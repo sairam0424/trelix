@@ -31,8 +31,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-import tree_sitter_c as _ts_c
-from tree_sitter import Language, Node, Parser
+import tree_sitter_languages
+from tree_sitter import Node, Parser
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 from trelix.indexing.parser.base import BaseParser, ParseResult
@@ -45,7 +45,9 @@ class CParser(BaseParser):
     MAX_STRUCT_FIELDS: int = 30
 
     def __init__(self) -> None:
-        self._parser = Parser(Language(_ts_c.language()))
+        self._ts_lang = tree_sitter_languages.get_language("c")
+        self._parser = Parser()
+        self._parser.set_language(self._ts_lang)
 
     @property
     def language_name(self) -> str:

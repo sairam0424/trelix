@@ -26,8 +26,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-import tree_sitter_c_sharp as _ts_csharp
-from tree_sitter import Language, Node, Parser
+import tree_sitter_languages
+from tree_sitter import Node, Parser
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 from trelix.indexing.parser.base import BaseParser, ParseResult
@@ -42,7 +42,9 @@ class CSharpParser(BaseParser):
     MAX_INTERFACE_MEMBERS: int = 20
 
     def __init__(self) -> None:
-        self._parser = Parser(Language(_ts_csharp.language()))
+        self._ts_lang = tree_sitter_languages.get_language("c_sharp")
+        self._parser = Parser()
+        self._parser.set_language(self._ts_lang)
 
     @property
     def language_name(self) -> str:
@@ -805,19 +807,15 @@ class CSharpParser(BaseParser):
         if not has_semi:
             return None
 
-        # Two forms:
-        #  using Namespace.Path;          → identifier / qualified_name
-        #  using Alias = Namespace.Path;  → identifier = qualified_name (no name_equals wrapper)
-        children = [c for c in node.children if c.is_named]
-        # If there's an '=' token, it's an alias directive — take the last named child as rhs
-        has_equals = any(
-            not c.is_named and self._txt(c, src) == "="
-            for c in node.children
-        )
-        if has_equals:
-            # rhs is the last qualified_name or identifier before the semicolon
-            for child in reversed(children):
-                if child.type in ("qualified_name", "identifier"):
+        # Three forms:
+        #  using System;                      → qualified_name / identifier
+        #  using static System.Math;          → qualified_name / identifier
+        #  using MyAlias = System.Text;       → name_equals child + qualified_name sibling
+        has_alias = any(c.type == "name_equals" for c in node.children)
+        if has_alias:
+            # Skip the name_equals node; the RHS qualified_name is a sibling
+            for child in node.children:
+                if child.type in ("qualified_name", "identifier") and child.is_named:
                     return ImportEdge(
                         file_id=file_id,
                         imported_from=self._txt(child, src),
@@ -826,15 +824,7 @@ class CSharpParser(BaseParser):
             return None
 
         for child in node.children:
-            if child.type == "name_equals":
-                for sub in child.children:
-                    if sub.type in ("qualified_name", "identifier"):
-                        return ImportEdge(
-                            file_id=file_id,
-                            imported_from=self._txt(sub, src),
-                            imported_names=[],
-                        )
-            elif child.type in ("qualified_name", "identifier"):
+            if child.type in ("qualified_name", "identifier") and child.is_named:
                 return ImportEdge(
                     file_id=file_id,
                     imported_from=self._txt(child, src),
