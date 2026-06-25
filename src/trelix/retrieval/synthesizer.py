@@ -203,7 +203,7 @@ class Synthesizer:
             query=context.query,
         )
 
-        max_tokens = config.synthesis_max_tokens if hasattr(config, "synthesis_max_tokens") else 2048
+        max_tokens: int = getattr(config, "synthesis_max_tokens", 2048)
 
         # For Azure use azure client attribute; for openai use openai client
         stream = self._client.chat.completions.create(  # type: ignore[union-attr]

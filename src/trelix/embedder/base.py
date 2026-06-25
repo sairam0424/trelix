@@ -194,6 +194,7 @@ class AavaPlatformEmbedder(BaseEmbedder):
             )
 
             last_exc: Exception | None = None
+            data: dict = {}
             for attempt in range(3):
                 try:
                     with urllib.request.urlopen(req) as resp:
