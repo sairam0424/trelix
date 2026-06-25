@@ -2,7 +2,7 @@
 trelix CLI — Phase 14 full implementation.
 
 Commands:
-    trelix index  <repo> [--provider local|openai|azure] [-v]
+    trelix index  <repo> [--provider local|openai|azure|aava] [-v]
     trelix search <repo> <query> [--provider ...] [--json]
     trelix ask    <repo> <query> [--provider ...]
     trelix query  <repo> <query> [--provider ...]
@@ -56,7 +56,7 @@ def _setup_logging(verbose: bool = False) -> None:
 @app.command()
 def index(
     repo: str = typer.Argument(..., help="Path to the repository to index"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
+    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | aava"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
 ) -> None:
     """Index a repository — builds the search index at <repo>/.trelix/index.db"""
@@ -108,7 +108,7 @@ def index(
 def search(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query: str = typer.Argument(..., help="Natural language query"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
+    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | aava"),
     json_output: bool = typer.Option(False, "--json", help="Output raw JSON"),
 ) -> None:
     """Search for code — returns ranked results as a table or JSON"""
@@ -170,7 +170,7 @@ def search(
 def ask(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query: str = typer.Argument(..., help="Question to answer about the codebase"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
+    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | aava"),
 ) -> None:
     """Ask a question — retrieval + LLM synthesis (requires OPENAI_API_KEY for full synthesis)"""
     _setup_logging(False)
@@ -221,7 +221,7 @@ def ask(
 def query(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query_str: str = typer.Argument(..., metavar="QUERY", help="Natural language query"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
+    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | aava"),
 ) -> None:
     """Query a repository — human-readable Rich terminal output (no LLM synthesis)"""
     _setup_logging(False)
@@ -327,7 +327,7 @@ def stats(
 def update_index(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     file: str = typer.Argument(..., help="File to re-index (absolute or relative to repo)"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
+    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | aava"),
 ) -> None:
     """Re-index a single file after editing"""
     _setup_logging(False)
