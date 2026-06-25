@@ -110,8 +110,8 @@ class PythonParser(BaseParser):
         root = tree.root_node
 
         symbols: list[Symbol] = []
-        # raw calls: (caller_local_idx | None, callee_name, line)
-        raw_calls: list[tuple[Optional[int], str, int]] = []
+        # raw calls: (caller_local_idx | None, callee_name, line, callee_type_hint | None)
+        raw_calls: list[tuple[Optional[int], str, int, Optional[str]]] = []
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
 
@@ -126,6 +126,7 @@ class PythonParser(BaseParser):
             type_edges=type_edges,
             parent_class_local_idx=None,
             current_func_local_idx=None,
+            param_types={},
             depth=0,
         )
 
@@ -155,8 +156,13 @@ class PythonParser(BaseParser):
 
         # Build CallEdge list — caller_id is a local index here, remapped by Indexer
         call_edges: list[CallEdge] = [
-            CallEdge(caller_id=caller_idx, callee_name=name, line=line)
-            for caller_idx, name, line in raw_calls
+            CallEdge(
+                caller_id=caller_idx,
+                callee_name=name,
+                line=line,
+                callee_type_hint=type_hint,
+            )
+            for caller_idx, name, line, type_hint in raw_calls
             if caller_idx is not None
         ]
 
@@ -178,11 +184,12 @@ class PythonParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[Optional[int], str, int, Optional[str]]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         parent_class_local_idx: Optional[int],
         current_func_local_idx: Optional[int],
+        param_types: dict[str, str],
         depth: int,
     ) -> None:
         """Recursive depth-first walk. depth guards against absurdly nested code."""
@@ -267,11 +274,11 @@ class PythonParser(BaseParser):
 
             # ---- Call sites (track for call graph) -----------------------
             elif ntype == "call":
-                self._handle_call(child, src, raw_calls, current_func_local_idx)
+                self._handle_call(child, src, raw_calls, current_func_local_idx, param_types)
                 # Still recurse into call arguments for nested calls
                 self._walk(
                     child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth + 1
+                    parent_class_local_idx, current_func_local_idx, param_types, depth + 1
                 )
 
             # ---- Recurse into statement / expression wrappers ------------
@@ -308,7 +315,7 @@ class PythonParser(BaseParser):
             ):
                 self._walk(
                     child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth + 1
+                    parent_class_local_idx, current_func_local_idx, param_types, depth + 1
                 )
 
     # ------------------------------------------------------------------
@@ -321,7 +328,7 @@ class PythonParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[Optional[int], str, int, Optional[str]]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         depth: int,
@@ -386,6 +393,7 @@ class PythonParser(BaseParser):
                 body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
                 parent_class_local_idx=class_local_idx,
                 current_func_local_idx=None,
+                param_types={},
                 depth=depth + 1,
             )
 
@@ -395,7 +403,7 @@ class PythonParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[Optional[int], str, int, Optional[str]]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         parent_class_local_idx: Optional[int],
@@ -440,12 +448,20 @@ class PythonParser(BaseParser):
         func_local_idx = len(symbols)
         symbols.append(sym)
 
+        # Build param_types: {param_name: type_name} for typed parameters.
+        # Used in _handle_call to infer callee_type_hint for method calls.
+        params_node = node.child_by_field_name("parameters")
+        func_param_types: dict[str, str] = (
+            self._extract_param_types(params_node, src) if params_node else {}
+        )
+
         # Walk the function body to find nested calls and imports
         if body_node:
             self._walk(
                 body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
                 parent_class_local_idx=parent_class_local_idx,
                 current_func_local_idx=func_local_idx,
+                param_types=func_param_types,
                 depth=depth + 1,
             )
 
@@ -707,13 +723,24 @@ class PythonParser(BaseParser):
         self,
         node: Node,
         src: bytes,
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[Optional[int], str, int, Optional[str]]],
         current_func_local_idx: Optional[int],
+        param_types: dict[str, str],
     ) -> None:
-        """Extract the callee name from a call node."""
+        """Extract the callee name from a call node.
+
+        For method calls of the form ``receiver.method()``, attempts to resolve
+        the static type of ``receiver`` from the enclosing function's annotated
+        parameter list (stored in ``param_types``).  When found, the type name
+        is stored as ``callee_type_hint`` on the resulting CallEdge so that
+        ``resolve_cross_file_calls()`` can use priority-2 type-hint resolution
+        instead of falling back to ambiguous name-only matching.
+        """
         func_node = node.child_by_field_name("function")
         if not func_node:
             return
+
+        type_hint: Optional[str] = None
 
         if func_node.type == "identifier":
             # Simple call: foo()
@@ -722,6 +749,11 @@ class PythonParser(BaseParser):
             # Method call: obj.foo()
             attr = func_node.child_by_field_name("attribute")
             name = self._txt(attr, src) if attr else ""
+            # Try to resolve receiver type hint from param annotations
+            obj_node = func_node.child_by_field_name("object")
+            if obj_node and obj_node.type == "identifier":
+                receiver_name = self._txt(obj_node, src)
+                type_hint = param_types.get(receiver_name)
         else:
             return
 
@@ -730,7 +762,44 @@ class PythonParser(BaseParser):
                 current_func_local_idx,
                 name,
                 node.start_point[0] + 1,
+                type_hint,
             ))
+
+    # ------------------------------------------------------------------
+    # Parameter type extraction (for callee_type_hint)
+    # ------------------------------------------------------------------
+
+    def _extract_param_types(self, params_node: Node, src: bytes) -> dict[str, str]:
+        """
+        Return a mapping of {parameter_name: type_annotation} for a function's
+        parameter list.  Only simple identifier type annotations are captured
+        (e.g. ``user_service: UserService``); generic types (``List[Foo]``) and
+        union types are skipped because they cannot be reliably matched against
+        a single qualified_name prefix.
+
+        Example: ``(self, user_service: UserService, db: Database)``
+        → ``{"user_service": "UserService", "db": "Database"}``
+        """
+        result: dict[str, str] = {}
+        for param in params_node.children:
+            # tree-sitter 0.21: typed parameters are `typed_parameter` nodes.
+            # tree-sitter 0.22+: they may be `identifier` nodes with a `type` child
+            # depending on grammar version.  Handle both.
+            if param.type == "typed_parameter":
+                name_node = self._get_child_by_type(param, "identifier")
+                type_node = param.child_by_field_name("type")
+                if name_node and type_node and type_node.type == "type":
+                    # Drill into the 'type' wrapper to find the inner identifier
+                    inner = self._get_child_by_type(type_node, "identifier")
+                    if inner:
+                        param_name = self._txt(name_node, src)
+                        type_name = self._txt(inner, src)
+                        if param_name != "self" and param_name != "cls":
+                            result[param_name] = type_name
+            elif param.type == "identifier":
+                # plain untyped parameter — no hint available, skip
+                pass
+        return result
 
     # ------------------------------------------------------------------
     # Import extraction

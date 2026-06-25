@@ -63,8 +63,8 @@ class TypeScriptParser(BaseParser):
         symbols: list[Symbol] = []
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
-        # raw_calls: (caller_local_idx, callee_name, line) — remapped by Indexer
-        raw_calls: list[tuple[int, str, int]] = []
+        # raw_calls: (caller_local_idx, callee_name, line, callee_type_hint | None)
+        raw_calls: list[tuple[int, str, int, Optional[str]]] = []
 
         # Module docstring — leading JSDoc/block comment before first import/declaration
         module_doc = self._get_module_docstring(root, source_bytes)
@@ -85,8 +85,13 @@ class TypeScriptParser(BaseParser):
         self._walk_top_level(root, source_bytes, file_id, symbols, import_edges, type_edges, raw_calls)
 
         call_edges: list[CallEdge] = [
-            CallEdge(caller_id=caller_idx, callee_name=name, line=line)
-            for caller_idx, name, line in raw_calls
+            CallEdge(
+                caller_id=caller_idx,
+                callee_name=name,
+                line=line,
+                callee_type_hint=type_hint,
+            )
+            for caller_idx, name, line, type_hint in raw_calls
         ]
 
         return ParseResult(
@@ -109,7 +114,7 @@ class TypeScriptParser(BaseParser):
         symbols: list[Symbol],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        raw_calls: list[tuple[int, str, int]],
+        raw_calls: list[tuple[int, str, int, Optional[str]]],
     ) -> None:
         for child in node.children:
             ntype = child.type
@@ -144,7 +149,7 @@ class TypeScriptParser(BaseParser):
         symbols: list[Symbol],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        raw_calls: list[tuple[int, str, int]],
+        raw_calls: list[tuple[int, str, int, Optional[str]]],
     ) -> None:
         """Unwrap export statement (including decorated exports) and dispatch."""
         # Re-export: export { A, B } from './module' — record as import edge
@@ -212,7 +217,7 @@ class TypeScriptParser(BaseParser):
         symbols: list[Symbol],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        raw_calls: list[tuple[int, str, int]],
+        raw_calls: list[tuple[int, str, int, Optional[str]]],
         exported: bool = False,
         decorators: Optional[list[str]] = None,
     ) -> None:
@@ -329,7 +334,7 @@ class TypeScriptParser(BaseParser):
         symbols: list[Symbol],
         class_local_idx: int,
         class_name: str,
-        raw_calls: list[tuple[int, str, int]],
+        raw_calls: list[tuple[int, str, int, Optional[str]]],
     ) -> None:
         name_node = self._get_child_by_type(node, "property_identifier")
         if not name_node:
@@ -365,7 +370,11 @@ class TypeScriptParser(BaseParser):
         # Walk method body for call edges
         body_node = self._get_child_by_type(node, "statement_block")
         if body_node:
-            self._walk_body(body_node, src, func_local_idx, raw_calls)
+            params_node = self._get_child_by_type(node, "formal_parameters")
+            method_param_types: dict[str, str] = (
+                self._extract_param_types(params_node, src) if params_node else {}
+            )
+            self._walk_body(body_node, src, func_local_idx, raw_calls, method_param_types)
 
     def _handle_class_field(
         self,
@@ -611,7 +620,7 @@ class TypeScriptParser(BaseParser):
         symbols: list[Symbol],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        raw_calls: list[tuple[int, str, int]],
+        raw_calls: list[tuple[int, str, int, Optional[str]]],
         exported: bool = False,
     ) -> None:
         """Handle TypeScript namespace/module blocks: namespace Foo { } / module "foo" { }"""
@@ -656,7 +665,7 @@ class TypeScriptParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[int, str, int]],
+        raw_calls: list[tuple[int, str, int, Optional[str]]],
         exported: bool = False,
         decorators: Optional[list[str]] = None,
     ) -> None:
@@ -683,7 +692,11 @@ class TypeScriptParser(BaseParser):
         # Walk body for call edges
         body_node = self._get_child_by_type(node, "statement_block")
         if body_node:
-            self._walk_body(body_node, src, func_local_idx, raw_calls)
+            params_node = self._get_child_by_type(node, "formal_parameters")
+            func_param_types: dict[str, str] = (
+                self._extract_param_types(params_node, src) if params_node else {}
+            )
+            self._walk_body(body_node, src, func_local_idx, raw_calls, func_param_types)
 
     def _handle_var_decl(
         self,
@@ -692,7 +705,7 @@ class TypeScriptParser(BaseParser):
         file_id: int,
         symbols: list[Symbol],
         exported: bool = False,
-        raw_calls: Optional[list[tuple[int, str, int]]] = None,
+        raw_calls: Optional[list[tuple[int, str, int, Optional[str]]]] = None,
     ) -> None:
         """Handle const/let declarations — arrow functions AND module-level constants."""
         for child in node.children:
@@ -757,25 +770,35 @@ class TypeScriptParser(BaseParser):
         node: Node,
         src: bytes,
         current_func_local_idx: int,
-        raw_calls: list[tuple[int, str, int]],
+        raw_calls: list[tuple[int, str, int, Optional[str]]],
+        param_types: Optional[dict[str, str]] = None,
     ) -> None:
         """Iterate over `node`'s children and dispatch each through `_walk_node`."""
+        pt = param_types or {}
         for child in node.children:
-            self._walk_node(child, src, current_func_local_idx, raw_calls)
+            self._walk_node(child, src, current_func_local_idx, raw_calls, pt)
 
     def _walk_node(
         self,
         child: Node,
         src: bytes,
         current_func_local_idx: int,
-        raw_calls: list[tuple[int, str, int]],
+        raw_calls: list[tuple[int, str, int, Optional[str]]],
+        param_types: Optional[dict[str, str]] = None,
     ) -> None:
         """Process a single AST node: extract calls and recurse into sub-expressions.
 
         Arrow function expression bodies (e.g. ``x => foo(x)``) pass the body node
         directly here so it is handled correctly whether it is a statement_block or a
         bare expression.
+
+        ``param_types`` maps parameter names to their TypeScript type annotation names
+        (e.g. ``{"authService": "AuthService", "db": "Database"}``).  When a method
+        call ``receiver.method()`` is found and the receiver name is in ``param_types``,
+        the type is stored as ``callee_type_hint`` on the CallEdge so resolution can
+        use the type-hint priority-2 path.
         """
+        pt = param_types or {}
         ntype = child.type
         if ntype == "call_expression":
             fn_node = child.child_by_field_name("function")
@@ -785,17 +808,27 @@ class TypeScriptParser(BaseParser):
                         current_func_local_idx,
                         self._txt(fn_node, src),
                         child.start_point[0] + 1,
+                        None,
                     ))
                 elif fn_node.type in ("member_expression", "optional_chain"):
                     prop = fn_node.child_by_field_name("property")
                     if prop:
+                        # Try to resolve receiver type hint
+                        type_hint: Optional[str] = None
+                        obj_node = fn_node.child_by_field_name("object")
+                        if obj_node and obj_node.type == "identifier":
+                            receiver_name = self._txt(obj_node, src)
+                            type_hint = pt.get(receiver_name)
+                        elif obj_node and obj_node.type == "this":
+                            pass  # this.method() — type hint not applicable
                         raw_calls.append((
                             current_func_local_idx,
                             self._txt(prop, src),
                             child.start_point[0] + 1,
+                            type_hint,
                         ))
             # Recurse into args for nested calls: foo(bar())
-            self._walk_body(child, src, current_func_local_idx, raw_calls)
+            self._walk_body(child, src, current_func_local_idx, raw_calls, pt)
         elif ntype == "new_expression":
             # new SomeClass() / new pkg.Class() — constructor call
             ctor = child.child_by_field_name("constructor")
@@ -805,6 +838,7 @@ class TypeScriptParser(BaseParser):
                         current_func_local_idx,
                         self._txt(ctor, src),
                         child.start_point[0] + 1,
+                        None,
                     ))
                 elif ctor.type in ("member_expression", "nested_identifier"):
                     prop = ctor.child_by_field_name("property")
@@ -813,17 +847,18 @@ class TypeScriptParser(BaseParser):
                             current_func_local_idx,
                             self._txt(prop, src),
                             child.start_point[0] + 1,
+                            None,
                         ))
-            self._walk_body(child, src, current_func_local_idx, raw_calls)
+            self._walk_body(child, src, current_func_local_idx, raw_calls, pt)
         elif ntype == "arrow_function":
             # Attribute calls in nested arrow functions to the enclosing symbol.
             # body may be a statement_block OR a bare expression (e.g. x => foo(x)).
             body_node = child.child_by_field_name("body")
             if body_node:
-                self._walk_node(body_node, src, current_func_local_idx, raw_calls)
+                self._walk_node(body_node, src, current_func_local_idx, raw_calls, pt)
         elif ntype not in self._SCOPE_BOUNDARY:
             # Generic container (if, for, block, etc.) — recurse
-            self._walk_body(child, src, current_func_local_idx, raw_calls)
+            self._walk_body(child, src, current_func_local_idx, raw_calls, pt)
 
     def _handle_ambient(
         self,
@@ -833,7 +868,7 @@ class TypeScriptParser(BaseParser):
         symbols: list[Symbol],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        raw_calls: list[tuple[int, str, int]],
+        raw_calls: list[tuple[int, str, int, Optional[str]]],
     ) -> None:
         """Handle `declare ...` ambient declarations (common in .d.ts files).
 
@@ -918,6 +953,48 @@ class TypeScriptParser(BaseParser):
             docstring=self._get_preceding_comment(node, src),
             is_public=is_public,
         ))
+
+    # ------------------------------------------------------------------
+    # Parameter type extraction (for callee_type_hint)
+    # ------------------------------------------------------------------
+
+    def _extract_param_types(self, params_node: Node, src: bytes) -> dict[str, str]:
+        """
+        Return ``{parameter_name: type_name}`` for a TypeScript function's
+        ``formal_parameters`` node.  Only simple identifier type annotations are
+        captured (e.g. ``authService: AuthService``); generic types (``Array<Foo>``)
+        and union types are skipped because they cannot be reliably matched against
+        a single qualified_name prefix.
+
+        Examples:
+          ``(authService: AuthService, db: Database)``
+          → ``{"authService": "AuthService", "db": "Database"}``
+
+          ``(items: string[], count: number)``
+          → ``{}``  (array/primitive types don't correspond to indexed symbols)
+        """
+        result: dict[str, str] = {}
+        for param in params_node.children:
+            if param.type not in ("required_parameter", "optional_parameter"):
+                continue
+            name_node = (
+                self._get_child_by_type(param, "identifier")
+                or self._get_child_by_type(param, "this")
+            )
+            type_node = param.child_by_field_name("type")
+            if not name_node or not type_node:
+                continue
+            param_name = self._txt(name_node, src)
+            if param_name == "this":
+                continue  # TS `this` parameter — skip
+            # Drill into the type_annotation wrapper
+            inner = (
+                self._get_child_by_type(type_node, "type_identifier")
+                or self._get_child_by_type(type_node, "identifier")
+            )
+            if inner:
+                result[param_name] = self._txt(inner, src)
+        return result
 
     # ------------------------------------------------------------------
     # Import extraction
