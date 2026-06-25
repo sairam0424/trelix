@@ -158,5 +158,12 @@ def get_parser(language: Language) -> BaseParser | None:
             except ImportError:
                 return None
 
+        case Language.RUBY:
+            try:
+                from .extractors.ruby import RubyParser  # type: ignore[import]
+                return RubyParser()
+            except ImportError:
+                return None
+
         case _:
             return None
