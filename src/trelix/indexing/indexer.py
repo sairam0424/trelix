@@ -40,7 +40,7 @@ from typing import Optional
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
-from trelix.indexing.chunker import Chunker
+from trelix.indexing.chunker import Chunker, ContextualChunker
 from trelix.core.config import IndexConfig
 from trelix.core.models import IndexedFile
 from trelix.embedder.base import BaseEmbedder, make_embedder
@@ -155,8 +155,47 @@ class Indexer:
             db_path=db_path,
             dimension=self.embedder.dimension,
         )
-        self.chunker = Chunker(config.chunker)
+        self.chunker = self._build_chunker(config)
         self.walker = FileWalker(config)
+
+    def _build_chunker(self, config: IndexConfig) -> Chunker:
+        """
+        Return a ContextualChunker if contextual=True in ChunkerConfig,
+        otherwise a plain Chunker.  The LLM client is built here so it is
+        created once and reused across all files.
+        """
+        if not config.chunker.contextual:
+            return Chunker(config.chunker)
+
+        llm_client = None
+        embedder_cfg = config.embedder
+        try:
+            if embedder_cfg.provider == "azure":
+                from openai import AzureOpenAI
+                llm_client = AzureOpenAI(
+                    api_key=embedder_cfg.azure_api_key,
+                    azure_endpoint=embedder_cfg.azure_endpoint or "",
+                    api_version=embedder_cfg.azure_api_version,
+                )
+                logger.info(
+                    "ContextualChunker: using Azure OpenAI model=%s",
+                    config.chunker.contextual_model,
+                )
+            else:
+                from openai import OpenAI
+                llm_client = OpenAI(api_key=embedder_cfg.openai_api_key)
+                logger.info(
+                    "ContextualChunker: using OpenAI model=%s",
+                    config.chunker.contextual_model,
+                )
+        except Exception as exc:
+            logger.warning(
+                "ContextualChunker: could not build LLM client (%s) — "
+                "falling back to base Chunker",
+                exc,
+            )
+
+        return ContextualChunker(config.chunker, llm_client=llm_client)
 
     def _report_progress(
         self,

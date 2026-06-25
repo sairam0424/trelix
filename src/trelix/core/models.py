@@ -103,6 +103,7 @@ class Symbol:
     is_public: bool = True
     parent_id: Optional[int] = None   # enclosing class/struct symbol id
     id: Optional[int] = None
+    context_summary: Optional[str] = None  # LLM-generated summary (contextual chunking)
 
 
 # ---------------------------------------------------------------------------
