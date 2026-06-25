@@ -137,7 +137,10 @@ class LocalEmbedder(BaseEmbedder):
 
     @property
     def dimension(self) -> int:
-        return self._model.get_sentence_embedding_dimension()  # type: ignore[return-value]
+        # get_embedding_dimension is the new name; fall back to legacy for older versions
+        getter = getattr(self._model, "get_embedding_dimension", None) or \
+                 getattr(self._model, "get_sentence_embedding_dimension", None)
+        return getter()  # type: ignore[return-value]
 
 
 def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
