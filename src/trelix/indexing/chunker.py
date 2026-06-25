@@ -173,7 +173,7 @@ class ContextualChunker(Chunker):
     def __init__(
         self,
         config: ChunkerConfig,
-        llm_client: object | None = None,  # openai.OpenAI or compatible
+        llm_client: object | None = None,  # openai.OpenAI or compatible; typed as object to avoid hard import
     ) -> None:
         super().__init__(config)
         self._llm_client = llm_client
@@ -258,7 +258,7 @@ class ContextualChunker(Chunker):
             body=symbol.body[:800],
         )
         try:
-            response = self._llm_client.chat.completions.create(
+            response = self._llm_client.chat.completions.create(  # type: ignore[union-attr]
                 model=self.config.contextual_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=self.config.contextual_max_tokens,
