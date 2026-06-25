@@ -17,13 +17,13 @@ from trelix.core.models import (
     Symbol,
     SymbolKind,
 )
-from trelix.retrieval.bm25 import bm25_search, _escape_fts5
+from trelix.retrieval.bm25 import _escape_fts5, bm25_search
 from trelix.store.db import Database
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_file(db: Database, rel_path: str = "src/auth/login.py") -> int:
     f = IndexedFile(
@@ -70,6 +70,7 @@ def _insert_chunk(db: Database, symbol_id: int, text: str) -> int:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def db(tmp_path: Path) -> Database:
     """Fresh SQLite DB per test (real file so FTS5 triggers fire correctly)."""
@@ -79,6 +80,7 @@ def db(tmp_path: Path) -> Database:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestBm25Search:
     def test_returns_empty_for_empty_query(self, db: Database) -> None:
@@ -97,7 +99,8 @@ class TestBm25Search:
             db,
             file_id,
             "authenticate_user",
-            "def authenticate_user(username, password):\n    return check_password(username, password)",
+            "def authenticate_user(username, password):\n"
+            "    return check_password(username, password)",
             docstring="Authenticate a user by username and password.",
         )
         _insert_chunk(db, sym_id, "def authenticate_user(): ...")
@@ -146,7 +149,9 @@ class TestBm25Search:
         """SearchResult scores must be > 0 and <= 1."""
         file_id = _make_file(db)
         sym_id = _insert_symbol(
-            db, file_id, "process_request",
+            db,
+            file_id,
+            "process_request",
             "def process_request(req): return req",
         )
         _insert_chunk(db, sym_id, "process request handler")
@@ -171,7 +176,9 @@ class TestBm25Search:
         file_id = _make_file(db)
         for i in range(10):
             sym_id = _insert_symbol(
-                db, file_id, f"validate_field_{i}",
+                db,
+                file_id,
+                f"validate_field_{i}",
                 f"def validate_field_{i}(v): return validate(v)",
             )
             _insert_chunk(db, sym_id, f"validate field {i}")
@@ -200,6 +207,7 @@ class TestBm25Search:
 # ---------------------------------------------------------------------------
 # _escape_fts5 unit tests
 # ---------------------------------------------------------------------------
+
 
 class TestEscapeFts5:
     def test_single_identifier_becomes_prefix_search(self) -> None:

@@ -17,6 +17,7 @@ Covers:
   - Nested module::class qualified names
   - Singleton class (class << self)
 """
+
 from __future__ import annotations
 
 import pytest
@@ -24,10 +25,10 @@ import pytest
 from trelix.core.models import SymbolKind
 from trelix.indexing.parser.extractors.ruby import RubyParser
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def parser() -> RubyParser:
@@ -40,6 +41,7 @@ FILE_ID = 99
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def names(symbols) -> list[str]:
     return [s.name for s in symbols]
@@ -59,6 +61,7 @@ def find_all(symbols, name: str) -> list:
 # ---------------------------------------------------------------------------
 # Class extraction
 # ---------------------------------------------------------------------------
+
 
 class TestClassExtraction:
     def test_simple_class_extracted(self, parser: RubyParser) -> None:
@@ -115,6 +118,7 @@ class TestClassExtraction:
 # Module extraction
 # ---------------------------------------------------------------------------
 
+
 class TestModuleExtraction:
     def test_module_kind_is_module(self, parser: RubyParser) -> None:
         src = "module Greeter\nend\n"
@@ -148,6 +152,7 @@ class TestModuleExtraction:
 # ---------------------------------------------------------------------------
 # Method extraction and parent_id linkage
 # ---------------------------------------------------------------------------
+
 
 class TestMethodExtraction:
     def test_method_inside_class_is_kind_method(self, parser: RubyParser) -> None:
@@ -226,6 +231,7 @@ class TestMethodExtraction:
 # Visibility (private / public)
 # ---------------------------------------------------------------------------
 
+
 class TestVisibility:
     def test_methods_are_public_by_default(self, parser: RubyParser) -> None:
         src = "class Foo\n  def bar\n  end\nend\n"
@@ -235,27 +241,14 @@ class TestVisibility:
         assert meth.is_public is True
 
     def test_private_method_is_not_public(self, parser: RubyParser) -> None:
-        src = (
-            "class Foo\n"
-            "  private\n"
-            "  def secret\n"
-            "  end\n"
-            "end\n"
-        )
+        src = "class Foo\n  private\n  def secret\n  end\nend\n"
         result = parser.parse(src, FILE_ID)
         meth = find(result.symbols, "secret")
         assert meth is not None
         assert meth.is_public is False
 
     def test_public_after_private_restores_visibility(self, parser: RubyParser) -> None:
-        src = (
-            "class Foo\n"
-            "  private\n"
-            "  def hidden\n  end\n"
-            "  public\n"
-            "  def visible\n  end\n"
-            "end\n"
-        )
+        src = "class Foo\n  private\n  def hidden\n  end\n  public\n  def visible\n  end\nend\n"
         result = parser.parse(src, FILE_ID)
         hidden = find(result.symbols, "hidden")
         visible = find(result.symbols, "visible")
@@ -266,6 +259,7 @@ class TestVisibility:
 # ---------------------------------------------------------------------------
 # TypeEdge — inheritance
 # ---------------------------------------------------------------------------
+
 
 class TestTypeEdgeInheritance:
     def test_class_inheritance_produces_type_edge(self, parser: RubyParser) -> None:
@@ -296,6 +290,7 @@ class TestTypeEdgeInheritance:
 # TypeEdge — mixins (include/prepend/extend)
 # ---------------------------------------------------------------------------
 
+
 class TestTypeEdgeMixins:
     def test_include_produces_implements_edge(self, parser: RubyParser) -> None:
         src = "class Foo\n  include Comparable\nend\n"
@@ -316,12 +311,7 @@ class TestTypeEdgeMixins:
         assert any(e.to_type_name == "Serializable" for e in impl_edges)
 
     def test_both_extends_and_implements_edges(self, parser: RubyParser) -> None:
-        src = (
-            "class Person < BaseEntity\n"
-            "  include Comparable\n"
-            "  extend Serializable\n"
-            "end\n"
-        )
+        src = "class Person < BaseEntity\n  include Comparable\n  extend Serializable\nend\n"
         result = parser.parse(src, FILE_ID)
         extends = [e for e in result.type_edges if e.edge_kind == "extends"]
         impls = [e for e in result.type_edges if e.edge_kind == "implements"]
@@ -333,6 +323,7 @@ class TestTypeEdgeMixins:
 # ---------------------------------------------------------------------------
 # ImportEdge — require / require_relative
 # ---------------------------------------------------------------------------
+
 
 class TestImportEdge:
     def test_require_produces_import_edge(self, parser: RubyParser) -> None:
@@ -367,6 +358,7 @@ class TestImportEdge:
 # Constants
 # ---------------------------------------------------------------------------
 
+
 class TestConstants:
     def test_allcaps_constant_extracted(self, parser: RubyParser) -> None:
         src = "MAX_SIZE = 100\n"
@@ -383,14 +375,14 @@ class TestConstants:
         assert sym.kind == SymbolKind.CONSTANT
 
     def test_class_level_constant_extracted(self, parser: RubyParser) -> None:
-        src = "class Foo\n  GREETING = \"Hello\"\nend\n"
+        src = 'class Foo\n  GREETING = "Hello"\nend\n'
         result = parser.parse(src, FILE_ID)
         sym = find(result.symbols, "GREETING")
         assert sym is not None
         assert sym.kind == SymbolKind.CONSTANT
 
     def test_class_level_constant_parent_id(self, parser: RubyParser) -> None:
-        src = "class Foo\n  GREETING = \"Hello\"\nend\n"
+        src = 'class Foo\n  GREETING = "Hello"\nend\n'
         result = parser.parse(src, FILE_ID)
         cls = find(result.symbols, "Foo")
         const = find(result.symbols, "GREETING")
@@ -403,39 +395,22 @@ class TestConstants:
 # Call edges
 # ---------------------------------------------------------------------------
 
+
 class TestCallEdges:
     def test_call_inside_method_produces_call_edge(self, parser: RubyParser) -> None:
-        src = (
-            "class Foo\n"
-            "  def do_work\n"
-            "    helper()\n"
-            "  end\n"
-            "end\n"
-        )
+        src = "class Foo\n  def do_work\n    helper()\n  end\nend\n"
         result = parser.parse(src, FILE_ID)
         callee_names = [e.callee_name for e in result.call_edges]
         assert "helper" in callee_names
 
     def test_method_call_receiver_name_extracted(self, parser: RubyParser) -> None:
-        src = (
-            "class Foo\n"
-            "  def run\n"
-            "    client.connect\n"
-            "  end\n"
-            "end\n"
-        )
+        src = "class Foo\n  def run\n    client.connect\n  end\nend\n"
         result = parser.parse(src, FILE_ID)
         callee_names = [e.callee_name for e in result.call_edges]
         assert "connect" in callee_names
 
     def test_call_edge_caller_id_is_method_index(self, parser: RubyParser) -> None:
-        src = (
-            "class Foo\n"
-            "  def run\n"
-            "    helper()\n"
-            "  end\n"
-            "end\n"
-        )
+        src = "class Foo\n  def run\n    helper()\n  end\nend\n"
         result = parser.parse(src, FILE_ID)
         run_method = find(result.symbols, "run")
         assert run_method is not None
@@ -448,6 +423,7 @@ class TestCallEdges:
 # ---------------------------------------------------------------------------
 # Singleton class (class << self)
 # ---------------------------------------------------------------------------
+
 
 class TestSingletonClass:
     def test_singleton_class_extracted(self, parser: RubyParser) -> None:
@@ -472,9 +448,11 @@ class TestSingletonClass:
 # Parse result integrity
 # ---------------------------------------------------------------------------
 
+
 class TestParseResultIntegrity:
     def test_parse_returns_parse_result(self, parser: RubyParser) -> None:
         from trelix.indexing.parser.base import ParseResult
+
         result = parser.parse("class A\nend\n", FILE_ID)
         assert isinstance(result, ParseResult)
 
@@ -497,13 +475,7 @@ class TestParseResultIntegrity:
         assert result.parse_errors == 0
 
     def test_all_symbols_have_correct_file_id(self, parser: RubyParser) -> None:
-        src = (
-            "module M\n"
-            "  class C\n"
-            "    def m\n    end\n"
-            "  end\n"
-            "end\n"
-        )
+        src = "module M\n  class C\n    def m\n    end\n  end\nend\n"
         result = parser.parse(src, FILE_ID)
         for sym in result.symbols:
             assert sym.file_id == FILE_ID
@@ -513,10 +485,12 @@ class TestParseResultIntegrity:
 # Registry integration
 # ---------------------------------------------------------------------------
 
+
 class TestRegistry:
     def test_registry_returns_ruby_parser(self) -> None:
         from trelix.core.models import Language
         from trelix.indexing.parser.registry import get_parser
+
         # Clear lru_cache so previous runs don't interfere
         get_parser.cache_clear()
         p = get_parser(Language.RUBY)

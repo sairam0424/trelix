@@ -24,7 +24,6 @@ Parent linkage:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 import tree_sitter_languages
 from tree_sitter import Node, Parser
@@ -60,25 +59,27 @@ class CSharpParser(BaseParser):
         root = tree.root_node
 
         symbols: list[Symbol] = []
-        raw_calls: list[tuple[Optional[int], str, int]] = []
+        raw_calls: list[tuple[int | None, str, int]] = []
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
 
         # File-level XML doc comment (/// before any declaration)
         module_doc = self._get_file_doc(root, source_bytes)
         if module_doc:
-            symbols.append(Symbol(
-                file_id=file_id,
-                name="<module>",
-                qualified_name="<module>",
-                kind=SymbolKind.MODULE,
-                line_start=1,
-                line_end=root.end_point[0] + 1,
-                signature=module_doc.split("\n")[0][:120],
-                body=module_doc,
-                docstring=module_doc,
-                is_public=True,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name="<module>",
+                    qualified_name="<module>",
+                    kind=SymbolKind.MODULE,
+                    line_start=1,
+                    line_end=root.end_point[0] + 1,
+                    signature=module_doc.split("\n")[0][:120],
+                    body=module_doc,
+                    docstring=module_doc,
+                    is_public=True,
+                )
+            )
 
         self._walk(
             node=root,
@@ -96,7 +97,8 @@ class CSharpParser(BaseParser):
         # Append top-level signatures to module symbol body if present
         if module_doc and symbols and symbols[0].kind == SymbolKind.MODULE:
             top_sigs = [
-                s.signature for s in symbols[1:]
+                s.signature
+                for s in symbols[1:]
                 if s.parent_id is None and s.kind not in (SymbolKind.CONSTANT,)
             ][:20]
             if top_sigs:
@@ -126,11 +128,11 @@ class CSharpParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
-        current_func_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
+        current_func_local_idx: int | None,
         depth: int,
     ) -> None:
         """Recursive depth-first walk."""
@@ -144,15 +146,31 @@ class CSharpParser(BaseParser):
             # ---- Namespace containers (block-scoped and file-scoped) ----
             if ntype in ("namespace_declaration", "file_scoped_namespace_declaration"):
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    depth + 1,
                 )
 
             # ---- Declaration list (class body / namespace body) ----------
             elif ntype == "declaration_list":
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    depth + 1,
                 )
 
             # ---- Using directives → ImportEdge ---------------------------
@@ -165,8 +183,15 @@ class CSharpParser(BaseParser):
             elif ntype in ("class_declaration", "struct_declaration", "record_declaration"):
                 doc = self._get_preceding_xml_doc(children, i, src)
                 self._handle_class(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    depth, docstring=doc,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth,
+                    docstring=doc,
                 )
 
             # ---- Delegate declaration → INTERFACE symbol ----------------
@@ -184,92 +209,171 @@ class CSharpParser(BaseParser):
             elif ntype == "interface_declaration":
                 doc = self._get_preceding_xml_doc(children, i, src)
                 self._handle_interface(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    depth, docstring=doc,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth,
+                    docstring=doc,
                 )
 
             # ---- Enum ---------------------------------------------------
             elif ntype == "enum_declaration":
                 doc = self._get_preceding_xml_doc(children, i, src)
                 self._handle_enum(
-                    child, src, file_id, symbols, type_edges, docstring=doc,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    type_edges,
+                    docstring=doc,
                 )
 
             # ---- Method -------------------------------------------------
             elif ntype == "method_declaration":
                 doc = self._get_preceding_xml_doc(children, i, src)
                 self._handle_method(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth, docstring=doc,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    depth,
+                    docstring=doc,
                 )
 
             # ---- Constructor --------------------------------------------
             elif ntype == "constructor_declaration":
                 doc = self._get_preceding_xml_doc(children, i, src)
                 self._handle_constructor(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth, docstring=doc,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    depth,
+                    docstring=doc,
                 )
 
             # ---- Property (class member only) ---------------------------
             elif ntype == "property_declaration" and parent_class_local_idx is not None:
                 field_count = sum(
-                    1 for s in symbols
+                    1
+                    for s in symbols
                     if s.parent_id == parent_class_local_idx
                     and s.kind in (SymbolKind.VARIABLE, SymbolKind.CONSTANT)
                 )
                 if field_count < self.MAX_CLASS_FIELDS:
                     doc = self._get_preceding_xml_doc(children, i, src)
                     self._handle_property(
-                        child, src, file_id, symbols, parent_class_local_idx, docstring=doc,
+                        child,
+                        src,
+                        file_id,
+                        symbols,
+                        parent_class_local_idx,
+                        docstring=doc,
                     )
 
             # ---- Field (class member only) ------------------------------
             elif ntype == "field_declaration" and parent_class_local_idx is not None:
                 field_count = sum(
-                    1 for s in symbols
+                    1
+                    for s in symbols
                     if s.parent_id == parent_class_local_idx
                     and s.kind in (SymbolKind.VARIABLE, SymbolKind.CONSTANT)
                 )
                 if field_count < self.MAX_CLASS_FIELDS:
                     self._handle_field(
-                        child, src, file_id, symbols, parent_class_local_idx,
+                        child,
+                        src,
+                        file_id,
+                        symbols,
+                        parent_class_local_idx,
                     )
 
             # ---- Call sites (track for call graph) ----------------------
             elif ntype == "invocation_expression":
                 self._handle_call(child, src, raw_calls, current_func_local_idx)
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    depth + 1,
                 )
 
             # ---- Recurse into statement / expression containers ---------
             elif ntype in (
-                "block", "if_statement", "else_clause",
-                "for_statement", "foreach_statement",
-                "while_statement", "do_statement",
-                "try_statement", "catch_clause", "finally_clause",
-                "switch_statement", "switch_section",
-                "using_statement", "lock_statement",
-                "expression_statement", "return_statement",
-                "local_declaration_statement", "local_function_statement",
-                "checked_statement", "unchecked_statement",
-                "fixed_statement", "unsafe_statement",
-                "yield_statement", "throw_statement",
-                "assignment_expression", "conditional_expression",
-                "await_expression", "object_creation_expression",
-                "equals_value_clause", "argument", "argument_list",
-                "variable_declaration", "variable_declarator",
-                "lambda_expression", "anonymous_method_expression",
-                "element_access_expression", "element_binding_expression",
-                "postfix_unary_expression", "prefix_unary_expression",
-                "binary_expression", "parenthesized_expression",
+                "block",
+                "if_statement",
+                "else_clause",
+                "for_statement",
+                "foreach_statement",
+                "while_statement",
+                "do_statement",
+                "try_statement",
+                "catch_clause",
+                "finally_clause",
+                "switch_statement",
+                "switch_section",
+                "using_statement",
+                "lock_statement",
+                "expression_statement",
+                "return_statement",
+                "local_declaration_statement",
+                "local_function_statement",
+                "checked_statement",
+                "unchecked_statement",
+                "fixed_statement",
+                "unsafe_statement",
+                "yield_statement",
+                "throw_statement",
+                "assignment_expression",
+                "conditional_expression",
+                "await_expression",
+                "object_creation_expression",
+                "equals_value_clause",
+                "argument",
+                "argument_list",
+                "variable_declaration",
+                "variable_declarator",
+                "lambda_expression",
+                "anonymous_method_expression",
+                "element_access_expression",
+                "element_binding_expression",
+                "postfix_unary_expression",
+                "prefix_unary_expression",
+                "binary_expression",
+                "parenthesized_expression",
                 "initializer_expression",
             ):
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    depth + 1,
                 )
 
     # ------------------------------------------------------------------
@@ -282,11 +386,11 @@ class CSharpParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         depth: int,
-        docstring: Optional[str] = None,
+        docstring: str | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -315,16 +419,24 @@ class CSharpParser(BaseParser):
         symbols.append(sym)
 
         for base in bases:
-            type_edges.append(TypeEdge(
-                from_symbol_id=class_local_idx,
-                to_type_name=base,
-                edge_kind="extends",
-            ))
+            type_edges.append(
+                TypeEdge(
+                    from_symbol_id=class_local_idx,
+                    to_type_name=base,
+                    edge_kind="extends",
+                )
+            )
 
         body_node = self._get_child_by_type(node, "declaration_list")
         if body_node:
             self._walk(
-                body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
                 parent_class_local_idx=class_local_idx,
                 current_func_local_idx=None,
                 depth=depth + 1,
@@ -336,11 +448,11 @@ class CSharpParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         depth: int,
-        docstring: Optional[str] = None,
+        docstring: str | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -369,11 +481,13 @@ class CSharpParser(BaseParser):
         symbols.append(sym)
 
         for base in bases:
-            type_edges.append(TypeEdge(
-                from_symbol_id=iface_local_idx,
-                to_type_name=base,
-                edge_kind="extends",
-            ))
+            type_edges.append(
+                TypeEdge(
+                    from_symbol_id=iface_local_idx,
+                    to_type_name=base,
+                    edge_kind="extends",
+                )
+            )
 
         body_node = self._get_child_by_type(node, "declaration_list")
         if body_node:
@@ -395,23 +509,25 @@ class CSharpParser(BaseParser):
                     sig = self._txt(member, src).split("{")[0].split(";")[0].strip()
                     if len(sig) > 200:
                         sig = sig[:200] + "..."
-                    symbols.append(Symbol(
-                        file_id=file_id,
-                        name=member_name,
-                        qualified_name=f"{name}.{member_name}",
-                        kind=(
-                            SymbolKind.METHOD
-                            if member.type == "method_declaration"
-                            else SymbolKind.VARIABLE
-                        ),
-                        line_start=member.start_point[0] + 1,
-                        line_end=member.end_point[0] + 1,
-                        signature=sig,
-                        body=self._txt(member, src),
-                        docstring=mdoc,
-                        parent_id=iface_local_idx,
-                        is_public=True,
-                    ))
+                    symbols.append(
+                        Symbol(
+                            file_id=file_id,
+                            name=member_name,
+                            qualified_name=f"{name}.{member_name}",
+                            kind=(
+                                SymbolKind.METHOD
+                                if member.type == "method_declaration"
+                                else SymbolKind.VARIABLE
+                            ),
+                            line_start=member.start_point[0] + 1,
+                            line_end=member.end_point[0] + 1,
+                            signature=sig,
+                            body=self._txt(member, src),
+                            docstring=mdoc,
+                            parent_id=iface_local_idx,
+                            is_public=True,
+                        )
+                    )
                     member_count += 1
 
     def _handle_enum(
@@ -421,7 +537,7 @@ class CSharpParser(BaseParser):
         file_id: int,
         symbols: list[Symbol],
         type_edges: list[TypeEdge],
-        docstring: Optional[str] = None,
+        docstring: str | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -458,18 +574,20 @@ class CSharpParser(BaseParser):
                     continue
                 member_name = self._txt(member_name_node, src)
                 body = self._txt(member, src)
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=member_name,
-                    qualified_name=f"{name}.{member_name}",
-                    kind=SymbolKind.CONSTANT,
-                    line_start=member.start_point[0] + 1,
-                    line_end=member.end_point[0] + 1,
-                    signature=body[:200],
-                    body=body,
-                    parent_id=enum_local_idx,
-                    is_public=is_public,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=member_name,
+                        qualified_name=f"{name}.{member_name}",
+                        kind=SymbolKind.CONSTANT,
+                        line_start=member.start_point[0] + 1,
+                        line_end=member.end_point[0] + 1,
+                        signature=body[:200],
+                        body=body,
+                        parent_id=enum_local_idx,
+                        is_public=is_public,
+                    )
+                )
 
     def _handle_method(
         self,
@@ -477,13 +595,13 @@ class CSharpParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
-        current_func_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
+        current_func_local_idx: int | None,
         depth: int,
-        docstring: Optional[str] = None,
+        docstring: str | None = None,
     ) -> None:
         name_node = self._get_method_name_node(node)
         if not name_node:
@@ -522,7 +640,13 @@ class CSharpParser(BaseParser):
         body_node = self._get_child_by_type(node, "block")
         if body_node:
             self._walk(
-                body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
                 parent_class_local_idx=parent_class_local_idx,
                 current_func_local_idx=method_local_idx,
                 depth=depth + 1,
@@ -534,13 +658,13 @@ class CSharpParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
-        current_func_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
+        current_func_local_idx: int | None,
         depth: int,
-        docstring: Optional[str] = None,
+        docstring: str | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -558,9 +682,8 @@ class CSharpParser(BaseParser):
         )
         qualified_name = f"{class_name}.{name}"
 
-        params_node = (
-            node.child_by_field_name("parameters")
-            or self._get_child_by_type(node, "parameter_list")
+        params_node = node.child_by_field_name("parameters") or self._get_child_by_type(
+            node, "parameter_list"
         )
         params_text = self._txt(params_node, src) if params_node else "()"
         sig = f"{name}{params_text}"
@@ -585,7 +708,13 @@ class CSharpParser(BaseParser):
         body_node = self._get_child_by_type(node, "block")
         if body_node:
             self._walk(
-                body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
                 parent_class_local_idx=parent_class_local_idx,
                 current_func_local_idx=ctor_local_idx,
                 depth=depth + 1,
@@ -598,7 +727,7 @@ class CSharpParser(BaseParser):
         file_id: int,
         symbols: list[Symbol],
         parent_class_local_idx: int,
-        docstring: Optional[str] = None,
+        docstring: str | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -616,19 +745,21 @@ class CSharpParser(BaseParser):
             body = body[:500] + "..."
         sig = self._property_signature(node, src)
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=f"{class_name}.{name}",
-            kind=SymbolKind.VARIABLE,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=sig,
-            body=body,
-            docstring=docstring,
-            parent_id=parent_class_local_idx,
-            is_public=is_public,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=f"{class_name}.{name}",
+                kind=SymbolKind.VARIABLE,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=sig,
+                body=body,
+                docstring=docstring,
+                parent_id=parent_class_local_idx,
+                is_public=is_public,
+            )
+        )
 
     def _handle_field(
         self,
@@ -665,23 +796,23 @@ class CSharpParser(BaseParser):
                 continue
             name = self._txt(name_node, src)
 
-            kind = (
-                SymbolKind.CONSTANT if (is_const or is_static_readonly) else SymbolKind.VARIABLE
+            kind = SymbolKind.CONSTANT if (is_const or is_static_readonly) else SymbolKind.VARIABLE
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=f"{class_name}.{name}",
+                    kind=kind,
+                    line_start=node.start_point[0] + 1,
+                    line_end=node.end_point[0] + 1,
+                    signature=body.split("\n")[0][:200],
+                    body=body,
+                    parent_id=parent_class_local_idx,
+                    is_public=is_public,
+                )
             )
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=f"{class_name}.{name}",
-                kind=kind,
-                line_start=node.start_point[0] + 1,
-                line_end=node.end_point[0] + 1,
-                signature=body.split("\n")[0][:200],
-                body=body,
-                parent_id=parent_class_local_idx,
-                is_public=is_public,
-            ))
 
-    def _get_method_name_node(self, node: Node) -> Optional[Node]:
+    def _get_method_name_node(self, node: Node) -> Node | None:
         """Return the identifier node that is the method name."""
         children = list(node.children)
         for i, child in enumerate(children):
@@ -703,33 +834,32 @@ class CSharpParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        parent_class_local_idx: Optional[int],
-        docstring: Optional[str] = None,
+        parent_class_local_idx: int | None,
+        docstring: str | None = None,
     ) -> None:
         """Extract delegate_declaration as SymbolKind.INTERFACE."""
-        name_node = (
-            self._get_method_name_node(node)
-            or self._get_child_by_type(node, "identifier")
-        )
+        name_node = self._get_method_name_node(node) or self._get_child_by_type(node, "identifier")
         if not name_node:
             return
         name = self._txt(name_node, src)
         modifiers = self._get_modifiers(node, src)
         is_public = "public" in modifiers or "internal" in modifiers
         body = self._txt(node, src).rstrip(";").strip()
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.INTERFACE,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=body[:200],
-            body=body,
-            docstring=docstring,
-            parent_id=parent_class_local_idx,
-            is_public=is_public,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.INTERFACE,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=body[:200],
+                body=body,
+                docstring=docstring,
+                parent_id=parent_class_local_idx,
+                is_public=is_public,
+            )
+        )
 
     def _handle_event_field(
         self,
@@ -758,25 +888,27 @@ class CSharpParser(BaseParser):
             if not name_node:
                 continue
             name = self._txt(name_node, src)
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=f"{class_name}.{name}",
-                kind=SymbolKind.VARIABLE,
-                line_start=node.start_point[0] + 1,
-                line_end=node.end_point[0] + 1,
-                signature=body[:200],
-                body=body,
-                parent_id=parent_class_local_idx,
-                is_public=is_public,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=f"{class_name}.{name}",
+                    kind=SymbolKind.VARIABLE,
+                    line_start=node.start_point[0] + 1,
+                    line_end=node.end_point[0] + 1,
+                    signature=body[:200],
+                    body=body,
+                    parent_id=parent_class_local_idx,
+                    is_public=is_public,
+                )
+            )
 
     def _handle_call(
         self,
         node: Node,
         src: bytes,
-        raw_calls: list[tuple[Optional[int], str, int]],
-        current_func_local_idx: Optional[int],
+        raw_calls: list[tuple[int | None, str, int]],
+        current_func_local_idx: int | None,
     ) -> None:
         """Extract callee name from an invocation_expression node."""
         if not node.children:
@@ -799,9 +931,7 @@ class CSharpParser(BaseParser):
     # Import extraction
     # ------------------------------------------------------------------
 
-    def _extract_using(
-        self, node: Node, src: bytes, file_id: int
-    ) -> Optional[ImportEdge]:
+    def _extract_using(self, node: Node, src: bytes, file_id: int) -> ImportEdge | None:
         """Extract a using directive."""
         has_semi = any(c.type == ";" for c in node.children)
         if not has_semi:
@@ -847,9 +977,8 @@ class CSharpParser(BaseParser):
                 keyword = self._txt(c, src)
                 break
 
-        type_params = (
-            node.child_by_field_name("type_parameters")
-            or self._get_child_by_type(node, "type_parameter_list")
+        type_params = node.child_by_field_name("type_parameters") or self._get_child_by_type(
+            node, "type_parameter_list"
         )
         type_params_text = self._txt(type_params, src) if type_params else ""
 
@@ -911,7 +1040,7 @@ class CSharpParser(BaseParser):
 
     def _get_preceding_xml_doc(
         self, siblings: list[Node], target_idx: int, src: bytes
-    ) -> Optional[str]:
+    ) -> str | None:
         """Collect consecutive /// XML doc comment lines immediately before target."""
         lines: list[str] = []
         i = target_idx - 1
@@ -933,7 +1062,7 @@ class CSharpParser(BaseParser):
         combined = re.sub(r"<[^>]+>", "", combined).strip()
         return combined if combined else None
 
-    def _get_file_doc(self, root: Node, src: bytes) -> Optional[str]:
+    def _get_file_doc(self, root: Node, src: bytes) -> str | None:
         """Extract leading /// XML doc from the top of the file."""
         children = list(root.children)
         lines: list[str] = []
@@ -947,9 +1076,12 @@ class CSharpParser(BaseParser):
                 else:
                     break
             elif child.type in (
-                "using_directive", "file_scoped_namespace_declaration",
-                "namespace_declaration", "class_declaration",
-                "interface_declaration", "enum_declaration",
+                "using_directive",
+                "file_scoped_namespace_declaration",
+                "namespace_declaration",
+                "class_declaration",
+                "interface_declaration",
+                "enum_declaration",
             ):
                 break
         if not lines:
@@ -993,9 +1125,7 @@ class CSharpParser(BaseParser):
         bases: list[str] = []
         for child in base_list_node.children:
             if child.type in ("identifier", "generic_name"):
-                bases.append(self._txt(
-                    self._get_child_by_type(child, "identifier") or child, src
-                ))
+                bases.append(self._txt(self._get_child_by_type(child, "identifier") or child, src))
             elif child.type == "qualified_name":
                 ident = self._get_last_identifier(child, src)
                 if ident:
@@ -1009,9 +1139,7 @@ class CSharpParser(BaseParser):
             if child.type == "identifier" and self._txt(child, src) == method_name:
                 found_name = True
                 continue
-            if found_name and child.type not in (
-                "modifier", "attribute_list", "comment", ";"
-            ):
+            if found_name and child.type not in ("modifier", "attribute_list", "comment", ";"):
                 return self._txt(child, src)
         return ""
 
@@ -1030,9 +1158,9 @@ class CSharpParser(BaseParser):
     # ------------------------------------------------------------------
 
     def _txt(self, node: Node, src: bytes) -> str:
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
+    def _get_child_by_type(self, node: Node, type_name: str) -> Node | None:
         for child in node.children:
             if child.type == type_name:
                 return child
@@ -1040,7 +1168,7 @@ class CSharpParser(BaseParser):
 
     def _get_last_identifier(self, node: Node, src: bytes) -> str:
         """Return the text of the last identifier in a node."""
-        last: Optional[Node] = None
+        last: Node | None = None
         for child in node.children:
             if child.type == "identifier":
                 last = child

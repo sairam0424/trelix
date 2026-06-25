@@ -22,7 +22,6 @@ from trelix.core.models import (
     SymbolKind,
     TypeEdge,
 )
-from trelix.store.db import Database
 from trelix.retrieval.graph import (
     expand_with_call_graph,
     expand_with_imports,
@@ -30,11 +29,12 @@ from trelix.retrieval.graph import (
     rank_by_pagerank,
     seed_from_import_paths,
 )
-
+from trelix.store.db import Database
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def db(tmp_path: Path) -> Database:
@@ -102,6 +102,7 @@ def _make_search_result(db: Database, symbol_id: int, score: float = 0.9) -> Sea
 # expand_with_call_graph
 # ---------------------------------------------------------------------------
 
+
 class TestExpandWithCallGraph:
     def test_empty_results_returns_empty(self, db: Database) -> None:
         extra = expand_with_call_graph(db, results=[])
@@ -117,7 +118,9 @@ class TestExpandWithCallGraph:
         _insert_chunk(db, caller_id)
         _insert_chunk(db, callee_id)
 
-        db.insert_call_edges([CallEdge(caller_id=caller_id, callee_name="callee", line=2, callee_id=callee_id)])
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="callee", line=2, callee_id=callee_id)]
+        )
         db._conn.commit()
 
         result = _make_search_result(db, caller_id)
@@ -136,7 +139,9 @@ class TestExpandWithCallGraph:
         _insert_chunk(db, caller_id)
         _insert_chunk(db, callee_id)
 
-        db.insert_call_edges([CallEdge(caller_id=caller_id, callee_name="calleeA", line=3, callee_id=callee_id)])
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="calleeA", line=3, callee_id=callee_id)]
+        )
         db._conn.commit()
 
         result = _make_search_result(db, callee_id)
@@ -152,7 +157,9 @@ class TestExpandWithCallGraph:
         _insert_chunk(db, caller_id)
         _insert_chunk(db, callee_id)
 
-        db.insert_call_edges([CallEdge(caller_id=caller_id, callee_name="fn_y", line=1, callee_id=callee_id)])
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="fn_y", line=1, callee_id=callee_id)]
+        )
         db._conn.commit()
 
         result = _make_search_result(db, caller_id)
@@ -169,10 +176,12 @@ class TestExpandWithCallGraph:
         _insert_chunk(db, b_id)
 
         # a calls b AND b calls a — no infinite loop and no duplicates
-        db.insert_call_edges([
-            CallEdge(caller_id=a_id, callee_name="fn_b", line=1, callee_id=b_id),
-            CallEdge(caller_id=b_id, callee_name="fn_a", line=2, callee_id=a_id),
-        ])
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=a_id, callee_name="fn_b", line=1, callee_id=b_id),
+                CallEdge(caller_id=b_id, callee_name="fn_a", line=2, callee_id=a_id),
+            ]
+        )
         db._conn.commit()
 
         result_a = _make_search_result(db, a_id)
@@ -194,7 +203,9 @@ class TestExpandWithCallGraph:
             cid = _insert_symbol(db, fid, f"callee_{i}")
             _insert_chunk(db, cid)
             callee_ids.append(cid)
-            db.insert_call_edges([CallEdge(caller_id=root_id, callee_name=f"callee_{i}", line=i, callee_id=cid)])
+            db.insert_call_edges(
+                [CallEdge(caller_id=root_id, callee_name=f"callee_{i}", line=i, callee_id=cid)]
+            )
         db._conn.commit()
 
         result = _make_search_result(db, root_id)
@@ -209,7 +220,9 @@ class TestExpandWithCallGraph:
         _insert_chunk(db, caller_id)
         _insert_chunk(db, callee_id)
 
-        db.insert_call_edges([CallEdge(caller_id=caller_id, callee_name="small_fn", line=1, callee_id=callee_id)])
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="small_fn", line=1, callee_id=callee_id)]
+        )
         db._conn.commit()
 
         result = _make_search_result(db, caller_id, score=1.0)
@@ -232,6 +245,7 @@ class TestExpandWithCallGraph:
 # ---------------------------------------------------------------------------
 # rank_by_pagerank
 # ---------------------------------------------------------------------------
+
 
 class TestRankByPagerank:
     def test_empty_list_returns_empty(self, db: Database) -> None:
@@ -260,11 +274,13 @@ class TestRankByPagerank:
             _insert_chunk(db, sym_id)
 
         # hub calls all spokes
-        db.insert_call_edges([
-            CallEdge(caller_id=a, callee_name="spoke1", line=1, callee_id=b),
-            CallEdge(caller_id=a, callee_name="spoke2", line=2, callee_id=c),
-            CallEdge(caller_id=a, callee_name="spoke3", line=3, callee_id=d),
-        ])
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=a, callee_name="spoke1", line=1, callee_id=b),
+                CallEdge(caller_id=a, callee_name="spoke2", line=2, callee_id=c),
+                CallEdge(caller_id=a, callee_name="spoke3", line=3, callee_id=d),
+            ]
+        )
         db._conn.commit()
 
         pr = rank_by_pagerank([a, b, c, d], db)
@@ -284,10 +300,12 @@ class TestRankByPagerank:
             _insert_chunk(db, s)
 
         # All spokes call the hub
-        db.insert_call_edges([
-            CallEdge(caller_id=s, callee_name="hub_central", line=1, callee_id=hub)
-            for s in spokes
-        ])
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=s, callee_name="hub_central", line=1, callee_id=hub)
+                for s in spokes
+            ]
+        )
         db._conn.commit()
 
         pr = dict(rank_by_pagerank([hub] + spokes, db))
@@ -313,6 +331,7 @@ class TestRankByPagerank:
 # expand_with_imports
 # ---------------------------------------------------------------------------
 
+
 class TestExpandWithImports:
     def test_empty_results_returns_empty(self, db: Database) -> None:
         extra = expand_with_imports(db, results=[])
@@ -333,7 +352,9 @@ class TestExpandWithImports:
 
         # a imports b (resolved)
         db.insert_imports([ImportEdge(file_id=fid_a, imported_from="b", imported_names=["func_b"])])
-        db._conn.execute("UPDATE imports SET imported_file_id = ? WHERE file_id = ?", (fid_b, fid_a))
+        db._conn.execute(
+            "UPDATE imports SET imported_file_id = ? WHERE file_id = ?", (fid_b, fid_a)
+        )
         db._conn.commit()
 
         result = _make_search_result(db, sym_a)
@@ -350,8 +371,12 @@ class TestExpandWithImports:
         _insert_chunk(db, sym_a)
         _insert_chunk(db, sym_b)
 
-        db.insert_imports([ImportEdge(file_id=fid_a, imported_from="src_b", imported_names=["helper_fn"])])
-        db._conn.execute("UPDATE imports SET imported_file_id = ? WHERE file_id = ?", (fid_b, fid_a))
+        db.insert_imports(
+            [ImportEdge(file_id=fid_a, imported_from="src_b", imported_names=["helper_fn"])]
+        )
+        db._conn.execute(
+            "UPDATE imports SET imported_file_id = ? WHERE file_id = ?", (fid_b, fid_a)
+        )
         db._conn.commit()
 
         result = _make_search_result(db, sym_a)
@@ -376,7 +401,9 @@ class TestExpandWithImports:
         _insert_chunk(db, sym_b)
 
         db.insert_imports([ImportEdge(file_id=fid_a, imported_from="q", imported_names=["q_fn"])])
-        db._conn.execute("UPDATE imports SET imported_file_id = ? WHERE file_id = ?", (fid_b, fid_a))
+        db._conn.execute(
+            "UPDATE imports SET imported_file_id = ? WHERE file_id = ?", (fid_b, fid_a)
+        )
         db._conn.commit()
 
         result = _make_search_result(db, sym_a)
@@ -387,6 +414,7 @@ class TestExpandWithImports:
 # ---------------------------------------------------------------------------
 # expand_with_type_edges
 # ---------------------------------------------------------------------------
+
 
 class TestExpandWithTypeEdges:
     def test_empty_results_returns_empty(self, db: Database) -> None:
@@ -401,7 +429,16 @@ class TestExpandWithTypeEdges:
         _insert_chunk(db, child_id)
         _insert_chunk(db, parent_id)
 
-        db.insert_type_edges([TypeEdge(from_symbol_id=child_id, to_type_name="ParentClass", edge_kind="extends", to_symbol_id=parent_id)])
+        db.insert_type_edges(
+            [
+                TypeEdge(
+                    from_symbol_id=child_id,
+                    to_type_name="ParentClass",
+                    edge_kind="extends",
+                    to_symbol_id=parent_id,
+                )
+            ]
+        )
         db._conn.commit()
 
         result = _make_search_result(db, child_id)
@@ -418,7 +455,16 @@ class TestExpandWithTypeEdges:
         _insert_chunk(db, parent_id)
         _insert_chunk(db, child_id)
 
-        db.insert_type_edges([TypeEdge(from_symbol_id=child_id, to_type_name="BaseClass", edge_kind="extends", to_symbol_id=parent_id)])
+        db.insert_type_edges(
+            [
+                TypeEdge(
+                    from_symbol_id=child_id,
+                    to_type_name="BaseClass",
+                    edge_kind="extends",
+                    to_symbol_id=parent_id,
+                )
+            ]
+        )
         db._conn.commit()
 
         result = _make_search_result(db, parent_id)
@@ -434,7 +480,16 @@ class TestExpandWithTypeEdges:
         _insert_chunk(db, parent_id)
         _insert_chunk(db, impl_id)
 
-        db.insert_type_edges([TypeEdge(from_symbol_id=impl_id, to_type_name="IFace", edge_kind="implements", to_symbol_id=parent_id)])
+        db.insert_type_edges(
+            [
+                TypeEdge(
+                    from_symbol_id=impl_id,
+                    to_type_name="IFace",
+                    edge_kind="implements",
+                    to_symbol_id=parent_id,
+                )
+            ]
+        )
         db._conn.commit()
 
         result = _make_search_result(db, impl_id)
@@ -455,6 +510,7 @@ class TestExpandWithTypeEdges:
 # seed_from_import_paths
 # ---------------------------------------------------------------------------
 
+
 class TestSeedFromImportPaths:
     def test_empty_patterns_returns_empty(self, db: Database) -> None:
         assert seed_from_import_paths(db, patterns=[]) == []
@@ -463,7 +519,9 @@ class TestSeedFromImportPaths:
         fid = _insert_file(db)
         sym_id = _insert_symbol(db, fid, "anything")
         _insert_chunk(db, sym_id)
-        db.insert_imports([ImportEdge(file_id=fid, imported_from="@shared/utils", imported_names=["*"])])
+        db.insert_imports(
+            [ImportEdge(file_id=fid, imported_from="@shared/utils", imported_names=["*"])]
+        )
         db._conn.commit()
 
         result = seed_from_import_paths(db, patterns=["@shared"], max_extra=0)
@@ -477,7 +535,9 @@ class TestSeedFromImportPaths:
         sym_id = _insert_symbol(db, fid, "consumer_fn")
         _insert_chunk(db, sym_id)
 
-        db.insert_imports([ImportEdge(file_id=fid, imported_from="@shared/utils", imported_names=["helper"])])
+        db.insert_imports(
+            [ImportEdge(file_id=fid, imported_from="@shared/utils", imported_names=["helper"])]
+        )
         db._conn.commit()
 
         results = seed_from_import_paths(db, patterns=["@shared"])
@@ -489,7 +549,9 @@ class TestSeedFromImportPaths:
         sym_id = _insert_symbol(db, fid, "other_fn")
         _insert_chunk(db, sym_id)
 
-        db.insert_imports([ImportEdge(file_id=fid, imported_from="@core/internal", imported_names=["x"])])
+        db.insert_imports(
+            [ImportEdge(file_id=fid, imported_from="@core/internal", imported_names=["x"])]
+        )
         db._conn.commit()
 
         results = seed_from_import_paths(db, patterns=["@shared"])
@@ -500,7 +562,9 @@ class TestSeedFromImportPaths:
         sym_id = _insert_symbol(db, fid, "svc_fn")
         _insert_chunk(db, sym_id)
 
-        db.insert_imports([ImportEdge(file_id=fid, imported_from="@auth/jwt", imported_names=["verify"])])
+        db.insert_imports(
+            [ImportEdge(file_id=fid, imported_from="@auth/jwt", imported_names=["verify"])]
+        )
         db._conn.commit()
 
         results = seed_from_import_paths(db, patterns=["@auth"])

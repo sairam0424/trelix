@@ -12,13 +12,13 @@ Covers:
 - Type alias
 - Constants and statics
 """
+
 from __future__ import annotations
 
 import pytest
 
 from trelix.core.models import SymbolKind
 from trelix.indexing.parser.extractors.rust import RustParser
-
 
 FILE_ID = 7
 
@@ -31,6 +31,7 @@ def parser() -> RustParser:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def syms_by_kind(result, kind: SymbolKind):
     return [s for s in result.symbols if s.kind == kind]
@@ -174,8 +175,7 @@ def test_trait_method_signatures(parser):
 
     # Trait methods are METHOD symbols with parent_id = trait idx
     methods = [
-        s for s in result.symbols
-        if s.kind == SymbolKind.METHOD and s.parent_id == drawable_idx
+        s for s in result.symbols if s.kind == SymbolKind.METHOD and s.parent_id == drawable_idx
     ]
     method_names = {m.name for m in methods}
     assert "draw" in method_names
@@ -354,6 +354,7 @@ def test_const_extracted(parser):
 # Parse errors
 # ---------------------------------------------------------------------------
 
+
 def test_clean_parse_no_errors(parser):
     result = parser.parse(STRUCT_SOURCE, FILE_ID)
     assert result.parse_errors == 0
@@ -362,6 +363,7 @@ def test_clean_parse_no_errors(parser):
 # ---------------------------------------------------------------------------
 # Language name
 # ---------------------------------------------------------------------------
+
 
 def test_language_name(parser):
     assert parser.language_name == "rust"

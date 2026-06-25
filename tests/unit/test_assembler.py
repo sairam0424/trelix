@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import pytest
-
 from trelix.core.models import (
     Chunk,
     IndexedFile,
@@ -17,10 +15,10 @@ from trelix.core.models import (
 )
 from trelix.retrieval.assembler import ContextAssembler
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_file(file_id: int, rel_path: str) -> IndexedFile:
     return IndexedFile(
@@ -98,35 +96,35 @@ FILE_C = _make_file(3, "src/utils/helpers.py")
 
 # File A symbols
 SYM_A1 = _make_symbol(1, 1, "authenticate_user", "LoginView.authenticate_user", 10, 30)
-SYM_A2 = _make_symbol(2, 1, "logout_user",       "LoginView.logout_user",       32, 45)
-SYM_A3 = _make_symbol(3, 1, "check_token",       "LoginView.check_token",       47, 60)
-SYM_A4 = _make_symbol(4, 1, "refresh_session",   "LoginView.refresh_session",   62, 80)
+SYM_A2 = _make_symbol(2, 1, "logout_user", "LoginView.logout_user", 32, 45)
+SYM_A3 = _make_symbol(3, 1, "check_token", "LoginView.check_token", 47, 60)
+SYM_A4 = _make_symbol(4, 1, "refresh_session", "LoginView.refresh_session", 62, 80)
 
 # File B symbols
-SYM_B1 = _make_symbol(5, 2, "User",         "User",         5,  40, SymbolKind.CLASS)
-SYM_B2 = _make_symbol(6, 2, "Session",      "Session",      42, 70, SymbolKind.CLASS)
-SYM_B3 = _make_symbol(7, 2, "get_user",     "get_user",     72, 85)
+SYM_B1 = _make_symbol(5, 2, "User", "User", 5, 40, SymbolKind.CLASS)
+SYM_B2 = _make_symbol(6, 2, "Session", "Session", 42, 70, SymbolKind.CLASS)
+SYM_B3 = _make_symbol(7, 2, "get_user", "get_user", 72, 85)
 
 # File C symbols
-SYM_C1 = _make_symbol(8,  3, "hash_password", "hash_password",  1, 15)
-SYM_C2 = _make_symbol(9,  3, "verify_token",  "verify_token",  17, 30)
-SYM_C3 = _make_symbol(10, 3, "encode_jwt",    "encode_jwt",    32, 50)
+SYM_C1 = _make_symbol(8, 3, "hash_password", "hash_password", 1, 15)
+SYM_C2 = _make_symbol(9, 3, "verify_token", "verify_token", 17, 30)
+SYM_C3 = _make_symbol(10, 3, "encode_jwt", "encode_jwt", 32, 50)
 
 # Chunks (token_count chosen so we can control budget effects)
-CHUNK_A1 = _make_chunk(1,  1, "# File: src/auth/login.py\ndef authenticate_user(): pass",  100)
-CHUNK_A2 = _make_chunk(2,  2, "# File: src/auth/login.py\ndef logout_user(): pass",          80)
-CHUNK_A3 = _make_chunk(3,  3, "# File: src/auth/login.py\ndef check_token(): pass",          90)
-CHUNK_A4 = _make_chunk(4,  4, "# File: src/auth/login.py\ndef refresh_session(): pass",     110)
-CHUNK_B1 = _make_chunk(5,  5, "# File: src/auth/models.py\nclass User: pass",               200)
-CHUNK_B2 = _make_chunk(6,  6, "# File: src/auth/models.py\nclass Session: pass",            150)
-CHUNK_B3 = _make_chunk(7,  7, "# File: src/auth/models.py\ndef get_user(): pass",            70)
-CHUNK_C1 = _make_chunk(8,  8, "# File: src/utils/helpers.py\ndef hash_password(): pass",    60)
-CHUNK_C2 = _make_chunk(9,  9, "# File: src/utils/helpers.py\ndef verify_token(): pass",     65)
-CHUNK_C3 = _make_chunk(10, 10, "# File: src/utils/helpers.py\ndef encode_jwt(): pass",      55)
+CHUNK_A1 = _make_chunk(1, 1, "# File: src/auth/login.py\ndef authenticate_user(): pass", 100)
+CHUNK_A2 = _make_chunk(2, 2, "# File: src/auth/login.py\ndef logout_user(): pass", 80)
+CHUNK_A3 = _make_chunk(3, 3, "# File: src/auth/login.py\ndef check_token(): pass", 90)
+CHUNK_A4 = _make_chunk(4, 4, "# File: src/auth/login.py\ndef refresh_session(): pass", 110)
+CHUNK_B1 = _make_chunk(5, 5, "# File: src/auth/models.py\nclass User: pass", 200)
+CHUNK_B2 = _make_chunk(6, 6, "# File: src/auth/models.py\nclass Session: pass", 150)
+CHUNK_B3 = _make_chunk(7, 7, "# File: src/auth/models.py\ndef get_user(): pass", 70)
+CHUNK_C1 = _make_chunk(8, 8, "# File: src/utils/helpers.py\ndef hash_password(): pass", 60)
+CHUNK_C2 = _make_chunk(9, 9, "# File: src/utils/helpers.py\ndef verify_token(): pass", 65)
+CHUNK_C3 = _make_chunk(10, 10, "# File: src/utils/helpers.py\ndef encode_jwt(): pass", 55)
 
 # Results — scores spread intentionally so we can assert ordering
 ALL_RESULTS: list[SearchResult] = [
-    _make_result(CHUNK_A1, SYM_A1, FILE_A, score=0.95, rank=1),   # highest score
+    _make_result(CHUNK_A1, SYM_A1, FILE_A, score=0.95, rank=1),  # highest score
     _make_result(CHUNK_B1, SYM_B1, FILE_B, score=0.88, rank=2),
     _make_result(CHUNK_C1, SYM_C1, FILE_C, score=0.82, rank=3),
     _make_result(CHUNK_A2, SYM_A2, FILE_A, score=0.78, rank=4),
@@ -144,6 +142,7 @@ QUERY = "how does user authentication work?"
 # ---------------------------------------------------------------------------
 # Tests: greedy mode
 # ---------------------------------------------------------------------------
+
 
 class TestGreedyMode:
     def test_greedy_results_ordered_by_score_descending(self) -> None:
@@ -179,7 +178,7 @@ class TestGreedyMode:
         """Calling assemble without assembly_mode must default to greedy."""
         assembler = ContextAssembler(token_budget=10_000)
         ctx_default = assembler.assemble(QUERY, ALL_RESULTS)
-        ctx_greedy  = assembler.assemble(QUERY, ALL_RESULTS, assembly_mode="greedy")
+        ctx_greedy = assembler.assemble(QUERY, ALL_RESULTS, assembly_mode="greedy")
 
         assert [r.score for r in ctx_default.results] == [r.score for r in ctx_greedy.results]
 
@@ -187,6 +186,7 @@ class TestGreedyMode:
 # ---------------------------------------------------------------------------
 # Tests: breadth_first mode
 # ---------------------------------------------------------------------------
+
 
 class TestBreadthFirstMode:
     def test_breadth_first_multiple_files_represented(self) -> None:
@@ -205,9 +205,9 @@ class TestBreadthFirstMode:
         ctx = assembler.assemble(QUERY, ALL_RESULTS, assembly_mode="breadth_first")
 
         file_paths = {r.file.rel_path for r in ctx.results}
-        assert "src/auth/login.py"     in file_paths
-        assert "src/auth/models.py"    in file_paths
-        assert "src/utils/helpers.py"  in file_paths
+        assert "src/auth/login.py" in file_paths
+        assert "src/auth/models.py" in file_paths
+        assert "src/utils/helpers.py" in file_paths
 
     def test_breadth_first_max_two_per_file(self) -> None:
         """Breadth-first must not include more than 2 results from the same file."""
@@ -215,11 +215,11 @@ class TestBreadthFirstMode:
         ctx = assembler.assemble(QUERY, ALL_RESULTS, assembly_mode="breadth_first")
 
         from collections import Counter
+
         counts = Counter(r.file.rel_path for r in ctx.results)
         for path, count in counts.items():
             assert count <= 2, (
-                f"breadth_first mode must not include >2 results per file, "
-                f"but {path!r} has {count}"
+                f"breadth_first mode must not include >2 results per file, but {path!r} has {count}"
             )
 
     def test_breadth_first_higher_scored_files_come_first(self) -> None:
@@ -234,6 +234,7 @@ class TestBreadthFirstMode:
 # ---------------------------------------------------------------------------
 # Tests: token budget
 # ---------------------------------------------------------------------------
+
 
 class TestTokenBudget:
     def test_total_tokens_within_budget_greedy(self) -> None:
@@ -283,6 +284,7 @@ class TestTokenBudget:
 # Tests: context_text content
 # ---------------------------------------------------------------------------
 
+
 class TestContextText:
     def test_context_text_contains_file_path(self) -> None:
         assembler = ContextAssembler(token_budget=10_000)
@@ -320,9 +322,7 @@ class TestContextText:
 
     def test_context_text_with_symbol_lookup_intent_preamble(self) -> None:
         assembler = ContextAssembler(token_budget=10_000)
-        ctx = assembler.assemble(
-            QUERY, ALL_RESULTS, intent="symbol_lookup", assembly_mode="greedy"
-        )
+        ctx = assembler.assemble(QUERY, ALL_RESULTS, intent="symbol_lookup", assembly_mode="greedy")
 
         assert "# Symbol:" in ctx.context_text
         assert "LoginView.authenticate_user" in ctx.context_text
@@ -337,9 +337,7 @@ class TestContextText:
 
     def test_context_text_with_comparison_intent_preamble(self) -> None:
         assembler = ContextAssembler(token_budget=10_000)
-        ctx = assembler.assemble(
-            QUERY, ALL_RESULTS, intent="comparison", assembly_mode="greedy"
-        )
+        ctx = assembler.assemble(QUERY, ALL_RESULTS, intent="comparison", assembly_mode="greedy")
 
         assert "# Comparison" in ctx.context_text
 
@@ -354,6 +352,7 @@ class TestContextText:
 # ---------------------------------------------------------------------------
 # Tests: RetrievedContext fields
 # ---------------------------------------------------------------------------
+
 
 class TestRetrievedContextFields:
     def test_query_preserved_in_context(self) -> None:

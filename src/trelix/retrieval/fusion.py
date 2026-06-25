@@ -38,7 +38,7 @@ def reciprocal_rank_fusion(
 
     for ranked_list in ranked_lists:
         for rank, result in enumerate(ranked_list, start=1):
-            chunk_id = result.chunk.symbol_id   # use symbol_id as dedup key
+            chunk_id = result.chunk.symbol_id  # use symbol_id as dedup key
             rrf_scores[chunk_id] += 1.0 / (k + rank)
             # Keep first-seen result: source reflects which leg first found it.
             # Do NOT replace based on raw score — scores across legs (cosine vs

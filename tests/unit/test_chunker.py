@@ -1,17 +1,17 @@
-"""Unit tests for the Chunker (Phase 7)."""
+"""Unit tests for the Chunker (Phase 7) and ContextualChunker (U1)."""
 
 from __future__ import annotations
 
-import pytest
+from unittest.mock import MagicMock
 
 from trelix.core.config import ChunkerConfig
 from trelix.core.models import Chunk, ImportEdge, Symbol, SymbolKind
-from trelix.indexing.chunker import Chunker
-
+from trelix.indexing.chunker import Chunker, ContextualChunker
 
 # ---------------------------------------------------------------------------
 # Minimal fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_symbol(
     *,
@@ -64,6 +64,7 @@ def _make_chunker(**kwargs) -> Chunker:
 # Context header format
 # ---------------------------------------------------------------------------
 
+
 class TestContextHeaderFormat:
     def test_header_contains_file_path(self) -> None:
         chunker = _make_chunker()
@@ -107,6 +108,7 @@ class TestContextHeaderFormat:
 # ---------------------------------------------------------------------------
 # Parent class signature in header
 # ---------------------------------------------------------------------------
+
 
 class TestParentClassInHeader:
     def test_parent_class_name_in_header_when_enabled(self) -> None:
@@ -157,6 +159,7 @@ class TestParentClassInHeader:
 # Import list in header
 # ---------------------------------------------------------------------------
 
+
 class TestImportListInHeader:
     def test_imports_present_when_enabled(self) -> None:
         chunker = _make_chunker(include_imports_in_header=True)
@@ -192,8 +195,7 @@ class TestImportListInHeader:
         chunker = _make_chunker(include_imports_in_header=True, max_imports_in_header=2)
         symbol = _make_symbol()
         imports = [
-            _make_import(imported_from=f"module_{i}", imported_names=["x"])
-            for i in range(5)
+            _make_import(imported_from=f"module_{i}", imported_names=["x"]) for i in range(5)
         ]
         chunks = chunker.build_chunks([symbol], imports, "src/foo.py", "python")
         # Only module_0 and module_1 should appear (max=2)
@@ -215,6 +217,7 @@ class TestImportListInHeader:
 # token_count computed via tiktoken
 # ---------------------------------------------------------------------------
 
+
 class TestTokenCount:
     def test_token_count_is_positive(self) -> None:
         chunker = _make_chunker()
@@ -230,6 +233,7 @@ class TestTokenCount:
 
     def test_token_count_matches_tiktoken(self) -> None:
         import tiktoken
+
         chunker = _make_chunker()
         symbol = _make_symbol(body="def greet():\n    return 'hello'")
         chunks = chunker.build_chunks([symbol], [], "src/foo.py", "python")
@@ -258,6 +262,7 @@ class TestTokenCount:
 # ---------------------------------------------------------------------------
 # chunk_text contains symbol body
 # ---------------------------------------------------------------------------
+
 
 class TestChunkTextContainsBody:
     def test_chunk_text_contains_body(self) -> None:
@@ -315,3 +320,141 @@ class TestChunkTextContainsBody:
         symbol = _make_symbol(body=body, docstring="Does something useful.")
         chunks = chunker.build_chunks([symbol], [], "src/foo.py", "python")
         assert "# Doc:" not in chunks[0].chunk_text
+
+
+# ---------------------------------------------------------------------------
+# ContextualChunker (U1)
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_llm_client(summary: str = "This function computes a value.") -> MagicMock:
+    """Build a mock OpenAI client whose .chat.completions.create() returns `summary`."""
+    mock_message = MagicMock()
+    mock_message.content = summary
+    mock_choice = MagicMock()
+    mock_choice.message = mock_message
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+    return mock_client
+
+
+def _make_contextual_chunker(
+    contextual: bool = True,
+    llm_client: object = None,
+    **kwargs: object,
+) -> ContextualChunker:
+    config = ChunkerConfig(contextual=contextual, **kwargs)
+    return ContextualChunker(config, llm_client=llm_client)
+
+
+class TestContextualChunker:
+    def test_contextual_true_prepends_summary_to_chunk_text(self) -> None:
+        """With contextual=True and a mock client, summary is prepended to chunk_text."""
+        summary = "This function authenticates a user."
+        mock_client = _make_mock_llm_client(summary)
+        chunker = _make_contextual_chunker(contextual=True, llm_client=mock_client)
+        symbol = _make_symbol()
+        chunks = chunker.build_chunks([symbol], [], "src/auth.py", "python")
+        assert chunks[0].chunk_text.startswith(summary)
+
+    def test_contextual_true_summary_separated_by_blank_line(self) -> None:
+        """Summary and base chunk_text must be separated by a blank line."""
+        summary = "Handles login logic."
+        mock_client = _make_mock_llm_client(summary)
+        chunker = _make_contextual_chunker(contextual=True, llm_client=mock_client)
+        symbol = _make_symbol()
+        chunks = chunker.build_chunks([symbol], [], "src/auth.py", "python")
+        # The blank line separator means summary\n\n appears in the text
+        assert f"{summary}\n\n" in chunks[0].chunk_text
+
+    def test_contextual_true_stores_summary_on_symbol(self) -> None:
+        """context_summary must be stored on the Symbol object after build_chunks."""
+        summary = "Returns the square of x."
+        mock_client = _make_mock_llm_client(summary)
+        chunker = _make_contextual_chunker(contextual=True, llm_client=mock_client)
+        symbol = _make_symbol()
+        chunker.build_chunks([symbol], [], "src/math.py", "python")
+        assert symbol.context_summary == summary
+
+    def test_contextual_true_token_count_includes_summary(self) -> None:
+        """token_count must reflect summary + base chunk_text combined."""
+        import tiktoken
+
+        summary = "Computes a result."
+        mock_client = _make_mock_llm_client(summary)
+        chunker = _make_contextual_chunker(contextual=True, llm_client=mock_client)
+        symbol = _make_symbol()
+        chunks = chunker.build_chunks([symbol], [], "src/foo.py", "python")
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        expected = len(enc.encode(chunks[0].chunk_text))
+        assert chunks[0].token_count == expected
+
+    def test_contextual_false_identical_to_base_chunker(self) -> None:
+        """With contextual=False the output must be byte-for-byte identical to Chunker."""
+        symbol = _make_symbol()
+        base_chunker = Chunker(ChunkerConfig())
+        ctx_chunker = _make_contextual_chunker(contextual=False, llm_client=None)
+
+        base_chunks = base_chunker.build_chunks([symbol], [], "src/foo.py", "python")
+        ctx_chunks = ctx_chunker.build_chunks([symbol], [], "src/foo.py", "python")
+
+        assert len(base_chunks) == len(ctx_chunks)
+        assert base_chunks[0].chunk_text == ctx_chunks[0].chunk_text
+        assert base_chunks[0].token_count == ctx_chunks[0].token_count
+
+    def test_contextual_true_no_client_falls_back_to_base_output(self) -> None:
+        """contextual=True but llm_client=None must behave identically to base Chunker."""
+        symbol = _make_symbol()
+        base_chunker = Chunker(ChunkerConfig())
+        ctx_chunker = _make_contextual_chunker(contextual=True, llm_client=None)
+
+        base_chunks = base_chunker.build_chunks([symbol], [], "src/foo.py", "python")
+        ctx_chunks = ctx_chunker.build_chunks([symbol], [], "src/foo.py", "python")
+
+        assert base_chunks[0].chunk_text == ctx_chunks[0].chunk_text
+
+    def test_contextual_true_llm_failure_falls_back_gracefully(self) -> None:
+        """If the LLM call raises an exception, fall back to base chunk_text silently."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = RuntimeError("API error")
+
+        symbol = _make_symbol()
+        base_chunker = Chunker(ChunkerConfig())
+        ctx_chunker = _make_contextual_chunker(contextual=True, llm_client=mock_client)
+
+        base_chunks = base_chunker.build_chunks([symbol], [], "src/foo.py", "python")
+        ctx_chunks = ctx_chunker.build_chunks([symbol], [], "src/foo.py", "python")
+
+        # No summary prepended — identical to base
+        assert base_chunks[0].chunk_text == ctx_chunks[0].chunk_text
+        # context_summary is None when the call failed
+        assert symbol.context_summary is None
+
+    def test_contextual_symbol_id_preserved(self) -> None:
+        """symbol_id must be correctly set on the returned Chunk."""
+        mock_client = _make_mock_llm_client("Does stuff.")
+        chunker = _make_contextual_chunker(contextual=True, llm_client=mock_client)
+        symbol = _make_symbol(id=77)
+        chunks = chunker.build_chunks([symbol], [], "src/foo.py", "python")
+        assert chunks[0].symbol_id == 77
+
+    def test_llm_called_with_correct_arguments(self) -> None:
+        """Verify the LLM is invoked with model, messages, max_tokens and temperature."""
+        mock_client = _make_mock_llm_client("A summary.")
+        config = ChunkerConfig(
+            contextual=True,
+            contextual_model="gpt-4o-mini",
+            contextual_max_tokens=100,
+        )
+        chunker = ContextualChunker(config, llm_client=mock_client)
+        symbol = _make_symbol(body="def fn(): pass")
+        chunker.build_chunks([symbol], [], "src/foo.py", "python")
+
+        call_kwargs = mock_client.chat.completions.create.call_args
+        assert call_kwargs.kwargs["model"] == "gpt-4o-mini"
+        assert call_kwargs.kwargs["max_tokens"] == 100
+        assert call_kwargs.kwargs["temperature"] == 0

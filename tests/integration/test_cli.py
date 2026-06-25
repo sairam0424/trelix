@@ -19,9 +19,7 @@ import pytest
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-TRELIX_BIN = str(
-    Path(__file__).parent.parent.parent / ".venv" / "bin" / "trelix"
-)
+TRELIX_BIN = str(Path(__file__).parent.parent.parent / ".venv" / "bin" / "trelix")
 
 
 def _env() -> dict[str, str]:
@@ -48,6 +46,7 @@ def _run(*args: str, repo: Path) -> subprocess.CompletedProcess:
 # ---------------------------------------------------------------------------
 # Fixture: minimal Python repo
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def mini_repo(tmp_path: Path) -> Path:
@@ -84,6 +83,7 @@ def mini_repo(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_help_exits_zero() -> None:
     """trelix --help must exit 0."""
@@ -125,9 +125,7 @@ def test_search_stdout_not_empty(mini_repo: Path) -> None:
     """trelix search must produce non-empty stdout."""
     _run("index", str(mini_repo), "--provider", "local", repo=mini_repo)
     result = _run("search", str(mini_repo), "function", repo=mini_repo)
-    assert result.stdout.strip(), (
-        f"trelix search produced empty stdout.\nstderr: {result.stderr}"
-    )
+    assert result.stdout.strip(), f"trelix search produced empty stdout.\nstderr: {result.stderr}"
 
 
 def test_search_json_flag(mini_repo: Path) -> None:
@@ -165,8 +163,11 @@ def test_update_index_exits_zero(mini_repo: Path) -> None:
     _run("index", str(mini_repo), "--provider", "local", repo=mini_repo)
     calc_py = mini_repo / "calc.py"
     result = _run(
-        "update-index", str(mini_repo), str(calc_py),
-        "--provider", "local",
+        "update-index",
+        str(mini_repo),
+        str(calc_py),
+        "--provider",
+        "local",
         repo=mini_repo,
     )
     assert result.returncode == 0, (
@@ -179,8 +180,11 @@ def test_update_index_returns_json(mini_repo: Path) -> None:
     _run("index", str(mini_repo), "--provider", "local", repo=mini_repo)
     calc_py = mini_repo / "calc.py"
     result = _run(
-        "update-index", str(mini_repo), str(calc_py),
-        "--provider", "local",
+        "update-index",
+        str(mini_repo),
+        str(calc_py),
+        "--provider",
+        "local",
         repo=mini_repo,
     )
     data = json.loads(result.stdout)
@@ -213,9 +217,7 @@ def test_invalid_repo_path_exits_one() -> None:
         text=True,
         env=_env(),
     )
-    assert result.returncode == 1, (
-        f"Expected exit code 1 for invalid path, got {result.returncode}"
-    )
+    assert result.returncode == 1, f"Expected exit code 1 for invalid path, got {result.returncode}"
 
 
 def test_stats_nonexistent_repo_exits_one() -> None:
@@ -226,9 +228,7 @@ def test_stats_nonexistent_repo_exits_one() -> None:
         text=True,
         env=_env(),
     )
-    assert result.returncode == 1, (
-        f"Expected exit code 1 for invalid path, got {result.returncode}"
-    )
+    assert result.returncode == 1, f"Expected exit code 1 for invalid path, got {result.returncode}"
 
 
 def test_search_nonexistent_repo_exits_one() -> None:
@@ -239,6 +239,4 @@ def test_search_nonexistent_repo_exits_one() -> None:
         text=True,
         env=_env(),
     )
-    assert result.returncode == 1, (
-        f"Expected exit code 1 for invalid path, got {result.returncode}"
-    )
+    assert result.returncode == 1, f"Expected exit code 1 for invalid path, got {result.returncode}"

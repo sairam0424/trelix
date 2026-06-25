@@ -23,8 +23,6 @@ accurate line_start / line_end without text-search approximation.
 
 from __future__ import annotations
 
-from typing import Optional
-
 import yaml
 
 from trelix.core.models import Symbol, SymbolKind
@@ -61,12 +59,14 @@ class YamlParser(BaseParser):
         try:
             docs = list(yaml.compose_all(source))
         except yaml.YAMLError:
-            return ParseResult(symbols=[], call_edges=[], import_edges=[],
-                               parse_errors=1, type_edges=[])
+            return ParseResult(
+                symbols=[], call_edges=[], import_edges=[], parse_errors=1, type_edges=[]
+            )
 
         if not docs:
-            return ParseResult(symbols=[], call_edges=[], import_edges=[],
-                               parse_errors=0, type_edges=[])
+            return ParseResult(
+                symbols=[], call_edges=[], import_edges=[], parse_errors=0, type_edges=[]
+            )
 
         lines = source.splitlines()
         symbols: list[Symbol] = []
@@ -79,8 +79,9 @@ class YamlParser(BaseParser):
             self._emit_module_symbol(root, doc_prefix, file_id, symbols, lines)
             self._walk_mapping(root, doc_prefix, file_id, symbols, lines, depth=0)
 
-        return ParseResult(symbols=symbols, call_edges=[], import_edges=[],
-                           parse_errors=0, type_edges=[])
+        return ParseResult(
+            symbols=symbols, call_edges=[], import_edges=[], parse_errors=0, type_edges=[]
+        )
 
     # ------------------------------------------------------------------
     # Module symbol (file/document summary)
@@ -111,9 +112,7 @@ class YamlParser(BaseParser):
     ) -> None:
         """Emit one MODULE symbol summarising the top-level keys of this document."""
         top_keys = [
-            k.value
-            for k, _ in root.value
-            if isinstance(k, yaml.ScalarNode) and k.tag != _MERGE_TAG
+            k.value for k, _ in root.value if isinstance(k, yaml.ScalarNode) and k.tag != _MERGE_TAG
         ]
         if not top_keys:
             return
@@ -122,17 +121,19 @@ class YamlParser(BaseParser):
         body = self._slice_source(lines, root.start_mark.line, root.end_mark.line)
         name = prefix or "config"
         sig_keys = " ".join(f"[{k}]" for k in top_keys[:12])
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.MODULE,
-            line_start=line_start,
-            line_end=line_end,
-            signature=sig_keys,
-            body=body,
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.MODULE,
+                line_start=line_start,
+                line_end=line_end,
+                signature=sig_keys,
+                body=body,
+                is_public=True,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Recursive mapping walker
@@ -166,33 +167,37 @@ class YamlParser(BaseParser):
             body = self._slice_source(lines, key_node.start_mark.line, val_node.end_mark.line)
 
             if isinstance(val_node, yaml.MappingNode):
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=key,
-                    qualified_name=path,
-                    kind=SymbolKind.SECTION,
-                    line_start=line_start,
-                    line_end=line_end,
-                    signature=f"{path}:",
-                    body=body,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=key,
+                        qualified_name=path,
+                        kind=SymbolKind.SECTION,
+                        line_start=line_start,
+                        line_end=line_end,
+                        signature=f"{path}:",
+                        body=body,
+                        is_public=True,
+                    )
+                )
                 if depth < self.MAX_DEPTH:
                     self._walk_mapping(val_node, path, file_id, symbols, lines, depth + 1)
 
             elif isinstance(val_node, yaml.SequenceNode):
                 item_count = len(val_node.value)
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=key,
-                    qualified_name=path,
-                    kind=SymbolKind.SECTION,
-                    line_start=line_start,
-                    line_end=line_end,
-                    signature=f"{path}: [{item_count} items]",
-                    body=body,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=key,
+                        qualified_name=path,
+                        kind=SymbolKind.SECTION,
+                        line_start=line_start,
+                        line_end=line_end,
+                        signature=f"{path}: [{item_count} items]",
+                        body=body,
+                        is_public=True,
+                    )
+                )
                 # Recurse into sequence-of-mappings (e.g. GitHub Actions steps)
                 if depth < self.MAX_DEPTH:
                     for item_idx, item in enumerate(val_node.value):
@@ -209,23 +214,25 @@ class YamlParser(BaseParser):
                 # Scalar value (string, int, bool, null, alias anchor name, etc.)
                 val_text = val_node.value if val_node.value is not None else ""
                 body = f"{path}: {val_text}"
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=key,
-                    qualified_name=path,
-                    kind=SymbolKind.CONSTANT,
-                    line_start=line_start,
-                    line_end=line_end,
-                    signature=body[:200],
-                    body=body,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=key,
+                        qualified_name=path,
+                        kind=SymbolKind.CONSTANT,
+                        line_start=line_start,
+                        line_end=line_end,
+                        signature=body[:200],
+                        body=body,
+                        is_public=True,
+                    )
+                )
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    def _get_scalar_field(self, node: yaml.MappingNode, *keys: str) -> Optional[str]:
+    def _get_scalar_field(self, node: yaml.MappingNode, *keys: str) -> str | None:
         """Return the value of the first matching scalar key in a mapping node."""
         for k, v in node.value:
             if (
@@ -239,7 +246,7 @@ class YamlParser(BaseParser):
 
     def _slice_source(self, lines: list[str], start_line: int, end_line: int) -> str:
         """Extract source lines [start_line, end_line] (0-indexed), capped at MAX_BODY_LEN."""
-        sliced = "\n".join(lines[start_line: end_line + 1])
+        sliced = "\n".join(lines[start_line : end_line + 1])
         if len(sliced) > self.MAX_BODY_LEN:
             sliced = sliced[: self.MAX_BODY_LEN] + "\n  ..."
         return sliced

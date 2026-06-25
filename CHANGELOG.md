@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-25
+
+### Added
+- U1: Contextual chunking — LLM-generated context summaries prepended to chunks (67% retrieval failure reduction)
+- U2: Voyage-code-3 embedder + local-code (SFR-Embedding-Code-2B_R) providers (49% quality gain)
+- U3: Filterable HNSW index in sqlite-vec (O(log n) vector search)
+- U4: Qdrant optional backend for >500k chunk scale
+- U5: Async batch embedding pipeline (3-4x indexing speedup)
+- U6: File watcher — trelix watch command for real-time incremental indexing
+- U7: Adaptive 3-tier query router (direct/single/multi-step)
+- U8: GraphRAG map-reduce synthesis for large context windows
+- U9: Call graph precision — qualified_name + type-hint edge resolution
+- U10: Production eval harness (MRR, Recall@1/5/10, NDCG@10)
+
 ## [0.2.0] — 2026-06-25
 
 ### Added

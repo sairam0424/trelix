@@ -26,17 +26,16 @@ Tree-sitter note:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 import tree_sitter_languages
 from tree_sitter import Node, Parser
 
 from trelix.core.models import ImportEdge, Symbol, SymbolKind
+from trelix.indexing.parser.base import BaseParser, ParseResult
 
 # Vue.js directive attribute prefixes / names
 _VUE_STRUCTURAL = frozenset({"v-if", "v-else-if", "v-else", "v-for", "v-show", "v-html", "v-text"})
 _VUE_FORM_ATTRS = frozenset({"v-model", "v-model.lazy", "v-model.trim", "v-model.number"})
-from trelix.indexing.parser.base import BaseParser, ParseResult
 
 # Semantic block tags worth extracting when they have id or aria-label
 _SECTION_TAGS = frozenset({"section", "main", "nav", "header", "footer", "article", "aside"})
@@ -45,19 +44,49 @@ _SECTION_TAGS = frozenset({"section", "main", "nav", "header", "footer", "articl
 _NG_STRUCTURAL = frozenset({"*ngif", "*ngfor", "*ngswitch", "*ngswichcase", "*ngswitchdefault"})
 
 # Angular form attribute names (lowercased)
-_NG_FORM_ATTRS = frozenset({
-    "formgroup", "[formgroup]", "formcontrolname", "[formcontrolname]",
-    "formarrayname", "[formarrayname]", "ngmodel", "[(ngmodel)]",
-})
+_NG_FORM_ATTRS = frozenset(
+    {
+        "formgroup",
+        "[formgroup]",
+        "formcontrolname",
+        "[formcontrolname]",
+        "formarrayname",
+        "[formarrayname]",
+        "ngmodel",
+        "[(ngmodel)]",
+    }
+)
 
 # Tags too small/inline to bother extracting by id
-_SKIP_ID_TAGS = frozenset({
-    "span", "a", "button", "input", "label", "img",
-    "br", "hr", "li", "td", "th", "tr", "i", "b", "em", "strong",
-    "option", "textarea", "select", "link", "meta", "script", "style",
-})
+_SKIP_ID_TAGS = frozenset(
+    {
+        "span",
+        "a",
+        "button",
+        "input",
+        "label",
+        "img",
+        "br",
+        "hr",
+        "li",
+        "td",
+        "th",
+        "tr",
+        "i",
+        "b",
+        "em",
+        "strong",
+        "option",
+        "textarea",
+        "select",
+        "link",
+        "meta",
+        "script",
+        "style",
+    }
+)
 
-MAX_DEPTH = 40          # guard against pathological nesting
+MAX_DEPTH = 40  # guard against pathological nesting
 MAX_CUSTOM_ELEMS = 150  # max unique custom element symbols per file
 
 
@@ -93,7 +122,9 @@ class HtmlParser(BaseParser):
             symbols.append(doc_sym)
 
         # 2. Walk all elements
-        self._walk_elements(root, source_bytes, file_id, symbols, import_edges, seen_custom_tags, depth=0)
+        self._walk_elements(
+            root, source_bytes, file_id, symbols, import_edges, seen_custom_tags, depth=0
+        )
 
         return ParseResult(
             symbols=symbols,
@@ -106,9 +137,7 @@ class HtmlParser(BaseParser):
     # Document symbol
     # ------------------------------------------------------------------
 
-    def _build_document_symbol(
-        self, root: Node, src: bytes, file_id: int
-    ) -> Optional[Symbol]:
+    def _build_document_symbol(self, root: Node, src: bytes, file_id: int) -> Symbol | None:
         """Build a MODULE symbol for the whole page using <title> + meta tags."""
         meta: dict[str, str] = {}  # keys: title, description, keywords, og_title, og_description
         self._collect_page_meta(root, src, meta, depth=0)
@@ -138,7 +167,9 @@ class HtmlParser(BaseParser):
             line_start=1,
             line_end=root.end_point[0] + 1,
             signature=sig,
-            body="\n".join(body_lines) if body_lines else src.decode("utf-8", errors="replace")[:500],
+            body="\n".join(body_lines)
+            if body_lines
+            else src.decode("utf-8", errors="replace")[:500],
             docstring=description or None,
             is_public=True,
         )
@@ -211,10 +242,20 @@ class HtmlParser(BaseParser):
                     tag = self._get_tag_name(tag_node, src)
                     attrs = self._get_attributes(tag_node, src)
                     self._handle_element(
-                        child, tag_node, tag, attrs,
-                        src, file_id, symbols, import_edges, seen_custom_tags, depth,
+                        child,
+                        tag_node,
+                        tag,
+                        attrs,
+                        src,
+                        file_id,
+                        symbols,
+                        import_edges,
+                        seen_custom_tags,
+                        depth,
                     )
-                self._walk_elements(child, src, file_id, symbols, import_edges, seen_custom_tags, depth + 1)
+                self._walk_elements(
+                    child, src, file_id, symbols, import_edges, seen_custom_tags, depth + 1
+                )
 
             elif ntype == "script_element":
                 self._handle_script(child, src, file_id, symbols, import_edges)
@@ -223,7 +264,9 @@ class HtmlParser(BaseParser):
                 self._handle_style(child, src, file_id, symbols)
 
             else:
-                self._walk_elements(child, src, file_id, symbols, import_edges, seen_custom_tags, depth + 1)
+                self._walk_elements(
+                    child, src, file_id, symbols, import_edges, seen_custom_tags, depth + 1
+                )
 
     def _handle_element(
         self,
@@ -247,11 +290,13 @@ class HtmlParser(BaseParser):
             href = attrs.get("href", "")
             rel = attrs.get("rel", "").lower()
             if href and rel in ("stylesheet", "preload", "modulepreload", "import"):
-                import_edges.append(ImportEdge(
-                    file_id=file_id,
-                    imported_from=href,
-                    imported_names=[],
-                ))
+                import_edges.append(
+                    ImportEdge(
+                        file_id=file_id,
+                        imported_from=href,
+                        imported_names=[],
+                    )
+                )
             return  # link is self-closing, nothing else to extract
 
         # ── 1. <template> and <ng-template> — Angular/Vue template blocks ──
@@ -262,50 +307,56 @@ class HtmlParser(BaseParser):
                     ref_name = attr_name[1:] or attr_val
                     break
             name = ref_name or f"{tag}-{line_start}"
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=name,
-                kind=SymbolKind.SECTION,
-                line_start=line_start,
-                line_end=line_end,
-                signature=f"<{tag}" + (f" #{ref_name}" if ref_name else "") + ">",
-                body=body_text,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=name,
+                    kind=SymbolKind.SECTION,
+                    line_start=line_start,
+                    line_end=line_end,
+                    signature=f"<{tag}" + (f" #{ref_name}" if ref_name else "") + ">",
+                    body=body_text,
+                )
+            )
 
         # ── 1b. Custom / web-component elements (hyphenated tag names) ─────
         elif "-" in tag and len(seen_custom_tags) < MAX_CUSTOM_ELEMS:
             if tag not in seen_custom_tags:
                 seen_custom_tags.add(tag)
                 sig, decorators = self._framework_element_signature(tag, attrs)
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=tag,
-                    qualified_name=tag,
-                    kind=SymbolKind.VARIABLE,
-                    line_start=line_start,
-                    line_end=line_end,
-                    signature=sig,
-                    body=body_text,
-                    decorators=decorators,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=tag,
+                        qualified_name=tag,
+                        kind=SymbolKind.VARIABLE,
+                        line_start=line_start,
+                        line_end=line_end,
+                        signature=sig,
+                        body=body_text,
+                        decorators=decorators,
+                        is_public=True,
+                    )
+                )
 
         # ── 2. Angular / Vue template references (#refName) ──────────────
         for attr_name, attr_val in attrs.items():
             if attr_name.startswith("#") and tag not in ("template", "ng-template"):
                 ref_name = attr_name[1:] or attr_val
                 if ref_name:
-                    symbols.append(Symbol(
-                        file_id=file_id,
-                        name=ref_name,
-                        qualified_name=ref_name,
-                        kind=SymbolKind.VARIABLE,
-                        line_start=line_start,
-                        line_end=line_end,
-                        signature=f"#{ref_name} on <{tag}>",
-                        body=self._txt(tag_node, src),
-                    ))
+                    symbols.append(
+                        Symbol(
+                            file_id=file_id,
+                            name=ref_name,
+                            qualified_name=ref_name,
+                            kind=SymbolKind.VARIABLE,
+                            line_start=line_start,
+                            line_end=line_end,
+                            signature=f"#{ref_name} on <{tag}>",
+                            body=self._txt(tag_node, src),
+                        )
+                    )
 
         # ── 3. <form> elements ────────────────────────────────────────────
         if tag == "form":
@@ -326,30 +377,8 @@ class HtmlParser(BaseParser):
             if action:
                 sig += f' action="{action}"'
             sig += ">"
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=label,
-                qualified_name=label,
-                kind=SymbolKind.SECTION,
-                line_start=line_start,
-                line_end=line_end,
-                signature=sig,
-                body=body_text,
-                docstring=self._get_preceding_comment(node, src),
-            ))
-
-        # ── 4. Structural semantic elements with id / aria-label ──────────
-        elif tag in _SECTION_TAGS:
-            section_id = attrs.get("id", "")
-            aria_label = attrs.get("aria-label", "")
-            label = section_id or aria_label
-            if label:
-                sig = (
-                    f'<{tag} id="{label}">'
-                    if section_id
-                    else f'<{tag} aria-label="{label}">'
-                )
-                symbols.append(Symbol(
+            symbols.append(
+                Symbol(
                     file_id=file_id,
                     name=label,
                     qualified_name=label,
@@ -359,30 +388,58 @@ class HtmlParser(BaseParser):
                     signature=sig,
                     body=body_text,
                     docstring=self._get_preceding_comment(node, src),
-                ))
+                )
+            )
+
+        # ── 4. Structural semantic elements with id / aria-label ──────────
+        elif tag in _SECTION_TAGS:
+            section_id = attrs.get("id", "")
+            aria_label = attrs.get("aria-label", "")
+            label = section_id or aria_label
+            if label:
+                sig = f'<{tag} id="{label}">' if section_id else f'<{tag} aria-label="{label}">'
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=label,
+                        qualified_name=label,
+                        kind=SymbolKind.SECTION,
+                        line_start=line_start,
+                        line_end=line_end,
+                        signature=sig,
+                        body=body_text,
+                        docstring=self._get_preceding_comment(node, src),
+                    )
+                )
 
         # ── 5. Other block elements with id attribute ─────────────────────
         elif tag not in _SKIP_ID_TAGS and tag not in ("html", "head", "body"):
             elem_id = attrs.get("id", "")
             if elem_id:
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=elem_id,
-                    qualified_name=elem_id,
-                    kind=SymbolKind.VARIABLE,
-                    line_start=line_start,
-                    line_end=line_end,
-                    signature=f'<{tag} id="{elem_id}">',
-                    body=body_text,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=elem_id,
+                        qualified_name=elem_id,
+                        kind=SymbolKind.VARIABLE,
+                        line_start=line_start,
+                        line_end=line_end,
+                        signature=f'<{tag} id="{elem_id}">',
+                        body=body_text,
+                    )
+                )
 
     # ------------------------------------------------------------------
     # Script / style
     # ------------------------------------------------------------------
 
     def _handle_script(
-        self, node: Node, src: bytes, file_id: int,
-        symbols: list[Symbol], import_edges: list[ImportEdge],
+        self,
+        node: Node,
+        src: bytes,
+        file_id: int,
+        symbols: list[Symbol],
+        import_edges: list[ImportEdge],
     ) -> None:
         """Extract <script> blocks as SECTION symbols and ImportEdges for external scripts."""
         tag_node = self._get_start_or_self_closing_tag(node)
@@ -393,11 +450,13 @@ class HtmlParser(BaseParser):
 
         # External script → ImportEdge (JS/module dependency)
         if script_src:
-            import_edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=script_src,
-                imported_names=[],
-            ))
+            import_edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=script_src,
+                    imported_names=[],
+                )
+            )
 
         # Find inline content
         raw = ""
@@ -418,20 +477,20 @@ class HtmlParser(BaseParser):
             sig += f' type="{script_type}"'
         sig += ">"
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.SECTION,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=sig,
-            body=raw[:1000] if raw else sig,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.SECTION,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=sig,
+                body=raw[:1000] if raw else sig,
+            )
+        )
 
-    def _handle_style(
-        self, node: Node, src: bytes, file_id: int, symbols: list[Symbol]
-    ) -> None:
+    def _handle_style(self, node: Node, src: bytes, file_id: int, symbols: list[Symbol]) -> None:
         """Extract non-empty <style> blocks as SECTION symbols."""
         raw = ""
         for child in node.children:
@@ -445,16 +504,18 @@ class HtmlParser(BaseParser):
         attrs = self._get_attributes(tag_node, src) if tag_node else {}
         scoped = " scoped" if "scoped" in attrs else ""
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name="inline-style",
-            qualified_name="inline-style",
-            kind=SymbolKind.SECTION,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"<style{scoped}>",
-            body=raw[:1000],
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name="inline-style",
+                qualified_name="inline-style",
+                kind=SymbolKind.SECTION,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"<style{scoped}>",
+                body=raw[:1000],
+            )
+        )
 
     # ------------------------------------------------------------------
     # Angular element signature builder
@@ -534,7 +595,7 @@ class HtmlParser(BaseParser):
     # AST helpers
     # ------------------------------------------------------------------
 
-    def _get_start_or_self_closing_tag(self, element_node: Node) -> Optional[Node]:
+    def _get_start_or_self_closing_tag(self, element_node: Node) -> Node | None:
         """Return the start_tag or self_closing_tag child of an element node."""
         for child in element_node.children:
             if child.type in ("start_tag", "self_closing_tag"):
@@ -573,14 +634,14 @@ class HtmlParser(BaseParser):
                 attrs[attr_name] = attr_val
         return attrs
 
-    def _get_preceding_comment(self, node: Node, src: bytes) -> Optional[str]:
+    def _get_preceding_comment(self, node: Node, src: bytes) -> str | None:
         """Return the text of an HTML comment immediately before this node."""
         prev = node.prev_named_sibling
         if prev is not None and prev.type == "comment":
             raw = self._txt(prev, src).strip()
             # Strip <!-- ... --> delimiters
-            raw = re.sub(r'^<!--\s*', '', raw)
-            raw = re.sub(r'\s*-->$', '', raw)
+            raw = re.sub(r"^<!--\s*", "", raw)
+            raw = re.sub(r"\s*-->$", "", raw)
             return raw.strip() or None
         return None
 
@@ -591,9 +652,9 @@ class HtmlParser(BaseParser):
         return count
 
     def _txt(self, node: Node, src: bytes) -> str:
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
+    def _get_child_by_type(self, node: Node, type_name: str) -> Node | None:
         for child in node.children:
             if child.type == type_name:
                 return child

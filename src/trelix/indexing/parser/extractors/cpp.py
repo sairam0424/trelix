@@ -27,8 +27,6 @@ Parent linkage:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import tree_sitter_languages
 from tree_sitter import Node, Parser
 
@@ -62,7 +60,7 @@ class CppParser(BaseParser):
         root = tree.root_node
 
         symbols: list[Symbol] = []
-        raw_calls: list[tuple[Optional[int], str, int]] = []
+        raw_calls: list[tuple[int | None, str, int]] = []
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
 
@@ -103,11 +101,11 @@ class CppParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
-        current_func_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
+        current_func_local_idx: int | None,
         depth: int,
     ) -> None:
         """Recursive depth-first walk of C++ AST."""
@@ -119,8 +117,16 @@ class CppParser(BaseParser):
 
             if ntype == "namespace_declaration":
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    depth + 1,
                 )
 
             elif ntype == "preproc_include":
@@ -131,14 +137,28 @@ class CppParser(BaseParser):
 
             elif ntype == "class_specifier" and parent_class_local_idx is None:
                 self._handle_class(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, depth, kind=SymbolKind.CLASS,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth,
+                    kind=SymbolKind.CLASS,
                 )
 
             elif ntype == "struct_specifier" and parent_class_local_idx is None:
                 self._handle_class(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, depth, kind=SymbolKind.STRUCT,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth,
+                    kind=SymbolKind.STRUCT,
                 )
 
             elif ntype == "enum_specifier" and parent_class_local_idx is None:
@@ -146,36 +166,77 @@ class CppParser(BaseParser):
 
             elif ntype == "function_definition" and parent_class_local_idx is None:
                 self._handle_function(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, depth,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth,
                 )
 
             elif ntype == "call_expression":
                 self._handle_call(child, src, raw_calls, current_func_local_idx)
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    depth + 1,
                 )
 
             elif ntype in (
-                "compound_statement", "if_statement", "else_clause",
-                "for_statement", "while_statement", "do_statement",
-                "try_statement", "catch_clause", "throw_statement",
-                "return_statement", "expression_statement",
-                "switch_statement", "case_statement", "default_statement",
+                "compound_statement",
+                "if_statement",
+                "else_clause",
+                "for_statement",
+                "while_statement",
+                "do_statement",
+                "try_statement",
+                "catch_clause",
+                "throw_statement",
+                "return_statement",
+                "expression_statement",
+                "switch_statement",
+                "case_statement",
+                "default_statement",
                 "for_range_statement",
-                "binary_expression", "unary_expression", "call_expression",
-                "conditional_expression", "assignment_expression",
-                "comma_expression", "parenthesized_expression",
-                "subscript_expression", "field_expression", "pointer_expression",
-                "initializer_list", "new_expression", "delete_expression",
-                "cast_expression", "sizeof_expression",
+                "binary_expression",
+                "unary_expression",
+                "call_expression",
+                "conditional_expression",
+                "assignment_expression",
+                "comma_expression",
+                "parenthesized_expression",
+                "subscript_expression",
+                "field_expression",
+                "pointer_expression",
+                "initializer_list",
+                "new_expression",
+                "delete_expression",
+                "cast_expression",
+                "sizeof_expression",
                 "lambda_expression",
-                "declaration", "block_item",
+                "declaration",
+                "block_item",
             ):
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    depth + 1,
                 )
 
     # ------------------------------------------------------------------
@@ -188,7 +249,7 @@ class CppParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         depth: int,
@@ -213,18 +274,20 @@ class CppParser(BaseParser):
 
         docstring = self._get_preceding_comment(node, src)
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=kind,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=signature[:300],
-            body=self._txt(node, src)[:2000],
-            docstring=docstring,
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=kind,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=signature[:300],
+                body=self._txt(node, src)[:2000],
+                docstring=docstring,
+                is_public=True,
+            )
+        )
 
         # Extract base classes → TypeEdge
         base_clause_node = node.child_by_field_name("base_class_list")
@@ -235,25 +298,37 @@ class CppParser(BaseParser):
                 if child.type == "base_class":
                     base_name = self._extract_base_name(child, src)
                     if base_name:
-                        type_edges.append(TypeEdge(
-                            from_symbol_id=class_local_idx,
-                            to_type_name=base_name,
-                            edge_kind="extends",
-                        ))
+                        type_edges.append(
+                            TypeEdge(
+                                from_symbol_id=class_local_idx,
+                                to_type_name=base_name,
+                                edge_kind="extends",
+                            )
+                        )
                 elif child.type == "type_identifier":
                     base_name = self._txt(child, src)
                     if base_name:
-                        type_edges.append(TypeEdge(
-                            from_symbol_id=class_local_idx,
-                            to_type_name=base_name,
-                            edge_kind="extends",
-                        ))
+                        type_edges.append(
+                            TypeEdge(
+                                from_symbol_id=class_local_idx,
+                                to_type_name=base_name,
+                                edge_kind="extends",
+                            )
+                        )
 
         body_node = self._get_child_by_type(node, "field_declaration_list")
         if body_node:
             self._walk_class_body(
-                body_node, src, file_id, symbols, raw_calls, import_edges,
-                type_edges, class_local_idx, name, depth,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
+                class_local_idx,
+                name,
+                depth,
             )
 
     def _walk_class_body(
@@ -262,7 +337,7 @@ class CppParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         class_local_idx: int,
@@ -276,8 +351,16 @@ class CppParser(BaseParser):
 
             if ntype == "function_definition":
                 self._handle_class_method(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, class_local_idx, class_name, depth,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    class_local_idx,
+                    class_name,
+                    depth,
                 )
 
             elif ntype == "access_specifier":
@@ -286,14 +369,25 @@ class CppParser(BaseParser):
             elif ntype == "field_declaration" and field_count < self.MAX_CLASS_FIELDS:
                 before = len(symbols)
                 self._handle_field_declaration(
-                    child, src, file_id, symbols, class_local_idx, class_name,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    class_local_idx,
+                    class_name,
                 )
                 field_count += len(symbols) - before
 
             elif ntype in ("class_specifier", "struct_specifier"):
                 self._handle_class(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth + 1,
                     kind=SymbolKind.CLASS if ntype == "class_specifier" else SymbolKind.STRUCT,
                 )
 
@@ -306,7 +400,7 @@ class CppParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         class_local_idx: int,
@@ -325,19 +419,21 @@ class CppParser(BaseParser):
         func_local_idx = len(symbols)
         signature = self._extract_function_signature(node, src)
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=f"{class_name}::{name}",
-            kind=SymbolKind.METHOD,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=signature[:300],
-            body=self._txt(node, src)[:2000],
-            parent_id=class_local_idx,
-            is_public=True,
-            docstring=self._get_preceding_comment(node, src),
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=f"{class_name}::{name}",
+                kind=SymbolKind.METHOD,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=signature[:300],
+                body=self._txt(node, src)[:2000],
+                parent_id=class_local_idx,
+                is_public=True,
+                docstring=self._get_preceding_comment(node, src),
+            )
+        )
 
         body_node = node.child_by_field_name("body")
         if body_node:
@@ -349,7 +445,7 @@ class CppParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         depth: int,
@@ -366,18 +462,20 @@ class CppParser(BaseParser):
         func_local_idx = len(symbols)
         signature = self._extract_function_signature(node, src)
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.FUNCTION,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=signature[:300],
-            body=self._txt(node, src)[:2000],
-            is_public=True,
-            docstring=self._get_preceding_comment(node, src),
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.FUNCTION,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=signature[:300],
+                body=self._txt(node, src)[:2000],
+                is_public=True,
+                docstring=self._get_preceding_comment(node, src),
+            )
+        )
 
         body_node = node.child_by_field_name("body")
         if body_node:
@@ -401,18 +499,20 @@ class CppParser(BaseParser):
 
                 field_sig = self._txt(node, src).split(";")[0][:200]
 
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=name,
-                    qualified_name=f"{class_name}::{name}",
-                    kind=SymbolKind.VARIABLE,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
-                    signature=field_sig,
-                    body=self._txt(node, src)[:500],
-                    parent_id=class_local_idx,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=name,
+                        qualified_name=f"{class_name}::{name}",
+                        kind=SymbolKind.VARIABLE,
+                        line_start=node.start_point[0] + 1,
+                        line_end=node.end_point[0] + 1,
+                        signature=field_sig,
+                        body=self._txt(node, src)[:500],
+                        parent_id=class_local_idx,
+                        is_public=True,
+                    )
+                )
 
     def _handle_enum(
         self,
@@ -432,18 +532,20 @@ class CppParser(BaseParser):
         name = self._txt(name_node, src)
 
         enum_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.ENUM,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"enum {name}",
-            body=self._txt(node, src)[:1000],
-            is_public=True,
-            docstring=self._get_preceding_comment(node, src),
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.ENUM,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"enum {name}",
+                body=self._txt(node, src)[:1000],
+                is_public=True,
+                docstring=self._get_preceding_comment(node, src),
+            )
+        )
 
         enumerator_list = self._get_child_by_type(node, "enumerator_list")
         if enumerator_list:
@@ -452,25 +554,27 @@ class CppParser(BaseParser):
                     member_node = self._get_child_by_type(child, "identifier")
                     if member_node:
                         member_name = self._txt(member_node, src)
-                        symbols.append(Symbol(
-                            file_id=file_id,
-                            name=member_name,
-                            qualified_name=f"{name}::{member_name}",
-                            kind=SymbolKind.CONSTANT,
-                            line_start=child.start_point[0] + 1,
-                            line_end=child.end_point[0] + 1,
-                            signature=self._txt(child, src)[:100],
-                            body=self._txt(child, src),
-                            parent_id=enum_local_idx,
-                            is_public=True,
-                        ))
+                        symbols.append(
+                            Symbol(
+                                file_id=file_id,
+                                name=member_name,
+                                qualified_name=f"{name}::{member_name}",
+                                kind=SymbolKind.CONSTANT,
+                                line_start=child.start_point[0] + 1,
+                                line_end=child.end_point[0] + 1,
+                                signature=self._txt(child, src)[:100],
+                                body=self._txt(child, src),
+                                parent_id=enum_local_idx,
+                                is_public=True,
+                            )
+                        )
 
     def _walk_for_calls(
         self,
         node: Node,
         src: bytes,
         func_local_idx: int,
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         depth: int,
     ) -> None:
         """Recursively walk function body looking for calls."""
@@ -487,8 +591,8 @@ class CppParser(BaseParser):
         self,
         node: Node,
         src: bytes,
-        raw_calls: list[tuple[Optional[int], str, int]],
-        current_func_local_idx: Optional[int],
+        raw_calls: list[tuple[int | None, str, int]],
+        current_func_local_idx: int | None,
     ) -> None:
         """Extract function call."""
         func_node = node.child_by_field_name("function")
@@ -510,11 +614,13 @@ class CppParser(BaseParser):
             callee_name = "::".join(parts) if parts else ""
 
         if callee_name:
-            raw_calls.append((
-                current_func_local_idx,
-                callee_name,
-                node.start_point[0] + 1,
-            ))
+            raw_calls.append(
+                (
+                    current_func_local_idx,
+                    callee_name,
+                    node.start_point[0] + 1,
+                )
+            )
 
     # ------------------------------------------------------------------
     # Import extraction (#include directives)
@@ -534,11 +640,13 @@ class CppParser(BaseParser):
         path = path.strip('<>"')
 
         if path:
-            edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=path,
-                imported_names=[],
-            ))
+            edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=path,
+                    imported_names=[],
+                )
+            )
 
         return edges
 
@@ -557,23 +665,25 @@ class CppParser(BaseParser):
         name = self._txt(name_node, src)
         body = self._txt(node, src)
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.CONSTANT,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"#define {name}",
-            body=body[:500],
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.CONSTANT,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"#define {name}",
+                body=body[:500],
+                is_public=True,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Helper functions
     # ------------------------------------------------------------------
 
-    def _extract_declarator_name(self, decl_node: Node, src: bytes) -> Optional[str]:
+    def _extract_declarator_name(self, decl_node: Node, src: bytes) -> str | None:
         """Extract function/variable name from declarator node."""
         current = decl_node
         while current:
@@ -623,7 +733,7 @@ class CppParser(BaseParser):
         params = self._txt(params_node, src) if params_node else "()"
         return f"{return_type} {func_name}{params}".strip()
 
-    def _extract_base_name(self, base_class_node: Node, src: bytes) -> Optional[str]:
+    def _extract_base_name(self, base_class_node: Node, src: bytes) -> str | None:
         """Extract base class name from base_class node."""
         for child in base_class_node.children:
             if child.type == "type_identifier":
@@ -637,7 +747,7 @@ class CppParser(BaseParser):
 
         return None
 
-    def _find_preceding_template(self, node: Node, src: bytes) -> Optional[Node]:
+    def _find_preceding_template(self, node: Node, src: bytes) -> Node | None:
         """Locate template_declaration before class/struct node."""
         parent = node.parent
         if not parent:
@@ -654,7 +764,7 @@ class CppParser(BaseParser):
 
         return None
 
-    def _get_preceding_comment(self, node: Node, src: bytes) -> Optional[str]:
+    def _get_preceding_comment(self, node: Node, src: bytes) -> str | None:
         """Extract preceding comment above a node."""
         if node.start_point[0] == 0:
             return None
@@ -680,9 +790,9 @@ class CppParser(BaseParser):
 
     def _txt(self, node: Node, src: bytes) -> str:
         """Extract text from node."""
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
+    def _get_child_by_type(self, node: Node, type_name: str) -> Node | None:
         """Find first child node of given type."""
         for child in node.children:
             if child.type == type_name:

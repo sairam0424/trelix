@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from auth import AuthService
-from user import User, UserRepository
+from user import UserRepository
 from utils import hash_password, verify_password
 
 
@@ -22,8 +22,8 @@ def setup_demo_data(
         user_repo: The user repository to persist User records in.
     """
     demo_users = [
-        ("admin",  "admin123",   "admin@example.com"),
-        ("alice",  "password1",  "alice@example.com"),
+        ("admin", "admin123", "admin@example.com"),
+        ("alice", "password1", "alice@example.com"),
     ]
     for username, password, email in demo_users:
         try:

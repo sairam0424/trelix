@@ -20,6 +20,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
 app = typer.Typer(
@@ -37,6 +38,7 @@ err_console = Console(stderr=True)
 # Logging helpers
 # ---------------------------------------------------------------------------
 
+
 def _setup_logging(verbose: bool = False) -> None:
     """Configure the trelix logger. Call once at CLI entry."""
     level = logging.DEBUG if verbose else logging.WARNING
@@ -52,6 +54,7 @@ def _setup_logging(verbose: bool = False) -> None:
 # ---------------------------------------------------------------------------
 # index
 # ---------------------------------------------------------------------------
+
 
 @app.command()
 def index(
@@ -89,12 +92,12 @@ def index(
     table = Table(title="Index Summary", show_header=True, header_style="bold cyan")
     table.add_column("Metric", style="dim")
     table.add_column("Value", justify="right")
-    table.add_row("Files found",       str(stats.get("files_found", 0)))
-    table.add_row("Files indexed",     str(stats.get("files_indexed", 0)))
-    table.add_row("Files skipped",     str(stats.get("files_skipped", 0)))
+    table.add_row("Files found", str(stats.get("files_found", 0)))
+    table.add_row("Files indexed", str(stats.get("files_indexed", 0)))
+    table.add_row("Files skipped", str(stats.get("files_skipped", 0)))
     table.add_row("Symbols extracted", str(stats.get("symbols_extracted", 0)))
-    table.add_row("Chunks embedded",   str(stats.get("chunks_embedded", 0)))
-    table.add_row("Elapsed",           f"{elapsed:.1f}s")
+    table.add_row("Chunks embedded", str(stats.get("chunks_embedded", 0)))
+    table.add_row("Elapsed", f"{elapsed:.1f}s")
     if stats.get("errors"):
         table.add_row("[red]Errors[/red]", f"[red]{stats['errors']}[/red]")
     console.print(table)
@@ -103,6 +106,7 @@ def index(
 # ---------------------------------------------------------------------------
 # search
 # ---------------------------------------------------------------------------
+
 
 @app.command()
 def search(
@@ -137,20 +141,22 @@ def search(
     if json_output:
         results_json = []
         for r in context.results:
-            results_json.append({
-                "file":   r.file.rel_path,
-                "symbol": r.symbol.name,
-                "lines":  f"{r.symbol.line_start}-{r.symbol.line_end}",
-                "score":  round(r.score, 4),
-            })
+            results_json.append(
+                {
+                    "file": r.file.rel_path,
+                    "symbol": r.symbol.name,
+                    "lines": f"{r.symbol.line_start}-{r.symbol.line_end}",
+                    "score": round(r.score, 4),
+                }
+            )
         print(json.dumps({"status": "ok", "results": results_json}))
         return
 
     table = Table(title=f"Search: {query}", show_header=True, header_style="bold cyan")
-    table.add_column("File",   style="dim", max_width=40)
+    table.add_column("File", style="dim", max_width=40)
     table.add_column("Symbol", style="bold")
-    table.add_column("Lines",  justify="right")
-    table.add_column("Score",  justify="right")
+    table.add_column("Lines", justify="right")
+    table.add_column("Score", justify="right")
 
     for r in context.results:
         table.add_row(
@@ -165,6 +171,7 @@ def search(
 # ---------------------------------------------------------------------------
 # ask
 # ---------------------------------------------------------------------------
+
 
 @app.command()
 def ask(
@@ -217,6 +224,7 @@ def ask(
 # query (human-readable, always Rich, no --json flag)
 # ---------------------------------------------------------------------------
 
+
 @app.command()
 def query(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
@@ -254,10 +262,10 @@ def query(
     )
 
     table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("File",   style="dim", max_width=40)
+    table.add_column("File", style="dim", max_width=40)
     table.add_column("Symbol", style="bold")
-    table.add_column("Lines",  justify="right")
-    table.add_column("Score",  justify="right")
+    table.add_column("Lines", justify="right")
+    table.add_column("Score", justify="right")
 
     for r in context.results:
         table.add_row(
@@ -272,6 +280,7 @@ def query(
 # ---------------------------------------------------------------------------
 # stats
 # ---------------------------------------------------------------------------
+
 
 @app.command()
 def stats(
@@ -297,9 +306,9 @@ def stats(
     try:
         with Database(db_path) as db:
             conn = db._conn
-            file_count   = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            file_count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             symbol_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
-            chunk_count  = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             db_size_bytes = db_path.stat().st_size
     except Exception as exc:
         err_console.print(f"[red]Failed to read index:[/red] {exc}")
@@ -311,17 +320,18 @@ def stats(
 
     table = Table(show_header=True, header_style="bold cyan")
     table.add_column("Metric", style="dim")
-    table.add_column("Value",  justify="right")
-    table.add_row("Files indexed",   str(file_count))
-    table.add_row("Symbols",         str(symbol_count))
-    table.add_row("Chunks",          str(chunk_count))
-    table.add_row("DB size",         f"{db_size_kb:.1f} KB")
+    table.add_column("Value", justify="right")
+    table.add_row("Files indexed", str(file_count))
+    table.add_row("Symbols", str(symbol_count))
+    table.add_row("Chunks", str(chunk_count))
+    table.add_row("DB size", f"{db_size_kb:.1f} KB")
     console.print(table)
 
 
 # ---------------------------------------------------------------------------
 # update-index
 # ---------------------------------------------------------------------------
+
 
 @app.command("update-index")
 def update_index(
@@ -352,6 +362,191 @@ def update_index(
         raise typer.Exit(1) from exc
 
     print(json.dumps(result))
+
+
+# ---------------------------------------------------------------------------
+# migrate-vectors
+# ---------------------------------------------------------------------------
+
+
+@app.command("migrate-vectors")
+def migrate_vectors(
+    repo: str = typer.Argument(..., help="Path to the indexed repository"),
+    to: str = typer.Option("qdrant", help="Target backend: qdrant"),
+    url: str = typer.Option("http://localhost:6333", help="Qdrant URL"),
+    collection: str = typer.Option("trelix", help="Qdrant collection name"),
+    api_key: str = typer.Option("", help="Qdrant API key (optional)"),
+) -> None:
+    """Migrate embeddings from SQLite to Qdrant (or another backend)."""
+    _setup_logging(False)
+
+    import sqlite3
+    import struct
+
+    from trelix.core.config import IndexConfig, StoreConfig
+    from trelix.store.vector_qdrant import QdrantVectorStore
+
+    if to != "qdrant":
+        err_console.print(
+            f"[red]Unsupported target backend:[/red] {to!r}. Only 'qdrant' is supported."
+        )
+        raise typer.Exit(1)
+
+    try:
+        # Build config pointing at the existing SQLite index
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        err_console.print(
+            f"[red]No index found at {db_path}[/red] — run `trelix index {repo}` first."
+        )
+        raise typer.Exit(1)
+
+    # Connect to the SQLite vector store directly to read raw embeddings
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    try:
+        conn.enable_load_extension(True)
+        import sqlite_vec
+
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+    except Exception as exc:
+        err_console.print(f"[red]Failed to load sqlite-vec:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    # Detect embedding dimension from the sqlite-vec virtual table metadata
+    try:
+        row = conn.execute("SELECT embedding FROM chunk_embeddings LIMIT 1").fetchone()
+    except Exception as exc:
+        err_console.print(f"[red]Failed to read chunk_embeddings:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if row is None:
+        console.print(
+            "[yellow]No embeddings found in the SQLite store — nothing to migrate.[/yellow]"
+        )
+        return
+
+    raw_bytes: bytes = row[0]
+    dimension = len(raw_bytes) // 4  # float32 = 4 bytes
+
+    # Build a temporary StoreConfig pointing at Qdrant
+    qdrant_config = IndexConfig(
+        repo_path=config.repo_path,
+        store=StoreConfig(  # type: ignore[call-arg]
+            db_path=config.store.db_path,
+            qdrant_url=url,
+            qdrant_api_key=api_key or None,
+            qdrant_collection=collection,
+        ),
+    )
+    qdrant_store = QdrantVectorStore(qdrant_config, dimension)
+
+    # Stream all rows from sqlite-vec in batches
+    total_row = conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()
+    total = total_row[0] if total_row else 0
+    console.print(f"[cyan]Migrating {total:,} embeddings (dim={dimension}) → Qdrant {url}[/cyan]")
+
+    BATCH = 500
+    offset = 0
+    migrated = 0
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Migrating…", total=total)
+
+        while True:
+            rows = conn.execute(
+                "SELECT chunk_id, embedding FROM chunk_embeddings LIMIT ? OFFSET ?",
+                (BATCH, offset),
+            ).fetchall()
+            if not rows:
+                break
+
+            pairs: list[tuple[int, list[float]]] = []
+            for chunk_id, raw in rows:
+                n = len(raw) // 4
+                emb = list(struct.unpack(f"{n}f", raw))
+                pairs.append((chunk_id, emb))
+
+            qdrant_store.upsert_batch(pairs)
+            migrated += len(pairs)
+            offset += BATCH
+            progress.advance(task, advance=len(pairs))
+
+    conn.close()
+    console.print(f"[green]Migration complete:[/green] {migrated:,} embeddings written to Qdrant.")
+
+
+# ---------------------------------------------------------------------------
+# watch
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def watch(
+    repo: str = typer.Argument(..., help="Path to the repository to watch"),
+    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
+) -> None:
+    """Watch repo for changes and auto-update index. Ctrl+C to stop."""
+    _setup_logging(False)
+
+    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.indexing.indexer import Indexer
+    from trelix.indexing.watcher import FileWatcher
+
+    try:
+        config = IndexConfig(
+            repo_path=str(Path(repo).resolve()),
+            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    try:
+        indexer = Indexer(config)
+    except Exception as exc:
+        err_console.print(f"[red]Failed to initialize indexer:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    # Run initial full index so the watcher starts from a known-good state
+    console.print(Panel(f"[bold cyan]Initial index[/bold cyan] {repo}", expand=False))
+    try:
+        indexer.index()
+    except Exception as exc:
+        err_console.print(f"[red]Initial indexing failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    # Start the file watcher
+    try:
+        watcher = FileWatcher(indexer, indexer.walker)
+    except ImportError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    watcher.start()
+    console.print("[green]Watching for changes. Press Ctrl+C to stop.[/green]")
+
+    try:
+        import time as _time
+
+        while True:
+            _time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        watcher.stop()
+        console.print("\n[dim]Watch stopped.[/dim]")
 
 
 # ---------------------------------------------------------------------------

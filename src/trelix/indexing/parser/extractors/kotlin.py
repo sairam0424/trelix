@@ -32,7 +32,6 @@ Extension functions:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 import tree_sitter_languages
 from tree_sitter import Node, Parser
@@ -65,11 +64,13 @@ class KotlinParser(BaseParser):
         root = tree.root_node
 
         symbols: list[Symbol] = []
-        raw_calls: list[tuple[Optional[int], str, int]] = []
+        raw_calls: list[tuple[int | None, str, int]] = []
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
 
-        self._walk_top_level(root, source_bytes, file_id, symbols, raw_calls, import_edges, type_edges)
+        self._walk_top_level(
+            root, source_bytes, file_id, symbols, raw_calls, import_edges, type_edges
+        )
 
         call_edges: list[CallEdge] = [
             CallEdge(caller_id=caller_idx, callee_name=name, line=line)
@@ -95,7 +96,7 @@ class KotlinParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
     ) -> None:
@@ -106,14 +107,17 @@ class KotlinParser(BaseParser):
                     if imp.type == "import_header":
                         import_edges.extend(self._extract_import(imp, src, file_id))
             elif ntype == "class_declaration":
-                self._handle_class(child, src, file_id, symbols, raw_calls, type_edges,
-                                   parent_class_local_idx=None)
+                self._handle_class(
+                    child, src, file_id, symbols, raw_calls, type_edges, parent_class_local_idx=None
+                )
             elif ntype == "object_declaration":
-                self._handle_object(child, src, file_id, symbols, raw_calls, type_edges,
-                                    parent_class_local_idx=None)
+                self._handle_object(
+                    child, src, file_id, symbols, raw_calls, type_edges, parent_class_local_idx=None
+                )
             elif ntype == "function_declaration":
-                self._handle_function(child, src, file_id, symbols, raw_calls,
-                                      parent_class_local_idx=None)
+                self._handle_function(
+                    child, src, file_id, symbols, raw_calls, parent_class_local_idx=None
+                )
             elif ntype == "property_declaration":
                 self._handle_top_property(child, src, file_id, symbols)
             elif ntype == "type_alias":
@@ -129,9 +133,9 @@ class KotlinParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
     ) -> None:
         # Name is always a type_identifier child
         name_node = self._field(node, "name")
@@ -188,11 +192,13 @@ class KotlinParser(BaseParser):
         body_node = self._field(node, "body")
         if body_node:
             if body_node.type == "enum_class_body":
-                self._walk_enum_body(body_node, src, file_id, symbols, raw_calls, type_edges,
-                                     class_local_idx)
+                self._walk_enum_body(
+                    body_node, src, file_id, symbols, raw_calls, type_edges, class_local_idx
+                )
             else:
-                self._walk_class_body(body_node, src, file_id, symbols, raw_calls, type_edges,
-                                      class_local_idx)
+                self._walk_class_body(
+                    body_node, src, file_id, symbols, raw_calls, type_edges, class_local_idx
+                )
 
     def _walk_class_body(
         self,
@@ -200,7 +206,7 @@ class KotlinParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         type_edges: list[TypeEdge],
         class_local_idx: int,
     ) -> None:
@@ -208,8 +214,9 @@ class KotlinParser(BaseParser):
         for child in body.children:
             ntype = child.type
             if ntype == "function_declaration":
-                self._handle_function(child, src, file_id, symbols, raw_calls,
-                                      parent_class_local_idx=class_local_idx)
+                self._handle_function(
+                    child, src, file_id, symbols, raw_calls, parent_class_local_idx=class_local_idx
+                )
             elif ntype == "property_declaration":
                 if field_count < self.MAX_CLASS_FIELDS:
                     self._handle_class_property(child, src, file_id, symbols, class_local_idx)
@@ -218,14 +225,29 @@ class KotlinParser(BaseParser):
                 # Companion object members are attributed to the parent class
                 comp_body = self._field(child, "body")
                 if comp_body:
-                    self._walk_class_body(comp_body, src, file_id, symbols, raw_calls,
-                                          type_edges, class_local_idx)
+                    self._walk_class_body(
+                        comp_body, src, file_id, symbols, raw_calls, type_edges, class_local_idx
+                    )
             elif ntype == "class_declaration":
-                self._handle_class(child, src, file_id, symbols, raw_calls, type_edges,
-                                   parent_class_local_idx=class_local_idx)
+                self._handle_class(
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    type_edges,
+                    parent_class_local_idx=class_local_idx,
+                )
             elif ntype == "object_declaration":
-                self._handle_object(child, src, file_id, symbols, raw_calls, type_edges,
-                                    parent_class_local_idx=class_local_idx)
+                self._handle_object(
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    type_edges,
+                    parent_class_local_idx=class_local_idx,
+                )
 
     def _walk_enum_body(
         self,
@@ -233,7 +255,7 @@ class KotlinParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         type_edges: list[TypeEdge],
         class_local_idx: int,
     ) -> None:
@@ -248,21 +270,24 @@ class KotlinParser(BaseParser):
                         break
                 if name_node:
                     entry_name = self._txt(name_node, src)
-                    symbols.append(Symbol(
-                        file_id=file_id,
-                        name=entry_name,
-                        qualified_name=f"{parent_name}.{entry_name}",
-                        kind=SymbolKind.CONSTANT,
-                        line_start=child.start_point[0] + 1,
-                        line_end=child.end_point[0] + 1,
-                        signature=f"{parent_name}.{entry_name}",
-                        body=self._txt(child, src),
-                        parent_id=class_local_idx,
-                        is_public=True,
-                    ))
+                    symbols.append(
+                        Symbol(
+                            file_id=file_id,
+                            name=entry_name,
+                            qualified_name=f"{parent_name}.{entry_name}",
+                            kind=SymbolKind.CONSTANT,
+                            line_start=child.start_point[0] + 1,
+                            line_end=child.end_point[0] + 1,
+                            signature=f"{parent_name}.{entry_name}",
+                            body=self._txt(child, src),
+                            parent_id=class_local_idx,
+                            is_public=True,
+                        )
+                    )
             elif child.type == "function_declaration":
-                self._handle_function(child, src, file_id, symbols, raw_calls,
-                                      parent_class_local_idx=class_local_idx)
+                self._handle_function(
+                    child, src, file_id, symbols, raw_calls, parent_class_local_idx=class_local_idx
+                )
 
     # ------------------------------------------------------------------
     # Object declarations (singletons, companion objects)
@@ -274,9 +299,9 @@ class KotlinParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
     ) -> None:
         name_node = self._field(node, "name")
         if not name_node:
@@ -312,8 +337,9 @@ class KotlinParser(BaseParser):
 
         body_node = self._field(node, "body")
         if body_node:
-            self._walk_class_body(body_node, src, file_id, symbols, raw_calls, type_edges,
-                                  obj_local_idx)
+            self._walk_class_body(
+                body_node, src, file_id, symbols, raw_calls, type_edges, obj_local_idx
+            )
 
     # ------------------------------------------------------------------
     # Functions / methods
@@ -325,8 +351,8 @@ class KotlinParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
-        parent_class_local_idx: Optional[int],
+        raw_calls: list[tuple[int | None, str, int]],
+        parent_class_local_idx: int | None,
     ) -> None:
         name_node = self._field(node, "name")
         if not name_node:
@@ -403,17 +429,19 @@ class KotlinParser(BaseParser):
         if len(body) > 500:
             body = body[:500] + "..."
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.CONSTANT,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=body.split("\n")[0][:200],
-            body=body,
-            is_public=self._is_public(node, src),
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.CONSTANT,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=body.split("\n")[0][:200],
+                body=body,
+                is_public=self._is_public(node, src),
+            )
+        )
 
     def _handle_class_property(
         self,
@@ -443,8 +471,10 @@ class KotlinParser(BaseParser):
             sym_kind = SymbolKind.CONSTANT
         else:
             # Only emit typed fields (has type annotation on variable_declaration)
-            has_type = self._get_child_by_type(var_node, "user_type") is not None or \
-                       self._get_child_by_type(var_node, "nullable_type") is not None
+            has_type = (
+                self._get_child_by_type(var_node, "user_type") is not None
+                or self._get_child_by_type(var_node, "nullable_type") is not None
+            )
             if not has_type:
                 return
             sym_kind = SymbolKind.VARIABLE
@@ -453,18 +483,20 @@ class KotlinParser(BaseParser):
         if name.startswith("_") and not name.startswith("__"):
             return
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=f"{parent_name}.{name}",
-            kind=sym_kind,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=body.split("\n")[0][:200],
-            body=body,
-            parent_id=class_local_idx,
-            is_public=self._is_public(node, src),
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=f"{parent_name}.{name}",
+                kind=sym_kind,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=body.split("\n")[0][:200],
+                body=body,
+                parent_id=class_local_idx,
+                is_public=self._is_public(node, src),
+            )
+        )
 
     # ------------------------------------------------------------------
     # Type alias
@@ -482,17 +514,19 @@ class KotlinParser(BaseParser):
             return
         name = self._txt(name_node, src)
         body = self._txt(node, src)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.INTERFACE,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=body[:200],
-            body=body,
-            is_public=self._is_public(node, src),
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.INTERFACE,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=body[:200],
+                body=body,
+                is_public=self._is_public(node, src),
+            )
+        )
 
     # ------------------------------------------------------------------
     # Call edge extraction (walk function body)
@@ -502,7 +536,7 @@ class KotlinParser(BaseParser):
         self,
         node: Node,
         src: bytes,
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         func_local_idx: int,
         depth: int = 0,
     ) -> None:
@@ -516,7 +550,9 @@ class KotlinParser(BaseParser):
                 # Recurse into call arguments for nested calls
                 self._walk_body_for_calls(child, src, raw_calls, func_local_idx, depth + 1)
             elif child.type not in (
-                "function_declaration", "class_declaration", "object_declaration",
+                "function_declaration",
+                "class_declaration",
+                "object_declaration",
                 "lambda_literal",  # separate scope — skip
             ):
                 self._walk_body_for_calls(child, src, raw_calls, func_local_idx, depth + 1)
@@ -525,7 +561,7 @@ class KotlinParser(BaseParser):
         self,
         node: Node,
         src: bytes,
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         func_local_idx: int,
     ) -> None:
         """Extract callee name from a call_expression node."""
@@ -555,9 +591,7 @@ class KotlinParser(BaseParser):
     # Import extraction
     # ------------------------------------------------------------------
 
-    def _extract_import(
-        self, node: Node, src: bytes, file_id: int
-    ) -> list[ImportEdge]:
+    def _extract_import(self, node: Node, src: bytes, file_id: int) -> list[ImportEdge]:
         """
         import com.example.util.Logger  → imported_from="com.example.util.Logger"
         import kotlin.io.*              → imported_from="kotlin.io", imported_names=["*"]
@@ -579,18 +613,20 @@ class KotlinParser(BaseParser):
         # Check for wildcard: last raw child of import_header is "*"
         imported_names: list[str] = []
         for c in node.children:
-            if not c.is_named and src[c.start_byte:c.end_byte] == b"*":
+            if not c.is_named and src[c.start_byte : c.end_byte] == b"*":
                 imported_names = ["*"]
                 break
 
         if not imported_names and parts:
             imported_names = [parts[-1]]
 
-        return [ImportEdge(
-            file_id=file_id,
-            imported_from=module_path,
-            imported_names=imported_names,
-        )]
+        return [
+            ImportEdge(
+                file_id=file_id,
+                imported_from=module_path,
+                imported_names=imported_names,
+            )
+        ]
 
     # ------------------------------------------------------------------
     # Type edge extraction
@@ -610,13 +646,15 @@ class KotlinParser(BaseParser):
                 # delegation_specifier > constructor_invocation > user_type > type_identifier
                 type_name = self._extract_delegation_type(child, src)
                 if type_name:
-                    type_edges.append(TypeEdge(
-                        from_symbol_id=from_idx,
-                        to_type_name=type_name,
-                        edge_kind="extends",
-                    ))
+                    type_edges.append(
+                        TypeEdge(
+                            from_symbol_id=from_idx,
+                            to_type_name=type_name,
+                            edge_kind="extends",
+                        )
+                    )
 
-    def _extract_delegation_type(self, node: Node, src: bytes) -> Optional[str]:
+    def _extract_delegation_type(self, node: Node, src: bytes) -> str | None:
         """Get the type name from a delegation_specifier node."""
         for child in node.children:
             if child.type == "user_type":
@@ -627,7 +665,7 @@ class KotlinParser(BaseParser):
                     return self._extract_type_name(ut, src)
         return None
 
-    def _extract_type_name(self, user_type_node: Node, src: bytes) -> Optional[str]:
+    def _extract_type_name(self, user_type_node: Node, src: bytes) -> str | None:
         """Get the base type name (without generics) from a user_type node."""
         ti = self._get_child_by_type(user_type_node, "type_identifier")
         return self._txt(ti, src) if ti else None
@@ -651,9 +689,11 @@ class KotlinParser(BaseParser):
         ctor_node = self._field(node, "primary_constructor")
         ctor_text = ""
         if ctor_node:
-            params_node = self._field(ctor_node, "parameters") or \
-                          self._get_child_by_type(ctor_node, "function_value_parameters") or \
-                          self._get_child_by_type(ctor_node, "class_parameters")
+            params_node = (
+                self._field(ctor_node, "parameters")
+                or self._get_child_by_type(ctor_node, "function_value_parameters")
+                or self._get_child_by_type(ctor_node, "class_parameters")
+            )
             if params_node:
                 ctor_text = self._txt(params_node, src)
                 if len(ctor_text) > 80:
@@ -758,13 +798,13 @@ class KotlinParser(BaseParser):
     # ------------------------------------------------------------------
 
     def _txt(self, node: Node, src: bytes) -> str:
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _field(self, node: Node, field_name: str) -> Optional[Node]:
+    def _field(self, node: Node, field_name: str) -> Node | None:
         """Return child node at a named field position."""
         return node.child_by_field_name(field_name)
 
-    def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
+    def _get_child_by_type(self, node: Node, type_name: str) -> Node | None:
         for child in node.children:
             if child.type == type_name:
                 return child

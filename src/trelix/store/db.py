@@ -18,9 +18,9 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator, Optional
 
 from trelix.core.models import (
     CallEdge,
@@ -32,7 +32,6 @@ from trelix.core.models import (
     SymbolKind,
     TypeEdge,
 )
-
 
 DDL = """
 PRAGMA journal_mode = WAL;
@@ -59,6 +58,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     line_end        INTEGER NOT NULL,
     signature       TEXT    NOT NULL DEFAULT '',
     docstring       TEXT,
+    context_summary TEXT,
     decorators      TEXT    NOT NULL DEFAULT '[]',
     is_public       INTEGER NOT NULL DEFAULT 1,
     parent_id       INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
@@ -81,11 +81,12 @@ CREATE INDEX IF NOT EXISTS idx_symbols_name       ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind       ON symbols(kind);
 
 CREATE TABLE IF NOT EXISTS calls (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    caller_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
-    callee_name TEXT    NOT NULL,
-    callee_id   INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
-    line        INTEGER NOT NULL
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    caller_id         INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    callee_name       TEXT    NOT NULL,
+    callee_id         INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+    line              INTEGER NOT NULL,
+    callee_type_hint  TEXT                          -- receiver static type, e.g. "UserService"
 );
 
 CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_id);
@@ -113,29 +114,41 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     qualified_name,
     docstring,
     body,
+    context_summary,
     content='symbols',
     content_rowid='id',
     tokenize='porter ascii'
 );
 
 -- Keep FTS index in sync with symbols table
--- NOTE: triggers reference the 4-column FTS schema; decorators are not FTS-indexed
+-- NOTE: triggers reference the 5-column FTS schema; decorators are not FTS-indexed
 -- (they appear in chunk_text so vector + BM25 search already covers them)
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
-    INSERT INTO symbols_fts(rowid, name, qualified_name, docstring, body)
-    VALUES (new.id, new.name, new.qualified_name, new.docstring, new.body);
+    INSERT INTO symbols_fts(rowid, name, qualified_name, docstring, body, context_summary)
+    VALUES (new.id, new.name, new.qualified_name, new.docstring, new.body, new.context_summary);
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, docstring, body)
-    VALUES ('delete', old.id, old.name, old.qualified_name, old.docstring, old.body);
+    INSERT INTO symbols_fts(
+        symbols_fts, rowid, name, qualified_name, docstring, body, context_summary
+    ) VALUES (
+        'delete', old.id, old.name, old.qualified_name,
+        old.docstring, old.body, old.context_summary
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, docstring, body)
-    VALUES ('delete', old.id, old.name, old.qualified_name, old.docstring, old.body);
-    INSERT INTO symbols_fts(rowid, name, qualified_name, docstring, body)
-    VALUES (new.id, new.name, new.qualified_name, new.docstring, new.body);
+    INSERT INTO symbols_fts(
+        symbols_fts, rowid, name, qualified_name, docstring, body, context_summary
+    ) VALUES (
+        'delete', old.id, old.name, old.qualified_name,
+        old.docstring, old.body, old.context_summary
+    );
+    INSERT INTO symbols_fts(rowid, name, qualified_name, docstring, body, context_summary)
+    VALUES (
+        new.id, new.name, new.qualified_name,
+        new.docstring, new.body, new.context_summary
+    );
 END;
 """
 
@@ -182,6 +195,15 @@ class Database:
                 "ALTER TABLE symbols ADD COLUMN is_public INTEGER NOT NULL DEFAULT 1"
             )
             self._conn.commit()
+        if "context_summary" not in sym_cols:
+            self._conn.execute("ALTER TABLE symbols ADD COLUMN context_summary TEXT")
+            self._conn.commit()
+
+        # calls.callee_type_hint — added in U9 for qualified-name + type-hint resolution
+        calls_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(calls)").fetchall()}
+        if "callee_type_hint" not in calls_cols:
+            self._conn.execute("ALTER TABLE calls ADD COLUMN callee_type_hint TEXT")
+            self._conn.commit()
 
         # type_edges table is idempotent (CREATE TABLE IF NOT EXISTS in DDL)
 
@@ -198,7 +220,7 @@ class Database:
     # Files
     # ------------------------------------------------------------------
 
-    def get_file_hash(self, rel_path: str) -> Optional[str]:
+    def get_file_hash(self, rel_path: str) -> str | None:
         """Return stored hash for a file, or None if not indexed yet."""
         row = self._conn.execute(
             "SELECT hash FROM files WHERE rel_path = ?", (rel_path,)
@@ -230,6 +252,52 @@ class Database:
         self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
         self._conn.commit()
 
+    def delete_file_by_path(
+        self,
+        abs_path: str,
+        rel_path: str,
+        vector_store: object | None = None,
+    ) -> bool:
+        """
+        Fully delete a file's index data (file row + symbols + chunks + vectors).
+
+        Cascades:
+          - symbols ON DELETE CASCADE removes chunks, calls, type_edges
+          - imports ON DELETE CASCADE removed via file_id FK
+          - vector_store.delete_batch() cleans up embeddings if provided
+
+        Args:
+            abs_path:     Absolute filesystem path (used as primary lookup key).
+            rel_path:     Repo-relative path (used as fallback lookup key).
+            vector_store: Optional VectorStore — if provided, chunk vectors are
+                          deleted before the DB rows are removed.
+
+        Returns:
+            True if a matching file row was found and deleted, False otherwise.
+        """
+        row = self._conn.execute(
+            "SELECT id FROM files WHERE path = ? OR rel_path = ? LIMIT 1",
+            (abs_path, rel_path),
+        ).fetchone()
+
+        if row is None:
+            return False
+
+        file_id: int = row[0]
+
+        # Delete vectors before DB rows so we never have orphaned vectors
+        if vector_store is not None:
+            chunk_ids = self.get_chunk_ids_for_file(file_id)
+            if chunk_ids:
+                vector_store.delete_batch(chunk_ids)  # type: ignore[attr-defined]
+
+        # ON DELETE CASCADE on symbols handles chunks / calls / type_edges
+        # Explicit import delete handles the file_id FK
+        self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
+        self._conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        self._conn.commit()
+        return True
+
     # ------------------------------------------------------------------
     # Symbols
     # ------------------------------------------------------------------
@@ -239,29 +307,33 @@ class Database:
             """
             INSERT INTO symbols
               (file_id, name, qualified_name, kind, line_start, line_end,
-               signature, docstring, decorators, is_public, parent_id, body)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               signature, docstring, context_summary, decorators, is_public, parent_id, body)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                symbol.file_id, symbol.name, symbol.qualified_name,
-                symbol.kind.value, symbol.line_start, symbol.line_end,
-                symbol.signature, symbol.docstring,
-                json.dumps(symbol.decorators), int(symbol.is_public),
-                symbol.parent_id, symbol.body,
+                symbol.file_id,
+                symbol.name,
+                symbol.qualified_name,
+                symbol.kind.value,
+                symbol.line_start,
+                symbol.line_end,
+                symbol.signature,
+                symbol.docstring,
+                symbol.context_summary,
+                json.dumps(symbol.decorators),
+                int(symbol.is_public),
+                symbol.parent_id,
+                symbol.body,
             ),
         )
         return cursor.lastrowid  # type: ignore[return-value]
 
     def get_symbol_by_name(self, name: str) -> list[Symbol]:
-        rows = self._conn.execute(
-            "SELECT * FROM symbols WHERE name = ?", (name,)
-        ).fetchall()
+        rows = self._conn.execute("SELECT * FROM symbols WHERE name = ?", (name,)).fetchall()
         return [self._row_to_symbol(r) for r in rows]
 
     def get_symbols_for_file(self, file_id: int) -> list[Symbol]:
-        rows = self._conn.execute(
-            "SELECT * FROM symbols WHERE file_id = ?", (file_id,)
-        ).fetchall()
+        rows = self._conn.execute("SELECT * FROM symbols WHERE file_id = ?", (file_id,)).fetchall()
         return [self._row_to_symbol(r) for r in rows]
 
     # ------------------------------------------------------------------
@@ -270,8 +342,9 @@ class Database:
 
     def insert_call_edges(self, edges: list[CallEdge]) -> None:
         self._conn.executemany(
-            "INSERT INTO calls (caller_id, callee_name, callee_id, line) VALUES (?, ?, ?, ?)",
-            [(e.caller_id, e.callee_name, e.callee_id, e.line) for e in edges],
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line, callee_type_hint)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [(e.caller_id, e.callee_name, e.callee_id, e.line, e.callee_type_hint) for e in edges],
         )
 
     def get_callees(self, symbol_id: int) -> list[int]:
@@ -300,9 +373,7 @@ class Database:
         )
 
     def get_imports_for_file(self, file_id: int) -> list[ImportEdge]:
-        rows = self._conn.execute(
-            "SELECT * FROM imports WHERE file_id = ?", (file_id,)
-        ).fetchall()
+        rows = self._conn.execute("SELECT * FROM imports WHERE file_id = ?", (file_id,)).fetchall()
         return [
             ImportEdge(
                 file_id=r["file_id"],
@@ -360,6 +431,7 @@ class Database:
             line_end=row["line_end"],
             signature=row["signature"],
             docstring=row["docstring"],
+            context_summary=row["context_summary"],
             decorators=json.loads(row["decorators"] or "[]"),
             is_public=bool(row["is_public"]),
             parent_id=row["parent_id"],
@@ -388,29 +460,88 @@ class Database:
 
     def resolve_cross_file_calls(self) -> int:
         """
-        Update callee_id for all unresolved call edges where callee_name
-        matches a known symbol in the DB. Called once after all files indexed.
+        Update callee_id for all unresolved call edges using a 4-priority cascade.
+        Called once after all files are indexed.
 
-        Handles cross-file calls where the callee file was indexed after the
-        caller file, leaving callee_id = NULL at index time.
-        Returns number of newly resolved edges.
+        Resolution priority (highest → lowest):
+
+          1. Qualified-name exact match — callee_name equals a symbol's qualified_name.
+             Most precise: resolves "UserService.login" directly.
+
+          2. Type-hint + name match — callee_type_hint is set AND a symbol exists with
+             the given name whose qualified_name starts with "<callee_type_hint>.".
+             Resolves method calls like user_service.login() when user_service: UserService
+             is annotated in the calling function's parameter list.
+
+          3. Name-only if unique — callee_name matches exactly one symbol across the whole
+             index.  Safe when there is no ambiguity.
+
+          4. Leave NULL — callee_name is ambiguous (multiple candidates) or unknown.
+             A wrong edge is worse than no edge.
+
+        Returns total number of newly resolved edges across all passes.
         """
+        total_resolved = 0
+
+        # ── Pass 1: qualified_name exact match ───────────────────────────────
+        cursor = self._conn.execute(
+            """
+            UPDATE calls
+            SET callee_id = (
+                SELECT id FROM symbols
+                WHERE qualified_name = calls.callee_name
+                LIMIT 1
+            )
+            WHERE callee_id IS NULL
+              AND EXISTS (
+                SELECT 1 FROM symbols WHERE qualified_name = calls.callee_name
+              )
+            """
+        )
+        total_resolved += cursor.rowcount
+
+        # ── Pass 2: type-hint assisted name match ────────────────────────────
+        # Only fires when callee_type_hint is non-NULL and a symbol with the
+        # right name is found whose qualified_name starts with "<hint>.".
         cursor = self._conn.execute(
             """
             UPDATE calls
             SET callee_id = (
                 SELECT id FROM symbols
                 WHERE name = calls.callee_name
+                  AND qualified_name LIKE (calls.callee_type_hint || '.%')
                 LIMIT 1
             )
             WHERE callee_id IS NULL
+              AND callee_type_hint IS NOT NULL
               AND EXISTS (
-                SELECT 1 FROM symbols WHERE name = calls.callee_name
+                SELECT 1 FROM symbols
+                WHERE name = calls.callee_name
+                  AND qualified_name LIKE (calls.callee_type_hint || '.%')
               )
             """
         )
+        total_resolved += cursor.rowcount
+
+        # ── Pass 3: name-only if unique (no ambiguity) ───────────────────────
+        cursor = self._conn.execute(
+            """
+            UPDATE calls
+            SET callee_id = (
+                SELECT id FROM symbols WHERE name = calls.callee_name
+            )
+            WHERE callee_id IS NULL
+              AND (
+                SELECT COUNT(*) FROM symbols WHERE name = calls.callee_name
+              ) = 1
+            """
+        )
+        total_resolved += cursor.rowcount
+
+        # Pass 4: leave NULL — ambiguous callee_name, better no edge than wrong one.
+
         self._conn.commit()
-        return cursor.rowcount
+        return total_resolved
 
     # ------------------------------------------------------------------
     # Import file resolution (second pass after all files indexed)
@@ -424,8 +555,7 @@ class Database:
         Returns number of newly resolved imports.
         """
         all_files: dict[int, str] = {
-            r[0]: r[1]
-            for r in self._conn.execute("SELECT id, rel_path FROM files").fetchall()
+            r[0]: r[1] for r in self._conn.execute("SELECT id, rel_path FROM files").fetchall()
         }
 
         # Build path lookup: normalized path (no ext, no common prefix) → file_id
@@ -438,8 +568,10 @@ class Database:
                     no_ext = no_ext[: -len(ext)]
                     break
             # Handle Go package files and Rust module files
-            no_ext = no_ext.removesuffix("/mod")    # Rust: store/db/mod.rs → store/db
-            no_ext = no_ext.removesuffix("/index")  # JS: components/Button/index.ts → components/Button
+            no_ext = no_ext.removesuffix("/mod")  # Rust: store/db/mod.rs → store/db
+            no_ext = no_ext.removesuffix(
+                "/index"
+            )  # JS: components/Button/index.ts → components/Button
 
             # Full path without extension
             path_lookup[no_ext] = fid
@@ -447,7 +579,7 @@ class Database:
             # Without common source root prefixes (src/, lib/, app/)
             for prefix in ("src/", "lib/", "app/"):
                 if no_ext.startswith(prefix):
-                    path_lookup[no_ext[len(prefix):]] = fid
+                    path_lookup[no_ext[len(prefix) :]] = fid
                     break
 
             # Last component only — used as fallback for single-segment matches
@@ -482,7 +614,7 @@ class Database:
         importer_file_id: int,
         all_files: dict[int, str],
         path_lookup: dict[str, int],
-    ) -> "int | None":
+    ) -> int | None:
         """
         Resolve a single import path to a file_id using language-aware heuristics.
         Handles: Python dotted paths, JS/TS relative, Go/Java slash paths, Rust :: paths.
@@ -512,10 +644,22 @@ class Database:
 
         # --- Skip well-known external / stdlib prefixes ---
         _external = (
-            "java.", "javax.", "android.", "kotlin.",       # Java/Kotlin stdlib
-            "std::", "core::", "alloc::",                   # Rust std
-            "react", "vue", "@angular", "@types/",          # JS/TS frameworks
-            "lodash", "axios", "express", "next", "nuxt",
+            "java.",
+            "javax.",
+            "android.",
+            "kotlin.",  # Java/Kotlin stdlib
+            "std::",
+            "core::",
+            "alloc::",  # Rust std
+            "react",
+            "vue",
+            "@angular",
+            "@types/",  # JS/TS frameworks
+            "lodash",
+            "axios",
+            "express",
+            "next",
+            "nuxt",
         )
         if any(
             module_path == x
@@ -548,7 +692,7 @@ class Database:
             candidate = module_path
             for prefix in ("crate::", "super::", "self::"):
                 if candidate.startswith(prefix):
-                    candidate = candidate[len(prefix):]
+                    candidate = candidate[len(prefix) :]
             candidate = candidate.replace("::", "/")
             if candidate in path_lookup:
                 return path_lookup[candidate]
@@ -575,7 +719,8 @@ class Database:
     def get_file_imports_resolved(self, file_id: int) -> list[int]:
         """Return file_ids that this file imports (resolved internal imports only)."""
         rows = self._conn.execute(
-            "SELECT imported_file_id FROM imports WHERE file_id = ? AND imported_file_id IS NOT NULL",
+            "SELECT imported_file_id FROM imports"
+            " WHERE file_id = ? AND imported_file_id IS NOT NULL",
             (file_id,),
         ).fetchall()
         return list({r[0] for r in rows})
@@ -594,14 +739,17 @@ class Database:
 
     def insert_type_edges(self, edges: list[TypeEdge]) -> None:
         self._conn.executemany(
-            "INSERT INTO type_edges (from_symbol_id, to_type_name, edge_kind, to_symbol_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO type_edges"
+            " (from_symbol_id, to_type_name, edge_kind, to_symbol_id)"
+            " VALUES (?, ?, ?, ?)",
             [(e.from_symbol_id, e.to_type_name, e.edge_kind, e.to_symbol_id) for e in edges],
         )
 
     def get_type_parents(self, symbol_id: int) -> list[int]:
         """Return symbol ids this symbol inherits/implements (outgoing type edges)."""
         rows = self._conn.execute(
-            "SELECT to_symbol_id FROM type_edges WHERE from_symbol_id = ? AND to_symbol_id IS NOT NULL",
+            "SELECT to_symbol_id FROM type_edges"
+            " WHERE from_symbol_id = ? AND to_symbol_id IS NOT NULL",
             (symbol_id,),
         ).fetchall()
         return [r[0] for r in rows]
@@ -895,7 +1043,7 @@ class Database:
     def close(self) -> None:
         self._conn.close()
 
-    def __enter__(self) -> "Database":
+    def __enter__(self) -> Database:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -906,9 +1054,7 @@ class Database:
     # Used by Retriever, BM25, graph expansion to build SearchResult objects
     # ------------------------------------------------------------------
 
-    def get_chunk_with_context(
-        self, chunk_id: int
-    ) -> "tuple[Chunk, Symbol, IndexedFile] | None":
+    def get_chunk_with_context(self, chunk_id: int) -> tuple[Chunk, Symbol, IndexedFile] | None:
         """
         Single JOIN query: chunk → symbol → file.
         Returns (Chunk, Symbol, IndexedFile) or None if not found.
@@ -931,6 +1077,7 @@ class Database:
                 s.line_end        AS s_line_end,
                 s.signature       AS s_signature,
                 s.docstring       AS s_docstring,
+                s.context_summary AS s_context_summary,
                 s.decorators      AS s_decorators,
                 s.is_public       AS s_is_public,
                 s.parent_id       AS s_parent_id,
@@ -955,9 +1102,7 @@ class Database:
 
         return self._row_to_hydrated(row)
 
-    def get_symbol_with_file(
-        self, symbol_id: int
-    ) -> "tuple[Symbol, IndexedFile] | None":
+    def get_symbol_with_file(self, symbol_id: int) -> tuple[Symbol, IndexedFile] | None:
         """
         Load a symbol and its file in one query.
         Used by graph expansion and grep search hydration.
@@ -974,6 +1119,7 @@ class Database:
                 s.line_end        AS s_line_end,
                 s.signature       AS s_signature,
                 s.docstring       AS s_docstring,
+                s.context_summary AS s_context_summary,
                 s.decorators      AS s_decorators,
                 s.is_public       AS s_is_public,
                 s.parent_id       AS s_parent_id,
@@ -1005,6 +1151,7 @@ class Database:
             line_end=row["s_line_end"],
             signature=row["s_signature"],
             docstring=row["s_docstring"],
+            context_summary=row["s_context_summary"],
             decorators=json.loads(row["s_decorators"] or "[]"),
             is_public=bool(row["s_is_public"]),
             parent_id=row["s_parent_id"],
@@ -1020,7 +1167,7 @@ class Database:
         )
         return symbol, file
 
-    def get_first_chunk_for_symbol(self, symbol_id: int) -> "Chunk | None":
+    def get_first_chunk_for_symbol(self, symbol_id: int) -> Chunk | None:
         """
         Return the first (and usually only) chunk for a symbol.
         Used when we have a symbol_id from BM25/graph and need a Chunk for SearchResult.
@@ -1038,9 +1185,7 @@ class Database:
             token_count=row["token_count"],
         )
 
-    def _row_to_hydrated(
-        self, row: sqlite3.Row
-    ) -> "tuple[Chunk, Symbol, IndexedFile]":
+    def _row_to_hydrated(self, row: sqlite3.Row) -> tuple[Chunk, Symbol, IndexedFile]:
         """Convert a JOIN row into (Chunk, Symbol, IndexedFile)."""
         chunk = Chunk(
             id=row["c_id"],
@@ -1058,6 +1203,7 @@ class Database:
             line_end=row["s_line_end"],
             signature=row["s_signature"],
             docstring=row["s_docstring"],
+            context_summary=row["s_context_summary"],
             decorators=json.loads(row["s_decorators"] or "[]"),
             is_public=bool(row["s_is_public"]),
             parent_id=row["s_parent_id"],

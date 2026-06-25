@@ -20,7 +20,6 @@ from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
 from trelix.indexing.indexer import Indexer
 from trelix.retrieval.retriever import Retriever
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -33,28 +32,30 @@ TOP_K = 5  # recall is measured in top-5
 # Eval case definition
 # ---------------------------------------------------------------------------
 
+
 class RecallCase(NamedTuple):
     query: str
     expected_file: str  # filename stem or partial path that must appear in top-5
 
 
 EVAL_CASES: list[RecallCase] = [
-    RecallCase("how does authentication work",   "auth.py"),
-    RecallCase("user repository get by id",       "user.py"),
-    RecallCase("hash password function",          "utils.py"),
-    RecallCase("login method",                    "auth.py"),
-    RecallCase("validate token",                  "auth.py"),
-    RecallCase("User dataclass",                  "user.py"),
-    RecallCase("main entry point",                "main.py"),
-    RecallCase("delete user",                     "user.py"),
-    RecallCase("verify password",                 "utils.py"),
-    RecallCase("create user",                     "user.py"),
+    RecallCase("how does authentication work", "auth.py"),
+    RecallCase("user repository get by id", "user.py"),
+    RecallCase("hash password function", "utils.py"),
+    RecallCase("login method", "auth.py"),
+    RecallCase("validate token", "auth.py"),
+    RecallCase("User dataclass", "user.py"),
+    RecallCase("main entry point", "main.py"),
+    RecallCase("delete user", "user.py"),
+    RecallCase("verify password", "utils.py"),
+    RecallCase("create user", "user.py"),
 ]
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def indexed_mini_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
@@ -105,6 +106,7 @@ def retriever(indexed_mini_repo: Path) -> Retriever:
 # Helper
 # ---------------------------------------------------------------------------
 
+
 def _file_in_top_k(retriever: Retriever, query: str, expected_file: str, k: int = TOP_K) -> bool:
     """Run a query and return True if expected_file appears in the top-k results."""
     context = retriever.retrieve(query)
@@ -125,6 +127,7 @@ def _top_k_files(retriever: Retriever, query: str, k: int = TOP_K) -> list[str]:
 # Individual recall tests (parametrized)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("case", EVAL_CASES, ids=[c.query for c in EVAL_CASES])
 def test_file_recall_top5(retriever: Retriever, case: RecallCase) -> None:
     """Assert the expected file appears in the top-5 results for the query."""
@@ -133,13 +136,14 @@ def test_file_recall_top5(retriever: Retriever, case: RecallCase) -> None:
     assert found, (
         f"\nQuery: {case.query!r}\n"
         f"Expected {case.expected_file!r} in top-{TOP_K}, but got:\n"
-        + "\n".join(f"  {i+1}. {f}" for i, f in enumerate(top_files))
+        + "\n".join(f"  {i + 1}. {f}" for i, f in enumerate(top_files))
     )
 
 
 # ---------------------------------------------------------------------------
 # Recall summary table (printed at end of module)
 # ---------------------------------------------------------------------------
+
 
 class TestRecallSummary:
     """
@@ -177,7 +181,7 @@ class TestRecallSummary:
             print(f"  TRELIX RECALL EVAL — mini_repo  |  top-{TOP_K}  |  {len(EVAL_CASES)} queries")
             print("=" * 80)
             print(f"  {'Query':<40} {'Expected':<12} {'Status':<6} {'Top-1 file'}")
-            print(f"  {'-'*40} {'-'*12} {'-'*6} {'-'*20}")
+            print(f"  {'-' * 40} {'-' * 12} {'-' * 6} {'-' * 20}")
             for query, expected, status, top1 in rows:
                 indicator = "" if status == "PASS" else ""
                 print(f"  {query:<40} {expected:<12} {indicator} {status}  {top1}")

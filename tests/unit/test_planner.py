@@ -8,8 +8,6 @@ deterministically without mocking the OpenAI wire protocol.
 
 from __future__ import annotations
 
-import pytest
-
 from trelix.retrieval.planner.models import (
     INTENT_STRATEGIES,
     IntentType,
@@ -19,10 +17,10 @@ from trelix.retrieval.planner.models import (
     default_plan,
 )
 
-
 # ---------------------------------------------------------------------------
 # Models / default_plan
 # ---------------------------------------------------------------------------
+
 
 class TestDefaultPlan:
     def test_returns_query_plan(self) -> None:
@@ -81,6 +79,7 @@ class TestDefaultPlan:
 # IntentType enum
 # ---------------------------------------------------------------------------
 
+
 class TestIntentType:
     EXPECTED_VALUES = {
         "symbol_lookup",
@@ -112,6 +111,7 @@ class TestIntentType:
 # ---------------------------------------------------------------------------
 # INTENT_STRATEGIES coverage
 # ---------------------------------------------------------------------------
+
 
 class TestIntentStrategies:
     def test_all_intent_types_covered(self) -> None:
@@ -149,21 +149,15 @@ class TestIntentStrategies:
 
     def test_each_strategy_rerank_top_n_positive(self) -> None:
         for intent, strategy in INTENT_STRATEGIES.items():
-            assert strategy.rerank_top_n > 0, (
-                f"rerank_top_n must be positive for {intent!r}"
-            )
+            assert strategy.rerank_top_n > 0, f"rerank_top_n must be positive for {intent!r}"
 
     def test_each_strategy_expand_depth_non_negative(self) -> None:
         for intent, strategy in INTENT_STRATEGIES.items():
-            assert strategy.expand_depth >= 0, (
-                f"expand_depth must be >= 0 for {intent!r}"
-            )
+            assert strategy.expand_depth >= 0, f"expand_depth must be >= 0 for {intent!r}"
 
     def test_each_strategy_import_depth_non_negative(self) -> None:
         for intent, strategy in INTENT_STRATEGIES.items():
-            assert strategy.import_depth >= 0, (
-                f"import_depth must be >= 0 for {intent!r}"
-            )
+            assert strategy.import_depth >= 0, f"import_depth must be >= 0 for {intent!r}"
 
     def test_blast_radius_uses_reverse_direction(self) -> None:
         strategy = INTENT_STRATEGIES[IntentType.BLAST_RADIUS]
@@ -186,32 +180,38 @@ class TestIntentStrategies:
 # QueryPlanner fallback (no API key)
 # ---------------------------------------------------------------------------
 
+
 class TestQueryPlannerFallback:
     def _make_local_config(self):
         """Return an EmbedderConfig with provider=local (no API keys)."""
         from trelix.core.config import EmbedderConfig
+
         return EmbedderConfig(provider="local")
 
     def test_local_provider_returns_query_plan(self) -> None:
         from trelix.retrieval.planner.agent import QueryPlanner
+
         planner = QueryPlanner(self._make_local_config())
         plan = planner.plan("how does the retrieval pipeline work?")
         assert isinstance(plan, QueryPlan)
 
     def test_local_provider_fallback_intent_is_feature_flow(self) -> None:
         from trelix.retrieval.planner.agent import QueryPlanner
+
         planner = QueryPlanner(self._make_local_config())
         plan = planner.plan("what does the indexer do?")
         assert plan.intent == IntentType.FEATURE_FLOW
 
     def test_local_provider_sub_queries_non_empty(self) -> None:
         from trelix.retrieval.planner.agent import QueryPlanner
+
         planner = QueryPlanner(self._make_local_config())
         plan = planner.plan("explain the chunker module")
         assert len(plan.sub_queries) >= 1
 
     def test_local_provider_raw_query_preserved(self) -> None:
         from trelix.retrieval.planner.agent import QueryPlanner
+
         raw = "what breaks if I change the embedder?"
         planner = QueryPlanner(self._make_local_config())
         plan = planner.plan(raw)
@@ -221,6 +221,7 @@ class TestQueryPlannerFallback:
         """openai provider with no API key must fall back silently."""
         from trelix.core.config import EmbedderConfig
         from trelix.retrieval.planner.agent import QueryPlanner
+
         config = EmbedderConfig(provider="openai", openai_api_key=None)
         planner = QueryPlanner(config)
         plan = planner.plan("what is the project structure?")
@@ -230,6 +231,7 @@ class TestQueryPlannerFallback:
     def test_plan_never_raises(self) -> None:
         """plan() must NEVER raise — any exception becomes a fallback plan."""
         from trelix.retrieval.planner.agent import QueryPlanner
+
         planner = QueryPlanner(self._make_local_config())
         # Should not raise regardless of input
         plan = planner.plan("")
@@ -239,6 +241,7 @@ class TestQueryPlannerFallback:
 # ---------------------------------------------------------------------------
 # SubQuery dataclass
 # ---------------------------------------------------------------------------
+
 
 class TestSubQuery:
     def test_defaults_depends_on_empty(self) -> None:

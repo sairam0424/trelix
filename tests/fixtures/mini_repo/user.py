@@ -1,7 +1,6 @@
 """User domain models and repository for managing user persistence."""
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -29,7 +28,7 @@ class UserRepository:
         self._store: dict[int, User] = {}
         self._next_id: int = 1
 
-    def get_by_id(self, user_id: int) -> Optional[User]:
+    def get_by_id(self, user_id: int) -> User | None:
         """Retrieve a user by their numeric ID.
 
         Args:
@@ -40,7 +39,7 @@ class UserRepository:
         """
         return self._store.get(user_id)
 
-    def get_by_username(self, username: str) -> Optional[User]:
+    def get_by_username(self, username: str) -> User | None:
         """Retrieve a user by their username.
 
         Args:

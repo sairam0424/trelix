@@ -18,9 +18,9 @@ class ParseResult:
     """Everything extracted from a single file."""
 
     symbols: list[Symbol]
-    call_edges: list[CallEdge]      # populated only if config.parser.extract_calls
+    call_edges: list[CallEdge]  # populated only if config.parser.extract_calls
     import_edges: list[ImportEdge]  # populated only if config.parser.extract_imports
-    parse_errors: int               # number of Tree-sitter error nodes (0 = clean parse)
+    parse_errors: int  # number of Tree-sitter error nodes (0 = clean parse)
     type_edges: list[TypeEdge] = field(default_factory=list)  # inheritance/impl edges
 
 

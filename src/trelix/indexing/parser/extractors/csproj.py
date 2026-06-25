@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as _stdlib_ET
-from typing import Optional
 
 import defusedxml
 import defusedxml.ElementTree as ET  # XXE / billion-laughs safe replacement
@@ -52,22 +51,24 @@ class CsprojParser(BaseParser):
         symbols: list[Symbol] = []
         import_edges: list[ImportEdge] = []
 
-        cleaned = _NS_RE.sub('', source)
+        cleaned = _NS_RE.sub("", source)
 
         try:
             root = ET.fromstring(cleaned)
         except (_stdlib_ET.ParseError, defusedxml.DefusedXmlException):
-            symbols.append(Symbol(
-                file_id=file_id,
-                name="<project>",
-                qualified_name="<project>",
-                kind=SymbolKind.MODULE,
-                line_start=1,
-                line_end=source.count('\n') + 1,
-                signature="<project> (parse error)",
-                body=source[:500],
-                is_public=True,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name="<project>",
+                    qualified_name="<project>",
+                    kind=SymbolKind.MODULE,
+                    line_start=1,
+                    line_end=source.count("\n") + 1,
+                    signature="<project> (parse error)",
+                    body=source[:500],
+                    is_public=True,
+                )
+            )
             return ParseResult(
                 symbols=symbols,
                 call_edges=[],
@@ -78,17 +79,17 @@ class CsprojParser(BaseParser):
         # ------------------------------------------------------------------
         # Collect project-level metadata
         # ------------------------------------------------------------------
-        sdk = root.get('Sdk', '')
+        sdk = root.get("Sdk", "")
         target_fw = (
-            self._find_text(root, 'TargetFramework')
-            or self._find_text(root, 'TargetFrameworks')
-            or ''
+            self._find_text(root, "TargetFramework")
+            or self._find_text(root, "TargetFrameworks")
+            or ""
         )
-        output_type = self._find_text(root, 'OutputType') or ''
-        root_ns = self._find_text(root, 'RootNamespace') or ''
-        asm_name = self._find_text(root, 'AssemblyName') or ''
-        nullable = self._find_text(root, 'Nullable') or ''
-        lang_ver = self._find_text(root, 'LangVersion') or ''
+        output_type = self._find_text(root, "OutputType") or ""
+        root_ns = self._find_text(root, "RootNamespace") or ""
+        asm_name = self._find_text(root, "AssemblyName") or ""
+        nullable = self._find_text(root, "Nullable") or ""
+        lang_ver = self._find_text(root, "LangVersion") or ""
 
         body_parts: list[str] = []
         if sdk:
@@ -113,64 +114,68 @@ class CsprojParser(BaseParser):
             sig_parts.append(output_type)
         signature = "  ".join(sig_parts)
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name="<project>",
-            qualified_name="<project>",
-            kind=SymbolKind.MODULE,
-            line_start=1,
-            line_end=source.count('\n') + 1,
-            signature=signature,
-            body="\n".join(body_parts) if body_parts else signature,
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name="<project>",
+                qualified_name="<project>",
+                kind=SymbolKind.MODULE,
+                line_start=1,
+                line_end=source.count("\n") + 1,
+                signature=signature,
+                body="\n".join(body_parts) if body_parts else signature,
+                is_public=True,
+            )
+        )
         project_local_idx = 0
 
         # ------------------------------------------------------------------
         # PackageReference → CONSTANT symbol + ImportEdge
         # ------------------------------------------------------------------
-        for pkg in root.iter('PackageReference'):
-            name = pkg.get('Include') or pkg.get('Update') or ''
+        for pkg in root.iter("PackageReference"):
+            name = pkg.get("Include") or pkg.get("Update") or ""
             if not name:
                 continue
-            version = (
-                pkg.get('Version')
-                or self._find_text(pkg, 'Version')
-                or ''
-            )
+            version = pkg.get("Version") or self._find_text(pkg, "Version") or ""
             line_no = self._approx_line(source, name)
             body = f"{name} {version}".strip()
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=name,
-                kind=SymbolKind.CONSTANT,
-                line_start=line_no,
-                line_end=line_no,
-                signature=f'<PackageReference Include="{name}" Version="{version}" />',
-                body=body,
-                parent_id=project_local_idx,
-                is_public=True,
-            ))
-            import_edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=name,
-                imported_names=[version] if version else [],
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=name,
+                    kind=SymbolKind.CONSTANT,
+                    line_start=line_no,
+                    line_end=line_no,
+                    signature=f'<PackageReference Include="{name}" Version="{version}" />',
+                    body=body,
+                    parent_id=project_local_idx,
+                    is_public=True,
+                )
+            )
+            import_edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=name,
+                    imported_names=[version] if version else [],
+                )
+            )
 
         # ------------------------------------------------------------------
         # ProjectReference → ImportEdge only
         # ------------------------------------------------------------------
-        for proj_ref in root.iter('ProjectReference'):
-            path = proj_ref.get('Include') or ''
+        for proj_ref in root.iter("ProjectReference"):
+            path = proj_ref.get("Include") or ""
             if not path:
                 continue
-            normalised = path.replace('\\', '/').lstrip('./')
-            import_edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=normalised,
-                imported_names=[],
-            ))
+            normalised = path.replace("\\", "/").lstrip("./")
+            import_edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=normalised,
+                    imported_names=[],
+                )
+            )
 
         return ParseResult(
             symbols=symbols,
@@ -183,9 +188,9 @@ class CsprojParser(BaseParser):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _find_text(self, root: _stdlib_ET.Element, tag: str) -> Optional[str]:
+    def _find_text(self, root: _stdlib_ET.Element, tag: str) -> str | None:
         """Find first element with given tag anywhere in the tree, return its text."""
-        el = root.find(f'.//{tag}')
+        el = root.find(f".//{tag}")
         if el is not None and el.text:
             return el.text.strip()
         return None
@@ -195,4 +200,4 @@ class CsprojParser(BaseParser):
         idx = source.find(name)
         if idx == -1:
             return 1
-        return source[:idx].count('\n') + 1
+        return source[:idx].count("\n") + 1

@@ -24,7 +24,6 @@ Tree-sitter note:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 import tree_sitter_languages
 from tree_sitter import Node, Parser
@@ -33,8 +32,8 @@ from trelix.core.models import ImportEdge, Symbol, SymbolKind
 from trelix.indexing.parser.base import BaseParser, ParseResult
 
 # Cap to prevent massive generated CSS files from flooding the symbol table
-MAX_SELECTORS = 300   # total class/id selector symbols per file
-MAX_CSS_VARS = 100    # total CSS custom property symbols per file
+MAX_SELECTORS = 300  # total class/id selector symbols per file
+MAX_CSS_VARS = 100  # total CSS custom property symbols per file
 
 
 class CssParser(BaseParser):
@@ -60,12 +59,17 @@ class CssParser(BaseParser):
 
         symbols: list[Symbol] = []
         import_edges: list[ImportEdge] = []
-        seen_selectors: set[str] = set()   # deduplicate class/id symbols per file
-        seen_vars: set[str] = set()        # deduplicate CSS custom properties
+        seen_selectors: set[str] = set()  # deduplicate class/id symbols per file
+        seen_vars: set[str] = set()  # deduplicate CSS custom properties
 
         self._walk_stylesheet(
-            root, source_bytes, file_id, symbols, import_edges,
-            seen_selectors, seen_vars,
+            root,
+            source_bytes,
+            file_id,
+            symbols,
+            import_edges,
+            seen_selectors,
+            seen_vars,
         )
 
         return ParseResult(
@@ -94,14 +98,24 @@ class CssParser(BaseParser):
 
             if ntype == "rule_set":
                 self._handle_rule_set(
-                    child, src, file_id, symbols, import_edges,
-                    seen_selectors, seen_vars,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    import_edges,
+                    seen_selectors,
+                    seen_vars,
                 )
 
             elif ntype == "media_statement":
                 self._handle_media(
-                    child, src, file_id, symbols, import_edges,
-                    seen_selectors, seen_vars,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    import_edges,
+                    seen_selectors,
+                    seen_vars,
                 )
 
             elif ntype == "keyframes_statement":
@@ -118,8 +132,13 @@ class CssParser(BaseParser):
                 block_node = self._get_child_by_type(child, "block")
                 if block_node:
                     self._walk_stylesheet(
-                        block_node, src, file_id, symbols, import_edges,
-                        seen_selectors, seen_vars,
+                        block_node,
+                        src,
+                        file_id,
+                        symbols,
+                        import_edges,
+                        seen_selectors,
+                        seen_vars,
                     )
 
             elif ntype == "scope_statement":
@@ -127,15 +146,25 @@ class CssParser(BaseParser):
                 block_node = self._get_child_by_type(child, "block")
                 if block_node:
                     self._walk_stylesheet(
-                        block_node, src, file_id, symbols, import_edges,
-                        seen_selectors, seen_vars,
+                        block_node,
+                        src,
+                        file_id,
+                        symbols,
+                        import_edges,
+                        seen_selectors,
+                        seen_vars,
                     )
 
             elif ntype == "at_rule":
                 # Generic @-rule: @font-face, @layer, @container, etc.
                 self._handle_at_rule(
-                    child, src, file_id, symbols, import_edges,
-                    seen_selectors, seen_vars,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    import_edges,
+                    seen_selectors,
+                    seen_vars,
                 )
 
     # ------------------------------------------------------------------
@@ -171,18 +200,20 @@ class CssParser(BaseParser):
             seen_selectors.add(sel_name)
 
             docstring = self._get_preceding_comment(node, src)
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=sel_name,
-                qualified_name=sel_name,
-                kind=SymbolKind.VARIABLE,
-                line_start=node.start_point[0] + 1,
-                line_end=node.end_point[0] + 1,
-                signature=f"{sel_name} {{ ... }}",
-                body=body_text[:800],
-                docstring=docstring,
-                is_public=True,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=sel_name,
+                    qualified_name=sel_name,
+                    kind=SymbolKind.VARIABLE,
+                    line_start=node.start_point[0] + 1,
+                    line_end=node.end_point[0] + 1,
+                    signature=f"{sel_name} {{ ... }}",
+                    body=body_text[:800],
+                    docstring=docstring,
+                    is_public=True,
+                )
+            )
 
         # Extract CSS custom properties + nested rules from the block
         if block_node:
@@ -191,8 +222,13 @@ class CssParser(BaseParser):
             for nested in block_node.children:
                 if nested.type == "rule_set":
                     self._handle_rule_set(
-                        nested, src, file_id, symbols, import_edges,
-                        seen_selectors, seen_vars,
+                        nested,
+                        src,
+                        file_id,
+                        symbols,
+                        import_edges,
+                        seen_selectors,
+                        seen_vars,
                     )
 
     def _collect_selectors(
@@ -245,23 +281,25 @@ class CssParser(BaseParser):
 
             # Get the value — everything after the property_name and ":"
             value = self._get_declaration_value(child, src, prop)
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=prop,
-                qualified_name=prop,
-                kind=SymbolKind.CONSTANT,
-                line_start=child.start_point[0] + 1,
-                line_end=child.end_point[0] + 1,
-                signature=f"{prop}: {value}",
-                body=self._txt(child, src),
-                is_public=True,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=prop,
+                    qualified_name=prop,
+                    kind=SymbolKind.CONSTANT,
+                    line_start=child.start_point[0] + 1,
+                    line_end=child.end_point[0] + 1,
+                    signature=f"{prop}: {value}",
+                    body=self._txt(child, src),
+                    is_public=True,
+                )
+            )
 
     def _get_declaration_value(self, decl_node: Node, src: bytes, prop: str) -> str:
         """Extract the value portion of a declaration node."""
         full = self._txt(decl_node, src)
         # Strip the property name and colon: "--color-primary: #fff" → "#fff"
-        after_colon = full[len(prop):].lstrip().lstrip(":").strip().rstrip(";").strip()
+        after_colon = full[len(prop) :].lstrip().lstrip(":").strip().rstrip(";").strip()
         return after_colon[:120] if after_colon else ""
 
     # ------------------------------------------------------------------
@@ -288,24 +326,31 @@ class CssParser(BaseParser):
         query_str = re.sub(r"\s+", " ", query_str)[:120]
 
         name = f"@media {query_str}"
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.SECTION,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"@media {query_str} {{ ... }}",
-            body=full_text[:800],
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.SECTION,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"@media {query_str} {{ ... }}",
+                body=full_text[:800],
+                is_public=True,
+            )
+        )
 
         # Also recurse into rule_sets inside the media block
         block_node = self._get_child_by_type(node, "block")
         if block_node:
             self._walk_stylesheet(
-                block_node, src, file_id, symbols, import_edges,
-                seen_selectors, seen_vars,
+                block_node,
+                src,
+                file_id,
+                symbols,
+                import_edges,
+                seen_selectors,
+                seen_vars,
             )
 
     # ------------------------------------------------------------------
@@ -323,26 +368,26 @@ class CssParser(BaseParser):
         if not name:
             return
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.FUNCTION,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"@keyframes {name}",
-            body=self._txt(node, src)[:800],
-            docstring=self._get_preceding_comment(node, src),
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.FUNCTION,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"@keyframes {name}",
+                body=self._txt(node, src)[:800],
+                docstring=self._get_preceding_comment(node, src),
+                is_public=True,
+            )
+        )
 
     # ------------------------------------------------------------------
     # @import / @use / @forward (SCSS)
     # ------------------------------------------------------------------
 
-    def _handle_import(
-        self, node: Node, src: bytes, file_id: int
-    ) -> Optional[ImportEdge]:
+    def _handle_import(self, node: Node, src: bytes, file_id: int) -> ImportEdge | None:
         """Handle: @import "file.css" / @import url("file") / @use "module" (SCSS)"""
         full = self._txt(node, src)
         # Extract path from quoted strings or url()
@@ -395,21 +440,24 @@ class CssParser(BaseParser):
                         prop = self._get_child_by_type(child, "property_name")
                         if prop and self._txt(prop, src) == "font-family":
                             family = re.sub(
-                                r'["\';]', "",
-                                self._get_declaration_value(child, src, "font-family")
+                                r'["\';]',
+                                "",
+                                self._get_declaration_value(child, src, "font-family"),
                             ).strip()
                             break
             name = f"@font-face {family}".strip()
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=name,
-                kind=SymbolKind.SECTION,
-                line_start=node.start_point[0] + 1,
-                line_end=node.end_point[0] + 1,
-                signature=f"@font-face {{ font-family: {family} }}",
-                body=self._txt(node, src)[:500],
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=name,
+                    kind=SymbolKind.SECTION,
+                    line_start=node.start_point[0] + 1,
+                    line_end=node.end_point[0] + 1,
+                    signature=f"@font-face {{ font-family: {family} }}",
+                    body=self._txt(node, src)[:500],
+                )
+            )
             return
 
         # @layer and @container — recurse into their blocks
@@ -417,15 +465,20 @@ class CssParser(BaseParser):
             block_node = self._get_child_by_type(node, "block")
             if block_node:
                 self._walk_stylesheet(
-                    block_node, src, file_id, symbols, import_edges,
-                    seen_selectors, seen_vars,
+                    block_node,
+                    src,
+                    file_id,
+                    symbols,
+                    import_edges,
+                    seen_selectors,
+                    seen_vars,
                 )
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    def _get_preceding_comment(self, node: Node, src: bytes) -> Optional[str]:
+    def _get_preceding_comment(self, node: Node, src: bytes) -> str | None:
         """Collect CSS block comment immediately before this node."""
         prev = node.prev_named_sibling
         if prev is not None and prev.type == "comment":
@@ -437,9 +490,9 @@ class CssParser(BaseParser):
     @staticmethod
     def _clean_comment(raw: str) -> str:
         """Strip /* ... */ delimiters and leading * from CSS comments."""
-        raw = re.sub(r'^/\*+\s*', '', raw.strip())
-        raw = re.sub(r'\s*\*+/$', '', raw)
-        raw = re.sub(r'^\s*\*\s?', '', raw, flags=re.MULTILINE)
+        raw = re.sub(r"^/\*+\s*", "", raw.strip())
+        raw = re.sub(r"\s*\*+/$", "", raw)
+        raw = re.sub(r"^\s*\*\s?", "", raw, flags=re.MULTILINE)
         return raw.strip()
 
     def _count_errors(self, node: Node) -> int:
@@ -449,9 +502,9 @@ class CssParser(BaseParser):
         return count
 
     def _txt(self, node: Node, src: bytes) -> str:
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
+    def _get_child_by_type(self, node: Node, type_name: str) -> Node | None:
         for child in node.children:
             if child.type == type_name:
                 return child

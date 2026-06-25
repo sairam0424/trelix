@@ -67,6 +67,15 @@ local = [
 rerank = [
     "cohere>=5.5.0",                  # Cohere reranker (best quality)
 ]
+voyage = [
+    "voyageai>=0.2.0",               # VoyageEmbedder (voyage-code-3, 56.26 CoIR)
+]
+qdrant = [
+    "qdrant-client>=1.9.0",           # Qdrant HNSW vector backend (optional)
+]
+watch = [
+    "watchdog>=4.0.0",               # Filesystem event monitoring for `trelix watch`
+]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
@@ -82,7 +91,7 @@ binary = [
     "sentence-transformers>=3.0.0",   # local embedder bundled into the binary
 ]
 all = [
-    "trelix[local,rerank]",
+    "trelix[local,rerank,voyage]",
 ]
 
 [project.scripts]
@@ -115,7 +124,7 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--tb=short"
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 
 [tool.coverage.run]
 source = ["src/trelix"]

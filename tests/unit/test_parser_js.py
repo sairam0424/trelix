@@ -6,15 +6,13 @@ arrow functions, module.exports, call graph extraction.
 
 from __future__ import annotations
 
-import pytest
-
-from trelix.indexing.parser.extractors.javascript import JavaScriptParser
 from trelix.core.models import SymbolKind
-
+from trelix.indexing.parser.extractors.javascript import JavaScriptParser
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_parser() -> JavaScriptParser:
     return JavaScriptParser()
@@ -36,6 +34,7 @@ def import_sources(result) -> list[str]:
 # language_name property
 # ---------------------------------------------------------------------------
 
+
 class TestLanguageName:
     def test_javascript_language_name(self):
         assert make_parser().language_name == "javascript"
@@ -44,6 +43,7 @@ class TestLanguageName:
 # ---------------------------------------------------------------------------
 # ES6 import extraction
 # ---------------------------------------------------------------------------
+
 
 class TestES6ImportExtraction:
     JS_IMPORTS = """\
@@ -61,9 +61,7 @@ import * as path from 'path';
     def test_named_import_names(self):
         parser = make_parser()
         result = parser.parse(self.JS_IMPORTS, file_id=1)
-        named = next(
-            (e for e in result.import_edges if "useState" in e.imported_names), None
-        )
+        named = next((e for e in result.import_edges if "useState" in e.imported_names), None)
         assert named is not None
         assert "useEffect" in named.imported_names
 
@@ -82,6 +80,7 @@ import * as path from 'path';
 # ---------------------------------------------------------------------------
 # CommonJS require() extraction
 # ---------------------------------------------------------------------------
+
 
 class TestCommonJSRequire:
     JS_CJS = """\
@@ -115,6 +114,7 @@ const { EventEmitter } = require('events');
 # ---------------------------------------------------------------------------
 # Class extraction
 # ---------------------------------------------------------------------------
+
 
 class TestClassExtraction:
     JS_CLASS = """\
@@ -182,18 +182,23 @@ export class Dog extends Animal {
         parser = make_parser()
         result = parser.parse(self.JS_CLASS, file_id=1)
         animal_idx = next(i for i, s in enumerate(result.symbols) if s.name == "Animal")
-        animal_methods = [s for s in result.symbols
-                          if s.kind == SymbolKind.METHOD and s.parent_id == animal_idx]
+        animal_methods = [
+            s for s in result.symbols if s.kind == SymbolKind.METHOD and s.parent_id == animal_idx
+        ]
         assert any(m.name == "speak" for m in animal_methods)
 
     def test_method_qualified_name(self):
         parser = make_parser()
         result = parser.parse(self.JS_CLASS, file_id=1)
         speak = next(
-            (s for s in result.symbols
-             if s.kind == SymbolKind.METHOD and s.name == "speak"
-             and s.qualified_name == "Animal.speak"),
-            None
+            (
+                s
+                for s in result.symbols
+                if s.kind == SymbolKind.METHOD
+                and s.name == "speak"
+                and s.qualified_name == "Animal.speak"
+            ),
+            None,
         )
         assert speak is not None
 
@@ -214,6 +219,7 @@ export class Dog extends Animal {
 # ---------------------------------------------------------------------------
 # Function extraction
 # ---------------------------------------------------------------------------
+
 
 class TestFunctionExtraction:
     JS_FUNCS = """\
@@ -272,6 +278,7 @@ function* generator() {
 # Arrow function extraction
 # ---------------------------------------------------------------------------
 
+
 class TestArrowFunctionExtraction:
     JS_ARROW = """\
 export const double = (x) => x * 2;
@@ -326,6 +333,7 @@ export const DEFAULT_TIMEOUT = 5000;
 # module.exports extraction
 # ---------------------------------------------------------------------------
 
+
 class TestModuleExports:
     JS_CJS_EXPORTS = """\
 const value = 42;
@@ -355,6 +363,7 @@ module.exports = { value, greet };
 # Re-export extraction
 # ---------------------------------------------------------------------------
 
+
 class TestReExportExtraction:
     JS_REEXPORT = """\
 export { foo, bar } from './utils';
@@ -373,6 +382,7 @@ export { foo, bar } from './utils';
 # ---------------------------------------------------------------------------
 # Call edge extraction
 # ---------------------------------------------------------------------------
+
 
 class TestCallEdgeExtraction:
     JS_CALLS = """\
@@ -416,6 +426,7 @@ function compute(a, b) { return a + b; }
 # Class field extraction
 # ---------------------------------------------------------------------------
 
+
 class TestClassFieldExtraction:
     JS_FIELDS = """\
 class Component {
@@ -436,14 +447,16 @@ class Component {
         parser = make_parser()
         result = parser.parse(self.JS_FIELDS, file_id=1)
         comp_idx = next(i for i, s in enumerate(result.symbols) if s.name == "Component")
-        child_vars = [s for s in result.symbols
-                      if s.kind == SymbolKind.VARIABLE and s.parent_id == comp_idx]
+        child_vars = [
+            s for s in result.symbols if s.kind == SymbolKind.VARIABLE and s.parent_id == comp_idx
+        ]
         assert len(child_vars) > 0
 
 
 # ---------------------------------------------------------------------------
 # Parse errors
 # ---------------------------------------------------------------------------
+
 
 class TestParseErrors:
     def test_clean_source_has_zero_errors(self):
@@ -461,6 +474,7 @@ class TestParseErrors:
 # File ID propagation
 # ---------------------------------------------------------------------------
 
+
 class TestFileIdPropagation:
     def test_all_symbols_have_correct_file_id(self):
         parser = make_parser()
@@ -477,6 +491,7 @@ const fn = () => {};
 # ---------------------------------------------------------------------------
 # Module docstring
 # ---------------------------------------------------------------------------
+
 
 class TestModuleDocstring:
     def test_leading_jsdoc_extracted_as_module_symbol(self):

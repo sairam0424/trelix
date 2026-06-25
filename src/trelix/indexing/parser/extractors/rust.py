@@ -24,7 +24,6 @@ Parent linkage:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 import tree_sitter_languages
 from tree_sitter import Node, Parser
@@ -70,7 +69,9 @@ class RustParser(BaseParser):
         # name → local_idx map for linking impl methods to their struct/enum/trait
         type_idx: dict[str, int] = {}
 
-        self._walk_top_level(root, source_bytes, file_id, symbols, import_edges, type_edges, type_idx, raw_calls)
+        self._walk_top_level(
+            root, source_bytes, file_id, symbols, import_edges, type_edges, type_idx, raw_calls
+        )
 
         call_edges = [
             CallEdge(caller_id=caller, callee_name=callee, line=line)
@@ -89,9 +90,7 @@ class RustParser(BaseParser):
     # Module symbol
     # ------------------------------------------------------------------
 
-    def _get_module_symbol(
-        self, root: Node, src: bytes, file_id: int
-    ) -> Optional[Symbol]:
+    def _get_module_symbol(self, root: Node, src: bytes, file_id: int) -> Symbol | None:
         """Extract //! inner doc comments at the top of the file as a MODULE symbol."""
         inner_doc_lines: list[str] = []
         for child in root.children:
@@ -178,7 +177,9 @@ class RustParser(BaseParser):
                 # Recurse into inline modules
                 body = self._get_child_by_type(child, "declaration_list")
                 if body:
-                    self._walk_top_level(body, src, file_id, symbols, import_edges, type_edges, type_idx, raw_calls)
+                    self._walk_top_level(
+                        body, src, file_id, symbols, import_edges, type_edges, type_idx, raw_calls
+                    )
 
     # ------------------------------------------------------------------
     # Struct
@@ -201,23 +202,27 @@ class RustParser(BaseParser):
         tp_str = self._txt(tp_node, src) if tp_node else ""
 
         attrs = self._get_rust_attributes(node, src)
-        is_pub = node.child_by_field_name("visibility") is not None or \
-                 self._get_child_by_type(node, "visibility_modifier") is not None
+        is_pub = (
+            node.child_by_field_name("visibility") is not None
+            or self._get_child_by_type(node, "visibility_modifier") is not None
+        )
 
         local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.CLASS,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"struct {name}{tp_str}",
-            body=self._txt(node, src),
-            docstring=self._get_preceding_comment(node, src),
-            decorators=attrs,
-            is_public=is_pub,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.CLASS,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"struct {name}{tp_str}",
+                body=self._txt(node, src),
+                docstring=self._get_preceding_comment(node, src),
+                decorators=attrs,
+                is_public=is_pub,
+            )
+        )
         type_idx[name] = local_idx
 
         # Extract pub struct fields from named struct bodies
@@ -248,18 +253,20 @@ class RustParser(BaseParser):
                 continue
             name = self._txt(name_node, src)
             type_str = self._txt(type_node, src) if type_node else ""
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=name,
-                kind=SymbolKind.VARIABLE,
-                line_start=child.start_point[0] + 1,
-                line_end=child.end_point[0] + 1,
-                signature=f"{name}: {type_str}",
-                body=self._txt(child, src),
-                parent_id=parent_local_idx,
-                is_public=True,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=name,
+                    kind=SymbolKind.VARIABLE,
+                    line_start=child.start_point[0] + 1,
+                    line_end=child.end_point[0] + 1,
+                    signature=f"{name}: {type_str}",
+                    body=self._txt(child, src),
+                    parent_id=parent_local_idx,
+                    is_public=True,
+                )
+            )
             field_count += 1
 
     # ------------------------------------------------------------------
@@ -283,19 +290,21 @@ class RustParser(BaseParser):
         tp_str = self._txt(tp_node, src) if tp_node else ""
         is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
         local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.CLASS,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"union {name}{tp_str}",
-            body=self._txt(node, src),
-            docstring=self._get_preceding_comment(node, src),
-            decorators=self._get_rust_attributes(node, src),
-            is_public=is_pub,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.CLASS,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"union {name}{tp_str}",
+                body=self._txt(node, src),
+                docstring=self._get_preceding_comment(node, src),
+                decorators=self._get_rust_attributes(node, src),
+                is_public=is_pub,
+            )
+        )
         type_idx[name] = local_idx
         body_node = self._get_child_by_type(node, "field_declaration_list")
         if body_node:
@@ -321,19 +330,21 @@ class RustParser(BaseParser):
         if len(body) > 800:
             body = body[:800] + "..."
         is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.FUNCTION,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"macro_rules! {name}",
-            body=body,
-            docstring=self._get_preceding_comment(node, src),
-            decorators=self._get_rust_attributes(node, src),
-            is_public=is_pub,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.FUNCTION,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"macro_rules! {name}",
+                body=body,
+                docstring=self._get_preceding_comment(node, src),
+                decorators=self._get_rust_attributes(node, src),
+                is_public=is_pub,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Enum
@@ -359,19 +370,21 @@ class RustParser(BaseParser):
         is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
 
         local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.ENUM,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"enum {name}{tp_str}",
-            body=self._txt(node, src),
-            docstring=self._get_preceding_comment(node, src),
-            decorators=attrs,
-            is_public=is_pub,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.ENUM,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"enum {name}{tp_str}",
+                body=self._txt(node, src),
+                docstring=self._get_preceding_comment(node, src),
+                decorators=attrs,
+                is_public=is_pub,
+            )
+        )
         type_idx[name] = local_idx
 
         # Extract enum variants
@@ -397,18 +410,20 @@ class RustParser(BaseParser):
             if not name_node:
                 continue
             name = self._txt(name_node, src)
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=f"{enum_name}::{name}",
-                kind=SymbolKind.CONSTANT,
-                line_start=child.start_point[0] + 1,
-                line_end=child.end_point[0] + 1,
-                signature=f"{enum_name}::{name}",
-                body=self._txt(child, src),
-                parent_id=parent_local_idx,
-                is_public=True,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=f"{enum_name}::{name}",
+                    kind=SymbolKind.CONSTANT,
+                    line_start=child.start_point[0] + 1,
+                    line_end=child.end_point[0] + 1,
+                    signature=f"{enum_name}::{name}",
+                    body=self._txt(child, src),
+                    parent_id=parent_local_idx,
+                    is_public=True,
+                )
+            )
             variant_count += 1
 
     # ------------------------------------------------------------------
@@ -437,19 +452,21 @@ class RustParser(BaseParser):
         is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
 
         local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.INTERFACE,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"trait {name}{tp_str}",
-            body=self._txt(node, src),
-            docstring=self._get_preceding_comment(node, src),
-            decorators=attrs,
-            is_public=is_pub,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.INTERFACE,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"trait {name}{tp_str}",
+                body=self._txt(node, src),
+                docstring=self._get_preceding_comment(node, src),
+                decorators=attrs,
+                is_public=is_pub,
+            )
+        )
         type_idx[name] = local_idx
 
         # Supertraits: trait Foo: Clone + Debug → TypeEdge(extends)
@@ -457,19 +474,23 @@ class RustParser(BaseParser):
         if bounds_node:
             for tc in bounds_node.children:
                 if tc.type == "type_identifier":
-                    type_edges.append(TypeEdge(
-                        from_symbol_id=local_idx,
-                        to_type_name=self._txt(tc, src),
-                        edge_kind="extends",
-                    ))
+                    type_edges.append(
+                        TypeEdge(
+                            from_symbol_id=local_idx,
+                            to_type_name=self._txt(tc, src),
+                            edge_kind="extends",
+                        )
+                    )
                 elif tc.type == "generic_type":
                     ti = self._get_child_by_type(tc, "type_identifier")
                     if ti:
-                        type_edges.append(TypeEdge(
-                            from_symbol_id=local_idx,
-                            to_type_name=self._txt(ti, src),
-                            edge_kind="extends",
-                        ))
+                        type_edges.append(
+                            TypeEdge(
+                                from_symbol_id=local_idx,
+                                to_type_name=self._txt(ti, src),
+                                edge_kind="extends",
+                            )
+                        )
 
         body = self._get_child_by_type(node, "declaration_list")
         if body:
@@ -478,22 +499,25 @@ class RustParser(BaseParser):
                     self._handle_trait_fn(child, src, file_id, symbols, local_idx, name, raw_calls)
                 elif child.type == "associated_type":
                     # type Output; inside trait body
-                    aname_node = child.child_by_field_name("name") or \
-                                 self._get_child_by_type(child, "type_identifier")
+                    aname_node = child.child_by_field_name("name") or self._get_child_by_type(
+                        child, "type_identifier"
+                    )
                     if aname_node:
                         aname = self._txt(aname_node, src)
-                        symbols.append(Symbol(
-                            file_id=file_id,
-                            name=aname,
-                            qualified_name=f"{name}::{aname}",
-                            kind=SymbolKind.INTERFACE,
-                            line_start=child.start_point[0] + 1,
-                            line_end=child.end_point[0] + 1,
-                            signature=self._txt(child, src).rstrip(";"),
-                            body=self._txt(child, src),
-                            parent_id=local_idx,
-                            is_public=True,
-                        ))
+                        symbols.append(
+                            Symbol(
+                                file_id=file_id,
+                                name=aname,
+                                qualified_name=f"{name}::{aname}",
+                                kind=SymbolKind.INTERFACE,
+                                line_start=child.start_point[0] + 1,
+                                line_end=child.end_point[0] + 1,
+                                signature=self._txt(child, src).rstrip(";"),
+                                body=self._txt(child, src),
+                                parent_id=local_idx,
+                                is_public=True,
+                            )
+                        )
 
     def _handle_trait_fn(
         self,
@@ -514,20 +538,22 @@ class RustParser(BaseParser):
         is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
 
         func_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=f"{trait_name}::{name}",
-            kind=SymbolKind.METHOD,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=self._fn_signature(node, src, trait_name),
-            body=self._txt(node, src),
-            parent_id=trait_local_idx,
-            docstring=self._get_preceding_comment(node, src),
-            decorators=attrs,
-            is_public=is_pub,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=f"{trait_name}::{name}",
+                kind=SymbolKind.METHOD,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=self._fn_signature(node, src, trait_name),
+                body=self._txt(node, src),
+                parent_id=trait_local_idx,
+                docstring=self._get_preceding_comment(node, src),
+                decorators=attrs,
+                is_public=is_pub,
+            )
+        )
 
         body_node = node.child_by_field_name("body")
         if body_node:
@@ -557,18 +583,20 @@ class RustParser(BaseParser):
 
         is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.INTERFACE,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"type {name}{tp_str} = {type_str}",
-            body=self._txt(node, src),
-            docstring=self._get_preceding_comment(node, src),
-            is_public=is_pub,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.INTERFACE,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"type {name}{tp_str} = {type_str}",
+                body=self._txt(node, src),
+                docstring=self._get_preceding_comment(node, src),
+                is_public=is_pub,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Impl block (methods)
@@ -608,11 +636,13 @@ class RustParser(BaseParser):
 
         # Record trait_impl type edge
         if trait_name and parent_local_idx is not None:
-            type_edges.append(TypeEdge(
-                from_symbol_id=parent_local_idx,
-                to_type_name=trait_name,
-                edge_kind="trait_impl",
-            ))
+            type_edges.append(
+                TypeEdge(
+                    from_symbol_id=parent_local_idx,
+                    to_type_name=trait_name,
+                    edge_kind="trait_impl",
+                )
+            )
 
         body = self._get_child_by_type(node, "declaration_list")
         if not body:
@@ -620,9 +650,13 @@ class RustParser(BaseParser):
 
         for child in body.children:
             if child.type == "function_item":
-                self._handle_impl_fn(child, src, file_id, symbols, parent_local_idx, type_name, raw_calls)
+                self._handle_impl_fn(
+                    child, src, file_id, symbols, parent_local_idx, type_name, raw_calls
+                )
             elif child.type == "const_item":
-                self._handle_const_item(child, src, file_id, symbols, parent_local_idx=parent_local_idx)
+                self._handle_const_item(
+                    child, src, file_id, symbols, parent_local_idx=parent_local_idx
+                )
             elif child.type == "type_item":
                 # type Alias = ... inside impl block
                 self._handle_type_alias(child, src, file_id, symbols)
@@ -645,7 +679,7 @@ class RustParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        parent_local_idx: Optional[int],
+        parent_local_idx: int | None,
         type_name: str,
         raw_calls: list[tuple[int, str, int]],
     ) -> None:
@@ -661,20 +695,22 @@ class RustParser(BaseParser):
         is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
 
         func_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=f"{type_name}::{name}",
-            kind=kind,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=self._fn_signature(node, src, type_name),
-            body=self._txt(node, src),
-            parent_id=parent_local_idx,
-            docstring=self._get_preceding_comment(node, src),
-            decorators=attrs,
-            is_public=is_pub,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=f"{type_name}::{name}",
+                kind=kind,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=self._fn_signature(node, src, type_name),
+                body=self._txt(node, src),
+                parent_id=parent_local_idx,
+                docstring=self._get_preceding_comment(node, src),
+                decorators=attrs,
+                is_public=is_pub,
+            )
+        )
 
         body_node = node.child_by_field_name("body")
         if body_node:
@@ -711,19 +747,21 @@ class RustParser(BaseParser):
         is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
 
         func_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.FUNCTION,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=self._fn_signature(node, src, None),
-            body=self._txt(node, src),
-            docstring=self._get_preceding_comment(node, src),
-            decorators=attrs,
-            is_public=is_pub,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.FUNCTION,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=self._fn_signature(node, src, None),
+                body=self._txt(node, src),
+                docstring=self._get_preceding_comment(node, src),
+                decorators=attrs,
+                is_public=is_pub,
+            )
+        )
 
         body_node = node.child_by_field_name("body")
         if body_node:
@@ -752,40 +790,49 @@ class RustParser(BaseParser):
                 func_node = child.child_by_field_name("function")
                 if func_node:
                     if func_node.type == "identifier":
-                        raw_calls.append((
-                            caller_local_idx,
-                            self._txt(func_node, src),
-                            child.start_point[0] + 1,
-                        ))
+                        raw_calls.append(
+                            (
+                                caller_local_idx,
+                                self._txt(func_node, src),
+                                child.start_point[0] + 1,
+                            )
+                        )
                     elif func_node.type == "scoped_identifier":
                         # std::mem::swap → last segment
-                        name_node = func_node.child_by_field_name("name") or \
-                                    self._get_child_by_type(func_node, "identifier")
+                        name_node = func_node.child_by_field_name(
+                            "name"
+                        ) or self._get_child_by_type(func_node, "identifier")
                         if name_node:
-                            raw_calls.append((
-                                caller_local_idx,
-                                self._txt(name_node, src),
-                                child.start_point[0] + 1,
-                            ))
+                            raw_calls.append(
+                                (
+                                    caller_local_idx,
+                                    self._txt(name_node, src),
+                                    child.start_point[0] + 1,
+                                )
+                            )
                     elif func_node.type == "field_expression":
                         # items.iter() — method name is in "field" (not "name")
                         field_node = func_node.child_by_field_name("field")
                         if field_node:
-                            raw_calls.append((
-                                caller_local_idx,
-                                self._txt(field_node, src),
-                                child.start_point[0] + 1,
-                            ))
+                            raw_calls.append(
+                                (
+                                    caller_local_idx,
+                                    self._txt(field_node, src),
+                                    child.start_point[0] + 1,
+                                )
+                            )
 
             elif child.type == "method_call_expression":
                 # foo.bar(args) — "method" field is the method name identifier
                 method_node = child.child_by_field_name("method")
                 if method_node:
-                    raw_calls.append((
-                        caller_local_idx,
-                        self._txt(method_node, src),
-                        child.start_point[0] + 1,
-                    ))
+                    raw_calls.append(
+                        (
+                            caller_local_idx,
+                            self._txt(method_node, src),
+                            child.start_point[0] + 1,
+                        )
+                    )
 
             self._walk_body(child, caller_local_idx, raw_calls, src)
 
@@ -799,7 +846,7 @@ class RustParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        parent_local_idx: Optional[int] = None,
+        parent_local_idx: int | None = None,
     ) -> None:
         """Handle: const MAX_SIZE: usize = 100;  pub const VERSION: &str = "1.0";"""
         name_node = node.child_by_field_name("name") or self._get_child_by_type(node, "identifier")
@@ -810,18 +857,20 @@ class RustParser(BaseParser):
         if len(body) > 500:
             body = body[:500] + "..."
         is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.CONSTANT,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=body.split("\n")[0][:200],
-            body=body,
-            is_public=is_pub,
-            parent_id=parent_local_idx,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.CONSTANT,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=body.split("\n")[0][:200],
+                body=body,
+                is_public=is_pub,
+                parent_id=parent_local_idx,
+            )
+        )
 
     def _handle_static_item(
         self,
@@ -841,25 +890,25 @@ class RustParser(BaseParser):
         if len(body) > 500:
             body = body[:500] + "..."
         is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.CONSTANT,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=body.split("\n")[0][:200],
-            body=body,
-            is_public=is_pub,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.CONSTANT,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=body.split("\n")[0][:200],
+                body=body,
+                is_public=is_pub,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Import extraction
     # ------------------------------------------------------------------
 
-    def _handle_extern_crate(
-        self, node: Node, src: bytes, file_id: int
-    ) -> Optional[ImportEdge]:
+    def _handle_extern_crate(self, node: Node, src: bytes, file_id: int) -> ImportEdge | None:
         """Handle: extern crate serde;  extern crate serde as s;"""
         # Children: 'extern', 'crate', identifier, (optional 'as' + identifier), ';'
         for child in node.children:
@@ -871,9 +920,7 @@ class RustParser(BaseParser):
                 )
         return None
 
-    def _extract_import(
-        self, node: Node, src: bytes, file_id: int
-    ) -> list[ImportEdge]:
+    def _extract_import(self, node: Node, src: bytes, file_id: int) -> list[ImportEdge]:
         """Handle: use std::collections::HashMap; use crate::foo::{A, B};"""
         edges: list[ImportEdge] = []
         for child in node.children:
@@ -898,30 +945,36 @@ class RustParser(BaseParser):
                     self._flatten_use_tree(child, src, file_id, path_so_far, edges)
         elif node.type == "use_tree":
             full = self._txt(node, src)
-            edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=full,
-                imported_names=[],
-            ))
+            edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=full,
+                    imported_names=[],
+                )
+            )
         else:
             full = self._txt(node, src)
             parts = full.replace("::", ".").split(".")
             name = parts[-1] if parts else full
             module = ".".join(parts[:-1]) if len(parts) > 1 else full
-            edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=module,
-                imported_names=[name],
-            ))
+            edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=module,
+                    imported_names=[name],
+                )
+            )
 
     # ------------------------------------------------------------------
     # Signature builders
     # ------------------------------------------------------------------
 
-    def _fn_signature(self, node: Node, src: bytes, type_name: Optional[str]) -> str:
+    def _fn_signature(self, node: Node, src: bytes, type_name: str | None) -> str:
         """Build: fn Type::name<T>(params) -> ReturnType"""
         name_node = node.child_by_field_name("name") or self._get_child_by_type(node, "identifier")
-        params_node = node.child_by_field_name("parameters") or self._get_child_by_type(node, "parameters")
+        params_node = node.child_by_field_name("parameters") or self._get_child_by_type(
+            node, "parameters"
+        )
         return_type_node = node.child_by_field_name("return_type")
         tp_node = node.child_by_field_name("type_parameters")
 
@@ -953,15 +1006,15 @@ class RustParser(BaseParser):
         return count
 
     def _txt(self, node: Node, src: bytes) -> str:
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
+    def _get_child_by_type(self, node: Node, type_name: str) -> Node | None:
         for child in node.children:
             if child.type == type_name:
                 return child
         return None
 
-    def _get_preceding_comment(self, node: Node, src: bytes) -> Optional[str]:
+    def _get_preceding_comment(self, node: Node, src: bytes) -> str | None:
         """Collect consecutive Rust doc comment lines (///) immediately before this node."""
         lines: list[str] = []
         prev = node.prev_named_sibling
@@ -977,8 +1030,8 @@ class RustParser(BaseParser):
     @staticmethod
     def _clean_comment(raw: str) -> str:
         """Strip comment delimiters: /* */, //, ///, //! prefixes."""
-        raw = re.sub(r'^/\*[*!]?\s*', '', raw.strip())
-        raw = re.sub(r'\s*\*+/$', '', raw)
-        raw = re.sub(r'^\s*\*\s?', '', raw, flags=re.MULTILINE)
-        raw = re.sub(r'^//[/!]?\s?', '', raw, flags=re.MULTILINE)
+        raw = re.sub(r"^/\*[*!]?\s*", "", raw.strip())
+        raw = re.sub(r"\s*\*+/$", "", raw)
+        raw = re.sub(r"^\s*\*\s?", "", raw, flags=re.MULTILINE)
+        raw = re.sub(r"^//[/!]?\s?", "", raw, flags=re.MULTILINE)
         return raw.strip()

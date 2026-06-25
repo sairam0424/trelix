@@ -23,10 +23,10 @@ from trelix.core.models import (
     TypeEdge,
 )
 
-
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+
 
 class TestSymbolKind:
     def test_all_values_are_strings(self) -> None:
@@ -34,8 +34,19 @@ class TestSymbolKind:
             assert isinstance(kind.value, str)
 
     def test_expected_members(self) -> None:
-        expected = {"function", "method", "class", "interface", "struct", "enum",
-                    "constant", "variable", "module", "section", "unknown"}
+        expected = {
+            "function",
+            "method",
+            "class",
+            "interface",
+            "struct",
+            "enum",
+            "constant",
+            "variable",
+            "module",
+            "section",
+            "unknown",
+        }
         assert {k.value for k in SymbolKind} == expected
 
 
@@ -109,6 +120,7 @@ class TestChunk:
 # Config
 # ---------------------------------------------------------------------------
 
+
 class TestWalkerConfig:
     def test_default_languages_include_common(self) -> None:
         cfg = WalkerConfig()
@@ -154,9 +166,7 @@ class TestStoreConfig:
         cfg = StoreConfig()
         assert cfg.db_path == ".trelix/index.db"
 
-    def test_custom_db_path_via_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_custom_db_path_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TRELIX_STORE_DB_PATH", ".trelix/custom.db")
         cfg = StoreConfig()
         assert cfg.db_path == ".trelix/custom.db"

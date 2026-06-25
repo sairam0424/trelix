@@ -25,16 +25,22 @@ See toml_config.py and yaml_config.py for TOML and YAML parsers.
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any
 
 from trelix.core.models import ImportEdge, Symbol, SymbolKind
 from trelix.indexing.parser.base import BaseParser, ParseResult
 
 # Top-level keys whose string values are treated as npm package ImportEdges
-_DEP_KEYS = frozenset({
-    "dependencies", "devDependencies", "peerDependencies",
-    "optionalDependencies", "bundledDependencies", "bundleDependencies",
-})
+_DEP_KEYS = frozenset(
+    {
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+        "bundledDependencies",
+        "bundleDependencies",
+    }
+)
 
 
 class JsonParser(BaseParser):
@@ -68,12 +74,14 @@ class JsonParser(BaseParser):
         try:
             import tree_sitter_languages
             from tree_sitter import Parser as TSParser
+
             lang = tree_sitter_languages.get_language("json")
             parser = TSParser()
             parser.set_language(lang)
         except Exception:
-            return ParseResult(symbols=[], call_edges=[], import_edges=[],
-                               parse_errors=1, type_edges=[])
+            return ParseResult(
+                symbols=[], call_edges=[], import_edges=[], parse_errors=1, type_edges=[]
+            )
 
         src_bytes = source.encode("utf-8", errors="replace")
         tree = parser.parse(src_bytes)
@@ -88,33 +96,43 @@ class JsonParser(BaseParser):
             None,
         )
         if root_value is None:
-            return ParseResult(symbols=symbols, call_edges=[], import_edges=import_edges,
-                               parse_errors=parse_errors, type_edges=[])
+            return ParseResult(
+                symbols=symbols,
+                call_edges=[],
+                import_edges=import_edges,
+                parse_errors=parse_errors,
+                type_edges=[],
+            )
 
         # Build MODULE symbol from top-level key names (object root only)
         if root_value.type == "object":
             top_keys = self._collect_top_keys(root_value, src_bytes)
             if top_keys:
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name="config",
-                    qualified_name="config",
-                    kind=SymbolKind.MODULE,
-                    line_start=root_value.start_point[0] + 1,
-                    line_end=root_value.end_point[0] + 1,
-                    signature="{ " + ", ".join(top_keys[:12]) + " }",
-                    body=self._render_node(root_value, src_bytes),
-                    is_public=True,
-                ))
-            self._walk_object(root_value, "", file_id, symbols, import_edges,
-                              src_bytes, depth=0)
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name="config",
+                        qualified_name="config",
+                        kind=SymbolKind.MODULE,
+                        line_start=root_value.start_point[0] + 1,
+                        line_end=root_value.end_point[0] + 1,
+                        signature="{ " + ", ".join(top_keys[:12]) + " }",
+                        body=self._render_node(root_value, src_bytes),
+                        is_public=True,
+                    )
+                )
+            self._walk_object(root_value, "", file_id, symbols, import_edges, src_bytes, depth=0)
         else:
             # Root is an array (e.g. some Babel/PostCSS configs)
-            self._walk_array_root(root_value, file_id, symbols, import_edges,
-                                  src_bytes)
+            self._walk_array_root(root_value, file_id, symbols, import_edges, src_bytes)
 
-        return ParseResult(symbols=symbols, call_edges=[], import_edges=import_edges,
-                           parse_errors=parse_errors, type_edges=[])
+        return ParseResult(
+            symbols=symbols,
+            call_edges=[],
+            import_edges=import_edges,
+            parse_errors=parse_errors,
+            type_edges=[],
+        )
 
     # ------------------------------------------------------------------
     # Object walker
@@ -147,59 +165,67 @@ class JsonParser(BaseParser):
 
             if val_node.type == "object":
                 body = self._render_node(val_node, src_bytes)
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=key_text,
-                    qualified_name=path,
-                    kind=SymbolKind.SECTION,
-                    line_start=line_start,
-                    line_end=line_end,
-                    signature=f'"{path}": {{...}}',
-                    body=body,
-                    docstring=docstring,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=key_text,
+                        qualified_name=path,
+                        kind=SymbolKind.SECTION,
+                        line_start=line_start,
+                        line_end=line_end,
+                        signature=f'"{path}": {{...}}',
+                        body=body,
+                        docstring=docstring,
+                        is_public=True,
+                    )
+                )
                 if depth < self.MAX_DEPTH:
-                    self._walk_object(val_node, path, file_id, symbols, import_edges,
-                                      src_bytes, depth + 1)
+                    self._walk_object(
+                        val_node, path, file_id, symbols, import_edges, src_bytes, depth + 1
+                    )
 
             elif val_node.type == "array":
                 item_count = sum(1 for c in val_node.children if c.type not in (",", "[", "]"))
                 body = self._render_node(val_node, src_bytes)
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=key_text,
-                    qualified_name=path,
-                    kind=SymbolKind.SECTION,
-                    line_start=line_start,
-                    line_end=line_end,
-                    signature=f'"{path}": [{item_count} items]',
-                    body=body,
-                    docstring=docstring,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=key_text,
+                        qualified_name=path,
+                        kind=SymbolKind.SECTION,
+                        line_start=line_start,
+                        line_end=line_end,
+                        signature=f'"{path}": [{item_count} items]',
+                        body=body,
+                        docstring=docstring,
+                        is_public=True,
+                    )
+                )
                 if depth < self.MAX_DEPTH:
-                    self._walk_array_items(val_node, path, file_id, symbols,
-                                           import_edges, src_bytes, depth + 1)
+                    self._walk_array_items(
+                        val_node, path, file_id, symbols, import_edges, src_bytes, depth + 1
+                    )
 
             else:
                 # Scalar: string, number, true, false, null
-                val_text = src_bytes[val_node.start_byte:val_node.end_byte].decode(
+                val_text = src_bytes[val_node.start_byte : val_node.end_byte].decode(
                     "utf-8", errors="replace"
                 )
                 body = f'"{path}": {val_text}'
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=key_text,
-                    qualified_name=path,
-                    kind=SymbolKind.CONSTANT,
-                    line_start=line_start,
-                    line_end=line_end,
-                    signature=body[:200],
-                    body=body,
-                    docstring=docstring,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=key_text,
+                        qualified_name=path,
+                        kind=SymbolKind.CONSTANT,
+                        line_start=line_start,
+                        line_end=line_end,
+                        signature=body[:200],
+                        body=body,
+                        docstring=docstring,
+                        is_public=True,
+                    )
+                )
 
             # Emit ImportEdges for dependency sections (depth 0 only)
             if depth == 0 and key_text in _DEP_KEYS and val_node.type == "object":
@@ -226,8 +252,7 @@ class JsonParser(BaseParser):
                 # Use "name", "id", or "type" field value as sub-path if present
                 label = self._find_name_field(item, src_bytes) or str(idx)
                 item_path = f"{prefix}[{label}]"
-                self._walk_object(item, item_path, file_id, symbols, import_edges,
-                                  src_bytes, depth)
+                self._walk_object(item, item_path, file_id, symbols, import_edges, src_bytes, depth)
                 idx += 1
 
     def _walk_array_root(
@@ -240,19 +265,20 @@ class JsonParser(BaseParser):
     ) -> None:
         """Handle a JSON file whose root is an array."""
         item_count = sum(1 for c in arr_node.children if c.type not in (",", "[", "]"))
-        symbols.append(Symbol(
-            file_id=file_id,
-            name="config",
-            qualified_name="config",
-            kind=SymbolKind.MODULE,
-            line_start=arr_node.start_point[0] + 1,
-            line_end=arr_node.end_point[0] + 1,
-            signature=f"[{item_count} items]",
-            body=self._render_node(arr_node, src_bytes),
-            is_public=True,
-        ))
-        self._walk_array_items(arr_node, "", file_id, symbols, import_edges,
-                               src_bytes, depth=0)
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name="config",
+                qualified_name="config",
+                kind=SymbolKind.MODULE,
+                line_start=arr_node.start_point[0] + 1,
+                line_end=arr_node.end_point[0] + 1,
+                signature=f"[{item_count} items]",
+                body=self._render_node(arr_node, src_bytes),
+                is_public=True,
+            )
+        )
+        self._walk_array_items(arr_node, "", file_id, symbols, import_edges, src_bytes, depth=0)
 
     # ------------------------------------------------------------------
     # Dependency ImportEdges
@@ -274,11 +300,13 @@ class JsonParser(BaseParser):
                 continue
             pkg_name = self._decode_string(key_node, src_bytes)
             if pkg_name:
-                import_edges.append(ImportEdge(
-                    file_id=file_id,
-                    imported_from=pkg_name,
-                    imported_names=[],
-                ))
+                import_edges.append(
+                    ImportEdge(
+                        file_id=file_id,
+                        imported_from=pkg_name,
+                        imported_names=[],
+                    )
+                )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -286,7 +314,7 @@ class JsonParser(BaseParser):
 
     def _decode_string(self, node: Any, src_bytes: bytes) -> str:
         """Decode a tree-sitter string node, stripping surrounding quotes."""
-        raw = src_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        raw = src_bytes[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
         if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
             return raw[1:-1]
         return raw
@@ -301,7 +329,7 @@ class JsonParser(BaseParser):
                     keys.append(self._decode_string(key_node, src_bytes))
         return keys
 
-    def _find_name_field(self, obj_node: Any, src_bytes: bytes) -> Optional[str]:
+    def _find_name_field(self, obj_node: Any, src_bytes: bytes) -> str | None:
         """Return value of 'name', 'id', or 'type' key if present in object."""
         for child in obj_node.children:
             if child.type != "pair":
@@ -315,13 +343,13 @@ class JsonParser(BaseParser):
                 return self._decode_string(val_node, src_bytes)
         return None
 
-    def _get_preceding_comment(self, node: Any, src_bytes: bytes) -> Optional[str]:
+    def _get_preceding_comment(self, node: Any, src_bytes: bytes) -> str | None:
         """Return JSONC comment immediately before this node, if any."""
         prev = node.prev_named_sibling
         if prev is not None and prev.type == "comment":
             # Only use if comment ends on the line immediately before node starts
             if prev.end_point[0] + 1 >= node.start_point[0]:
-                raw = src_bytes[prev.start_byte:prev.end_byte].decode("utf-8", errors="replace")
+                raw = src_bytes[prev.start_byte : prev.end_byte].decode("utf-8", errors="replace")
                 return self._clean_comment(raw)
         return None
 
@@ -332,14 +360,14 @@ class JsonParser(BaseParser):
         if raw.startswith("//"):
             return raw[2:].strip()
         # Block comment: /* ... */
-        raw = re.sub(r'^/\*+\s*', '', raw)
-        raw = re.sub(r'\s*\*+/$', '', raw)
-        raw = re.sub(r'^\s*\*\s?', '', raw, flags=re.MULTILINE)
+        raw = re.sub(r"^/\*+\s*", "", raw)
+        raw = re.sub(r"\s*\*+/$", "", raw)
+        raw = re.sub(r"^\s*\*\s?", "", raw, flags=re.MULTILINE)
         return raw.strip()
 
     def _render_node(self, node: Any, src_bytes: bytes) -> str:
         """Extract raw source text for a node, capped at MAX_BODY_LEN."""
-        text = src_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        text = src_bytes[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
         if len(text) > self.MAX_BODY_LEN:
             text = text[: self.MAX_BODY_LEN] + "\n  ..."
         return text

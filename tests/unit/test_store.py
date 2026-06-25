@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from trelix.core.models import (
+    CallEdge,
     Chunk,
     ImportEdge,
     IndexedFile,
@@ -22,10 +24,10 @@ from trelix.core.models import (
 from trelix.store.db import Database
 from trelix.store.vector import VectorStore
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def db(tmp_path: Path) -> Database:
@@ -67,15 +69,14 @@ def sample_symbol(db: Database, sample_file: IndexedFile) -> Symbol:
 # Schema creation
 # ---------------------------------------------------------------------------
 
+
 class TestSchemaCreation:
     def test_tables_exist(self, db: Database) -> None:
         """All expected tables should be created on Database init."""
         conn = db._conn
         tables = {
             row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         for expected in ("files", "symbols", "calls", "imports", "chunks"):
             assert expected in tables, f"Table '{expected}' not found"
@@ -108,15 +109,14 @@ class TestSchemaCreation:
 # upsert_file
 # ---------------------------------------------------------------------------
 
+
 class TestUpsertFile:
     def test_insert_returns_id(self, db: Database, sample_file: IndexedFile) -> None:
         file_id = db.upsert_file(sample_file)
         assert isinstance(file_id, int)
         assert file_id > 0
 
-    def test_upsert_same_path_returns_same_id(
-        self, db: Database, sample_file: IndexedFile
-    ) -> None:
+    def test_upsert_same_path_returns_same_id(self, db: Database, sample_file: IndexedFile) -> None:
         id1 = db.upsert_file(sample_file)
         id2 = db.upsert_file(sample_file)
         assert id1 == id2
@@ -148,6 +148,7 @@ class TestUpsertFile:
 # ---------------------------------------------------------------------------
 # insert_symbol
 # ---------------------------------------------------------------------------
+
 
 class TestInsertSymbol:
     def test_insert_returns_id(self, db: Database, sample_symbol: Symbol) -> None:
@@ -198,14 +199,24 @@ class TestInsertSymbol:
         fid2 = db.upsert_file(file2)
 
         sym1 = Symbol(
-            file_id=fid1, name="login", qualified_name="login",
-            kind=SymbolKind.FUNCTION, line_start=1, line_end=5,
-            signature="def login()", body="def login(): pass",
+            file_id=fid1,
+            name="login",
+            qualified_name="login",
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=5,
+            signature="def login()",
+            body="def login(): pass",
         )
         sym2 = Symbol(
-            file_id=fid2, name="logout", qualified_name="logout",
-            kind=SymbolKind.FUNCTION, line_start=1, line_end=5,
-            signature="def logout()", body="def logout(): pass",
+            file_id=fid2,
+            name="logout",
+            qualified_name="logout",
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=5,
+            signature="def logout()",
+            body="def logout(): pass",
         )
         db.insert_symbol(sym1)
         db.insert_symbol(sym2)
@@ -218,6 +229,7 @@ class TestInsertSymbol:
 # delete_file_symbols
 # ---------------------------------------------------------------------------
 
+
 class TestDeleteFileSymbols:
     def test_delete_removes_symbols(self, db: Database, sample_symbol: Symbol) -> None:
         db.insert_symbol(sample_symbol)
@@ -226,7 +238,9 @@ class TestDeleteFileSymbols:
 
     def test_delete_removes_imports(self, db: Database, sample_file: IndexedFile) -> None:
         file_id = db.upsert_file(sample_file)
-        edge = ImportEdge(file_id=file_id, imported_from="django.contrib.auth", imported_names=["authenticate"])
+        edge = ImportEdge(
+            file_id=file_id, imported_from="django.contrib.auth", imported_names=["authenticate"]
+        )
         db.insert_imports([edge])
         db.delete_file_symbols(file_id)
         assert db.get_imports_for_file(file_id) == []
@@ -235,6 +249,7 @@ class TestDeleteFileSymbols:
 # ---------------------------------------------------------------------------
 # FTS5 search (BM25)
 # ---------------------------------------------------------------------------
+
 
 class TestFTS5Search:
     def _insert_symbol(
@@ -261,8 +276,13 @@ class TestFTS5Search:
     def test_bm25_search_finds_match(self, db: Database, sample_file: IndexedFile) -> None:
         file_id = db.upsert_file(sample_file)
         self._insert_symbol(
-            db, file_id, "authenticate_user",
-            body="def authenticate_user(username, password):\n    return check_password(username, password)",
+            db,
+            file_id,
+            "authenticate_user",
+            body=(
+                "def authenticate_user(username, password):\n"
+                "    return check_password(username, password)"
+            ),
             docstring="Authenticate a user by checking their password.",
         )
         results = db.bm25_search("authenticate password")
@@ -271,7 +291,9 @@ class TestFTS5Search:
     def test_bm25_search_returns_symbol_id(self, db: Database, sample_file: IndexedFile) -> None:
         file_id = db.upsert_file(sample_file)
         sym_id = self._insert_symbol(
-            db, file_id, "compute_hash",
+            db,
+            file_id,
+            "compute_hash",
             body="def compute_hash(data): return hashlib.sha256(data)",
             docstring="Compute SHA-256 hash of data.",
         )
@@ -284,7 +306,9 @@ class TestFTS5Search:
     ) -> None:
         file_id = db.upsert_file(sample_file)
         self._insert_symbol(
-            db, file_id, "send_email",
+            db,
+            file_id,
+            "send_email",
             body="def send_email(to, subject): smtp.send(to, subject)",
         )
         results = db.bm25_search("quantum_teleportation_algorithm_xyz")
@@ -293,7 +317,9 @@ class TestFTS5Search:
     def test_bm25_search_rank_is_float(self, db: Database, sample_file: IndexedFile) -> None:
         file_id = db.upsert_file(sample_file)
         self._insert_symbol(
-            db, file_id, "process_payment",
+            db,
+            file_id,
+            "process_payment",
             body="def process_payment(amount): stripe.charge(amount)",
             docstring="Process a Stripe payment.",
         )
@@ -308,7 +334,9 @@ class TestFTS5Search:
         """FTS5 trigger should automatically index newly inserted symbols."""
         file_id = db.upsert_file(sample_file)
         self._insert_symbol(
-            db, file_id, "validate_token",
+            db,
+            file_id,
+            "validate_token",
             body="def validate_token(token): return jwt.decode(token)",
             docstring="Validate a JWT token.",
         )
@@ -319,7 +347,9 @@ class TestFTS5Search:
         file_id = db.upsert_file(sample_file)
         for i in range(10):
             self._insert_symbol(
-                db, file_id, f"func_{i}",
+                db,
+                file_id,
+                f"func_{i}",
                 body=f"def func_{i}(): return process_data_{i}()",
                 docstring=f"Process data variant {i}.",
             )
@@ -330,6 +360,7 @@ class TestFTS5Search:
 # ---------------------------------------------------------------------------
 # Chunks
 # ---------------------------------------------------------------------------
+
 
 class TestChunks:
     def test_insert_chunk_returns_id(self, db: Database, sample_symbol: Symbol) -> None:
@@ -366,6 +397,7 @@ class TestChunks:
 # Hydration
 # ---------------------------------------------------------------------------
 
+
 class TestHydration:
     def test_get_chunk_with_context(self, db: Database, sample_symbol: Symbol) -> None:
         sym_id = db.insert_symbol(sample_symbol)
@@ -398,6 +430,7 @@ class TestHydration:
 # ---------------------------------------------------------------------------
 # VectorStore
 # ---------------------------------------------------------------------------
+
 
 class TestVectorStore:
     DIM = 4  # tiny dimension for fast tests
@@ -454,11 +487,13 @@ class TestVectorStore:
         assert all(r[0] != 5 for r in results)
 
     def test_delete_batch(self, vs: VectorStore) -> None:
-        vs.upsert_batch([
-            (20, [1.0, 0.0, 0.0, 0.0]),
-            (21, [0.0, 1.0, 0.0, 0.0]),
-            (22, [0.0, 0.0, 1.0, 0.0]),
-        ])
+        vs.upsert_batch(
+            [
+                (20, [1.0, 0.0, 0.0, 0.0]),
+                (21, [0.0, 1.0, 0.0, 0.0]),
+                (22, [0.0, 0.0, 1.0, 0.0]),
+            ]
+        )
         vs.delete_batch([20, 21])
         results = vs.search([1.0, 0.0, 0.0, 0.0], k=10)
         ids = {r[0] for r in results}
@@ -484,3 +519,321 @@ class TestVectorStore:
         results = vs.search([0.5, 0.5, 0.5, 0.5], k=5)
         for _, dist in results:
             assert dist >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# U9: Call Graph Precision — resolve_cross_file_calls() priority cascade
+# ---------------------------------------------------------------------------
+
+
+def _make_file(db: Database, rel_path: str) -> int:
+    """Insert a dummy file and return its id."""
+    return db.upsert_file(
+        IndexedFile(
+            path=f"/repo/{rel_path}",
+            rel_path=rel_path,
+            language=Language.PYTHON,
+            hash=rel_path,
+            size_bytes=100,
+        )
+    )
+
+
+def _make_symbol(
+    db: Database,
+    file_id: int,
+    name: str,
+    qualified_name: str,
+    kind: SymbolKind = SymbolKind.METHOD,
+) -> int:
+    """Insert a symbol and return its DB id."""
+    return db.insert_symbol(
+        Symbol(
+            file_id=file_id,
+            name=name,
+            qualified_name=qualified_name,
+            kind=kind,
+            line_start=1,
+            line_end=10,
+            signature=f"def {name}(self)",
+            body=f"def {name}(self): pass",
+        )
+    )
+
+
+class TestResolveCallsPriority:
+    """
+    Tests for the 4-priority call edge resolution in resolve_cross_file_calls().
+
+    Priority order:
+      1. qualified_name exact match
+      2. type-hint assisted name match (callee_type_hint is set)
+      3. name-only if unique
+      4. leave NULL if ambiguous
+    """
+
+    def test_qualified_name_takes_priority_over_name_only(self, db: Database) -> None:
+        """
+        Pass 1 (qualified_name exact match) must fire before pass 3 (name-only).
+
+        Two symbols share the same short name 'login':
+          - AuthService.login  (qualified_name = "AuthService.login")
+          - OtherService.login (qualified_name = "OtherService.login")
+
+        The call edge has callee_name = "AuthService.login" — it should resolve
+        to AuthService.login, not to either symbol via the ambiguous name-only path.
+        """
+        fid = _make_file(db, "services/auth.py")
+        auth_login_id = _make_symbol(db, fid, "login", "AuthService.login")
+        _make_symbol(db, fid, "login", "OtherService.login")
+
+        caller_fid = _make_file(db, "api/views.py")
+        caller_id = _make_symbol(
+            db, caller_fid, "handle_request", "handle_request", kind=SymbolKind.FUNCTION
+        )
+
+        # Insert unresolved call edge with fully-qualified callee_name
+        db._conn.execute(
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line) VALUES (?, ?, NULL, ?)",
+            (caller_id, "AuthService.login", 5),
+        )
+        db._conn.commit()
+
+        resolved = db.resolve_cross_file_calls()
+        assert resolved >= 1
+
+        row = db._conn.execute(
+            "SELECT callee_id FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == auth_login_id, (
+            "Qualified-name match should resolve to AuthService.login, not the other symbol or NULL"
+        )
+
+    def test_ambiguous_name_only_leaves_callee_id_null(self, db: Database) -> None:
+        """
+        Pass 4 (leave NULL): when two symbols share the same short name and no
+        qualified-name or type-hint hint is present, callee_id must stay NULL.
+        A wrong edge (randomly picking one) is worse than no edge.
+        """
+        fid = _make_file(db, "services/mixed.py")
+        _make_symbol(db, fid, "process", "ServiceA.process")
+        _make_symbol(db, fid, "process", "ServiceB.process")
+
+        caller_fid = _make_file(db, "api/handler.py")
+        caller_id = _make_symbol(db, caller_fid, "run", "run", kind=SymbolKind.FUNCTION)
+
+        # Call with just the short name — ambiguous
+        db._conn.execute(
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line) VALUES (?, ?, NULL, ?)",
+            (caller_id, "process", 10),
+        )
+        db._conn.commit()
+
+        db.resolve_cross_file_calls()
+
+        row = db._conn.execute(
+            "SELECT callee_id FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] is None, (
+            "Ambiguous callee_name with multiple matching symbols should leave "
+            "callee_id = NULL rather than picking a wrong edge"
+        )
+
+    def test_type_hint_resolution_picks_correct_method(self, db: Database) -> None:
+        """
+        Pass 2 (type-hint assisted): when callee_type_hint = "UserService" and
+        two symbols named 'login' exist — one under UserService, one under AdminService
+        — the resolution should pick UserService.login.
+        """
+        fid = _make_file(db, "services/users.py")
+        user_login_id = _make_symbol(db, fid, "login", "UserService.login")
+
+        fid2 = _make_file(db, "services/admin.py")
+        _make_symbol(db, fid2, "login", "AdminService.login")
+
+        caller_fid = _make_file(db, "api/auth.py")
+        caller_id = _make_symbol(
+            db, caller_fid, "authenticate", "authenticate", kind=SymbolKind.FUNCTION
+        )
+
+        # Call edge with type hint but ambiguous short name
+        db._conn.execute(
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line, callee_type_hint)"
+            " VALUES (?, ?, NULL, ?, ?)",
+            (caller_id, "login", 7, "UserService"),
+        )
+        db._conn.commit()
+
+        resolved = db.resolve_cross_file_calls()
+        assert resolved >= 1
+
+        row = db._conn.execute(
+            "SELECT callee_id FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == user_login_id, (
+            "Type-hint resolution should pick UserService.login, not AdminService.login"
+        )
+
+    def test_name_only_unique_resolves_correctly(self, db: Database) -> None:
+        """
+        Pass 3 (name-only if unique): when exactly one symbol matches callee_name
+        and no qualified-name or type-hint hint applies, callee_id should be set.
+        """
+        fid = _make_file(db, "utils/helpers.py")
+        helper_id = _make_symbol(db, fid, "parse_date", "parse_date", kind=SymbolKind.FUNCTION)
+
+        caller_fid = _make_file(db, "api/views.py")
+        caller_id = _make_symbol(db, caller_fid, "get_event", "get_event", kind=SymbolKind.FUNCTION)
+
+        db._conn.execute(
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line) VALUES (?, ?, NULL, ?)",
+            (caller_id, "parse_date", 3),
+        )
+        db._conn.commit()
+
+        resolved = db.resolve_cross_file_calls()
+        assert resolved == 1
+
+        row = db._conn.execute(
+            "SELECT callee_id FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == helper_id
+
+    def test_callee_type_hint_column_exists(self, db: Database) -> None:
+        """The calls table must have a callee_type_hint column after migration."""
+        cols = {r[1] for r in db._conn.execute("PRAGMA table_info(calls)").fetchall()}
+        assert "callee_type_hint" in cols
+
+    def test_insert_call_edges_stores_type_hint(self, db: Database) -> None:
+        """insert_call_edges() should persist callee_type_hint to the DB."""
+        fid = _make_file(db, "svc/auth.py")
+        caller_id = _make_symbol(db, fid, "handle", "handle", kind=SymbolKind.FUNCTION)
+
+        edge = CallEdge(
+            caller_id=caller_id,
+            callee_name="login",
+            line=4,
+            callee_type_hint="AuthService",
+        )
+        with db.transaction():
+            db.insert_call_edges([edge])
+
+        row = db._conn.execute(
+            "SELECT callee_type_hint FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "AuthService"
+
+
+# ---------------------------------------------------------------------------
+# HNSW-specific tests
+# ---------------------------------------------------------------------------
+
+
+class TestVectorStoreHNSW:
+    """Tests for HNSW index support and flat fallback logic."""
+
+    DIM = 4
+
+    def test_hnsw_mode_creates_virtual_table_with_hnsw(self, tmp_path: Path) -> None:
+        """HNSW mode should create chunk_embeddings with +hnsw in its DDL."""
+        vs = VectorStore(tmp_path / "hnsw.db", dimension=self.DIM, hnsw=True)
+        assert vs.hnsw_active is True
+
+        row = vs._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'"
+        ).fetchone()
+        assert row is not None
+        assert "+hnsw" in (row[0] or "").lower()
+        vs.close()
+
+    def test_hnsw_mode_search_returns_results(self, tmp_path: Path) -> None:
+        """HNSW-backed store should still return correct search results."""
+        vs = VectorStore(tmp_path / "hnsw_search.db", dimension=self.DIM, hnsw=True)
+        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+        vs.upsert(chunk_id=2, embedding=[0.0, 1.0, 0.0, 0.0])
+
+        results = vs.search([1.0, 0.0, 0.0, 0.0], k=5)
+        assert len(results) >= 1
+        assert results[0][0] == 1
+        vs.close()
+
+    def test_flat_fallback_when_hnsw_not_supported(self, tmp_path: Path) -> None:
+        """When _try_create_hnsw_table returns False, fall back to flat vec0."""
+        # Patch _try_create_hnsw_table to simulate an older sqlite-vec without HNSW.
+        with patch.object(VectorStore, "_try_create_hnsw_table", return_value=False):
+            vs = VectorStore(tmp_path / "flat.db", dimension=self.DIM, hnsw=True)
+
+        assert vs.hnsw_active is False
+
+        # Verify flat table was created (no +hnsw in DDL)
+        row = vs._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'"
+        ).fetchone()
+        assert row is not None
+        assert "+hnsw" not in (row[0] or "").lower()
+        vs.close()
+
+    def test_hnsw_disabled_creates_flat_table(self, tmp_path: Path) -> None:
+        """When hnsw=False, should create flat vec0 table and hnsw_active=False."""
+        vs = VectorStore(tmp_path / "flat2.db", dimension=self.DIM, hnsw=False)
+        assert vs.hnsw_active is False
+
+        row = vs._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'"
+        ).fetchone()
+        assert row is not None
+        assert "+hnsw" not in (row[0] or "").lower()
+        vs.close()
+
+    def test_info_returns_correct_dict(self, tmp_path: Path) -> None:
+        """info() should return backend, hnsw, dimension, and count."""
+        vs = VectorStore(tmp_path / "info.db", dimension=self.DIM, hnsw=True)
+        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+        vs.upsert(chunk_id=2, embedding=[0.0, 1.0, 0.0, 0.0])
+
+        result = vs.info()
+
+        assert result["backend"] == "sqlite-vec"
+        assert result["hnsw"] is True
+        assert result["dimension"] == self.DIM
+        assert result["count"] == 2
+        vs.close()
+
+    def test_info_count_reflects_upserts_and_deletes(self, tmp_path: Path) -> None:
+        """info()['count'] should track additions and deletions accurately."""
+        vs = VectorStore(tmp_path / "info2.db", dimension=self.DIM, hnsw=False)
+        assert vs.info()["count"] == 0
+
+        vs.upsert(chunk_id=10, embedding=[1.0, 0.0, 0.0, 0.0])
+        vs.upsert(chunk_id=11, embedding=[0.0, 1.0, 0.0, 0.0])
+        assert vs.info()["count"] == 2
+
+        vs.delete(chunk_id=10)
+        assert vs.info()["count"] == 1
+        vs.close()
+
+    def test_info_hnsw_false_when_flat(self, tmp_path: Path) -> None:
+        """info()['hnsw'] must be False when the flat scan fallback is active."""
+        vs = VectorStore(tmp_path / "info_flat.db", dimension=self.DIM, hnsw=False)
+        result = vs.info()
+        assert result["hnsw"] is False
+        vs.close()
+
+    def test_hnsw_reopen_detects_existing_table(self, tmp_path: Path) -> None:
+        """Re-opening an existing HNSW database should detect mode without re-creating."""
+        db_path = tmp_path / "reopen.db"
+        vs1 = VectorStore(db_path, dimension=self.DIM, hnsw=True)
+        assert vs1.hnsw_active is True
+        vs1.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+        vs1.close()
+
+        vs2 = VectorStore(db_path, dimension=self.DIM, hnsw=True)
+        assert vs2.hnsw_active is True
+        results = vs2.search([1.0, 0.0, 0.0, 0.0], k=5)
+        assert results[0][0] == 1
+        vs2.close()

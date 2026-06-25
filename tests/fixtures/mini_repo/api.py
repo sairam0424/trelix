@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Decorator helpers (minimal Flask-style simulation)
 # ---------------------------------------------------------------------------
+
 
 def route(path: str, methods: list[str] | None = None):
     """Decorator to register a function as an HTTP route handler.
@@ -29,8 +29,10 @@ def route(path: str, methods: list[str] | None = None):
 
 def require_auth(func):
     """Decorator that enforces authentication on a route handler."""
+
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
+
     wrapper._requires_auth = True
     return wrapper
 
@@ -38,6 +40,7 @@ def require_auth(func):
 # ---------------------------------------------------------------------------
 # Authentication routes
 # ---------------------------------------------------------------------------
+
 
 @route("/auth/login", methods=["POST"])
 def login_route(request: dict[str, Any]) -> dict[str, Any]:
@@ -87,6 +90,7 @@ def validate_token_route(request: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # User routes
 # ---------------------------------------------------------------------------
+
 
 @route("/users", methods=["GET"])
 @require_auth

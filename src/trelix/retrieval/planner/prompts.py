@@ -7,6 +7,9 @@ SYSTEM_PROMPT instructs the LLM to classify the user query into one of the
 PLANNER_TOOL_SCHEMA is an OpenAI function/tool call schema that maps directly
 onto QueryPlan / SubQuery — forcing the LLM to emit structured JSON rather
 than free-form text.
+
+DECOMPOSITION_PROMPT is used by AdaptiveRouter._multi_step_plan() for Tier 3
+queries to decompose a complex multi-part question into 2–3 focused sub-questions.
 """
 
 from __future__ import annotations
@@ -57,6 +60,27 @@ Set execution_mode to:
 ## Output
 
 You MUST call the `produce_query_plan` tool. Do NOT respond with plain text.
+"""
+
+DECOMPOSITION_PROMPT = """\
+You are a code-search query decomposer. Break the following complex code question
+into exactly 2 or 3 focused sub-questions, each targeting a specific, independent
+aspect of the codebase.
+
+Rules:
+- Each sub-question must be self-contained and independently searchable.
+- Do NOT overlap: each sub-question covers a distinct aspect.
+- Keep each sub-question short and technical (one sentence).
+- Return ONLY a JSON array of strings — no prose, no markdown fences.
+
+Example input: "walk me through how a query goes from the CLI to the final LLM answer"
+Example output: [
+  "how does the CLI parse and dispatch a user query",
+  "how does the retrieval pipeline process a query into context",
+  "how does the synthesizer produce the final LLM answer from retrieved context"
+]
+
+Query: {query}
 """
 
 PLANNER_TOOL_SCHEMA: dict = {

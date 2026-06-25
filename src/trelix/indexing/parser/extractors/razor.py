@@ -28,7 +28,6 @@ Design:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 from trelix.indexing.parser.base import BaseParser, ParseResult
@@ -40,29 +39,29 @@ from trelix.indexing.parser.base import BaseParser, ParseResult
 # @page "/route" or @page "/route/{id:int}"
 _PAGE_RE = re.compile(r'^\s*@page\s+"([^"]*)"', re.MULTILINE)
 # @using Namespace.Path
-_USING_RE = re.compile(r'^\s*@using\s+([\w.]+)', re.MULTILINE)
+_USING_RE = re.compile(r"^\s*@using\s+([\w.]+)", re.MULTILINE)
 # @namespace MyApp.Components
-_NAMESPACE_RE = re.compile(r'^\s*@namespace\s+([\w.]+)', re.MULTILINE)
+_NAMESPACE_RE = re.compile(r"^\s*@namespace\s+([\w.]+)", re.MULTILINE)
 # @inject ServiceType VarName  (ServiceType may be generic: ILogger<T>)
-_INJECT_RE = re.compile(r'^\s*@inject\s+([\w][\w.<>, \[\]?]*?)\s+(\w+)\s*$', re.MULTILINE)
+_INJECT_RE = re.compile(r"^\s*@inject\s+([\w][\w.<>, \[\]?]*?)\s+(\w+)\s*$", re.MULTILINE)
 # @inherits BaseComponent<T>
-_INHERITS_RE = re.compile(r'^\s*@inherits\s+([\w][\w.<>, \[\]?]*)', re.MULTILINE)
+_INHERITS_RE = re.compile(r"^\s*@inherits\s+([\w][\w.<>, \[\]?]*)", re.MULTILINE)
 # @implements IDisposable / @implements IAsyncDisposable<T>
-_IMPLEMENTS_RE = re.compile(r'^\s*@implements\s+([\w][\w.<>, \[\]?]*)', re.MULTILINE)
+_IMPLEMENTS_RE = re.compile(r"^\s*@implements\s+([\w][\w.<>, \[\]?]*)", re.MULTILINE)
 # @layout MainLayout
-_LAYOUT_RE = re.compile(r'^\s*@layout\s+([\w.]+)', re.MULTILINE)
+_LAYOUT_RE = re.compile(r"^\s*@layout\s+([\w.]+)", re.MULTILINE)
 # @typeparam T  or  @typeparam T where T : IBase
-_TYPEPARAM_RE = re.compile(r'^\s*@typeparam\s+(.+)', re.MULTILINE)
+_TYPEPARAM_RE = re.compile(r"^\s*@typeparam\s+(.+)", re.MULTILINE)
 # @rendermode InteractiveServer / InteractiveWebAssembly / InteractiveAuto
-_RENDERMODE_RE = re.compile(r'^\s*@rendermode\s+(\S+)', re.MULTILINE)
+_RENDERMODE_RE = re.compile(r"^\s*@rendermode\s+(\S+)", re.MULTILINE)
 # @attribute [Authorize] or @attribute [Authorize(Roles="admin")]
-_ATTRIBUTE_RE = re.compile(r'^\s*@attribute\s+(\[.+?\])', re.MULTILINE)
+_ATTRIBUTE_RE = re.compile(r"^\s*@attribute\s+(\[.+?\])", re.MULTILINE)
 # @code { or @functions {  (the opening brace may be on next line)
-_CODE_BLOCK_RE = re.compile(r'@(?:code|functions)\s*\{', re.MULTILINE)
+_CODE_BLOCK_RE = re.compile(r"@(?:code|functions)\s*\{", re.MULTILINE)
 # Inline @{ statement block
-_STMT_BLOCK_RE = re.compile(r'(?<!\w)@\{', re.MULTILINE)
+_STMT_BLOCK_RE = re.compile(r"(?<!\w)@\{", re.MULTILINE)
 # PascalCase HTML tags = Blazor component references: <MyComponent or <Namespace.Component
-_COMPONENT_REF_RE = re.compile(r'<([A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*)[\s/>]')
+_COMPONENT_REF_RE = re.compile(r"<([A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*)[\s/>]")
 
 
 def _extract_brace_block(src: str, open_brace_pos: int) -> tuple[str, int]:
@@ -74,17 +73,17 @@ def _extract_brace_block(src: str, open_brace_pos: int) -> tuple[str, int]:
     depth = 0
     i = open_brace_pos
     n = len(src)
-    in_string: Optional[str] = None
+    in_string: str | None = None
     in_verbatim = False
     while i < n:
         ch = src[i]
         if in_string:
-            if ch == '\\' and not in_verbatim:
+            if ch == "\\" and not in_verbatim:
                 i += 2
                 continue
             if ch == in_string:
                 in_string = None
-        elif ch == '@' and i + 1 < n and src[i + 1] == '"':
+        elif ch == "@" and i + 1 < n and src[i + 1] == '"':
             in_verbatim = True
             in_string = '"'
             i += 2
@@ -92,24 +91,25 @@ def _extract_brace_block(src: str, open_brace_pos: int) -> tuple[str, int]:
         elif ch in ('"', "'"):
             in_string = ch
             in_verbatim = False
-        elif ch == '{':
+        elif ch == "{":
             depth += 1
-        elif ch == '}':
+        elif ch == "}":
             depth -= 1
             if depth == 0:
-                return src[open_brace_pos + 1:i], i + 1
+                return src[open_brace_pos + 1 : i], i + 1
         i += 1
-    return src[open_brace_pos + 1:], n
+    return src[open_brace_pos + 1 :], n
 
 
 def _count_lines_to(src: str, pos: int) -> int:
     """Return 1-based line number of character at pos in src."""
-    return src[:pos].count('\n') + 1
+    return src[:pos].count("\n") + 1
 
 
 # ---------------------------------------------------------------------------
 # Shared base
 # ---------------------------------------------------------------------------
+
 
 class _RazorBase(BaseParser):
     """
@@ -119,6 +119,7 @@ class _RazorBase(BaseParser):
 
     def __init__(self) -> None:
         from trelix.indexing.parser.extractors.csharp import CSharpParser
+
         self._cs_parser = CSharpParser()
 
     @property
@@ -133,35 +134,45 @@ class _RazorBase(BaseParser):
         symbols: list[Symbol] = []
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
-        raw_calls: list[tuple[Optional[int], str, int]] = []
+        raw_calls: list[tuple[int | None, str, int]] = []
 
         component_local_idx = self._make_module_symbol(
             source, file_id, symbols, import_edges, type_edges
         )
 
         for m in _USING_RE.finditer(source):
-            import_edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=m.group(1),
-                imported_names=[],
-            ))
+            import_edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=m.group(1),
+                    imported_names=[],
+                )
+            )
 
         for m in _INJECT_RE.finditer(source):
             service_type = m.group(1).strip()
-            base_type = re.sub(r'<.*>', '', service_type).strip()
-            import_edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=base_type,
-                imported_names=[m.group(2).strip()],
-            ))
+            base_type = re.sub(r"<.*>", "", service_type).strip()
+            import_edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=base_type,
+                    imported_names=[m.group(2).strip()],
+                )
+            )
 
         for code_match in _CODE_BLOCK_RE.finditer(source):
             brace_pos = code_match.end() - 1
             block_line = _count_lines_to(source, brace_pos)
             content, _ = _extract_brace_block(source, brace_pos)
             self._parse_code_block(
-                content, file_id, symbols, import_edges, type_edges, raw_calls,
-                component_local_idx, line_offset=block_line,
+                content,
+                file_id,
+                symbols,
+                import_edges,
+                type_edges,
+                raw_calls,
+                component_local_idx,
+                line_offset=block_line,
             )
 
         for stmt_match in _STMT_BLOCK_RE.finditer(source):
@@ -169,7 +180,8 @@ class _RazorBase(BaseParser):
             content, _ = _extract_brace_block(source, brace_pos)
             block_line = _count_lines_to(source, brace_pos)
             self._extract_calls_from_snippet(
-                content, raw_calls,
+                content,
+                raw_calls,
                 caller_idx=component_local_idx,
                 line_offset=block_line,
             )
@@ -179,11 +191,13 @@ class _RazorBase(BaseParser):
             tag_name = ref_match.group(1)
             if tag_name not in seen_refs:
                 seen_refs.add(tag_name)
-                raw_calls.append((
-                    component_local_idx,
-                    tag_name,
-                    _count_lines_to(source, ref_match.start()),
-                ))
+                raw_calls.append(
+                    (
+                        component_local_idx,
+                        tag_name,
+                        _count_lines_to(source, ref_match.start()),
+                    )
+                )
 
         call_edges: list[CallEdge] = [
             CallEdge(caller_id=caller_idx, callee_name=name, line=line)
@@ -253,42 +267,50 @@ class _RazorBase(BaseParser):
         body = "\n".join(body_lines) if body_lines else signature
 
         component_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name="<component>",
-            qualified_name="<component>",
-            kind=SymbolKind.MODULE,
-            line_start=1,
-            line_end=source.count('\n') + 1,
-            signature=signature,
-            body=body,
-            decorators=decorators,
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name="<component>",
+                qualified_name="<component>",
+                kind=SymbolKind.MODULE,
+                line_start=1,
+                line_end=source.count("\n") + 1,
+                signature=signature,
+                body=body,
+                decorators=decorators,
+                is_public=True,
+            )
+        )
 
         inh_match = _INHERITS_RE.search(source)
         if inh_match:
-            base = re.sub(r'<.*>', '', inh_match.group(1)).strip()
-            type_edges.append(TypeEdge(
-                from_symbol_id=component_local_idx,
-                to_type_name=base,
-                edge_kind="extends",
-            ))
+            base = re.sub(r"<.*>", "", inh_match.group(1)).strip()
+            type_edges.append(
+                TypeEdge(
+                    from_symbol_id=component_local_idx,
+                    to_type_name=base,
+                    edge_kind="extends",
+                )
+            )
 
         for impl_match in _IMPLEMENTS_RE.finditer(source):
-            iface = re.sub(r'<.*>', '', impl_match.group(1)).strip()
-            type_edges.append(TypeEdge(
-                from_symbol_id=component_local_idx,
-                to_type_name=iface,
-                edge_kind="implements",
-            ))
+            iface = re.sub(r"<.*>", "", impl_match.group(1)).strip()
+            type_edges.append(
+                TypeEdge(
+                    from_symbol_id=component_local_idx,
+                    to_type_name=iface,
+                    edge_kind="implements",
+                )
+            )
 
         if layout:
-            import_edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=layout,
-                imported_names=[],
-            ))
+            import_edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=layout,
+                    imported_names=[],
+                )
+            )
 
         return component_local_idx
 
@@ -303,7 +325,7 @@ class _RazorBase(BaseParser):
         symbols: list[Symbol],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         component_local_idx: int,
         line_offset: int,
     ) -> None:
@@ -319,7 +341,7 @@ class _RazorBase(BaseParser):
             adjusted_start = max(1, sym.line_start - 1 + line_offset)
             adjusted_end = max(adjusted_start, sym.line_end - 1 + line_offset)
 
-            new_parent: Optional[int]
+            new_parent: int | None
             if sym.parent_id == wrapper_class_idx:
                 new_parent = component_local_idx
             elif sym.parent_id is not None:
@@ -327,20 +349,22 @@ class _RazorBase(BaseParser):
             else:
                 new_parent = None
 
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=sym.name,
-                qualified_name=sym.qualified_name,
-                kind=sym.kind,
-                line_start=adjusted_start,
-                line_end=adjusted_end,
-                signature=sym.signature,
-                body=sym.body,
-                docstring=sym.docstring,
-                decorators=sym.decorators,
-                is_public=sym.is_public,
-                parent_id=new_parent,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=sym.name,
+                    qualified_name=sym.qualified_name,
+                    kind=sym.kind,
+                    line_start=adjusted_start,
+                    line_end=adjusted_end,
+                    signature=sym.signature,
+                    body=sym.body,
+                    docstring=sym.docstring,
+                    decorators=sym.decorators,
+                    is_public=sym.is_public,
+                    parent_id=new_parent,
+                )
+            )
 
         symbols_before = len(symbols) - len(cs_result.symbols) + 1
         for edge in cs_result.call_edges:
@@ -356,11 +380,13 @@ class _RazorBase(BaseParser):
         import_edges.extend(cs_result.import_edges)
         for te in cs_result.type_edges:
             if te.from_symbol_id == wrapper_class_idx:
-                type_edges.append(TypeEdge(
-                    from_symbol_id=component_local_idx,
-                    to_type_name=te.to_type_name,
-                    edge_kind=te.edge_kind,
-                ))
+                type_edges.append(
+                    TypeEdge(
+                        from_symbol_id=component_local_idx,
+                        to_type_name=te.to_type_name,
+                        edge_kind=te.edge_kind,
+                    )
+                )
 
     # ------------------------------------------------------------------
     # Call extraction from statement snippets
@@ -369,12 +395,12 @@ class _RazorBase(BaseParser):
     def _extract_calls_from_snippet(
         self,
         content: str,
-        raw_calls: list[tuple[Optional[int], str, int]],
-        caller_idx: Optional[int],
+        raw_calls: list[tuple[int | None, str, int]],
+        caller_idx: int | None,
         line_offset: int,
     ) -> None:
         """Extract method call names from a statement block using regex."""
-        for m in re.finditer(r'\b([A-Za-z_]\w+)\s*\(', content):
+        for m in re.finditer(r"\b([A-Za-z_]\w+)\s*\(", content):
             name = m.group(1)
             if name in _CS_KEYWORDS:
                 continue
@@ -390,22 +416,78 @@ class _RazorBase(BaseParser):
 
 
 # C# keywords to skip when extracting call names from statement snippets
-_CS_KEYWORDS: frozenset[str] = frozenset({
-    "if", "else", "for", "foreach", "while", "do", "switch", "case",
-    "return", "new", "var", "int", "string", "bool", "void", "async",
-    "await", "try", "catch", "finally", "throw", "using", "lock",
-    "typeof", "nameof", "sizeof", "stackalloc", "checked", "unchecked",
-    "true", "false", "null", "this", "base", "static", "readonly",
-    "const", "public", "private", "protected", "internal", "override",
-    "virtual", "abstract", "sealed", "partial", "class", "interface",
-    "struct", "enum", "delegate", "event", "get", "set", "init",
-    "where", "select", "from", "in", "out", "ref", "params",
-})
+_CS_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "if",
+        "else",
+        "for",
+        "foreach",
+        "while",
+        "do",
+        "switch",
+        "case",
+        "return",
+        "new",
+        "var",
+        "int",
+        "string",
+        "bool",
+        "void",
+        "async",
+        "await",
+        "try",
+        "catch",
+        "finally",
+        "throw",
+        "using",
+        "lock",
+        "typeof",
+        "nameof",
+        "sizeof",
+        "stackalloc",
+        "checked",
+        "unchecked",
+        "true",
+        "false",
+        "null",
+        "this",
+        "base",
+        "static",
+        "readonly",
+        "const",
+        "public",
+        "private",
+        "protected",
+        "internal",
+        "override",
+        "virtual",
+        "abstract",
+        "sealed",
+        "partial",
+        "class",
+        "interface",
+        "struct",
+        "enum",
+        "delegate",
+        "event",
+        "get",
+        "set",
+        "init",
+        "where",
+        "select",
+        "from",
+        "in",
+        "out",
+        "ref",
+        "params",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
 # RazorParser — .razor (Blazor components)
 # ---------------------------------------------------------------------------
+
 
 class RazorParser(_RazorBase):
     """
