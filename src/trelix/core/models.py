@@ -116,11 +116,22 @@ class CallEdge:
     A directed edge in the call graph: caller_id calls callee_name at `line`.
     `callee_id` is resolved after all symbols are stored (may remain None for
     external / stdlib calls).
+
+    `callee_type_hint` carries the static type of the receiver object when the
+    call is a method call on a typed variable.  For example, given:
+
+        user_service: UserService
+        user_service.login(username)
+
+    the extractor stores callee_type_hint="UserService" so that resolution can
+    prefer symbols whose qualified_name starts with "UserService." over bare
+    name-only matches — dramatically reducing false-positive edges.
     """
     caller_id: int
     callee_name: str
     line: int
     callee_id: Optional[int] = None
+    callee_type_hint: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

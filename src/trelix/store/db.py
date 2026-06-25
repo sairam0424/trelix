@@ -82,11 +82,12 @@ CREATE INDEX IF NOT EXISTS idx_symbols_name       ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind       ON symbols(kind);
 
 CREATE TABLE IF NOT EXISTS calls (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    caller_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
-    callee_name TEXT    NOT NULL,
-    callee_id   INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
-    line        INTEGER NOT NULL
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    caller_id         INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    callee_name       TEXT    NOT NULL,
+    callee_id         INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+    line              INTEGER NOT NULL,
+    callee_type_hint  TEXT                          -- receiver static type, e.g. "UserService"
 );
 
 CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_id);
@@ -198,6 +199,14 @@ class Database:
         if "context_summary" not in sym_cols:
             self._conn.execute(
                 "ALTER TABLE symbols ADD COLUMN context_summary TEXT"
+            )
+            self._conn.commit()
+
+        # calls.callee_type_hint — added in U9 for qualified-name + type-hint resolution
+        calls_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(calls)").fetchall()}
+        if "callee_type_hint" not in calls_cols:
+            self._conn.execute(
+                "ALTER TABLE calls ADD COLUMN callee_type_hint TEXT"
             )
             self._conn.commit()
 
@@ -334,8 +343,12 @@ class Database:
 
     def insert_call_edges(self, edges: list[CallEdge]) -> None:
         self._conn.executemany(
-            "INSERT INTO calls (caller_id, callee_name, callee_id, line) VALUES (?, ?, ?, ?)",
-            [(e.caller_id, e.callee_name, e.callee_id, e.line) for e in edges],
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line, callee_type_hint)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [
+                (e.caller_id, e.callee_name, e.callee_id, e.line, e.callee_type_hint)
+                for e in edges
+            ],
         )
 
     def get_callees(self, symbol_id: int) -> list[int]:
@@ -453,29 +466,88 @@ class Database:
 
     def resolve_cross_file_calls(self) -> int:
         """
-        Update callee_id for all unresolved call edges where callee_name
-        matches a known symbol in the DB. Called once after all files indexed.
+        Update callee_id for all unresolved call edges using a 4-priority cascade.
+        Called once after all files are indexed.
 
-        Handles cross-file calls where the callee file was indexed after the
-        caller file, leaving callee_id = NULL at index time.
-        Returns number of newly resolved edges.
+        Resolution priority (highest → lowest):
+
+          1. Qualified-name exact match — callee_name equals a symbol's qualified_name.
+             Most precise: resolves "UserService.login" directly.
+
+          2. Type-hint + name match — callee_type_hint is set AND a symbol exists with
+             the given name whose qualified_name starts with "<callee_type_hint>.".
+             Resolves method calls like user_service.login() when user_service: UserService
+             is annotated in the calling function's parameter list.
+
+          3. Name-only if unique — callee_name matches exactly one symbol across the whole
+             index.  Safe when there is no ambiguity.
+
+          4. Leave NULL — callee_name is ambiguous (multiple candidates) or unknown.
+             A wrong edge is worse than no edge.
+
+        Returns total number of newly resolved edges across all passes.
         """
+        total_resolved = 0
+
+        # ── Pass 1: qualified_name exact match ───────────────────────────────
+        cursor = self._conn.execute(
+            """
+            UPDATE calls
+            SET callee_id = (
+                SELECT id FROM symbols
+                WHERE qualified_name = calls.callee_name
+                LIMIT 1
+            )
+            WHERE callee_id IS NULL
+              AND EXISTS (
+                SELECT 1 FROM symbols WHERE qualified_name = calls.callee_name
+              )
+            """
+        )
+        total_resolved += cursor.rowcount
+
+        # ── Pass 2: type-hint assisted name match ────────────────────────────
+        # Only fires when callee_type_hint is non-NULL and a symbol with the
+        # right name is found whose qualified_name starts with "<hint>.".
         cursor = self._conn.execute(
             """
             UPDATE calls
             SET callee_id = (
                 SELECT id FROM symbols
                 WHERE name = calls.callee_name
+                  AND qualified_name LIKE (calls.callee_type_hint || '.%')
                 LIMIT 1
             )
             WHERE callee_id IS NULL
+              AND callee_type_hint IS NOT NULL
               AND EXISTS (
-                SELECT 1 FROM symbols WHERE name = calls.callee_name
+                SELECT 1 FROM symbols
+                WHERE name = calls.callee_name
+                  AND qualified_name LIKE (calls.callee_type_hint || '.%')
               )
             """
         )
+        total_resolved += cursor.rowcount
+
+        # ── Pass 3: name-only if unique (no ambiguity) ───────────────────────
+        cursor = self._conn.execute(
+            """
+            UPDATE calls
+            SET callee_id = (
+                SELECT id FROM symbols WHERE name = calls.callee_name
+            )
+            WHERE callee_id IS NULL
+              AND (
+                SELECT COUNT(*) FROM symbols WHERE name = calls.callee_name
+              ) = 1
+            """
+        )
+        total_resolved += cursor.rowcount
+
+        # Pass 4: leave NULL — ambiguous callee_name, better no edge than wrong one.
+
         self._conn.commit()
-        return cursor.rowcount
+        return total_resolved
 
     # ------------------------------------------------------------------
     # Import file resolution (second pass after all files indexed)

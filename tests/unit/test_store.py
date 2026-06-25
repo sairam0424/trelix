@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from trelix.core.models import (
+    CallEdge,
     Chunk,
     ImportEdge,
     IndexedFile,
@@ -486,6 +487,219 @@ class TestVectorStore:
         results = vs.search([0.5, 0.5, 0.5, 0.5], k=5)
         for _, dist in results:
             assert dist >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# U9: Call Graph Precision — resolve_cross_file_calls() priority cascade
+# ---------------------------------------------------------------------------
+
+def _make_file(db: Database, rel_path: str) -> int:
+    """Insert a dummy file and return its id."""
+    return db.upsert_file(IndexedFile(
+        path=f"/repo/{rel_path}",
+        rel_path=rel_path,
+        language=Language.PYTHON,
+        hash=rel_path,
+        size_bytes=100,
+    ))
+
+
+def _make_symbol(
+    db: Database,
+    file_id: int,
+    name: str,
+    qualified_name: str,
+    kind: SymbolKind = SymbolKind.METHOD,
+) -> int:
+    """Insert a symbol and return its DB id."""
+    return db.insert_symbol(Symbol(
+        file_id=file_id,
+        name=name,
+        qualified_name=qualified_name,
+        kind=kind,
+        line_start=1,
+        line_end=10,
+        signature=f"def {name}(self)",
+        body=f"def {name}(self): pass",
+    ))
+
+
+class TestResolveCallsPriority:
+    """
+    Tests for the 4-priority call edge resolution in resolve_cross_file_calls().
+
+    Priority order:
+      1. qualified_name exact match
+      2. type-hint assisted name match (callee_type_hint is set)
+      3. name-only if unique
+      4. leave NULL if ambiguous
+    """
+
+    def test_qualified_name_takes_priority_over_name_only(
+        self, db: Database
+    ) -> None:
+        """
+        Pass 1 (qualified_name exact match) must fire before pass 3 (name-only).
+
+        Two symbols share the same short name 'login':
+          - AuthService.login  (qualified_name = "AuthService.login")
+          - OtherService.login (qualified_name = "OtherService.login")
+
+        The call edge has callee_name = "AuthService.login" — it should resolve
+        to AuthService.login, not to either symbol via the ambiguous name-only path.
+        """
+        fid = _make_file(db, "services/auth.py")
+        auth_login_id = _make_symbol(db, fid, "login", "AuthService.login")
+        _make_symbol(db, fid, "login", "OtherService.login")
+
+        caller_fid = _make_file(db, "api/views.py")
+        caller_id = _make_symbol(db, caller_fid, "handle_request", "handle_request",
+                                 kind=SymbolKind.FUNCTION)
+
+        # Insert unresolved call edge with fully-qualified callee_name
+        db._conn.execute(
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line)"
+            " VALUES (?, ?, NULL, ?)",
+            (caller_id, "AuthService.login", 5),
+        )
+        db._conn.commit()
+
+        resolved = db.resolve_cross_file_calls()
+        assert resolved >= 1
+
+        row = db._conn.execute(
+            "SELECT callee_id FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == auth_login_id, (
+            "Qualified-name match should resolve to AuthService.login, "
+            "not the other symbol or NULL"
+        )
+
+    def test_ambiguous_name_only_leaves_callee_id_null(
+        self, db: Database
+    ) -> None:
+        """
+        Pass 4 (leave NULL): when two symbols share the same short name and no
+        qualified-name or type-hint hint is present, callee_id must stay NULL.
+        A wrong edge (randomly picking one) is worse than no edge.
+        """
+        fid = _make_file(db, "services/mixed.py")
+        _make_symbol(db, fid, "process", "ServiceA.process")
+        _make_symbol(db, fid, "process", "ServiceB.process")
+
+        caller_fid = _make_file(db, "api/handler.py")
+        caller_id = _make_symbol(db, caller_fid, "run", "run", kind=SymbolKind.FUNCTION)
+
+        # Call with just the short name — ambiguous
+        db._conn.execute(
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line)"
+            " VALUES (?, ?, NULL, ?)",
+            (caller_id, "process", 10),
+        )
+        db._conn.commit()
+
+        db.resolve_cross_file_calls()
+
+        row = db._conn.execute(
+            "SELECT callee_id FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] is None, (
+            "Ambiguous callee_name with multiple matching symbols should leave "
+            "callee_id = NULL rather than picking a wrong edge"
+        )
+
+    def test_type_hint_resolution_picks_correct_method(
+        self, db: Database
+    ) -> None:
+        """
+        Pass 2 (type-hint assisted): when callee_type_hint = "UserService" and
+        two symbols named 'login' exist — one under UserService, one under AdminService
+        — the resolution should pick UserService.login.
+        """
+        fid = _make_file(db, "services/users.py")
+        user_login_id = _make_symbol(db, fid, "login", "UserService.login")
+
+        fid2 = _make_file(db, "services/admin.py")
+        _make_symbol(db, fid2, "login", "AdminService.login")
+
+        caller_fid = _make_file(db, "api/auth.py")
+        caller_id = _make_symbol(db, caller_fid, "authenticate", "authenticate",
+                                 kind=SymbolKind.FUNCTION)
+
+        # Call edge with type hint but ambiguous short name
+        db._conn.execute(
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line, callee_type_hint)"
+            " VALUES (?, ?, NULL, ?, ?)",
+            (caller_id, "login", 7, "UserService"),
+        )
+        db._conn.commit()
+
+        resolved = db.resolve_cross_file_calls()
+        assert resolved >= 1
+
+        row = db._conn.execute(
+            "SELECT callee_id FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == user_login_id, (
+            "Type-hint resolution should pick UserService.login, not AdminService.login"
+        )
+
+    def test_name_only_unique_resolves_correctly(self, db: Database) -> None:
+        """
+        Pass 3 (name-only if unique): when exactly one symbol matches callee_name
+        and no qualified-name or type-hint hint applies, callee_id should be set.
+        """
+        fid = _make_file(db, "utils/helpers.py")
+        helper_id = _make_symbol(db, fid, "parse_date", "parse_date",
+                                 kind=SymbolKind.FUNCTION)
+
+        caller_fid = _make_file(db, "api/views.py")
+        caller_id = _make_symbol(db, caller_fid, "get_event", "get_event",
+                                 kind=SymbolKind.FUNCTION)
+
+        db._conn.execute(
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line)"
+            " VALUES (?, ?, NULL, ?)",
+            (caller_id, "parse_date", 3),
+        )
+        db._conn.commit()
+
+        resolved = db.resolve_cross_file_calls()
+        assert resolved == 1
+
+        row = db._conn.execute(
+            "SELECT callee_id FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == helper_id
+
+    def test_callee_type_hint_column_exists(self, db: Database) -> None:
+        """The calls table must have a callee_type_hint column after migration."""
+        cols = {r[1] for r in db._conn.execute("PRAGMA table_info(calls)").fetchall()}
+        assert "callee_type_hint" in cols
+
+    def test_insert_call_edges_stores_type_hint(self, db: Database) -> None:
+        """insert_call_edges() should persist callee_type_hint to the DB."""
+        fid = _make_file(db, "svc/auth.py")
+        caller_id = _make_symbol(db, fid, "handle", "handle", kind=SymbolKind.FUNCTION)
+
+        edge = CallEdge(
+            caller_id=caller_id,
+            callee_name="login",
+            line=4,
+            callee_type_hint="AuthService",
+        )
+        with db.transaction():
+            db.insert_call_edges([edge])
+
+        row = db._conn.execute(
+            "SELECT callee_type_hint FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "AuthService"
 
 
 # ---------------------------------------------------------------------------
