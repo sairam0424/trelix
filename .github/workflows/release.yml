@@ -6,22 +6,96 @@ on:
       - "v*"
 
 jobs:
-  publish:
-    name: Build & Publish to PyPI
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write   # required for trusted publisher (OIDC)
+  build-binaries:
+    name: Build codeindex (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact-name: codeindex-macos-arm64
+            binary-path: dist/codeindex
+          - os: windows-latest
+            artifact-name: codeindex-windows-x64
+            binary-path: dist/codeindex.exe
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[local]" && pip install pyinstaller
+
+      - name: Build binary
+        run: pyinstaller trelix.spec --clean --noconfirm
+
+      - name: Verify binary (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          file dist/codeindex
+          ./dist/codeindex --help
+
+      - name: Verify binary (Windows)
+        if: runner.os == 'Windows'
+        run: dist/codeindex.exe --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.binary-path }}
+          retention-days: 30
+
+  publish:
+    name: Publish to PyPI & GitHub Release
+    runs-on: ubuntu-latest
+    needs: build-binaries
+    environment: pypi
+    permissions:
+      id-token: write    # required for OIDC trusted publisher (PyPI)
+      contents: write    # required to create GitHub Release and upload assets
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Install build tools
         run: pip install build twine
+
       - name: Build distributions
         run: python -m build
+
       - name: Check distributions
         run: twine check dist/*
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Download macOS binary
+        uses: actions/download-artifact@v4
+        with:
+          name: codeindex-macos-arm64
+          path: release-assets/macos
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: codeindex-windows-x64
+          path: release-assets/windows
+
+      - name: Create GitHub Release with binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/macos/codeindex
+            release-assets/windows/codeindex.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

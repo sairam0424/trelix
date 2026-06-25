@@ -75,6 +75,11 @@ dev = [
     "mypy>=1.10.0",
     "build>=1.0.0",
     "twine>=5.0.0",
+    "pyinstaller>=6.0.0",
+]
+binary = [
+    "pyinstaller>=6.0.0",
+    "sentence-transformers>=3.0.0",   # local embedder bundled into the binary
 ]
 all = [
     "trelix[local,rerank]",

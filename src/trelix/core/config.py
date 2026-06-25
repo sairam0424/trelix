@@ -9,10 +9,11 @@ Set TRELIX_EMBEDDER_PROVIDER=openai and OPENAI_API_KEY for higher quality.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Language
@@ -95,7 +96,22 @@ class EmbedderConfig(BaseSettings):
         populate_by_name=True,
     )
 
-    provider: Literal["openai", "azure", "local"] = "local"
+    provider: Literal["openai", "azure", "local", "aava"] = "local"
+
+    # ── Aava Platform ────────────────────────────────────────────────────────
+    # Injected by the VS Code plugin at indexing time — never stored in config.
+    embedding_bearer_token: Optional[str] = Field(
+        default=None, alias="EMBEDDING_BEARER_TOKEN"
+    )
+    embedding_base_url: str = Field(
+        default="https://aava-dev.avateam.io", alias="EMBEDDING_BASE_URL"
+    )
+    embedding_service: str = Field(
+        default="gemini", alias="EMBEDDING_SERVICE"
+    )
+    embedding_model_ref: str = Field(
+        default="gemini-embedding-001", alias="EMBEDDING_MODEL_REF"
+    )
 
     # ── OpenAI ───────────────────────────────────────────────────────────────
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
@@ -131,6 +147,8 @@ class EmbedderConfig(BaseSettings):
             return self.azure_dimensions
         if self.provider == "openai":
             return self.openai_dimensions
+        if self.provider == "aava":
+            return 3072   # gemini-embedding-001
         return 384   # all-MiniLM-L6-v2
 
 
@@ -138,6 +156,22 @@ class StoreConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TRELIX_STORE_")
 
     db_path: str = ".trelix/index.db"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_env_compat(cls, values: object) -> object:
+        """Accept CODEINDEX_STORE_DB_PATH as a fallback for VS Code plugin compatibility.
+
+        The VS Code plugin passes CODEINDEX_STORE_DB_PATH (from the legacy aava-core
+        codeindex binary). When TRELIX_STORE_DB_PATH is not explicitly set, we honour
+        the legacy variable so the plugin works without any configuration changes.
+        """
+        if "TRELIX_STORE_DB_PATH" not in os.environ:
+            legacy = os.environ.get("CODEINDEX_STORE_DB_PATH")
+            if legacy:
+                if isinstance(values, dict):
+                    values.setdefault("db_path", legacy)
+        return values
 
 
 class RetrievalConfig(BaseSettings):

@@ -6,6 +6,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-25
+
+### Added
+
+#### Binary Distribution
+- macOS arm64 binary (`codeindex`) via PyInstaller
+- Windows x64 binary (`codeindex.exe`) via GitHub Actions
+- Drop-in compatible with aava-core-vscode-ide-plugin
+
+#### VS Code Plugin Compatibility
+- `CODEINDEX_STORE_DB_PATH` env var accepted as fallback when `TRELIX_STORE_DB_PATH` is not set
+- `--provider aava` flag supported — routes to `AavaPlatformEmbedder`
+- `AavaPlatformEmbedder` ported back from aava-core for Aava platform embedding service
+- Aava-specific config fields: `EMBEDDING_BEARER_TOKEN`, `EMBEDDING_BASE_URL`, `EMBEDDING_SERVICE`, `EMBEDDING_MODEL_REF`
+
+#### Language Support
+- Ruby parser added (Tree-sitter grammar)
+
 ## [0.1.0] — 2025-06-25
 
 ### Added
