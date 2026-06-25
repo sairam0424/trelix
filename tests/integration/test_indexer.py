@@ -15,10 +15,10 @@ import pytest
 from trelix.core.config import EmbedderConfig, IndexConfig
 from trelix.indexing.indexer import Indexer
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def mini_repo(tmp_path: Path) -> Path:
@@ -69,6 +69,7 @@ def mini_repo(tmp_path: Path) -> Path:
 # Helper
 # ---------------------------------------------------------------------------
 
+
 def _make_config(repo_path: Path) -> IndexConfig:
     """Build an IndexConfig using the local (no-API-key) embedder."""
     embedder_cfg = EmbedderConfig(provider="local")
@@ -83,6 +84,7 @@ def _make_config(repo_path: Path) -> IndexConfig:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_indexer_full_pipeline(mini_repo: Path) -> None:
     """
@@ -107,9 +109,7 @@ def test_indexer_full_pipeline(mini_repo: Path) -> None:
     )
 
     # No errors should have occurred
-    assert stats["errors"] == 0, (
-        f"Expected errors == 0, got {stats['errors']}"
-    )
+    assert stats["errors"] == 0, f"Expected errors == 0, got {stats['errors']}"
 
     # DB file must exist at the configured path
     db_path = config.db_path_absolute
@@ -154,15 +154,11 @@ def test_indexer_progress_callback(mini_repo: Path) -> None:
         assert "phase_label" in evt
         assert "progress" in evt
         assert "stats" in evt
-        assert 0.0 <= evt["progress"] <= 1.0, (
-            f"progress out of range: {evt['progress']}"
-        )
+        assert 0.0 <= evt["progress"] <= 1.0, f"progress out of range: {evt['progress']}"
 
     # Final event must be at progress = 1.0
     last = events[-1]
-    assert last["progress"] == 1.0, (
-        f"Final progress event should be 1.0, got {last['progress']}"
-    )
+    assert last["progress"] == 1.0, f"Final progress event should be 1.0, got {last['progress']}"
 
 
 def test_indexer_incremental_skips_unchanged(mini_repo: Path) -> None:

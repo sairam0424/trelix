@@ -9,58 +9,60 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Optional
-
+from enum import StrEnum
 
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
 
-class SymbolKind(str, Enum):
+
+class SymbolKind(StrEnum):
     """Coarse-grained kind of a parsed symbol."""
-    FUNCTION  = "function"
-    METHOD    = "method"
-    CLASS     = "class"
+
+    FUNCTION = "function"
+    METHOD = "method"
+    CLASS = "class"
     INTERFACE = "interface"
-    STRUCT    = "struct"
-    ENUM      = "enum"
-    CONSTANT  = "constant"
-    VARIABLE  = "variable"
-    MODULE    = "module"    # file-level module symbol
-    SECTION   = "section"  # markdown heading section
-    UNKNOWN   = "unknown"
+    STRUCT = "struct"
+    ENUM = "enum"
+    CONSTANT = "constant"
+    VARIABLE = "variable"
+    MODULE = "module"  # file-level module symbol
+    SECTION = "section"  # markdown heading section
+    UNKNOWN = "unknown"
 
 
-class Language(str, Enum):
+class Language(StrEnum):
     """Languages with Tree-sitter grammars and extractors."""
-    PYTHON     = "python"
+
+    PYTHON = "python"
     JAVASCRIPT = "javascript"
     TYPESCRIPT = "typescript"
-    TSX        = "tsx"
-    GO         = "go"
-    RUST       = "rust"
-    JAVA       = "java"
-    CPP        = "cpp"
-    C          = "c"
-    CSHARP     = "csharp"
-    RAZOR      = "razor"
-    CSHTML     = "cshtml"
-    CSPROJ     = "csproj"
-    KOTLIN     = "kotlin"
-    RUBY       = "ruby"
-    MARKDOWN   = "markdown"
-    JSON       = "json"
-    YAML       = "yaml"
-    TOML       = "toml"
-    HTML       = "html"
-    CSS        = "css"
-    UNKNOWN    = "unknown"
+    TSX = "tsx"
+    GO = "go"
+    RUST = "rust"
+    JAVA = "java"
+    CPP = "cpp"
+    C = "c"
+    CSHARP = "csharp"
+    RAZOR = "razor"
+    CSHTML = "cshtml"
+    CSPROJ = "csproj"
+    KOTLIN = "kotlin"
+    RUBY = "ruby"
+    MARKDOWN = "markdown"
+    JSON = "json"
+    YAML = "yaml"
+    TOML = "toml"
+    HTML = "html"
+    CSS = "css"
+    UNKNOWN = "unknown"
 
 
 # ---------------------------------------------------------------------------
 # File
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class IndexedFile:
@@ -68,18 +70,20 @@ class IndexedFile:
     A file that has been discovered and (optionally) parsed.
     `hash` is SHA-256 of file content — used for incremental re-indexing.
     """
-    path: str               # absolute path on disk
-    rel_path: str           # path relative to repo root — stable key
+
+    path: str  # absolute path on disk
+    rel_path: str  # path relative to repo root — stable key
     language: Language
-    hash: str               # SHA-256 of file content
+    hash: str  # SHA-256 of file content
     size_bytes: int
-    id: Optional[int] = None
-    indexed_at: Optional[datetime] = None
+    id: int | None = None
+    indexed_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
 # Symbol  (output of Tree-sitter parsing)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Symbol:
@@ -90,25 +94,27 @@ class Symbol:
     `body` is the full source text of the symbol (verbatim from the file).
     `parent_id` links methods back to their enclosing class symbol.
     """
+
     file_id: int
     name: str
-    qualified_name: str         # e.g. "LoginView.authenticate_user"
+    qualified_name: str  # e.g. "LoginView.authenticate_user"
     kind: SymbolKind
-    line_start: int             # 1-indexed
-    line_end: int               # 1-indexed, inclusive
-    signature: str              # e.g. "def authenticate_user(self, username: str) -> User"
-    body: str                   # full source text
-    docstring: Optional[str] = None
+    line_start: int  # 1-indexed
+    line_end: int  # 1-indexed, inclusive
+    signature: str  # e.g. "def authenticate_user(self, username: str) -> User"
+    body: str  # full source text
+    docstring: str | None = None
     decorators: list[str] = field(default_factory=list)
     is_public: bool = True
-    parent_id: Optional[int] = None   # enclosing class/struct symbol id
-    id: Optional[int] = None
-    context_summary: Optional[str] = None  # LLM-generated summary (contextual chunking)
+    parent_id: int | None = None  # enclosing class/struct symbol id
+    id: int | None = None
+    context_summary: str | None = None  # LLM-generated summary (contextual chunking)
 
 
 # ---------------------------------------------------------------------------
 # Call edge
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class CallEdge:
@@ -127,16 +133,18 @@ class CallEdge:
     prefer symbols whose qualified_name starts with "UserService." over bare
     name-only matches — dramatically reducing false-positive edges.
     """
+
     caller_id: int
     callee_name: str
     line: int
-    callee_id: Optional[int] = None
-    callee_type_hint: Optional[str] = None
+    callee_id: int | None = None
+    callee_type_hint: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # Type edge
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TypeEdge:
@@ -149,15 +157,17 @@ class TypeEdge:
       "trait_impl" — Rust impl Trait for Type
       "embedded"   — Go struct embedding
     """
-    from_symbol_id: int      # local idx during parse, remapped by Indexer to DB id
+
+    from_symbol_id: int  # local idx during parse, remapped by Indexer to DB id
     to_type_name: str
     edge_kind: str
-    to_symbol_id: Optional[int] = None
+    to_symbol_id: int | None = None
 
 
 # ---------------------------------------------------------------------------
 # Import edge
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ImportEdge:
@@ -165,14 +175,16 @@ class ImportEdge:
     Tracks what a file imports and from where.
     `imported_names` is ["*"] for wildcard imports.
     """
+
     file_id: int
-    imported_from: str          # module path, e.g. "django.contrib.auth"
-    imported_names: list[str]   # ["authenticate", "logout"]
+    imported_from: str  # module path, e.g. "django.contrib.auth"
+    imported_names: list[str]  # ["authenticate", "logout"]
 
 
 # ---------------------------------------------------------------------------
 # Chunk  (output of Chunker — what gets embedded)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Chunk:
@@ -191,16 +203,18 @@ class Chunk:
         def authenticate_user(self, username, password):
             ...
     """
+
     symbol_id: int
-    chunk_text: str          # context header + symbol body
-    token_count: int         # pre-computed via tiktoken
-    embedding: Optional[list[float]] = None
-    id: Optional[int] = None
+    chunk_text: str  # context header + symbol body
+    token_count: int  # pre-computed via tiktoken
+    embedding: list[float] | None = None
+    id: int | None = None
 
 
 # ---------------------------------------------------------------------------
 # Search result  (output of Retrieval)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class SearchResult:
@@ -208,17 +222,19 @@ class SearchResult:
     A single result from any retrieval method, before fusion/reranking.
     `source` tracks which retrieval method produced it for RRF fusion.
     """
+
     chunk: Chunk
     symbol: Symbol
     file: IndexedFile
     score: float
     rank: int
-    source: str   # "vector" | "bm25" | "graph_expansion"
+    source: str  # "vector" | "bm25" | "graph_expansion"
 
 
 # ---------------------------------------------------------------------------
 # Retrieved context  (final output sent to LLM)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class RetrievedContext:
@@ -226,6 +242,7 @@ class RetrievedContext:
     The assembled context block ready to be injected into an LLM prompt.
     `context_text` is the final formatted string within the token budget.
     """
+
     query: str
     results: list[SearchResult]
     context_text: str

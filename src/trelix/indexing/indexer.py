@@ -37,19 +37,18 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
-from trelix.indexing.chunker import Chunker, ContextualChunker
 from trelix.core.config import IndexConfig
 from trelix.core.models import IndexedFile
 from trelix.embedder.base import BaseEmbedder, make_embedder
+from trelix.indexing.chunker import Chunker, ContextualChunker
 from trelix.indexing.parser.registry import get_parser
+from trelix.indexing.walker import FileWalker
 from trelix.store.db import Database
 from trelix.store.vector import BaseVectorStore, make_vector_store
-from trelix.indexing.walker import FileWalker
 
 logger = logging.getLogger("trelix.indexing")
 
@@ -58,18 +57,21 @@ logger = logging.getLogger("trelix.indexing")
 # Internal data-transfer objects (not part of the public API)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _ParsedFile:
     """Carries the result of Phase 1 for a single file."""
+
     file: IndexedFile
-    parse_result: object          # ParseResult | None
-    skipped: bool = False         # True  → hash unchanged, nothing to do
-    error: Optional[str] = None   # non-None → parse failed
+    parse_result: object  # ParseResult | None
+    skipped: bool = False  # True  → hash unchanged, nothing to do
+    error: str | None = None  # non-None → parse failed
 
 
 @dataclass
 class _PendingChunk:
     """A chunk that has been inserted into the DB and is waiting to be embedded."""
+
     chunk_id: int
     chunk_text: str
     token_count: int
@@ -78,6 +80,7 @@ class _PendingChunk:
 # ---------------------------------------------------------------------------
 # TPM rate limiters
 # ---------------------------------------------------------------------------
+
 
 class _TpmRateLimiter:
     """
@@ -107,7 +110,7 @@ class _TpmRateLimiter:
             self._window_start = now
             elapsed = 0.0
         if self._used + tokens > self._limit:
-            wait = 61.0 - elapsed   # +1 s safety buffer
+            wait = 61.0 - elapsed  # +1 s safety buffer
             self._console.print(
                 f"[yellow]⏸  TPM limit ({self._limit:,}/min) reached — "
                 f"waiting {wait:.1f} s[/yellow]"
@@ -147,7 +150,7 @@ class _AsyncTpmRateLimiter:
                 self._window_start = now
                 elapsed = 0.0
             if self._used + tokens > self._limit:
-                wait = 61.0 - elapsed   # +1 s safety buffer
+                wait = 61.0 - elapsed  # +1 s safety buffer
                 self._console.print(
                     f"[yellow]⏸  TPM limit ({self._limit:,}/min) reached — "
                     f"waiting {wait:.1f} s[/yellow]"
@@ -162,6 +165,7 @@ class _AsyncTpmRateLimiter:
 # Indexer
 # ---------------------------------------------------------------------------
 
+
 class Indexer:
     """
     Top-level indexer.  Call `index()` to build or update the index.
@@ -173,11 +177,11 @@ class Indexer:
 
     # Phase weight allocation for overall progress (must sum to 1.0)
     _PHASE_WEIGHTS = {
-        0: (0.00, 0.05),   # discovery
-        1: (0.05, 0.30),   # parse
-        2: (0.30, 0.50),   # insert / chunk
-        3: (0.50, 0.95),   # embed
-        4: (0.95, 1.00),   # resolve
+        0: (0.00, 0.05),  # discovery
+        1: (0.05, 0.30),  # parse
+        2: (0.30, 0.50),  # insert / chunk
+        3: (0.50, 0.95),  # embed
+        4: (0.95, 1.00),  # resolve
     }
 
     def __init__(
@@ -214,6 +218,7 @@ class Indexer:
         try:
             if embedder_cfg.provider == "azure":
                 from openai import AzureOpenAI
+
                 llm_client = AzureOpenAI(
                     api_key=embedder_cfg.azure_api_key,
                     azure_endpoint=embedder_cfg.azure_endpoint or "",
@@ -225,6 +230,7 @@ class Indexer:
                 )
             else:
                 from openai import OpenAI
+
                 llm_client = OpenAI(api_key=embedder_cfg.openai_api_key)
                 logger.info(
                     "ContextualChunker: using OpenAI model=%s",
@@ -232,8 +238,7 @@ class Indexer:
                 )
         except Exception as exc:
             logger.warning(
-                "ContextualChunker: could not build LLM client (%s) — "
-                "falling back to base Chunker",
+                "ContextualChunker: could not build LLM client (%s) — falling back to base Chunker",
                 exc,
             )
 
@@ -251,12 +256,14 @@ class Indexer:
             return
         lo, hi = self._PHASE_WEIGHTS[phase]
         overall = lo + (hi - lo) * min(max(phase_fraction, 0.0), 1.0)
-        self._progress_cb({
-            "phase": phase,
-            "phase_label": phase_label,
-            "progress": round(overall, 4),
-            "stats": dict(stats),
-        })
+        self._progress_cb(
+            {
+                "phase": phase,
+                "phase_label": phase_label,
+                "progress": round(overall, 4),
+                "stats": dict(stats),
+            }
+        )
 
     def index(self) -> dict:
         t_start = time.perf_counter()
@@ -331,8 +338,12 @@ class Indexer:
         logger.info(
             "Indexing complete: files_indexed=%d files_skipped=%d symbols=%d "
             "chunks=%d errors=%d elapsed=%.2fs",
-            stats["files_indexed"], stats["files_skipped"], stats["symbols_extracted"],
-            stats["chunks_embedded"], stats["errors"], stats["elapsed_seconds"],
+            stats["files_indexed"],
+            stats["files_skipped"],
+            stats["symbols_extracted"],
+            stats["chunks_embedded"],
+            stats["errors"],
+            stats["elapsed_seconds"],
         )
         self._console.print(f"\n[green]Done.[/green] {stats}")
         return stats
@@ -341,9 +352,7 @@ class Indexer:
     # Phase 1: parallel parse
     # ──────────────────────────────────────────────────────────────────────
 
-    def _parse_all(
-        self, files: list[IndexedFile], stats: dict[str, int]
-    ) -> list[_ParsedFile]:
+    def _parse_all(self, files: list[IndexedFile], stats: dict[str, int]) -> list[_ParsedFile]:
         """Submit all files to a thread pool; collect _ParsedFile results."""
         results: list[_ParsedFile] = []
         total = len(files)
@@ -359,9 +368,7 @@ class Indexer:
             task = progress.add_task("Parsing…", total=len(files))
 
             with ThreadPoolExecutor(max_workers=self.config.parse_workers) as pool:
-                future_to_file = {
-                    pool.submit(self._parse_one, f): f for f in files
-                }
+                future_to_file = {pool.submit(self._parse_one, f): f for f in files}
                 for future in as_completed(future_to_file):
                     progress.advance(task)
                     done_count += 1
@@ -416,7 +423,9 @@ class Indexer:
                 done_count += 1
                 if pf.skipped or pf.parse_result is None:
                     stats["files_skipped"] += 1
-                    self._report_progress(2, "Building symbols & chunks…", done_count / total, stats)
+                    self._report_progress(
+                        2, "Building symbols & chunks…", done_count / total, stats
+                    )
                     continue
                 try:
                     pending = self._insert_one(pf, stats)
@@ -500,11 +509,13 @@ class Indexer:
         with self.db.transaction():
             for chunk in chunks:
                 chunk_id = self.db.insert_chunk(chunk)
-                pending.append(_PendingChunk(
-                    chunk_id=chunk_id,
-                    chunk_text=chunk.chunk_text,
-                    token_count=chunk.token_count,
-                ))
+                pending.append(
+                    _PendingChunk(
+                        chunk_id=chunk_id,
+                        chunk_text=chunk.chunk_text,
+                        token_count=chunk.token_count,
+                    )
+                )
 
         return pending
 
@@ -512,9 +523,7 @@ class Indexer:
     # Phase 3: token-aware batch embed + store
     # ──────────────────────────────────────────────────────────────────────
 
-    def _batch_embed_and_store(
-        self, pending: list[_PendingChunk], stats: dict[str, int]
-    ) -> None:
+    def _batch_embed_and_store(self, pending: list[_PendingChunk], stats: dict[str, int]) -> None:
         """
         Embed all pending chunks in token-aware batches, then write vectors.
 
@@ -541,7 +550,7 @@ class Indexer:
 
             for batch in batches:
                 batch_tokens = sum(p.token_count for p in batch)
-                limiter.acquire(batch_tokens)   # may sleep to respect TPM limit
+                limiter.acquire(batch_tokens)  # may sleep to respect TPM limit
 
                 embeddings = self.embedder.embed([p.chunk_text for p in batch])
                 self.vector_store.upsert_batch(
@@ -551,7 +560,8 @@ class Indexer:
                 embedded_so_far += len(batch)
                 progress.advance(task, advance=len(batch))
                 self._report_progress(
-                    3, "Embedding chunks…",
+                    3,
+                    "Embedding chunks…",
                     embedded_so_far / total_chunks if total_chunks else 1.0,
                     stats,
                 )
@@ -604,21 +614,18 @@ class Indexer:
                 # during a potentially long sleep.
                 await limiter.acquire(batch_tokens)
                 async with semaphore:
-                    embeddings = await self.embedder.embed_async(
-                        [p.chunk_text for p in batch]
-                    )
+                    embeddings = await self.embedder.embed_async([p.chunk_text for p in batch])
                 # upsert_batch is sync — run in executor to not block event loop
                 pairs = [(p.chunk_id, emb) for p, emb in zip(batch, embeddings)]
-                await loop.run_in_executor(
-                    upsert_executor, self.vector_store.upsert_batch, pairs
-                )
+                await loop.run_in_executor(upsert_executor, self.vector_store.upsert_batch, pairs)
                 # Update shared counters safely
                 async with counter_lock:
                     embedded_so_far += len(batch)
                     stats["chunks_embedded"] += len(batch)
                     progress.advance(task, advance=len(batch))
                     self._report_progress(
-                        3, "Embedding chunks…",
+                        3,
+                        "Embedding chunks…",
                         embedded_so_far / total_chunks if total_chunks else 1.0,
                         stats,
                     )
@@ -664,6 +671,7 @@ class Indexer:
         Unresolvable types (external libs) remain with to_symbol_id = None.
         """
         from trelix.core.models import TypeEdge
+
         valid: list[TypeEdge] = []
         for edge in edges:
             db_from_id = local_to_db.get(edge.from_symbol_id)
@@ -697,6 +705,7 @@ class Indexer:
             {"status": "error", "error": "<message>"}
         """
         import hashlib
+
         from trelix.core.models import Language
         from trelix.indexing.walker import EXTENSION_MAP
 
@@ -782,7 +791,7 @@ class Indexer:
             logger.error("index_file failed for %s: %s", file_path, exc)
             return {"status": "error", "error": str(exc)}
 
-    def _get_file_id(self, rel_path: str) -> Optional[int]:
+    def _get_file_id(self, rel_path: str) -> int | None:
         """Return the DB id for a file by rel_path, or None if not indexed."""
         row = self.db._conn.execute(
             "SELECT id FROM files WHERE rel_path = ?", (rel_path,)
@@ -793,6 +802,7 @@ class Indexer:
 # ---------------------------------------------------------------------------
 # Utility: token-aware batch builder
 # ---------------------------------------------------------------------------
+
 
 def _make_token_batches(
     chunks: list[_PendingChunk],

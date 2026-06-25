@@ -20,10 +20,10 @@ from trelix.core.models import (
 from trelix.retrieval.grep_search import grep_search
 from trelix.store.db import Database
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_file(db: Database, rel_path: str = "src/auth/login.py") -> int:
     f = IndexedFile(
@@ -69,6 +69,7 @@ def _insert_chunk(db: Database, symbol_id: int, text: str) -> int:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def db(tmp_path: Path) -> Database:
     """Fresh SQLite DB per test."""
@@ -79,12 +80,15 @@ def db(tmp_path: Path) -> Database:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestGrepSearch:
     def test_exact_symbol_name_match(self, db: Database) -> None:
         """Searching the exact function name returns that symbol with score 1.0."""
         file_id = _make_file(db)
         sym_id = _insert_symbol(
-            db, file_id, "authenticate_user",
+            db,
+            file_id,
+            "authenticate_user",
             "def authenticate_user(username, password): pass",
         )
         _insert_chunk(db, sym_id, "authenticate user impl")
@@ -104,7 +108,9 @@ class TestGrepSearch:
         """Prefix of a symbol name is matched via LIKE query."""
         file_id = _make_file(db)
         sym_id = _insert_symbol(
-            db, file_id, "authenticate_user",
+            db,
+            file_id,
+            "authenticate_user",
             "def authenticate_user(username, password): pass",
         )
         _insert_chunk(db, sym_id, "authenticate impl")
@@ -120,17 +126,19 @@ class TestGrepSearch:
         """A pattern that appears in the body (but not the name) is found at score 0.8."""
         file_id = _make_file(db)
         sym_id = _insert_symbol(
-            db, file_id, "process_request",
-            "def process_request(req):\n    result = call_downstream_service(req)\n    return result",
+            db,
+            file_id,
+            "process_request",
+            "def process_request(req):\n"
+            "    result = call_downstream_service(req)\n"
+            "    return result",
         )
         _insert_chunk(db, sym_id, "process request")
 
         results = grep_search(db, "call_downstream_service", k=10)
 
         assert len(results) >= 1
-        body_match = next(
-            (r for r in results if r.symbol.name == "process_request"), None
-        )
+        body_match = next((r for r in results if r.symbol.name == "process_request"), None)
         assert body_match is not None
         assert body_match.score == 0.8
 
@@ -146,7 +154,9 @@ class TestGrepSearch:
         """All results must carry source='grep'."""
         file_id = _make_file(db)
         sym_id = _insert_symbol(
-            db, file_id, "compute_hash",
+            db,
+            file_id,
+            "compute_hash",
             "def compute_hash(data): return hash(data)",
         )
         _insert_chunk(db, sym_id, "compute hash")
@@ -161,7 +171,9 @@ class TestGrepSearch:
         file_id = _make_file(db)
         for i in range(15):
             sym_id = _insert_symbol(
-                db, file_id, f"validate_item_{i}",
+                db,
+                file_id,
+                f"validate_item_{i}",
                 f"def validate_item_{i}(v): return validate(v)",
             )
             _insert_chunk(db, sym_id, f"validate item {i}")
@@ -175,7 +187,9 @@ class TestGrepSearch:
         """
         file_id = _make_file(db)
         sym_id = _insert_symbol(
-            db, file_id, "check_token",
+            db,
+            file_id,
+            "check_token",
             "def check_token(tok):\n    return check_token_validity(tok)",
         )
         _insert_chunk(db, sym_id, "check token validation")
@@ -189,7 +203,9 @@ class TestGrepSearch:
         """use_regex=True applies a compiled regex to symbol bodies."""
         file_id = _make_file(db)
         sym_id = _insert_symbol(
-            db, file_id, "send_email",
+            db,
+            file_id,
+            "send_email",
             "def send_email(to):\n    smtp.sendmail(FROM, to, message)",
         )
         _insert_chunk(db, sym_id, "send email impl")
@@ -222,11 +238,15 @@ class TestGrepSearch:
         file_id_api = _make_file(db, rel_path="src/api/views.py")
 
         sym_auth = _insert_symbol(
-            db, file_id_auth, "login_handler",
+            db,
+            file_id_auth,
+            "login_handler",
             "def login_handler(): pass",
         )
         sym_api = _insert_symbol(
-            db, file_id_api, "login_handler",
+            db,
+            file_id_api,
+            "login_handler",
             "def login_handler(): pass",
         )
         _insert_chunk(db, sym_auth, "login auth")
@@ -235,6 +255,4 @@ class TestGrepSearch:
         results = grep_search(db, "login_handler", k=10, path_filter="src/auth")
 
         file_ids = {r.file.rel_path for r in results}
-        assert all("auth" in p for p in file_ids), (
-            f"Expected only auth files, got: {file_ids}"
-        )
+        assert all("auth" in p for p in file_ids), f"Expected only auth files, got: {file_ids}"

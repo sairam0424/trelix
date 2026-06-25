@@ -11,7 +11,6 @@ Key insight stolen from Aider's repo-map:
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Optional
 
 import tiktoken
 
@@ -36,7 +35,7 @@ class ContextAssembler:
         self,
         query: str,
         results: list[SearchResult],
-        intent: Optional[str] = None,
+        intent: str | None = None,
         assembly_mode: str = "greedy",
     ) -> RetrievedContext:
         """
@@ -126,9 +125,7 @@ class ContextAssembler:
                     tokens_used += result.chunk.token_count
         return selected
 
-    def _format_context(
-        self, results: list[SearchResult], intent: Optional[str] = None
-    ) -> str:
+    def _format_context(self, results: list[SearchResult], intent: str | None = None) -> str:
         """
         Format results into a clean, LLM-readable context block.
 
@@ -154,17 +151,14 @@ class ContextAssembler:
             blocks.append(f"=== {file_path} ===\n")
             for r in sorted(file_results, key=lambda x: x.symbol.line_start):
                 header = (
-                    f"[Lines {r.symbol.line_start}-{r.symbol.line_end}] "
-                    f"{r.symbol.qualified_name}"
+                    f"[Lines {r.symbol.line_start}-{r.symbol.line_end}] {r.symbol.qualified_name}"
                 )
                 blocks.append(f"{header}\n{r.chunk.chunk_text}\n")
 
         body = "\n".join(blocks)
         return f"{preamble}\n{body}" if preamble else body
 
-    def _make_preamble(
-        self, results: list[SearchResult], intent: Optional[str]
-    ) -> str:
+    def _make_preamble(self, results: list[SearchResult], intent: str | None) -> str:
         """
         Return an intent-specific preamble that orients the LLM before it reads code.
 

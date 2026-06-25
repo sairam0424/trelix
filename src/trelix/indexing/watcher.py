@@ -250,6 +250,7 @@ class FileWatcher:
 # watchdog event handler
 # ---------------------------------------------------------------------------
 
+
 class _TrelixEventHandler:
     """
     Watchdog FileSystemEventHandler that forwards events to FileWatcher.
@@ -291,6 +292,7 @@ class _TrelixEventHandler:
 # ---------------------------------------------------------------------------
 # Small helpers (avoid attribute access on untyped watchdog objects)
 # ---------------------------------------------------------------------------
+
 
 def _is_file_event(event: object) -> bool:
     return not getattr(event, "is_directory", True)

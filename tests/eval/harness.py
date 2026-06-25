@@ -156,10 +156,10 @@ class EvalHarness:
             context = retriever.retrieve(query)
             results: list[SearchResult] = context.results
 
-            r1  = recall_at_k(results, expected_file, k=1)
-            r5  = recall_at_k(results, expected_file, k=5)
+            r1 = recall_at_k(results, expected_file, k=1)
+            r5 = recall_at_k(results, expected_file, k=5)
             r10 = recall_at_k(results, expected_file, k=10)
-            rr  = reciprocal_rank(results, expected_file)
+            rr = reciprocal_rank(results, expected_file)
             ndcg = ndcg_at_k(results, expected_file, k=10)
             rank = find_rank(results, expected_file)
 
@@ -199,13 +199,9 @@ class EvalHarness:
                 f"Recall@5 = {report.mean_recall_at_5:.3f} < required {min_recall5:.3f}"
             )
         if report.mrr < min_mrr:
-            failures.append(
-                f"MRR = {report.mrr:.3f} < required {min_mrr:.3f}"
-            )
+            failures.append(f"MRR = {report.mrr:.3f} < required {min_mrr:.3f}")
         if report.mean_ndcg_at_10 < min_ndcg:
-            failures.append(
-                f"NDCG@10 = {report.mean_ndcg_at_10:.3f} < required {min_ndcg:.3f}"
-            )
+            failures.append(f"NDCG@10 = {report.mean_ndcg_at_10:.3f} < required {min_ndcg:.3f}")
 
         if failures:
             detail_lines = []

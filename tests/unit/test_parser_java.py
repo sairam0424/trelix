@@ -13,13 +13,13 @@ Covers:
 - Call edges
 - extends/implements TypeEdge generation
 """
+
 from __future__ import annotations
 
 import pytest
 
 from trelix.core.models import SymbolKind
 from trelix.indexing.parser.extractors.java import JavaParser
-
 
 FILE_ID = 99
 
@@ -32,6 +32,7 @@ def parser() -> JavaParser:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def syms_by_kind(result, kind: SymbolKind):
     return [s for s in result.symbols if s.kind == kind]
@@ -121,6 +122,7 @@ def test_interface_methods_extracted(parser):
 # Method extraction and parent linkage
 # ---------------------------------------------------------------------------
 
+
 def test_method_extracted(parser):
     result = parser.parse(CLASS_SOURCE, FILE_ID)
     methods = syms_by_kind(result, SymbolKind.METHOD)
@@ -158,6 +160,7 @@ def test_method_signature(parser):
 # ---------------------------------------------------------------------------
 # Constructor extraction
 # ---------------------------------------------------------------------------
+
 
 def test_constructor_extracted(parser):
     result = parser.parse(CLASS_SOURCE, FILE_ID)
@@ -320,6 +323,7 @@ def test_call_edges_extracted(parser):
 # Parse errors
 # ---------------------------------------------------------------------------
 
+
 def test_clean_parse_no_errors(parser):
     result = parser.parse(CLASS_SOURCE, FILE_ID)
     assert result.parse_errors == 0
@@ -328,6 +332,7 @@ def test_clean_parse_no_errors(parser):
 # ---------------------------------------------------------------------------
 # Language name
 # ---------------------------------------------------------------------------
+
 
 def test_language_name(parser):
     assert parser.language_name == "java"

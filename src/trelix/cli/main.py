@@ -38,6 +38,7 @@ err_console = Console(stderr=True)
 # Logging helpers
 # ---------------------------------------------------------------------------
 
+
 def _setup_logging(verbose: bool = False) -> None:
     """Configure the trelix logger. Call once at CLI entry."""
     level = logging.DEBUG if verbose else logging.WARNING
@@ -53,6 +54,7 @@ def _setup_logging(verbose: bool = False) -> None:
 # ---------------------------------------------------------------------------
 # index
 # ---------------------------------------------------------------------------
+
 
 @app.command()
 def index(
@@ -90,12 +92,12 @@ def index(
     table = Table(title="Index Summary", show_header=True, header_style="bold cyan")
     table.add_column("Metric", style="dim")
     table.add_column("Value", justify="right")
-    table.add_row("Files found",       str(stats.get("files_found", 0)))
-    table.add_row("Files indexed",     str(stats.get("files_indexed", 0)))
-    table.add_row("Files skipped",     str(stats.get("files_skipped", 0)))
+    table.add_row("Files found", str(stats.get("files_found", 0)))
+    table.add_row("Files indexed", str(stats.get("files_indexed", 0)))
+    table.add_row("Files skipped", str(stats.get("files_skipped", 0)))
     table.add_row("Symbols extracted", str(stats.get("symbols_extracted", 0)))
-    table.add_row("Chunks embedded",   str(stats.get("chunks_embedded", 0)))
-    table.add_row("Elapsed",           f"{elapsed:.1f}s")
+    table.add_row("Chunks embedded", str(stats.get("chunks_embedded", 0)))
+    table.add_row("Elapsed", f"{elapsed:.1f}s")
     if stats.get("errors"):
         table.add_row("[red]Errors[/red]", f"[red]{stats['errors']}[/red]")
     console.print(table)
@@ -104,6 +106,7 @@ def index(
 # ---------------------------------------------------------------------------
 # search
 # ---------------------------------------------------------------------------
+
 
 @app.command()
 def search(
@@ -138,20 +141,22 @@ def search(
     if json_output:
         results_json = []
         for r in context.results:
-            results_json.append({
-                "file":   r.file.rel_path,
-                "symbol": r.symbol.name,
-                "lines":  f"{r.symbol.line_start}-{r.symbol.line_end}",
-                "score":  round(r.score, 4),
-            })
+            results_json.append(
+                {
+                    "file": r.file.rel_path,
+                    "symbol": r.symbol.name,
+                    "lines": f"{r.symbol.line_start}-{r.symbol.line_end}",
+                    "score": round(r.score, 4),
+                }
+            )
         print(json.dumps({"status": "ok", "results": results_json}))
         return
 
     table = Table(title=f"Search: {query}", show_header=True, header_style="bold cyan")
-    table.add_column("File",   style="dim", max_width=40)
+    table.add_column("File", style="dim", max_width=40)
     table.add_column("Symbol", style="bold")
-    table.add_column("Lines",  justify="right")
-    table.add_column("Score",  justify="right")
+    table.add_column("Lines", justify="right")
+    table.add_column("Score", justify="right")
 
     for r in context.results:
         table.add_row(
@@ -166,6 +171,7 @@ def search(
 # ---------------------------------------------------------------------------
 # ask
 # ---------------------------------------------------------------------------
+
 
 @app.command()
 def ask(
@@ -218,6 +224,7 @@ def ask(
 # query (human-readable, always Rich, no --json flag)
 # ---------------------------------------------------------------------------
 
+
 @app.command()
 def query(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
@@ -255,10 +262,10 @@ def query(
     )
 
     table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("File",   style="dim", max_width=40)
+    table.add_column("File", style="dim", max_width=40)
     table.add_column("Symbol", style="bold")
-    table.add_column("Lines",  justify="right")
-    table.add_column("Score",  justify="right")
+    table.add_column("Lines", justify="right")
+    table.add_column("Score", justify="right")
 
     for r in context.results:
         table.add_row(
@@ -273,6 +280,7 @@ def query(
 # ---------------------------------------------------------------------------
 # stats
 # ---------------------------------------------------------------------------
+
 
 @app.command()
 def stats(
@@ -298,9 +306,9 @@ def stats(
     try:
         with Database(db_path) as db:
             conn = db._conn
-            file_count   = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            file_count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             symbol_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
-            chunk_count  = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             db_size_bytes = db_path.stat().st_size
     except Exception as exc:
         err_console.print(f"[red]Failed to read index:[/red] {exc}")
@@ -312,17 +320,18 @@ def stats(
 
     table = Table(show_header=True, header_style="bold cyan")
     table.add_column("Metric", style="dim")
-    table.add_column("Value",  justify="right")
-    table.add_row("Files indexed",   str(file_count))
-    table.add_row("Symbols",         str(symbol_count))
-    table.add_row("Chunks",          str(chunk_count))
-    table.add_row("DB size",         f"{db_size_kb:.1f} KB")
+    table.add_column("Value", justify="right")
+    table.add_row("Files indexed", str(file_count))
+    table.add_row("Symbols", str(symbol_count))
+    table.add_row("Chunks", str(chunk_count))
+    table.add_row("DB size", f"{db_size_kb:.1f} KB")
     console.print(table)
 
 
 # ---------------------------------------------------------------------------
 # update-index
 # ---------------------------------------------------------------------------
+
 
 @app.command("update-index")
 def update_index(
@@ -378,7 +387,9 @@ def migrate_vectors(
     from trelix.store.vector_qdrant import QdrantVectorStore
 
     if to != "qdrant":
-        err_console.print(f"[red]Unsupported target backend:[/red] {to!r}. Only 'qdrant' is supported.")
+        err_console.print(
+            f"[red]Unsupported target backend:[/red] {to!r}. Only 'qdrant' is supported."
+        )
         raise typer.Exit(1)
 
     try:
@@ -400,6 +411,7 @@ def migrate_vectors(
     try:
         conn.enable_load_extension(True)
         import sqlite_vec
+
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
     except Exception as exc:
@@ -414,7 +426,9 @@ def migrate_vectors(
         raise typer.Exit(1) from exc
 
     if row is None:
-        console.print("[yellow]No embeddings found in the SQLite store — nothing to migrate.[/yellow]")
+        console.print(
+            "[yellow]No embeddings found in the SQLite store — nothing to migrate.[/yellow]"
+        )
         return
 
     raw_bytes: bytes = row[0]
@@ -477,6 +491,7 @@ def migrate_vectors(
 # watch
 # ---------------------------------------------------------------------------
 
+
 @app.command()
 def watch(
     repo: str = typer.Argument(..., help="Path to the repository to watch"),
@@ -524,6 +539,7 @@ def watch(
 
     try:
         import time as _time
+
         while True:
             _time.sleep(1)
     except KeyboardInterrupt:

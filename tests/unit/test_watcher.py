@@ -8,17 +8,15 @@ without the watchdog package being installed and without touching the disk.
 from __future__ import annotations
 
 import sys
-import threading
 import time
 import types
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
-
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Helpers to build lightweight mock watchdog events
 # ---------------------------------------------------------------------------
+
 
 def _make_event(event_type: str, src_path: str, is_directory: bool = False) -> MagicMock:
     event = MagicMock()
@@ -39,6 +37,7 @@ def _make_dir_event(event_type: str, src_path: str) -> MagicMock:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_config(repo_path: str = "/repo") -> MagicMock:
     config = MagicMock()
@@ -75,6 +74,7 @@ def _make_walker(repo_path: str = "/repo") -> MagicMock:
 # Inject a minimal fake 'watchdog' package so tests run without it installed
 # ---------------------------------------------------------------------------
 
+
 def _inject_fake_watchdog() -> None:
     """Register a minimal watchdog stub in sys.modules (idempotent)."""
     if "watchdog" in sys.modules:
@@ -103,8 +103,8 @@ def _inject_fake_watchdog() -> None:
     observers_mod.Observer = FakeObserver
     events_mod.FileSystemEventHandler = FakeFileSystemEventHandler
 
-    watchdog_pkg.observers = observers_mod   # type: ignore[attr-defined]
-    watchdog_pkg.events = events_mod         # type: ignore[attr-defined]
+    watchdog_pkg.observers = observers_mod  # type: ignore[attr-defined]
+    watchdog_pkg.events = events_mod  # type: ignore[attr-defined]
 
     sys.modules["watchdog"] = watchdog_pkg
     sys.modules["watchdog.observers"] = observers_mod
@@ -116,10 +116,10 @@ _inject_fake_watchdog()
 # Now we can safely import the module under test
 from trelix.indexing.watcher import FileWatcher, _TrelixEventHandler  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Test: ImportError when watchdog not installed
 # ---------------------------------------------------------------------------
+
 
 class TestWatchdogImportError(unittest.TestCase):
     """Verify a friendly ImportError is raised when watchdog is absent."""
@@ -145,6 +145,7 @@ class TestWatchdogImportError(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Test: modified / created events trigger debounced index_file call
 # ---------------------------------------------------------------------------
+
 
 class TestModifiedCreatedEvents(unittest.TestCase):
     def _make_watcher(self, debounce_ms: int = 50) -> FileWatcher:
@@ -196,6 +197,7 @@ class TestModifiedCreatedEvents(unittest.TestCase):
 # Test: deleted event → delete_file_by_path called
 # ---------------------------------------------------------------------------
 
+
 class TestDeletedEvent(unittest.TestCase):
     def test_deleted_event_removes_index_data(self) -> None:
         """on_deleted should call db.delete_file_by_path with the correct paths."""
@@ -236,6 +238,7 @@ class TestDeletedEvent(unittest.TestCase):
 # Test: gitignore-filtered files are NOT indexed
 # ---------------------------------------------------------------------------
 
+
 class TestGitignoreFilter(unittest.TestCase):
     def test_gitignore_filtered_file_not_indexed(self) -> None:
         """Files matching .gitignore must not be re-indexed on modification."""
@@ -272,6 +275,7 @@ class TestGitignoreFilter(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Test: rapid edits debounce to a single index_file call
 # ---------------------------------------------------------------------------
+
 
 class TestDebouncing(unittest.TestCase):
     def test_rapid_edits_collapsed_to_single_call(self) -> None:
@@ -336,6 +340,7 @@ class TestDebouncing(unittest.TestCase):
 # Test: start / stop lifecycle
 # ---------------------------------------------------------------------------
 
+
 class TestLifecycle(unittest.TestCase):
     def test_start_stop_calls_observer(self) -> None:
         """start() and stop() must call Observer.start/stop/join in order."""
@@ -348,6 +353,7 @@ class TestLifecycle(unittest.TestCase):
         with patch("watchdog.observers.Observer", return_value=mock_observer):
             # Reload the Observer import inside watcher.start() by patching the module attr
             import watchdog.observers as _obs_mod
+
             original_observer = _obs_mod.Observer
             _obs_mod.Observer = MagicMock(return_value=mock_observer)
             try:
@@ -365,17 +371,18 @@ class TestLifecycle(unittest.TestCase):
 # Test: db.delete_file_by_path (unit — no watchdog required)
 # ---------------------------------------------------------------------------
 
+
 class TestDeleteFileByPath(unittest.TestCase):
     """
     White-box tests for Database.delete_file_by_path().
     Uses an in-memory SQLite database to avoid any filesystem coupling.
     """
 
-    def _make_db(self) -> "object":
+    def _make_db(self) -> object:
         """Create a Database backed by in-memory SQLite."""
-        import sqlite3
         import tempfile
         from pathlib import Path as P
+
         from trelix.store.db import Database
 
         # Use a temporary file so WAL mode works (WAL requires a real path)
@@ -392,7 +399,6 @@ class TestDeleteFileByPath(unittest.TestCase):
 
     def test_delete_file_by_path_removes_file_row(self) -> None:
         from trelix.core.models import IndexedFile, Language
-        from trelix.store.db import Database
 
         db = self._make_db()
 
@@ -425,7 +431,6 @@ class TestDeleteFileByPath(unittest.TestCase):
 
     def test_delete_file_by_path_deletes_vectors(self) -> None:
         from trelix.core.models import IndexedFile, Language
-        from trelix.store.db import Database
 
         db = self._make_db()
 
@@ -441,9 +446,7 @@ class TestDeleteFileByPath(unittest.TestCase):
         mock_vs = MagicMock()
         # Patch get_chunk_ids_for_file to return fake chunk ids
         with patch.object(db, "get_chunk_ids_for_file", return_value=[10, 20, 30]):
-            result = db.delete_file_by_path(
-                "/repo/src/utils.py", "src/utils.py", mock_vs
-            )
+            result = db.delete_file_by_path("/repo/src/utils.py", "src/utils.py", mock_vs)
 
         self.assertTrue(result)
         mock_vs.delete_batch.assert_called_once_with([10, 20, 30])

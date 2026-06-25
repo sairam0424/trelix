@@ -7,7 +7,6 @@ All tests use tmp_path SQLite databases — no external services required.
 from __future__ import annotations
 
 import math
-import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,10 +24,10 @@ from trelix.core.models import (
 from trelix.store.db import Database
 from trelix.store.vector import VectorStore
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def db(tmp_path: Path) -> Database:
@@ -70,15 +69,14 @@ def sample_symbol(db: Database, sample_file: IndexedFile) -> Symbol:
 # Schema creation
 # ---------------------------------------------------------------------------
 
+
 class TestSchemaCreation:
     def test_tables_exist(self, db: Database) -> None:
         """All expected tables should be created on Database init."""
         conn = db._conn
         tables = {
             row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         for expected in ("files", "symbols", "calls", "imports", "chunks"):
             assert expected in tables, f"Table '{expected}' not found"
@@ -111,15 +109,14 @@ class TestSchemaCreation:
 # upsert_file
 # ---------------------------------------------------------------------------
 
+
 class TestUpsertFile:
     def test_insert_returns_id(self, db: Database, sample_file: IndexedFile) -> None:
         file_id = db.upsert_file(sample_file)
         assert isinstance(file_id, int)
         assert file_id > 0
 
-    def test_upsert_same_path_returns_same_id(
-        self, db: Database, sample_file: IndexedFile
-    ) -> None:
+    def test_upsert_same_path_returns_same_id(self, db: Database, sample_file: IndexedFile) -> None:
         id1 = db.upsert_file(sample_file)
         id2 = db.upsert_file(sample_file)
         assert id1 == id2
@@ -151,6 +148,7 @@ class TestUpsertFile:
 # ---------------------------------------------------------------------------
 # insert_symbol
 # ---------------------------------------------------------------------------
+
 
 class TestInsertSymbol:
     def test_insert_returns_id(self, db: Database, sample_symbol: Symbol) -> None:
@@ -201,14 +199,24 @@ class TestInsertSymbol:
         fid2 = db.upsert_file(file2)
 
         sym1 = Symbol(
-            file_id=fid1, name="login", qualified_name="login",
-            kind=SymbolKind.FUNCTION, line_start=1, line_end=5,
-            signature="def login()", body="def login(): pass",
+            file_id=fid1,
+            name="login",
+            qualified_name="login",
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=5,
+            signature="def login()",
+            body="def login(): pass",
         )
         sym2 = Symbol(
-            file_id=fid2, name="logout", qualified_name="logout",
-            kind=SymbolKind.FUNCTION, line_start=1, line_end=5,
-            signature="def logout()", body="def logout(): pass",
+            file_id=fid2,
+            name="logout",
+            qualified_name="logout",
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=5,
+            signature="def logout()",
+            body="def logout(): pass",
         )
         db.insert_symbol(sym1)
         db.insert_symbol(sym2)
@@ -221,6 +229,7 @@ class TestInsertSymbol:
 # delete_file_symbols
 # ---------------------------------------------------------------------------
 
+
 class TestDeleteFileSymbols:
     def test_delete_removes_symbols(self, db: Database, sample_symbol: Symbol) -> None:
         db.insert_symbol(sample_symbol)
@@ -229,7 +238,9 @@ class TestDeleteFileSymbols:
 
     def test_delete_removes_imports(self, db: Database, sample_file: IndexedFile) -> None:
         file_id = db.upsert_file(sample_file)
-        edge = ImportEdge(file_id=file_id, imported_from="django.contrib.auth", imported_names=["authenticate"])
+        edge = ImportEdge(
+            file_id=file_id, imported_from="django.contrib.auth", imported_names=["authenticate"]
+        )
         db.insert_imports([edge])
         db.delete_file_symbols(file_id)
         assert db.get_imports_for_file(file_id) == []
@@ -238,6 +249,7 @@ class TestDeleteFileSymbols:
 # ---------------------------------------------------------------------------
 # FTS5 search (BM25)
 # ---------------------------------------------------------------------------
+
 
 class TestFTS5Search:
     def _insert_symbol(
@@ -264,8 +276,13 @@ class TestFTS5Search:
     def test_bm25_search_finds_match(self, db: Database, sample_file: IndexedFile) -> None:
         file_id = db.upsert_file(sample_file)
         self._insert_symbol(
-            db, file_id, "authenticate_user",
-            body="def authenticate_user(username, password):\n    return check_password(username, password)",
+            db,
+            file_id,
+            "authenticate_user",
+            body=(
+                "def authenticate_user(username, password):\n"
+                "    return check_password(username, password)"
+            ),
             docstring="Authenticate a user by checking their password.",
         )
         results = db.bm25_search("authenticate password")
@@ -274,7 +291,9 @@ class TestFTS5Search:
     def test_bm25_search_returns_symbol_id(self, db: Database, sample_file: IndexedFile) -> None:
         file_id = db.upsert_file(sample_file)
         sym_id = self._insert_symbol(
-            db, file_id, "compute_hash",
+            db,
+            file_id,
+            "compute_hash",
             body="def compute_hash(data): return hashlib.sha256(data)",
             docstring="Compute SHA-256 hash of data.",
         )
@@ -287,7 +306,9 @@ class TestFTS5Search:
     ) -> None:
         file_id = db.upsert_file(sample_file)
         self._insert_symbol(
-            db, file_id, "send_email",
+            db,
+            file_id,
+            "send_email",
             body="def send_email(to, subject): smtp.send(to, subject)",
         )
         results = db.bm25_search("quantum_teleportation_algorithm_xyz")
@@ -296,7 +317,9 @@ class TestFTS5Search:
     def test_bm25_search_rank_is_float(self, db: Database, sample_file: IndexedFile) -> None:
         file_id = db.upsert_file(sample_file)
         self._insert_symbol(
-            db, file_id, "process_payment",
+            db,
+            file_id,
+            "process_payment",
             body="def process_payment(amount): stripe.charge(amount)",
             docstring="Process a Stripe payment.",
         )
@@ -311,7 +334,9 @@ class TestFTS5Search:
         """FTS5 trigger should automatically index newly inserted symbols."""
         file_id = db.upsert_file(sample_file)
         self._insert_symbol(
-            db, file_id, "validate_token",
+            db,
+            file_id,
+            "validate_token",
             body="def validate_token(token): return jwt.decode(token)",
             docstring="Validate a JWT token.",
         )
@@ -322,7 +347,9 @@ class TestFTS5Search:
         file_id = db.upsert_file(sample_file)
         for i in range(10):
             self._insert_symbol(
-                db, file_id, f"func_{i}",
+                db,
+                file_id,
+                f"func_{i}",
                 body=f"def func_{i}(): return process_data_{i}()",
                 docstring=f"Process data variant {i}.",
             )
@@ -333,6 +360,7 @@ class TestFTS5Search:
 # ---------------------------------------------------------------------------
 # Chunks
 # ---------------------------------------------------------------------------
+
 
 class TestChunks:
     def test_insert_chunk_returns_id(self, db: Database, sample_symbol: Symbol) -> None:
@@ -369,6 +397,7 @@ class TestChunks:
 # Hydration
 # ---------------------------------------------------------------------------
 
+
 class TestHydration:
     def test_get_chunk_with_context(self, db: Database, sample_symbol: Symbol) -> None:
         sym_id = db.insert_symbol(sample_symbol)
@@ -401,6 +430,7 @@ class TestHydration:
 # ---------------------------------------------------------------------------
 # VectorStore
 # ---------------------------------------------------------------------------
+
 
 class TestVectorStore:
     DIM = 4  # tiny dimension for fast tests
@@ -457,11 +487,13 @@ class TestVectorStore:
         assert all(r[0] != 5 for r in results)
 
     def test_delete_batch(self, vs: VectorStore) -> None:
-        vs.upsert_batch([
-            (20, [1.0, 0.0, 0.0, 0.0]),
-            (21, [0.0, 1.0, 0.0, 0.0]),
-            (22, [0.0, 0.0, 1.0, 0.0]),
-        ])
+        vs.upsert_batch(
+            [
+                (20, [1.0, 0.0, 0.0, 0.0]),
+                (21, [0.0, 1.0, 0.0, 0.0]),
+                (22, [0.0, 0.0, 1.0, 0.0]),
+            ]
+        )
         vs.delete_batch([20, 21])
         results = vs.search([1.0, 0.0, 0.0, 0.0], k=10)
         ids = {r[0] for r in results}
@@ -493,15 +525,18 @@ class TestVectorStore:
 # U9: Call Graph Precision — resolve_cross_file_calls() priority cascade
 # ---------------------------------------------------------------------------
 
+
 def _make_file(db: Database, rel_path: str) -> int:
     """Insert a dummy file and return its id."""
-    return db.upsert_file(IndexedFile(
-        path=f"/repo/{rel_path}",
-        rel_path=rel_path,
-        language=Language.PYTHON,
-        hash=rel_path,
-        size_bytes=100,
-    ))
+    return db.upsert_file(
+        IndexedFile(
+            path=f"/repo/{rel_path}",
+            rel_path=rel_path,
+            language=Language.PYTHON,
+            hash=rel_path,
+            size_bytes=100,
+        )
+    )
 
 
 def _make_symbol(
@@ -512,16 +547,18 @@ def _make_symbol(
     kind: SymbolKind = SymbolKind.METHOD,
 ) -> int:
     """Insert a symbol and return its DB id."""
-    return db.insert_symbol(Symbol(
-        file_id=file_id,
-        name=name,
-        qualified_name=qualified_name,
-        kind=kind,
-        line_start=1,
-        line_end=10,
-        signature=f"def {name}(self)",
-        body=f"def {name}(self): pass",
-    ))
+    return db.insert_symbol(
+        Symbol(
+            file_id=file_id,
+            name=name,
+            qualified_name=qualified_name,
+            kind=kind,
+            line_start=1,
+            line_end=10,
+            signature=f"def {name}(self)",
+            body=f"def {name}(self): pass",
+        )
+    )
 
 
 class TestResolveCallsPriority:
@@ -535,9 +572,7 @@ class TestResolveCallsPriority:
       4. leave NULL if ambiguous
     """
 
-    def test_qualified_name_takes_priority_over_name_only(
-        self, db: Database
-    ) -> None:
+    def test_qualified_name_takes_priority_over_name_only(self, db: Database) -> None:
         """
         Pass 1 (qualified_name exact match) must fire before pass 3 (name-only).
 
@@ -553,13 +588,13 @@ class TestResolveCallsPriority:
         _make_symbol(db, fid, "login", "OtherService.login")
 
         caller_fid = _make_file(db, "api/views.py")
-        caller_id = _make_symbol(db, caller_fid, "handle_request", "handle_request",
-                                 kind=SymbolKind.FUNCTION)
+        caller_id = _make_symbol(
+            db, caller_fid, "handle_request", "handle_request", kind=SymbolKind.FUNCTION
+        )
 
         # Insert unresolved call edge with fully-qualified callee_name
         db._conn.execute(
-            "INSERT INTO calls (caller_id, callee_name, callee_id, line)"
-            " VALUES (?, ?, NULL, ?)",
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line) VALUES (?, ?, NULL, ?)",
             (caller_id, "AuthService.login", 5),
         )
         db._conn.commit()
@@ -572,13 +607,10 @@ class TestResolveCallsPriority:
         ).fetchone()
         assert row is not None
         assert row[0] == auth_login_id, (
-            "Qualified-name match should resolve to AuthService.login, "
-            "not the other symbol or NULL"
+            "Qualified-name match should resolve to AuthService.login, not the other symbol or NULL"
         )
 
-    def test_ambiguous_name_only_leaves_callee_id_null(
-        self, db: Database
-    ) -> None:
+    def test_ambiguous_name_only_leaves_callee_id_null(self, db: Database) -> None:
         """
         Pass 4 (leave NULL): when two symbols share the same short name and no
         qualified-name or type-hint hint is present, callee_id must stay NULL.
@@ -593,8 +625,7 @@ class TestResolveCallsPriority:
 
         # Call with just the short name — ambiguous
         db._conn.execute(
-            "INSERT INTO calls (caller_id, callee_name, callee_id, line)"
-            " VALUES (?, ?, NULL, ?)",
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line) VALUES (?, ?, NULL, ?)",
             (caller_id, "process", 10),
         )
         db._conn.commit()
@@ -610,9 +641,7 @@ class TestResolveCallsPriority:
             "callee_id = NULL rather than picking a wrong edge"
         )
 
-    def test_type_hint_resolution_picks_correct_method(
-        self, db: Database
-    ) -> None:
+    def test_type_hint_resolution_picks_correct_method(self, db: Database) -> None:
         """
         Pass 2 (type-hint assisted): when callee_type_hint = "UserService" and
         two symbols named 'login' exist — one under UserService, one under AdminService
@@ -625,8 +654,9 @@ class TestResolveCallsPriority:
         _make_symbol(db, fid2, "login", "AdminService.login")
 
         caller_fid = _make_file(db, "api/auth.py")
-        caller_id = _make_symbol(db, caller_fid, "authenticate", "authenticate",
-                                 kind=SymbolKind.FUNCTION)
+        caller_id = _make_symbol(
+            db, caller_fid, "authenticate", "authenticate", kind=SymbolKind.FUNCTION
+        )
 
         # Call edge with type hint but ambiguous short name
         db._conn.execute(
@@ -653,16 +683,13 @@ class TestResolveCallsPriority:
         and no qualified-name or type-hint hint applies, callee_id should be set.
         """
         fid = _make_file(db, "utils/helpers.py")
-        helper_id = _make_symbol(db, fid, "parse_date", "parse_date",
-                                 kind=SymbolKind.FUNCTION)
+        helper_id = _make_symbol(db, fid, "parse_date", "parse_date", kind=SymbolKind.FUNCTION)
 
         caller_fid = _make_file(db, "api/views.py")
-        caller_id = _make_symbol(db, caller_fid, "get_event", "get_event",
-                                 kind=SymbolKind.FUNCTION)
+        caller_id = _make_symbol(db, caller_fid, "get_event", "get_event", kind=SymbolKind.FUNCTION)
 
         db._conn.execute(
-            "INSERT INTO calls (caller_id, callee_name, callee_id, line)"
-            " VALUES (?, ?, NULL, ?)",
+            "INSERT INTO calls (caller_id, callee_name, callee_id, line) VALUES (?, ?, NULL, ?)",
             (caller_id, "parse_date", 3),
         )
         db._conn.commit()
@@ -705,6 +732,7 @@ class TestResolveCallsPriority:
 # ---------------------------------------------------------------------------
 # HNSW-specific tests
 # ---------------------------------------------------------------------------
+
 
 class TestVectorStoreHNSW:
     """Tests for HNSW index support and flat fallback logic."""

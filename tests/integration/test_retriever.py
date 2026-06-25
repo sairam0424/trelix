@@ -19,10 +19,10 @@ from trelix.core.config import EmbedderConfig, IndexConfig
 from trelix.indexing.indexer import Indexer
 from trelix.retrieval.retriever import Retriever
 
-
 # ---------------------------------------------------------------------------
 # Fixture: tiny auth-focused repo
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def auth_mini_repo(tmp_path: Path) -> Path:
@@ -134,6 +134,7 @@ def indexed_auth_repo(auth_mini_repo: Path) -> Path:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def _make_config(repo_path: Path) -> IndexConfig:
     """Build an IndexConfig using the local (no-API-key) embedder."""
     return IndexConfig(
@@ -172,18 +173,14 @@ class TestRetriever:
         retriever = Retriever(_make_config(indexed_auth_repo))
         context = retriever.retrieve("how does authentication work")
 
-        assert context.total_tokens > 0, (
-            f"Expected total_tokens > 0, got {context.total_tokens}"
-        )
+        assert context.total_tokens > 0, f"Expected total_tokens > 0, got {context.total_tokens}"
 
     def test_intent_is_set(self, indexed_auth_repo: Path) -> None:
         """intent field must be a non-empty string on the returned context."""
         retriever = Retriever(_make_config(indexed_auth_repo))
         context = retriever.retrieve("how does authentication work")
 
-        assert context.intent, (
-            f"Expected intent to be set, got {context.intent!r}"
-        )
+        assert context.intent, f"Expected intent to be set, got {context.intent!r}"
 
     def test_retrieve_with_explicit_plan(self, indexed_auth_repo: Path) -> None:
         """
@@ -205,9 +202,7 @@ class TestRetriever:
 
         debug_dir = Path(indexed_auth_repo) / ".trelix" / "debug"
         trace_files = list(debug_dir.glob("*.json"))
-        assert trace_files, (
-            f"Expected at least one debug trace JSON in {debug_dir}, found none."
-        )
+        assert trace_files, f"Expected at least one debug trace JSON in {debug_dir}, found none."
 
     def test_elapsed_seconds_set(self, indexed_auth_repo: Path) -> None:
         """elapsed_seconds must be a positive float."""

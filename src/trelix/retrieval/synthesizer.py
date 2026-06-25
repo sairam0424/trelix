@@ -93,6 +93,7 @@ Answer based solely on the code shown above."""
 # Synthesizer
 # ---------------------------------------------------------------------------
 
+
 class Synthesizer:
     """
     Wraps an LLM chat client to synthesize a natural-language answer from
@@ -115,6 +116,7 @@ class Synthesizer:
         # Lazy-import to avoid circular deps; default to RetrievalConfig() if not supplied.
         if retrieval_config is None:
             from trelix.core.config import RetrievalConfig as _RC
+
             retrieval_config = _RC()
         self._retrieval_config = retrieval_config
 
@@ -154,6 +156,7 @@ class Synthesizer:
         # Delegate to GraphRAG map-reduce for large contexts.
         try:
             from trelix.retrieval.graph_rag import GraphRAGSynthesizer
+
             graph_rag = GraphRAGSynthesizer(cfg, self._retrieval_config)
             if graph_rag.should_use(context):
                 logger.info(
@@ -188,6 +191,7 @@ class Synthesizer:
                 return None
             try:
                 from openai import AzureOpenAI
+
                 return AzureOpenAI(
                     api_key=config.azure_api_key,
                     azure_endpoint=config.azure_endpoint,
@@ -203,6 +207,7 @@ class Synthesizer:
                 return None
             try:
                 from openai import OpenAI
+
                 return OpenAI(api_key=config.openai_api_key)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Synthesizer: could not create OpenAI client: %s", exc)
@@ -237,7 +242,7 @@ class Synthesizer:
             model=self._model_name(),
             messages=[
                 {"role": "system", "content": self._system_prompt(context.intent)},
-                {"role": "user",   "content": user_message},
+                {"role": "user", "content": user_message},
             ],
             max_completion_tokens=max_tokens,
             temperature=0.2,

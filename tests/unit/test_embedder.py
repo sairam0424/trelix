@@ -28,6 +28,7 @@ _FAKE_AZURE_ENDPOINT = "https://test.openai.azure.com/"
 # BaseEmbedder is abstract
 # ---------------------------------------------------------------------------
 
+
 class TestBaseEmbedderIsAbstract:
     def test_cannot_instantiate_directly(self) -> None:
         """BaseEmbedder must be abstract — direct instantiation must raise TypeError."""
@@ -48,6 +49,7 @@ class TestBaseEmbedderIsAbstract:
 # ---------------------------------------------------------------------------
 # make_embedder factory
 # ---------------------------------------------------------------------------
+
 
 class TestMakeEmbedderFactory:
     def test_local_provider_returns_local_embedder(self) -> None:
@@ -96,6 +98,7 @@ class TestMakeEmbedderFactory:
 # ---------------------------------------------------------------------------
 # OpenAIEmbedder
 # ---------------------------------------------------------------------------
+
 
 class TestOpenAIEmbedder:
     def _make(self) -> OpenAIEmbedder:
@@ -151,6 +154,7 @@ class TestOpenAIEmbedder:
 # ---------------------------------------------------------------------------
 # AzureOpenAIEmbedder
 # ---------------------------------------------------------------------------
+
 
 class TestAzureOpenAIEmbedder:
     def _make(self) -> AzureOpenAIEmbedder:
@@ -222,6 +226,7 @@ class TestAzureOpenAIEmbedder:
 # ---------------------------------------------------------------------------
 # LocalEmbedder
 # ---------------------------------------------------------------------------
+
 
 class TestLocalEmbedder:
     def test_dimension_is_384(self) -> None:
@@ -315,9 +320,11 @@ class TestVoyageEmbedder:
         embedder.embed(["def foo(): pass"])
         mock_client.embed.assert_called_once()
         call_kwargs = mock_client.embed.call_args
-        assert call_kwargs.kwargs.get("input_type") == "document" or \
-               call_kwargs.args[2] == "document" if len(call_kwargs.args) > 2 \
-               else call_kwargs.kwargs["input_type"] == "document"
+        assert (
+            call_kwargs.kwargs.get("input_type") == "document" or call_kwargs.args[2] == "document"
+            if len(call_kwargs.args) > 2
+            else call_kwargs.kwargs["input_type"] == "document"
+        )
 
     def test_embed_query_uses_query_input_type(self) -> None:
         embedder, mock_client = self._make()
@@ -327,9 +334,11 @@ class TestVoyageEmbedder:
         embedder.embed_query("find all async functions")
         mock_client.embed.assert_called_once()
         call_kwargs = mock_client.embed.call_args
-        assert call_kwargs.kwargs.get("input_type") == "query" or \
-               call_kwargs.args[2] == "query" if len(call_kwargs.args) > 2 \
-               else call_kwargs.kwargs["input_type"] == "query"
+        assert (
+            call_kwargs.kwargs.get("input_type") == "query" or call_kwargs.args[2] == "query"
+            if len(call_kwargs.args) > 2
+            else call_kwargs.kwargs["input_type"] == "query"
+        )
 
     def test_embed_returns_list_of_vectors(self) -> None:
         embedder, mock_client = self._make()
@@ -383,6 +392,7 @@ class TestVoyageEmbedder:
 # ---------------------------------------------------------------------------
 # LocalCodeEmbedder
 # ---------------------------------------------------------------------------
+
 
 class TestLocalCodeEmbedder:
     """Tests for the SFR-Embedding-Code-2B_R local code embedder."""
@@ -463,6 +473,6 @@ class TestLocalCodeEmbedder:
         with patch.dict(sys.modules, {"sentence_transformers": mock_st_module}):
             LocalCodeEmbedder(config)
         call_kwargs = mock_st_module.SentenceTransformer.call_args
-        assert call_kwargs.kwargs.get("trust_remote_code") is True or \
-               (len(call_kwargs.args) > 1 and call_kwargs.args[1] is True)
-
+        assert call_kwargs.kwargs.get("trust_remote_code") is True or (
+            len(call_kwargs.args) > 1 and call_kwargs.args[1] is True
+        )

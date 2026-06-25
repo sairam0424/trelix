@@ -26,9 +26,6 @@ import threading
 import time
 from pathlib import Path
 
-# Thread-local storage so parallel eval workers don't mix each other's traces
-_trace_local = threading.local()
-
 from trelix.core.config import IndexConfig
 from trelix.core.models import Chunk, RetrievedContext, SearchResult
 from trelix.embedder.base import BaseEmbedder, make_embedder
@@ -37,11 +34,19 @@ from trelix.store.vector import BaseVectorStore, make_vector_store
 
 from .bm25 import bm25_search
 from .fusion import reciprocal_rank_fusion
-from .graph import expand_with_call_graph, expand_with_imports, expand_with_type_edges, seed_from_import_paths
+from .graph import (
+    expand_with_call_graph,
+    expand_with_imports,
+    expand_with_type_edges,
+    seed_from_import_paths,
+)
 from .grep_search import grep_search
-from .planner.models import IntentType, QueryPlan, RoutingTier, default_plan
 from .planner.agent import QueryPlanner
+from .planner.models import IntentType, QueryPlan, RoutingTier, default_plan
 from .reranker import rerank
+
+# Thread-local storage so parallel eval workers don't mix each other's traces
+_trace_local = threading.local()
 
 logger = logging.getLogger("trelix.retrieval")
 
@@ -105,46 +110,53 @@ class Retriever:
             plan = self._planner.plan(query)
 
         # -- Trace: planner decision --
-        self._trace("planner", {
-            "intent": plan.intent.value,
-            "execution_mode": plan.execution_mode,
-            "sub_queries": [
-                {
-                    "semantic_query": sq.semantic_query,
-                    "hyde_snippet":   sq.hyde_snippet[:120] if sq.hyde_snippet else "",
-                    "bm25_tokens":    sq.bm25_tokens,
-                    "grep_hints":     sq.grep_hints,
-                    "file_hints":     sq.file_hints,
-                    "depends_on":     sq.depends_on,
-                }
-                for sq in plan.sub_queries
-            ],
-        })
+        self._trace(
+            "planner",
+            {
+                "intent": plan.intent.value,
+                "execution_mode": plan.execution_mode,
+                "sub_queries": [
+                    {
+                        "semantic_query": sq.semantic_query,
+                        "hyde_snippet": sq.hyde_snippet[:120] if sq.hyde_snippet else "",
+                        "bm25_tokens": sq.bm25_tokens,
+                        "grep_hints": sq.grep_hints,
+                        "file_hints": sq.file_hints,
+                        "depends_on": sq.depends_on,
+                    }
+                    for sq in plan.sub_queries
+                ],
+            },
+        )
 
         context = self._execute_plan(plan)
         context.elapsed_seconds = round(time.perf_counter() - t_start, 3)
 
         # -- Trace: final assembly output --
-        self._trace("assembly", {
-            "intent": plan.intent.value,
-            "results_count": len(context.results),
-            "tokens_used": context.total_tokens,
-            "token_budget": self.config.retrieval.context_token_budget,
-            "budget_pct": round(
-                context.total_tokens / max(1, self.config.retrieval.context_token_budget) * 100, 1
-            ),
-            "sources": context.retrieval_sources,
-            "top5_symbols": [
-                {
-                    "name": r.symbol.name,
-                    "kind": r.symbol.kind,
-                    "file": r.file.rel_path,
-                    "score": round(r.score, 4),
-                }
-                for r in context.results[:5]
-            ],
-            "elapsed_s": context.elapsed_seconds,
-        })
+        self._trace(
+            "assembly",
+            {
+                "intent": plan.intent.value,
+                "results_count": len(context.results),
+                "tokens_used": context.total_tokens,
+                "token_budget": self.config.retrieval.context_token_budget,
+                "budget_pct": round(
+                    context.total_tokens / max(1, self.config.retrieval.context_token_budget) * 100,
+                    1,
+                ),
+                "sources": context.retrieval_sources,
+                "top5_symbols": [
+                    {
+                        "name": r.symbol.name,
+                        "kind": r.symbol.kind,
+                        "file": r.file.rel_path,
+                        "score": round(r.score, 4),
+                    }
+                    for r in context.results[:5]
+                ],
+                "elapsed_s": context.elapsed_seconds,
+            },
+        )
         self._flush_trace()
 
         logger.info(
@@ -191,46 +203,49 @@ class Retriever:
         # Run sub-queries in parallel when the planner says they're independent.
         if plan.execution_mode == "parallel" and len(plan.sub_queries) > 1:
             from concurrent.futures import ThreadPoolExecutor
+
             with ThreadPoolExecutor() as pool:
                 futures = [
-                    pool.submit(self._run_subquery_legs, sq, strategy)
-                    for sq in plan.sub_queries
+                    pool.submit(self._run_subquery_legs, sq, strategy) for sq in plan.sub_queries
                 ]
                 leg_results_list = [f.result() for f in futures]
         else:
-            leg_results_list = [
-                self._run_subquery_legs(sq, strategy) for sq in plan.sub_queries
-            ]
+            leg_results_list = [self._run_subquery_legs(sq, strategy) for sq in plan.sub_queries]
 
         # Merge per-leg results across all sub-queries for RRF
         vector_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["vector"]]
-        bm25_results:   list[SearchResult] = [r for lr in leg_results_list for r in lr["bm25"]]
-        grep_results:   list[SearchResult] = [r for lr in leg_results_list for r in lr["grep"]]
+        bm25_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["bm25"]]
+        grep_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["grep"]]
 
         logger.info(
             "Pre-fusion leg sizes: vector=%d bm25=%d grep=%d",
-            len(vector_results), len(bm25_results), len(grep_results),
+            len(vector_results),
+            len(bm25_results),
+            len(grep_results),
         )
 
         # -- Trace: per-leg results --
-        self._trace("retrieval_legs", {
-            "intent": plan.intent.value,
-            "vector_count": len(vector_results),
-            "bm25_count":   len(bm25_results),
-            "grep_count":   len(grep_results),
-            "top_vector": [
-                {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
-                for r in vector_results[:5]
-            ],
-            "top_bm25": [
-                {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
-                for r in bm25_results[:5]
-            ],
-            "top_grep": [
-                {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
-                for r in grep_results[:5]
-            ],
-        })
+        self._trace(
+            "retrieval_legs",
+            {
+                "intent": plan.intent.value,
+                "vector_count": len(vector_results),
+                "bm25_count": len(bm25_results),
+                "grep_count": len(grep_results),
+                "top_vector": [
+                    {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
+                    for r in vector_results[:5]
+                ],
+                "top_bm25": [
+                    {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
+                    for r in bm25_results[:5]
+                ],
+                "top_grep": [
+                    {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
+                    for r in grep_results[:5]
+                ],
+            },
+        )
 
         fused = reciprocal_rank_fusion(
             [vector_results, bm25_results, grep_results],
@@ -238,26 +253,30 @@ class Retriever:
         )
 
         # -- Trace: post-fusion ranking --
-        self._trace("post_fusion", {
-            "total": len(fused),
-            "top5": [
-                {
-                    "name": r.symbol.name,
-                    "file": r.file.rel_path,
-                    "rrf_score": round(r.score, 6),
-                    "source": r.source,
-                }
-                for r in fused[:5]
-            ],
-        })
+        self._trace(
+            "post_fusion",
+            {
+                "total": len(fused),
+                "top5": [
+                    {
+                        "name": r.symbol.name,
+                        "file": r.file.rel_path,
+                        "rrf_score": round(r.score, 6),
+                        "source": r.source,
+                    }
+                    for r in fused[:5]
+                ],
+            },
+        )
 
         # Graph expansion — all parameters driven by intent strategy
         top = fused[: cfg.graph_expansion_max_symbols]
-        call_expanded   = expand_with_call_graph(
+        call_expanded = expand_with_call_graph(
             self.db, top, depth=strategy.expand_depth, max_extra=cfg.graph_expansion_max_symbols
         )
         import_expanded = expand_with_imports(
-            self.db, top,
+            self.db,
+            top,
             max_extra=strategy.import_max_extra,
             depth=strategy.import_depth,
             direction=strategy.import_direction,
@@ -280,25 +299,32 @@ class Retriever:
         logger.info(
             "Post-expansion candidates: fused=%d call_exp=%d import_exp=%d "
             "type_exp=%d path_seed=%d total=%d",
-            len(fused), len(call_expanded), len(import_expanded),
-            len(type_expanded), len(import_path_seeded), len(candidates),
+            len(fused),
+            len(call_expanded),
+            len(import_expanded),
+            len(type_expanded),
+            len(import_path_seeded),
+            len(candidates),
         )
 
         # -- Trace: graph expansion --
-        self._trace("expansion", {
-            "call_expanded":        len(call_expanded),
-            "import_expanded":      len(import_expanded),
-            "type_expanded":        len(type_expanded),
-            "import_path_seeded":   len(import_path_seeded),
-            "total_candidates":     len(candidates),
-            "import_strategy": {
-                "depth": strategy.import_depth,
-                "max_extra": strategy.import_max_extra,
-                "direction": strategy.import_direction,
+        self._trace(
+            "expansion",
+            {
+                "call_expanded": len(call_expanded),
+                "import_expanded": len(import_expanded),
+                "type_expanded": len(type_expanded),
+                "import_path_seeded": len(import_path_seeded),
+                "total_candidates": len(candidates),
+                "import_strategy": {
+                    "depth": strategy.import_depth,
+                    "max_extra": strategy.import_max_extra,
+                    "direction": strategy.import_direction,
+                },
+                "top_import_files": list({r.file.rel_path for r in import_expanded}),
+                "import_path_seed_files": list({r.file.rel_path for r in import_path_seeded})[:10],
             },
-            "top_import_files": list({r.file.rel_path for r in import_expanded}),
-            "import_path_seed_files": list({r.file.rel_path for r in import_path_seeded})[:10],
-        })
+        )
 
         # Rerank — skipped when strategy says exact ordering is already correct.
         if cfg.rerank and candidates and not strategy.skip_reranker:
@@ -310,13 +336,16 @@ class Retriever:
             )
 
             # -- Trace: post-rerank ordering --
-            self._trace("post_rerank", {
-                "total": len(candidates),
-                "top5": [
-                    {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
-                    for r in candidates[:5]
-                ],
-            })
+            self._trace(
+                "post_rerank",
+                {
+                    "total": len(candidates),
+                    "top5": [
+                        {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
+                        for r in candidates[:5]
+                    ],
+                },
+            )
 
         return self._assemble(
             plan.raw_query,
@@ -351,18 +380,25 @@ class Retriever:
                     continue
                 visited_file_ids.add(file_id)
                 for rank, sid in enumerate(self.db.get_all_symbols_for_file(file_id), start=1):
-                    r = self.hydrate_symbol(sid, score=1.0 - rank * 0.001, rank=rank, source="file_direct")
+                    r = self.hydrate_symbol(
+                        sid, score=1.0 - rank * 0.001, rank=rank, source="file_direct"
+                    )
                     if r:
                         results.append(r)
 
-        self._trace("file_overview", {
-            "file_hints": file_hints,
-            "files_matched": len(visited_file_ids),
-            "symbols_fetched": len(results),
-        })
+        self._trace(
+            "file_overview",
+            {
+                "file_hints": file_hints,
+                "files_matched": len(visited_file_ids),
+                "symbols_fetched": len(results),
+            },
+        )
 
         if not results:
-            logger.info("file_overview: no file matched hints %r — falling back to standard", file_hints)
+            logger.info(
+                "file_overview: no file matched hints %r — falling back to standard", file_hints
+            )
             return self._retrieve_standard(default_plan(plan.raw_query))
 
         return self._assemble(plan.raw_query, self._dedup(results), intent=plan.intent.value)
@@ -383,11 +419,14 @@ class Retriever:
             if r:
                 results.append(r)
 
-        self._trace("project_overview", {
-            "symbol_ids_from_db": len(symbol_ids),
-            "hydrated": len(results),
-            "files": list({r.file.rel_path for r in results}),
-        })
+        self._trace(
+            "project_overview",
+            {
+                "symbol_ids_from_db": len(symbol_ids),
+                "hydrated": len(results),
+                "files": list({r.file.rel_path for r in results}),
+            },
+        )
 
         if not results:
             logger.info("project_overview: no overview symbols found — falling back to standard")
@@ -420,11 +459,14 @@ class Retriever:
                         if r:
                             results.append(r)
 
-        self._trace("config_lookup", {
-            "file_hints": file_hints,
-            "files_matched": len(visited),
-            "symbols_fetched": len(results),
-        })
+        self._trace(
+            "config_lookup",
+            {
+                "file_hints": file_hints,
+                "files_matched": len(visited),
+                "symbols_fetched": len(results),
+            },
+        )
 
         if not results:
             logger.info("config_lookup: no config file matched — falling back to standard")
@@ -438,8 +480,8 @@ class Retriever:
 
     def _run_subquery_legs(
         self,
-        sq,       # SubQuery
-        strategy, # RetrievalStrategy
+        sq,  # SubQuery
+        strategy,  # RetrievalStrategy
     ) -> dict[str, list[SearchResult]]:
         """
         Run all retrieval legs for a single sub-query.
@@ -497,7 +539,9 @@ class Retriever:
         if row is None:
             return None
         chunk, symbol, file = row
-        return SearchResult(chunk=chunk, symbol=symbol, file=file, score=score, rank=rank, source=source)
+        return SearchResult(
+            chunk=chunk, symbol=symbol, file=file, score=score, rank=rank, source=source
+        )
 
     def hydrate_symbol(
         self,
@@ -519,7 +563,9 @@ class Retriever:
                 token_count=0,
             )
 
-        return SearchResult(chunk=chunk, symbol=symbol, file=file, score=score, rank=rank, source=source)
+        return SearchResult(
+            chunk=chunk, symbol=symbol, file=file, score=score, rank=rank, source=source
+        )
 
     # ------------------------------------------------------------------
     # Dedup + assemble
@@ -542,6 +588,7 @@ class Retriever:
         assembly_mode: str = "greedy",
     ) -> RetrievedContext:
         from trelix.retrieval.assembler import ContextAssembler
+
         assembler = ContextAssembler(token_budget=self.config.retrieval.context_token_budget)
         return assembler.assemble(
             query=query,

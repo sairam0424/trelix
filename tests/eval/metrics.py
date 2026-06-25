@@ -78,6 +78,6 @@ class EvalResult:
     recall_at_1: float
     recall_at_5: float
     recall_at_10: float
-    mrr: float          # reciprocal rank for this query
+    mrr: float  # reciprocal rank for this query
     ndcg_at_10: float
-    rank: int           # 1-based rank of first match, -1 if not found
+    rank: int  # 1-based rank of first match, -1 if not found

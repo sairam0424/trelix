@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from trelix.core.config import ChunkerConfig
 from trelix.core.models import Chunk, ImportEdge, Symbol, SymbolKind
 from trelix.indexing.chunker import Chunker, ContextualChunker
 
-
 # ---------------------------------------------------------------------------
 # Minimal fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_symbol(
     *,
@@ -66,6 +64,7 @@ def _make_chunker(**kwargs) -> Chunker:
 # Context header format
 # ---------------------------------------------------------------------------
 
+
 class TestContextHeaderFormat:
     def test_header_contains_file_path(self) -> None:
         chunker = _make_chunker()
@@ -109,6 +108,7 @@ class TestContextHeaderFormat:
 # ---------------------------------------------------------------------------
 # Parent class signature in header
 # ---------------------------------------------------------------------------
+
 
 class TestParentClassInHeader:
     def test_parent_class_name_in_header_when_enabled(self) -> None:
@@ -159,6 +159,7 @@ class TestParentClassInHeader:
 # Import list in header
 # ---------------------------------------------------------------------------
 
+
 class TestImportListInHeader:
     def test_imports_present_when_enabled(self) -> None:
         chunker = _make_chunker(include_imports_in_header=True)
@@ -194,8 +195,7 @@ class TestImportListInHeader:
         chunker = _make_chunker(include_imports_in_header=True, max_imports_in_header=2)
         symbol = _make_symbol()
         imports = [
-            _make_import(imported_from=f"module_{i}", imported_names=["x"])
-            for i in range(5)
+            _make_import(imported_from=f"module_{i}", imported_names=["x"]) for i in range(5)
         ]
         chunks = chunker.build_chunks([symbol], imports, "src/foo.py", "python")
         # Only module_0 and module_1 should appear (max=2)
@@ -217,6 +217,7 @@ class TestImportListInHeader:
 # token_count computed via tiktoken
 # ---------------------------------------------------------------------------
 
+
 class TestTokenCount:
     def test_token_count_is_positive(self) -> None:
         chunker = _make_chunker()
@@ -232,6 +233,7 @@ class TestTokenCount:
 
     def test_token_count_matches_tiktoken(self) -> None:
         import tiktoken
+
         chunker = _make_chunker()
         symbol = _make_symbol(body="def greet():\n    return 'hello'")
         chunks = chunker.build_chunks([symbol], [], "src/foo.py", "python")
@@ -260,6 +262,7 @@ class TestTokenCount:
 # ---------------------------------------------------------------------------
 # chunk_text contains symbol body
 # ---------------------------------------------------------------------------
+
 
 class TestChunkTextContainsBody:
     def test_chunk_text_contains_body(self) -> None:
@@ -323,6 +326,7 @@ class TestChunkTextContainsBody:
 # ContextualChunker (U1)
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_llm_client(summary: str = "This function computes a value.") -> MagicMock:
     """Build a mock OpenAI client whose .chat.completions.create() returns `summary`."""
     mock_message = MagicMock()
@@ -378,6 +382,7 @@ class TestContextualChunker:
     def test_contextual_true_token_count_includes_summary(self) -> None:
         """token_count must reflect summary + base chunk_text combined."""
         import tiktoken
+
         summary = "Computes a result."
         mock_client = _make_mock_llm_client(summary)
         chunker = _make_contextual_chunker(contextual=True, llm_client=mock_client)

@@ -75,11 +75,13 @@ class Chunker:
                 chunk_text = self._truncate_chunk(chunk_text, self.config.max_tokens_per_chunk)
                 token_count = self.config.max_tokens_per_chunk
 
-            chunks.append(Chunk(
-                symbol_id=symbol.id or 0,
-                chunk_text=chunk_text,
-                token_count=token_count,
-            ))
+            chunks.append(
+                Chunk(
+                    symbol_id=symbol.id or 0,
+                    chunk_text=chunk_text,
+                    token_count=token_count,
+                )
+            )
 
         return chunks
 
@@ -100,11 +102,15 @@ class Chunker:
             lines.append(f"# Imports: {import_header}")
 
         # Parent class context (for methods)
-        if self.config.include_parent_signature and symbol.parent_id and symbol.parent_id in parent_symbols:
+        if (
+            self.config.include_parent_signature
+            and symbol.parent_id
+            and symbol.parent_id in parent_symbols
+        ):
             parent = parent_symbols[symbol.parent_id]
             lines.append(f"# {parent.kind.value.capitalize()}: {parent.name}")
 
-        lines.append("")   # blank line between header and body
+        lines.append("")  # blank line between header and body
 
         # Docstring — surfaced before body so it survives truncation.
         # Skip if the body already starts with a string literal (Python docstrings
@@ -191,9 +197,7 @@ class ContextualChunker(Chunker):
         entirely to the base Chunker — zero overhead.
         """
         if not self._contextual_enabled:
-            return super().build_chunks(
-                symbols, imports, file_rel_path, language, parent_symbols
-            )
+            return super().build_chunks(symbols, imports, file_rel_path, language, parent_symbols)
 
         if parent_symbols is None:
             parent_symbols = {}
@@ -228,11 +232,13 @@ class ContextualChunker(Chunker):
                 chunk_text = self._truncate_chunk(chunk_text, self.config.max_tokens_per_chunk)
                 token_count = self.config.max_tokens_per_chunk
 
-            chunks.append(Chunk(
-                symbol_id=symbol.id or 0,
-                chunk_text=chunk_text,
-                token_count=token_count,
-            ))
+            chunks.append(
+                Chunk(
+                    symbol_id=symbol.id or 0,
+                    chunk_text=chunk_text,
+                    token_count=token_count,
+                )
+            )
 
         return chunks
 

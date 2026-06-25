@@ -6,15 +6,13 @@ type aliases, enums, exported symbols, and call graph extraction.
 
 from __future__ import annotations
 
-import pytest
-
-from trelix.indexing.parser.extractors.typescript import TypeScriptParser
 from trelix.core.models import SymbolKind
-
+from trelix.indexing.parser.extractors.typescript import TypeScriptParser
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_parser(tsx: bool = False) -> TypeScriptParser:
     return TypeScriptParser(tsx=tsx)
@@ -36,6 +34,7 @@ def import_sources(result) -> list[str]:
 # language_name property
 # ---------------------------------------------------------------------------
 
+
 class TestLanguageName:
     def test_typescript_language_name(self):
         parser = make_parser(tsx=False)
@@ -49,6 +48,7 @@ class TestLanguageName:
 # ---------------------------------------------------------------------------
 # Import extraction
 # ---------------------------------------------------------------------------
+
 
 class TestImportExtraction:
     TS_IMPORTS = """\
@@ -74,18 +74,14 @@ import type { Foo } from './foo';
         parser = make_parser()
         result = parser.parse(self.TS_IMPORTS, file_id=1)
         # Named import edge should list useState and useEffect
-        named = next(
-            (e for e in result.import_edges if "useState" in e.imported_names), None
-        )
+        named = next((e for e in result.import_edges if "useState" in e.imported_names), None)
         assert named is not None
         assert "useEffect" in named.imported_names
 
     def test_namespace_import(self):
         parser = make_parser()
         result = parser.parse(self.TS_IMPORTS, file_id=1)
-        star = next(
-            (e for e in result.import_edges if e.imported_from == "path"), None
-        )
+        star = next((e for e in result.import_edges if e.imported_from == "path"), None)
         assert star is not None
 
     def test_file_id_set_on_import_edges(self):
@@ -98,6 +94,7 @@ import type { Foo } from './foo';
 # ---------------------------------------------------------------------------
 # Interface extraction
 # ---------------------------------------------------------------------------
+
 
 class TestInterfaceExtraction:
     TS_INTERFACE = """\
@@ -157,6 +154,7 @@ interface Internal {
 # ---------------------------------------------------------------------------
 # Class extraction
 # ---------------------------------------------------------------------------
+
 
 class TestClassExtraction:
     TS_CLASS = """\
@@ -219,17 +217,23 @@ export class Dog extends Animal {
         parser = make_parser()
         result = parser.parse(self.TS_CLASS, file_id=1)
         animal_idx = next(i for i, s in enumerate(result.symbols) if s.name == "Animal")
-        animal_methods = [s for s in result.symbols
-                          if s.kind == SymbolKind.METHOD and s.parent_id == animal_idx]
+        animal_methods = [
+            s for s in result.symbols if s.kind == SymbolKind.METHOD and s.parent_id == animal_idx
+        ]
         assert any(m.name == "speak" for m in animal_methods)
 
     def test_method_qualified_name(self):
         parser = make_parser()
         result = parser.parse(self.TS_CLASS, file_id=1)
         speak = next(
-            (s for s in result.symbols
-             if s.kind == SymbolKind.METHOD and s.name == "speak" and "Animal" in s.qualified_name),
-            None
+            (
+                s
+                for s in result.symbols
+                if s.kind == SymbolKind.METHOD
+                and s.name == "speak"
+                and "Animal" in s.qualified_name
+            ),
+            None,
         )
         assert speak is not None
         assert speak.qualified_name == "Animal.speak"
@@ -245,6 +249,7 @@ export class Dog extends Animal {
 # ---------------------------------------------------------------------------
 # Abstract class extraction
 # ---------------------------------------------------------------------------
+
 
 class TestAbstractClass:
     TS_ABSTRACT = """\
@@ -278,6 +283,7 @@ export abstract class Shape {
 # ---------------------------------------------------------------------------
 # Arrow function extraction
 # ---------------------------------------------------------------------------
+
 
 class TestArrowFunctionExtraction:
     TS_ARROW = """\
@@ -334,6 +340,7 @@ export const MAX_RETRIES = 3;
 # Function declaration extraction
 # ---------------------------------------------------------------------------
 
+
 class TestFunctionDeclaration:
     TS_FUNCS = """\
 export function fetchUser(id: number): Promise<User> {
@@ -373,6 +380,7 @@ async function loadData(): Promise<void> {
 # Type alias extraction
 # ---------------------------------------------------------------------------
 
+
 class TestTypeAliasExtraction:
     TS_TYPE = """\
 export type UserId = number;
@@ -395,6 +403,7 @@ type Result<T> = { data: T; error: string | null };
 # ---------------------------------------------------------------------------
 # Enum extraction
 # ---------------------------------------------------------------------------
+
 
 class TestEnumExtraction:
     TS_ENUM = """\
@@ -435,17 +444,23 @@ enum Status {
         parser = make_parser()
         result = parser.parse(self.TS_ENUM, file_id=1)
         direction_idx = next(i for i, s in enumerate(result.symbols) if s.name == "Direction")
-        members = [s for s in result.symbols
-                   if s.kind == SymbolKind.CONSTANT and s.parent_id == direction_idx]
+        members = [
+            s
+            for s in result.symbols
+            if s.kind == SymbolKind.CONSTANT and s.parent_id == direction_idx
+        ]
         assert len(members) > 0
 
     def test_enum_member_qualified_name(self):
         parser = make_parser()
         result = parser.parse(self.TS_ENUM, file_id=1)
         up = next(
-            (s for s in result.symbols
-             if s.kind == SymbolKind.CONSTANT and s.qualified_name == "Direction.Up"),
-            None
+            (
+                s
+                for s in result.symbols
+                if s.kind == SymbolKind.CONSTANT and s.qualified_name == "Direction.Up"
+            ),
+            None,
         )
         assert up is not None
 
@@ -461,6 +476,7 @@ enum Status {
 # ---------------------------------------------------------------------------
 # Call edge extraction
 # ---------------------------------------------------------------------------
+
 
 class TestCallEdgeExtraction:
     TS_CALLS = """\
@@ -496,6 +512,7 @@ function compute(a: number, b: number): number { return a + b; }
 # Re-export extraction
 # ---------------------------------------------------------------------------
 
+
 class TestReExportExtraction:
     TS_REEXPORT = """\
 export { Foo, Bar } from './module';
@@ -514,6 +531,7 @@ export { Foo, Bar } from './module';
 # ---------------------------------------------------------------------------
 # Interface with extends
 # ---------------------------------------------------------------------------
+
 
 class TestInterfaceExtends:
     TS_EXTENDS = """\
@@ -536,6 +554,7 @@ interface Dog extends Animal {
 # ---------------------------------------------------------------------------
 # Class with implements
 # ---------------------------------------------------------------------------
+
 
 class TestClassImplements:
     TS_IMPLEMENTS = """\
@@ -561,6 +580,7 @@ class Record implements Serializable {
 # Parse errors count
 # ---------------------------------------------------------------------------
 
+
 class TestParseErrors:
     def test_clean_source_has_zero_errors(self):
         parser = make_parser()
@@ -576,6 +596,7 @@ class TestParseErrors:
 # ---------------------------------------------------------------------------
 # File ID propagation
 # ---------------------------------------------------------------------------
+
 
 class TestFileIdPropagation:
     def test_all_symbols_have_correct_file_id(self):

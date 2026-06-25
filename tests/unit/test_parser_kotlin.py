@@ -15,6 +15,7 @@ Covers:
   - Extension function
   - Top-level const val and ALL_CAPS property → CONSTANT
 """
+
 from __future__ import annotations
 
 import pytest
@@ -22,10 +23,10 @@ import pytest
 from trelix.core.models import SymbolKind
 from trelix.indexing.parser.extractors.kotlin import KotlinParser
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def parser() -> KotlinParser:
@@ -38,6 +39,7 @@ FILE_ID = 2
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def names(symbols) -> list[str]:
     return [s.name for s in symbols]
@@ -57,6 +59,7 @@ def find_all(symbols, name: str) -> list:
 # ---------------------------------------------------------------------------
 # Regular class
 # ---------------------------------------------------------------------------
+
 
 class TestClassExtraction:
     def test_simple_class_extracted(self, parser: KotlinParser) -> None:
@@ -99,6 +102,7 @@ class TestClassExtraction:
 # Data class
 # ---------------------------------------------------------------------------
 
+
 class TestDataClassExtraction:
     def test_data_class_extracted_as_class(self, parser: KotlinParser) -> None:
         src = "data class User(val id: Int, val name: String)\n"
@@ -134,9 +138,10 @@ class TestDataClassExtraction:
 # Object declaration (singleton)
 # ---------------------------------------------------------------------------
 
+
 class TestObjectDeclaration:
     def test_object_extracted_as_class(self, parser: KotlinParser) -> None:
-        src = "object AppConfig {\n    const val VERSION = \"1.0\"\n}\n"
+        src = 'object AppConfig {\n    const val VERSION = "1.0"\n}\n'
         result = parser.parse(src, FILE_ID)
         sym = find(result.symbols, "AppConfig")
         assert sym is not None
@@ -161,9 +166,10 @@ class TestObjectDeclaration:
 # fun (function / method) extraction
 # ---------------------------------------------------------------------------
 
+
 class TestFunExtraction:
     def test_top_level_fun_extracted(self, parser: KotlinParser) -> None:
-        src = "fun greet(name: String): String = \"Hello $name\"\n"
+        src = 'fun greet(name: String): String = "Hello $name"\n'
         result = parser.parse(src, FILE_ID)
         sym = find(result.symbols, "greet")
         assert sym is not None
@@ -240,6 +246,7 @@ class MathUtils {
 # Enum class
 # ---------------------------------------------------------------------------
 
+
 class TestEnumClassExtraction:
     def test_enum_class_extracted_as_enum(self, parser: KotlinParser) -> None:
         src = "enum class Direction { NORTH, SOUTH, EAST, WEST }\n"
@@ -278,6 +285,7 @@ class TestEnumClassExtraction:
 # Interface
 # ---------------------------------------------------------------------------
 
+
 class TestInterfaceExtraction:
     def test_interface_extracted(self, parser: KotlinParser) -> None:
         src = "interface Repository {\n    fun findById(id: Int): Item?\n}\n"
@@ -302,6 +310,7 @@ interface Cache {
 # Import extraction
 # ---------------------------------------------------------------------------
 
+
 class TestImportExtraction:
     def test_import_produces_import_edge(self, parser: KotlinParser) -> None:
         src = "import kotlin.math.sqrt\nfun f(): Double = sqrt(2.0)\n"
@@ -318,6 +327,7 @@ class TestImportExtraction:
 # ---------------------------------------------------------------------------
 # Type edge extraction (supertype delegation)
 # ---------------------------------------------------------------------------
+
 
 class TestTypeEdges:
     def test_class_extending_base_produces_type_edge(self, parser: KotlinParser) -> None:
@@ -336,6 +346,7 @@ class TestTypeEdges:
 # ---------------------------------------------------------------------------
 # Annotation decorator extraction
 # ---------------------------------------------------------------------------
+
 
 class TestAnnotationExtraction:
     def test_annotation_on_class_extracted_as_decorator(self, parser: KotlinParser) -> None:
@@ -362,6 +373,7 @@ class Controller {
 # Companion object
 # ---------------------------------------------------------------------------
 
+
 class TestCompanionObject:
     def test_companion_object_methods_attributed_to_class(self, parser: KotlinParser) -> None:
         src = """
@@ -384,6 +396,7 @@ class Config {
 # Top-level constants
 # ---------------------------------------------------------------------------
 
+
 class TestTopLevelConstants:
     def test_const_val_extracted_as_constant(self, parser: KotlinParser) -> None:
         src = "const val MAX_RETRIES = 3\n"
@@ -403,6 +416,7 @@ class TestTopLevelConstants:
 # ---------------------------------------------------------------------------
 # Parse quality
 # ---------------------------------------------------------------------------
+
 
 class TestParseQuality:
     def test_valid_kotlin_has_zero_errors(self, parser: KotlinParser) -> None:

@@ -12,6 +12,7 @@ Covers:
   - XML doc comment → docstring
   - Attribute decorator extraction
 """
+
 from __future__ import annotations
 
 import pytest
@@ -19,10 +20,10 @@ import pytest
 from trelix.core.models import SymbolKind
 from trelix.indexing.parser.extractors.csharp import CSharpParser
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def parser() -> CSharpParser:
@@ -35,6 +36,7 @@ FILE_ID = 1
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def names(symbols) -> list[str]:
     return [s.name for s in symbols]
@@ -54,6 +56,7 @@ def find(symbols, name: str):
 # ---------------------------------------------------------------------------
 # Namespace / using extraction
 # ---------------------------------------------------------------------------
+
 
 class TestUsingExtraction:
     def test_simple_using_produces_import_edge(self, parser: CSharpParser) -> None:
@@ -82,6 +85,7 @@ class TestUsingExtraction:
 # ---------------------------------------------------------------------------
 # Class extraction
 # ---------------------------------------------------------------------------
+
 
 class TestClassExtraction:
     def test_simple_class_is_extracted(self, parser: CSharpParser) -> None:
@@ -153,6 +157,7 @@ class TestClassExtraction:
 # ---------------------------------------------------------------------------
 # Method extraction
 # ---------------------------------------------------------------------------
+
 
 class TestMethodExtraction:
     def test_method_inside_class_is_extracted(self, parser: CSharpParser) -> None:
@@ -241,6 +246,7 @@ public class Logger {
 # Constructor extraction
 # ---------------------------------------------------------------------------
 
+
 class TestConstructorExtraction:
     def test_constructor_is_extracted_as_method(self, parser: CSharpParser) -> None:
         src = """
@@ -250,7 +256,6 @@ public class Service {
 """
         result = parser.parse(src, FILE_ID)
         # Constructor name matches the class name
-        sym = find(result.symbols, "Service")
         # There should be both a CLASS and a METHOD (constructor) named "Service"
         service_syms = [s for s in result.symbols if s.name == "Service"]
         kinds_found = {s.kind for s in service_syms}
@@ -264,8 +269,12 @@ public class Widget {
 }
 """
         result = parser.parse(src, FILE_ID)
-        cls = next((s for s in result.symbols if s.kind == SymbolKind.CLASS and s.name == "Widget"), None)
-        ctor = next((s for s in result.symbols if s.kind == SymbolKind.METHOD and s.name == "Widget"), None)
+        cls = next(
+            (s for s in result.symbols if s.kind == SymbolKind.CLASS and s.name == "Widget"), None
+        )
+        ctor = next(
+            (s for s in result.symbols if s.kind == SymbolKind.METHOD and s.name == "Widget"), None
+        )
         assert cls is not None
         assert ctor is not None
         cls_idx = result.symbols.index(cls)
@@ -275,6 +284,7 @@ public class Widget {
 # ---------------------------------------------------------------------------
 # Property extraction
 # ---------------------------------------------------------------------------
+
 
 class TestPropertyExtraction:
     def test_public_property_is_extracted(self, parser: CSharpParser) -> None:
@@ -327,6 +337,7 @@ public class Product {
 # Namespace / qualified name
 # ---------------------------------------------------------------------------
 
+
 class TestNamespaceExtraction:
     def test_class_inside_namespace_is_extracted(self, parser: CSharpParser) -> None:
         src = """
@@ -349,6 +360,7 @@ namespace MyApp.Services {
 # ---------------------------------------------------------------------------
 # Enum extraction
 # ---------------------------------------------------------------------------
+
 
 class TestEnumExtraction:
     def test_enum_symbol_extracted(self, parser: CSharpParser) -> None:
@@ -388,6 +400,7 @@ class TestEnumExtraction:
 # Interface extraction
 # ---------------------------------------------------------------------------
 
+
 class TestInterfaceExtraction:
     def test_interface_is_extracted(self, parser: CSharpParser) -> None:
         src = "public interface IRepository { void Save(); }\n"
@@ -411,6 +424,7 @@ public interface ICache {
 # ---------------------------------------------------------------------------
 # XML doc comment extraction
 # ---------------------------------------------------------------------------
+
 
 class TestXmlDocExtraction:
     def test_xml_doc_comment_becomes_docstring(self, parser: CSharpParser) -> None:
@@ -440,6 +454,7 @@ public class Service {
 # ---------------------------------------------------------------------------
 # Parse errors
 # ---------------------------------------------------------------------------
+
 
 class TestParseErrors:
     def test_valid_csharp_has_zero_parse_errors(self, parser: CSharpParser) -> None:

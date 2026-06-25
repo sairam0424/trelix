@@ -18,9 +18,9 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator, Optional
 
 from trelix.core.models import (
     CallEdge,
@@ -32,7 +32,6 @@ from trelix.core.models import (
     SymbolKind,
     TypeEdge,
 )
-
 
 DDL = """
 PRAGMA journal_mode = WAL;
@@ -197,17 +196,13 @@ class Database:
             )
             self._conn.commit()
         if "context_summary" not in sym_cols:
-            self._conn.execute(
-                "ALTER TABLE symbols ADD COLUMN context_summary TEXT"
-            )
+            self._conn.execute("ALTER TABLE symbols ADD COLUMN context_summary TEXT")
             self._conn.commit()
 
         # calls.callee_type_hint — added in U9 for qualified-name + type-hint resolution
         calls_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(calls)").fetchall()}
         if "callee_type_hint" not in calls_cols:
-            self._conn.execute(
-                "ALTER TABLE calls ADD COLUMN callee_type_hint TEXT"
-            )
+            self._conn.execute("ALTER TABLE calls ADD COLUMN callee_type_hint TEXT")
             self._conn.commit()
 
         # type_edges table is idempotent (CREATE TABLE IF NOT EXISTS in DDL)
@@ -225,7 +220,7 @@ class Database:
     # Files
     # ------------------------------------------------------------------
 
-    def get_file_hash(self, rel_path: str) -> Optional[str]:
+    def get_file_hash(self, rel_path: str) -> str | None:
         """Return stored hash for a file, or None if not indexed yet."""
         row = self._conn.execute(
             "SELECT hash FROM files WHERE rel_path = ?", (rel_path,)
@@ -261,7 +256,7 @@ class Database:
         self,
         abs_path: str,
         rel_path: str,
-        vector_store: "object | None" = None,
+        vector_store: object | None = None,
     ) -> bool:
         """
         Fully delete a file's index data (file row + symbols + chunks + vectors).
@@ -316,25 +311,29 @@ class Database:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                symbol.file_id, symbol.name, symbol.qualified_name,
-                symbol.kind.value, symbol.line_start, symbol.line_end,
-                symbol.signature, symbol.docstring, symbol.context_summary,
-                json.dumps(symbol.decorators), int(symbol.is_public),
-                symbol.parent_id, symbol.body,
+                symbol.file_id,
+                symbol.name,
+                symbol.qualified_name,
+                symbol.kind.value,
+                symbol.line_start,
+                symbol.line_end,
+                symbol.signature,
+                symbol.docstring,
+                symbol.context_summary,
+                json.dumps(symbol.decorators),
+                int(symbol.is_public),
+                symbol.parent_id,
+                symbol.body,
             ),
         )
         return cursor.lastrowid  # type: ignore[return-value]
 
     def get_symbol_by_name(self, name: str) -> list[Symbol]:
-        rows = self._conn.execute(
-            "SELECT * FROM symbols WHERE name = ?", (name,)
-        ).fetchall()
+        rows = self._conn.execute("SELECT * FROM symbols WHERE name = ?", (name,)).fetchall()
         return [self._row_to_symbol(r) for r in rows]
 
     def get_symbols_for_file(self, file_id: int) -> list[Symbol]:
-        rows = self._conn.execute(
-            "SELECT * FROM symbols WHERE file_id = ?", (file_id,)
-        ).fetchall()
+        rows = self._conn.execute("SELECT * FROM symbols WHERE file_id = ?", (file_id,)).fetchall()
         return [self._row_to_symbol(r) for r in rows]
 
     # ------------------------------------------------------------------
@@ -345,10 +344,7 @@ class Database:
         self._conn.executemany(
             "INSERT INTO calls (caller_id, callee_name, callee_id, line, callee_type_hint)"
             " VALUES (?, ?, ?, ?, ?)",
-            [
-                (e.caller_id, e.callee_name, e.callee_id, e.line, e.callee_type_hint)
-                for e in edges
-            ],
+            [(e.caller_id, e.callee_name, e.callee_id, e.line, e.callee_type_hint) for e in edges],
         )
 
     def get_callees(self, symbol_id: int) -> list[int]:
@@ -377,9 +373,7 @@ class Database:
         )
 
     def get_imports_for_file(self, file_id: int) -> list[ImportEdge]:
-        rows = self._conn.execute(
-            "SELECT * FROM imports WHERE file_id = ?", (file_id,)
-        ).fetchall()
+        rows = self._conn.execute("SELECT * FROM imports WHERE file_id = ?", (file_id,)).fetchall()
         return [
             ImportEdge(
                 file_id=r["file_id"],
@@ -561,8 +555,7 @@ class Database:
         Returns number of newly resolved imports.
         """
         all_files: dict[int, str] = {
-            r[0]: r[1]
-            for r in self._conn.execute("SELECT id, rel_path FROM files").fetchall()
+            r[0]: r[1] for r in self._conn.execute("SELECT id, rel_path FROM files").fetchall()
         }
 
         # Build path lookup: normalized path (no ext, no common prefix) → file_id
@@ -575,8 +568,10 @@ class Database:
                     no_ext = no_ext[: -len(ext)]
                     break
             # Handle Go package files and Rust module files
-            no_ext = no_ext.removesuffix("/mod")    # Rust: store/db/mod.rs → store/db
-            no_ext = no_ext.removesuffix("/index")  # JS: components/Button/index.ts → components/Button
+            no_ext = no_ext.removesuffix("/mod")  # Rust: store/db/mod.rs → store/db
+            no_ext = no_ext.removesuffix(
+                "/index"
+            )  # JS: components/Button/index.ts → components/Button
 
             # Full path without extension
             path_lookup[no_ext] = fid
@@ -584,7 +579,7 @@ class Database:
             # Without common source root prefixes (src/, lib/, app/)
             for prefix in ("src/", "lib/", "app/"):
                 if no_ext.startswith(prefix):
-                    path_lookup[no_ext[len(prefix):]] = fid
+                    path_lookup[no_ext[len(prefix) :]] = fid
                     break
 
             # Last component only — used as fallback for single-segment matches
@@ -619,7 +614,7 @@ class Database:
         importer_file_id: int,
         all_files: dict[int, str],
         path_lookup: dict[str, int],
-    ) -> "int | None":
+    ) -> int | None:
         """
         Resolve a single import path to a file_id using language-aware heuristics.
         Handles: Python dotted paths, JS/TS relative, Go/Java slash paths, Rust :: paths.
@@ -649,10 +644,22 @@ class Database:
 
         # --- Skip well-known external / stdlib prefixes ---
         _external = (
-            "java.", "javax.", "android.", "kotlin.",       # Java/Kotlin stdlib
-            "std::", "core::", "alloc::",                   # Rust std
-            "react", "vue", "@angular", "@types/",          # JS/TS frameworks
-            "lodash", "axios", "express", "next", "nuxt",
+            "java.",
+            "javax.",
+            "android.",
+            "kotlin.",  # Java/Kotlin stdlib
+            "std::",
+            "core::",
+            "alloc::",  # Rust std
+            "react",
+            "vue",
+            "@angular",
+            "@types/",  # JS/TS frameworks
+            "lodash",
+            "axios",
+            "express",
+            "next",
+            "nuxt",
         )
         if any(
             module_path == x
@@ -685,7 +692,7 @@ class Database:
             candidate = module_path
             for prefix in ("crate::", "super::", "self::"):
                 if candidate.startswith(prefix):
-                    candidate = candidate[len(prefix):]
+                    candidate = candidate[len(prefix) :]
             candidate = candidate.replace("::", "/")
             if candidate in path_lookup:
                 return path_lookup[candidate]
@@ -712,7 +719,8 @@ class Database:
     def get_file_imports_resolved(self, file_id: int) -> list[int]:
         """Return file_ids that this file imports (resolved internal imports only)."""
         rows = self._conn.execute(
-            "SELECT imported_file_id FROM imports WHERE file_id = ? AND imported_file_id IS NOT NULL",
+            "SELECT imported_file_id FROM imports"
+            " WHERE file_id = ? AND imported_file_id IS NOT NULL",
             (file_id,),
         ).fetchall()
         return list({r[0] for r in rows})
@@ -731,14 +739,17 @@ class Database:
 
     def insert_type_edges(self, edges: list[TypeEdge]) -> None:
         self._conn.executemany(
-            "INSERT INTO type_edges (from_symbol_id, to_type_name, edge_kind, to_symbol_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO type_edges"
+            " (from_symbol_id, to_type_name, edge_kind, to_symbol_id)"
+            " VALUES (?, ?, ?, ?)",
             [(e.from_symbol_id, e.to_type_name, e.edge_kind, e.to_symbol_id) for e in edges],
         )
 
     def get_type_parents(self, symbol_id: int) -> list[int]:
         """Return symbol ids this symbol inherits/implements (outgoing type edges)."""
         rows = self._conn.execute(
-            "SELECT to_symbol_id FROM type_edges WHERE from_symbol_id = ? AND to_symbol_id IS NOT NULL",
+            "SELECT to_symbol_id FROM type_edges"
+            " WHERE from_symbol_id = ? AND to_symbol_id IS NOT NULL",
             (symbol_id,),
         ).fetchall()
         return [r[0] for r in rows]
@@ -1032,7 +1043,7 @@ class Database:
     def close(self) -> None:
         self._conn.close()
 
-    def __enter__(self) -> "Database":
+    def __enter__(self) -> Database:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -1043,9 +1054,7 @@ class Database:
     # Used by Retriever, BM25, graph expansion to build SearchResult objects
     # ------------------------------------------------------------------
 
-    def get_chunk_with_context(
-        self, chunk_id: int
-    ) -> "tuple[Chunk, Symbol, IndexedFile] | None":
+    def get_chunk_with_context(self, chunk_id: int) -> tuple[Chunk, Symbol, IndexedFile] | None:
         """
         Single JOIN query: chunk → symbol → file.
         Returns (Chunk, Symbol, IndexedFile) or None if not found.
@@ -1093,9 +1102,7 @@ class Database:
 
         return self._row_to_hydrated(row)
 
-    def get_symbol_with_file(
-        self, symbol_id: int
-    ) -> "tuple[Symbol, IndexedFile] | None":
+    def get_symbol_with_file(self, symbol_id: int) -> tuple[Symbol, IndexedFile] | None:
         """
         Load a symbol and its file in one query.
         Used by graph expansion and grep search hydration.
@@ -1160,7 +1167,7 @@ class Database:
         )
         return symbol, file
 
-    def get_first_chunk_for_symbol(self, symbol_id: int) -> "Chunk | None":
+    def get_first_chunk_for_symbol(self, symbol_id: int) -> Chunk | None:
         """
         Return the first (and usually only) chunk for a symbol.
         Used when we have a symbol_id from BM25/graph and need a Chunk for SearchResult.
@@ -1178,9 +1185,7 @@ class Database:
             token_count=row["token_count"],
         )
 
-    def _row_to_hydrated(
-        self, row: sqlite3.Row
-    ) -> "tuple[Chunk, Symbol, IndexedFile]":
+    def _row_to_hydrated(self, row: sqlite3.Row) -> tuple[Chunk, Symbol, IndexedFile]:
         """Convert a JOIN row into (Chunk, Symbol, IndexedFile)."""
         chunk = Chunk(
             id=row["c_id"],

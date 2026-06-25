@@ -15,7 +15,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Fake qdrant_client module injected before every test that needs it
 # ---------------------------------------------------------------------------
@@ -143,6 +142,7 @@ class TestQdrantUpsertBatch:
 
     def _make_store(self, collection: str = "trelix") -> Any:
         from trelix.store.vector_qdrant import QdrantVectorStore
+
         return QdrantVectorStore(_make_config(qdrant_collection=collection), dimension=4)
 
     def test_upsert_batch_calls_upsert_with_point_structs(self) -> None:
@@ -208,6 +208,7 @@ class TestQdrantSearch:
 
     def _make_store(self, collection: str = "trelix") -> Any:
         from trelix.store.vector_qdrant import QdrantVectorStore
+
         return QdrantVectorStore(_make_config(qdrant_collection=collection), dimension=4)
 
     def test_search_returns_id_score_tuples(self) -> None:

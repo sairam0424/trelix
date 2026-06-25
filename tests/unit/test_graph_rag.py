@@ -6,8 +6,6 @@ import os
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from trelix.core.config import EmbedderConfig, RetrievalConfig
 from trelix.core.models import (
     Chunk,
@@ -21,10 +19,10 @@ from trelix.core.models import (
 from trelix.retrieval.graph_rag import GraphRAGSynthesizer
 from trelix.retrieval.synthesizer import Synthesizer
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_file(file_id: int, rel_path: str = "src/foo.py") -> IndexedFile:
     return IndexedFile(
@@ -119,6 +117,7 @@ def _make_retrieval_config(
 # should_use() tests
 # ---------------------------------------------------------------------------
 
+
 class TestShouldUse:
     def _make_synthesizer(
         self,
@@ -207,6 +206,7 @@ class TestShouldUse:
 # MAP phase tests
 # ---------------------------------------------------------------------------
 
+
 class TestMapPhase:
     def _make_synthesizer_with_mock(
         self, response_text: str = "partial answer"
@@ -269,6 +269,7 @@ class TestMapPhase:
 # ---------------------------------------------------------------------------
 # REDUCE phase tests
 # ---------------------------------------------------------------------------
+
 
 class TestReducePhase:
     def test_reduce_combines_partial_answers(self) -> None:
@@ -357,6 +358,7 @@ class TestReducePhase:
 # Synthesizer delegation tests
 # ---------------------------------------------------------------------------
 
+
 class TestSynthesizerDelegation:
     def test_delegates_to_graph_rag_when_threshold_exceeded(self) -> None:
         """Synthesizer delegates to GraphRAGSynthesizer for large contexts."""
@@ -372,10 +374,9 @@ class TestSynthesizerDelegation:
         large_context = _make_context(num_results=25, total_tokens=9000)
 
         # Patch the class in the graph_rag module (where it's defined)
-        # because synthesizer imports it with `from trelix.retrieval.graph_rag import GraphRAGSynthesizer`
-        with patch(
-            "trelix.retrieval.graph_rag.GraphRAGSynthesizer"
-        ) as mock_graph_rag_cls:
+        # because synthesizer imports it with
+        # `from trelix.retrieval.graph_rag import GraphRAGSynthesizer`
+        with patch("trelix.retrieval.graph_rag.GraphRAGSynthesizer") as mock_graph_rag_cls:
             mock_graph_rag_instance = MagicMock()
             mock_graph_rag_instance.should_use.return_value = True
             mock_graph_rag_instance.synthesize.return_value = "GraphRAG answer"
@@ -412,9 +413,7 @@ class TestSynthesizerDelegation:
 
         small_context = _make_context(num_results=5, total_tokens=500)
 
-        with patch(
-            "trelix.retrieval.graph_rag.GraphRAGSynthesizer"
-        ) as mock_graph_rag_cls:
+        with patch("trelix.retrieval.graph_rag.GraphRAGSynthesizer") as mock_graph_rag_cls:
             mock_graph_rag_instance = MagicMock()
             mock_graph_rag_instance.should_use.return_value = False
             mock_graph_rag_cls.return_value = mock_graph_rag_instance

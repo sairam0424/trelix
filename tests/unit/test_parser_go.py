@@ -11,13 +11,13 @@ Covers:
 - Type alias and named type extraction
 - Package-level constants
 """
+
 from __future__ import annotations
 
 import pytest
 
 from trelix.core.models import SymbolKind
 from trelix.indexing.parser.extractors.go import GoParser
-
 
 FILE_ID = 42
 
@@ -30,6 +30,7 @@ def parser() -> GoParser:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def syms_by_kind(result, kind: SymbolKind):
     return [s for s in result.symbols if s.kind == kind]
@@ -125,8 +126,7 @@ def test_interface_method_specs(parser):
 
     # Interface method specs are emitted as FUNCTION symbols with parent_id = interface idx
     iface_funcs = [
-        s for s in result.symbols
-        if s.kind == SymbolKind.FUNCTION and s.parent_id == handler_idx
+        s for s in result.symbols if s.kind == SymbolKind.FUNCTION and s.parent_id == handler_idx
     ]
     method_names = {f.name for f in iface_funcs}
     assert "ServeHTTP" in method_names
@@ -327,6 +327,7 @@ def test_exported_const_extracted(parser):
 # Parse errors
 # ---------------------------------------------------------------------------
 
+
 def test_clean_parse_no_errors(parser):
     result = parser.parse(STRUCT_SOURCE, FILE_ID)
     assert result.parse_errors == 0
@@ -336,6 +337,7 @@ def test_clean_parse_no_errors(parser):
 # Language name
 # ---------------------------------------------------------------------------
 
+
 def test_language_name(parser):
     assert parser.language_name == "go"
 
@@ -343,6 +345,7 @@ def test_language_name(parser):
 # ---------------------------------------------------------------------------
 # Empty source
 # ---------------------------------------------------------------------------
+
 
 def test_empty_source(parser):
     result = parser.parse("package main\n", FILE_ID)

@@ -9,21 +9,20 @@ Uses a synthetic repo in tmp_path to verify:
 - Files above max_file_size_bytes are skipped
 - SHA-256 hash is deterministic (same content = same hash)
 """
+
 from __future__ import annotations
 
 import hashlib
 from pathlib import Path
 
-import pytest
-
 from trelix.core.config import IndexConfig, WalkerConfig
 from trelix.core.models import Language
 from trelix.indexing.walker import EXTENSION_MAP, FileWalker
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_config(
     repo_path: Path,
@@ -36,7 +35,8 @@ def make_config(
     walker_cfg = WalkerConfig(
         respect_gitignore=respect_gitignore,
         max_file_size_bytes=max_file_size_bytes,
-        languages=languages or [
+        languages=languages
+        or [
             Language.PYTHON,
             Language.JAVASCRIPT,
             Language.TYPESCRIPT,
@@ -119,6 +119,7 @@ def _build_synthetic_repo(base: Path) -> dict[str, Path]:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestGitignoreFiltering:
     def test_gitignore_ignored_files_are_skipped(self, tmp_path: Path) -> None:
         """Files matched by .gitignore must NOT appear when respect_gitignore=True."""
@@ -140,9 +141,7 @@ class TestGitignoreFiltering:
 
         found_rel_paths = {f.rel_path for f in walker.walk()}
 
-        assert "main.py" in found_rel_paths, (
-            "main.py is not gitignored -- it must be indexed"
-        )
+        assert "main.py" in found_rel_paths, "main.py is not gitignored -- it must be indexed"
 
     def test_gitignore_disabled_includes_secret(self, tmp_path: Path) -> None:
         """When respect_gitignore=False, .gitignore patterns are ignored."""

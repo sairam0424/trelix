@@ -15,18 +15,16 @@ import time
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from trelix.indexing.indexer import (
     _AsyncTpmRateLimiter,
-    _PendingChunk,
     _make_token_batches,
+    _PendingChunk,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_chunk(chunk_id: int, tokens: int = 10) -> _PendingChunk:
     return _PendingChunk(
@@ -60,6 +58,7 @@ def _patch_rich_progress():
 # ---------------------------------------------------------------------------
 # _AsyncTpmRateLimiter tests
 # ---------------------------------------------------------------------------
+
 
 class TestAsyncTpmRateLimiter:
     def test_no_limit_does_not_sleep(self) -> None:
@@ -98,8 +97,8 @@ class TestAsyncTpmRateLimiter:
                 limiter._window_start = time.monotonic() - 65.0
 
             with patch("asyncio.sleep", side_effect=fake_sleep):
-                await limiter.acquire(40)   # used=40, ok
-                await limiter.acquire(20)   # used+20=60 > 50 → sleep
+                await limiter.acquire(40)  # used=40, ok
+                await limiter.acquire(20)  # used+20=60 > 50 → sleep
             return sleep_calls
 
         sleep_calls = asyncio.run(_run())
@@ -119,9 +118,9 @@ class TestAsyncTpmRateLimiter:
                 limiter._window_start = time.monotonic() - 65.0
 
             with patch("asyncio.sleep", side_effect=fake_sleep):
-                await limiter.acquire(40)   # ok
-                await limiter.acquire(20)   # triggers sleep, resets
-                await limiter.acquire(30)   # should NOT trigger another sleep
+                await limiter.acquire(40)  # ok
+                await limiter.acquire(20)  # triggers sleep, resets
+                await limiter.acquire(30)  # should NOT trigger another sleep
             return sleep_count
 
         count = asyncio.run(_run())
@@ -141,6 +140,7 @@ class TestAsyncTpmRateLimiter:
 # ---------------------------------------------------------------------------
 # _batch_embed_and_store_async tests
 # ---------------------------------------------------------------------------
+
 
 class TestBatchEmbedAndStoreAsync:
     """
@@ -214,9 +214,7 @@ class TestBatchEmbedAndStoreAsync:
         # If sequential (0.01s each), span would be ~0.03s.
         # If concurrent, all start at roughly the same time → span < 0.02s.
         span = max(call_times) - min(call_times)
-        assert span < 0.02, (
-            f"Batches appear sequential (span={span:.4f}s); expected concurrent"
-        )
+        assert span < 0.02, f"Batches appear sequential (span={span:.4f}s); expected concurrent"
 
     def test_upsert_batch_called_once_per_batch(self) -> None:
         """upsert_batch must be called exactly once per batch."""
@@ -360,6 +358,7 @@ class TestBatchEmbedAndStoreAsync:
 # ---------------------------------------------------------------------------
 # _make_token_batches (regression — unchanged from sync version)
 # ---------------------------------------------------------------------------
+
 
 class TestMakeTokenBatches:
     def test_single_batch_when_all_fit(self) -> None:

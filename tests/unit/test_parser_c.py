@@ -14,6 +14,7 @@ Covers:
   - Function call edges
   - Parse error counting
 """
+
 from __future__ import annotations
 
 import pytest
@@ -21,10 +22,10 @@ import pytest
 from trelix.core.models import SymbolKind
 from trelix.indexing.parser.extractors.c import CParser
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def parser() -> CParser:
@@ -38,6 +39,7 @@ FILE_ID = 3
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def find(symbols, name: str):
     for s in symbols:
         if s.name == name:
@@ -48,6 +50,7 @@ def find(symbols, name: str):
 # ---------------------------------------------------------------------------
 # Function extraction
 # ---------------------------------------------------------------------------
+
 
 class TestFunctionExtraction:
     def test_simple_function_extracted(self, parser: CParser) -> None:
@@ -72,11 +75,7 @@ class TestFunctionExtraction:
         assert sym.kind == SymbolKind.FUNCTION
 
     def test_multiple_functions_all_extracted(self, parser: CParser) -> None:
-        src = (
-            "int foo(void) { return 0; }\n"
-            "int bar(void) { return 1; }\n"
-            "void baz(void) { }\n"
-        )
+        src = "int foo(void) { return 0; }\nint bar(void) { return 1; }\nvoid baz(void) { }\n"
         result = parser.parse(src, FILE_ID)
         names = {s.name for s in result.symbols if s.kind == SymbolKind.FUNCTION}
         assert "foo" in names
@@ -121,6 +120,7 @@ class TestFunctionExtraction:
 # ---------------------------------------------------------------------------
 # Struct extraction
 # ---------------------------------------------------------------------------
+
 
 class TestStructExtraction:
     def test_simple_struct_extracted(self, parser: CParser) -> None:
@@ -179,6 +179,7 @@ class TestStructExtraction:
 # Union extraction
 # ---------------------------------------------------------------------------
 
+
 class TestUnionExtraction:
     def test_union_extracted_as_struct(self, parser: CParser) -> None:
         src = "union Data { int i; float f; char c; };\n"
@@ -191,6 +192,7 @@ class TestUnionExtraction:
 # ---------------------------------------------------------------------------
 # Enum extraction
 # ---------------------------------------------------------------------------
+
 
 class TestEnumExtraction:
     def test_enum_extracted(self, parser: CParser) -> None:
@@ -229,6 +231,7 @@ class TestEnumExtraction:
 # #include → ImportEdge
 # ---------------------------------------------------------------------------
 
+
 class TestIncludeExtraction:
     def test_system_include_produces_import_edge(self, parser: CParser) -> None:
         src = "#include <stdio.h>\n#include <stdlib.h>\n"
@@ -252,6 +255,7 @@ class TestIncludeExtraction:
 # ---------------------------------------------------------------------------
 # #define → CONSTANT
 # ---------------------------------------------------------------------------
+
 
 class TestDefineExtraction:
     def test_define_extracted_as_constant(self, parser: CParser) -> None:
@@ -281,6 +285,7 @@ class TestDefineExtraction:
 # Typedef extraction
 # ---------------------------------------------------------------------------
 
+
 class TestTypedefExtraction:
     def test_typedef_struct_extracted_as_class(self, parser: CParser) -> None:
         src = "typedef struct { int x; int y; } Point;\n"
@@ -293,6 +298,7 @@ class TestTypedefExtraction:
 # ---------------------------------------------------------------------------
 # Parse quality
 # ---------------------------------------------------------------------------
+
 
 class TestParseQuality:
     def test_clean_c_file_has_zero_errors(self, parser: CParser) -> None:

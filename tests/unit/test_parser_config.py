@@ -8,18 +8,16 @@ no file walker. All inputs are inline strings.
 
 from __future__ import annotations
 
-import pytest
-
 from trelix.core.models import SymbolKind
 from trelix.indexing.parser.extractors.json_config import JsonParser
 from trelix.indexing.parser.extractors.markdown import MarkdownParser
 from trelix.indexing.parser.extractors.toml_config import TomlParser
 from trelix.indexing.parser.extractors.yaml_config import YamlParser
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _symbols_by_name(result, name: str):
     return [s for s in result.symbols if s.name == name]
@@ -36,6 +34,7 @@ def _kinds(result) -> list[str]:
 # ===========================================================================
 # JSON / JSONC Tests
 # ===========================================================================
+
 
 class TestJsonParser:
     """JsonParser — object key extraction, JSONC comment handling."""
@@ -211,6 +210,7 @@ class TestJsonParser:
 # YAML Tests
 # ===========================================================================
 
+
 class TestYamlParser:
     """YamlParser — single doc, multi-doc, kubernetes manifest shape."""
 
@@ -364,6 +364,7 @@ class TestYamlParser:
 # TOML Tests
 # ===========================================================================
 
+
 class TestTomlParser:
     """TomlParser — dotted headers, array-of-tables."""
 
@@ -375,7 +376,7 @@ class TestTomlParser:
     # ------------------------------------------------------------------
 
     def test_module_symbol_lists_section_headers(self):
-        src = "[package]\nname = \"myapp\"\n\n[dependencies]\nrequests = \"2.28\"\n"
+        src = '[package]\nname = "myapp"\n\n[dependencies]\nrequests = "2.28"\n'
         result = self.parser.parse(src, file_id=1)
         modules = [s for s in result.symbols if s.kind == SymbolKind.MODULE]
         assert len(modules) == 1
@@ -388,14 +389,14 @@ class TestTomlParser:
     # ------------------------------------------------------------------
 
     def test_table_header_is_section(self):
-        src = "[build-system]\nrequires = [\"hatchling\"]\n"
+        src = '[build-system]\nrequires = ["hatchling"]\n'
         result = self.parser.parse(src, file_id=1)
         sections = [s for s in result.symbols if s.kind == SymbolKind.SECTION]
         names = [s.name for s in sections]
         assert "build-system" in names
 
     def test_table_header_signature_uses_bracket_notation(self):
-        src = "[package]\nname = \"myapp\"\n"
+        src = '[package]\nname = "myapp"\n'
         result = self.parser.parse(src, file_id=1)
         sec = next((s for s in result.symbols if s.name == "package"), None)
         assert sec is not None
@@ -406,18 +407,16 @@ class TestTomlParser:
     # ------------------------------------------------------------------
 
     def test_dotted_header_qualified_name_preserved(self):
-        src = "[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n"
+        src = '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
         result = self.parser.parse(src, file_id=1)
         sections = [s for s in result.symbols if s.kind == SymbolKind.SECTION]
         qnames = [s.qualified_name for s in sections]
         assert "tool.pytest.ini_options" in qnames
 
     def test_dotted_header_name_is_last_part(self):
-        src = "[tool.ruff.lint]\nselect = [\"E\", \"F\"]\n"
+        src = '[tool.ruff.lint]\nselect = ["E", "F"]\n'
         result = self.parser.parse(src, file_id=1)
-        sec = next(
-            (s for s in result.symbols if s.qualified_name == "tool.ruff.lint"), None
-        )
+        sec = next((s for s in result.symbols if s.qualified_name == "tool.ruff.lint"), None)
         assert sec is not None
         assert sec.name == "lint"
 
@@ -426,22 +425,29 @@ class TestTomlParser:
     # ------------------------------------------------------------------
 
     def test_array_of_tables_uses_double_bracket_signature(self):
-        src = "[[bin]]\nname = \"mycli\"\npath = \"src/main.rs\"\n"
+        src = '[[bin]]\nname = "mycli"\npath = "src/main.rs"\n'
         result = self.parser.parse(src, file_id=1)
-        sec = next((s for s in result.symbols if s.kind == SymbolKind.SECTION
-                    and "bin" in s.qualified_name), None)
+        sec = next(
+            (
+                s
+                for s in result.symbols
+                if s.kind == SymbolKind.SECTION and "bin" in s.qualified_name
+            ),
+            None,
+        )
         assert sec is not None
         assert "[[bin]]" in sec.signature
 
     def test_array_of_tables_disambiguated_by_name(self):
         src = (
-            "[[bin]]\nname = \"tool1\"\npath = \"src/tool1.rs\"\n\n"
-            "[[bin]]\nname = \"tool2\"\npath = \"src/tool2.rs\"\n"
+            '[[bin]]\nname = "tool1"\npath = "src/tool1.rs"\n\n'
+            '[[bin]]\nname = "tool2"\npath = "src/tool2.rs"\n'
         )
         result = self.parser.parse(src, file_id=1)
         # Should get two bin sections, disambiguated by name
-        bin_sections = [s for s in result.symbols
-                        if s.kind == SymbolKind.SECTION and "bin" in s.qualified_name]
+        bin_sections = [
+            s for s in result.symbols if s.kind == SymbolKind.SECTION and "bin" in s.qualified_name
+        ]
         assert len(bin_sections) >= 2
         qnames = [s.qualified_name for s in bin_sections]
         assert any("tool1" in qn for qn in qnames)
@@ -452,21 +458,21 @@ class TestTomlParser:
     # ------------------------------------------------------------------
 
     def test_scalar_pair_is_constant(self):
-        src = "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n"
+        src = '[package]\nname = "myapp"\nversion = "0.1.0"\n'
         result = self.parser.parse(src, file_id=1)
         const = next((s for s in result.symbols if s.name == "name"), None)
         assert const is not None
         assert const.kind == SymbolKind.CONSTANT
 
     def test_array_pair_is_section(self):
-        src = "[build-system]\nrequires = [\"hatchling\", \"hatch-vcs\"]\n"
+        src = '[build-system]\nrequires = ["hatchling", "hatch-vcs"]\n'
         result = self.parser.parse(src, file_id=1)
         sec = next((s for s in result.symbols if s.name == "requires"), None)
         assert sec is not None
         assert sec.kind == SymbolKind.SECTION
 
     def test_inline_table_pair_is_section(self):
-        src = "[package]\nauthors = [{name = \"Alice\", email = \"a@b.com\"}]\n"
+        src = '[package]\nauthors = [{name = "Alice", email = "a@b.com"}]\n'
         # authors is an array (of inline tables); we just need it not to crash
         result = self.parser.parse(src, file_id=1)
         assert result.parse_errors == 0
@@ -476,14 +482,14 @@ class TestTomlParser:
     # ------------------------------------------------------------------
 
     def test_dependencies_table_emits_import_edges(self):
-        src = "[dependencies]\nrequests = \"2.28\"\nnumpy = \">=1.26\"\n"
+        src = '[dependencies]\nrequests = "2.28"\nnumpy = ">=1.26"\n'
         result = self.parser.parse(src, file_id=1)
         froms = [e.imported_from for e in result.import_edges]
         assert "requests" in froms
         assert "numpy" in froms
 
     def test_dev_dependencies_table_emits_import_edges(self):
-        src = "[dev-dependencies]\npytest = \">=8.0\"\n"
+        src = '[dev-dependencies]\npytest = ">=8.0"\n'
         result = self.parser.parse(src, file_id=1)
         froms = [e.imported_from for e in result.import_edges]
         assert "pytest" in froms
@@ -493,7 +499,7 @@ class TestTomlParser:
     # ------------------------------------------------------------------
 
     def test_preceding_comment_becomes_docstring(self):
-        src = "# The main package table\n[package]\nname = \"x\"\n"
+        src = '# The main package table\n[package]\nname = "x"\n'
         result = self.parser.parse(src, file_id=1)
         sec = next((s for s in result.symbols if s.name == "package"), None)
         assert sec is not None
@@ -514,7 +520,7 @@ class TestTomlParser:
     # ------------------------------------------------------------------
 
     def test_line_numbers_one_indexed(self):
-        src = "[package]\nname = \"x\"\n"
+        src = '[package]\nname = "x"\n'
         result = self.parser.parse(src, file_id=1)
         for sym in result.symbols:
             assert sym.line_start >= 1
@@ -523,6 +529,7 @@ class TestTomlParser:
 # ===========================================================================
 # Markdown Tests
 # ===========================================================================
+
 
 class TestMarkdownParser:
     """MarkdownParser — heading hierarchy, breadcrumb qualified names."""
@@ -644,7 +651,10 @@ class TestMarkdownParser:
     # ------------------------------------------------------------------
 
     def test_yaml_front_matter_becomes_module(self):
-        src = "---\ntitle: My Guide\ndescription: A guide\ntags: [python, async]\n---\n\n# Introduction\n"
+        src = (
+            "---\ntitle: My Guide\ndescription: A guide\n"
+            "tags: [python, async]\n---\n\n# Introduction\n"
+        )
         result = self.parser.parse(src, file_id=1)
         modules = [s for s in result.symbols if s.kind == SymbolKind.MODULE]
         assert len(modules) == 1
@@ -658,7 +668,7 @@ class TestMarkdownParser:
         assert "python" in mod.signature or "async" in mod.signature
 
     def test_toml_front_matter_becomes_module(self):
-        src = "+++\ntitle = \"My Article\"\n+++\n\n# Overview\n"
+        src = '+++\ntitle = "My Article"\n+++\n\n# Overview\n'
         result = self.parser.parse(src, file_id=1)
         modules = [s for s in result.symbols if s.kind == SymbolKind.MODULE]
         assert len(modules) == 1
@@ -724,6 +734,8 @@ class TestMarkdownParser:
 # Helper imported at test time to avoid top-level import issues
 # ---------------------------------------------------------------------------
 
+
 def textwrap_dedent(s: str) -> str:
     import textwrap
+
     return textwrap.dedent(s)

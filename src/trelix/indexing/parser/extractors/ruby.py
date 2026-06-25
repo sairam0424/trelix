@@ -36,9 +36,6 @@ Visibility:
 
 from __future__ import annotations
 
-import re
-from typing import Optional
-
 import tree_sitter_languages
 from tree_sitter import Node, Parser
 
@@ -82,7 +79,7 @@ class RubyParser(BaseParser):
 
         symbols: list[Symbol] = []
         # (caller_local_idx | None, callee_name, line)
-        raw_calls: list[tuple[Optional[int], str, int]] = []
+        raw_calls: list[tuple[int | None, str, int]] = []
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
 
@@ -125,12 +122,12 @@ class RubyParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
-        parent_module_name: Optional[str],
-        current_func_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
+        parent_module_name: str | None,
+        current_func_local_idx: int | None,
         current_visibility_is_public: bool,
         depth: int,
     ) -> None:
@@ -146,39 +143,79 @@ class RubyParser(BaseParser):
             # ---- Module definition ------------------------------------------
             if ntype == "module":
                 self._handle_module(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, parent_module_name, depth,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_module_name,
+                    depth,
                 )
 
             # ---- Class definition -------------------------------------------
             elif ntype == "class":
                 self._handle_class(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, parent_class_local_idx, parent_module_name, depth,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    parent_module_name,
+                    depth,
                 )
 
             # ---- Singleton class: class << self --------------------------------
             elif ntype == "singleton_class":
                 self._handle_singleton_class(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, parent_class_local_idx, parent_module_name, depth,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    parent_module_name,
+                    depth,
                 )
 
             # ---- Instance method definition -----------------------------------
             elif ntype == "method":
                 self._handle_method(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, parent_class_local_idx, parent_module_name,
-                    current_func_local_idx, is_singleton=False,
-                    is_public=visibility_public, depth=depth,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    parent_module_name,
+                    current_func_local_idx,
+                    is_singleton=False,
+                    is_public=visibility_public,
+                    depth=depth,
                 )
 
             # ---- Singleton method: def self.foo --------------------------------
             elif ntype == "singleton_method":
                 self._handle_method(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, parent_class_local_idx, parent_module_name,
-                    current_func_local_idx, is_singleton=True,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    parent_module_name,
+                    current_func_local_idx,
+                    is_singleton=True,
                     is_public=True,  # singleton methods are always public
                     depth=depth,
                 )
@@ -188,22 +225,41 @@ class RubyParser(BaseParser):
             # inside a class/module body.
             elif ntype == "assignment":
                 self._handle_assignment(
-                    child, src, file_id, symbols,
-                    parent_class_local_idx, parent_module_name,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    parent_class_local_idx,
+                    parent_module_name,
                     current_func_local_idx,
                 )
 
             # ---- Call node: require / include / extend / regular calls ---------
             elif ntype == "call":
                 self._handle_call(
-                    child, src, file_id, import_edges, type_edges,
-                    raw_calls, parent_class_local_idx, current_func_local_idx,
+                    child,
+                    src,
+                    file_id,
+                    import_edges,
+                    type_edges,
+                    raw_calls,
+                    parent_class_local_idx,
+                    current_func_local_idx,
                 )
                 # Recurse into call arguments (nested calls)
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, parent_module_name, current_func_local_idx,
-                    visibility_public, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    parent_module_name,
+                    current_func_local_idx,
+                    visibility_public,
+                    depth + 1,
                 )
 
             # ---- Visibility modifiers: bare "private" / "protected" / "public" --
@@ -218,25 +274,53 @@ class RubyParser(BaseParser):
 
             # ---- Recurse into container nodes ---------------------------------
             elif ntype in (
-                "program", "body_statement",
-                "if", "unless", "while", "until", "for",
-                "begin", "rescue", "ensure",
-                "do_block", "block", "lambda",
-                "then", "else", "elsif",
-                "case", "when", "in",
-                "return", "yield",
+                "program",
+                "body_statement",
+                "if",
+                "unless",
+                "while",
+                "until",
+                "for",
+                "begin",
+                "rescue",
+                "ensure",
+                "do_block",
+                "block",
+                "lambda",
+                "then",
+                "else",
+                "elsif",
+                "case",
+                "when",
+                "in",
+                "return",
+                "yield",
                 "parenthesized_statements",
-                "binary", "unary",
-                "array", "hash", "pair",
-                "argument_list", "method_parameters",
-                "assignment", "operator_assignment",
+                "binary",
+                "unary",
+                "array",
+                "hash",
+                "pair",
+                "argument_list",
+                "method_parameters",
+                "assignment",
+                "operator_assignment",
                 "conditional",
                 "string_interpolation",
             ):
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, parent_module_name, current_func_local_idx,
-                    visibility_public, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    parent_module_name,
+                    current_func_local_idx,
+                    visibility_public,
+                    depth + 1,
                 )
 
     # ------------------------------------------------------------------
@@ -249,10 +333,10 @@ class RubyParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_module_name: Optional[str],
+        parent_module_name: str | None,
         depth: int,
     ) -> None:
         """Handle `module Foo ... end`."""
@@ -280,7 +364,13 @@ class RubyParser(BaseParser):
         body_node = node.child_by_field_name("body")
         if body_node:
             self._walk(
-                body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
                 parent_class_local_idx=module_local_idx,
                 parent_module_name=qualified,
                 current_func_local_idx=None,
@@ -294,11 +384,11 @@ class RubyParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
-        parent_module_name: Optional[str],
+        parent_class_local_idx: int | None,
+        parent_module_name: str | None,
         depth: int,
     ) -> None:
         """Handle `class Foo < Bar ... end`."""
@@ -311,7 +401,7 @@ class RubyParser(BaseParser):
 
         # Extract superclass
         superclass_node = node.child_by_field_name("superclass")
-        superclass_name: Optional[str] = None
+        superclass_name: str | None = None
         if superclass_node:
             # superclass node: `< ConstantName`
             for sc in superclass_node.children:
@@ -334,16 +424,24 @@ class RubyParser(BaseParser):
         symbols.append(sym)
 
         if superclass_name:
-            type_edges.append(TypeEdge(
-                from_symbol_id=class_local_idx,
-                to_type_name=superclass_name,
-                edge_kind="extends",
-            ))
+            type_edges.append(
+                TypeEdge(
+                    from_symbol_id=class_local_idx,
+                    to_type_name=superclass_name,
+                    edge_kind="extends",
+                )
+            )
 
         body_node = node.child_by_field_name("body")
         if body_node:
             self._walk(
-                body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
                 parent_class_local_idx=class_local_idx,
                 parent_module_name=parent_module_name,
                 current_func_local_idx=None,
@@ -357,11 +455,11 @@ class RubyParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
-        parent_module_name: Optional[str],
+        parent_class_local_idx: int | None,
+        parent_module_name: str | None,
         depth: int,
     ) -> None:
         """Handle `class << self ... end`."""
@@ -379,7 +477,7 @@ class RubyParser(BaseParser):
             kind=SymbolKind.CLASS,
             line_start=node.start_point[0] + 1,
             line_end=node.end_point[0] + 1,
-            signature=f"class << self",
+            signature="class << self",
             body=self._txt(node, src),
             is_public=True,
         )
@@ -395,7 +493,13 @@ class RubyParser(BaseParser):
 
         if body_node:
             self._walk(
-                body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
                 parent_class_local_idx=singleton_local_idx,
                 parent_module_name=parent_module_name,
                 current_func_local_idx=None,
@@ -409,12 +513,12 @@ class RubyParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
-        parent_module_name: Optional[str],
-        current_func_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
+        parent_module_name: str | None,
+        current_func_local_idx: int | None,
         is_singleton: bool,
         is_public: bool,
         depth: int,
@@ -458,7 +562,13 @@ class RubyParser(BaseParser):
         body_node = node.child_by_field_name("body")
         if body_node:
             self._walk(
-                body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
                 parent_class_local_idx=parent_class_local_idx,
                 parent_module_name=parent_module_name,
                 current_func_local_idx=func_local_idx,
@@ -472,9 +582,9 @@ class RubyParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        parent_class_local_idx: Optional[int],
-        parent_module_name: Optional[str],
-        current_func_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
+        parent_module_name: str | None,
+        current_func_local_idx: int | None,
     ) -> None:
         """
         Handle constant assignments: UPPER_CASE = ... or CamelCase = ...
@@ -508,18 +618,20 @@ class RubyParser(BaseParser):
         if len(body) > 500:
             body = body[:500] + "..."
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=qualified_name,
-            kind=SymbolKind.CONSTANT,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=body.split("\n")[0][:200],
-            body=body,
-            is_public=True,
-            parent_id=parent_class_local_idx,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=qualified_name,
+                kind=SymbolKind.CONSTANT,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=body.split("\n")[0][:200],
+                body=body,
+                is_public=True,
+                parent_id=parent_class_local_idx,
+            )
+        )
 
     def _handle_call(
         self,
@@ -528,9 +640,9 @@ class RubyParser(BaseParser):
         file_id: int,
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        raw_calls: list[tuple[Optional[int], str, int]],
-        parent_class_local_idx: Optional[int],
-        current_func_local_idx: Optional[int],
+        raw_calls: list[tuple[int | None, str, int]],
+        parent_class_local_idx: int | None,
+        current_func_local_idx: int | None,
     ) -> None:
         """
         Handle call nodes:
@@ -560,11 +672,13 @@ class RubyParser(BaseParser):
                     if arg.type == "string":
                         path = self._extract_string_content(arg, src)
                         if path:
-                            import_edges.append(ImportEdge(
-                                file_id=file_id,
-                                imported_from=path,
-                                imported_names=[],
-                            ))
+                            import_edges.append(
+                                ImportEdge(
+                                    file_id=file_id,
+                                    imported_from=path,
+                                    imported_names=[],
+                                )
+                            )
             return
 
         # --- include / prepend / extend → TypeEdge(implements) ---------------
@@ -574,11 +688,13 @@ class RubyParser(BaseParser):
                 for arg in args_node.children:
                     if arg.type in ("constant", "scope_resolution"):
                         mixin_name = self._txt(arg, src)
-                        type_edges.append(TypeEdge(
-                            from_symbol_id=parent_class_local_idx,
-                            to_type_name=mixin_name,
-                            edge_kind="implements",
-                        ))
+                        type_edges.append(
+                            TypeEdge(
+                                from_symbol_id=parent_class_local_idx,
+                                to_type_name=mixin_name,
+                                edge_kind="implements",
+                            )
+                        )
             return
 
         # --- Regular call → CallEdge -----------------------------------------
@@ -593,7 +709,7 @@ class RubyParser(BaseParser):
         node: Node,
         src: bytes,
         qualified_name: str,
-        superclass_name: Optional[str],
+        superclass_name: str | None,
     ) -> str:
         if superclass_name:
             return f"class {qualified_name} < {superclass_name}"
@@ -603,7 +719,7 @@ class RubyParser(BaseParser):
         self,
         name: str,
         is_singleton: bool,
-        params_node: Optional[Node],
+        params_node: Node | None,
         src: bytes,
     ) -> str:
         prefix = "def self." if is_singleton else "def "
@@ -623,7 +739,7 @@ class RubyParser(BaseParser):
         raw = self._txt(string_node, src)
         for quote in ('"""', "'''", '"', "'"):
             if raw.startswith(quote) and raw.endswith(quote) and len(raw) >= 2 * len(quote):
-                return raw[len(quote):-len(quote)]
+                return raw[len(quote) : -len(quote)]
         return raw.strip("'\"")
 
     # ------------------------------------------------------------------
@@ -641,7 +757,7 @@ class RubyParser(BaseParser):
     # ------------------------------------------------------------------
 
     def _txt(self, node: Node, src: bytes) -> str:
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _field(self, node: Node, field_name: str) -> Optional[Node]:
+    def _field(self, node: Node, field_name: str) -> Node | None:
         return node.child_by_field_name(field_name)

@@ -45,7 +45,9 @@ def rerank(
             return _cross_encoder_rerank(query, results, config.rerank_model, top_n)
         case "cohere":
             return _cohere_rerank(
-                query, results, top_n,
+                query,
+                results,
+                top_n,
                 api_key=config.cohere_api_key,
                 endpoint=config.cohere_endpoint,
                 model=config.cohere_rerank_model,
@@ -196,15 +198,17 @@ def _cohere_rerank(
                 wait = 2 ** (attempt - 1)  # 1s, 2s, 4s …
                 log.warning(
                     "Cohere rerank attempt %d/%d failed (%s), retrying in %ds …",
-                    attempt, max_retries, type(exc).__name__, wait,
+                    attempt,
+                    max_retries,
+                    type(exc).__name__,
+                    wait,
                 )
                 time.sleep(wait)
 
     # All retries exhausted — fall back to the original ordering so the
     # query pipeline can still return results (just without reranking).
     log.error(
-        "Cohere rerank failed after %d attempts: %s. "
-        "Falling back to un-reranked results.",
+        "Cohere rerank failed after %d attempts: %s. Falling back to un-reranked results.",
         max_retries,
         last_error,
     )

@@ -22,7 +22,7 @@ def hash_password(pwd: str) -> str:
         assert verify_password("s3cr3t", stored) is True
     """
     salt = secrets.token_hex(16)
-    digest = hashlib.sha256(f"{salt}{pwd}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{salt}{pwd}".encode()).hexdigest()
     return f"{salt}:{digest}"
 
 
@@ -51,7 +51,7 @@ def verify_password(pwd: str, hashed: str) -> bool:
     if ":" not in hashed:
         raise ValueError(f"Invalid hash format: {hashed!r}")
     salt, digest = hashed.split(":", 1)
-    expected = hashlib.sha256(f"{salt}{pwd}".encode("utf-8")).hexdigest()
+    expected = hashlib.sha256(f"{salt}{pwd}".encode()).hexdigest()
     return secrets.compare_digest(expected, digest)
 
 

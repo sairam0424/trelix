@@ -194,9 +194,7 @@ class SQLiteVectorStore(BaseVectorStore):
         packed = self._pack(embedding)
         # sqlite-vec virtual tables do not support INSERT OR REPLACE semantics —
         # delete first, then insert to achieve a true upsert.
-        self._conn.execute(
-            "DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,)
-        )
+        self._conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,))
         self._conn.execute(
             "INSERT INTO chunk_embeddings (chunk_id, embedding) VALUES (?, ?)",
             (chunk_id, packed),
@@ -208,9 +206,7 @@ class SQLiteVectorStore(BaseVectorStore):
         try:
             for chunk_id, emb in pairs:
                 packed = self._pack(emb)
-                self._conn.execute(
-                    "DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,)
-                )
+                self._conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,))
                 self._conn.execute(
                     "INSERT INTO chunk_embeddings (chunk_id, embedding) VALUES (?, ?)",
                     (chunk_id, packed),
@@ -244,9 +240,7 @@ class SQLiteVectorStore(BaseVectorStore):
         return [(r[0], r[1]) for r in rows]
 
     def delete(self, chunk_id: int) -> None:
-        self._conn.execute(
-            "DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,)
-        )
+        self._conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,))
         self._conn.commit()
 
     def delete_batch(self, chunk_ids: list[int]) -> None:
@@ -254,15 +248,11 @@ class SQLiteVectorStore(BaseVectorStore):
         if not chunk_ids:
             return
         for chunk_id in chunk_ids:
-            self._conn.execute(
-                "DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,)
-            )
+            self._conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,))
         self._conn.commit()
 
     def count(self) -> int:
-        row = self._conn.execute(
-            "SELECT COUNT(*) FROM chunk_embeddings"
-        ).fetchone()
+        row = self._conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()
         return row[0] if row else 0
 
     def info(self) -> dict:
@@ -320,5 +310,6 @@ def make_vector_store(config: IndexConfig, dimension: int) -> BaseVectorStore:
     backend = getattr(config.store, "backend", "sqlite")
     if backend == "qdrant":
         from trelix.store.vector_qdrant import QdrantVectorStore
+
         return QdrantVectorStore(config, dimension)
     return SQLiteVectorStore(db_path=config.db_path_absolute, dimension=dimension)

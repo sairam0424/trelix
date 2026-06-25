@@ -6,8 +6,6 @@ All tests use in-memory mock SearchResult objects — no DB required.
 
 from __future__ import annotations
 
-import pytest
-
 from trelix.core.models import (
     Chunk,
     IndexedFile,
@@ -18,10 +16,10 @@ from trelix.core.models import (
 )
 from trelix.retrieval.fusion import reciprocal_rank_fusion
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_result(symbol_id: int, score: float, source: str = "vector") -> SearchResult:
     """Build a minimal SearchResult with the given symbol_id and score."""
@@ -52,6 +50,7 @@ def _make_result(symbol_id: int, score: float, source: str = "vector") -> Search
 # Empty and trivial inputs
 # ---------------------------------------------------------------------------
 
+
 class TestRRFEdgeCases:
     def test_empty_input_returns_empty(self) -> None:
         assert reciprocal_rank_fusion([]) == []
@@ -77,11 +76,12 @@ class TestRRFEdgeCases:
 # Deduplication
 # ---------------------------------------------------------------------------
 
+
 class TestRRFDeduplication:
     def test_same_symbol_in_both_lists_deduplicated(self) -> None:
         """Symbol appearing in both vector and BM25 lists should appear only once."""
         list_a = [_make_result(1, 0.9, "vector"), _make_result(2, 0.8, "vector")]
-        list_b = [_make_result(1, 0.7, "bm25"),   _make_result(3, 0.6, "bm25")]
+        list_b = [_make_result(1, 0.7, "bm25"), _make_result(3, 0.6, "bm25")]
         fused = reciprocal_rank_fusion([list_a, list_b])
 
         ids = [r.chunk.symbol_id for r in fused]
@@ -106,6 +106,7 @@ class TestRRFDeduplication:
 # ---------------------------------------------------------------------------
 # RRF score correctness — ranked highest from multiple lists
 # ---------------------------------------------------------------------------
+
 
 class TestRRFScoring:
     def test_top_item_in_all_lists_gets_highest_fused_score(self) -> None:
@@ -167,7 +168,7 @@ class TestRRFScoring:
 
         for i in range(len(fused) - 1):
             assert fused[i].score >= fused[i + 1].score, (
-                f"Score at rank {i} ({fused[i].score}) < rank {i+1} ({fused[i+1].score})"
+                f"Score at rank {i} ({fused[i].score}) < rank {i + 1} ({fused[i + 1].score})"
             )
 
     def test_rank_field_is_1_indexed_sequential(self) -> None:

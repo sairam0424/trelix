@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # Chat model to use for the planner (cheap + fast — we only need structured output)
 _PLANNER_MODEL_OPENAI = "gpt-4o-mini"
-_PLANNER_MODEL_AZURE  = "gpt-4o"   # deployment name; caller can override via config
+_PLANNER_MODEL_AZURE = "gpt-4o"  # deployment name; caller can override via config
 
 
 class AdaptiveRouter:
@@ -150,13 +150,15 @@ class AdaptiveRouter:
             routing_tier=RoutingTier.TIER_1_DIRECT,
             execution_mode="parallel",
             strategy=INTENT_STRATEGIES[intent],
-            sub_queries=[SubQuery(
-                semantic_query=query,
-                hyde_snippet="",
-                bm25_tokens=query.split(),
-                grep_hints=[],
-                file_hints=[],
-            )],
+            sub_queries=[
+                SubQuery(
+                    semantic_query=query,
+                    hyde_snippet="",
+                    bm25_tokens=query.split(),
+                    grep_hints=[],
+                    file_hints=[],
+                )
+            ],
             raw_query=query,
         )
 
@@ -164,9 +166,7 @@ class AdaptiveRouter:
     # Tier 2: delegate to the LLM single-step planner (existing behaviour)
     # ------------------------------------------------------------------
 
-    def _single_step_plan(
-        self, query: str, project_context: dict | None
-    ) -> QueryPlan:
+    def _single_step_plan(self, query: str, project_context: dict | None) -> QueryPlan:
         # Call _plan_direct() (not plan()) to avoid re-entering the router loop.
         plan = self._get_planner()._plan_direct(query, project_context)
         # Stamp the tier (planner doesn't know about tiers)
@@ -177,9 +177,7 @@ class AdaptiveRouter:
     # Tier 3: LLM decomposes query → 2-3 parallel sub-queries
     # ------------------------------------------------------------------
 
-    def _multi_step_plan(
-        self, query: str, project_context: dict | None
-    ) -> QueryPlan:
+    def _multi_step_plan(self, query: str, project_context: dict | None) -> QueryPlan:
         """
         Ask the LLM to decompose *query* into 2–3 focused sub-questions and
         build a parallel QueryPlan from the result.
@@ -364,6 +362,7 @@ class QueryPlanner:
                 return None
             try:
                 from openai import AzureOpenAI
+
                 return AzureOpenAI(
                     api_key=config.azure_api_key,
                     azure_endpoint=config.azure_endpoint,
@@ -379,6 +378,7 @@ class QueryPlanner:
                 return None
             try:
                 from openai import OpenAI
+
                 return OpenAI(api_key=config.openai_api_key)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("QueryPlanner: could not create OpenAI client: %s", exc)
@@ -412,7 +412,7 @@ class QueryPlanner:
             model=self._model_name(),
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": self._build_user_message(query, project_context)},
+                {"role": "user", "content": self._build_user_message(query, project_context)},
             ],
             tools=[PLANNER_TOOL_SCHEMA],
             tool_choice={"type": "function", "function": {"name": "produce_query_plan"}},
@@ -450,14 +450,16 @@ class QueryPlanner:
         # Build SubQuery list
         sub_queries: list[SubQuery] = []
         for sq_raw in args["sub_queries"]:
-            sub_queries.append(SubQuery(
-                semantic_query=sq_raw["semantic_query"],
-                hyde_snippet=sq_raw.get("hyde_snippet", ""),
-                bm25_tokens=sq_raw.get("bm25_tokens", []),
-                grep_hints=sq_raw.get("grep_hints", []),
-                file_hints=sq_raw.get("file_hints", []),
-                depends_on=sq_raw.get("depends_on", []),
-            ))
+            sub_queries.append(
+                SubQuery(
+                    semantic_query=sq_raw["semantic_query"],
+                    hyde_snippet=sq_raw.get("hyde_snippet", ""),
+                    bm25_tokens=sq_raw.get("bm25_tokens", []),
+                    grep_hints=sq_raw.get("grep_hints", []),
+                    file_hints=sq_raw.get("file_hints", []),
+                    depends_on=sq_raw.get("depends_on", []),
+                )
+            )
 
         if not sub_queries:
             raise ValueError("LLM returned an empty sub_queries list.")

@@ -29,8 +29,6 @@ Parent linkage:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import tree_sitter_languages
 from tree_sitter import Node, Parser
 
@@ -64,7 +62,7 @@ class CParser(BaseParser):
         root = tree.root_node
 
         symbols: list[Symbol] = []
-        raw_calls: list[tuple[Optional[int], str, int]] = []
+        raw_calls: list[tuple[int | None, str, int]] = []
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
 
@@ -107,11 +105,11 @@ class CParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_struct_local_idx: Optional[int],
-        current_func_local_idx: Optional[int],
+        parent_struct_local_idx: int | None,
+        current_func_local_idx: int | None,
         depth: int,
     ) -> None:
         """Recursive depth-first walk of C AST."""
@@ -132,15 +130,29 @@ class CParser(BaseParser):
             # ---- Struct declaration ----
             elif ntype == "struct_specifier" and parent_struct_local_idx is None:
                 self._handle_struct(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, depth, kind=SymbolKind.STRUCT,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth,
+                    kind=SymbolKind.STRUCT,
                 )
 
             # ---- Union declaration ----
             elif ntype == "union_specifier" and parent_struct_local_idx is None:
                 self._handle_struct(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, depth, kind=SymbolKind.STRUCT,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth,
+                    kind=SymbolKind.STRUCT,
                 )
 
             # ---- Enum declaration ----
@@ -150,15 +162,27 @@ class CParser(BaseParser):
             # ---- Function definition ----
             elif ntype == "function_definition" and parent_struct_local_idx is None:
                 self._handle_function(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, depth,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth,
                 )
 
             # ---- Declaration (function declarations, variable declarations) ----
             elif ntype == "declaration" and parent_struct_local_idx is None:
                 self._handle_declaration(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, depth,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth,
                 )
 
             # ---- Typedef (type_definition node in tree-sitter-c 0.24+) ----
@@ -169,30 +193,62 @@ class CParser(BaseParser):
             elif ntype == "call_expression":
                 self._handle_call(child, src, raw_calls, current_func_local_idx)
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_struct_local_idx, current_func_local_idx, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_struct_local_idx,
+                    current_func_local_idx,
+                    depth + 1,
                 )
 
             # ---- Recurse into statement / expression containers ----
             elif ntype in (
-                "compound_statement", "if_statement", "else_clause",
-                "for_statement", "while_statement", "do_statement",
-                "return_statement", "expression_statement",
-                "switch_statement", "case_statement", "default_statement",
+                "compound_statement",
+                "if_statement",
+                "else_clause",
+                "for_statement",
+                "while_statement",
+                "do_statement",
+                "return_statement",
+                "expression_statement",
+                "switch_statement",
+                "case_statement",
+                "default_statement",
                 # expressions that may contain calls
-                "binary_expression", "unary_expression", "call_expression",
-                "conditional_expression", "assignment_expression",
-                "comma_expression", "parenthesized_expression",
-                "subscript_expression", "field_expression", "pointer_expression",
-                "initializer_list", "cast_expression", "sizeof_expression",
+                "binary_expression",
+                "unary_expression",
+                "call_expression",
+                "conditional_expression",
+                "assignment_expression",
+                "comma_expression",
+                "parenthesized_expression",
+                "subscript_expression",
+                "field_expression",
+                "pointer_expression",
+                "initializer_list",
+                "cast_expression",
+                "sizeof_expression",
                 # array/struct initializers
                 "initializer_pair",
                 # declaration containers
-                "declaration", "block_item",
+                "declaration",
+                "block_item",
             ):
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_struct_local_idx, current_func_local_idx, depth + 1,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_struct_local_idx,
+                    current_func_local_idx,
+                    depth + 1,
                 )
 
     # ------------------------------------------------------------------
@@ -205,7 +261,7 @@ class CParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         depth: int,
@@ -227,25 +283,35 @@ class CParser(BaseParser):
         signature = f"{kind.value} {name}"
         docstring = self._get_preceding_comment(node, src)
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=kind,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=signature[:300],
-            body=self._txt(node, src)[:2000],
-            docstring=docstring,
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=kind,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=signature[:300],
+                body=self._txt(node, src)[:2000],
+                docstring=docstring,
+                is_public=True,
+            )
+        )
 
         # Walk struct body for members
         body_node = self._get_child_by_type(node, "field_declaration_list")
         if body_node:
             self._walk_struct_body(
-                body_node, src, file_id, symbols, raw_calls, import_edges,
-                type_edges, struct_local_idx, name, depth,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
+                struct_local_idx,
+                name,
+                depth,
             )
 
     def _walk_struct_body(
@@ -254,7 +320,7 @@ class CParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         struct_local_idx: int,
@@ -269,20 +335,39 @@ class CParser(BaseParser):
             if ntype == "field_declaration" and field_count < self.MAX_STRUCT_FIELDS:
                 before = len(symbols)
                 self._handle_field_declaration(
-                    child, src, file_id, symbols, struct_local_idx, struct_name,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    struct_local_idx,
+                    struct_name,
                 )
                 field_count += len(symbols) - before
 
             elif ntype == "struct_specifier":
                 self._handle_struct(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, depth + 1, kind=SymbolKind.STRUCT,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth + 1,
+                    kind=SymbolKind.STRUCT,
                 )
 
             elif ntype == "union_specifier":
                 self._handle_struct(
-                    child, src, file_id, symbols, raw_calls, import_edges,
-                    type_edges, depth + 1, kind=SymbolKind.STRUCT,
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    depth + 1,
+                    kind=SymbolKind.STRUCT,
                 )
 
             elif ntype == "enum_specifier":
@@ -306,18 +391,20 @@ class CParser(BaseParser):
 
                 field_sig = self._txt(node, src).split(";")[0][:200]
 
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=name,
-                    qualified_name=f"{struct_name}.{name}",
-                    kind=SymbolKind.VARIABLE,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
-                    signature=field_sig,
-                    body=self._txt(node, src)[:500],
-                    parent_id=struct_local_idx,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=name,
+                        qualified_name=f"{struct_name}.{name}",
+                        kind=SymbolKind.VARIABLE,
+                        line_start=node.start_point[0] + 1,
+                        line_end=node.end_point[0] + 1,
+                        signature=field_sig,
+                        body=self._txt(node, src)[:500],
+                        parent_id=struct_local_idx,
+                        is_public=True,
+                    )
+                )
 
     def _handle_enum(
         self,
@@ -339,18 +426,20 @@ class CParser(BaseParser):
             return
 
         enum_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.ENUM,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"enum {name}",
-            body=self._txt(node, src)[:1000],
-            is_public=True,
-            docstring=self._get_preceding_comment(node, src),
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.ENUM,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"enum {name}",
+                body=self._txt(node, src)[:1000],
+                is_public=True,
+                docstring=self._get_preceding_comment(node, src),
+            )
+        )
 
         enumerator_list = self._get_child_by_type(node, "enumerator_list")
         if enumerator_list:
@@ -359,18 +448,20 @@ class CParser(BaseParser):
                     member_node = self._get_child_by_type(child, "identifier")
                     if member_node:
                         member_name = self._txt(member_node, src)
-                        symbols.append(Symbol(
-                            file_id=file_id,
-                            name=member_name,
-                            qualified_name=f"{name}::{member_name}",
-                            kind=SymbolKind.CONSTANT,
-                            line_start=child.start_point[0] + 1,
-                            line_end=child.end_point[0] + 1,
-                            signature=self._txt(child, src)[:100],
-                            body=self._txt(child, src),
-                            parent_id=enum_local_idx,
-                            is_public=True,
-                        ))
+                        symbols.append(
+                            Symbol(
+                                file_id=file_id,
+                                name=member_name,
+                                qualified_name=f"{name}::{member_name}",
+                                kind=SymbolKind.CONSTANT,
+                                line_start=child.start_point[0] + 1,
+                                line_end=child.end_point[0] + 1,
+                                signature=self._txt(child, src)[:100],
+                                body=self._txt(child, src),
+                                parent_id=enum_local_idx,
+                                is_public=True,
+                            )
+                        )
 
     def _handle_function(
         self,
@@ -378,7 +469,7 @@ class CParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         depth: int,
@@ -395,18 +486,20 @@ class CParser(BaseParser):
         func_local_idx = len(symbols)
         signature = self._extract_function_signature(node, src)
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.FUNCTION,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=signature[:300],
-            body=self._txt(node, src)[:2000],
-            is_public=True,
-            docstring=self._get_preceding_comment(node, src),
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.FUNCTION,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=signature[:300],
+                body=self._txt(node, src)[:2000],
+                is_public=True,
+                docstring=self._get_preceding_comment(node, src),
+            )
+        )
 
         body_node = node.child_by_field_name("body")
         if body_node:
@@ -418,7 +511,7 @@ class CParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         depth: int,
@@ -441,18 +534,20 @@ class CParser(BaseParser):
                         orig_type = self._txt(child, src).split("{")[0].strip()
                         break
 
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=name,
-                    qualified_name=name,
-                    kind=SymbolKind.CLASS,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
-                    signature=f"typedef {orig_type} {name}",
-                    body=self._txt(node, src)[:500],
-                    docstring=self._get_preceding_comment(node, src),
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=name,
+                        qualified_name=name,
+                        kind=SymbolKind.CLASS,
+                        line_start=node.start_point[0] + 1,
+                        line_end=node.end_point[0] + 1,
+                        signature=f"typedef {orig_type} {name}",
+                        body=self._txt(node, src)[:500],
+                        docstring=self._get_preceding_comment(node, src),
+                        is_public=True,
+                    )
+                )
 
         elif declarator_node and not is_typedef:
             # Function declaration (no body)
@@ -467,18 +562,20 @@ class CParser(BaseParser):
                 if name:
                     signature = self._extract_function_signature_from_declaration(node, src)
 
-                    symbols.append(Symbol(
-                        file_id=file_id,
-                        name=name,
-                        qualified_name=name,
-                        kind=SymbolKind.FUNCTION,
-                        line_start=node.start_point[0] + 1,
-                        line_end=node.end_point[0] + 1,
-                        signature=signature[:300],
-                        body=self._txt(node, src)[:500],
-                        is_public=True,
-                        docstring=self._get_preceding_comment(node, src),
-                    ))
+                    symbols.append(
+                        Symbol(
+                            file_id=file_id,
+                            name=name,
+                            qualified_name=name,
+                            kind=SymbolKind.FUNCTION,
+                            line_start=node.start_point[0] + 1,
+                            line_end=node.end_point[0] + 1,
+                            signature=signature[:300],
+                            body=self._txt(node, src)[:500],
+                            is_public=True,
+                            docstring=self._get_preceding_comment(node, src),
+                        )
+                    )
 
     def _handle_typedef(
         self,
@@ -506,30 +603,37 @@ class CParser(BaseParser):
         # Extract original type description (struct/union/enum specifier or plain type)
         orig_type = ""
         for c in node.children:
-            if c.type in ("struct_specifier", "union_specifier", "enum_specifier",
-                          "primitive_type", "sized_type_specifier"):
+            if c.type in (
+                "struct_specifier",
+                "union_specifier",
+                "enum_specifier",
+                "primitive_type",
+                "sized_type_specifier",
+            ):
                 orig_type = self._txt(c, src).split("{")[0].strip()
                 break
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.CLASS,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"typedef {orig_type} {name}".strip(),
-            body=self._txt(node, src)[:500],
-            docstring=self._get_preceding_comment(node, src),
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.CLASS,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"typedef {orig_type} {name}".strip(),
+                body=self._txt(node, src)[:500],
+                docstring=self._get_preceding_comment(node, src),
+                is_public=True,
+            )
+        )
 
     def _walk_for_calls(
         self,
         node: Node,
         src: bytes,
         func_local_idx: int,
-        raw_calls: list[tuple[Optional[int], str, int]],
+        raw_calls: list[tuple[int | None, str, int]],
         depth: int,
     ) -> None:
         """Recursively walk function body looking for calls."""
@@ -546,8 +650,8 @@ class CParser(BaseParser):
         self,
         node: Node,
         src: bytes,
-        raw_calls: list[tuple[Optional[int], str, int]],
-        current_func_local_idx: Optional[int],
+        raw_calls: list[tuple[int | None, str, int]],
+        current_func_local_idx: int | None,
     ) -> None:
         """Extract function call."""
         func_node = node.child_by_field_name("function")
@@ -572,11 +676,13 @@ class CParser(BaseParser):
                     break
 
         if callee_name:
-            raw_calls.append((
-                current_func_local_idx,
-                callee_name,
-                node.start_point[0] + 1,
-            ))
+            raw_calls.append(
+                (
+                    current_func_local_idx,
+                    callee_name,
+                    node.start_point[0] + 1,
+                )
+            )
 
     # ------------------------------------------------------------------
     # Import extraction (#include directives)
@@ -596,11 +702,13 @@ class CParser(BaseParser):
         path = path.strip('<>"')
 
         if path:
-            edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=path,
-                imported_names=[],
-            ))
+            edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=path,
+                    imported_names=[],
+                )
+            )
 
         return edges
 
@@ -619,23 +727,25 @@ class CParser(BaseParser):
         name = self._txt(name_node, src)
         body = self._txt(node, src)
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.CONSTANT,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=f"#define {name}",
-            body=body[:500],
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.CONSTANT,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=f"#define {name}",
+                body=body[:500],
+                is_public=True,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Helper functions
     # ------------------------------------------------------------------
 
-    def _extract_declarator_name(self, decl_node: Node, src: bytes) -> Optional[str]:
+    def _extract_declarator_name(self, decl_node: Node, src: bytes) -> str | None:
         """Extract function/variable name from declarator node."""
         current = decl_node
         while current:
@@ -710,7 +820,7 @@ class CParser(BaseParser):
         params = self._txt(params_node, src) if params_node else "()"
         return f"{return_type} {func_name}{params}".strip()
 
-    def _get_preceding_comment(self, node: Node, src: bytes) -> Optional[str]:
+    def _get_preceding_comment(self, node: Node, src: bytes) -> str | None:
         """Extract preceding comment above a node."""
         if node.start_point[0] == 0:
             return None
@@ -738,9 +848,9 @@ class CParser(BaseParser):
 
     def _txt(self, node: Node, src: bytes) -> str:
         """Extract text from node."""
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
+    def _get_child_by_type(self, node: Node, type_name: str) -> Node | None:
         """Find first child node of given type."""
         for child in node.children:
             if child.type == type_name:

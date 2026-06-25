@@ -21,27 +21,26 @@ Extracts:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 from trelix.indexing.parser.base import ParseResult
 from trelix.indexing.parser.extractors.razor import (
-    _RazorBase,
-    _USING_RE,
-    _INJECT_RE,
-    _INHERITS_RE,
-    _NAMESPACE_RE,
     _ATTRIBUTE_RE,
-    _STMT_BLOCK_RE,
     _CODE_BLOCK_RE,
+    _INHERITS_RE,
+    _INJECT_RE,
+    _NAMESPACE_RE,
+    _STMT_BLOCK_RE,
+    _USING_RE,
     _count_lines_to,
     _extract_brace_block,
+    _RazorBase,
 )
 
 # @model TypeName (MVC / Razor Pages)
-_MODEL_RE = re.compile(r'^\s*@model\s+([\w][\w.<>, \[\]?]*)', re.MULTILINE)
+_MODEL_RE = re.compile(r"^\s*@model\s+([\w][\w.<>, \[\]?]*)", re.MULTILINE)
 # @section SectionName {
-_SECTION_RE = re.compile(r'@section\s+(\w+)\s*\{', re.MULTILINE)
+_SECTION_RE = re.compile(r"@section\s+(\w+)\s*\{", re.MULTILINE)
 # @page (Razor Pages — no route required)
 _PAGE_RE = re.compile(r'^\s*@page(?:\s+"([^"]*)")?', re.MULTILINE)
 
@@ -66,43 +65,55 @@ class CshtmlParser(_RazorBase):
         symbols: list[Symbol] = []
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
-        raw_calls: list[tuple[Optional[int], str, int]] = []
+        raw_calls: list[tuple[int | None, str, int]] = []
 
         component_local_idx = self._make_module_symbol(
             source, file_id, symbols, import_edges, type_edges
         )
 
         for m in _USING_RE.finditer(source):
-            import_edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=m.group(1),
-                imported_names=[],
-            ))
+            import_edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=m.group(1),
+                    imported_names=[],
+                )
+            )
 
         model_match = _MODEL_RE.search(source)
         if model_match:
-            model_type = re.sub(r'<.*>', '', model_match.group(1)).strip()
-            import_edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=model_type,
-                imported_names=[],
-            ))
+            model_type = re.sub(r"<.*>", "", model_match.group(1)).strip()
+            import_edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=model_type,
+                    imported_names=[],
+                )
+            )
 
         for m in _INJECT_RE.finditer(source):
-            service_type = re.sub(r'<.*>', '', m.group(1)).strip()
-            import_edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=service_type,
-                imported_names=[m.group(2).strip()],
-            ))
+            service_type = re.sub(r"<.*>", "", m.group(1)).strip()
+            import_edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=service_type,
+                    imported_names=[m.group(2).strip()],
+                )
+            )
 
         for code_match in _CODE_BLOCK_RE.finditer(source):
             brace_pos = code_match.end() - 1
             block_line = _count_lines_to(source, brace_pos)
             content, _ = _extract_brace_block(source, brace_pos)
             self._parse_code_block(
-                content, file_id, symbols, import_edges, type_edges, raw_calls,
-                component_local_idx, line_offset=block_line,
+                content,
+                file_id,
+                symbols,
+                import_edges,
+                type_edges,
+                raw_calls,
+                component_local_idx,
+                line_offset=block_line,
             )
 
         for stmt_match in _STMT_BLOCK_RE.finditer(source):
@@ -110,7 +121,8 @@ class CshtmlParser(_RazorBase):
             content, _ = _extract_brace_block(source, brace_pos)
             block_line = _count_lines_to(source, brace_pos)
             self._extract_calls_from_snippet(
-                content, raw_calls,
+                content,
+                raw_calls,
                 caller_idx=component_local_idx,
                 line_offset=block_line,
             )
@@ -121,18 +133,20 @@ class CshtmlParser(_RazorBase):
             _, end_pos = _extract_brace_block(source, brace_pos)
             sec_end_line = _count_lines_to(source, end_pos)
             sec_start_line = _count_lines_to(source, sec_match.start())
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=name,
-                kind=SymbolKind.SECTION,
-                line_start=sec_start_line,
-                line_end=sec_end_line,
-                signature=f"@section {name}",
-                body=f"@section {name} {{ ... }}",
-                parent_id=component_local_idx,
-                is_public=True,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=name,
+                    kind=SymbolKind.SECTION,
+                    line_start=sec_start_line,
+                    line_end=sec_end_line,
+                    signature=f"@section {name}",
+                    body=f"@section {name} {{ ... }}",
+                    parent_id=component_local_idx,
+                    is_public=True,
+                )
+            )
 
         call_edges: list[CallEdge] = [
             CallEdge(caller_id=caller_idx, callee_name=name, line=line)
@@ -195,26 +209,30 @@ class CshtmlParser(_RazorBase):
         body = "\n".join(body_lines) if body_lines else signature
 
         component_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name="<view>",
-            qualified_name="<view>",
-            kind=SymbolKind.MODULE,
-            line_start=1,
-            line_end=source.count('\n') + 1,
-            signature=signature,
-            body=body,
-            decorators=decorators,
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name="<view>",
+                qualified_name="<view>",
+                kind=SymbolKind.MODULE,
+                line_start=1,
+                line_end=source.count("\n") + 1,
+                signature=signature,
+                body=body,
+                decorators=decorators,
+                is_public=True,
+            )
+        )
 
         inh_match = _INHERITS_RE.search(source)
         if inh_match:
-            base = re.sub(r'<.*>', '', inh_match.group(1)).strip()
-            type_edges.append(TypeEdge(
-                from_symbol_id=component_local_idx,
-                to_type_name=base,
-                edge_kind="extends",
-            ))
+            base = re.sub(r"<.*>", "", inh_match.group(1)).strip()
+            type_edges.append(
+                TypeEdge(
+                    from_symbol_id=component_local_idx,
+                    to_type_name=base,
+                    edge_kind="extends",
+                )
+            )
 
         return component_local_idx

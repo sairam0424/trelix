@@ -65,6 +65,7 @@ Cite specific file and function names where possible. Be precise and technical."
 # GraphRAGSynthesizer
 # ---------------------------------------------------------------------------
 
+
 class GraphRAGSynthesizer:
     """
     Map-reduce synthesis for large retrieved contexts.
@@ -100,10 +101,7 @@ class GraphRAGSynthesizer:
             return False
         token_threshold = self._retrieval_config.graph_rag_threshold_tokens
         results_threshold = self._retrieval_config.graph_rag_threshold_results
-        return (
-            context.total_tokens > token_threshold
-            or len(context.results) > results_threshold
-        )
+        return context.total_tokens > token_threshold or len(context.results) > results_threshold
 
     def synthesize(self, query: str, context: RetrievedContext, intent: str) -> str:
         """
@@ -148,9 +146,7 @@ class GraphRAGSynthesizer:
             return ""
 
         # --- REDUCE phase ---
-        numbered = "\n\n".join(
-            f"[Partial {i + 1}]\n{ans}" for i, ans in enumerate(partial_answers)
-        )
+        numbered = "\n\n".join(f"[Partial {i + 1}]\n{ans}" for i, ans in enumerate(partial_answers))
         reduce_prompt = _REDUCE_PROMPT_TEMPLATE.format(
             query=query,
             partial_answers=numbered,
@@ -227,6 +223,7 @@ class GraphRAGSynthesizer:
                 return None
             try:
                 from openai import AzureOpenAI
+
                 return AzureOpenAI(
                     api_key=config.azure_api_key,
                     azure_endpoint=config.azure_endpoint,
@@ -242,6 +239,7 @@ class GraphRAGSynthesizer:
                 return None
             try:
                 from openai import OpenAI
+
                 return OpenAI(api_key=config.openai_api_key)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("GraphRAGSynthesizer: could not create OpenAI client: %s", exc)

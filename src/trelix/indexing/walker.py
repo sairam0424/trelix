@@ -10,51 +10,50 @@ Key decisions stolen from continue.dev:
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import pathspec
 
 from trelix.core.config import IndexConfig
 from trelix.core.models import IndexedFile, Language
 
-
 # Map file extension → Language
 EXTENSION_MAP: dict[str, Language] = {
-    ".py":   Language.PYTHON,
-    ".js":   Language.JAVASCRIPT,
-    ".mjs":  Language.JAVASCRIPT,
-    ".cjs":  Language.JAVASCRIPT,
-    ".ts":   Language.TYPESCRIPT,
-    ".tsx":  Language.TSX,
-    ".go":   Language.GO,
-    ".rs":   Language.RUST,
+    ".py": Language.PYTHON,
+    ".js": Language.JAVASCRIPT,
+    ".mjs": Language.JAVASCRIPT,
+    ".cjs": Language.JAVASCRIPT,
+    ".ts": Language.TYPESCRIPT,
+    ".tsx": Language.TSX,
+    ".go": Language.GO,
+    ".rs": Language.RUST,
     ".java": Language.JAVA,
-    ".cpp":  Language.CPP,
-    ".cc":   Language.CPP,
-    ".cxx":  Language.CPP,
-    ".c":    Language.C,
-    ".h":    Language.C,
-    ".hpp":  Language.CPP,
-    ".cs":     Language.CSHARP,
-    ".razor":  Language.RAZOR,
+    ".cpp": Language.CPP,
+    ".cc": Language.CPP,
+    ".cxx": Language.CPP,
+    ".c": Language.C,
+    ".h": Language.C,
+    ".hpp": Language.CPP,
+    ".cs": Language.CSHARP,
+    ".razor": Language.RAZOR,
     ".cshtml": Language.CSHTML,
     ".csproj": Language.CSPROJ,
     ".fsproj": Language.CSPROJ,
     ".vbproj": Language.CSPROJ,
-    ".kt":   Language.KOTLIN,
-    ".kts":  Language.KOTLIN,
-    ".rb":   Language.RUBY,
-    ".md":   Language.MARKDOWN,
-    ".mdx":  Language.MARKDOWN,
+    ".kt": Language.KOTLIN,
+    ".kts": Language.KOTLIN,
+    ".rb": Language.RUBY,
+    ".md": Language.MARKDOWN,
+    ".mdx": Language.MARKDOWN,
     ".json": Language.JSON,
     ".yaml": Language.YAML,
-    ".yml":  Language.YAML,
+    ".yml": Language.YAML,
     ".toml": Language.TOML,
     ".html": Language.HTML,
-    ".htm":  Language.HTML,
-    ".jsx":  Language.JAVASCRIPT,
-    ".css":  Language.CSS,
+    ".htm": Language.HTML,
+    ".jsx": Language.JAVASCRIPT,
+    ".css": Language.CSS,
     ".scss": Language.CSS,
     ".sass": Language.CSS,
     ".less": Language.CSS,

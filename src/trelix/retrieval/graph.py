@@ -59,9 +59,7 @@ def expand_with_call_graph(
     # Only apply PageRank re-sorting when the call graph is rich enough to matter.
     # On sparse graphs (few resolved callee_ids) PageRank scores are near-uniform
     # and the sort just shuffles BFS order, which hurts more than it helps.
-    total_resolved = sum(
-        1 for sid, _ in candidates if db.get_callees(sid) or db.get_callers(sid)
-    )
+    total_resolved = sum(1 for sid, _ in candidates if db.get_callees(sid) or db.get_callers(sid))
     if total_resolved >= 3:
         all_ids = [r.chunk.symbol_id for r in results] + [sid for sid, _ in candidates]
         pr_scores = dict(rank_by_pagerank(all_ids, db))
@@ -85,14 +83,16 @@ def expand_with_call_graph(
                 token_count=0,
             )
 
-        extra.append(SearchResult(
-            chunk=chunk,
-            symbol=symbol,
-            file=file,
-            score=base_score * (0.5 ** hop),
-            rank=len(extra) + 1,
-            source="graph_expansion",
-        ))
+        extra.append(
+            SearchResult(
+                chunk=chunk,
+                symbol=symbol,
+                file=file,
+                score=base_score * (0.5**hop),
+                rank=len(extra) + 1,
+                source="graph_expansion",
+            )
+        )
 
     return extra
 
@@ -184,14 +184,16 @@ def expand_with_imports(
                     token_count=0,
                 )
 
-            extra.append(SearchResult(
-                chunk=chunk,
-                symbol=symbol,
-                file=file,
-                score=base_score * score_discount,
-                rank=len(extra) + 1,
-                source="import_expansion",
-            ))
+            extra.append(
+                SearchResult(
+                    chunk=chunk,
+                    symbol=symbol,
+                    file=file,
+                    score=base_score * score_discount,
+                    rank=len(extra) + 1,
+                    source="import_expansion",
+                )
+            )
 
             if len(extra) >= max_extra:
                 return extra
@@ -249,14 +251,16 @@ def expand_with_type_edges(
                     token_count=0,
                 )
 
-            extra.append(SearchResult(
-                chunk=chunk,
-                symbol=symbol,
-                file=file,
-                score=base_score * score_discount,
-                rank=len(extra) + 1,
-                source="type_expansion",
-            ))
+            extra.append(
+                SearchResult(
+                    chunk=chunk,
+                    symbol=symbol,
+                    file=file,
+                    score=base_score * score_discount,
+                    rank=len(extra) + 1,
+                    source="type_expansion",
+                )
+            )
 
             if len(extra) >= max_extra:
                 return extra
@@ -312,14 +316,16 @@ def seed_from_import_paths(
                     token_count=0,
                 )
 
-            extra.append(SearchResult(
-                chunk=chunk,
-                symbol=symbol,
-                file=file,
-                score=0.3,   # below real retrieval scores; reranker will re-sort
-                rank=len(extra) + 1,
-                source="import_path_seed",
-            ))
+            extra.append(
+                SearchResult(
+                    chunk=chunk,
+                    symbol=symbol,
+                    file=file,
+                    score=0.3,  # below real retrieval scores; reranker will re-sort
+                    rank=len(extra) + 1,
+                    source="import_path_seed",
+                )
+            )
 
             if len(extra) >= max_extra:
                 return extra

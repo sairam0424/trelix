@@ -11,10 +11,10 @@ import pytest
 from trelix.core.models import SymbolKind
 from trelix.indexing.parser.extractors.python import PythonParser
 
-
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def parser() -> PythonParser:
@@ -28,6 +28,7 @@ def _parse(parser: PythonParser, source: str):
 # ---------------------------------------------------------------------------
 # language_name
 # ---------------------------------------------------------------------------
+
 
 def test_language_name(parser: PythonParser) -> None:
     assert parser.language_name == "python"
@@ -214,17 +215,13 @@ def test_method_parent_id_links_to_class(parser: PythonParser) -> None:
     for method in result.symbols:
         if method.kind == SymbolKind.METHOD and method.name in ("add", "subtract"):
             assert method.parent_id == cls_idx, (
-                f"Method {method.name}.parent_id={method.parent_id} "
-                f"expected {cls_idx}"
+                f"Method {method.name}.parent_id={method.parent_id} expected {cls_idx}"
             )
 
 
 def test_method_qualified_name(parser: PythonParser) -> None:
     result = _parse(parser, METHOD_SOURCE)
-    add_method = next(
-        s for s in result.symbols
-        if s.kind == SymbolKind.METHOD and s.name == "add"
-    )
+    add_method = next(s for s in result.symbols if s.kind == SymbolKind.METHOD and s.name == "add")
     assert add_method.qualified_name == "Calculator.add"
 
 
@@ -378,8 +375,7 @@ def test_class_decorator_captured(parser: PythonParser) -> None:
 def test_method_decorators_captured(parser: PythonParser) -> None:
     result = _parse(parser, DECORATOR_SOURCE)
     route_method = next(
-        s for s in result.symbols
-        if s.kind == SymbolKind.METHOD and s.name == "route"
+        s for s in result.symbols if s.kind == SymbolKind.METHOD and s.name == "route"
     )
     assert any("staticmethod" in d for d in route_method.decorators)
 
@@ -484,6 +480,7 @@ def test_no_module_symbol_without_docstring(parser: PythonParser) -> None:
 # parse_errors field
 # ---------------------------------------------------------------------------
 
+
 def test_clean_source_has_zero_errors(parser: PythonParser) -> None:
     result = _parse(parser, "def foo():\n    return 42\n")
     assert result.parse_errors == 0
@@ -492,6 +489,7 @@ def test_clean_source_has_zero_errors(parser: PythonParser) -> None:
 # ---------------------------------------------------------------------------
 # Registry integration
 # ---------------------------------------------------------------------------
+
 
 def test_get_parser_returns_python_parser() -> None:
     from trelix.core.models import Language

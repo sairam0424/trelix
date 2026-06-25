@@ -9,8 +9,6 @@ so those tests are deterministic even without a live model.
 
 from __future__ import annotations
 
-import pytest
-
 from trelix.retrieval.planner.models import (
     INTENT_STRATEGIES,
     IntentType,
@@ -20,14 +18,15 @@ from trelix.retrieval.planner.models import (
     default_plan,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helper: build a local-provider AdaptiveRouter (no API key, no LLM calls)
 # ---------------------------------------------------------------------------
 
+
 def _make_router():
     from trelix.core.config import EmbedderConfig
     from trelix.retrieval.planner.agent import AdaptiveRouter
+
     config = EmbedderConfig(provider="local")
     return AdaptiveRouter(config)
 
@@ -35,6 +34,7 @@ def _make_router():
 # ---------------------------------------------------------------------------
 # RoutingTier enum
 # ---------------------------------------------------------------------------
+
 
 class TestRoutingTierEnum:
     def test_has_three_tiers(self) -> None:
@@ -53,6 +53,7 @@ class TestRoutingTierEnum:
 # QueryPlan.routing_tier field
 # ---------------------------------------------------------------------------
 
+
 class TestQueryPlanRoutingTierField:
     def test_default_plan_has_tier2(self) -> None:
         plan = default_plan("some query")
@@ -69,13 +70,15 @@ class TestQueryPlanRoutingTierField:
             intent=intent,
             execution_mode="parallel",
             strategy=INTENT_STRATEGIES[intent],
-            sub_queries=[SubQuery(
-                semantic_query="q",
-                hyde_snippet="",
-                bm25_tokens=["q"],
-                grep_hints=[],
-                file_hints=[],
-            )],
+            sub_queries=[
+                SubQuery(
+                    semantic_query="q",
+                    hyde_snippet="",
+                    bm25_tokens=["q"],
+                    grep_hints=[],
+                    file_hints=[],
+                )
+            ],
             raw_query="q",
             routing_tier=RoutingTier.TIER_3_MULTI,
         )
@@ -85,6 +88,7 @@ class TestQueryPlanRoutingTierField:
 # ---------------------------------------------------------------------------
 # Tier 1 detection (_is_tier1)
 # ---------------------------------------------------------------------------
+
 
 class TestTier1Detection:
     """Tier 1 is driven by regex — deterministic, no LLM needed."""
@@ -125,29 +129,22 @@ class TestTier1Detection:
 # Tier 3 detection (_is_tier3)
 # ---------------------------------------------------------------------------
 
+
 class TestTier3Detection:
     def _router(self):
         return _make_router()
 
     def test_walk_me_through(self) -> None:
-        assert self._router()._is_tier3(
-            "walk me through how a query goes from CLI to LLM answer"
-        )
+        assert self._router()._is_tier3("walk me through how a query goes from CLI to LLM answer")
 
     def test_step_by_step(self) -> None:
-        assert self._router()._is_tier3(
-            "explain step by step how the indexer works"
-        )
+        assert self._router()._is_tier3("explain step by step how the indexer works")
 
     def test_end_to_end(self) -> None:
-        assert self._router()._is_tier3(
-            "show the end-to-end flow for code search"
-        )
+        assert self._router()._is_tier3("show the end-to-end flow for code search")
 
     def test_full_flow(self) -> None:
-        assert self._router()._is_tier3(
-            "describe the full flow from indexing to retrieval"
-        )
+        assert self._router()._is_tier3("describe the full flow from indexing to retrieval")
 
     def test_long_and_multiple_conjunctions(self) -> None:
         # >80 chars + "and" appearing 2+ times
@@ -170,6 +167,7 @@ class TestTier3Detection:
 # ---------------------------------------------------------------------------
 # Tier 2 default (no special signals)
 # ---------------------------------------------------------------------------
+
 
 class TestTier2Default:
     def _router(self):
@@ -195,6 +193,7 @@ class TestTier2Default:
 # ---------------------------------------------------------------------------
 # Tier 1 routing via route() — end-to-end
 # ---------------------------------------------------------------------------
+
 
 class TestTier1Routing:
     def _router(self):
@@ -230,6 +229,7 @@ class TestTier1Routing:
 # Tier 3 routing via route() — end-to-end (no LLM, falls back gracefully)
 # ---------------------------------------------------------------------------
 
+
 class TestTier3Routing:
     """
     With provider=local the decomposition LLM call is unavailable, so
@@ -241,22 +241,16 @@ class TestTier3Routing:
         return _make_router()
 
     def test_walk_through_routes_tier3(self) -> None:
-        plan = self._router().route(
-            "walk me through how a query goes from CLI to LLM answer"
-        )
+        plan = self._router().route("walk me through how a query goes from CLI to LLM answer")
         assert plan.routing_tier == RoutingTier.TIER_3_MULTI
 
     def test_tier3_returns_query_plan(self) -> None:
-        plan = self._router().route(
-            "walk me through how a query goes from CLI to LLM answer"
-        )
+        plan = self._router().route("walk me through how a query goes from CLI to LLM answer")
         assert isinstance(plan, QueryPlan)
 
     def test_tier3_has_sub_queries(self) -> None:
         """Even after fallback the plan must have at least one sub-query."""
-        plan = self._router().route(
-            "walk me through how a query goes from CLI to LLM answer"
-        )
+        plan = self._router().route("walk me through how a query goes from CLI to LLM answer")
         assert len(plan.sub_queries) >= 1
 
     def test_tier3_raw_query_preserved(self) -> None:
@@ -273,6 +267,7 @@ class TestTier3Routing:
 # Multi-step plan via mock LLM (verifies 2-3 sub-queries produced)
 # ---------------------------------------------------------------------------
 
+
 class TestMultiStepPlanWithMockLLM:
     """
     Simulate a live LLM by monkey-patching the client on the planner so that
@@ -288,14 +283,10 @@ class TestMultiStepPlanWithMockLLM:
 
         def create(**kwargs):
             content = json.dumps(decomposed)
-            choice = types.SimpleNamespace(
-                message=types.SimpleNamespace(content=content)
-            )
+            choice = types.SimpleNamespace(message=types.SimpleNamespace(content=content))
             return types.SimpleNamespace(choices=[choice])
 
-        mock_client.chat = types.SimpleNamespace(
-            completions=types.SimpleNamespace(create=create)
-        )
+        mock_client.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
         return mock_client
 
     def test_multi_step_produces_two_sub_queries(self) -> None:
@@ -307,10 +298,12 @@ class TestMultiStepPlanWithMockLLM:
 
         # Inject a mock LLM client into the internal planner
         planner = router._get_planner()
-        planner._client = self._make_mock_client([
-            "how does the CLI parse and dispatch a user query",
-            "how does the retrieval pipeline process a query into context",
-        ])
+        planner._client = self._make_mock_client(
+            [
+                "how does the CLI parse and dispatch a user query",
+                "how does the retrieval pipeline process a query into context",
+            ]
+        )
 
         plan = router._multi_step_plan(
             "walk me through how a query goes from CLI to LLM answer",
@@ -327,11 +320,13 @@ class TestMultiStepPlanWithMockLLM:
         router = AdaptiveRouter(config)
 
         planner = router._get_planner()
-        planner._client = self._make_mock_client([
-            "how does the CLI parse and dispatch a user query",
-            "how does the retrieval pipeline process a query into context",
-            "how does the synthesizer produce the final LLM answer",
-        ])
+        planner._client = self._make_mock_client(
+            [
+                "how does the CLI parse and dispatch a user query",
+                "how does the retrieval pipeline process a query into context",
+                "how does the synthesizer produce the final LLM answer",
+            ]
+        )
 
         plan = router._multi_step_plan(
             "walk me through how a query goes from CLI to LLM answer",
@@ -348,10 +343,12 @@ class TestMultiStepPlanWithMockLLM:
         router = AdaptiveRouter(config)
 
         planner = router._get_planner()
-        planner._client = self._make_mock_client([
-            "CLI query parsing and dispatch",
-            "retrieval pipeline context assembly",
-        ])
+        planner._client = self._make_mock_client(
+            [
+                "CLI query parsing and dispatch",
+                "retrieval pipeline context assembly",
+            ]
+        )
 
         plan = router._multi_step_plan(
             "walk me through how a query goes from CLI to LLM answer",
@@ -368,10 +365,12 @@ class TestMultiStepPlanWithMockLLM:
         router = AdaptiveRouter(config)
 
         planner = router._get_planner()
-        planner._client = self._make_mock_client([
-            "CLI query parsing",
-            "retrieval pipeline processing",
-        ])
+        planner._client = self._make_mock_client(
+            [
+                "CLI query parsing",
+                "retrieval pipeline processing",
+            ]
+        )
 
         plan = router._multi_step_plan(
             "walk me through query handling end-to-end",
@@ -389,9 +388,14 @@ class TestMultiStepPlanWithMockLLM:
         router = AdaptiveRouter(config)
 
         planner = router._get_planner()
-        planner._client = self._make_mock_client([
-            "q1", "q2", "q3", "q4",
-        ])
+        planner._client = self._make_mock_client(
+            [
+                "q1",
+                "q2",
+                "q3",
+                "q4",
+            ]
+        )
 
         plan = router._multi_step_plan(
             "walk me through the full pipeline step by step",
@@ -404,6 +408,7 @@ class TestMultiStepPlanWithMockLLM:
 # QueryPlanner.plan() delegates to AdaptiveRouter
 # ---------------------------------------------------------------------------
 
+
 class TestQueryPlannerDelegatesRouter:
     """
     Verify QueryPlanner.plan() is now a thin wrapper — it returns plans with
@@ -412,36 +417,40 @@ class TestQueryPlannerDelegatesRouter:
 
     def _make_local_config(self):
         from trelix.core.config import EmbedderConfig
+
         return EmbedderConfig(provider="local")
 
     def test_plan_returns_query_plan(self) -> None:
         from trelix.retrieval.planner.agent import QueryPlanner
+
         planner = QueryPlanner(self._make_local_config())
         plan = planner.plan("how does the retrieval pipeline work?")
         assert isinstance(plan, QueryPlan)
 
     def test_plan_tier1_query_returns_tier1(self) -> None:
         from trelix.retrieval.planner.agent import QueryPlanner
+
         planner = QueryPlanner(self._make_local_config())
         plan = planner.plan("what is trelix?")
         assert plan.routing_tier == RoutingTier.TIER_1_DIRECT
 
     def test_plan_tier3_query_returns_tier3(self) -> None:
         from trelix.retrieval.planner.agent import QueryPlanner
+
         planner = QueryPlanner(self._make_local_config())
-        plan = planner.plan(
-            "walk me through how a query goes from CLI to LLM answer"
-        )
+        plan = planner.plan("walk me through how a query goes from CLI to LLM answer")
         assert plan.routing_tier == RoutingTier.TIER_3_MULTI
 
     def test_plan_standard_query_returns_tier2(self) -> None:
         from trelix.retrieval.planner.agent import QueryPlanner
+
         planner = QueryPlanner(self._make_local_config())
         plan = planner.plan("how does authentication work")
         assert plan.routing_tier == RoutingTier.TIER_2_SINGLE
 
     def test_plan_never_raises(self) -> None:
         from trelix.retrieval.planner.agent import QueryPlanner
+
         planner = QueryPlanner(self._make_local_config())
         plan = planner.plan("")
         assert isinstance(plan, QueryPlan)

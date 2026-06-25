@@ -21,12 +21,12 @@ Parent linkage:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 import tree_sitter_languages
 from tree_sitter import Node, Parser
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
+
 from ..base import BaseParser, ParseResult
 
 
@@ -63,20 +63,24 @@ class JavaScriptParser(BaseParser):
         # Module docstring — leading JSDoc/block comment before first declaration
         module_doc = self._get_module_docstring(root, source_bytes)
         if module_doc:
-            symbols.append(Symbol(
-                file_id=file_id,
-                name="<module>",
-                qualified_name="<module>",
-                kind=SymbolKind.MODULE,
-                line_start=1,
-                line_end=root.end_point[0] + 1,
-                signature=module_doc.split("\n")[0][:120],
-                body=module_doc,
-                docstring=module_doc,
-                is_public=True,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name="<module>",
+                    qualified_name="<module>",
+                    kind=SymbolKind.MODULE,
+                    line_start=1,
+                    line_end=root.end_point[0] + 1,
+                    signature=module_doc.split("\n")[0][:120],
+                    body=module_doc,
+                    docstring=module_doc,
+                    is_public=True,
+                )
+            )
 
-        self._walk_top_level(root, source_bytes, file_id, symbols, import_edges, type_edges, raw_calls)
+        self._walk_top_level(
+            root, source_bytes, file_id, symbols, import_edges, type_edges, raw_calls
+        )
 
         call_edges: list[CallEdge] = [
             CallEdge(caller_id=caller_idx, callee_name=name, line=line)
@@ -110,7 +114,9 @@ class JavaScriptParser(BaseParser):
             if ntype == "import_statement":
                 import_edges.extend(self._extract_import(child, src, file_id))
             elif ntype == "export_statement":
-                self._handle_export(child, src, file_id, symbols, import_edges, type_edges, raw_calls)
+                self._handle_export(
+                    child, src, file_id, symbols, import_edges, type_edges, raw_calls
+                )
             elif ntype == "class_declaration":
                 self._handle_class(child, src, file_id, symbols, type_edges, raw_calls)
             elif ntype in ("function_declaration", "generator_function_declaration"):
@@ -142,27 +148,40 @@ class JavaScriptParser(BaseParser):
                     id_node = self._get_child_by_type(spec, "identifier")
                     if id_node:
                         names.append(self._txt(id_node, src))
-            import_edges.append(ImportEdge(
-                file_id=file_id,
-                imported_from=module_name,
-                imported_names=names,
-            ))
+            import_edges.append(
+                ImportEdge(
+                    file_id=file_id,
+                    imported_from=module_name,
+                    imported_names=names,
+                )
+            )
             return
 
         # Collect decorators from the export_statement node (rare in JS but possible)
-        decs = [self._extract_decorator_text(c, src)
-                for c in node.children if c.type == "decorator"]
+        decs = [
+            self._extract_decorator_text(c, src) for c in node.children if c.type == "decorator"
+        ]
         for child in node.children:
             ntype = child.type
             if ntype == "class_declaration":
-                self._handle_class(child, src, file_id, symbols, type_edges, raw_calls,
-                                   exported=True, decorators=decs)
+                self._handle_class(
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    type_edges,
+                    raw_calls,
+                    exported=True,
+                    decorators=decs,
+                )
             elif ntype in ("function_declaration", "generator_function_declaration"):
-                self._handle_function(child, src, file_id, symbols, raw_calls,
-                                      exported=True, decorators=decs)
+                self._handle_function(
+                    child, src, file_id, symbols, raw_calls, exported=True, decorators=decs
+                )
             elif ntype in ("lexical_declaration", "variable_declaration"):
-                self._handle_var_decl(child, src, file_id, symbols, import_edges, raw_calls,
-                                      exported=True)
+                self._handle_var_decl(
+                    child, src, file_id, symbols, import_edges, raw_calls, exported=True
+                )
 
     # ------------------------------------------------------------------
     # Class handling
@@ -177,15 +196,16 @@ class JavaScriptParser(BaseParser):
         type_edges: list[TypeEdge],
         raw_calls: list[tuple[int, str, int]],
         exported: bool = False,
-        decorators: Optional[list[str]] = None,
+        decorators: list[str] | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
             return
         name = self._txt(name_node, src)
 
-        own_decs = [self._extract_decorator_text(c, src)
-                    for c in node.children if c.type == "decorator"]
+        own_decs = [
+            self._extract_decorator_text(c, src) for c in node.children if c.type == "decorator"
+        ]
         all_decs = (decorators or []) + own_decs
 
         sym = Symbol(
@@ -218,11 +238,13 @@ class JavaScriptParser(BaseParser):
                     # Wrapped form: tree-sitter >= some version
                     for c in clause.children:
                         if c.type == "identifier":
-                            type_edges.append(TypeEdge(
-                                from_symbol_id=class_local_idx,
-                                to_type_name=self._txt(c, src),
-                                edge_kind="extends",
-                            ))
+                            type_edges.append(
+                                TypeEdge(
+                                    from_symbol_id=class_local_idx,
+                                    to_type_name=self._txt(c, src),
+                                    edge_kind="extends",
+                                )
+                            )
                     found_extends = True
             if not found_extends:
                 # Flat form: class_heritage → extends + identifier as direct siblings
@@ -231,11 +253,13 @@ class JavaScriptParser(BaseParser):
                     if c.type == "extends":
                         saw_extends_kw = True
                     elif saw_extends_kw and c.type == "identifier":
-                        type_edges.append(TypeEdge(
-                            from_symbol_id=class_local_idx,
-                            to_type_name=self._txt(c, src),
-                            edge_kind="extends",
-                        ))
+                        type_edges.append(
+                            TypeEdge(
+                                from_symbol_id=class_local_idx,
+                                to_type_name=self._txt(c, src),
+                                edge_kind="extends",
+                            )
+                        )
 
         # Walk class body: methods + public field definitions
         body_node = self._get_child_by_type(node, "class_body")
@@ -243,9 +267,13 @@ class JavaScriptParser(BaseParser):
             field_count = 0
             for child in body_node.children:
                 if child.type == "method_definition":
-                    self._handle_method(child, src, file_id, symbols, class_local_idx, name, raw_calls)
+                    self._handle_method(
+                        child, src, file_id, symbols, class_local_idx, name, raw_calls
+                    )
                 elif child.type == "field_definition" and field_count < self.MAX_CLASS_FIELDS:
-                    if self._handle_class_field(child, src, file_id, symbols, class_local_idx, name):
+                    if self._handle_class_field(
+                        child, src, file_id, symbols, class_local_idx, name
+                    ):
                         field_count += 1
 
     def _handle_method(
@@ -264,19 +292,21 @@ class JavaScriptParser(BaseParser):
         name = self._txt(name_node, src)
 
         func_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=f"{class_name}.{name}",
-            kind=SymbolKind.METHOD,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=self._method_signature(node, src, class_name),
-            body=self._txt(node, src),
-            parent_id=class_local_idx,
-            docstring=self._get_preceding_comment(node, src),
-            is_public=not name.startswith("_"),
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=f"{class_name}.{name}",
+                kind=SymbolKind.METHOD,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=self._method_signature(node, src, class_name),
+                body=self._txt(node, src),
+                parent_id=class_local_idx,
+                docstring=self._get_preceding_comment(node, src),
+                is_public=not name.startswith("_"),
+            )
+        )
 
         # Walk method body for call edges
         body_node = self._get_child_by_type(node, "statement_block")
@@ -317,18 +347,20 @@ class JavaScriptParser(BaseParser):
         if len(body) > 300:
             body = body[:300] + "..."
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=f"{class_name}.{name}",
-            kind=SymbolKind.VARIABLE,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=body.split("\n")[0][:200],
-            body=body,
-            parent_id=class_local_idx,
-            is_public=True,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=f"{class_name}.{name}",
+                kind=SymbolKind.VARIABLE,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=body.split("\n")[0][:200],
+                body=body,
+                parent_id=class_local_idx,
+                is_public=True,
+            )
+        )
         return True
 
     # ------------------------------------------------------------------
@@ -343,7 +375,7 @@ class JavaScriptParser(BaseParser):
         symbols: list[Symbol],
         raw_calls: list[tuple[int, str, int]],
         exported: bool = False,
-        decorators: Optional[list[str]] = None,
+        decorators: list[str] | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -351,19 +383,21 @@ class JavaScriptParser(BaseParser):
         name = self._txt(name_node, src)
 
         func_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.FUNCTION,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=self._func_signature(node, src),
-            body=self._txt(node, src),
-            docstring=self._get_preceding_comment(node, src),
-            decorators=decorators or [],
-            is_public=exported,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.FUNCTION,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=self._func_signature(node, src),
+                body=self._txt(node, src),
+                docstring=self._get_preceding_comment(node, src),
+                decorators=decorators or [],
+                is_public=exported,
+            )
+        )
 
         # Walk body for call edges
         body_node = self._get_child_by_type(node, "statement_block")
@@ -389,7 +423,7 @@ class JavaScriptParser(BaseParser):
 
             # Find function-like value and detect require()
             fn_node = None
-            require_path: Optional[str] = None
+            require_path: str | None = None
             for c in child.children:
                 if c.type in ("arrow_function", "function", "function_expression"):
                     fn_node = c
@@ -406,27 +440,31 @@ class JavaScriptParser(BaseParser):
                                     break
 
             if require_path:
-                import_edges.append(ImportEdge(
-                    file_id=file_id,
-                    imported_from=require_path,
-                    imported_names=[],
-                ))
+                import_edges.append(
+                    ImportEdge(
+                        file_id=file_id,
+                        imported_from=require_path,
+                        imported_names=[],
+                    )
+                )
 
             if name_node and fn_node:
                 name = self._txt(name_node, src)
                 func_local_idx = len(symbols)
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=name,
-                    qualified_name=name,
-                    kind=SymbolKind.FUNCTION,
-                    line_start=child.start_point[0] + 1,
-                    line_end=child.end_point[0] + 1,
-                    signature=self._arrow_signature(name_node, fn_node, src),
-                    body=self._txt(child, src),
-                    docstring=self._get_preceding_comment(node, src),
-                    is_public=exported,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=name,
+                        qualified_name=name,
+                        kind=SymbolKind.FUNCTION,
+                        line_start=child.start_point[0] + 1,
+                        line_end=child.end_point[0] + 1,
+                        signature=self._arrow_signature(name_node, fn_node, src),
+                        body=self._txt(child, src),
+                        docstring=self._get_preceding_comment(node, src),
+                        is_public=exported,
+                    )
+                )
                 # Walk arrow/function body for call edges
                 body_node = fn_node.child_by_field_name("body")
                 if body_node and body_node.type == "statement_block":
@@ -437,17 +475,19 @@ class JavaScriptParser(BaseParser):
                     body = self._txt(child, src)
                     if len(body) > 500:
                         body = body[:500] + "..."
-                    symbols.append(Symbol(
-                        file_id=file_id,
-                        name=name,
-                        qualified_name=name,
-                        kind=SymbolKind.CONSTANT,
-                        line_start=child.start_point[0] + 1,
-                        line_end=child.end_point[0] + 1,
-                        signature=body.split("\n")[0][:200],
-                        body=body,
-                        is_public=exported,
-                    ))
+                    symbols.append(
+                        Symbol(
+                            file_id=file_id,
+                            name=name,
+                            qualified_name=name,
+                            kind=SymbolKind.CONSTANT,
+                            line_start=child.start_point[0] + 1,
+                            line_end=child.end_point[0] + 1,
+                            signature=body.split("\n")[0][:200],
+                            body=body,
+                            is_public=exported,
+                        )
+                    )
 
     def _handle_expression_stmt(
         self,
@@ -462,17 +502,23 @@ class JavaScriptParser(BaseParser):
             if child.type == "call_expression":
                 # CommonJS: require('./module')
                 fn_node = child.child_by_field_name("function")
-                if fn_node and fn_node.type == "identifier" and self._txt(fn_node, src) == "require":
+                if (
+                    fn_node
+                    and fn_node.type == "identifier"
+                    and self._txt(fn_node, src) == "require"
+                ):
                     args_node = child.child_by_field_name("arguments")
                     if args_node:
                         for arg in args_node.children:
                             if arg.type == "string":
                                 module_name = self._txt(arg, src).strip("'\"")
-                                import_edges.append(ImportEdge(
-                                    file_id=file_id,
-                                    imported_from=module_name,
-                                    imported_names=[],
-                                ))
+                                import_edges.append(
+                                    ImportEdge(
+                                        file_id=file_id,
+                                        imported_from=module_name,
+                                        imported_names=[],
+                                    )
+                                )
 
             elif child.type == "assignment_expression":
                 # CommonJS: module.exports = { ... } or module.exports = SomeClass
@@ -492,17 +538,19 @@ class JavaScriptParser(BaseParser):
                 body = self._txt(right, src)
                 if len(body) > 500:
                     body = body[:500] + "..."
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name="module.exports",
-                    qualified_name="module.exports",
-                    kind=SymbolKind.CONSTANT,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
-                    signature="module.exports = ...",
-                    body=body,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name="module.exports",
+                        qualified_name="module.exports",
+                        kind=SymbolKind.CONSTANT,
+                        line_start=node.start_point[0] + 1,
+                        line_end=node.end_point[0] + 1,
+                        signature="module.exports = ...",
+                        body=body,
+                        is_public=True,
+                    )
+                )
 
     # ------------------------------------------------------------------
     # Call extraction
@@ -525,19 +573,23 @@ class JavaScriptParser(BaseParser):
                 fn_node = child.child_by_field_name("function")
                 if fn_node:
                     if fn_node.type == "identifier":
-                        raw_calls.append((
-                            current_func_local_idx,
-                            self._txt(fn_node, src),
-                            child.start_point[0] + 1,
-                        ))
+                        raw_calls.append(
+                            (
+                                current_func_local_idx,
+                                self._txt(fn_node, src),
+                                child.start_point[0] + 1,
+                            )
+                        )
                     elif fn_node.type == "member_expression":
                         prop = fn_node.child_by_field_name("property")
                         if prop:
-                            raw_calls.append((
-                                current_func_local_idx,
-                                self._txt(prop, src),
-                                child.start_point[0] + 1,
-                            ))
+                            raw_calls.append(
+                                (
+                                    current_func_local_idx,
+                                    self._txt(prop, src),
+                                    child.start_point[0] + 1,
+                                )
+                            )
                 # Recurse into call args for nested calls (foo(bar()))
                 self._walk_body(child, src, current_func_local_idx, raw_calls)
             elif child.type == "new_expression":
@@ -545,24 +597,32 @@ class JavaScriptParser(BaseParser):
                 ctor_node = child.child_by_field_name("constructor")
                 if ctor_node:
                     if ctor_node.type == "identifier":
-                        raw_calls.append((
-                            current_func_local_idx,
-                            self._txt(ctor_node, src),
-                            child.start_point[0] + 1,
-                        ))
+                        raw_calls.append(
+                            (
+                                current_func_local_idx,
+                                self._txt(ctor_node, src),
+                                child.start_point[0] + 1,
+                            )
+                        )
                     elif ctor_node.type == "member_expression":
                         prop = ctor_node.child_by_field_name("property")
                         if prop:
-                            raw_calls.append((
-                                current_func_local_idx,
-                                self._txt(prop, src),
-                                child.start_point[0] + 1,
-                            ))
+                            raw_calls.append(
+                                (
+                                    current_func_local_idx,
+                                    self._txt(prop, src),
+                                    child.start_point[0] + 1,
+                                )
+                            )
                 self._walk_body(child, src, current_func_local_idx, raw_calls)
             elif child.type not in (
-                "function_declaration", "generator_function_declaration",
-                "arrow_function", "function_expression", "generator_function",
-                "class_declaration", "class_expression",
+                "function_declaration",
+                "generator_function_declaration",
+                "arrow_function",
+                "function_expression",
+                "generator_function",
+                "class_declaration",
+                "class_expression",
             ):
                 self._walk_body(child, src, current_func_local_idx, raw_calls)
 
@@ -570,11 +630,9 @@ class JavaScriptParser(BaseParser):
     # Import extraction
     # ------------------------------------------------------------------
 
-    def _extract_import(
-        self, node: Node, src: bytes, file_id: int
-    ) -> list[ImportEdge]:
+    def _extract_import(self, node: Node, src: bytes, file_id: int) -> list[ImportEdge]:
         """Handle ES6 import_statement → ImportEdge."""
-        source_node: Optional[Node] = None
+        source_node: Node | None = None
         imported_names: list[str] = []
 
         for child in node.children:
@@ -587,11 +645,13 @@ class JavaScriptParser(BaseParser):
             return []
 
         module_name = self._txt(source_node, src).strip("'\"")
-        return [ImportEdge(
-            file_id=file_id,
-            imported_from=module_name,
-            imported_names=imported_names,
-        )]
+        return [
+            ImportEdge(
+                file_id=file_id,
+                imported_from=module_name,
+                imported_names=imported_names,
+            )
+        ]
 
     def _extract_import_clause(self, node: Node, src: bytes) -> list[str]:
         names: list[str] = []
@@ -633,9 +693,8 @@ class JavaScriptParser(BaseParser):
 
     def _arrow_signature(self, name_node: Node, fn_node: Node, src: bytes) -> str:
         name = self._txt(name_node, src)
-        params_node = (
-            fn_node.child_by_field_name("parameters")
-            or self._get_child_by_type(fn_node, "formal_parameters")
+        params_node = fn_node.child_by_field_name("parameters") or self._get_child_by_type(
+            fn_node, "formal_parameters"
         )
         params = self._txt(params_node, src) if params_node else "(...)"
         return f"const {name} = {params} => ..."
@@ -668,9 +727,9 @@ class JavaScriptParser(BaseParser):
         return count
 
     def _txt(self, node: Node, src: bytes) -> str:
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
+    def _get_child_by_type(self, node: Node, type_name: str) -> Node | None:
         for child in node.children:
             if child.type == type_name:
                 return child
@@ -685,7 +744,7 @@ class JavaScriptParser(BaseParser):
             return True
         return False
 
-    def _get_module_docstring(self, root: Node, src: bytes) -> Optional[str]:
+    def _get_module_docstring(self, root: Node, src: bytes) -> str | None:
         """Return the leading file-level JSDoc/block comment if present at top of file."""
         for child in root.children:
             if child.type == "comment":
@@ -698,7 +757,7 @@ class JavaScriptParser(BaseParser):
                 break  # Stop at first non-comment node
         return None
 
-    def _get_preceding_comment(self, node: Node, src: bytes) -> Optional[str]:
+    def _get_preceding_comment(self, node: Node, src: bytes) -> str | None:
         """Find doc comment immediately before this node (or its export wrapper)."""
         start = node
         if start.parent is not None and start.parent.type == "export_statement":
@@ -717,8 +776,8 @@ class JavaScriptParser(BaseParser):
     @staticmethod
     def _clean_comment(raw: str) -> str:
         """Strip comment delimiters: /** */, //, ///, * line prefixes."""
-        raw = re.sub(r'^/\*+\s*', '', raw.strip())
-        raw = re.sub(r'\s*\*+/$', '', raw)
-        raw = re.sub(r'^\s*\*\s?', '', raw, flags=re.MULTILINE)
-        raw = re.sub(r'^///?\s?', '', raw, flags=re.MULTILINE)
+        raw = re.sub(r"^/\*+\s*", "", raw.strip())
+        raw = re.sub(r"\s*\*+/$", "", raw)
+        raw = re.sub(r"^\s*\*\s?", "", raw, flags=re.MULTILINE)
+        raw = re.sub(r"^///?\s?", "", raw, flags=re.MULTILINE)
         return raw.strip()

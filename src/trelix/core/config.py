@@ -21,43 +21,107 @@ from .models import Language
 # Sub-configs
 # ---------------------------------------------------------------------------
 
+
 class WalkerConfig(BaseSettings):
     """Controls which files get indexed."""
+
     model_config = SettingsConfigDict(env_prefix="TRELIX_WALKER_")
 
     languages: list[Language] = [
-        Language.PYTHON, Language.JAVASCRIPT, Language.TYPESCRIPT,
-        Language.TSX, Language.GO, Language.RUST, Language.JAVA,
-        Language.KOTLIN, Language.RUBY,
-        Language.CPP, Language.C,
-        Language.CSHARP, Language.RAZOR, Language.CSHTML, Language.CSPROJ,
-        Language.MARKDOWN, Language.JSON, Language.YAML, Language.TOML,
-        Language.HTML, Language.CSS,
+        Language.PYTHON,
+        Language.JAVASCRIPT,
+        Language.TYPESCRIPT,
+        Language.TSX,
+        Language.GO,
+        Language.RUST,
+        Language.JAVA,
+        Language.KOTLIN,
+        Language.RUBY,
+        Language.CPP,
+        Language.C,
+        Language.CSHARP,
+        Language.RAZOR,
+        Language.CSHTML,
+        Language.CSPROJ,
+        Language.MARKDOWN,
+        Language.JSON,
+        Language.YAML,
+        Language.TOML,
+        Language.HTML,
+        Language.CSS,
     ]
     max_file_size_bytes: int = 500_000
     respect_gitignore: bool = True
     extra_ignore_dirs: list[str] = [
-        ".git", ".hg", ".svn",
-        "node_modules", "__pycache__", ".mypy_cache", ".ruff_cache",
-        "venv", ".venv", "env",
-        "dist", "build", "target", "out", ".next", ".nuxt",
-        "coverage", ".coverage", "vendor", "Pods", ".gradle", ".idea", ".vscode",
-        ".angular", "19.2.17",
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "__pycache__",
+        ".mypy_cache",
+        ".ruff_cache",
+        "venv",
+        ".venv",
+        "env",
+        "dist",
+        "build",
+        "target",
+        "out",
+        ".next",
+        ".nuxt",
+        "coverage",
+        ".coverage",
+        "vendor",
+        "Pods",
+        ".gradle",
+        ".idea",
+        ".vscode",
+        ".angular",
+        "19.2.17",
         # .NET build output
-        "bin", "obj", "packages", ".vs", ".rider",
+        "bin",
+        "obj",
+        "packages",
+        ".vs",
+        ".rider",
         # trelix own index data — never index the index
         ".trelix",
     ]
     extra_ignore_filenames: list[str] = [
-        "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lockb",
         "angular.json",
     ]
     extra_ignore_extensions: list[str] = [
-        ".pyc", ".pyo", ".so", ".dylib", ".dll", ".exe",
-        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
-        ".pdf", ".zip", ".tar", ".gz", ".bz2",
-        ".min.js", ".min.css", ".lock",
-        ".nupkg", ".snupkg", ".pdb", ".ilk", ".exp", ".lib",
+        ".pyc",
+        ".pyo",
+        ".so",
+        ".dylib",
+        ".dll",
+        ".exe",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".ico",
+        ".webp",
+        ".pdf",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".min.js",
+        ".min.css",
+        ".lock",
+        ".nupkg",
+        ".snupkg",
+        ".pdb",
+        ".ilk",
+        ".exp",
+        ".lib",
     ]
 
 
@@ -91,6 +155,7 @@ class EmbedderConfig(BaseSettings):
     Set TRELIX_EMBEDDER_PROVIDER=openai + OPENAI_API_KEY for higher quality.
     Set TRELIX_EMBEDDER_PROVIDER=azure + AZURE_API_KEY + AZURE_ENDPOINT for Azure.
     """
+
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_EMBEDDER_",
         env_file=".env",
@@ -135,7 +200,7 @@ class EmbedderConfig(BaseSettings):
 
     # ── Indexing performance / rate limiting ─────────────────────────────────
     embed_max_tokens_per_batch: int = 100_000
-    tpm_limit: int = 0   # 0 = unlimited (local provider has no rate limit)
+    tpm_limit: int = 0  # 0 = unlimited (local provider has no rate limit)
 
     @property
     def effective_dimension(self) -> int:
@@ -148,7 +213,7 @@ class EmbedderConfig(BaseSettings):
             return self.voyage_dimensions
         if self.provider == "local-code":
             return self.local_code_dimensions
-        return 384   # all-MiniLM-L6-v2
+        return 384  # all-MiniLM-L6-v2
 
 
 class StoreConfig(BaseSettings):
@@ -205,9 +270,7 @@ class RetrievalConfig(BaseSettings):
     # Cohere reranker
     cohere_api_key: str | None = Field(default=None, alias="COHERE_API_KEY")
     cohere_endpoint: str | None = Field(default=None, alias="COHERE_ENDPOINT")
-    cohere_rerank_model: str = Field(
-        default="Cohere-rerank-v4.0-pro", alias="COHERE_MODEL_RERANK"
-    )
+    cohere_rerank_model: str = Field(default="Cohere-rerank-v4.0-pro", alias="COHERE_MODEL_RERANK")
 
     context_token_budget: int = 12_000
     synthesis_max_tokens: int = 12_000
@@ -222,6 +285,7 @@ class RetrievalConfig(BaseSettings):
 # Root config
 # ---------------------------------------------------------------------------
 
+
 class IndexConfig(BaseSettings):
     """
     Top-level config. Instantiate once and pass through the whole pipeline.
@@ -229,6 +293,7 @@ class IndexConfig(BaseSettings):
         config = IndexConfig(repo_path="/path/to/repo")
         indexer = Indexer(config)
     """
+
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_",
         env_file=".env",
@@ -240,11 +305,11 @@ class IndexConfig(BaseSettings):
     incremental: bool = True
     parse_workers: int = 4
 
-    walker:    WalkerConfig    = Field(default_factory=WalkerConfig)
-    parser:    ParserConfig    = Field(default_factory=ParserConfig)
-    chunker:   ChunkerConfig   = Field(default_factory=ChunkerConfig)
-    embedder:  EmbedderConfig  = Field(default_factory=EmbedderConfig)
-    store:     StoreConfig     = Field(default_factory=StoreConfig)
+    walker: WalkerConfig = Field(default_factory=WalkerConfig)
+    parser: ParserConfig = Field(default_factory=ParserConfig)
+    chunker: ChunkerConfig = Field(default_factory=ChunkerConfig)
+    embedder: EmbedderConfig = Field(default_factory=EmbedderConfig)
+    store: StoreConfig = Field(default_factory=StoreConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
 
     @field_validator("repo_path")

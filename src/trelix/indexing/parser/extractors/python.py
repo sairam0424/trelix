@@ -36,11 +36,11 @@ Parent linkage:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from tree_sitter import Language, Node, Parser
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
+
 from ..base import BaseParser, ParseResult
 
 
@@ -52,9 +52,11 @@ def _get_python_language() -> Language:
     """
     try:
         import tree_sitter_languages  # type: ignore[import]
+
         return tree_sitter_languages.get_language("python")  # type: ignore[no-any-return]
     except ImportError:
         import tree_sitter_python  # type: ignore[import]
+
         return Language(tree_sitter_python.language())
 
 
@@ -86,9 +88,7 @@ class PythonParser(BaseParser):
     MAX_CLASS_FIELDS: int = 30
 
     # Base class names that make a class an Enum (all members → CONSTANT)
-    _ENUM_BASES: frozenset[str] = frozenset(
-        {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
-    )
+    _ENUM_BASES: frozenset[str] = frozenset({"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"})
     # Base class names that make a class a Protocol (→ INTERFACE)
     _PROTOCOL_BASES: frozenset[str] = frozenset({"Protocol"})
 
@@ -111,7 +111,7 @@ class PythonParser(BaseParser):
 
         symbols: list[Symbol] = []
         # raw calls: (caller_local_idx | None, callee_name, line, callee_type_hint | None)
-        raw_calls: list[tuple[Optional[int], str, int, Optional[str]]] = []
+        raw_calls: list[tuple[int | None, str, int, str | None]] = []
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
 
@@ -136,23 +136,27 @@ class PythonParser(BaseParser):
         module_doc = self._get_docstring(root, source_bytes)
         if module_doc:
             top_sigs = [
-                s.signature for s in symbols
+                s.signature
+                for s in symbols
                 if s.parent_id is None and s.kind not in (SymbolKind.CONSTANT,)
             ][:20]
             body = module_doc
             if top_sigs:
                 body += "\n\n# Symbols:\n" + "\n".join(top_sigs)
-            symbols.insert(0, Symbol(
-                file_id=file_id,
-                name="<module>",
-                qualified_name="<module>",
-                kind=SymbolKind.MODULE,
-                line_start=1,
-                line_end=root.end_point[0] + 1,
-                signature="module",
-                body=body,
-                docstring=module_doc,
-            ))
+            symbols.insert(
+                0,
+                Symbol(
+                    file_id=file_id,
+                    name="<module>",
+                    qualified_name="<module>",
+                    kind=SymbolKind.MODULE,
+                    line_start=1,
+                    line_end=root.end_point[0] + 1,
+                    signature="module",
+                    body=body,
+                    docstring=module_doc,
+                ),
+            )
 
         # Build CallEdge list — caller_id is a local index here, remapped by Indexer
         call_edges: list[CallEdge] = [
@@ -184,11 +188,11 @@ class PythonParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int, Optional[str]]],
+        raw_calls: list[tuple[int | None, str, int, str | None]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
-        current_func_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
+        current_func_local_idx: int | None,
         param_types: dict[str, str],
         depth: int,
     ) -> None:
@@ -208,8 +212,16 @@ class PythonParser(BaseParser):
             # ---- Function / method definition ----------------------------
             elif ntype == "function_definition":
                 self._handle_function(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, depth
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    depth,
                 )
 
             # ---- Decorated definition: @dec\ndef foo or @dec\nclass Foo ---
@@ -218,54 +230,71 @@ class PythonParser(BaseParser):
                 inner = self._get_child_by_type(child, "function_definition")
                 if inner:
                     self._handle_function(
-                        inner, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                        parent_class_local_idx, current_func_local_idx, depth,
+                        inner,
+                        src,
+                        file_id,
+                        symbols,
+                        raw_calls,
+                        import_edges,
+                        type_edges,
+                        parent_class_local_idx,
+                        current_func_local_idx,
+                        depth,
                         decorators=decs,
                     )
                 else:
                     inner_cls = self._get_child_by_type(child, "class_definition")
                     if inner_cls:
                         self._handle_class(
-                            inner_cls, src, file_id, symbols, raw_calls,
-                            import_edges, type_edges, depth, decorators=decs,
+                            inner_cls,
+                            src,
+                            file_id,
+                            symbols,
+                            raw_calls,
+                            import_edges,
+                            type_edges,
+                            depth,
+                            decorators=decs,
                         )
 
             # ---- Python 3.12 type alias: type Vector = list[float] ----------
-            elif (ntype == "type_alias_statement"
-                  and parent_class_local_idx is None
-                  and current_func_local_idx is None):
+            elif (
+                ntype == "type_alias_statement"
+                and parent_class_local_idx is None
+                and current_func_local_idx is None
+            ):
                 self._handle_type_alias(child, src, file_id, symbols)
 
             # ---- Import statements ----------------------------------------
             elif ntype in ("import_statement", "import_from_statement"):
-                import_edges.extend(
-                    self._extract_import(child, src, file_id)
-                )
+                import_edges.extend(self._extract_import(child, src, file_id))
 
             # ---- Module-level constants: ALL_CAPS and __dunder__ names ----
             # Only at module scope (not inside a function or class).
             # Note: in tree-sitter 0.21, annotated assignments (BASE_URL: str = "x")
             # are ALSO expression_statement > assignment nodes — the 'type' child
             # distinguishes annotated from plain. _handle_module_assignment handles both.
-            elif (ntype == "expression_statement"
-                  and parent_class_local_idx is None
-                  and current_func_local_idx is None):
-                self._handle_module_assignment(
-                    child, src, file_id, symbols
-                )
+            elif (
+                ntype == "expression_statement"
+                and parent_class_local_idx is None
+                and current_func_local_idx is None
+            ):
+                self._handle_module_assignment(child, src, file_id, symbols)
 
             # ---- Class-level expression statements: field annotations and constants ----
             # Covers Pydantic fields, dataclass fields, TypedDict fields, typed class vars.
             # In tree-sitter 0.21, 'provider: str = "x"' is expression_statement > assignment
             # with a 'type' child — same node type as plain assignments, just with annotation.
-            elif (ntype == "expression_statement"
-                  and parent_class_local_idx is not None
-                  and current_func_local_idx is None):
+            elif (
+                ntype == "expression_statement"
+                and parent_class_local_idx is not None
+                and current_func_local_idx is None
+            ):
                 # Enforce per-class field cap to avoid symbol flood on large models
                 existing_fields = sum(
-                    1 for s in symbols
-                    if s.parent_id == parent_class_local_idx
-                    and s.kind == SymbolKind.VARIABLE
+                    1
+                    for s in symbols
+                    if s.parent_id == parent_class_local_idx and s.kind == SymbolKind.VARIABLE
                 )
                 if existing_fields < self.MAX_CLASS_FIELDS:
                     self._handle_class_expression(
@@ -277,8 +306,17 @@ class PythonParser(BaseParser):
                 self._handle_call(child, src, raw_calls, current_func_local_idx, param_types)
                 # Still recurse into call arguments for nested calls
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, param_types, depth + 1
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    param_types,
+                    depth + 1,
                 )
 
             # ---- Recurse into statement / expression wrappers ------------
@@ -286,36 +324,77 @@ class PythonParser(BaseParser):
             # wrap `call` nodes — we must recurse into them to find call sites.
             # Also covers: return foo(), assert foo(), raise Foo(), del foo()
             elif ntype in (
-                "block", "module", "if_statement", "for_statement",
-                "while_statement", "with_statement", "try_statement",
-                "match_statement", "case_clause",
+                "block",
+                "module",
+                "if_statement",
+                "for_statement",
+                "while_statement",
+                "with_statement",
+                "try_statement",
+                "match_statement",
+                "case_clause",
                 # if/try/with sub-clauses (contain blocks with calls)
-                "elif_clause", "else_clause",
-                "except_clause", "finally_clause",
-                "with_clause", "with_item",
+                "elif_clause",
+                "else_clause",
+                "except_clause",
+                "finally_clause",
+                "with_clause",
+                "with_item",
                 # expression containers (calls live inside these)
-                "expression_statement", "assignment", "augmented_assignment",
-                "return_statement", "assert_statement", "raise_statement",
-                "delete_statement", "await", "yield", "yield_from",
+                "expression_statement",
+                "assignment",
+                "augmented_assignment",
+                "return_statement",
+                "assert_statement",
+                "raise_statement",
+                "delete_statement",
+                "await",
+                "yield",
+                "yield_from",
                 # walrus / paren / subscript / lambda / f-string
-                "named_expression", "parenthesized_expression",
-                "expression_list", "subscript", "lambda",
+                "named_expression",
+                "parenthesized_expression",
+                "expression_list",
+                "subscript",
+                "lambda",
                 # f-string: recurse into string to reach interpolation children
-                "string", "interpolation",
+                "string",
+                "interpolation",
                 # with X as f / except E as e — call is inside as_pattern
                 "as_pattern",
                 # boolean / comparison / arithmetic expressions
-                "boolean_operator", "comparison_operator", "not_operator",
-                "binary_operator", "unary_operator", "conditional_expression",
+                "boolean_operator",
+                "comparison_operator",
+                "not_operator",
+                "binary_operator",
+                "unary_operator",
+                "conditional_expression",
                 # containers
-                "list", "tuple", "set", "dictionary",
-                "list_comprehension", "set_comprehension", "dictionary_comprehension",
-                "generator_expression", "argument_list", "parameters",
-                "keyword_argument", "pair",
+                "list",
+                "tuple",
+                "set",
+                "dictionary",
+                "list_comprehension",
+                "set_comprehension",
+                "dictionary_comprehension",
+                "generator_expression",
+                "argument_list",
+                "parameters",
+                "keyword_argument",
+                "pair",
             ):
                 self._walk(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges,
-                    parent_class_local_idx, current_func_local_idx, param_types, depth + 1
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    param_types,
+                    depth + 1,
                 )
 
     # ------------------------------------------------------------------
@@ -328,11 +407,11 @@ class PythonParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int, Optional[str]]],
+        raw_calls: list[tuple[int | None, str, int, str | None]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
         depth: int,
-        decorators: Optional[list[str]] = None,
+        decorators: list[str] | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -381,16 +460,24 @@ class PythonParser(BaseParser):
         symbols.append(sym)
 
         for base in bases:
-            type_edges.append(TypeEdge(
-                from_symbol_id=class_local_idx,
-                to_type_name=base,
-                edge_kind="extends",
-            ))
+            type_edges.append(
+                TypeEdge(
+                    from_symbol_id=class_local_idx,
+                    to_type_name=base,
+                    edge_kind="extends",
+                )
+            )
 
         # Walk the class body: extract methods (pass is_enum so all members get extracted)
         if body_node:
             self._walk(
-                body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
                 parent_class_local_idx=class_local_idx,
                 current_func_local_idx=None,
                 param_types={},
@@ -403,13 +490,13 @@ class PythonParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
-        raw_calls: list[tuple[Optional[int], str, int, Optional[str]]],
+        raw_calls: list[tuple[int | None, str, int, str | None]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
-        parent_class_local_idx: Optional[int],
-        current_func_local_idx: Optional[int],
+        parent_class_local_idx: int | None,
+        current_func_local_idx: int | None,
         depth: int,
-        decorators: Optional[list[str]] = None,
+        decorators: list[str] | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -458,7 +545,13 @@ class PythonParser(BaseParser):
         # Walk the function body to find nested calls and imports
         if body_node:
             self._walk(
-                body_node, src, file_id, symbols, raw_calls, import_edges, type_edges,
+                body_node,
+                src,
+                file_id,
+                symbols,
+                raw_calls,
+                import_edges,
+                type_edges,
                 parent_class_local_idx=parent_class_local_idx,
                 current_func_local_idx=func_local_idx,
                 param_types=func_param_types,
@@ -467,11 +560,14 @@ class PythonParser(BaseParser):
 
     # Class factory calls that produce a new class at module level.
     # These appear as plain assignments but should be CLASS symbols.
-    _CLASS_FACTORIES: frozenset[str] = frozenset({
-        "namedtuple", "NamedTuple",
-        "TypedDict",
-        "make_dataclass",
-    })
+    _CLASS_FACTORIES: frozenset[str] = frozenset(
+        {
+            "namedtuple",
+            "NamedTuple",
+            "TypedDict",
+            "make_dataclass",
+        }
+    )
 
     def _handle_module_assignment(
         self,
@@ -514,17 +610,19 @@ class PythonParser(BaseParser):
                     func_name = self._txt(attr, src) if attr else ""
                 if func_name in self._CLASS_FACTORIES:
                     body = self._txt(stmt_node, src)
-                    symbols.append(Symbol(
-                        file_id=file_id,
-                        name=name,
-                        qualified_name=name,
-                        kind=SymbolKind.CLASS,
-                        line_start=stmt_node.start_point[0] + 1,
-                        line_end=stmt_node.end_point[0] + 1,
-                        signature=f"class {name}  # {func_name}",
-                        body=body[:500],
-                        is_public=not name.startswith("_"),
-                    ))
+                    symbols.append(
+                        Symbol(
+                            file_id=file_id,
+                            name=name,
+                            qualified_name=name,
+                            kind=SymbolKind.CLASS,
+                            line_start=stmt_node.start_point[0] + 1,
+                            line_end=stmt_node.end_point[0] + 1,
+                            signature=f"class {name}  # {func_name}",
+                            body=body[:500],
+                            is_public=not name.startswith("_"),
+                        )
+                    )
                     return
 
         if not self._is_constant_name(name):
@@ -543,16 +641,18 @@ class PythonParser(BaseParser):
             if exported:
                 body = f"Exports: {', '.join(exported)}\n{body}"
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.CONSTANT,
-            line_start=stmt_node.start_point[0] + 1,
-            line_end=stmt_node.end_point[0] + 1,
-            signature=body.split("\n")[0][:200],
-            body=body,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.CONSTANT,
+                line_start=stmt_node.start_point[0] + 1,
+                line_end=stmt_node.end_point[0] + 1,
+                signature=body.split("\n")[0][:200],
+                body=body,
+            )
+        )
 
     def _handle_type_alias(
         self,
@@ -567,10 +667,11 @@ class PythonParser(BaseParser):
         that contains an identifier for the alias name.
         Extracted as kind=INTERFACE (consistent with TypeScript type aliases).
         """
-        # Structure: type_alias_statement → 'type' keyword (leaf), 'type' node (name), '=', 'type' node (value)
+        # Structure: type_alias_statement → 'type' keyword (leaf), 'type' node (name),
+        # '=', 'type' node (value)
         # The keyword 'type' is also a 'type' leaf node — skip it and find the name node,
         # which is the first 'type' node that contains an identifier child.
-        name_node: Optional[Node] = None
+        name_node: Node | None = None
         for child in node.children:
             if child.type == "type" and child.child_count > 0:
                 ident = self._get_child_by_type(child, "identifier")
@@ -585,17 +686,19 @@ class PythonParser(BaseParser):
         if len(body) > 500:
             body = body[:500] + "..."
 
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.INTERFACE,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=body.split("\n")[0][:200],
-            body=body,
-            is_public=not name.startswith("_"),
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.INTERFACE,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=body.split("\n")[0][:200],
+                body=body,
+                is_public=not name.startswith("_"),
+            )
+        )
 
     def _handle_class_expression(
         self,
@@ -644,50 +747,56 @@ class PythonParser(BaseParser):
         if is_enum_class and not name.startswith("_"):
             # Inside an Enum subclass every non-private assignment is a member constant,
             # regardless of casing (PENDING = 1, active = 2, ERROR = "err").
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=f"{class_name}.{name}",
-                kind=SymbolKind.CONSTANT,
-                line_start=stmt_node.start_point[0] + 1,
-                line_end=stmt_node.end_point[0] + 1,
-                signature=body.split("\n")[0][:200],
-                body=body,
-                parent_id=class_local_idx,
-                is_public=True,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=f"{class_name}.{name}",
+                    kind=SymbolKind.CONSTANT,
+                    line_start=stmt_node.start_point[0] + 1,
+                    line_end=stmt_node.end_point[0] + 1,
+                    signature=body.split("\n")[0][:200],
+                    body=body,
+                    parent_id=class_local_idx,
+                    is_public=True,
+                )
+            )
         elif self._is_constant_name(name):
             # ALL_CAPS or __dunder__ class constant — annotated or not:
             #   MAX_SIZE: ClassVar[int] = 100  /  MAX_SIZE = 100
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=f"{class_name}.{name}",
-                kind=SymbolKind.CONSTANT,
-                line_start=stmt_node.start_point[0] + 1,
-                line_end=stmt_node.end_point[0] + 1,
-                signature=body.split("\n")[0][:200],
-                body=body,
-                parent_id=class_local_idx,
-                is_public=not name.startswith("_"),
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=f"{class_name}.{name}",
+                    kind=SymbolKind.CONSTANT,
+                    line_start=stmt_node.start_point[0] + 1,
+                    line_end=stmt_node.end_point[0] + 1,
+                    signature=body.split("\n")[0][:200],
+                    body=body,
+                    parent_id=class_local_idx,
+                    is_public=not name.startswith("_"),
+                )
+            )
         elif has_annotation:
             # Type-annotated instance field: provider: str = "sqlite"
             # Skip single-underscore private fields but keep dunder (__slots__, etc.)
             if name.startswith("_") and not (name.startswith("__") and name.endswith("__")):
                 return
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=f"{class_name}.{name}",
-                kind=SymbolKind.VARIABLE,
-                line_start=stmt_node.start_point[0] + 1,
-                line_end=stmt_node.end_point[0] + 1,
-                signature=body.split("\n")[0][:200],
-                body=body,
-                parent_id=class_local_idx,
-                is_public=not name.startswith("_"),
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=f"{class_name}.{name}",
+                    kind=SymbolKind.VARIABLE,
+                    line_start=stmt_node.start_point[0] + 1,
+                    line_end=stmt_node.end_point[0] + 1,
+                    signature=body.split("\n")[0][:200],
+                    body=body,
+                    parent_id=class_local_idx,
+                    is_public=not name.startswith("_"),
+                )
+            )
 
     def _parse_string_list(self, node: Node, src: bytes) -> list[str]:
         """
@@ -703,8 +812,12 @@ class PythonParser(BaseParser):
                 raw = self._txt(child, src)
                 # Strip surrounding quotes: "foo" → foo, 'foo' → foo
                 for quote in ('"""', "'''", '"', "'"):
-                    if raw.startswith(quote) and raw.endswith(quote) and len(raw) > 2 * len(quote) - 1:
-                        names.append(raw[len(quote):-len(quote)])
+                    if (
+                        raw.startswith(quote)
+                        and raw.endswith(quote)
+                        and len(raw) > 2 * len(quote) - 1
+                    ):
+                        names.append(raw[len(quote) : -len(quote)])
                         break
         return names
 
@@ -723,8 +836,8 @@ class PythonParser(BaseParser):
         self,
         node: Node,
         src: bytes,
-        raw_calls: list[tuple[Optional[int], str, int, Optional[str]]],
-        current_func_local_idx: Optional[int],
+        raw_calls: list[tuple[int | None, str, int, str | None]],
+        current_func_local_idx: int | None,
         param_types: dict[str, str],
     ) -> None:
         """Extract the callee name from a call node.
@@ -740,7 +853,7 @@ class PythonParser(BaseParser):
         if not func_node:
             return
 
-        type_hint: Optional[str] = None
+        type_hint: str | None = None
 
         if func_node.type == "identifier":
             # Simple call: foo()
@@ -758,12 +871,14 @@ class PythonParser(BaseParser):
             return
 
         if name:
-            raw_calls.append((
-                current_func_local_idx,
-                name,
-                node.start_point[0] + 1,
-                type_hint,
-            ))
+            raw_calls.append(
+                (
+                    current_func_local_idx,
+                    name,
+                    node.start_point[0] + 1,
+                    type_hint,
+                )
+            )
 
     # ------------------------------------------------------------------
     # Parameter type extraction (for callee_type_hint)
@@ -805,9 +920,7 @@ class PythonParser(BaseParser):
     # Import extraction
     # ------------------------------------------------------------------
 
-    def _extract_import(
-        self, node: Node, src: bytes, file_id: int
-    ) -> list[ImportEdge]:
+    def _extract_import(self, node: Node, src: bytes, file_id: int) -> list[ImportEdge]:
         edges: list[ImportEdge] = []
 
         if node.type == "import_statement":
@@ -816,19 +929,23 @@ class PythonParser(BaseParser):
             # import foo as f      → ImportEdge(imported_from="foo", imported_names=[])
             for child in node.children:
                 if child.type == "dotted_name":
-                    edges.append(ImportEdge(
-                        file_id=file_id,
-                        imported_from=self._txt(child, src),
-                        imported_names=[],
-                    ))
+                    edges.append(
+                        ImportEdge(
+                            file_id=file_id,
+                            imported_from=self._txt(child, src),
+                            imported_names=[],
+                        )
+                    )
                 elif child.type == "aliased_import":
                     name_node = child.child_by_field_name("name")
                     if name_node:
-                        edges.append(ImportEdge(
-                            file_id=file_id,
-                            imported_from=self._txt(name_node, src),
-                            imported_names=[],
-                        ))
+                        edges.append(
+                            ImportEdge(
+                                file_id=file_id,
+                                imported_from=self._txt(name_node, src),
+                                imported_names=[],
+                            )
+                        )
 
         elif node.type == "import_from_statement":
             # from foo import bar, baz   → from=foo, names=[bar, baz]
@@ -868,11 +985,13 @@ class PythonParser(BaseParser):
                     imported_names = ["*"]
 
             if module_name:
-                edges.append(ImportEdge(
-                    file_id=file_id,
-                    imported_from=module_name,
-                    imported_names=imported_names,
-                ))
+                edges.append(
+                    ImportEdge(
+                        file_id=file_id,
+                        imported_from=module_name,
+                        imported_names=imported_names,
+                    )
+                )
 
         return edges
 
@@ -919,7 +1038,7 @@ class PythonParser(BaseParser):
     # Docstring extraction
     # ------------------------------------------------------------------
 
-    def _get_docstring(self, block_node: Node, src: bytes) -> Optional[str]:
+    def _get_docstring(self, block_node: Node, src: bytes) -> str | None:
         """Return the docstring of a function/class body block, or None."""
         for child in block_node.children:
             if child.type == "expression_statement":
@@ -937,7 +1056,7 @@ class PythonParser(BaseParser):
         """Strip triple quotes and leading/trailing whitespace."""
         for quote in ('"""', "'''", '"', "'"):
             if raw.startswith(quote) and raw.endswith(quote) and len(raw) >= 2 * len(quote):
-                return raw[len(quote):-len(quote)].strip()
+                return raw[len(quote) : -len(quote)].strip()
         return raw.strip()
 
     # ------------------------------------------------------------------
@@ -955,9 +1074,9 @@ class PythonParser(BaseParser):
     # ------------------------------------------------------------------
 
     def _txt(self, node: Node, src: bytes) -> str:
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
+    def _get_child_by_type(self, node: Node, type_name: str) -> Node | None:
         for child in node.children:
             if child.type == type_name:
                 return child

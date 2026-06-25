@@ -15,9 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
-
 from tests.eval.harness import EvalHarness
+from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -29,16 +28,16 @@ MINI_REPO_PATH = Path(__file__).parent.parent / "fixtures" / "mini_repo"
 # Kept consistent with the existing test_recall.py query set so CI tracks
 # the same test surface.
 MINI_REPO_CASES: list[tuple[str, str]] = [
-    ("how does authentication work",   "auth.py"),
-    ("user repository get by id",       "user.py"),
-    ("hash password function",          "utils.py"),
-    ("login method",                    "auth.py"),
-    ("validate token",                  "auth.py"),
-    ("User dataclass",                  "user.py"),
-    ("main entry point",                "main.py"),
-    ("delete user",                     "user.py"),
-    ("verify password",                 "utils.py"),
-    ("create user",                     "user.py"),
+    ("how does authentication work", "auth.py"),
+    ("user repository get by id", "user.py"),
+    ("hash password function", "utils.py"),
+    ("login method", "auth.py"),
+    ("validate token", "auth.py"),
+    ("User dataclass", "user.py"),
+    ("main entry point", "main.py"),
+    ("delete user", "user.py"),
+    ("verify password", "utils.py"),
+    ("create user", "user.py"),
 ]
 
 # ---------------------------------------------------------------------------

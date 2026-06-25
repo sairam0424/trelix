@@ -22,7 +22,6 @@ Parent linkage:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 import tree_sitter_languages
 from tree_sitter import Node, Parser
@@ -68,7 +67,9 @@ class GoParser(BaseParser):
         # Build name→local_idx map so methods can reference their receiver struct
         struct_idx: dict[str, int] = {}
 
-        self._walk_top_level(root, source_bytes, file_id, symbols, import_edges, struct_idx, raw_calls, type_edges)
+        self._walk_top_level(
+            root, source_bytes, file_id, symbols, import_edges, struct_idx, raw_calls, type_edges
+        )
 
         call_edges = [
             CallEdge(caller_id=caller, callee_name=callee, line=line)
@@ -87,9 +88,7 @@ class GoParser(BaseParser):
     # Module symbol
     # ------------------------------------------------------------------
 
-    def _get_module_symbol(
-        self, root: Node, src: bytes, file_id: int
-    ) -> Optional[Symbol]:
+    def _get_module_symbol(self, root: Node, src: bytes, file_id: int) -> Symbol | None:
         """Extract package-level doc comment as a MODULE symbol."""
         pkg_node = None
         for child in root.children:
@@ -165,9 +164,13 @@ class GoParser(BaseParser):
         """Handle: type Foo struct{} / type Foo interface{} / type Foo = Bar / type MyInt int"""
         for spec in node.children:
             if spec.type == "type_spec":
-                self._handle_type_spec(spec, node, src, file_id, symbols, struct_idx, type_edges, is_alias=False)
+                self._handle_type_spec(
+                    spec, node, src, file_id, symbols, struct_idx, type_edges, is_alias=False
+                )
             elif spec.type == "type_alias":
-                self._handle_type_spec(spec, node, src, file_id, symbols, struct_idx, type_edges, is_alias=True)
+                self._handle_type_spec(
+                    spec, node, src, file_id, symbols, struct_idx, type_edges, is_alias=True
+                )
 
     def _handle_type_spec(
         self,
@@ -281,29 +284,33 @@ class GoParser(BaseParser):
                 if type_node:
                     embedded_type = self._unqualified_type_name(type_node, src)
                     if embedded_type:
-                        type_edges.append(TypeEdge(
-                            from_symbol_id=parent_local_idx,
-                            to_type_name=embedded_type,
-                            edge_kind="embedded",
-                        ))
+                        type_edges.append(
+                            TypeEdge(
+                                from_symbol_id=parent_local_idx,
+                                to_type_name=embedded_type,
+                                edge_kind="embedded",
+                            )
+                        )
                 continue
 
             for name_node in name_nodes:
                 name = self._txt(name_node, src)
                 if not name or not name[0].isupper():
                     continue  # skip unexported fields
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=name,
-                    qualified_name=name,
-                    kind=SymbolKind.VARIABLE,
-                    line_start=child.start_point[0] + 1,
-                    line_end=child.end_point[0] + 1,
-                    signature=f"{name} {type_str}",
-                    body=self._txt(child, src),
-                    parent_id=parent_local_idx,
-                    is_public=True,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=name,
+                        qualified_name=name,
+                        kind=SymbolKind.VARIABLE,
+                        line_start=child.start_point[0] + 1,
+                        line_end=child.end_point[0] + 1,
+                        signature=f"{name} {type_str}",
+                        body=self._txt(child, src),
+                        parent_id=parent_local_idx,
+                        is_public=True,
+                    )
+                )
                 field_count += 1
 
     def _extract_interface_methods(
@@ -330,18 +337,20 @@ class GoParser(BaseParser):
                 param_lists = [c for c in child.children if c.type == "parameter_list"]
                 params_str = self._txt(param_lists[0], src) if param_lists else "()"
                 result_str = (" " + self._txt(param_lists[1], src)) if len(param_lists) > 1 else ""
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name=name,
-                    qualified_name=name,
-                    kind=SymbolKind.FUNCTION,
-                    line_start=child.start_point[0] + 1,
-                    line_end=child.end_point[0] + 1,
-                    signature=f"{name}{params_str}{result_str}",
-                    body=self._txt(child, src),
-                    parent_id=parent_local_idx,
-                    is_public=name[0].isupper() if name else False,
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name=name,
+                        qualified_name=name,
+                        kind=SymbolKind.FUNCTION,
+                        line_start=child.start_point[0] + 1,
+                        line_end=child.end_point[0] + 1,
+                        signature=f"{name}{params_str}{result_str}",
+                        body=self._txt(child, src),
+                        parent_id=parent_local_idx,
+                        is_public=name[0].isupper() if name else False,
+                    )
+                )
                 method_count += 1
             elif child.type in ("constraint_elem", "type_elem"):
                 # Embedded interface or type constraint: io.Reader, int | string, ~int
@@ -350,11 +359,13 @@ class GoParser(BaseParser):
                 if "|" not in type_text and not type_text.startswith("~"):
                     embedded = self._unqualified_name(type_text)
                     if embedded:
-                        type_edges.append(TypeEdge(
-                            from_symbol_id=parent_local_idx,
-                            to_type_name=embedded,
-                            edge_kind="embedded",
-                        ))
+                        type_edges.append(
+                            TypeEdge(
+                                from_symbol_id=parent_local_idx,
+                                to_type_name=embedded,
+                                edge_kind="embedded",
+                            )
+                        )
 
     # ------------------------------------------------------------------
     # Function / method handling
@@ -374,18 +385,20 @@ class GoParser(BaseParser):
         name = self._txt(name_node, src)
 
         func_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=name,
-            kind=SymbolKind.FUNCTION,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=self._func_signature(node, src),
-            body=self._txt(node, src),
-            docstring=self._get_preceding_comment(node, src),
-            is_public=name[0].isupper() if name else False,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=name,
+                kind=SymbolKind.FUNCTION,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=self._func_signature(node, src),
+                body=self._txt(node, src),
+                docstring=self._get_preceding_comment(node, src),
+                is_public=name[0].isupper() if name else False,
+            )
+        )
 
         body_node = node.child_by_field_name("body")
         if body_node:
@@ -415,19 +428,21 @@ class GoParser(BaseParser):
         parent_id = struct_idx.get(receiver_type)
 
         func_local_idx = len(symbols)
-        symbols.append(Symbol(
-            file_id=file_id,
-            name=name,
-            qualified_name=qualified_name,
-            kind=SymbolKind.METHOD,
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
-            signature=self._method_signature(node, src, receiver_type),
-            body=self._txt(node, src),
-            parent_id=parent_id,
-            docstring=self._get_preceding_comment(node, src),
-            is_public=name[0].isupper() if name else False,
-        ))
+        symbols.append(
+            Symbol(
+                file_id=file_id,
+                name=name,
+                qualified_name=qualified_name,
+                kind=SymbolKind.METHOD,
+                line_start=node.start_point[0] + 1,
+                line_end=node.end_point[0] + 1,
+                signature=self._method_signature(node, src, receiver_type),
+                body=self._txt(node, src),
+                parent_id=parent_id,
+                docstring=self._get_preceding_comment(node, src),
+                is_public=name[0].isupper() if name else False,
+            )
+        )
 
         body_node = node.child_by_field_name("body")
         if body_node:
@@ -469,20 +484,24 @@ class GoParser(BaseParser):
                 func_node = child.child_by_field_name("function")
                 if func_node:
                     if func_node.type == "identifier":
-                        raw_calls.append((
-                            caller_local_idx,
-                            self._txt(func_node, src),
-                            child.start_point[0] + 1,
-                        ))
+                        raw_calls.append(
+                            (
+                                caller_local_idx,
+                                self._txt(func_node, src),
+                                child.start_point[0] + 1,
+                            )
+                        )
                     elif func_node.type == "selector_expression":
                         # e.g., s.Method() or pkg.Func()
                         field_node = func_node.child_by_field_name("field")
                         if field_node:
-                            raw_calls.append((
-                                caller_local_idx,
-                                self._txt(field_node, src),
-                                child.start_point[0] + 1,
-                            ))
+                            raw_calls.append(
+                                (
+                                    caller_local_idx,
+                                    self._txt(field_node, src),
+                                    child.start_point[0] + 1,
+                                )
+                            )
             self._walk_body(child, caller_local_idx, raw_calls, src)
 
     # ------------------------------------------------------------------
@@ -544,24 +563,24 @@ class GoParser(BaseParser):
             name = self._txt(name_node, src)
             if not name or not name[0].isupper():
                 continue  # only exported package-level symbols
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=name,
-                kind=SymbolKind.CONSTANT,
-                line_start=node.start_point[0] + 1,
-                line_end=node.end_point[0] + 1,
-                signature=sig_line,
-                body=body,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=name,
+                    kind=SymbolKind.CONSTANT,
+                    line_start=node.start_point[0] + 1,
+                    line_end=node.end_point[0] + 1,
+                    signature=sig_line,
+                    body=body,
+                )
+            )
 
     # ------------------------------------------------------------------
     # Import extraction
     # ------------------------------------------------------------------
 
-    def _extract_import(
-        self, node: Node, src: bytes, file_id: int
-    ) -> list[ImportEdge]:
+    def _extract_import(self, node: Node, src: bytes, file_id: int) -> list[ImportEdge]:
         """Handle both single and grouped import declarations."""
         edges: list[ImportEdge] = []
 
@@ -571,19 +590,23 @@ class GoParser(BaseParser):
                     if spec.type == "import_spec":
                         path = self._get_import_path(spec, src)
                         if path:
-                            edges.append(ImportEdge(
-                                file_id=file_id,
-                                imported_from=path,
-                                imported_names=[],
-                            ))
+                            edges.append(
+                                ImportEdge(
+                                    file_id=file_id,
+                                    imported_from=path,
+                                    imported_names=[],
+                                )
+                            )
             elif child.type == "import_spec":
                 path = self._get_import_path(child, src)
                 if path:
-                    edges.append(ImportEdge(
-                        file_id=file_id,
-                        imported_from=path,
-                        imported_names=[],
-                    ))
+                    edges.append(
+                        ImportEdge(
+                            file_id=file_id,
+                            imported_from=path,
+                            imported_names=[],
+                        )
+                    )
 
         return edges
 
@@ -642,9 +665,9 @@ class GoParser(BaseParser):
         return count
 
     def _txt(self, node: Node, src: bytes) -> str:
-        return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
+    def _get_child_by_type(self, node: Node, type_name: str) -> Node | None:
         for child in node.children:
             if child.type == type_name:
                 return child
@@ -668,7 +691,7 @@ class GoParser(BaseParser):
         name = type_str.lstrip("*").split("[")[0].strip()
         return name.split(".")[-1].strip() if name else ""
 
-    def _get_preceding_comment(self, node: Node, src: bytes) -> Optional[str]:
+    def _get_preceding_comment(self, node: Node, src: bytes) -> str | None:
         """Collect consecutive Go doc comment lines immediately before this node."""
         lines: list[str] = []
         prev = node.prev_named_sibling
@@ -684,8 +707,8 @@ class GoParser(BaseParser):
     @staticmethod
     def _clean_comment(raw: str) -> str:
         """Strip comment delimiters: /* */, //, /// prefixes."""
-        raw = re.sub(r'^/\*+\s*', '', raw.strip())
-        raw = re.sub(r'\s*\*+/$', '', raw)
-        raw = re.sub(r'^\s*\*\s?', '', raw, flags=re.MULTILINE)
-        raw = re.sub(r'^///?\s?', '', raw, flags=re.MULTILINE)
+        raw = re.sub(r"^/\*+\s*", "", raw.strip())
+        raw = re.sub(r"\s*\*+/$", "", raw)
+        raw = re.sub(r"^\s*\*\s?", "", raw, flags=re.MULTILINE)
+        raw = re.sub(r"^///?\s?", "", raw, flags=re.MULTILINE)
         return raw.strip()

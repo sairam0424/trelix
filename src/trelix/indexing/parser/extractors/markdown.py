@@ -20,7 +20,6 @@ Files with no headings (plain prose) are indexed as a single
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from trelix.core.models import Symbol, SymbolKind
 from trelix.indexing.parser.base import BaseParser, ParseResult
@@ -38,7 +37,6 @@ _TOML_FM_START = "+++"
 
 
 class MarkdownParser(BaseParser):
-
     @property
     def language_name(self) -> str:
         return "markdown"
@@ -89,16 +87,18 @@ class MarkdownParser(BaseParser):
 
         if not headings and content_after_fm.strip():
             if not fm_symbol:
-                symbols.append(Symbol(
-                    file_id=file_id,
-                    name="Document",
-                    qualified_name="Document",
-                    kind=SymbolKind.SECTION,
-                    line_start=1,
-                    line_end=n_lines,
-                    body=source,
-                    signature="(document)",
-                ))
+                symbols.append(
+                    Symbol(
+                        file_id=file_id,
+                        name="Document",
+                        qualified_name="Document",
+                        kind=SymbolKind.SECTION,
+                        line_start=1,
+                        line_end=n_lines,
+                        body=source,
+                        signature="(document)",
+                    )
+                )
             return ParseResult(
                 symbols=symbols,
                 call_edges=[],
@@ -132,16 +132,18 @@ class MarkdownParser(BaseParser):
             signature = "#" * level + " " + name
             body = "\n".join(lines[line_0 : line_end_0 + 1])
 
-            symbols.append(Symbol(
-                file_id=file_id,
-                name=name,
-                qualified_name=qualified_name,
-                kind=SymbolKind.SECTION,
-                line_start=line_0 + 1,   # 1-indexed
-                line_end=line_end_0 + 1,
-                body=body,
-                signature=signature,
-            ))
+            symbols.append(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=qualified_name,
+                    kind=SymbolKind.SECTION,
+                    line_start=line_0 + 1,  # 1-indexed
+                    line_end=line_end_0 + 1,
+                    body=body,
+                    signature=signature,
+                )
+            )
 
         return ParseResult(
             symbols=symbols,
@@ -155,9 +157,7 @@ class MarkdownParser(BaseParser):
     # Front matter
     # ------------------------------------------------------------------
 
-    def _extract_frontmatter(
-        self, lines: list[str], file_id: int
-    ) -> tuple[Optional[Symbol], int]:
+    def _extract_frontmatter(self, lines: list[str], file_id: int) -> tuple[Symbol | None, int]:
         """
         Detect and parse YAML (---) or TOML (+++) front matter at start of file.
         Returns (MODULE symbol or None, first line index after front matter).
@@ -205,18 +205,19 @@ class MarkdownParser(BaseParser):
             qualified_name=name,
             kind=SymbolKind.MODULE,
             line_start=1,
-            line_end=end_idx + 1,   # 1-indexed, inclusive of closing delimiter
+            line_end=end_idx + 1,  # 1-indexed, inclusive of closing delimiter
             body=fm_text,
             signature=signature,
             docstring=docstring,
             is_public=True,
         )
-        return symbol, end_idx + 1   # skip past the closing delimiter line
+        return symbol, end_idx + 1  # skip past the closing delimiter line
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
 
 def _strip_inline_md(text: str) -> str:
     """Remove **bold**, *italic*, `code`, [text](url) from heading text."""
@@ -226,7 +227,7 @@ def _strip_inline_md(text: str) -> str:
     return text.strip()
 
 
-def _fm_field(fm_text: str, key: str) -> Optional[str]:
+def _fm_field(fm_text: str, key: str) -> str | None:
     """Extract a scalar YAML/TOML front matter field: key: value (or key = value)."""
     m = re.search(
         rf'^{re.escape(key)}\s*[:=]\s*["\']?(.+?)["\']?\s*$',
@@ -248,7 +249,7 @@ def _fm_list_field(fm_text: str, key: str) -> list[str]:
     """
     # Inline YAML array: tags: [a, b, c]
     m = re.search(
-        rf'^{re.escape(key)}\s*:\s*\[([^\]]*)\]',
+        rf"^{re.escape(key)}\s*:\s*\[([^\]]*)\]",
         fm_text,
         re.MULTILINE | re.IGNORECASE,
     )
@@ -257,15 +258,15 @@ def _fm_list_field(fm_text: str, key: str) -> list[str]:
 
     # Block YAML list: collect "- item" lines after "key:"
     m2 = re.search(
-        rf'^{re.escape(key)}\s*:',
+        rf"^{re.escape(key)}\s*:",
         fm_text,
         re.MULTILINE | re.IGNORECASE,
     )
     if m2:
-        rest = fm_text[m2.end():]
+        rest = fm_text[m2.end() :]
         items: list[str] = []
         for line in rest.splitlines():
-            li = re.match(r'^\s*-\s+(.+)', line)
+            li = re.match(r"^\s*-\s+(.+)", line)
             if li:
                 items.append(li.group(1).strip().strip("'\""))
             elif line.strip() and not line.startswith(" "):

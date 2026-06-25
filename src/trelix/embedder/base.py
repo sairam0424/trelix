@@ -34,9 +34,7 @@ _SYNC_EXECUTOR: ThreadPoolExecutor | None = None
 def _get_sync_executor() -> ThreadPoolExecutor:
     global _SYNC_EXECUTOR
     if _SYNC_EXECUTOR is None:
-        _SYNC_EXECUTOR = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="trelix-embed-sync"
-        )
+        _SYNC_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="trelix-embed-sync")
     return _SYNC_EXECUTOR
 
 
@@ -81,6 +79,7 @@ class AzureOpenAIEmbedder(BaseEmbedder):
 
     def __init__(self, config: EmbedderConfig) -> None:
         from openai import AzureOpenAI
+
         self._client = AzureOpenAI(
             api_key=config.azure_api_key,
             azure_endpoint=config.azure_endpoint or "",
@@ -94,6 +93,7 @@ class AzureOpenAIEmbedder(BaseEmbedder):
     def _get_async_client(self):  # type: ignore[return]
         """Lazily create AsyncAzureOpenAI client (avoids import at module level)."""
         from openai import AsyncAzureOpenAI
+
         return AsyncAzureOpenAI(
             api_key=self._async_client_config.azure_api_key,
             azure_endpoint=self._async_client_config.azure_endpoint or "",
@@ -145,6 +145,7 @@ class OpenAIEmbedder(BaseEmbedder):
 
     def __init__(self, config: EmbedderConfig) -> None:
         from openai import OpenAI
+
         self._client = OpenAI(api_key=config.openai_api_key)
         self._model = config.openai_model
         self._dimensions = config.openai_dimensions
@@ -154,6 +155,7 @@ class OpenAIEmbedder(BaseEmbedder):
     def _get_async_client(self):  # type: ignore[return]
         """Lazily create AsyncOpenAI client."""
         from openai import AsyncOpenAI
+
         return AsyncOpenAI(api_key=self._async_client_config.openai_api_key)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -228,9 +230,8 @@ class LocalEmbedder(BaseEmbedder):
     @property
     def dimension(self) -> int:
         # get_embedding_dimension is the new name; fall back to legacy for older versions
-        getter = (
-            getattr(self._model, "get_embedding_dimension", None)
-            or getattr(self._model, "get_sentence_embedding_dimension", None)
+        getter = getattr(self._model, "get_embedding_dimension", None) or getattr(
+            self._model, "get_sentence_embedding_dimension", None
         )
         return getter()  # type: ignore[return-value]
 
@@ -319,8 +320,9 @@ class LocalCodeEmbedder(BaseEmbedder):
 
     @property
     def dimension(self) -> int:
-        getter = getattr(self._model, "get_embedding_dimension", None) or \
-                 getattr(self._model, "get_sentence_embedding_dimension", None)
+        getter = getattr(self._model, "get_embedding_dimension", None) or getattr(
+            self._model, "get_sentence_embedding_dimension", None
+        )
         if getter is not None:
             return getter()  # type: ignore[return-value]
         # Fallback: SFR-Embedding-Code-2B_R native output dimension
