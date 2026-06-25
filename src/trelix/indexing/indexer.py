@@ -1,7 +1,7 @@
 """
 Indexer: orchestrates the full indexing pipeline.
 
-Two-phase design for large-repo performance:
+Three-phase design for large-repo performance:
 
   Phase 1 — parallel parse
     N threads read + parse files concurrently (file I/O + tree-sitter both
@@ -11,12 +11,13 @@ Two-phase design for large-repo performance:
     Symbols and chunks are inserted in the main thread to keep parent_id
     remapping consistent (local parse indices → real DB row ids).
 
-  Phase 3 — token-aware batch embed
-    ALL chunks from ALL files are embedded in as few API calls as possible.
-    _make_token_batches() builds batches so each call stays under
+  Phase 3 — async concurrent batch embed  (U5)
+    Up to 4 API calls run concurrently via asyncio.gather + Semaphore(4).
+    _make_token_batches() groups chunks so each batch stays under
     embed_max_tokens_per_batch tokens (prevents request-size errors).
-    _TpmRateLimiter sleeps between batches if needed to stay below the
-    configured Azure TPM ceiling — we never exceed the quota.
+    _AsyncTpmRateLimiter uses asyncio.sleep (non-blocking) to stay within
+    the configured Azure TPM ceiling — we never exceed the quota.
+    vector_store.upsert_batch() is sync → called in a thread executor.
 
   Phase 4 — cross-file resolution
     Call-edge targets and import file_ids are resolved after every file
@@ -29,6 +30,7 @@ parent_id / caller_id convention:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -74,12 +76,12 @@ class _PendingChunk:
 
 
 # ---------------------------------------------------------------------------
-# TPM rate limiter
+# TPM rate limiters
 # ---------------------------------------------------------------------------
 
 class _TpmRateLimiter:
     """
-    Sliding 60-second window TPM guard.
+    Sliding 60-second window TPM guard (sync).
 
     Call .acquire(tokens) before every embedding API call.  If adding
     `tokens` to the running total would exceed tpm_limit within the current
@@ -114,6 +116,46 @@ class _TpmRateLimiter:
             self._used = 0
             self._window_start = time.monotonic()
         self._used += tokens
+
+
+class _AsyncTpmRateLimiter:
+    """
+    Async sliding 60-second window TPM guard (U5).
+
+    Identical logic to _TpmRateLimiter but uses asyncio.sleep (non-blocking)
+    and an asyncio.Lock to prevent multiple concurrent coroutines from all
+    seeing the same under-limit state at the same instant.
+
+    tpm_limit = 0  →  unlimited (no sleeping).
+    """
+
+    def __init__(self, tpm_limit: int, console: Console | None = None) -> None:
+        self._limit = tpm_limit
+        self._used = 0
+        self._window_start = time.monotonic()
+        self._console = console or Console()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, tokens: int) -> None:
+        if self._limit <= 0:
+            return
+        async with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._window_start
+            if elapsed >= 60.0:
+                self._used = 0
+                self._window_start = now
+                elapsed = 0.0
+            if self._used + tokens > self._limit:
+                wait = 61.0 - elapsed   # +1 s safety buffer
+                self._console.print(
+                    f"[yellow]⏸  TPM limit ({self._limit:,}/min) reached — "
+                    f"waiting {wait:.1f} s[/yellow]"
+                )
+                await asyncio.sleep(max(0.0, wait))
+                self._used = 0
+                self._window_start = time.monotonic()
+            self._used += tokens
 
 
 # ---------------------------------------------------------------------------
@@ -259,16 +301,16 @@ class Indexer:
         self._report_progress(2, "Building symbols & chunks…", 0.0, stats)
         pending = self._insert_and_chunk_all(parsed, stats)
 
-        # ── Phase 3: token-aware batch embed ────────────────────────────────
+        # ── Phase 3: async concurrent batch embed ───────────────────────────
         stats["chunks_total"] = len(pending)
         if pending:
             total_tokens = sum(p.token_count for p in pending)
             self._console.print(
                 f"[dim]  Phase 3/3: embedding {len(pending)} chunks "
-                f"({total_tokens:,} tokens)…[/dim]"
+                f"({total_tokens:,} tokens, up to 4 concurrent API calls)…[/dim]"
             )
             self._report_progress(3, "Embedding chunks…", 0.0, stats)
-            self._batch_embed_and_store(pending, stats)
+            asyncio.run(self._batch_embed_and_store_async(pending, stats))
 
         # ── Phase 4: cross-file resolution ──────────────────────────────────
         self._report_progress(4, "Resolving cross-file references…", 0.0, stats)
@@ -513,6 +555,77 @@ class Indexer:
                     embedded_so_far / total_chunks if total_chunks else 1.0,
                     stats,
                 )
+
+    async def _batch_embed_and_store_async(
+        self, pending: list[_PendingChunk], stats: dict[str, int]
+    ) -> None:
+        """
+        Async Phase 3: embed all pending chunks with up to 4 concurrent API calls.
+
+        Concurrency model:
+          - asyncio.Semaphore(4) caps simultaneous embed_async() calls at 4.
+          - asyncio.gather() fans out all batches at once; the semaphore ensures
+            at most 4 are in-flight to the embedding API at any given time.
+          - _AsyncTpmRateLimiter uses asyncio.sleep (non-blocking) to honour
+            the rolling TPM ceiling.
+          - vector_store.upsert_batch() is sync → run in a thread executor so
+            it does not block the event loop.
+
+        Progress tracking uses a lock-protected shared counter so concurrent
+        coroutines can safely increment stats["chunks_embedded"].
+        """
+        cfg = self.config.embedder
+        limiter = _AsyncTpmRateLimiter(cfg.tpm_limit, console=self._console)
+        semaphore = asyncio.Semaphore(4)
+        batches = _make_token_batches(pending, cfg.embed_max_tokens_per_batch)
+        total_chunks = len(pending)
+
+        # Thread executor for the sync upsert_batch call
+        loop = asyncio.get_event_loop()
+        upsert_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="trelix-upsert")
+
+        # Shared mutable counter guarded by a lock
+        counter_lock = asyncio.Lock()
+        embedded_so_far = 0
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=self._console,
+        ) as progress:
+            task = progress.add_task("Embedding…", total=total_chunks)
+
+            async def embed_one_batch(batch: list[_PendingChunk]) -> None:
+                nonlocal embedded_so_far
+                batch_tokens = sum(p.token_count for p in batch)
+                # Respect TPM before acquiring semaphore to avoid holding it
+                # during a potentially long sleep.
+                await limiter.acquire(batch_tokens)
+                async with semaphore:
+                    embeddings = await self.embedder.embed_async(
+                        [p.chunk_text for p in batch]
+                    )
+                # upsert_batch is sync — run in executor to not block event loop
+                pairs = [(p.chunk_id, emb) for p, emb in zip(batch, embeddings)]
+                await loop.run_in_executor(
+                    upsert_executor, self.vector_store.upsert_batch, pairs
+                )
+                # Update shared counters safely
+                async with counter_lock:
+                    embedded_so_far += len(batch)
+                    stats["chunks_embedded"] += len(batch)
+                    progress.advance(task, advance=len(batch))
+                    self._report_progress(
+                        3, "Embedding chunks…",
+                        embedded_so_far / total_chunks if total_chunks else 1.0,
+                        stats,
+                    )
+
+            await asyncio.gather(*[embed_one_batch(b) for b in batches])
+
+        upsert_executor.shutdown(wait=True)
 
     # ──────────────────────────────────────────────────────────────────────
     # Helpers
