@@ -1,4 +1,4 @@
-"""Unit tests for the embedder abstraction (Phase 3)."""
+"""Unit tests for the embedder abstraction (Phase 3 + U2 code-specialised providers)."""
 
 from __future__ import annotations
 
@@ -11,8 +11,10 @@ from trelix.core.config import EmbedderConfig
 from trelix.embedder.base import (
     AzureOpenAIEmbedder,
     BaseEmbedder,
+    LocalCodeEmbedder,
     LocalEmbedder,
     OpenAIEmbedder,
+    VoyageEmbedder,
     make_embedder,
 )
 
@@ -271,4 +273,196 @@ class TestLocalEmbedder:
         assert isinstance(result, list)
         assert len(result) == 384
 
+
+# ---------------------------------------------------------------------------
+# VoyageEmbedder
+# ---------------------------------------------------------------------------
+
+_FAKE_VOYAGE_KEY = "voyage-test-key-not-real"
+
+
+class TestVoyageEmbedder:
+    """Tests for the Voyage AI code-optimised embedder (voyage-code-3)."""
+
+    def _make_client_mock(self, dim: int = 1024) -> MagicMock:
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.embeddings = [[0.1] * dim]
+        mock_client.embed.return_value = mock_response
+        return mock_client
+
+    def _make(self, dim: int = 1024) -> tuple[VoyageEmbedder, MagicMock]:
+        config = EmbedderConfig(provider="voyage", voyage_api_key=_FAKE_VOYAGE_KEY)
+        mock_client = self._make_client_mock(dim)
+        mock_voyage_module = MagicMock()
+        mock_voyage_module.Client.return_value = mock_client
+        with patch.dict(sys.modules, {"voyageai": mock_voyage_module}):
+            embedder = VoyageEmbedder(config)
+        # Replace client with mock for assertion purposes
+        embedder._client = mock_client  # noqa: SLF001
+        return embedder, mock_client
+
+    def test_dimension_property(self) -> None:
+        embedder, _ = self._make()
+        assert embedder.dimension == 1024
+
+    def test_is_base_embedder(self) -> None:
+        embedder, _ = self._make()
+        assert isinstance(embedder, BaseEmbedder)
+
+    def test_embed_uses_document_input_type(self) -> None:
+        embedder, mock_client = self._make()
+        embedder.embed(["def foo(): pass"])
+        mock_client.embed.assert_called_once()
+        call_kwargs = mock_client.embed.call_args
+        assert call_kwargs.kwargs.get("input_type") == "document" or \
+               call_kwargs.args[2] == "document" if len(call_kwargs.args) > 2 \
+               else call_kwargs.kwargs["input_type"] == "document"
+
+    def test_embed_query_uses_query_input_type(self) -> None:
+        embedder, mock_client = self._make()
+        mock_response = MagicMock()
+        mock_response.embeddings = [[0.5] * 1024]
+        mock_client.embed.return_value = mock_response
+        embedder.embed_query("find all async functions")
+        mock_client.embed.assert_called_once()
+        call_kwargs = mock_client.embed.call_args
+        assert call_kwargs.kwargs.get("input_type") == "query" or \
+               call_kwargs.args[2] == "query" if len(call_kwargs.args) > 2 \
+               else call_kwargs.kwargs["input_type"] == "query"
+
+    def test_embed_returns_list_of_vectors(self) -> None:
+        embedder, mock_client = self._make()
+        mock_response = MagicMock()
+        mock_response.embeddings = [[0.1] * 1024, [0.2] * 1024]
+        mock_client.embed.return_value = mock_response
+        result = embedder.embed(["hello", "world"])
+        assert len(result) == 2
+        assert all(len(v) == 1024 for v in result)
+
+    def test_embed_query_returns_single_vector(self) -> None:
+        embedder, mock_client = self._make()
+        mock_response = MagicMock()
+        mock_response.embeddings = [[0.7] * 1024]
+        mock_client.embed.return_value = mock_response
+        result = embedder.embed_query("search query")
+        assert isinstance(result, list)
+        assert len(result) == 1024
+
+    def test_embed_batches_at_128(self) -> None:
+        """VoyageEmbedder must split inputs into chunks of 128."""
+        config = EmbedderConfig(provider="voyage", voyage_api_key=_FAKE_VOYAGE_KEY)
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.embeddings = [[0.0] * 1024] * 128
+        mock_client.embed.return_value = mock_response
+        mock_voyage_module = MagicMock()
+        mock_voyage_module.Client.return_value = mock_client
+        with patch.dict(sys.modules, {"voyageai": mock_voyage_module}):
+            embedder = VoyageEmbedder(config)
+        embedder._client = mock_client  # noqa: SLF001
+        texts = ["text"] * 256
+        embedder.embed(texts)
+        assert mock_client.embed.call_count == 2
+
+    def test_factory_returns_voyage_embedder(self) -> None:
+        config = EmbedderConfig(provider="voyage", voyage_api_key=_FAKE_VOYAGE_KEY)
+        mock_voyage_module = MagicMock()
+        mock_voyage_module.Client.return_value = MagicMock()
+        with patch.dict(sys.modules, {"voyageai": mock_voyage_module}):
+            embedder = make_embedder(config)
+        assert isinstance(embedder, VoyageEmbedder)
+
+    def test_import_error_with_helpful_message_if_voyageai_missing(self) -> None:
+        config = EmbedderConfig(provider="voyage", voyage_api_key=_FAKE_VOYAGE_KEY)
+        with patch.dict(sys.modules, {"voyageai": None}):
+            with pytest.raises(ImportError, match="pip install"):
+                VoyageEmbedder(config)
+
+
+# ---------------------------------------------------------------------------
+# LocalCodeEmbedder
+# ---------------------------------------------------------------------------
+
+class TestLocalCodeEmbedder:
+    """Tests for the SFR-Embedding-Code-2B_R local code embedder."""
+
+    def test_factory_returns_local_code_embedder(self) -> None:
+        pytest.importorskip(
+            "sentence_transformers",
+            reason="sentence-transformers not installed; skipping local-code provider test",
+        )
+        config = EmbedderConfig(provider="local-code")
+        mock_st_module = MagicMock()
+        mock_model = MagicMock()
+        mock_model.get_embedding_dimension.return_value = 4096
+        mock_st_module.SentenceTransformer.return_value = mock_model
+        with patch.dict(sys.modules, {"sentence_transformers": mock_st_module}):
+            embedder = make_embedder(config)
+        assert isinstance(embedder, LocalCodeEmbedder)
+
+    def test_is_base_embedder(self) -> None:
+        pytest.importorskip(
+            "sentence_transformers",
+            reason="sentence-transformers not installed; skipping local-code provider test",
+        )
+        config = EmbedderConfig(provider="local-code")
+        mock_st_module = MagicMock()
+        mock_model = MagicMock()
+        mock_model.get_embedding_dimension.return_value = 4096
+        mock_st_module.SentenceTransformer.return_value = mock_model
+        with patch.dict(sys.modules, {"sentence_transformers": mock_st_module}):
+            embedder = LocalCodeEmbedder(config)
+        assert isinstance(embedder, BaseEmbedder)
+
+    def test_dimension_uses_model_method(self) -> None:
+        pytest.importorskip(
+            "sentence_transformers",
+            reason="sentence-transformers not installed; skipping local-code provider test",
+        )
+        config = EmbedderConfig(provider="local-code")
+        mock_st_module = MagicMock()
+        mock_model = MagicMock()
+        mock_model.get_embedding_dimension.return_value = 4096
+        mock_st_module.SentenceTransformer.return_value = mock_model
+        with patch.dict(sys.modules, {"sentence_transformers": mock_st_module}):
+            embedder = LocalCodeEmbedder(config)
+        assert embedder.dimension == 4096
+
+    def test_dimension_fallback_is_4096(self) -> None:
+        """If model has no dimension method, fallback must be 4096."""
+        pytest.importorskip(
+            "sentence_transformers",
+            reason="sentence-transformers not installed; skipping local-code provider test",
+        )
+        config = EmbedderConfig(provider="local-code")
+        mock_st_module = MagicMock()
+        mock_model = MagicMock(spec=[])  # no methods
+        mock_st_module.SentenceTransformer.return_value = mock_model
+        with patch.dict(sys.modules, {"sentence_transformers": mock_st_module}):
+            embedder = LocalCodeEmbedder(config)
+        assert embedder.dimension == 4096
+
+    def test_import_error_when_sentence_transformers_missing(self) -> None:
+        config = EmbedderConfig(provider="local-code")
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            with pytest.raises(ImportError, match="pip install"):
+                LocalCodeEmbedder(config)
+
+    def test_trust_remote_code_true(self) -> None:
+        """SentenceTransformer must be called with trust_remote_code=True."""
+        pytest.importorskip(
+            "sentence_transformers",
+            reason="sentence-transformers not installed; skipping local-code provider test",
+        )
+        config = EmbedderConfig(provider="local-code")
+        mock_st_module = MagicMock()
+        mock_model = MagicMock()
+        mock_model.get_embedding_dimension.return_value = 4096
+        mock_st_module.SentenceTransformer.return_value = mock_model
+        with patch.dict(sys.modules, {"sentence_transformers": mock_st_module}):
+            LocalCodeEmbedder(config)
+        call_kwargs = mock_st_module.SentenceTransformer.call_args
+        assert call_kwargs.kwargs.get("trust_remote_code") is True or \
+               (len(call_kwargs.args) > 1 and call_kwargs.args[1] is True)
 
