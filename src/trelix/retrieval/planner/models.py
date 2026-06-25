@@ -16,6 +16,21 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+class RoutingTier(int, Enum):
+    """
+    Adaptive routing tier assigned by AdaptiveRouter.
+
+    TIER_1_DIRECT: trivial factual queries — skip retrieval entirely and
+                   answer directly from project overview symbols.
+    TIER_2_SINGLE: default single-step plan (current behaviour for most queries).
+    TIER_3_MULTI:  complex multi-part queries — LLM decomposes into 2–3 focused
+                   sub-queries executed in parallel.
+    """
+    TIER_1_DIRECT = 1
+    TIER_2_SINGLE = 2
+    TIER_3_MULTI  = 3
+
+
 class IntentType(str, Enum):
     SYMBOL_LOOKUP    = "symbol_lookup"    # "what does text_to_code() do"
     FILE_OVERVIEW    = "file_overview"    # "tell me about auth.py"
@@ -132,14 +147,15 @@ class QueryPlan:
     """
     The complete retrieval plan produced by the planner agent.
 
-    Retriever reads `intent`, `strategy`, and `sub_queries` — no conditional
-    intent-switch logic inside the retriever itself.
+    Retriever reads `intent`, `strategy`, `routing_tier`, and `sub_queries` —
+    no conditional intent-switch logic inside the retriever itself.
     """
     intent: IntentType
     execution_mode: str       # "parallel" | "sequential"
     strategy: RetrievalStrategy
     sub_queries: list[SubQuery]
     raw_query: str            # original user query, used as final fallback
+    routing_tier: RoutingTier = field(default=RoutingTier.TIER_2_SINGLE)
 
 
 def default_plan(raw_query: str) -> QueryPlan:
