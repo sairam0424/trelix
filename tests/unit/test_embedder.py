@@ -9,7 +9,6 @@ import pytest
 
 from trelix.core.config import EmbedderConfig
 from trelix.embedder.base import (
-    AavaPlatformEmbedder,
     AzureOpenAIEmbedder,
     BaseEmbedder,
     LocalEmbedder,
@@ -273,73 +272,3 @@ class TestLocalEmbedder:
         assert len(result) == 384
 
 
-# ---------------------------------------------------------------------------
-# AavaPlatformEmbedder — VS Code plugin compatibility
-# ---------------------------------------------------------------------------
-
-# Placeholder values used only in tests — not real credentials.
-_TEST_AAVA_AUTH = "aava-test-placeholder"
-_TEST_AAVA_URL = "https://aava-test.avateam.io"
-
-
-class TestAavaPlatformEmbedder:
-    def _make_config(self) -> EmbedderConfig:
-        return EmbedderConfig(
-            provider="aava",
-            embedding_bearer_token=_TEST_AAVA_AUTH,
-            embedding_base_url=_TEST_AAVA_URL,
-        )
-
-    def test_is_base_embedder(self) -> None:
-        embedder = AavaPlatformEmbedder(self._make_config())
-        assert isinstance(embedder, BaseEmbedder)
-
-    def test_dimension_is_3072(self) -> None:
-        embedder = AavaPlatformEmbedder(self._make_config())
-        assert embedder.dimension == 3072
-
-    def test_factory_returns_aava_embedder(self) -> None:
-        embedder = make_embedder(self._make_config())
-        assert isinstance(embedder, AavaPlatformEmbedder)
-
-    def test_embed_posts_to_api(self) -> None:
-        """embed() must POST to the Aava embedding endpoint and parse the response."""
-        import json
-        from unittest.mock import MagicMock, patch
-
-        embedder = AavaPlatformEmbedder(self._make_config())
-
-        fake_response_data = {
-            "data": {"embeddings": [{"vector": [0.1] * 3072}]}
-        }
-        fake_resp = MagicMock()
-        fake_resp.read.return_value = json.dumps(fake_response_data).encode("utf-8")
-        fake_resp.__enter__ = lambda s: s
-        fake_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=fake_resp):
-            result = embedder.embed(["hello world"])
-
-        assert len(result) == 1
-        assert len(result[0]) == 3072
-
-    def test_embed_query_returns_single_vector(self) -> None:
-        """embed_query() must return a single flat list of floats."""
-        import json
-        from unittest.mock import MagicMock, patch
-
-        embedder = AavaPlatformEmbedder(self._make_config())
-
-        fake_response_data = {
-            "data": {"embeddings": [{"vector": [0.5] * 3072}]}
-        }
-        fake_resp = MagicMock()
-        fake_resp.read.return_value = json.dumps(fake_response_data).encode("utf-8")
-        fake_resp.__enter__ = lambda s: s
-        fake_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=fake_resp):
-            result = embedder.embed_query("search query")
-
-        assert isinstance(result, list)
-        assert len(result) == 3072

@@ -7,18 +7,18 @@ on:
 
 jobs:
   build-binaries:
-    name: Build codeindex (${{ matrix.os }})
+    name: Build trelix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
-            artifact-name: codeindex-macos-arm64
-            binary-path: dist/codeindex
+            artifact-name: trelix-macos-arm64
+            binary-path: dist/trelix
           - os: windows-latest
-            artifact-name: codeindex-windows-x64
-            binary-path: dist/codeindex.exe
+            artifact-name: trelix-windows-x64
+            binary-path: dist/trelix.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -36,12 +36,12 @@ jobs:
       - name: Verify binary (macOS)
         if: runner.os == 'macOS'
         run: |
-          file dist/codeindex
-          ./dist/codeindex --help
+          file dist/trelix
+          ./dist/trelix --help
 
       - name: Verify binary (Windows)
         if: runner.os == 'Windows'
-        run: dist/codeindex.exe --help
+        run: dist/trelix.exe --help
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -56,8 +56,8 @@ jobs:
     needs: build-binaries
     environment: pypi
     permissions:
-      id-token: write    # required for OIDC trusted publisher (PyPI)
-      contents: write    # required to create GitHub Release and upload assets
+      id-token: write    # OIDC trusted publisher (PyPI)
+      contents: write    # create GitHub Release + upload assets
 
     steps:
       - uses: actions/checkout@v4
@@ -81,21 +81,21 @@ jobs:
       - name: Download macOS binary
         uses: actions/download-artifact@v4
         with:
-          name: codeindex-macos-arm64
+          name: trelix-macos-arm64
           path: release-assets/macos
 
       - name: Download Windows binary
         uses: actions/download-artifact@v4
         with:
-          name: codeindex-windows-x64
+          name: trelix-windows-x64
           path: release-assets/windows
 
       - name: Create GitHub Release with binaries
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release-assets/macos/codeindex
-            release-assets/windows/codeindex.exe
+            release-assets/macos/trelix
+            release-assets/windows/trelix.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
