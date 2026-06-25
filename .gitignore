@@ -10,11 +10,8 @@ build/
 .eggs/
 pip-wheel-metadata/
 
-# dist/ — ignore generated packaging artefacts but ship the codeindex binary.
-# Using dist/* (not dist/) so that negation rules for tracked files work.
-dist/*
-!dist/.gitkeep
-!dist/codeindex
+# dist/ — ignore generated packaging artefacts; binaries are attached via GitHub Releases.
+dist/
 
 # Virtual environments
 .venv/
@@ -39,6 +36,12 @@ htmlcov/
 .env
 .env.local
 .env.*.local
+
+# Claude Code internal data
+.claude/
+
+# uv lockfile (not committed — project uses pip/hatchling)
+uv.lock
 
 # Editor / OS
 .DS_Store

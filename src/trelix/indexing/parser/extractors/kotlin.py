@@ -1,6 +1,7 @@
-"""Kotlin parser: direct AST traversal using Tree-sitter 0.25+.
+"""Kotlin parser: direct AST traversal using Tree-sitter.
 
-Targets tree-sitter-kotlin >=1.1 (individual package, tree-sitter 0.25 API).
+Design: same pattern as Python/TypeScript/Java parsers — direct tree-sitter walk,
+no .scm query files at runtime.
 
 Extracts:
   - Classes (kind=CLASS) — regular, data, sealed, abstract, open
@@ -15,22 +16,17 @@ Extracts:
   - Top-level `const val` and ALL_CAPS vals (kind=CONSTANT)
   - Class property declarations (kind=VARIABLE, parent_id=class local idx)
   - Import statements → ImportEdge
-  - Call sites inside functions → CallEdge (caller_id = local idx)
-  - Supertype delegation specifiers → TypeEdge (extends)
+  - Call sites inside functions → CallEdge (caller_id = local idx, remapped by Indexer)
+  - Supertype delegation specifiers → TypeEdge (extends / implements)
   - Kotlin annotations (@Component, @Inject, etc.) → stored as decorators
-
-Grammar notes (tree-sitter-kotlin 1.1 / tree-sitter 0.25):
-  - Imports: `import` node with `qualified_identifier` child (not import_list)
-  - Class body: `class_body` child (no `body` field in child_by_field_name)
-  - Class kind: keyword child type is 'class'/'interface'/'enum' (no `kind` field)
-  - Function params: `function_value_parameters` child node
-  - Delegation specifiers: `delegation_specifiers` → `delegation_specifier` children
-  - Annotations: inside `modifiers` as `annotation` children
-  - Companion object body: `class_body` child
 
 Parent linkage:
   parent_id in Symbol is set to the LOCAL INDEX in the symbols list during
   parsing. The Indexer remaps this to the actual DB id after insertion.
+
+Extension functions:
+  `fun String.extended(): Int` → name="extended", qualified_name="String.extended",
+  kind=FUNCTION, is_public based on visibility modifier.
 """
 
 from __future__ import annotations
@@ -38,20 +34,22 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-import tree_sitter_kotlin as _ts_kotlin
-from tree_sitter import Language, Node, Parser
+import tree_sitter_languages
+from tree_sitter import Node, Parser
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 from trelix.indexing.parser.base import BaseParser, ParseResult
 
 
 class KotlinParser(BaseParser):
-    """Tree-sitter based Kotlin parser (tree-sitter-kotlin 1.1 / ts 0.25)."""
+    """Tree-sitter based Kotlin parser using direct AST traversal."""
 
     MAX_CLASS_FIELDS: int = 30
 
     def __init__(self) -> None:
-        self._parser = Parser(Language(_ts_kotlin.language()))
+        self._ts_lang = tree_sitter_languages.get_language("kotlin")
+        self._parser = Parser()
+        self._parser.set_language(self._ts_lang)
 
     @property
     def language_name(self) -> str:
@@ -103,8 +101,10 @@ class KotlinParser(BaseParser):
     ) -> None:
         for child in root.children:
             ntype = child.type
-            if ntype == "import":
-                import_edges.extend(self._extract_import(child, src, file_id))
+            if ntype == "import_list":
+                for imp in child.children:
+                    if imp.type == "import_header":
+                        import_edges.extend(self._extract_import(imp, src, file_id))
             elif ntype == "class_declaration":
                 self._handle_class(child, src, file_id, symbols, raw_calls, type_edges,
                                    parent_class_local_idx=None)
@@ -133,32 +133,32 @@ class KotlinParser(BaseParser):
         type_edges: list[TypeEdge],
         parent_class_local_idx: Optional[int],
     ) -> None:
-        # Name node is the `identifier` child
-        name_node = self._get_child_by_type(node, "identifier")
+        # Name is always a type_identifier child
+        name_node = self._field(node, "name")
         if not name_node:
             return
         name = self._txt(name_node, src)
         if not name:
             return
 
-        # Determine kind from keyword children: 'class', 'interface', 'fun' (fun interface)
-        # enum is indicated by modifiers containing 'enum' class_modifier
-        sym_kind = SymbolKind.CLASS
-        for c in node.children:
-            if c.type == "interface":
-                sym_kind = SymbolKind.INTERFACE
-                break
-        # Check for enum modifier
-        mod_node = self._get_child_by_type(node, "modifiers")
-        if mod_node:
-            for c in mod_node.children:
-                if c.type == "class_modifier" and self._txt(c, src) == "enum":
-                    sym_kind = SymbolKind.ENUM
-                    break
+        # Determine symbol kind from the 'kind' field (keyword token: 'interface', 'enum', 'class')
+        kind_node = self._field(node, "kind")
+        kind_text = kind_node.type if kind_node else "class"
 
+        if kind_text == "interface":
+            sym_kind = SymbolKind.INTERFACE
+        elif kind_text == "enum":
+            sym_kind = SymbolKind.ENUM
+        else:
+            sym_kind = SymbolKind.CLASS
+
+        # Decorators from annotations in modifiers
         decorators = self._extract_annotations(node, src)
+
+        # Visibility — default in Kotlin is public
         is_public = self._is_public(node, src)
 
+        # Qualified name (nested class gets parent prefix)
         if parent_class_local_idx is not None:
             parent_name = symbols[parent_class_local_idx].name  # type: ignore[index]
             qualified_name = f"{parent_name}.{name}"
@@ -181,17 +181,16 @@ class KotlinParser(BaseParser):
         class_local_idx = len(symbols)
         symbols.append(sym)
 
-        # Type edges from delegation_specifiers
+        # Type edges from delegation specifiers (: Base(), Interface)
         self._extract_type_edges(node, src, class_local_idx, type_edges)
 
         # Walk body
-        body_node = self._get_child_by_type(node, "enum_class_body")
+        body_node = self._field(node, "body")
         if body_node:
-            self._walk_enum_body(body_node, src, file_id, symbols, raw_calls, type_edges,
-                                 class_local_idx)
-        else:
-            body_node = self._get_child_by_type(node, "class_body")
-            if body_node:
+            if body_node.type == "enum_class_body":
+                self._walk_enum_body(body_node, src, file_id, symbols, raw_calls, type_edges,
+                                     class_local_idx)
+            else:
                 self._walk_class_body(body_node, src, file_id, symbols, raw_calls, type_edges,
                                       class_local_idx)
 
@@ -216,8 +215,8 @@ class KotlinParser(BaseParser):
                     self._handle_class_property(child, src, file_id, symbols, class_local_idx)
                     field_count += 1
             elif ntype == "companion_object":
-                # Companion object body is a class_body child
-                comp_body = self._get_child_by_type(child, "class_body")
+                # Companion object members are attributed to the parent class
+                comp_body = self._field(child, "body")
                 if comp_body:
                     self._walk_class_body(comp_body, src, file_id, symbols, raw_calls,
                                           type_edges, class_local_idx)
@@ -241,8 +240,12 @@ class KotlinParser(BaseParser):
         parent_name = symbols[class_local_idx].name  # type: ignore[index]
         for child in body.children:
             if child.type == "enum_entry":
-                # First named identifier child is the entry name
-                name_node = self._get_child_by_type(child, "identifier")
+                name_node = child.children[0] if child.children else None
+                # enum_entry: first named child is simple_identifier
+                for c in child.children:
+                    if c.is_named and c.type == "simple_identifier":
+                        name_node = c
+                        break
                 if name_node:
                     entry_name = self._txt(name_node, src)
                     symbols.append(Symbol(
@@ -275,7 +278,7 @@ class KotlinParser(BaseParser):
         type_edges: list[TypeEdge],
         parent_class_local_idx: Optional[int],
     ) -> None:
-        name_node = self._get_child_by_type(node, "identifier")
+        name_node = self._field(node, "name")
         if not name_node:
             return
         name = self._txt(name_node, src)
@@ -307,7 +310,7 @@ class KotlinParser(BaseParser):
 
         self._extract_type_edges(node, src, obj_local_idx, type_edges)
 
-        body_node = self._get_child_by_type(node, "class_body")
+        body_node = self._field(node, "body")
         if body_node:
             self._walk_class_body(body_node, src, file_id, symbols, raw_calls, type_edges,
                                   obj_local_idx)
@@ -325,28 +328,16 @@ class KotlinParser(BaseParser):
         raw_calls: list[tuple[Optional[int], str, int]],
         parent_class_local_idx: Optional[int],
     ) -> None:
-        name_node = self._get_child_by_type(node, "identifier")
+        name_node = self._field(node, "name")
         if not name_node:
             return
         name = self._txt(name_node, src)
         if not name:
             return
 
-        # Extension function: `fun String.reverse()` — look for a type before the identifier
-        # In the grammar, receiver type appears before the identifier when field named 'receiver'
-        receiver_node = node.child_by_field_name("receiver")
-        receiver_name: Optional[str] = None
-        if receiver_node:
-            id_node = self._get_child_by_type(receiver_node, "identifier")
-            if id_node:
-                receiver_name = self._txt(id_node, src)
-            else:
-                # Try user_type
-                ut = self._get_child_by_type(receiver_node, "user_type")
-                if ut:
-                    id2 = self._get_child_by_type(ut, "identifier")
-                    if id2:
-                        receiver_name = self._txt(id2, src)
+        # Extension function receiver: `fun String.upper()` → receiver = user_type before name
+        receiver_node = self._field(node, "receiver")
+        receiver_name = self._extract_type_name(receiver_node, src) if receiver_node else None
 
         is_method = parent_class_local_idx is not None
         if is_method:
@@ -379,14 +370,10 @@ class KotlinParser(BaseParser):
         func_local_idx = len(symbols)
         symbols.append(sym)
 
-        # Walk body for call edges
-        body_node = self._get_child_by_type(node, "function_body")
+        # Walk function body for call edges
+        body_node = self._field(node, "body")
         if body_node:
             self._walk_body_for_calls(body_node, src, raw_calls, func_local_idx)
-        # Also check block directly
-        block_node = self._get_child_by_type(node, "block")
-        if block_node:
-            self._walk_body_for_calls(block_node, src, raw_calls, func_local_idx)
 
     # ------------------------------------------------------------------
     # Properties / constants
@@ -400,10 +387,10 @@ class KotlinParser(BaseParser):
         symbols: list[Symbol],
     ) -> None:
         """Top-level property: extract if `const val` or ALL_CAPS name."""
-        var_decl = self._get_child_by_type(node, "variable_declaration")
-        if not var_decl:
+        var_node = self._field(node, "variable")
+        if not var_node:
             return
-        name_node = self._get_child_by_type(var_decl, "identifier")
+        name_node = self._get_child_by_type(var_node, "simple_identifier")
         if not name_node:
             return
         name = self._txt(name_node, src)
@@ -437,10 +424,10 @@ class KotlinParser(BaseParser):
         class_local_idx: int,
     ) -> None:
         """Class-level property: const → CONSTANT, typed field → VARIABLE."""
-        var_decl = self._get_child_by_type(node, "variable_declaration")
-        if not var_decl:
+        var_node = self._field(node, "variable")
+        if not var_node:
             return
-        name_node = self._get_child_by_type(var_decl, "identifier")
+        name_node = self._get_child_by_type(var_node, "simple_identifier")
         if not name_node:
             return
         name = self._txt(name_node, src)
@@ -455,15 +442,14 @@ class KotlinParser(BaseParser):
         if is_const or self._is_constant_name(name):
             sym_kind = SymbolKind.CONSTANT
         else:
-            # Only emit typed fields
-            has_type = (
-                self._get_child_by_type(var_decl, "user_type") is not None
-                or self._get_child_by_type(var_decl, "nullable_type") is not None
-            )
+            # Only emit typed fields (has type annotation on variable_declaration)
+            has_type = self._get_child_by_type(var_node, "user_type") is not None or \
+                       self._get_child_by_type(var_node, "nullable_type") is not None
             if not has_type:
                 return
             sym_kind = SymbolKind.VARIABLE
 
+        # Skip private single-underscore fields
         if name.startswith("_") and not name.startswith("__"):
             return
 
@@ -491,7 +477,7 @@ class KotlinParser(BaseParser):
         file_id: int,
         symbols: list[Symbol],
     ) -> None:
-        name_node = self._get_child_by_type(node, "identifier")
+        name_node = self._field(node, "name")
         if not name_node:
             return
         name = self._txt(name_node, src)
@@ -527,10 +513,11 @@ class KotlinParser(BaseParser):
                 continue
             if child.type == "call_expression":
                 self._extract_call(child, src, raw_calls, func_local_idx)
+                # Recurse into call arguments for nested calls
                 self._walk_body_for_calls(child, src, raw_calls, func_local_idx, depth + 1)
             elif child.type not in (
                 "function_declaration", "class_declaration", "object_declaration",
-                "lambda_literal",
+                "lambda_literal",  # separate scope — skip
             ):
                 self._walk_body_for_calls(child, src, raw_calls, func_local_idx, depth + 1)
 
@@ -550,14 +537,13 @@ class KotlinParser(BaseParser):
 
         if func_node.type == "simple_identifier":
             name = self._txt(func_node, src)
-        elif func_node.type == "identifier":
-            name = self._txt(func_node, src)
         elif func_node.type == "navigation_expression":
+            # obj.method() — last navigation_suffix simple_identifier is the method
             name = ""
             for c in func_node.children:
                 if c.type == "navigation_suffix":
                     for sc in c.children:
-                        if sc.is_named and sc.type in ("simple_identifier", "identifier"):
+                        if sc.is_named and sc.type == "simple_identifier":
                             name = self._txt(sc, src)
         else:
             return
@@ -576,26 +562,24 @@ class KotlinParser(BaseParser):
         import com.example.util.Logger  → imported_from="com.example.util.Logger"
         import kotlin.io.*              → imported_from="kotlin.io", imported_names=["*"]
         """
-        # In tree-sitter-kotlin 1.1, import node has a `qualified_identifier` child
-        qi = self._get_child_by_type(node, "qualified_identifier")
-        if not qi:
+        ident_node = self._get_child_by_type(node, "identifier")
+        if not ident_node:
             return []
 
-        # Collect identifier parts (separated by '.' non-named children)
-        parts: list[str] = []
-        for c in qi.children:
-            if c.is_named and c.type == "identifier":
-                parts.append(self._txt(c, src))
-
+        parts = [
+            self._txt(c, src)
+            for c in ident_node.children
+            if c.is_named and c.type == "simple_identifier"
+        ]
         if not parts:
             return []
 
         module_path = ".".join(parts)
 
-        # Check for wildcard: '*' as a non-named child of the import node itself
+        # Check for wildcard: last raw child of import_header is "*"
         imported_names: list[str] = []
         for c in node.children:
-            if not c.is_named and self._txt(c, src) == "*":
+            if not c.is_named and src[c.start_byte:c.end_byte] == b"*":
                 imported_names = ["*"]
                 break
 
@@ -619,12 +603,11 @@ class KotlinParser(BaseParser):
         from_idx: int,
         type_edges: list[TypeEdge],
     ) -> None:
-        """Extract TypeEdges from delegation_specifiers children."""
-        del_specs = self._get_child_by_type(node, "delegation_specifiers")
-        if not del_specs:
-            return
-        for child in del_specs.children:
+        """Extract TypeEdges from delegation_specifier children."""
+        for child in node.children:
             if child.type == "delegation_specifier":
+                # delegation_specifier > user_type > type_identifier
+                # delegation_specifier > constructor_invocation > user_type > type_identifier
                 type_name = self._extract_delegation_type(child, src)
                 if type_name:
                     type_edges.append(TypeEdge(
@@ -637,100 +620,82 @@ class KotlinParser(BaseParser):
         """Get the type name from a delegation_specifier node."""
         for child in node.children:
             if child.type == "user_type":
-                id_node = self._get_child_by_type(child, "identifier")
-                return self._txt(id_node, src) if id_node else None
+                return self._extract_type_name(child, src)
             elif child.type == "constructor_invocation":
                 ut = self._get_child_by_type(child, "user_type")
                 if ut:
-                    id_node = self._get_child_by_type(ut, "identifier")
-                    return self._txt(id_node, src) if id_node else None
+                    return self._extract_type_name(ut, src)
         return None
+
+    def _extract_type_name(self, user_type_node: Node, src: bytes) -> Optional[str]:
+        """Get the base type name (without generics) from a user_type node."""
+        ti = self._get_child_by_type(user_type_node, "type_identifier")
+        return self._txt(ti, src) if ti else None
 
     # ------------------------------------------------------------------
     # Signature builders
     # ------------------------------------------------------------------
 
     def _class_signature(self, node: Node, src: bytes) -> str:
-        """Build `[modifiers] class/interface/enum Name[params] [: Supertypes]`."""
-        # Determine keyword
-        keyword = "class"
-        for c in node.children:
-            if c.type in ("class", "interface", "fun"):
-                keyword = c.type
-                break
+        """Build `[modifiers] kind Name[(params)] [: Supertypes]`."""
+        kind_node = self._field(node, "kind")
+        kind_text = kind_node.type if kind_node else "class"
 
+        # Class modifier prefix (data, sealed, abstract, open)
         mod_prefix = self._class_mod_prefix(node, src)
 
-        name_node = self._get_child_by_type(node, "identifier")
+        name_node = self._field(node, "name")
         name = self._txt(name_node, src) if name_node else "?"
 
-        # Primary constructor params
+        # Primary constructor params (condensed)
+        ctor_node = self._field(node, "primary_constructor")
         ctor_text = ""
-        params_node = self._get_child_by_type(node, "primary_constructor")
-        if params_node:
-            fp = self._get_child_by_type(params_node, "class_parameters")
-            if fp:
-                ctor_text = self._txt(fp, src)
+        if ctor_node:
+            params_node = self._field(ctor_node, "parameters") or \
+                          self._get_child_by_type(ctor_node, "function_value_parameters") or \
+                          self._get_child_by_type(ctor_node, "class_parameters")
+            if params_node:
+                ctor_text = self._txt(params_node, src)
                 if len(ctor_text) > 80:
                     ctor_text = ctor_text[:77] + "..."
 
         # Supertypes
         supers: list[str] = []
-        del_specs = self._get_child_by_type(node, "delegation_specifiers")
-        if del_specs:
-            for child in del_specs.children:
-                if child.type == "delegation_specifier":
-                    t = self._extract_delegation_type(child, src)
-                    if t:
-                        supers.append(t)
+        for child in node.children:
+            if child.type == "delegation_specifier":
+                t = self._extract_delegation_type(child, src)
+                if t:
+                    supers.append(t)
         super_text = f" : {', '.join(supers)}" if supers else ""
 
-        return f"{mod_prefix}{keyword} {name}{ctor_text}{super_text}"
+        return f"{mod_prefix}{kind_text} {name}{ctor_text}{super_text}"
 
     def _func_signature(self, node: Node, src: bytes) -> str:
         """Build `fun [Receiver.]name(params)[: ReturnType]`."""
-        receiver_node = node.child_by_field_name("receiver")
-        name_node = self._get_child_by_type(node, "identifier")
-        params_node = self._get_child_by_type(node, "function_value_parameters")
-        # Return type: find 'user_type' or 'nullable_type' after the params
-        return_type = ""
-        found_params = False
-        for c in node.children:
-            if c == params_node:
-                found_params = True
-                continue
-            if found_params and c.type in ("user_type", "nullable_type", "function_type"):
-                return_type = self._txt(c, src)
-                break
+        receiver_node = self._field(node, "receiver")
+        name_node = self._field(node, "name")
+        params_node = self._field(node, "parameters")
+        return_node = self._field(node, "return_type")
 
-        receiver_text = ""
-        if receiver_node:
-            id_node = self._get_child_by_type(receiver_node, "identifier")
-            if not id_node:
-                ut = self._get_child_by_type(receiver_node, "user_type")
-                if ut:
-                    id_node = self._get_child_by_type(ut, "identifier")
-            if id_node:
-                receiver_text = f"{self._txt(id_node, src)}."
-
+        receiver_text = f"{self._extract_type_name(receiver_node, src)}." if receiver_node else ""
         name = self._txt(name_node, src) if name_node else "?"
         params = self._txt(params_node, src) if params_node else "()"
         if len(params) > 100:
             params = params[:97] + "..."
-        ret = f": {return_type}" if return_type else ""
+        ret = f": {self._txt(return_node, src)}" if return_node else ""
         return f"fun {receiver_text}{name}{params}{ret}"
 
     def _class_mod_prefix(self, node: Node, src: bytes) -> str:
-        """Extract data/sealed/abstract/open/enum prefix from modifiers."""
+        """Extract data/sealed/abstract/open prefix from modifiers."""
         mod_node = self._get_child_by_type(node, "modifiers")
         if not mod_node:
             return ""
         parts: list[str] = []
         for c in mod_node.children:
-            if c.type in ("class_modifier", "inheritance_modifier", "member_modifier"):
-                text = self._txt(c, src)
-                if text not in parts:
-                    parts.append(text)
+            if c.type == "class_modifier":
+                parts.append(self._txt(c, src))
+            elif c.type == "inheritance_modifier":
+                parts.append(self._txt(c, src))
         return (" ".join(parts) + " ") if parts else ""
 
     # ------------------------------------------------------------------
@@ -745,9 +710,7 @@ class KotlinParser(BaseParser):
         result: list[str] = []
         for c in mod_node.children:
             if c.type == "annotation":
-                text = self._txt(c, src)
-                if not text.startswith("@"):
-                    text = "@" + text
+                text = "@" + self._txt(c, src).lstrip("@")
                 if len(text) > 200:
                     text = text[:200] + "..."
                 result.append(text)
@@ -796,6 +759,10 @@ class KotlinParser(BaseParser):
 
     def _txt(self, node: Node, src: bytes) -> str:
         return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+    def _field(self, node: Node, field_name: str) -> Optional[Node]:
+        """Return child node at a named field position."""
+        return node.child_by_field_name(field_name)
 
     def _get_child_by_type(self, node: Node, type_name: str) -> Optional[Node]:
         for child in node.children:

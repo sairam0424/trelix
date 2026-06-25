@@ -1,10 +1,9 @@
 """
-Embedder abstraction — four providers, same interface.
+Embedder abstraction — three providers, same interface.
 
   local  → LocalEmbedder         (sentence-transformers, no API key needed)
   openai → OpenAIEmbedder        (standard OpenAI API)
   azure  → AzureOpenAIEmbedder   (Azure OpenAI, uses AZURE_* env vars)
-  aava   → AavaPlatformEmbedder  (Aava platform service, credentials injected by VS Code plugin)
 
 The rest of the pipeline only ever calls embed() / embed_query().
 Switching provider = change one line in config (TRELIX_EMBEDDER_PROVIDER).
@@ -141,91 +140,11 @@ class LocalEmbedder(BaseEmbedder):
         return self._model.get_sentence_embedding_dimension()  # type: ignore[return-value]
 
 
-class AavaPlatformEmbedder(BaseEmbedder):
-    """
-    Aava platform embedding service — POST /embedding/knowledge/v2/chunks/embed.
-
-    Credentials are injected by the VS Code plugin at indexing time:
-      EMBEDDING_BEARER_TOKEN  — SSO access token (rotated automatically by the plugin)
-      EMBEDDING_BASE_URL      — service base URL (e.g. https://aava-dev.avateam.io)
-
-    No API keys are stored in config files or VS Code settings.
-    Embedding dimension: 3072 (gemini-embedding-001).
-    """
-
-    _API_PATH = "/embedding/knowledge/v2/chunks/embed"
-    _DIMENSION = 3072  # gemini-embedding-001
-
-    def __init__(self, config: EmbedderConfig) -> None:
-        self._bearer_token = config.embedding_bearer_token or ""
-        self._base_url = config.embedding_base_url.rstrip("/")
-        self._embedding_service = config.embedding_service
-        self._model_ref = config.embedding_model_ref
-        self._batch_size = config.batch_size
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        import json
-        import time
-        import urllib.error
-        import urllib.request
-
-        results: list[list[float]] = []
-        url = f"{self._base_url}{self._API_PATH}"
-
-        for i in range(0, len(texts), self._batch_size):
-            batch = texts[i : i + self._batch_size]
-            payload = json.dumps({
-                "embedding_service": self._embedding_service,
-                "model_ref": self._model_ref,
-                "chunks": [{"text": t, "metadata": {}} for t in batch],
-            }).encode("utf-8")
-
-            req = urllib.request.Request(
-                url=url,
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self._bearer_token}",
-                },
-                method="POST",
-            )
-
-            last_exc: Exception | None = None
-            for attempt in range(3):
-                try:
-                    with urllib.request.urlopen(req) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                    last_exc = None
-                    break
-                except urllib.error.HTTPError as exc:
-                    body = exc.read().decode("utf-8", errors="replace")
-                    last_exc = RuntimeError(
-                        f"Embedding service returned {exc.code}: {body}"
-                    )
-                    if exc.code < 500:
-                        raise last_exc from exc
-                    time.sleep(2 ** attempt)
-
-            if last_exc is not None:
-                raise last_exc
-
-            results.extend([e["vector"] for e in data["data"]["embeddings"]])
-
-        return results
-
-    def embed_query(self, text: str) -> list[float]:
-        return self.embed([text])[0]
-
-    @property
-    def dimension(self) -> int:
-        return self._DIMENSION
-
-
 def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
     """Factory — instantiate the right embedder from config.provider.
 
     Args:
-        config: EmbedderConfig with provider set to "local", "openai", "azure", or "aava".
+        config: EmbedderConfig with provider set to "local", "openai", or "azure".
 
     Returns:
         The appropriate BaseEmbedder subclass instance.
@@ -235,8 +154,6 @@ def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
         ImportError: If provider is "local" and sentence-transformers is not installed.
     """
     match config.provider:
-        case "aava":
-            return AavaPlatformEmbedder(config)
         case "azure":
             return AzureOpenAIEmbedder(config)
         case "openai":
@@ -246,5 +163,5 @@ def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
         case _:
             raise ValueError(
                 f"Unknown embedder provider: {config.provider!r}. "
-                "Expected one of: 'local', 'openai', 'azure', 'aava'."
+                "Expected one of: 'local', 'openai', 'azure'."
             )

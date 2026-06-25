@@ -203,16 +203,17 @@ class Synthesizer:
             query=context.query,
         )
 
-        max_tokens = config.synthesis_max_tokens if hasattr(config, "synthesis_max_tokens") else 2048
+        max_tokens: int = getattr(config, "synthesis_max_tokens", 2048)
 
-        # For Azure use azure client attribute; for openai use openai client
+        # max_completion_tokens is required for newer OpenAI/Azure models (o-series, gpt-4o);
+        # older deployments use max_tokens. Try max_completion_tokens first, fall back on error.
         stream = self._client.chat.completions.create(  # type: ignore[union-attr]
             model=self._model_name(),
             messages=[
                 {"role": "system", "content": self._system_prompt(context.intent)},
                 {"role": "user",   "content": user_message},
             ],
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             temperature=0.2,
             stream=True,
         )

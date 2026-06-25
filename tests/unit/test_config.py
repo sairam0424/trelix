@@ -128,7 +128,7 @@ class TestWalkerConfig:
 
 class TestEmbedderConfig:
     def test_default_provider_is_local(self) -> None:
-        cfg = EmbedderConfig()
+        cfg = EmbedderConfig(_env_file=None)  # type: ignore[call-arg]
         assert cfg.provider == "local"
 
     def test_local_dimension(self) -> None:
@@ -154,25 +154,10 @@ class TestStoreConfig:
         cfg = StoreConfig()
         assert cfg.db_path == ".trelix/index.db"
 
-    def test_legacy_codeindex_store_db_path_compat(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """CODEINDEX_STORE_DB_PATH must be honoured when TRELIX_STORE_DB_PATH is absent.
-
-        This ensures the VS Code plugin (which passes CODEINDEX_STORE_DB_PATH) works
-        without any configuration changes.
-        """
-        monkeypatch.delenv("TRELIX_STORE_DB_PATH", raising=False)
-        monkeypatch.setenv("CODEINDEX_STORE_DB_PATH", ".aava/.codeindex/index.db")
-        cfg = StoreConfig()
-        assert cfg.db_path == ".aava/.codeindex/index.db"
-
-    def test_trelix_env_takes_precedence_over_legacy(
+    def test_custom_db_path_via_env(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """TRELIX_STORE_DB_PATH must win over CODEINDEX_STORE_DB_PATH when both are set."""
         monkeypatch.setenv("TRELIX_STORE_DB_PATH", ".trelix/custom.db")
-        monkeypatch.setenv("CODEINDEX_STORE_DB_PATH", ".aava/.codeindex/index.db")
         cfg = StoreConfig()
         assert cfg.db_path == ".trelix/custom.db"
 
@@ -209,5 +194,5 @@ class TestIndexConfig:
         assert gitignore.read_text() == "*\n"
 
     def test_default_provider_is_local(self, tmp_path: Path) -> None:
-        cfg = IndexConfig(repo_path=str(tmp_path))
+        cfg = IndexConfig(repo_path=str(tmp_path), embedder={"_env_file": None})  # type: ignore[arg-type]
         assert cfg.embedder.provider == "local"

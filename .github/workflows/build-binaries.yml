@@ -9,18 +9,18 @@ on:
 
 jobs:
   build:
-    name: Build codeindex (${{ matrix.os }})
+    name: Build trelix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
-            artifact-name: codeindex-macos-arm64
-            binary-path: dist/codeindex
+            artifact-name: trelix-macos-arm64
+            binary-path: dist/trelix
           - os: windows-latest
-            artifact-name: codeindex-windows-x64
-            binary-path: dist/codeindex.exe
+            artifact-name: trelix-windows-x64
+            binary-path: dist/trelix.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -38,12 +38,12 @@ jobs:
       - name: Verify binary (macOS)
         if: runner.os == 'macOS'
         run: |
-          file dist/codeindex
-          ./dist/codeindex --help
+          file dist/trelix
+          ./dist/trelix --help
 
       - name: Verify binary (Windows)
         if: runner.os == 'Windows'
-        run: dist/codeindex.exe --help
+        run: dist/trelix.exe --help
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

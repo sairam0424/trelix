@@ -29,8 +29,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-import tree_sitter_cpp as _ts_cpp
-from tree_sitter import Language, Node, Parser
+import tree_sitter_languages
+from tree_sitter import Node, Parser
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 from trelix.indexing.parser.base import BaseParser, ParseResult
@@ -43,7 +43,9 @@ class CppParser(BaseParser):
     MAX_CLASS_FIELDS: int = 30
 
     def __init__(self) -> None:
-        self._parser = Parser(Language(_ts_cpp.language()))
+        self._ts_lang = tree_sitter_languages.get_language("cpp")
+        self._parser = Parser()
+        self._parser.set_language(self._ts_lang)
 
     @property
     def language_name(self) -> str:
