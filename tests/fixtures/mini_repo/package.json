@@ -1,0 +1,12 @@
+{
+  "name": "mini-repo",
+  "version": "1.0.0",
+  "description": "Synthetic test repository for trelix integration tests",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  },
+  "keywords": ["test", "fixture"],
+  "license": "MIT"
+}

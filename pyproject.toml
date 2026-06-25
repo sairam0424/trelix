@@ -32,8 +32,11 @@ classifiers = [
 ]
 dependencies = [
     # --- Parsing ---
-    "tree-sitter>=0.21,<0.22",
-    "tree-sitter-languages>=1.10.2",
+    "tree-sitter>=0.21",
+    "tree-sitter-c>=0.23",
+    "tree-sitter-cpp>=0.23",
+    "tree-sitter-c-sharp>=0.23",
+    "tree-sitter-kotlin>=1.1",
     "PyYAML>=6.0",
     # --- Storage ---
     "sqlite-vec>=0.1.6",
@@ -51,6 +54,8 @@ dependencies = [
     # --- Config ---
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
+    # --- Secure XML parsing (XXE/billion-laughs protection for .csproj) ---
+    "defusedxml>=0.7.1",
     # --- Graph (PageRank) ---
     "networkx>=3.3.0",
 ]
@@ -105,6 +110,7 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--tb=short"
+pythonpath = ["src"]
 
 [tool.coverage.run]
 source = ["src/trelix"]
@@ -112,4 +118,4 @@ omit = ["tests/*"]
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 0   # raised to 80 in Phase 15
+fail_under = 0
