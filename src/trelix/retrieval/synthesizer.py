@@ -24,7 +24,7 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from trelix.core.config import EmbedderConfig
+    from trelix.core.config import EmbedderConfig, RetrievalConfig
     from trelix.core.models import RetrievedContext
 
 logger = logging.getLogger("trelix.retrieval.synthesizer")
@@ -100,11 +100,23 @@ class Synthesizer:
 
     Streams output to stdout so the user sees tokens arrive in real time.
     Falls back silently when no API key / provider is available.
+
+    For large contexts (>20 results or >8k tokens), delegates to
+    GraphRAGSynthesizer which runs map-reduce synthesis.
     """
 
-    def __init__(self, config: EmbedderConfig) -> None:
+    def __init__(
+        self,
+        config: EmbedderConfig,
+        retrieval_config: RetrievalConfig | None = None,
+    ) -> None:
         self._config = config
         self._client = self._build_client(config)
+        # Lazy-import to avoid circular deps; default to RetrievalConfig() if not supplied.
+        if retrieval_config is None:
+            from trelix.core.config import RetrievalConfig as _RC
+            retrieval_config = _RC()
+        self._retrieval_config = retrieval_config
 
     # ------------------------------------------------------------------
     # Public API
@@ -138,6 +150,20 @@ class Synthesizer:
             msg = "[trelix] No relevant code found — cannot synthesize an answer."
             print(msg, flush=True)
             return msg
+
+        # Delegate to GraphRAG map-reduce for large contexts.
+        try:
+            from trelix.retrieval.graph_rag import GraphRAGSynthesizer
+            graph_rag = GraphRAGSynthesizer(cfg, self._retrieval_config)
+            if graph_rag.should_use(context):
+                logger.info(
+                    "Delegating to GraphRAG map-reduce (results=%d, tokens=%d)",
+                    len(context.results),
+                    context.total_tokens,
+                )
+                return graph_rag.synthesize(context.query, context, context.intent)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("GraphRAG check/dispatch failed, falling back to standard: %s", exc)
 
         try:
             return self._stream_response(context, cfg)

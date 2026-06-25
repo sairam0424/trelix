@@ -212,6 +212,11 @@ class RetrievalConfig(BaseSettings):
     context_token_budget: int = 12_000
     synthesis_max_tokens: int = 12_000
 
+    # GraphRAG map-reduce synthesis
+    graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")
+    graph_rag_threshold_tokens: int = 8000
+    graph_rag_threshold_results: int = 20
+
 
 # ---------------------------------------------------------------------------
 # Root config
