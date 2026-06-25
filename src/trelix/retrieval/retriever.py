@@ -39,7 +39,7 @@ from .bm25 import bm25_search
 from .fusion import reciprocal_rank_fusion
 from .graph import expand_with_call_graph, expand_with_imports, expand_with_type_edges, seed_from_import_paths
 from .grep_search import grep_search
-from .planner.models import IntentType, QueryPlan, default_plan
+from .planner.models import IntentType, QueryPlan, RoutingTier, default_plan
 from .planner.agent import QueryPlanner
 from .reranker import rerank
 
@@ -163,6 +163,12 @@ class Retriever:
     # ------------------------------------------------------------------
 
     def _execute_plan(self, plan: QueryPlan) -> RetrievedContext:
+        # Tier 1 DIRECT: skip all retrieval legs — answer from project overview only.
+        # The router has already classified this as a trivial factual query.
+        if getattr(plan, "routing_tier", None) == RoutingTier.TIER_1_DIRECT:
+            logger.info("Tier 1 DIRECT path: skipping retrieval legs for query=%r", plan.raw_query)
+            return self._retrieve_project_overview(plan)
+
         if plan.intent == IntentType.FILE_OVERVIEW:
             return self._retrieve_file_overview(plan)
         if plan.intent == IntentType.PROJECT_OVERVIEW:
@@ -170,6 +176,7 @@ class Retriever:
         if plan.intent == IntentType.CONFIG_LOOKUP:
             return self._retrieve_config(plan)
         # SYMBOL_LOOKUP, FEATURE_FLOW, COMPARISON, DEPENDENCY_MAP, BLAST_RADIUS
+        # Tier 3 MULTI also lands here — execution_mode="parallel" runs all sub-queries.
         return self._retrieve_standard(plan)
 
     # ------------------------------------------------------------------

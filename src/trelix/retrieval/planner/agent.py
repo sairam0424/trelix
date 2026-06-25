@@ -8,22 +8,33 @@ per-retrieval-leg hints.
 On ANY failure (missing API key, network error, parse error, invalid tool
 call) it silently falls back to default_plan() — the retriever always gets
 a valid QueryPlan.
+
+AdaptiveRouter wraps QueryPlanner with 3-tier routing:
+  Tier 1 (DIRECT)  — trivial factual queries, skip retrieval
+  Tier 2 (SINGLE)  — default single-step plan (existing LLM call)
+  Tier 3 (MULTI)   — complex multi-part queries, LLM decomposes into 2-3 sub-queries
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from trelix.retrieval.planner.models import (
     INTENT_STRATEGIES,
     IntentType,
     QueryPlan,
+    RoutingTier,
     SubQuery,
     default_plan,
 )
-from trelix.retrieval.planner.prompts import PLANNER_TOOL_SCHEMA, SYSTEM_PROMPT
+from trelix.retrieval.planner.prompts import (
+    DECOMPOSITION_PROMPT,
+    PLANNER_TOOL_SCHEMA,
+    SYSTEM_PROMPT,
+)
 
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig
@@ -35,9 +46,240 @@ _PLANNER_MODEL_OPENAI = "gpt-4o-mini"
 _PLANNER_MODEL_AZURE  = "gpt-4o"   # deployment name; caller can override via config
 
 
+class AdaptiveRouter:
+    """
+    3-tier adaptive query router.
+
+    Tier 1 (DIRECT): trivial factual queries matched by regex — skip retrieval
+                     entirely and return a PROJECT_OVERVIEW plan backed by
+                     file_direct lookup (very cheap).
+    Tier 2 (SINGLE): default single-step plan — delegates to the LLM planner
+                     (existing behaviour, handles ~90 % of queries).
+    Tier 3 (MULTI):  complex multi-part queries — LLM decomposes the question
+                     into 2–3 focused sub-queries run in parallel.
+
+    Usage::
+
+        router = AdaptiveRouter(config)
+        plan = router.route("what is trelix?")        # → Tier 1
+        plan = router.route("how does auth work?")    # → Tier 2
+        plan = router.route("walk me through how …")  # → Tier 3
+    """
+
+    # ------------------------------------------------------------------
+    # Tier 1: trivial factual queries — no retrieval needed
+    # ------------------------------------------------------------------
+    _TIER_1_PATTERNS: list[re.Pattern[str]] = [
+        re.compile(r"^what (is|are) \w+\??$", re.IGNORECASE),
+        re.compile(r"^(list|show) all ", re.IGNORECASE),
+        re.compile(r"^define ", re.IGNORECASE),
+    ]
+
+    # ------------------------------------------------------------------
+    # Tier 3 signals — any match escalates to multi-step decomposition
+    # ------------------------------------------------------------------
+    _TIER_3_PHRASES: tuple[str, ...] = (
+        "from ... to ...",
+        "end-to-end",
+        "step by step",
+        "walk me through",
+        "full flow",
+    )
+
+    def __init__(self, config: EmbedderConfig) -> None:
+        self._config = config
+        # Lazy — only built when an LLM call is actually needed.
+        self._planner: QueryPlanner | None = None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def route(self, query: str, project_context: dict | None = None) -> QueryPlan:
+        """
+        Route *query* to the appropriate tier and return a QueryPlan.
+
+        Never raises — any failure falls back to default_plan().
+        """
+        try:
+            if self._is_tier1(query):
+                logger.debug("AdaptiveRouter: Tier 1 (direct) for query=%r", query)
+                return self._tier1_plan(query)
+
+            if self._is_tier3(query):
+                logger.debug("AdaptiveRouter: Tier 3 (multi-step) for query=%r", query)
+                return self._multi_step_plan(query, project_context)
+
+            logger.debug("AdaptiveRouter: Tier 2 (single-step) for query=%r", query)
+            return self._single_step_plan(query, project_context)
+
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "AdaptiveRouter: routing failed (%s), falling back to default plan.", exc
+            )
+            return default_plan(query)
+
+    # ------------------------------------------------------------------
+    # Tier detection helpers
+    # ------------------------------------------------------------------
+
+    def _is_tier1(self, query: str) -> bool:
+        """Return True when *query* matches any Tier 1 trivial-factual pattern."""
+        q = query.strip()
+        return any(pattern.match(q) for pattern in self._TIER_1_PATTERNS)
+
+    def _is_tier3(self, query: str) -> bool:
+        """Return True when *query* signals a complex multi-step question."""
+        q_lower = query.lower()
+        # Explicit phrase signals
+        if any(phrase in q_lower for phrase in self._TIER_3_PHRASES):
+            return True
+        # Long query with multiple conjunctions
+        if len(query) > 80 and q_lower.count(" and ") >= 2:
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Tier 1: direct answer from project overview (no retrieval legs)
+    # ------------------------------------------------------------------
+
+    def _tier1_plan(self, query: str) -> QueryPlan:
+        intent = IntentType.PROJECT_OVERVIEW
+        return QueryPlan(
+            intent=intent,
+            routing_tier=RoutingTier.TIER_1_DIRECT,
+            execution_mode="parallel",
+            strategy=INTENT_STRATEGIES[intent],
+            sub_queries=[SubQuery(
+                semantic_query=query,
+                hyde_snippet="",
+                bm25_tokens=query.split(),
+                grep_hints=[],
+                file_hints=[],
+            )],
+            raw_query=query,
+        )
+
+    # ------------------------------------------------------------------
+    # Tier 2: delegate to the LLM single-step planner (existing behaviour)
+    # ------------------------------------------------------------------
+
+    def _single_step_plan(
+        self, query: str, project_context: dict | None
+    ) -> QueryPlan:
+        # Call _plan_direct() (not plan()) to avoid re-entering the router loop.
+        plan = self._get_planner()._plan_direct(query, project_context)
+        # Stamp the tier (planner doesn't know about tiers)
+        plan.routing_tier = RoutingTier.TIER_2_SINGLE
+        return plan
+
+    # ------------------------------------------------------------------
+    # Tier 3: LLM decomposes query → 2-3 parallel sub-queries
+    # ------------------------------------------------------------------
+
+    def _multi_step_plan(
+        self, query: str, project_context: dict | None
+    ) -> QueryPlan:
+        """
+        Ask the LLM to decompose *query* into 2–3 focused sub-questions and
+        build a parallel QueryPlan from the result.
+
+        Falls back to single-step on any parse error.
+        """
+        planner = self._get_planner()
+        if planner._client is None:
+            # No LLM available — single-step fallback with Tier 3 stamp
+            plan = default_plan(query)
+            plan.routing_tier = RoutingTier.TIER_3_MULTI
+            return plan
+
+        try:
+            sub_questions = self._decompose_via_llm(planner, query)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "AdaptiveRouter: decomposition failed (%s), falling back to single-step.", exc
+            )
+            plan = planner._plan_direct(query, project_context)
+            plan.routing_tier = RoutingTier.TIER_3_MULTI
+            return plan
+
+        # Build one SubQuery per decomposed sub-question.
+        sub_queries = [
+            SubQuery(
+                semantic_query=sq_text,
+                hyde_snippet="",
+                bm25_tokens=sq_text.split(),
+                grep_hints=[],
+                file_hints=[],
+            )
+            for sq_text in sub_questions
+        ]
+
+        if not sub_queries:
+            plan = planner._plan_direct(query, project_context)
+            plan.routing_tier = RoutingTier.TIER_3_MULTI
+            return plan
+
+        intent = IntentType.FEATURE_FLOW
+        return QueryPlan(
+            intent=intent,
+            routing_tier=RoutingTier.TIER_3_MULTI,
+            execution_mode="parallel",
+            strategy=INTENT_STRATEGIES[intent],
+            sub_queries=sub_queries,
+            raw_query=query,
+        )
+
+    def _decompose_via_llm(self, planner: QueryPlanner, query: str) -> list[str]:
+        """
+        Call the LLM with DECOMPOSITION_PROMPT and parse the returned JSON array.
+
+        Returns a list of 2–3 sub-question strings.
+        Raises ValueError if parsing fails.
+        """
+        prompt = DECOMPOSITION_PROMPT.format(query=query)
+
+        response = planner._client.chat.completions.create(  # type: ignore[union-attr]
+            model=planner._model_name(),
+            messages=[
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            timeout=15.0,
+        )
+
+        raw = response.choices[0].message.content or ""
+        # Strip markdown fences if the model wraps the JSON
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw)
+
+        sub_questions: list[str] = json.loads(raw)
+        if not isinstance(sub_questions, list) or not sub_questions:
+            raise ValueError(f"Unexpected decomposition response: {raw!r}")
+
+        # Clamp to 2–3 sub-questions
+        sub_questions = [str(sq).strip() for sq in sub_questions[:3]]
+        if len(sub_questions) < 2:
+            raise ValueError(f"Too few sub-questions decomposed: {sub_questions!r}")
+
+        return sub_questions
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get_planner(self) -> QueryPlanner:
+        """Lazily create the QueryPlanner (builds the LLM client once)."""
+        if self._planner is None:
+            self._planner = QueryPlanner(self._config)
+        return self._planner
+
+
 class QueryPlanner:
     """
-    LLM-backed query planner.
+    LLM-backed query planner — thin wrapper around AdaptiveRouter.
 
     Usage::
 
@@ -45,13 +287,21 @@ class QueryPlanner:
         planner = QueryPlanner(config)
         plan = planner.plan("how does the indexing pipeline work?")
 
-    The planner makes ONE tool-call to the chat LLM and parses the result
-    into a QueryPlan.  Falls back to default_plan() on any failure.
+    Internally delegates to AdaptiveRouter which applies 3-tier routing:
+      Tier 1 — trivial factual queries (direct, no retrieval)
+      Tier 2 — single-step LLM plan (default, existing behaviour)
+      Tier 3 — multi-step decomposition for complex queries
+
+    On ANY failure falls back to default_plan() — the retriever always gets
+    a valid QueryPlan.
     """
 
     def __init__(self, config: EmbedderConfig) -> None:
         self._config = config
         self._client = self._build_client(config)
+        # AdaptiveRouter is initialised lazily on first plan() call to avoid
+        # circular reference issues during __init__ of the router itself.
+        self._router: AdaptiveRouter | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -59,7 +309,7 @@ class QueryPlanner:
 
     def plan(self, query: str, project_context: dict | None = None) -> QueryPlan:
         """
-        Produce a QueryPlan for *query*.
+        Produce a QueryPlan for *query* via adaptive 3-tier routing.
 
         Args:
             query:           The raw natural-language question from the user.
@@ -68,8 +318,24 @@ class QueryPlanner:
                              Currently appended to the user message as JSON.
 
         Returns:
-            A fully populated QueryPlan.  Never raises — falls back to
-            default_plan() on any error.
+            A fully populated QueryPlan with routing_tier set.
+            Never raises — falls back to default_plan() on any error.
+        """
+        if self._router is None:
+            self._router = AdaptiveRouter(self._config)
+        return self._router.route(query, project_context)
+
+    # ------------------------------------------------------------------
+    # Direct LLM call (used internally by AdaptiveRouter for Tier 2)
+    # ------------------------------------------------------------------
+
+    def _plan_direct(self, query: str, project_context: dict | None = None) -> QueryPlan:
+        """
+        Produce a single-step QueryPlan via one LLM tool-call.
+
+        This is the original plan() body, preserved for AdaptiveRouter._single_step_plan()
+        to call directly without triggering the router loop.
+        Falls back to default_plan() on any failure.
         """
         if self._client is None:
             logger.debug("QueryPlanner: no LLM client available, using default plan.")
@@ -140,7 +406,7 @@ class QueryPlanner:
 
         Raises on any failure so the caller can fall back cleanly.
         """
-        from openai import OpenAI, AzureOpenAI  # noqa: F401 — needed for type narrowing
+        from openai import AzureOpenAI, OpenAI  # noqa: F401 — needed for type narrowing
 
         response = self._client.chat.completions.create(  # type: ignore[union-attr]
             model=self._model_name(),
