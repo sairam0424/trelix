@@ -51,10 +51,10 @@ check-dist:
 # ---------------------------------------------------------------------------
 
 clean:
-	rm -rf dist/ build/ *.egg-info/ .pytest_cache/ .coverage htmlcov/ .ruff_cache/ .mypy_cache/ trelix.spec.d/ __pycache__/ $(shell find . -name '*.pyc' -not -path './.venv/*' 2>/dev/null)
+	rm -rf dist/ build/ *.egg-info/ .pytest_cache/ .coverage htmlcov/ .ruff_cache/ .mypy_cache/ trelix.spec.d/
 
 # ---------------------------------------------------------------------------
-# Binary (PyInstaller — produces dist/codeindex)
+# Binary (PyInstaller — produces dist/trelix)
 # ---------------------------------------------------------------------------
 
 binary:
@@ -66,9 +66,9 @@ binary-clean:
 
 binary-install:
 	@if [ "$$(uname)" != "Darwin" ]; then \
-	    echo "binary-install is macOS-only. Copy dist/codeindex manually on other platforms."; \
+	    echo "binary-install is macOS-only. Copy dist/trelix manually on other platforms."; \
 	    exit 1; \
 	fi
-	sudo cp dist/codeindex /usr/local/bin/codeindex
-	@echo "Installed: /usr/local/bin/codeindex"
-	@codeindex --version
+	sudo cp dist/trelix /usr/local/bin/trelix
+	@echo "Installed: /usr/local/bin/trelix"
+	@trelix --version

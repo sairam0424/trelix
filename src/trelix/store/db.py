@@ -145,7 +145,7 @@ class Database:
     Thin wrapper around sqlite3 with typed methods for each table.
 
     Usage:
-        db = Database(Path(".trelix/.codeindex/index.db"))
+        db = Database(Path(".trelix/index.db"))
         file_id = db.upsert_file(indexed_file)
         symbol_id = db.insert_symbol(symbol)
         db.close()

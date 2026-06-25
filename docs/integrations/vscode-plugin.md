@@ -1,17 +1,14 @@
-# trelix in VS Code (Drop-in for aava-core-vscode-ide-plugin)
+# trelix in VS Code
 
-## How it works
+## Overview
 
-The `aava-core-vscode-ide-plugin` bundles a precompiled binary at:
+A VS Code extension can use trelix as a bundled binary to provide code
+intelligence features — indexing, semantic search, BM25 search, and
+call-graph traversal — entirely on the developer's machine.
 
-```
-src/assets/bin/codeindex        # macOS / Linux
-src/assets/bin/codeindex.exe    # Windows
-```
-
-trelix compiles to the **exact same binary name and CLI interface** — it is a
-drop-in replacement. No plugin source changes are required; you only swap the
-binary.
+The binary is compiled as a single self-contained executable via PyInstaller
+and embedded in the extension package. No Python installation is required on
+the user's machine.
 
 ---
 
@@ -28,105 +25,74 @@ This runs `scripts/build-binary.sh`, which:
 1. Creates / activates `.venv` (Python 3.11+).
 2. Installs `trelix[local,dev]` + PyInstaller.
 3. Runs `pyinstaller trelix.spec --clean --noconfirm`.
-4. Smoke-tests the result with `dist/codeindex --help`.
+4. Smoke-tests the result with `dist/trelix --help`.
 
-**Output:** `dist/codeindex` (macOS arm64 / Linux x64) or `dist/codeindex.exe`
+**Output:** `dist/trelix` (macOS arm64 / Linux x64) or `dist/trelix.exe`
 (Windows x64 when built on Windows).
 
 ---
 
-## Replacing the plugin binary
+## Embedding the binary in an extension
 
-### macOS / Linux
+Place the compiled binary in your extension's assets directory, then resolve
+it at runtime based on `process.platform`:
 
-```bash
-cp dist/codeindex /path/to/aava-core-vscode-ide-plugin/src/assets/bin/codeindex
-chmod +x /path/to/aava-core-vscode-ide-plugin/src/assets/bin/codeindex
+```typescript
+const binName = process.platform === 'win32' ? 'trelix.exe' : 'trelix';
+const binaryPath = path.join(context.extensionPath, 'src', 'assets', 'bin', binName);
 ```
-
-Or install system-wide (macOS only):
-
-```bash
-make binary-install   # sudo-copies to /usr/local/bin/codeindex
-```
-
-### Windows
-
-```bat
-copy dist\codeindex.exe \path\to\aava-core-vscode-ide-plugin\src\assets\bin\codeindex.exe
-```
-
-The plugin selects the binary via a `process.platform` check in
-`python-engine.ts`, so the platform-correct filename is picked automatically
-at runtime.
 
 ---
 
-## CLI interface the plugin uses
+## CLI commands
 
-The plugin (`python-engine.ts`) issues exactly two commands:
+Two commands cover the full indexing and incremental-update lifecycle:
 
 ### Full index
 
 ```bash
-codeindex index <workspace-path> \
-    --provider <aava|azure|openai|local> \
-    -v
+trelix index <workspace-path> --provider <local|openai|azure> -v
 ```
 
 ### Incremental file update
 
 ```bash
-codeindex update-index <workspace-path> <changed-file> \
-    --provider <provider>
+trelix update-index <workspace-path> <changed-file> --provider <provider>
 ```
-
-Both commands read configuration from the environment (see below). trelix
-accepts the identical flags and positional arguments.
 
 ---
 
 ## Environment variables
 
-| Variable | Plugin role | trelix mapping |
-|---|---|---|
-| `EMBEDDING_BEARER_TOKEN` | Bearer token sent to the embedding endpoint | Passed directly to the `aava` provider HTTP client as the `Authorization: Bearer` header |
-| `EMBEDDING_BASE_URL` | Base URL of the embedding service (e.g. `https://api.aava.ai/v1`) | Used by `aava`, `azure`, and `openai` providers as the API base URL |
-| `CODEINDEX_STORE_DB_PATH` | Absolute path where the plugin expects the SQLite DB to be written | Forwarded internally as `TRELIX_STORE_DB_PATH` — **note this name difference**. If `CODEINDEX_STORE_DB_PATH` is set trelix reads it; set `TRELIX_STORE_DB_PATH` to override |
-
-> **Compatibility note:** trelix reads `CODEINDEX_STORE_DB_PATH` as an alias
-> for `TRELIX_STORE_DB_PATH` so the plugin works out of the box without any
-> environment changes.
+| Variable | Purpose |
+|---|---|
+| `TRELIX_EMBEDDER_PROVIDER` | Provider: `local` \| `openai` \| `azure` |
+| `OPENAI_API_KEY` | API key for the `openai` provider |
+| `AZURE_API_KEY` / `AZURE_ENDPOINT` | Credentials for the `azure` provider |
+| `TRELIX_STORE_DB_PATH` | Path where trelix writes the SQLite index |
 
 ---
 
-## Database schema compatibility
+## Database schema
 
-trelix writes the identical SQLite schema that the plugin expects:
+trelix writes a SQLite file (`.trelix/index.db` by default) with this schema:
 
 | Table | Purpose |
 |---|---|
-| `symbols` | AST-extracted symbol records (name, kind, location, doc) |
-| `symbols_fts` | FTS5 full-text index over `symbols` |
+| `symbols` | AST-extracted symbol records |
+| `symbols_fts` | FTS5 full-text index |
 | `chunks` | Text chunks with embedding vectors |
 | `call_graph` | Caller → callee edges |
 | `imports` | Module import relationships |
-| `type_edges` | Type hierarchy / usage edges |
+| `type_edges` | Type hierarchy edges |
 | `vec0` | sqlite-vec virtual table for ANN search |
-
-The plugin can open a database produced by trelix (and vice-versa) without
-migration.
 
 ---
 
 ## Provider mapping
 
-| `--provider` value | Embedding backend |
+| `--provider` | Embedding backend |
 |---|---|
-| `aava` | Aava platform embedding service (uses `EMBEDDING_BASE_URL` + `EMBEDDING_BEARER_TOKEN`) |
-| `azure` | Azure OpenAI Embeddings (uses `EMBEDDING_BASE_URL` as the Azure endpoint) |
-| `openai` | OpenAI Embeddings API (`text-embedding-3-small` by default) |
-| `local` | Local sentence-transformers model — no network call, no token required |
-
-The `local` provider is useful for offline development or CI environments where
-no embedding service is available.
+| `local` | sentence-transformers — no network call, no token required |
+| `openai` | OpenAI Embeddings API (`text-embedding-3-large`) |
+| `azure` | Azure OpenAI Embeddings |
