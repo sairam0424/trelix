@@ -1,4 +1,4 @@
-.PHONY: install install-dev lint format typecheck test test-fast eval clean build binary binary-clean binary-install
+.PHONY: install install-dev lint format typecheck test test-fast eval eval-full clean build binary binary-clean binary-install
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -34,7 +34,11 @@ test-fast:
 	pytest tests/unit/ -x -q
 
 eval:
-	pytest tests/integration/test_recall.py -v
+	pytest tests/integration/test_recall.py tests/integration/test_eval.py -v
+
+# Full 50-query trelix self-eval (slow — indexes trelix source; skip in CI)
+eval-full:
+	$(VENV) -m pytest tests/eval/ -v --tb=short -s
 
 # ---------------------------------------------------------------------------
 # Release
