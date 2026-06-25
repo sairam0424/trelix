@@ -154,6 +154,28 @@ class TestStoreConfig:
         cfg = StoreConfig()
         assert cfg.db_path == ".trelix/index.db"
 
+    def test_legacy_codeindex_store_db_path_compat(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """CODEINDEX_STORE_DB_PATH must be honoured when TRELIX_STORE_DB_PATH is absent.
+
+        This ensures the VS Code plugin (which passes CODEINDEX_STORE_DB_PATH) works
+        without any configuration changes.
+        """
+        monkeypatch.delenv("TRELIX_STORE_DB_PATH", raising=False)
+        monkeypatch.setenv("CODEINDEX_STORE_DB_PATH", ".aava/.codeindex/index.db")
+        cfg = StoreConfig()
+        assert cfg.db_path == ".aava/.codeindex/index.db"
+
+    def test_trelix_env_takes_precedence_over_legacy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TRELIX_STORE_DB_PATH must win over CODEINDEX_STORE_DB_PATH when both are set."""
+        monkeypatch.setenv("TRELIX_STORE_DB_PATH", ".trelix/custom.db")
+        monkeypatch.setenv("CODEINDEX_STORE_DB_PATH", ".aava/.codeindex/index.db")
+        cfg = StoreConfig()
+        assert cfg.db_path == ".trelix/custom.db"
+
 
 class TestRetrievalConfig:
     def test_defaults(self) -> None:
