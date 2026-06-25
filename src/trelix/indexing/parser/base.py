@@ -16,6 +16,7 @@ from trelix.core.models import CallEdge, ImportEdge, Symbol, TypeEdge
 @dataclass
 class ParseResult:
     """Everything extracted from a single file."""
+
     symbols: list[Symbol]
     call_edges: list[CallEdge]      # populated only if config.parser.extract_calls
     import_edges: list[ImportEdge]  # populated only if config.parser.extract_imports
