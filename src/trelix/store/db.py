@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     line_end        INTEGER NOT NULL,
     signature       TEXT    NOT NULL DEFAULT '',
     docstring       TEXT,
+    context_summary TEXT,
     decorators      TEXT    NOT NULL DEFAULT '[]',
     is_public       INTEGER NOT NULL DEFAULT 1,
     parent_id       INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
@@ -113,29 +114,41 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     qualified_name,
     docstring,
     body,
+    context_summary,
     content='symbols',
     content_rowid='id',
     tokenize='porter ascii'
 );
 
 -- Keep FTS index in sync with symbols table
--- NOTE: triggers reference the 4-column FTS schema; decorators are not FTS-indexed
+-- NOTE: triggers reference the 5-column FTS schema; decorators are not FTS-indexed
 -- (they appear in chunk_text so vector + BM25 search already covers them)
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
-    INSERT INTO symbols_fts(rowid, name, qualified_name, docstring, body)
-    VALUES (new.id, new.name, new.qualified_name, new.docstring, new.body);
+    INSERT INTO symbols_fts(rowid, name, qualified_name, docstring, body, context_summary)
+    VALUES (new.id, new.name, new.qualified_name, new.docstring, new.body, new.context_summary);
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, docstring, body)
-    VALUES ('delete', old.id, old.name, old.qualified_name, old.docstring, old.body);
+    INSERT INTO symbols_fts(
+        symbols_fts, rowid, name, qualified_name, docstring, body, context_summary
+    ) VALUES (
+        'delete', old.id, old.name, old.qualified_name,
+        old.docstring, old.body, old.context_summary
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, docstring, body)
-    VALUES ('delete', old.id, old.name, old.qualified_name, old.docstring, old.body);
-    INSERT INTO symbols_fts(rowid, name, qualified_name, docstring, body)
-    VALUES (new.id, new.name, new.qualified_name, new.docstring, new.body);
+    INSERT INTO symbols_fts(
+        symbols_fts, rowid, name, qualified_name, docstring, body, context_summary
+    ) VALUES (
+        'delete', old.id, old.name, old.qualified_name,
+        old.docstring, old.body, old.context_summary
+    );
+    INSERT INTO symbols_fts(rowid, name, qualified_name, docstring, body, context_summary)
+    VALUES (
+        new.id, new.name, new.qualified_name,
+        new.docstring, new.body, new.context_summary
+    );
 END;
 """
 
@@ -180,6 +193,11 @@ class Database:
         if "is_public" not in sym_cols:
             self._conn.execute(
                 "ALTER TABLE symbols ADD COLUMN is_public INTEGER NOT NULL DEFAULT 1"
+            )
+            self._conn.commit()
+        if "context_summary" not in sym_cols:
+            self._conn.execute(
+                "ALTER TABLE symbols ADD COLUMN context_summary TEXT"
             )
             self._conn.commit()
 
@@ -239,13 +257,13 @@ class Database:
             """
             INSERT INTO symbols
               (file_id, name, qualified_name, kind, line_start, line_end,
-               signature, docstring, decorators, is_public, parent_id, body)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               signature, docstring, context_summary, decorators, is_public, parent_id, body)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol.file_id, symbol.name, symbol.qualified_name,
                 symbol.kind.value, symbol.line_start, symbol.line_end,
-                symbol.signature, symbol.docstring,
+                symbol.signature, symbol.docstring, symbol.context_summary,
                 json.dumps(symbol.decorators), int(symbol.is_public),
                 symbol.parent_id, symbol.body,
             ),
@@ -360,6 +378,7 @@ class Database:
             line_end=row["line_end"],
             signature=row["signature"],
             docstring=row["docstring"],
+            context_summary=row["context_summary"],
             decorators=json.loads(row["decorators"] or "[]"),
             is_public=bool(row["is_public"]),
             parent_id=row["parent_id"],
@@ -931,6 +950,7 @@ class Database:
                 s.line_end        AS s_line_end,
                 s.signature       AS s_signature,
                 s.docstring       AS s_docstring,
+                s.context_summary AS s_context_summary,
                 s.decorators      AS s_decorators,
                 s.is_public       AS s_is_public,
                 s.parent_id       AS s_parent_id,
@@ -974,6 +994,7 @@ class Database:
                 s.line_end        AS s_line_end,
                 s.signature       AS s_signature,
                 s.docstring       AS s_docstring,
+                s.context_summary AS s_context_summary,
                 s.decorators      AS s_decorators,
                 s.is_public       AS s_is_public,
                 s.parent_id       AS s_parent_id,
@@ -1005,6 +1026,7 @@ class Database:
             line_end=row["s_line_end"],
             signature=row["s_signature"],
             docstring=row["s_docstring"],
+            context_summary=row["s_context_summary"],
             decorators=json.loads(row["s_decorators"] or "[]"),
             is_public=bool(row["s_is_public"]),
             parent_id=row["s_parent_id"],
@@ -1058,6 +1080,7 @@ class Database:
             line_end=row["s_line_end"],
             signature=row["s_signature"],
             docstring=row["s_docstring"],
+            context_summary=row["s_context_summary"],
             decorators=json.loads(row["s_decorators"] or "[]"),
             is_public=bool(row["s_is_public"]),
             parent_id=row["s_parent_id"],

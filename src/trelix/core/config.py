@@ -78,6 +78,11 @@ class ChunkerConfig(BaseSettings):
     max_imports_in_header: int = 8
     include_parent_signature: bool = True
 
+    # Contextual chunking (off by default — requires LLM API access)
+    contextual: bool = False
+    contextual_model: str = "gpt-4o-mini"
+    contextual_max_tokens: int = 100
+
 
 class EmbedderConfig(BaseSettings):
     """
