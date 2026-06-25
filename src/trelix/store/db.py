@@ -20,7 +20,7 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Generator, Optional
 
 from trelix.core.models import (
     CallEdge,
@@ -204,7 +204,7 @@ class Database:
         # type_edges table is idempotent (CREATE TABLE IF NOT EXISTS in DDL)
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
+    def transaction(self) -> Generator[sqlite3.Connection, None, None]:
         try:
             yield self._conn
             self._conn.commit()

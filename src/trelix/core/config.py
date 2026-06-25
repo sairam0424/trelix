@@ -10,13 +10,12 @@ Set TRELIX_EMBEDDER_PROVIDER=openai and OPENAI_API_KEY for higher quality.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Language
-
 
 # ---------------------------------------------------------------------------
 # Sub-configs
@@ -100,16 +99,16 @@ class EmbedderConfig(BaseSettings):
         populate_by_name=True,
     )
 
-    provider: Literal["openai", "azure", "local"] = "local"
+    provider: Literal["openai", "azure", "local", "voyage", "local-code"] = "local"
 
     # ── OpenAI ───────────────────────────────────────────────────────────────
-    openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = "text-embedding-3-large"
     openai_dimensions: int = 3072
 
     # ── Azure OpenAI ─────────────────────────────────────────────────────────
-    azure_api_key: Optional[str] = Field(default=None, alias="AZURE_API_KEY")
-    azure_endpoint: Optional[str] = Field(default=None, alias="AZURE_ENDPOINT")
+    azure_api_key: str | None = Field(default=None, alias="AZURE_API_KEY")
+    azure_endpoint: str | None = Field(default=None, alias="AZURE_ENDPOINT")
     azure_api_version: str = Field(default="2025-04-01-preview", alias="AZURE_API_VERSION")
     azure_embeddings_deployment: str = Field(
         default="text-embedding-3-large", alias="AZURE_EMBEDDINGS_MODEL"
@@ -122,6 +121,15 @@ class EmbedderConfig(BaseSettings):
 
     # ── Local (sentence-transformers) ────────────────────────────────────────
     local_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+    # ── Voyage (code-optimised API embedder) ─────────────────────────────────
+    voyage_api_key: str | None = Field(default=None, alias="VOYAGE_API_KEY")
+    voyage_model: str = Field(default="voyage-code-3", alias="TRELIX_EMBEDDER_VOYAGE_MODEL")
+    voyage_dimensions: int = 1024
+
+    # ── Local-code (SFR-Embedding-Code-2B_R) ─────────────────────────────────
+    local_code_model: str = "Salesforce/SFR-Embedding-Code-2B_R"
+    local_code_dimensions: int = 4096
 
     batch_size: int = 64
 
@@ -136,6 +144,10 @@ class EmbedderConfig(BaseSettings):
             return self.azure_dimensions
         if self.provider == "openai":
             return self.openai_dimensions
+        if self.provider == "voyage":
+            return self.voyage_dimensions
+        if self.provider == "local-code":
+            return self.local_code_dimensions
         return 384   # all-MiniLM-L6-v2
 
 
@@ -168,8 +180,8 @@ class RetrievalConfig(BaseSettings):
     rerank_top_n: int = 15
 
     # Cohere reranker
-    cohere_api_key: Optional[str] = Field(default=None, alias="COHERE_API_KEY")
-    cohere_endpoint: Optional[str] = Field(default=None, alias="COHERE_ENDPOINT")
+    cohere_api_key: str | None = Field(default=None, alias="COHERE_API_KEY")
+    cohere_endpoint: str | None = Field(default=None, alias="COHERE_ENDPOINT")
     cohere_rerank_model: str = Field(
         default="Cohere-rerank-v4.0-pro", alias="COHERE_MODEL_RERANK"
     )
