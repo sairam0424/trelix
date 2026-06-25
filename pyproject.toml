@@ -7,8 +7,8 @@ packages = ["src/trelix"]
 
 [project]
 name = "trelix"
-version = "0.1.0"
-description = "Fast, reliable code indexing and retrieval — Tree-sitter parsing, hybrid search, call-graph expansion, LLM synthesis"
+version = "0.4.0"
+description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Trelix Contributors" }]
@@ -91,18 +91,18 @@ binary = [
     "sentence-transformers>=3.0.0",   # local embedder bundled into the binary
 ]
 all = [
-    "trelix[local,rerank,voyage]",
+    "trelix[local,rerank,voyage,qdrant,watch]",
 ]
 
 [project.scripts]
 trelix = "trelix.cli.main:app"
 
 [project.urls]
-Homepage = "https://github.com/trelix-dev/trelix"
-Repository = "https://github.com/trelix-dev/trelix"
-Documentation = "https://github.com/trelix-dev/trelix#readme"
-Changelog = "https://github.com/trelix-dev/trelix/blob/main/CHANGELOG.md"
-"Bug Tracker" = "https://github.com/trelix-dev/trelix/issues"
+Homepage = "https://github.com/sairam0424/trelix"
+Repository = "https://github.com/sairam0424/trelix"
+Documentation = "https://github.com/sairam0424/trelix#readme"
+Changelog = "https://github.com/sairam0424/trelix/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/sairam0424/trelix/issues"
 
 # ---------------------------------------------------------------------------
 # Tooling

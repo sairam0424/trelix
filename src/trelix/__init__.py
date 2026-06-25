@@ -1,8 +1,9 @@
 """
 trelix — fast, reliable code indexing and retrieval.
 
-Tree-sitter AST parsing → hybrid search (vector + BM25 + grep)
-→ call-graph expansion → optional LLM synthesis.
+Tree-sitter AST parsing → contextual hybrid search (vector + BM25 + grep)
+→ adaptive 3-tier query planning → call-graph expansion
+→ GraphRAG synthesis.
 
 Quick start:
     from trelix.core.config import IndexConfig
@@ -15,5 +16,5 @@ Quick start:
     print(ctx.context_text)
 """
 
-__version__ = "0.1.0"
+__version__ = "0.4.0"
 __all__ = ["__version__"]
