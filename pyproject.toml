@@ -73,6 +73,9 @@ voyage = [
 qdrant = [
     "qdrant-client>=1.9.0",           # Qdrant HNSW vector backend (optional)
 ]
+watch = [
+    "watchdog>=4.0.0",               # Filesystem event monitoring for `trelix watch`
+]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
