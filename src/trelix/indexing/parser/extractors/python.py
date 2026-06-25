@@ -62,15 +62,20 @@ def _make_parser(language: Language) -> Parser:
     """
     Construct a tree-sitter Parser, compatible with both the 0.21 API
     (parser.set_language(lang)) and the 0.22+ API (Parser(lang)).
+
+    On tree-sitter 0.21, Parser(lang) does not raise TypeError but silently
+    creates a parser with no language set (parse() then raises ValueError).
+    We detect this by checking for the set_language attribute, which exists
+    only on the 0.21 Parser API, and prefer that path when available.
     """
     try:
-        # tree-sitter >=0.22 — Language is passed to the constructor
-        return Parser(language)
-    except TypeError:
-        # tree-sitter 0.21 — use set_language
+        # tree-sitter 0.21 — Parser has set_language method
         p = Parser()
         p.set_language(language)  # type: ignore[attr-defined]
         return p
+    except (TypeError, AttributeError):
+        # tree-sitter >=0.22 — Language is passed to the constructor
+        return Parser(language)
 
 
 class PythonParser(BaseParser):
