@@ -115,7 +115,7 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--tb=short"
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 
 [tool.coverage.run]
 source = ["src/trelix"]
