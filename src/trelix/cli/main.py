@@ -1,14 +1,26 @@
 """
-trelix CLI — placeholder until Phase 14 is implemented.
+trelix CLI — Phase 14 full implementation.
 
-All commands are stubbed so `trelix --help` works immediately after install.
-Full implementations land in feature/phase-14-cli.
+Commands:
+    trelix index  <repo> [--provider local|openai|azure] [-v]
+    trelix search <repo> <query> [--provider ...] [--json]
+    trelix ask    <repo> <query> [--provider ...]
+    trelix query  <repo> <query> [--provider ...]
+    trelix stats  <repo>
+    trelix update-index <repo> <file>
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import time
+from pathlib import Path
+
 import typer
 from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 app = typer.Typer(
     name="trelix",
@@ -18,9 +30,28 @@ app = typer.Typer(
 )
 
 console = Console()
+err_console = Console(stderr=True)
 
-_NOT_IMPLEMENTED = "[yellow]This command will be implemented in Phase 14.[/yellow]"
 
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+
+def _setup_logging(verbose: bool = False) -> None:
+    """Configure the trelix logger. Call once at CLI entry."""
+    level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        level=level,
+    )
+    for lib in ("httpx", "httpcore", "openai", "sentence_transformers", "transformers"):
+        logging.getLogger(lib).setLevel(logging.WARNING)
+
+
+# ---------------------------------------------------------------------------
+# index
+# ---------------------------------------------------------------------------
 
 @app.command()
 def index(
@@ -29,8 +60,49 @@ def index(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
 ) -> None:
     """Index a repository — builds the search index at <repo>/.trelix/index.db"""
-    console.print(_NOT_IMPLEMENTED)
+    _setup_logging(verbose)
 
+    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.indexing.indexer import Indexer
+
+    try:
+        config = IndexConfig(
+            repo_path=str(Path(repo).resolve()),
+            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(Panel(f"[bold cyan]Indexing[/bold cyan] {repo}", expand=False))
+
+    t0 = time.perf_counter()
+    try:
+        indexer = Indexer(config)
+        stats = indexer.index()
+    except Exception as exc:
+        err_console.print(f"[red]Indexing failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    elapsed = time.perf_counter() - t0
+
+    table = Table(title="Index Summary", show_header=True, header_style="bold cyan")
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+    table.add_row("Files found",       str(stats.get("files_found", 0)))
+    table.add_row("Files indexed",     str(stats.get("files_indexed", 0)))
+    table.add_row("Files skipped",     str(stats.get("files_skipped", 0)))
+    table.add_row("Symbols extracted", str(stats.get("symbols_extracted", 0)))
+    table.add_row("Chunks embedded",   str(stats.get("chunks_embedded", 0)))
+    table.add_row("Elapsed",           f"{elapsed:.1f}s")
+    if stats.get("errors"):
+        table.add_row("[red]Errors[/red]", f"[red]{stats['errors']}[/red]")
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# search
+# ---------------------------------------------------------------------------
 
 @app.command()
 def search(
@@ -39,9 +111,60 @@ def search(
     provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
     json_output: bool = typer.Option(False, "--json", help="Output raw JSON"),
 ) -> None:
-    """Search for code — returns ranked results as JSON"""
-    console.print(_NOT_IMPLEMENTED)
+    """Search for code — returns ranked results as a table or JSON"""
+    _setup_logging(False)
 
+    from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
+    from trelix.retrieval.retriever import Retriever
+
+    try:
+        config = IndexConfig(
+            repo_path=str(Path(repo).resolve()),
+            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+            retrieval=RetrievalConfig(rerank=False),
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    try:
+        retriever = Retriever(config)
+        context = retriever.retrieve(query)
+    except Exception as exc:
+        err_console.print(f"[red]Search failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if json_output:
+        results_json = []
+        for r in context.results:
+            results_json.append({
+                "file":   r.file.rel_path,
+                "symbol": r.symbol.name,
+                "lines":  f"{r.symbol.line_start}-{r.symbol.line_end}",
+                "score":  round(r.score, 4),
+            })
+        print(json.dumps({"status": "ok", "results": results_json}))
+        return
+
+    table = Table(title=f"Search: {query}", show_header=True, header_style="bold cyan")
+    table.add_column("File",   style="dim", max_width=40)
+    table.add_column("Symbol", style="bold")
+    table.add_column("Lines",  justify="right")
+    table.add_column("Score",  justify="right")
+
+    for r in context.results:
+        table.add_row(
+            r.file.rel_path,
+            r.symbol.name,
+            f"{r.symbol.line_start}-{r.symbol.line_end}",
+            f"{r.score:.4f}",
+        )
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# ask
+# ---------------------------------------------------------------------------
 
 @app.command()
 def ask(
@@ -49,9 +172,50 @@ def ask(
     query: str = typer.Argument(..., help="Question to answer about the codebase"),
     provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
 ) -> None:
-    """Ask a question — retrieval + LLM synthesis (requires OPENAI_API_KEY)"""
-    console.print(_NOT_IMPLEMENTED)
+    """Ask a question — retrieval + LLM synthesis (requires OPENAI_API_KEY for full synthesis)"""
+    _setup_logging(False)
 
+    from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
+    from trelix.retrieval.retriever import Retriever
+    from trelix.retrieval.synthesizer import Synthesizer
+
+    try:
+        config = IndexConfig(
+            repo_path=str(Path(repo).resolve()),
+            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+            retrieval=RetrievalConfig(rerank=False),
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    try:
+        retriever = Retriever(config)
+        context = retriever.retrieve(query)
+    except Exception as exc:
+        err_console.print(f"[red]Retrieval failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    # If provider=local (no API key), print the context text directly
+    if provider == "local":
+        console.print(Panel(f"[bold cyan]Context for:[/bold cyan] {query}", expand=False))
+        if context.context_text:
+            console.print(context.context_text)
+        else:
+            console.print("[yellow]No relevant code found.[/yellow]")
+        return
+
+    try:
+        synth = Synthesizer(config.embedder)
+        synth.synthesize(context)
+    except Exception as exc:
+        err_console.print(f"[red]Synthesis failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+# ---------------------------------------------------------------------------
+# query (human-readable, always Rich, no --json flag)
+# ---------------------------------------------------------------------------
 
 @app.command()
 def query(
@@ -59,22 +223,140 @@ def query(
     query_str: str = typer.Argument(..., metavar="QUERY", help="Natural language query"),
     provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
 ) -> None:
-    """Query a repository — human-readable terminal output (no LLM synthesis)"""
-    console.print(_NOT_IMPLEMENTED)
+    """Query a repository — human-readable Rich terminal output (no LLM synthesis)"""
+    _setup_logging(False)
 
+    from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
+    from trelix.retrieval.retriever import Retriever
+
+    try:
+        config = IndexConfig(
+            repo_path=str(Path(repo).resolve()),
+            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+            retrieval=RetrievalConfig(rerank=False),
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(Panel(f"[bold cyan]Query:[/bold cyan] {query_str}", expand=False))
+
+    try:
+        retriever = Retriever(config)
+        context = retriever.retrieve(query_str)
+    except Exception as exc:
+        err_console.print(f"[red]Query failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"\n[dim]Retrieved {len(context.results)} results "
+        f"({context.total_tokens} tokens) in {context.elapsed_seconds:.3f}s[/dim]\n"
+    )
+
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("File",   style="dim", max_width=40)
+    table.add_column("Symbol", style="bold")
+    table.add_column("Lines",  justify="right")
+    table.add_column("Score",  justify="right")
+
+    for r in context.results:
+        table.add_row(
+            r.file.rel_path,
+            r.symbol.name,
+            f"{r.symbol.line_start}-{r.symbol.line_end}",
+            f"{r.score:.4f}",
+        )
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# stats
+# ---------------------------------------------------------------------------
 
 @app.command()
 def stats(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
 ) -> None:
     """Show index statistics (files, symbols, chunks, DB size)"""
-    console.print(_NOT_IMPLEMENTED)
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
 
+    try:
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        err_console.print(
+            f"[red]No index found at {db_path}[/red] — run `trelix index {repo}` first."
+        )
+        raise typer.Exit(1)
+
+    try:
+        with Database(db_path) as db:
+            conn = db._conn
+            file_count   = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            symbol_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+            chunk_count  = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            db_size_bytes = db_path.stat().st_size
+    except Exception as exc:
+        err_console.print(f"[red]Failed to read index:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    db_size_kb = db_size_bytes / 1024
+
+    console.print(Panel(f"[bold cyan]Index Stats:[/bold cyan] {repo}", expand=False))
+
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Metric", style="dim")
+    table.add_column("Value",  justify="right")
+    table.add_row("Files indexed",   str(file_count))
+    table.add_row("Symbols",         str(symbol_count))
+    table.add_row("Chunks",          str(chunk_count))
+    table.add_row("DB size",         f"{db_size_kb:.1f} KB")
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# update-index
+# ---------------------------------------------------------------------------
 
 @app.command("update-index")
 def update_index(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     file: str = typer.Argument(..., help="File to re-index (absolute or relative to repo)"),
+    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
 ) -> None:
     """Re-index a single file after editing"""
-    console.print(_NOT_IMPLEMENTED)
+    _setup_logging(False)
+
+    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.indexing.indexer import Indexer
+
+    try:
+        config = IndexConfig(
+            repo_path=str(Path(repo).resolve()),
+            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    try:
+        indexer = Indexer(config)
+        result = indexer.index_file(file)
+    except Exception as exc:
+        err_console.print(f"[red]update-index failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    print(json.dumps(result))
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    app()
