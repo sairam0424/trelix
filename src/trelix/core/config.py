@@ -152,9 +152,18 @@ class EmbedderConfig(BaseSettings):
 
 
 class StoreConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="TRELIX_STORE_")
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_STORE_",
+        populate_by_name=True,
+    )
 
     db_path: str = ".trelix/index.db"
+
+    # HNSW index settings (sqlite-vec ≥ 0.1.6)
+    hnsw: bool = Field(default=True, alias="TRELIX_STORE_HNSW")
+    hnsw_m: int = Field(default=16, alias="TRELIX_STORE_HNSW_M")
+    hnsw_ef_construction: int = 200
+    hnsw_ef_search: int = Field(default=50, alias="TRELIX_STORE_HNSW_EF_SEARCH")
 
 
 class RetrievalConfig(BaseSettings):
