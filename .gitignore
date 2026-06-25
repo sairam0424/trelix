@@ -6,10 +6,15 @@ __pycache__/
 .Python
 *.egg-info/
 *.egg
-dist/
 build/
 .eggs/
 pip-wheel-metadata/
+
+# dist/ — ignore generated packaging artefacts but ship the codeindex binary.
+# Using dist/* (not dist/) so that negation rules for tracked files work.
+dist/*
+!dist/.gitkeep
+!dist/codeindex
 
 # Virtual environments
 .venv/

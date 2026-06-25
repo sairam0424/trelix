@@ -6,13 +6,19 @@
 #   pyinstaller trelix.spec --clean --noconfirm
 #
 # Output: dist/codeindex  (macOS arm64 / Linux x64 / Windows x64)
+#
+# NOTE: sentence_transformers, torch, scipy, and sklearn are intentionally
+# excluded from this binary. The VS Code plugin uses the openai or azure
+# provider; the local provider (which requires torch) is a developer-only
+# feature available via `pip install trelix[local]`. Excluding these
+# heavyweight libraries keeps the binary at ~30-40 MB rather than ~500 MB.
 
 import os
 
 # ---------------------------------------------------------------------------
 # Dynamically locate native-extension package directories.
 # Both packages must be importable in the build environment before running
-# PyInstaller (i.e. pip install -e ".[local]" && pip install pyinstaller).
+# PyInstaller (i.e. pip install -e "." && pip install pyinstaller).
 # ---------------------------------------------------------------------------
 
 import sqlite_vec
@@ -25,19 +31,6 @@ vec_path = os.path.dirname(sqlite_vec.__file__)
 ts_path = os.path.dirname(tree_sitter_languages.__file__)
 
 # ---------------------------------------------------------------------------
-# Optional: sentence_transformers — present only in local/binary builds.
-# We add it to datas when available; the runtime import is guarded in trelix.
-# ---------------------------------------------------------------------------
-
-_sentence_transformers_datas = []
-try:
-    import sentence_transformers as _st
-    _st_path = os.path.dirname(_st.__file__)
-    _sentence_transformers_datas = [(_st_path, 'sentence_transformers')]
-except ImportError:
-    pass
-
-# ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
 
@@ -48,7 +41,6 @@ a = Analysis(
     datas=[
         (vec_path, 'sqlite_vec'),
         (ts_path,  'tree_sitter_languages'),
-        *_sentence_transformers_datas,
     ],
     hiddenimports=[
         'sqlite_vec',
@@ -58,12 +50,39 @@ a = Analysis(
         'tree_sitter_languages',
         'pydantic',
         'pydantic_settings',
-        'sentence_transformers',   # optional — PyInstaller skips if absent
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # Exclude heavyweight ML libs not needed by openai/azure providers.
+        # These add ~400 MB to the binary and require /tmp extraction space.
+        'sentence_transformers',
+        'torch',
+        'torchvision',
+        'torchaudio',
+        'scipy',
+        'sklearn',
+        'scikit_learn',
+        'tensorflow',
+        'keras',
+        'transformers',
+        'huggingface_hub',
+        'tokenizers',
+        'accelerate',
+        'datasets',
+        'PIL',
+        'cv2',
+        'matplotlib',
+        'pandas',
+        'sympy',
+        'IPython',
+        'ipykernel',
+        'notebook',
+        'pytest',
+        'py',
+        '_pytest',
+    ],
     noarchive=False,
     optimize=0,
 )
@@ -84,7 +103,8 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,           # UPX disabled: decompression at /tmp init fails on
+                         # near-full disks and adds noticeable startup latency.
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
