@@ -128,7 +128,7 @@ class TestWalkerConfig:
 
 class TestEmbedderConfig:
     def test_default_provider_is_local(self) -> None:
-        cfg = EmbedderConfig()
+        cfg = EmbedderConfig(_env_file=None)  # type: ignore[call-arg]
         assert cfg.provider == "local"
 
     def test_local_dimension(self) -> None:
@@ -194,5 +194,5 @@ class TestIndexConfig:
         assert gitignore.read_text() == "*\n"
 
     def test_default_provider_is_local(self, tmp_path: Path) -> None:
-        cfg = IndexConfig(repo_path=str(tmp_path))
+        cfg = IndexConfig(repo_path=str(tmp_path), embedder={"_env_file": None})  # type: ignore[arg-type]
         assert cfg.embedder.provider == "local"
