@@ -1,0 +1,53 @@
+name: Build Binaries
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build codeindex (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact-name: codeindex-macos-arm64
+            binary-path: dist/codeindex
+          - os: windows-latest
+            artifact-name: codeindex-windows-x64
+            binary-path: dist/codeindex.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[local]" && pip install pyinstaller
+
+      - name: Build binary
+        run: pyinstaller trelix.spec --clean --noconfirm
+
+      - name: Verify binary (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          file dist/codeindex
+          ./dist/codeindex --help
+
+      - name: Verify binary (Windows)
+        if: runner.os == 'Windows'
+        run: dist/codeindex.exe --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.binary-path }}
+          retention-days: 30
