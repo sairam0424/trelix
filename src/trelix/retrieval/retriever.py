@@ -33,7 +33,7 @@ from trelix.core.config import IndexConfig
 from trelix.core.models import Chunk, RetrievedContext, SearchResult
 from trelix.embedder.base import BaseEmbedder, make_embedder
 from trelix.store.db import Database
-from trelix.store.vector import VectorStore
+from trelix.store.vector import BaseVectorStore, make_vector_store
 
 from .bm25 import bm25_search
 from .fusion import reciprocal_rank_fusion
@@ -65,8 +65,8 @@ class Retriever:
         self.config = config
         self.db = Database(config.db_path_absolute)
         self.embedder: BaseEmbedder = make_embedder(config.embedder)
-        self.vector_store = VectorStore(
-            db_path=config.db_path_absolute,
+        self.vector_store: BaseVectorStore = make_vector_store(
+            config=config,
             dimension=self.embedder.dimension,
         )
         # Instantiate the LLM query planner. Falls back gracefully to

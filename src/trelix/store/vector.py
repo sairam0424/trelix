@@ -1,9 +1,11 @@
 """
-Vector store: stores and searches chunk embeddings using sqlite-vec.
+Vector store: stores and searches chunk embeddings.
 
-sqlite-vec is a SQLite extension that adds fast vector similarity search
-with no external infrastructure — perfect for local/dev use.
-Swap out for Qdrant by changing this file only (same interface).
+Backends:
+  - SQLiteVectorStore  — sqlite-vec extension, no external infra needed (default)
+  - QdrantVectorStore  — Qdrant HNSW index, scales to 500k+ chunks (optional)
+
+Use make_vector_store(config, dimension) to get the right backend.
 """
 
 from __future__ import annotations
@@ -11,18 +13,54 @@ from __future__ import annotations
 import sqlite3
 import struct
 import threading
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
 
 import sqlite_vec
 
+from trelix.core.config import IndexConfig
 
-class VectorStore:
+# ---------------------------------------------------------------------------
+# Abstract base
+# ---------------------------------------------------------------------------
+
+
+class BaseVectorStore(ABC):
+    """
+    Protocol that every vector-store backend must implement.
+
+    All methods operate on (chunk_id: int, embedding: list[float]) pairs.
+    chunk_id is the primary key from the `chunks` table in the SQLite DB.
+    """
+
+    @abstractmethod
+    def upsert_batch(self, pairs: list[tuple[int, list[float]]]) -> None:
+        """Insert or replace embeddings for the given (chunk_id, vector) pairs."""
+
+    @abstractmethod
+    def search(self, query: list[float], k: int) -> list[tuple[int, float]]:
+        """Return top-k (chunk_id, score/distance) pairs for the query vector."""
+
+    @abstractmethod
+    def delete_batch(self, chunk_ids: list[int]) -> None:
+        """Delete embeddings for the given chunk_ids. No-op for empty list."""
+
+    @abstractmethod
+    def count(self) -> int:
+        """Return the total number of stored embeddings."""
+
+
+# ---------------------------------------------------------------------------
+# SQLite backend (default)
+# ---------------------------------------------------------------------------
+
+
+class SQLiteVectorStore(BaseVectorStore):
     """
     Stores chunk embeddings in a SQLite database using sqlite-vec.
 
     Usage:
-        store = VectorStore(db_path, dimension=1536)
+        store = SQLiteVectorStore(db_path, dimension=1536)
         store.upsert(chunk_id=1, embedding=[0.1, 0.2, ...])
         results = store.search(query_embedding, k=20)  # → list of (chunk_id, score)
     """
@@ -63,10 +101,10 @@ class VectorStore:
         )
         self._conn.commit()
 
-    def upsert_batch(self, items: list[tuple[int, list[float]]]) -> None:
+    def upsert_batch(self, pairs: list[tuple[int, list[float]]]) -> None:
         """Batch upsert for efficiency during indexing."""
         try:
-            for chunk_id, emb in items:
+            for chunk_id, emb in pairs:
                 packed = self._pack(emb)
                 self._conn.execute(
                     "DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,)
@@ -116,8 +154,47 @@ class VectorStore:
             )
         self._conn.commit()
 
+    def count(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM chunk_embeddings"
+        ).fetchone()
+        return row[0] if row else 0
+
     def _pack(self, embedding: list[float]) -> bytes:
         return struct.pack(f"{len(embedding)}f", *embedding)
 
     def close(self) -> None:
         self._conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatibility alias
+# ---------------------------------------------------------------------------
+
+#: Legacy name kept so existing import sites (indexer, retriever) continue to work
+#: until they are updated to use make_vector_store().
+VectorStore = SQLiteVectorStore
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+
+def make_vector_store(config: IndexConfig, dimension: int) -> BaseVectorStore:
+    """
+    Return the configured vector-store backend.
+
+    Backend is selected by config.store.backend:
+      "sqlite"  (default) → SQLiteVectorStore backed by <repo>/.trelix/index.db
+      "qdrant"             → QdrantVectorStore backed by a running Qdrant instance
+
+    Args:
+        config:    IndexConfig instance (provides store sub-config and db_path).
+        dimension: Embedding dimension (must match the embedder being used).
+    """
+    backend = getattr(config.store, "backend", "sqlite")
+    if backend == "qdrant":
+        from trelix.store.vector_qdrant import QdrantVectorStore
+        return QdrantVectorStore(config, dimension)
+    return SQLiteVectorStore(db_path=config.db_path_absolute, dimension=dimension)

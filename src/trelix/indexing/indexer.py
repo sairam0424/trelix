@@ -46,7 +46,7 @@ from trelix.core.models import IndexedFile
 from trelix.embedder.base import BaseEmbedder, make_embedder
 from trelix.indexing.parser.registry import get_parser
 from trelix.store.db import Database
-from trelix.store.vector import VectorStore
+from trelix.store.vector import BaseVectorStore, make_vector_store
 from trelix.indexing.walker import FileWalker
 
 logger = logging.getLogger("trelix.indexing")
@@ -151,8 +151,8 @@ class Indexer:
         self.db = Database(db_path)
         # Load embedder first so we can query its actual dimension
         self.embedder: BaseEmbedder = make_embedder(config.embedder)
-        self.vector_store = VectorStore(
-            db_path=db_path,
+        self.vector_store: BaseVectorStore = make_vector_store(
+            config=config,
             dimension=self.embedder.dimension,
         )
         self.chunker = self._build_chunker(config)

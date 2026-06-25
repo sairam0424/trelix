@@ -152,9 +152,26 @@ class EmbedderConfig(BaseSettings):
 
 
 class StoreConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="TRELIX_STORE_")
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_STORE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     db_path: str = ".trelix/index.db"
+
+    # ── Backend selection ────────────────────────────────────────────────────
+    backend: Literal["sqlite", "qdrant"] = Field(
+        default="sqlite",
+        validation_alias="TRELIX_STORE_BACKEND",
+    )
+
+    # ── Qdrant connection ────────────────────────────────────────────────────
+    qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
+    qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
+    qdrant_collection: str = Field(default="trelix", alias="QDRANT_COLLECTION")
 
 
 class RetrievalConfig(BaseSettings):

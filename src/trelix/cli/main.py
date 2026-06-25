@@ -20,6 +20,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
 app = typer.Typer(
@@ -352,6 +353,124 @@ def update_index(
         raise typer.Exit(1) from exc
 
     print(json.dumps(result))
+
+
+# ---------------------------------------------------------------------------
+# migrate-vectors
+# ---------------------------------------------------------------------------
+
+
+@app.command("migrate-vectors")
+def migrate_vectors(
+    repo: str = typer.Argument(..., help="Path to the indexed repository"),
+    to: str = typer.Option("qdrant", help="Target backend: qdrant"),
+    url: str = typer.Option("http://localhost:6333", help="Qdrant URL"),
+    collection: str = typer.Option("trelix", help="Qdrant collection name"),
+    api_key: str = typer.Option("", help="Qdrant API key (optional)"),
+) -> None:
+    """Migrate embeddings from SQLite to Qdrant (or another backend)."""
+    _setup_logging(False)
+
+    import sqlite3
+    import struct
+
+    from trelix.core.config import IndexConfig, StoreConfig
+    from trelix.store.vector_qdrant import QdrantVectorStore
+
+    if to != "qdrant":
+        err_console.print(f"[red]Unsupported target backend:[/red] {to!r}. Only 'qdrant' is supported.")
+        raise typer.Exit(1)
+
+    try:
+        # Build config pointing at the existing SQLite index
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        err_console.print(
+            f"[red]No index found at {db_path}[/red] — run `trelix index {repo}` first."
+        )
+        raise typer.Exit(1)
+
+    # Connect to the SQLite vector store directly to read raw embeddings
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    try:
+        conn.enable_load_extension(True)
+        import sqlite_vec
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+    except Exception as exc:
+        err_console.print(f"[red]Failed to load sqlite-vec:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    # Detect embedding dimension from the sqlite-vec virtual table metadata
+    try:
+        row = conn.execute("SELECT embedding FROM chunk_embeddings LIMIT 1").fetchone()
+    except Exception as exc:
+        err_console.print(f"[red]Failed to read chunk_embeddings:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if row is None:
+        console.print("[yellow]No embeddings found in the SQLite store — nothing to migrate.[/yellow]")
+        return
+
+    raw_bytes: bytes = row[0]
+    dimension = len(raw_bytes) // 4  # float32 = 4 bytes
+
+    # Build a temporary StoreConfig pointing at Qdrant
+    qdrant_config = IndexConfig(
+        repo_path=config.repo_path,
+        store=StoreConfig(  # type: ignore[call-arg]
+            db_path=config.store.db_path,
+            qdrant_url=url,
+            qdrant_api_key=api_key or None,
+            qdrant_collection=collection,
+        ),
+    )
+    qdrant_store = QdrantVectorStore(qdrant_config, dimension)
+
+    # Stream all rows from sqlite-vec in batches
+    total_row = conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()
+    total = total_row[0] if total_row else 0
+    console.print(f"[cyan]Migrating {total:,} embeddings (dim={dimension}) → Qdrant {url}[/cyan]")
+
+    BATCH = 500
+    offset = 0
+    migrated = 0
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Migrating…", total=total)
+
+        while True:
+            rows = conn.execute(
+                "SELECT chunk_id, embedding FROM chunk_embeddings LIMIT ? OFFSET ?",
+                (BATCH, offset),
+            ).fetchall()
+            if not rows:
+                break
+
+            pairs: list[tuple[int, list[float]]] = []
+            for chunk_id, raw in rows:
+                n = len(raw) // 4
+                emb = list(struct.unpack(f"{n}f", raw))
+                pairs.append((chunk_id, emb))
+
+            qdrant_store.upsert_batch(pairs)
+            migrated += len(pairs)
+            offset += BATCH
+            progress.advance(task, advance=len(pairs))
+
+    conn.close()
+    console.print(f"[green]Migration complete:[/green] {migrated:,} embeddings written to Qdrant.")
 
 
 # ---------------------------------------------------------------------------
