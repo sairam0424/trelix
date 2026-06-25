@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Trelix index data — never commit these
+.trelix/
+
+# Test / coverage artefacts
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Ruff / Mypy caches
+.ruff_cache/
+.mypy_cache/
+
+# Environment files — secrets must not be committed
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# Distribution / packaging
+*.tar.gz
+*.whl
+MANIFEST
