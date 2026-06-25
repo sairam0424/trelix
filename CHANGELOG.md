@@ -9,20 +9,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 ## [0.2.0] — 2026-06-25
 
 ### Added
-
-#### Binary Distribution
-- macOS arm64 binary (`codeindex`) via PyInstaller
-- Windows x64 binary (`codeindex.exe`) via GitHub Actions
-- Drop-in compatible with aava-core-vscode-ide-plugin
-
-#### VS Code Plugin Compatibility
-- `CODEINDEX_STORE_DB_PATH` env var accepted as fallback when `TRELIX_STORE_DB_PATH` is not set
-- `--provider aava` flag supported — routes to `AavaPlatformEmbedder`
-- `AavaPlatformEmbedder` ported back from aava-core for Aava platform embedding service
-- Aava-specific config fields: `EMBEDDING_BEARER_TOKEN`, `EMBEDDING_BASE_URL`, `EMBEDDING_SERVICE`, `EMBEDDING_MODEL_REF`
-
-#### Language Support
-- Ruby parser added (Tree-sitter grammar)
+- Ruby parser — completes all 20 language extractors
+- PyInstaller spec (`trelix.spec`) — produces `dist/trelix` single-file binary
+- `scripts/build-binary.sh` — local binary build script
+- `make binary` / `make binary-clean` / `make binary-install` Makefile targets
+- GitHub Actions `build-binaries.yml` — macOS arm64 + Windows x64 matrix
+- Release workflow attaches `trelix` / `trelix.exe` binaries to GitHub Releases
+- `docs/integrations/vscode-plugin.md` — guide for embedding trelix in a VS Code extension
 
 ## [0.1.0] — 2025-06-25
 
@@ -38,5 +31,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 - Three embedding providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5
 
-[Unreleased]: https://github.com/trelix-dev/trelix/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/trelix-dev/trelix/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/trelix-dev/trelix/releases/tag/v0.2.0
 [0.1.0]: https://github.com/trelix-dev/trelix/releases/tag/v0.1.0
