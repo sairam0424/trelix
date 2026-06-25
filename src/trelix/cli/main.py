@@ -355,6 +355,66 @@ def update_index(
 
 
 # ---------------------------------------------------------------------------
+# watch
+# ---------------------------------------------------------------------------
+
+@app.command()
+def watch(
+    repo: str = typer.Argument(..., help="Path to the repository to watch"),
+    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure"),
+) -> None:
+    """Watch repo for changes and auto-update index. Ctrl+C to stop."""
+    _setup_logging(False)
+
+    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.indexing.indexer import Indexer
+    from trelix.indexing.watcher import FileWatcher
+
+    try:
+        config = IndexConfig(
+            repo_path=str(Path(repo).resolve()),
+            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    try:
+        indexer = Indexer(config)
+    except Exception as exc:
+        err_console.print(f"[red]Failed to initialize indexer:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    # Run initial full index so the watcher starts from a known-good state
+    console.print(Panel(f"[bold cyan]Initial index[/bold cyan] {repo}", expand=False))
+    try:
+        indexer.index()
+    except Exception as exc:
+        err_console.print(f"[red]Initial indexing failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    # Start the file watcher
+    try:
+        watcher = FileWatcher(indexer, indexer.walker)
+    except ImportError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    watcher.start()
+    console.print("[green]Watching for changes. Press Ctrl+C to stop.[/green]")
+
+    try:
+        import time as _time
+        while True:
+            _time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        watcher.stop()
+        console.print("\n[dim]Watch stopped.[/dim]")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

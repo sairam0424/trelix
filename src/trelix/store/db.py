@@ -248,6 +248,52 @@ class Database:
         self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
         self._conn.commit()
 
+    def delete_file_by_path(
+        self,
+        abs_path: str,
+        rel_path: str,
+        vector_store: "object | None" = None,
+    ) -> bool:
+        """
+        Fully delete a file's index data (file row + symbols + chunks + vectors).
+
+        Cascades:
+          - symbols ON DELETE CASCADE removes chunks, calls, type_edges
+          - imports ON DELETE CASCADE removed via file_id FK
+          - vector_store.delete_batch() cleans up embeddings if provided
+
+        Args:
+            abs_path:     Absolute filesystem path (used as primary lookup key).
+            rel_path:     Repo-relative path (used as fallback lookup key).
+            vector_store: Optional VectorStore — if provided, chunk vectors are
+                          deleted before the DB rows are removed.
+
+        Returns:
+            True if a matching file row was found and deleted, False otherwise.
+        """
+        row = self._conn.execute(
+            "SELECT id FROM files WHERE path = ? OR rel_path = ? LIMIT 1",
+            (abs_path, rel_path),
+        ).fetchone()
+
+        if row is None:
+            return False
+
+        file_id: int = row[0]
+
+        # Delete vectors before DB rows so we never have orphaned vectors
+        if vector_store is not None:
+            chunk_ids = self.get_chunk_ids_for_file(file_id)
+            if chunk_ids:
+                vector_store.delete_batch(chunk_ids)  # type: ignore[attr-defined]
+
+        # ON DELETE CASCADE on symbols handles chunks / calls / type_edges
+        # Explicit import delete handles the file_id FK
+        self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
+        self._conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        self._conn.commit()
+        return True
+
     # ------------------------------------------------------------------
     # Symbols
     # ------------------------------------------------------------------
