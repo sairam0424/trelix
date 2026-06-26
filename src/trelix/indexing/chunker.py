@@ -173,7 +173,7 @@ class ContextualChunker(Chunker):
     def __init__(
         self,
         config: ChunkerConfig,
-        llm_client: object | None = None,  # openai.OpenAI or compatible; typed as object to avoid hard import
+        llm_client: object | None = None,  # openai.OpenAI or compatible (object avoids hard import)
     ) -> None:
         super().__init__(config)
         self._llm_client = llm_client
