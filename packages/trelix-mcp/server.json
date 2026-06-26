@@ -2,13 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.sairam0424/trelix",
   "title": "trelix",
-  "description": "Semantic code search — Tree-sitter AST parsing, hybrid BM25+vector search, call-graph expansion. Zero infra (SQLite). 20+ languages.",
-  "version": "0.5.0",
+  "description": "Semantic code search for AI agents — hybrid BM25+vector, call-graph, 20+ languages.",
+  "version": "0.5.1",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "trelix-mcp",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "transport": {
         "type": "stdio",
         "command": "trelix-mcp",
