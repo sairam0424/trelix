@@ -164,7 +164,7 @@ class KotlinParser(BaseParser):
 
         # Qualified name (nested class gets parent prefix)
         if parent_class_local_idx is not None:
-            parent_name = symbols[parent_class_local_idx].name  # type: ignore[index]
+            parent_name = symbols[parent_class_local_idx].name
             qualified_name = f"{parent_name}.{name}"
         else:
             qualified_name = name
@@ -259,7 +259,7 @@ class KotlinParser(BaseParser):
         type_edges: list[TypeEdge],
         class_local_idx: int,
     ) -> None:
-        parent_name = symbols[class_local_idx].name  # type: ignore[index]
+        parent_name = symbols[class_local_idx].name
         for child in body.children:
             if child.type == "enum_entry":
                 name_node = child.children[0] if child.children else None
@@ -312,7 +312,7 @@ class KotlinParser(BaseParser):
         is_public = self._is_public(node, src)
 
         if parent_class_local_idx is not None:
-            parent_name = symbols[parent_class_local_idx].name  # type: ignore[index]
+            parent_name = symbols[parent_class_local_idx].name
             qualified_name = f"{parent_name}.{name}"
         else:
             qualified_name = name
@@ -367,7 +367,8 @@ class KotlinParser(BaseParser):
 
         is_method = parent_class_local_idx is not None
         if is_method:
-            parent_name = symbols[parent_class_local_idx].name  # type: ignore[index]
+            assert parent_class_local_idx is not None  # guaranteed by is_method check
+            parent_name = symbols[parent_class_local_idx].name
             qualified_name = f"{parent_name}.{name}"
             sym_kind = SymbolKind.METHOD
         elif receiver_name:
@@ -460,7 +461,7 @@ class KotlinParser(BaseParser):
             return
         name = self._txt(name_node, src)
 
-        parent_name = symbols[class_local_idx].name  # type: ignore[index]
+        parent_name = symbols[class_local_idx].name
         body = self._txt(node, src)
         if len(body) > 500:
             body = body[:500] + "..."

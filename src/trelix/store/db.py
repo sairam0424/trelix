@@ -244,7 +244,7 @@ class Database:
         )
         row = cursor.fetchone()
         self._conn.commit()
-        return row[0]
+        return row[0]  # type: ignore[no-any-return]
 
     def delete_file_symbols(self, file_id: int) -> None:
         """Remove all symbols (and cascaded data) for a file before re-indexing."""

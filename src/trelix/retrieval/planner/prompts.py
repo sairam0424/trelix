@@ -14,6 +14,8 @@ queries to decompose a complex multi-part question into 2–3 focused sub-questi
 
 from __future__ import annotations
 
+from typing import Any
+
 SYSTEM_PROMPT = """\
 You are a code-search query planner. Your job is to analyse a natural-language
 question about a codebase and produce a structured retrieval plan.
@@ -83,7 +85,7 @@ Example output: [
 Query: {query}
 """
 
-PLANNER_TOOL_SCHEMA: dict = {
+PLANNER_TOOL_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
         "name": "produce_query_plan",

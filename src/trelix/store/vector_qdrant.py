@@ -77,7 +77,7 @@ class QdrantVectorStore(BaseVectorStore):
                 collection_name=self._collection,
                 vectors_config=VectorParams(
                     size=self._dimension,
-                    distance=Distance.COSINE,
+                    distance=Distance.COSINE,  # type: ignore[attr-defined]
                     hnsw_config=HnswConfigDiff(
                         m=16,
                         ef_construct=200,

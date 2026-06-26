@@ -32,11 +32,8 @@ classifiers = [
 ]
 dependencies = [
     # --- Parsing ---
-    "tree-sitter>=0.21",
-    "tree-sitter-c>=0.23",
-    "tree-sitter-cpp>=0.23",
-    "tree-sitter-c-sharp>=0.23",
-    "tree-sitter-kotlin>=1.1",
+    "tree-sitter>=0.21,<0.22",
+    "tree-sitter-languages>=1.10.2",
     "PyYAML>=6.0",
     # --- Storage ---
     "sqlite-vec>=0.1.6",

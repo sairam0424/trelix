@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig, RetrievalConfig
@@ -180,7 +180,7 @@ class Synthesizer:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_client(self, config: EmbedderConfig) -> object | None:
+    def _build_client(self, config: EmbedderConfig) -> Any | None:
         """
         Instantiate the appropriate OpenAI client.
         Returns None for provider=local or when credentials are missing.
@@ -238,7 +238,8 @@ class Synthesizer:
 
         # max_completion_tokens is required for newer OpenAI/Azure models (o-series, gpt-4o);
         # older deployments use max_tokens. Try max_completion_tokens first, fall back on error.
-        stream = self._client.chat.completions.create(  # type: ignore[union-attr]
+        assert self._client is not None  # guaranteed by synthesize() None check above
+        stream = self._client.chat.completions.create(
             model=self._model_name(),
             messages=[
                 {"role": "system", "content": self._system_prompt(context.intent)},

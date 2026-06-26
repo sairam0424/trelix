@@ -16,6 +16,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Literal, cast
 
 import typer
 from rich.console import Console
@@ -32,6 +33,8 @@ app = typer.Typer(
 
 console = Console()
 err_console = Console(stderr=True)
+
+_EmbedderProvider = Literal["openai", "azure", "local", "voyage", "local-code"]
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +74,7 @@ def index(
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
         )
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
@@ -124,7 +127,7 @@ def search(
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
             retrieval=RetrievalConfig(rerank=False),
         )
     except (ValueError, FileNotFoundError) as exc:
@@ -189,7 +192,7 @@ def ask(
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
             retrieval=RetrievalConfig(rerank=False),
         )
     except (ValueError, FileNotFoundError) as exc:
@@ -240,7 +243,7 @@ def query(
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
             retrieval=RetrievalConfig(rerank=False),
         )
     except (ValueError, FileNotFoundError) as exc:
@@ -348,7 +351,7 @@ def update_index(
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
         )
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
@@ -507,7 +510,7 @@ def watch(
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=provider),  # type: ignore[call-arg]
+            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
         )
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")

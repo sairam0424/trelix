@@ -23,6 +23,7 @@ import struct
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any
 
 import sqlite_vec
 
@@ -255,7 +256,7 @@ class SQLiteVectorStore(BaseVectorStore):
         row = self._conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()
         return row[0] if row else 0
 
-    def info(self) -> dict:
+    def info(self) -> dict[str, Any]:
         """
         Return a summary dict suitable for ``trelix stats``.
 

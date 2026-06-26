@@ -241,7 +241,7 @@ class YamlParser(BaseParser):
                 and isinstance(v, yaml.ScalarNode)
                 and v.value
             ):
-                return v.value
+                return v.value  # type: ignore[no-any-return]
         return None
 
     def _slice_source(self, lines: list[str], start_line: int, end_line: int) -> str:
