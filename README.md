@@ -96,6 +96,12 @@ The action handles Python setup, caching (keyed to the commit SHA), and exposes 
 ## Installation
 
 ```bash
+# Homebrew (macOS — Apple Silicon)
+brew tap sairam0424/trelix
+brew install trelix
+```
+
+```bash
 # Minimal — local embeddings only (no API key)
 pip install "trelix[local]"
 
