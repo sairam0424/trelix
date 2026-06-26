@@ -10,7 +10,7 @@ name = "trelix-mcp"
 version = "0.4.0"
 description = "MCP server for trelix — semantic code search for Claude Code, Cursor, Windsurf, Continue.dev"
 readme = "README.md"
-license = { file = "../../LICENSE" }
+license = { file = "LICENSE" }
 authors = [{ name = "Trelix Contributors" }]
 requires-python = ">=3.11"
 keywords = ["mcp", "model-context-protocol", "code-search", "claude-code", "cursor", "code-intelligence", "llm", "ai-agent"]
