@@ -15,7 +15,10 @@ authors = [{ name = "Trelix Contributors" }]
 requires-python = ">=3.11,<3.14"
 keywords = [
     "code-search", "code-intelligence", "tree-sitter", "semantic-search",
-    "code-indexing", "hybrid-search", "developer-tools", "llm", "rag",
+    "hybrid-search", "llm", "rag", "developer-tools", "code-indexing",
+    "mcp", "model-context-protocol", "ast", "vector-search", "bm25",
+    "call-graph", "embeddings", "openai", "langchain", "llama-index",
+    "code-assistant", "code-retrieval", "static-analysis",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -26,9 +29,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
     "Topic :: Software Development :: Libraries :: Python Modules",
-    "Topic :: Utilities",
+    "Topic :: Text Processing :: Indexing",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
 ]
 dependencies = [
     # --- Parsing ---

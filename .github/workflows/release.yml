@@ -78,6 +78,30 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
+      - name: Build trelix-mcp
+        run: cd packages/trelix-mcp && python -m build
+
+      - name: Publish trelix-mcp to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/trelix-mcp/dist/
+
+      - name: Build trelix-langchain
+        run: cd packages/trelix-langchain && python -m build
+
+      - name: Publish trelix-langchain to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/trelix-langchain/dist/
+
+      - name: Build trelix-llama-index
+        run: cd packages/trelix-llama-index && python -m build
+
+      - name: Publish trelix-llama-index to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/trelix-llama-index/dist/
+
       - name: Download macOS binary
         uses: actions/download-artifact@v4
         with:

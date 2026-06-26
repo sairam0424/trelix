@@ -5,6 +5,9 @@
 [![Python](https://img.shields.io/pypi/pyversions/trelix)](https://pypi.org/project/trelix/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.4.0-blue)](CHANGELOG.md)
+[![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blue)](https://github.com/sairam0424/trelix)
+[![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
+[![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
 
 **Fast, reliable code indexing and retrieval.** Given a user query and a repository, trelix finds the most relevant code — using a 3-tier adaptive query planner, contextual hybrid search (semantic + keyword + grep), call-graph expansion, reranking, and LLM synthesis.
 
@@ -77,9 +80,26 @@ trelix update-index ./my-repo src/auth/middleware.py
 trelix migrate-vectors --to qdrant --url http://localhost:6333
 ```
 
+### GitHub Actions — index in CI
+
+Add the [trelix-index-action](https://github.com/sairam0424/trelix-index-action) to any workflow to build and cache the index on every push:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: sairam0424/trelix-index-action@v1
+```
+
+The action handles Python setup, caching (keyed to the commit SHA), and exposes the index path as an output so downstream steps can query it directly.
+
 ---
 
 ## Installation
+
+```bash
+# Homebrew (macOS — Apple Silicon)
+brew tap sairam0424/trelix
+brew install trelix
+```
 
 ```bash
 # Minimal — local embeddings only (no API key)
@@ -304,6 +324,35 @@ make eval
 
 # Full eval (trelix-self, 50 queries, MRR + Recall@1/5/10 + NDCG@10)
 make eval-full
+```
+
+---
+
+## Integrations
+
+trelix works across the AI developer ecosystem:
+
+| Integration | Install | Usage |
+|---|---|---|
+| **MCP** (Claude Code, Cursor, Windsurf, Continue.dev) | `pip install trelix-mcp` | `claude mcp add trelix -- trelix-mcp` |
+| **LangChain** | `pip install trelix-langchain` | `TrelixRetriever(repo_path=".")` |
+| **LlamaIndex** | `pip install trelix-llama-index` | `TrelixIndexRetriever(repo_path=".")` |
+| **GitHub Action** | `uses: sairam0424/trelix-index-action@v1` | Auto-index on push |
+| **Homebrew** (macOS) | `brew tap sairam0424/trelix` | `brew install trelix` |
+
+### MCP Quick Setup
+
+```bash
+pip install trelix-mcp
+claude mcp add trelix -- trelix-mcp
+```
+
+### LangChain Quick Setup
+
+```python
+from trelix_langchain import TrelixRetriever
+retriever = TrelixRetriever(repo_path="/path/to/repo")
+docs = retriever.invoke("how does authentication work?")
 ```
 
 ---

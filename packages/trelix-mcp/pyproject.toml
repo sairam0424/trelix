@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trelix_mcp"]
+
+[project]
+name = "trelix-mcp"
+version = "0.4.0"
+description = "MCP server for trelix — semantic code search for Claude Code, Cursor, Windsurf, Continue.dev"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Trelix Contributors" }]
+requires-python = ">=3.11"
+keywords = ["mcp", "model-context-protocol", "code-search", "claude-code", "cursor", "code-intelligence", "llm", "ai-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["trelix>=0.4.0", "mcp>=1.0.0", "fastmcp>=2.0.0"]
+
+[project.scripts]
+trelix-mcp = "trelix_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/sairam0424/trelix"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
