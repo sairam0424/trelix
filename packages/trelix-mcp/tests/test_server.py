@@ -6,12 +6,10 @@ Uses unittest.mock.patch to avoid touching real files or embedding models.
 from __future__ import annotations
 
 import sys
-import types
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,7 +90,7 @@ def test_search_code_returns_list_of_dicts() -> None:
     mock_ctx = _make_mock_context(mock_results)
 
     with (
-        patch("trelix_mcp.server.IndexConfig") as MockConfig,
+        patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.Retriever") as MockRetriever,
     ):
         MockRetriever.return_value.retrieve.return_value = mock_ctx

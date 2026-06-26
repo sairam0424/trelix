@@ -7,15 +7,15 @@ logging.basicConfig(
     format="[trelix-mcp] %(levelname)s %(message)s",
 )
 
-import signal
-from typing import Any, Literal
+import signal  # noqa: E402
+from typing import Any, Literal  # noqa: E402
 
-from fastmcp import FastMCP
+from fastmcp import FastMCP  # noqa: E402
 
-from trelix.core.config import EmbedderConfig, IndexConfig
-from trelix.indexing.indexer import Indexer
-from trelix.retrieval.retriever import Retriever
-from trelix.store.db import Database
+from trelix.core.config import EmbedderConfig, IndexConfig  # noqa: E402
+from trelix.indexing.indexer import Indexer  # noqa: E402
+from trelix.retrieval.retriever import Retriever  # noqa: E402
+from trelix.store.db import Database  # noqa: E402
 
 mcp = FastMCP("trelix")
 _log = logging.getLogger("trelix_mcp")

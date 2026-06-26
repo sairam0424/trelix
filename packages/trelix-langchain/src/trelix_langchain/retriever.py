@@ -1,7 +1,7 @@
-from langchain_core.retrievers import BaseRetriever
-from langchain_core.documents import Document
+
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
-from typing import List
+from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
 
 
 class TrelixRetriever(BaseRetriever):
@@ -10,9 +10,10 @@ class TrelixRetriever(BaseRetriever):
     k: int = 10
 
     def _get_trelix_retriever(self):
+        from typing import Literal, cast
+
         from trelix.core.config import EmbedderConfig, IndexConfig
         from trelix.retrieval.retriever import Retriever
-        from typing import Literal, cast
 
         config = IndexConfig(
             repo_path=self.repo_path,
@@ -30,7 +31,7 @@ class TrelixRetriever(BaseRetriever):
         query: str,
         *,
         run_manager: CallbackManagerForRetrieverRun,
-    ) -> List[Document]:
+    ) -> list[Document]:
         ctx = self._get_trelix_retriever().retrieve(query)
         return [
             Document(
