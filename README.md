@@ -80,6 +80,17 @@ trelix update-index ./my-repo src/auth/middleware.py
 trelix migrate-vectors --to qdrant --url http://localhost:6333
 ```
 
+### GitHub Actions — index in CI
+
+Add the [trelix-index-action](https://github.com/sairam0424/trelix-index-action) to any workflow to build and cache the index on every push:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: sairam0424/trelix-index-action@v1
+```
+
+The action handles Python setup, caching (keyed to the commit SHA), and exposes the index path as an output so downstream steps can query it directly.
+
 ---
 
 ## Installation
