@@ -105,6 +105,9 @@ Repository = "https://github.com/sairam0424/trelix"
 Documentation = "https://github.com/sairam0424/trelix#readme"
 Changelog = "https://github.com/sairam0424/trelix/blob/main/CHANGELOG.md"
 "Bug Tracker" = "https://github.com/sairam0424/trelix/issues"
+"MCP Server" = "https://pypi.org/project/trelix-mcp/"
+"LangChain" = "https://pypi.org/project/trelix-langchain/"
+"LlamaIndex" = "https://pypi.org/project/trelix-llama-index/"
 
 # ---------------------------------------------------------------------------
 # Tooling

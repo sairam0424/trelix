@@ -5,7 +5,7 @@ Thank you for your interest in contributing! This guide covers dev setup, testin
 ## Development Setup
 
 ```bash
-git clone https://github.com/trelix-dev/trelix
+git clone https://github.com/sairam0424/trelix
 cd trelix
 
 # Create virtualenv
@@ -69,4 +69,24 @@ Use the GitHub issue templates:
 
 ## Questions
 
-Open a [GitHub Discussion](https://github.com/trelix-dev/trelix/discussions) for questions.
+Open a [GitHub Discussion](https://github.com/sairam0424/trelix/discussions) for questions.
+
+---
+
+## Working on Sub-packages
+
+trelix ships three integration packages. To work on them:
+
+```bash
+# Install a sub-package in editable mode
+pip install -e packages/trelix-mcp/
+pip install -e packages/trelix-langchain/
+pip install -e packages/trelix-llama-index/
+
+# Run tests for a specific package
+python -m pytest packages/trelix-mcp/tests/ --override-ini="testpaths=packages" -v
+python -m pytest packages/trelix-langchain/tests/ --override-ini="testpaths=packages" -v
+python -m pytest packages/trelix-llama-index/tests/ --override-ini="testpaths=packages" -v
+```
+
+Each package has its own `pyproject.toml` and `tests/` directory. The `src/` layout mirrors the main package.

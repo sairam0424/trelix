@@ -1,4 +1,4 @@
-# Trelix Architecture (v0.4.0)
+# Trelix Architecture (v0.5.0)
 
 ## Indexing Pipeline (offline — `trelix index`)
 
@@ -174,11 +174,57 @@ Requires `pip install trelix[watch]` (watchdog).
 
 ---
 
-## Test Coverage (v0.4.0)
+## Test Coverage (v0.5.0)
 
 | Suite | Count | What's covered |
 |-------|-------|---------------|
-| Unit tests | **860** | All modules, all parsers, all new features |
+| Unit tests (core) | **860** | All modules, all parsers, all new features |
 | Integration tests | **39** | Full pipeline, recall eval, CLI |
 | Eval harness | 50 queries | MRR, Recall@1/5/10, NDCG@10 on trelix-self |
-| **Total** | **899** | |
+| trelix-mcp tests | **9** | 4 tools, stdout-clean MCP protocol test |
+| trelix-langchain tests | **19** | BaseRetriever, Document structure, metadata keys |
+| trelix-llama-index tests | **10** | BaseRetriever, NodeWithScore structure |
+| **Total** | **987** | |
+
+---
+
+## Ecosystem Packages (v0.5.0)
+
+| Package | PyPI | Purpose |
+|---------|------|---------|
+| `trelix` | [pypi.org/project/trelix](https://pypi.org/project/trelix/) | Core library + CLI |
+| `trelix-mcp` | [pypi.org/project/trelix-mcp](https://pypi.org/project/trelix-mcp/) | MCP server — Claude Code, Cursor, Windsurf |
+| `trelix-langchain` | [pypi.org/project/trelix-langchain](https://pypi.org/project/trelix-langchain/) | LangChain `BaseRetriever` |
+| `trelix-llama-index` | [pypi.org/project/trelix-llama-index](https://pypi.org/project/trelix-llama-index/) | LlamaIndex `BaseRetriever` |
+
+### MCP Server Tools
+
+```
+trelix-mcp (stdio transport)
+  ├── search_code(query, repo_path, k=10)      → list[dict]
+  ├── index_codebase(repo_path, provider)       → dict (stats)
+  ├── get_symbol(qualified_name, repo_path)     → dict | None
+  └── blast_radius(symbol_name, repo_path)      → list[dict]
+```
+
+### Integration Surface
+
+```
+Claude Code / Cursor / Windsurf / Continue.dev
+  └── pip install trelix-mcp
+      └── claude mcp add trelix -- trelix-mcp
+
+LangChain RAG pipeline
+  └── pip install trelix-langchain
+      └── TrelixRetriever(repo_path=".").invoke(query)
+
+LlamaIndex RAG pipeline
+  └── pip install trelix-llama-index
+      └── TrelixIndexRetriever(repo_path=".").retrieve(QueryBundle(query))
+
+GitHub Actions CI
+  └── uses: sairam0424/trelix-index-action@v1
+
+Homebrew (macOS)
+  └── brew tap sairam0424/trelix && brew install trelix
+```
