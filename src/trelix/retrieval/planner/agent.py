@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from trelix.retrieval.planner.models import (
     INTENT_STRATEGIES,
@@ -95,7 +95,7 @@ class AdaptiveRouter:
     # Public API
     # ------------------------------------------------------------------
 
-    def route(self, query: str, project_context: dict | None = None) -> QueryPlan:
+    def route(self, query: str, project_context: dict[str, Any] | None = None) -> QueryPlan:
         """
         Route *query* to the appropriate tier and return a QueryPlan.
 
@@ -166,7 +166,7 @@ class AdaptiveRouter:
     # Tier 2: delegate to the LLM single-step planner (existing behaviour)
     # ------------------------------------------------------------------
 
-    def _single_step_plan(self, query: str, project_context: dict | None) -> QueryPlan:
+    def _single_step_plan(self, query: str, project_context: dict[str, Any] | None) -> QueryPlan:
         # Call _plan_direct() (not plan()) to avoid re-entering the router loop.
         plan = self._get_planner()._plan_direct(query, project_context)
         # Stamp the tier (planner doesn't know about tiers)
@@ -177,7 +177,7 @@ class AdaptiveRouter:
     # Tier 3: LLM decomposes query → 2-3 parallel sub-queries
     # ------------------------------------------------------------------
 
-    def _multi_step_plan(self, query: str, project_context: dict | None) -> QueryPlan:
+    def _multi_step_plan(self, query: str, project_context: dict[str, Any] | None) -> QueryPlan:
         """
         Ask the LLM to decompose *query* into 2–3 focused sub-questions and
         build a parallel QueryPlan from the result.
@@ -237,7 +237,8 @@ class AdaptiveRouter:
         """
         prompt = DECOMPOSITION_PROMPT.format(query=query)
 
-        response = planner._client.chat.completions.create(  # type: ignore[union-attr]
+        assert planner._client is not None  # guaranteed by caller
+        response = planner._client.chat.completions.create(
             model=planner._model_name(),
             messages=[
                 {"role": "user", "content": prompt},
@@ -305,7 +306,7 @@ class QueryPlanner:
     # Public API
     # ------------------------------------------------------------------
 
-    def plan(self, query: str, project_context: dict | None = None) -> QueryPlan:
+    def plan(self, query: str, project_context: dict[str, Any] | None = None) -> QueryPlan:
         """
         Produce a QueryPlan for *query* via adaptive 3-tier routing.
 
@@ -327,7 +328,7 @@ class QueryPlanner:
     # Direct LLM call (used internally by AdaptiveRouter for Tier 2)
     # ------------------------------------------------------------------
 
-    def _plan_direct(self, query: str, project_context: dict | None = None) -> QueryPlan:
+    def _plan_direct(self, query: str, project_context: dict[str, Any] | None = None) -> QueryPlan:
         """
         Produce a single-step QueryPlan via one LLM tool-call.
 
@@ -349,7 +350,7 @@ class QueryPlanner:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_client(self, config: EmbedderConfig) -> object | None:
+    def _build_client(self, config: EmbedderConfig) -> Any | None:
         """
         Instantiate the appropriate OpenAI client.
 
@@ -393,14 +394,14 @@ class QueryPlanner:
             return self._config.azure_chat_deployment
         return self._config.openai_chat_model
 
-    def _build_user_message(self, query: str, project_context: dict | None) -> str:
+    def _build_user_message(self, query: str, project_context: dict[str, Any] | None) -> str:
         """Construct the user message, optionally including project context."""
         if project_context:
             context_str = json.dumps(project_context, indent=2)
             return f"Project context:\n{context_str}\n\nQuery: {query}"
         return f"Query: {query}"
 
-    def _call_llm(self, query: str, project_context: dict | None) -> QueryPlan:
+    def _call_llm(self, query: str, project_context: dict[str, Any] | None) -> QueryPlan:
         """
         Make ONE tool-call to the LLM and parse the result into a QueryPlan.
 
@@ -408,7 +409,8 @@ class QueryPlanner:
         """
         from openai import AzureOpenAI, OpenAI  # noqa: F401 — needed for type narrowing
 
-        response = self._client.chat.completions.create(  # type: ignore[union-attr]
+        assert self._client is not None  # guaranteed by _plan_direct's None check
+        response = self._client.chat.completions.create(
             model=self._model_name(),
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -422,20 +424,20 @@ class QueryPlanner:
 
         return self._parse_response(response, query)
 
-    def _parse_response(self, response: object, raw_query: str) -> QueryPlan:
+    def _parse_response(self, response: Any, raw_query: str) -> QueryPlan:
         """
         Parse the LLM tool-call response into a QueryPlan.
 
         Raises ValueError / KeyError on malformed output so the caller falls back.
         """
         # Navigate to the tool call arguments
-        choice = response.choices[0]  # type: ignore[union-attr]
+        choice = response.choices[0]
         tool_calls = choice.message.tool_calls
         if not tool_calls:
             raise ValueError("LLM did not return a tool call.")
 
         args_raw = tool_calls[0].function.arguments
-        args: dict = json.loads(args_raw)
+        args: dict[str, Any] = json.loads(args_raw)
 
         # Validate & coerce intent
         intent_str: str = args["intent"]

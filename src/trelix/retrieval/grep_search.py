@@ -127,7 +127,7 @@ def _body_search(
 
     matched: list[tuple[int, float]] = []
     for symbol_id, body in rows:
-        if match_fn(body):
+        if match_fn(body):  # type: ignore[no-untyped-call]
             matched.append((symbol_id, 0.8))
             if len(matched) >= limit:
                 break

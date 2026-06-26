@@ -25,6 +25,7 @@ import logging
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from trelix.core.config import IndexConfig
 from trelix.core.models import Chunk, RetrievedContext, SearchResult
@@ -42,7 +43,14 @@ from .graph import (
 )
 from .grep_search import grep_search
 from .planner.agent import QueryPlanner
-from .planner.models import IntentType, QueryPlan, RoutingTier, default_plan
+from .planner.models import (
+    IntentType,
+    QueryPlan,
+    RetrievalStrategy,
+    RoutingTier,
+    SubQuery,
+    default_plan,
+)
 from .reranker import rerank
 
 # Thread-local storage so parallel eval workers don't mix each other's traces
@@ -480,8 +488,8 @@ class Retriever:
 
     def _run_subquery_legs(
         self,
-        sq,  # SubQuery
-        strategy,  # RetrievalStrategy
+        sq: SubQuery,
+        strategy: RetrievalStrategy,
     ) -> dict[str, list[SearchResult]]:
         """
         Run all retrieval legs for a single sub-query.
@@ -601,7 +609,7 @@ class Retriever:
     # Structured per-query trace
     # ------------------------------------------------------------------
 
-    def _trace(self, section: str, data: dict) -> None:
+    def _trace(self, section: str, data: dict[str, Any]) -> None:
         """Write a named section into the current query's in-memory trace."""
         try:
             _trace_local.data[section] = data

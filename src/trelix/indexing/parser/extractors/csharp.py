@@ -615,7 +615,8 @@ class CSharpParser(BaseParser):
         kind = SymbolKind.METHOD if is_method else SymbolKind.FUNCTION
 
         if is_method:
-            class_name = symbols[parent_class_local_idx].name  # type: ignore[index]
+            assert parent_class_local_idx is not None  # guaranteed by is_method check
+            class_name = symbols[parent_class_local_idx].name
             qualified_name = f"{class_name}.{name}"
         else:
             qualified_name = name
@@ -676,7 +677,7 @@ class CSharpParser(BaseParser):
         decorators = self._get_attribute_texts(node, src)
 
         class_name = (
-            symbols[parent_class_local_idx].name  # type: ignore[index]
+            symbols[parent_class_local_idx].name
             if parent_class_local_idx is not None
             else name
         )
@@ -739,7 +740,7 @@ class CSharpParser(BaseParser):
         if not is_public:
             return
 
-        class_name = symbols[parent_class_local_idx].name  # type: ignore[index]
+        class_name = symbols[parent_class_local_idx].name
         body = self._txt(node, src)
         if len(body) > 500:
             body = body[:500] + "..."
@@ -783,7 +784,7 @@ class CSharpParser(BaseParser):
         if not var_decl:
             return
 
-        class_name = symbols[parent_class_local_idx].name  # type: ignore[index]
+        class_name = symbols[parent_class_local_idx].name
         body = self._txt(node, src).rstrip(";").strip()
         if len(body) > 500:
             body = body[:500] + "..."
@@ -875,7 +876,7 @@ class CSharpParser(BaseParser):
         if not is_public:
             return
 
-        class_name = symbols[parent_class_local_idx].name  # type: ignore[index]
+        class_name = symbols[parent_class_local_idx].name
         body = self._txt(node, src).rstrip(";").strip()
 
         var_decl = self._get_child_by_type(node, "variable_declaration")

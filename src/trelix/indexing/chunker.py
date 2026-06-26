@@ -19,6 +19,7 @@ Example chunk_text:
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import tiktoken
 
@@ -173,7 +174,7 @@ class ContextualChunker(Chunker):
     def __init__(
         self,
         config: ChunkerConfig,
-        llm_client: object | None = None,  # openai.OpenAI or compatible (object avoids hard import)
+        llm_client: Any | None = None,  # openai.OpenAI or compatible
     ) -> None:
         super().__init__(config)
         self._llm_client = llm_client
@@ -258,13 +259,14 @@ class ContextualChunker(Chunker):
             body=symbol.body[:800],
         )
         try:
-            response = self._llm_client.chat.completions.create(  # type: ignore[union-attr]
+            assert self._llm_client is not None  # guaranteed by _contextual_enabled check
+            response = self._llm_client.chat.completions.create(
                 model=self.config.contextual_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=self.config.contextual_max_tokens,
                 temperature=0,
             )
-            return response.choices[0].message.content.strip()
+            return response.choices[0].message.content.strip()  # type: ignore[no-any-return]
         except Exception as exc:  # noqa: BLE001
             logger.warning("ContextualChunker LLM call failed: %s", exc)
             return None

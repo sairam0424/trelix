@@ -21,7 +21,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig, RetrievalConfig
@@ -186,7 +186,8 @@ class GraphRAGSynthesizer:
         Returns the response text or raises on error.
         """
         model = self._model_name()
-        response = self._client.chat.completions.create(  # type: ignore[union-attr]
+        assert self._client is not None  # guaranteed by caller (should_use checks None)
+        response = self._client.chat.completions.create(
             model=model,
             messages=[
                 {
@@ -211,7 +212,7 @@ class GraphRAGSynthesizer:
             return self._embedder_config.azure_chat_deployment
         return self._embedder_config.openai_chat_model
 
-    def _build_client(self, config: EmbedderConfig) -> object | None:
+    def _build_client(self, config: EmbedderConfig) -> Any | None:
         """
         Instantiate the appropriate OpenAI client.
         Mirrors the pattern used in Synthesizer._build_client().

@@ -685,7 +685,7 @@ class CppParser(BaseParser):
 
     def _extract_declarator_name(self, decl_node: Node, src: bytes) -> str | None:
         """Extract function/variable name from declarator node."""
-        current = decl_node
+        current: Node | None = decl_node
         while current:
             if current.type == "identifier":
                 return self._txt(current, src)
