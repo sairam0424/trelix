@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dev deps
-        run: pip install ruff mypy pydantic pydantic-settings
+        run: pip install "ruff>=0.5.0" "mypy>=2.1.0,<2.2.0" "pydantic>=2.7.0" "pydantic-settings>=2.3.0"
       - name: Ruff check
         run: ruff check src/ tests/
       - name: Ruff format check

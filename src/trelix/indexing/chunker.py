@@ -141,7 +141,7 @@ class Chunker:
     def _truncate_chunk(self, chunk_text: str, max_tokens: int) -> str:
         """Truncate chunk to max_tokens by cutting body lines from the bottom."""
         tokens = self._tokenizer.encode(chunk_text)
-        truncated = self._tokenizer.decode(tokens[:max_tokens])
+        truncated: str = str(self._tokenizer.decode(tokens[:max_tokens]))
         return truncated + "\n# ... (truncated)"
 
     def count_tokens(self, text: str) -> int:
