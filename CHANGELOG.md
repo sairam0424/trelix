@@ -8,6 +8,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ---
 
+## [0.6.0] — 2026-06-27
+
+### Overview
+Contextual chunking is now production-ready — the feature works end-to-end with verified context summaries stored in the database and indexed in BM25. Two bugs fixed that prevented contextual summaries from actually persisting.
+
+### Fixed
+- **Contextual chunking context_summary persistence:** `ContextualChunker.build_chunks()` sets `symbol.context_summary` but the DB insert in `Indexer._insert_one()` happened before chunking ran. Fixed by adding an `UPDATE symbols SET context_summary = ?` pass after `build_chunks()` for any symbols that received summaries. All 66 test symbols now have `context_summary IS NOT NULL`.
+- **Contextual chunking LLM call:** `ContextualChunker._generate_summary()` used `max_tokens=` — unsupported by gpt-4o / newer Azure. Changed to `max_completion_tokens=` (consistent with synthesizer.py fix in v0.3.0).
+- **Test updated:** `test_llm_called_with_correct_arguments` asserts `max_completion_tokens` instead of `max_tokens`.
+
+### Verified
+- 66/66 symbols receive LLM context summaries stored in `symbols.context_summary`
+- Summaries indexed in `symbols_fts` — BM25 searches now include them
+- Recall@5: 10/10 = 100% on mini_repo (baseline maintained)
+
+### How to Enable Contextual Chunking
+
+```bash
+TRELIX_CHUNKER_CONTEXTUAL=true
+TRELIX_CHUNKER_CONTEXTUAL_MODEL=gpt-4o-mini
+TRELIX_EMBEDDER_PROVIDER=openai   # or azure
+trelix index ./your-repo
+```
+
+---
+
 ## [0.5.1] — 2026-06-27
 
 ### Fixed

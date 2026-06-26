@@ -263,7 +263,7 @@ class ContextualChunker(Chunker):
             response = self._llm_client.chat.completions.create(
                 model=self.config.contextual_model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=self.config.contextual_max_tokens,
+                max_completion_tokens=self.config.contextual_max_tokens,
                 temperature=0,
             )
             return response.choices[0].message.content.strip()  # type: ignore[no-any-return]

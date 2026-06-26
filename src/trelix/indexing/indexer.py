@@ -504,6 +504,16 @@ class Indexer:
         stats["files_indexed"] += 1
         stats["symbols_extracted"] += len(parse_result.symbols)
 
+        # Persist context_summary back to DB if ContextualChunker populated it
+        symbols_with_summary = [s for s in parse_result.symbols if s.context_summary and s.id]
+        if symbols_with_summary:
+            with self.db.transaction():
+                for sym in symbols_with_summary:
+                    self.db._conn.execute(
+                        "UPDATE symbols SET context_summary = ? WHERE id = ?",
+                        (sym.context_summary, sym.id),
+                    )
+
         if not chunks:
             return []
 
