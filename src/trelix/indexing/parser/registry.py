@@ -35,7 +35,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.JAVASCRIPT:
             try:
-                from .extractors.javascript import JavaScriptParser  # type: ignore[import]
+                from .extractors.javascript import JavaScriptParser
 
                 return JavaScriptParser()
             except ImportError:
@@ -43,7 +43,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.TYPESCRIPT | Language.TSX:
             try:
-                from .extractors.typescript import TypeScriptParser  # type: ignore[import]
+                from .extractors.typescript import TypeScriptParser
 
                 return TypeScriptParser(tsx=(language == Language.TSX))
             except ImportError:
@@ -51,7 +51,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.GO:
             try:
-                from .extractors.go import GoParser  # type: ignore[import]
+                from .extractors.go import GoParser
 
                 return GoParser()
             except ImportError:
@@ -59,7 +59,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.RUST:
             try:
-                from .extractors.rust import RustParser  # type: ignore[import]
+                from .extractors.rust import RustParser
 
                 return RustParser()
             except ImportError:
@@ -67,7 +67,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.JAVA:
             try:
-                from .extractors.java import JavaParser  # type: ignore[import]
+                from .extractors.java import JavaParser
 
                 return JavaParser()
             except ImportError:
@@ -75,7 +75,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.KOTLIN:
             try:
-                from .extractors.kotlin import KotlinParser  # type: ignore[import]
+                from .extractors.kotlin import KotlinParser
 
                 return KotlinParser()
             except ImportError:
@@ -83,7 +83,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.CPP:
             try:
-                from .extractors.cpp import CppParser  # type: ignore[import]
+                from .extractors.cpp import CppParser
 
                 return CppParser()
             except ImportError:
@@ -91,7 +91,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.C:
             try:
-                from .extractors.c import CParser  # type: ignore[import]
+                from .extractors.c import CParser
 
                 return CParser()
             except ImportError:
@@ -99,7 +99,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.CSHARP:
             try:
-                from .extractors.csharp import CSharpParser  # type: ignore[import]
+                from .extractors.csharp import CSharpParser
 
                 return CSharpParser()
             except ImportError:
@@ -107,7 +107,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.RAZOR:
             try:
-                from .extractors.razor import RazorParser  # type: ignore[import]
+                from .extractors.razor import RazorParser
 
                 return RazorParser()
             except ImportError:
@@ -115,7 +115,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.CSHTML:
             try:
-                from .extractors.cshtml import CshtmlParser  # type: ignore[import]
+                from .extractors.cshtml import CshtmlParser
 
                 return CshtmlParser()
             except ImportError:
@@ -123,7 +123,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.CSPROJ:
             try:
-                from .extractors.csproj import CsprojParser  # type: ignore[import]
+                from .extractors.csproj import CsprojParser
 
                 return CsprojParser()
             except ImportError:
@@ -131,7 +131,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.MARKDOWN:
             try:
-                from .extractors.markdown import MarkdownParser  # type: ignore[import]
+                from .extractors.markdown import MarkdownParser
 
                 return MarkdownParser()
             except ImportError:
@@ -139,7 +139,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.JSON:
             try:
-                from .extractors.json_config import JsonParser  # type: ignore[import]
+                from .extractors.json_config import JsonParser
 
                 return JsonParser()
             except ImportError:
@@ -147,7 +147,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.YAML:
             try:
-                from .extractors.yaml_config import YamlParser  # type: ignore[import]
+                from .extractors.yaml_config import YamlParser
 
                 return YamlParser()
             except ImportError:
@@ -155,7 +155,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.TOML:
             try:
-                from .extractors.toml_config import TomlParser  # type: ignore[import]
+                from .extractors.toml_config import TomlParser
 
                 return TomlParser()
             except ImportError:
@@ -163,7 +163,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.HTML:
             try:
-                from .extractors.html import HtmlParser  # type: ignore[import]
+                from .extractors.html import HtmlParser
 
                 return HtmlParser()
             except ImportError:
@@ -171,7 +171,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.CSS:
             try:
-                from .extractors.css import CssParser  # type: ignore[import]
+                from .extractors.css import CssParser
 
                 return CssParser()
             except ImportError:
@@ -179,7 +179,7 @@ def get_parser(language: Language) -> BaseParser | None:
 
         case Language.RUBY:
             try:
-                from .extractors.ruby import RubyParser  # type: ignore[import]
+                from .extractors.ruby import RubyParser
 
                 return RubyParser()
             except ImportError:
