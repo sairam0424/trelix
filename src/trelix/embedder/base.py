@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from trelix.core.config import EmbedderConfig
 
@@ -90,7 +91,7 @@ class AzureOpenAIEmbedder(BaseEmbedder):
         self._batch_size = config.batch_size
         self._async_client_config = config  # stored for lazy async client init
 
-    def _get_async_client(self):  # type: ignore[return]
+    def _get_async_client(self) -> Any:
         """Lazily create AsyncAzureOpenAI client (avoids import at module level)."""
         from openai import AsyncAzureOpenAI
 
@@ -152,7 +153,7 @@ class OpenAIEmbedder(BaseEmbedder):
         self._batch_size = config.batch_size
         self._async_client_config = config  # stored for lazy async client init
 
-    def _get_async_client(self):  # type: ignore[return]
+    def _get_async_client(self) -> Any:
         """Lazily create AsyncOpenAI client."""
         from openai import AsyncOpenAI
 
@@ -222,7 +223,7 @@ class LocalEmbedder(BaseEmbedder):
             show_progress_bar=False,
             convert_to_numpy=True,
         )
-        return embeddings.tolist()  # type: ignore[return-value]
+        return embeddings.tolist()  # type: ignore[no-any-return]
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed([text])[0]
@@ -233,7 +234,7 @@ class LocalEmbedder(BaseEmbedder):
         getter = getattr(self._model, "get_embedding_dimension", None) or getattr(
             self._model, "get_sentence_embedding_dimension", None
         )
-        return getter()  # type: ignore[return-value]
+        return getter()  # type: ignore[no-any-return, misc]
 
     # embed_async: inherited BaseEmbedder default (run_in_executor) — CPU-bound,
     # running in a thread keeps the event loop free.
@@ -274,7 +275,7 @@ class VoyageEmbedder(BaseEmbedder):
 
     def embed_query(self, text: str) -> list[float]:
         response = self._client.embed([text], model=self._model, input_type="query")
-        return response.embeddings[0]
+        return response.embeddings[0]  # type: ignore[no-any-return]
 
     @property
     def dimension(self) -> int:
@@ -313,7 +314,7 @@ class LocalCodeEmbedder(BaseEmbedder):
             show_progress_bar=False,
             convert_to_numpy=True,
         )
-        return embeddings.tolist()  # type: ignore[return-value]
+        return embeddings.tolist()  # type: ignore[no-any-return]
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed([text])[0]
@@ -324,7 +325,7 @@ class LocalCodeEmbedder(BaseEmbedder):
             self._model, "get_sentence_embedding_dimension", None
         )
         if getter is not None:
-            return getter()  # type: ignore[return-value]
+            return getter()  # type: ignore[no-any-return]
         # Fallback: SFR-Embedding-Code-2B_R native output dimension
         return 4096
 

@@ -76,7 +76,7 @@ class FileWalker:
         self.repo_root = Path(config.repo_path)
         self._gitignore_spec = self._load_gitignore_spec()
 
-    def _load_gitignore_spec(self) -> pathspec.PathSpec | None:
+    def _load_gitignore_spec(self) -> pathspec.PathSpec | None:  # type: ignore[type-arg]
         """Load .gitignore patterns from the repo root (and nested dirs later)."""
         gitignore_path = self.repo_root / ".gitignore"
         if not self.config.walker.respect_gitignore or not gitignore_path.exists():

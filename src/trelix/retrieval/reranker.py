@@ -73,7 +73,7 @@ def _cross_encoder_rerank(
         import io
         import os
 
-        from sentence_transformers import CrossEncoder  # type: ignore[import]
+        from sentence_transformers import CrossEncoder
     except ImportError:
         log.warning(
             "sentence-transformers is not installed; skipping cross-encoder reranking. "
@@ -136,7 +136,7 @@ def _cohere_rerank(
     retries are exhausted so the query pipeline still produces an answer.
     """
     try:
-        import requests  # type: ignore[import]
+        import requests
     except ImportError:
         log.warning(
             "requests is not installed; skipping Cohere reranking. "
@@ -169,7 +169,7 @@ def _cohere_rerank(
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)  # type: ignore[arg-type]
             resp.raise_for_status()
             data = resp.json()
 

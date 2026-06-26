@@ -51,13 +51,13 @@ def _get_python_language() -> Language:
     package (tree-sitter >=0.22).
     """
     try:
-        import tree_sitter_languages  # type: ignore[import]
+        import tree_sitter_languages  # noqa: F401
 
         return tree_sitter_languages.get_language("python")  # type: ignore[no-any-return]
     except ImportError:
-        import tree_sitter_python  # type: ignore[import]
+        import tree_sitter_python  # noqa: F401
 
-        return Language(tree_sitter_python.language())
+        return Language(tree_sitter_python.language())  # type: ignore[call-arg]
 
 
 def _make_parser(language: Language) -> Parser:
@@ -73,11 +73,11 @@ def _make_parser(language: Language) -> Parser:
     try:
         # tree-sitter 0.21 — Parser has set_language method
         p = Parser()
-        p.set_language(language)  # type: ignore[attr-defined]
+        p.set_language(language)
         return p
     except (TypeError, AttributeError):
         # tree-sitter >=0.22 — Language is passed to the constructor
-        return Parser(language)
+        return Parser(language)  # type: ignore[call-arg]
 
 
 class PythonParser(BaseParser):
@@ -509,7 +509,8 @@ class PythonParser(BaseParser):
         kind = SymbolKind.METHOD if is_method else SymbolKind.FUNCTION
 
         if is_method:
-            class_name = symbols[parent_class_local_idx].name  # type: ignore[index]
+            assert parent_class_local_idx is not None  # guaranteed by is_method check
+            class_name = symbols[parent_class_local_idx].name
             qualified_name = f"{class_name}.{name}"
         else:
             qualified_name = name
@@ -737,7 +738,7 @@ class PythonParser(BaseParser):
         # Detect whether this is a type-annotated field (has a 'type' child on assignment)
         has_annotation = any(c.type == "type" for c in assign_node.children)
 
-        parent_sym = symbols[class_local_idx]  # type: ignore[index]
+        parent_sym = symbols[class_local_idx]
         class_name = parent_sym.name
         is_enum_class = parent_sym.kind == SymbolKind.ENUM
         body = self._txt(stmt_node, src)

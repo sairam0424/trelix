@@ -82,7 +82,7 @@ class FileWatcher:
 
     def start(self) -> None:
         """Start the filesystem observer (non-blocking)."""
-        from watchdog.observers import Observer  # type: ignore[import-untyped]
+        from watchdog.observers import Observer
 
         handler = _TrelixEventHandler(self)
         observer = Observer()
@@ -266,15 +266,15 @@ class _TrelixEventHandler:
     # We inherit from FileSystemEventHandler dynamically to avoid importing
     # watchdog at module load time.
 
-    def on_modified(self, event: object) -> None:  # type: ignore[override]
+    def on_modified(self, event: object) -> None:
         if _is_file_event(event):
             self._watcher._schedule_reindex(_get_src_path(event))
 
-    def on_created(self, event: object) -> None:  # type: ignore[override]
+    def on_created(self, event: object) -> None:
         if _is_file_event(event):
             self._watcher._schedule_reindex(_get_src_path(event))
 
-    def on_deleted(self, event: object) -> None:  # type: ignore[override]
+    def on_deleted(self, event: object) -> None:
         if _is_file_event(event):
             self._watcher.handle_deleted(_get_src_path(event))
 

@@ -62,7 +62,7 @@ class RubyParser(BaseParser):
     def __init__(self) -> None:
         self._ts_lang = tree_sitter_languages.get_language(self._GRAMMAR)
         self._parser = Parser()
-        self._parser.set_language(self._ts_lang)  # type: ignore[attr-defined]
+        self._parser.set_language(self._ts_lang)
 
     @property
     def language_name(self) -> str:
@@ -533,6 +533,7 @@ class RubyParser(BaseParser):
         kind = SymbolKind.METHOD if is_inside_class else SymbolKind.FUNCTION
 
         if is_inside_class:
+            assert parent_class_local_idx is not None  # guaranteed by is_inside_class check
             parent_sym = symbols[parent_class_local_idx]
             parent_name = parent_sym.name
             # "ClassName.method" for singleton/class methods, "ClassName#method" for instance

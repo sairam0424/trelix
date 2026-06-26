@@ -37,6 +37,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
@@ -45,6 +46,7 @@ from trelix.core.config import IndexConfig
 from trelix.core.models import IndexedFile
 from trelix.embedder.base import BaseEmbedder, make_embedder
 from trelix.indexing.chunker import Chunker, ContextualChunker
+from trelix.indexing.parser.base import ParseResult
 from trelix.indexing.parser.registry import get_parser
 from trelix.indexing.walker import FileWalker
 from trelix.store.db import Database
@@ -63,7 +65,7 @@ class _ParsedFile:
     """Carries the result of Phase 1 for a single file."""
 
     file: IndexedFile
-    parse_result: object  # ParseResult | None
+    parse_result: ParseResult | None  # ParseResult | None
     skipped: bool = False  # True  → hash unchanged, nothing to do
     error: str | None = None  # non-None → parse failed
 
@@ -188,7 +190,7 @@ class Indexer:
         self,
         config: IndexConfig,
         quiet: bool = False,
-        progress_callback: Callable[[dict], None] | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.config = config
         self._console = Console(quiet=quiet)
@@ -213,7 +215,7 @@ class Indexer:
         if not config.chunker.contextual:
             return Chunker(config.chunker)
 
-        llm_client = None
+        llm_client: Any | None = None
         embedder_cfg = config.embedder
         try:
             if embedder_cfg.provider == "azure":
@@ -249,7 +251,7 @@ class Indexer:
         phase: int,
         phase_label: str,
         phase_fraction: float,
-        stats: dict,
+        stats: dict[str, Any],
     ) -> None:
         """Call the progress callback with an overall progress value 0→1."""
         if self._progress_cb is None:
@@ -265,9 +267,9 @@ class Indexer:
             }
         )
 
-    def index(self) -> dict:
+    def index(self) -> dict[str, Any]:
         t_start = time.perf_counter()
-        stats: dict = {
+        stats: dict[str, Any] = {
             "files_found": 0,
             "files_indexed": 0,
             "files_skipped": 0,
@@ -445,6 +447,7 @@ class Indexer:
         """
         file = pf.file
         parse_result = pf.parse_result
+        assert parse_result is not None  # guaranteed by _insert_and_chunk_all's None check
 
         # Upsert file record → get real file_id
         file_id = self.db.upsert_file(file)
@@ -640,7 +643,7 @@ class Indexer:
 
     def _store_call_edges(
         self,
-        edges: list,
+        edges: list[Any],
         local_to_db: dict[int, int],
     ) -> None:
         """
@@ -663,7 +666,7 @@ class Indexer:
 
     def _store_type_edges(
         self,
-        edges: list,
+        edges: list[Any],
         local_to_db: dict[int, int],
     ) -> None:
         """
@@ -692,7 +695,7 @@ class Indexer:
     # Single-file update (called by `trelix update-index`)
     # ──────────────────────────────────────────────────────────────────────
 
-    def index_file(self, file_path: str) -> dict:
+    def index_file(self, file_path: str) -> dict[str, Any]:
         """
         Re-index a single file.  Faster than a full `--incremental` run because
         it skips the repo walk entirely.
@@ -745,7 +748,7 @@ class Indexer:
 
             pf = self._parse_one(file)
 
-            inner_stats: dict = {
+            inner_stats: dict[str, Any] = {
                 "files_indexed": 0,
                 "symbols_extracted": 0,
                 "chunks_total": 0,
