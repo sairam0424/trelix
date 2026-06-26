@@ -328,6 +328,35 @@ make eval-full
 
 ---
 
+## Integrations
+
+trelix works across the AI developer ecosystem:
+
+| Integration | Install | Usage |
+|---|---|---|
+| **MCP** (Claude Code, Cursor, Windsurf, Continue.dev) | `pip install trelix-mcp` | `claude mcp add trelix -- trelix-mcp` |
+| **LangChain** | `pip install trelix-langchain` | `TrelixRetriever(repo_path=".")` |
+| **LlamaIndex** | `pip install trelix-llama-index` | `TrelixIndexRetriever(repo_path=".")` |
+| **GitHub Action** | `uses: sairam0424/trelix-index-action@v1` | Auto-index on push |
+| **Homebrew** (macOS) | `brew tap sairam0424/trelix` | `brew install trelix` |
+
+### MCP Quick Setup
+
+```bash
+pip install trelix-mcp
+claude mcp add trelix -- trelix-mcp
+```
+
+### LangChain Quick Setup
+
+```python
+from trelix_langchain import TrelixRetriever
+retriever = TrelixRetriever(repo_path="/path/to/repo")
+docs = retriever.invoke("how does authentication work?")
+```
+
+---
+
 ## Development
 
 ```bash
