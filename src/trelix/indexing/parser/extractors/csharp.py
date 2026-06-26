@@ -677,9 +677,7 @@ class CSharpParser(BaseParser):
         decorators = self._get_attribute_texts(node, src)
 
         class_name = (
-            symbols[parent_class_local_idx].name
-            if parent_class_local_idx is not None
-            else name
+            symbols[parent_class_local_idx].name if parent_class_local_idx is not None else name
         )
         qualified_name = f"{class_name}.{name}"
 
