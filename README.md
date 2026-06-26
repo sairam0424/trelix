@@ -197,29 +197,29 @@ CoIR benchmark scores from [archersama.github.io/coir](https://archersama.github
 
 ```mermaid
 flowchart TD
-    subgraph INDEXING["INDEXING  (offline — trelix index)"]
-        A[Repository] --> B[FileWalker\n.gitignore-aware\nSHA-256 change detection]
-        B --> C[Tree-sitter Parser\n20 languages\nsymbols + call/import/type edges]
-        C --> D[ContextualChunker\nLLM context summary\n+ breadcrumb header]
-        D --> E[Embedder\nvoyage | local-code | openai | azure | local]
-        E --> F[(sqlite-vec HNSW\nor Qdrant\nvector store)]
-        C --> G[(SQLite DB\nfiles, symbols,\ncall_graph, imports,\nFTS5 BM25)]
+    subgraph INDEXING["INDEXING — trelix index"]
+        A[Repository] --> B[FileWalker]
+        B --> C[Tree-sitter Parser: 20 languages]
+        C --> D[ContextualChunker: LLM summary + breadcrumb]
+        D --> E[Embedder: voyage / local-code / openai / azure / local]
+        E --> F[(sqlite-vec HNSW or Qdrant)]
+        C --> G[(SQLite: symbols, call_graph, FTS5 BM25)]
     end
 
-    subgraph RETRIEVAL["RETRIEVAL  (per query — trelix search / ask)"]
-        H[User Query] --> I[AdaptiveRouter\nTier 1: direct\nTier 2: 8-intent\nTier 3: multi-step]
-        I --> J[Vector Search\nHyDE snippet → ANN]
-        I --> K[Contextual BM25\nFTS5 + context summaries]
-        I --> L[Grep Search\nexact / regex]
-        J --> M[RRF Fusion\nk=60]
+    subgraph RETRIEVAL["RETRIEVAL — trelix search / ask"]
+        H[User Query] --> I[AdaptiveRouter: direct / 8-intent / multi-step]
+        I --> J[Vector Search: HyDE + ANN]
+        I --> K[Contextual BM25: FTS5 + summaries]
+        I --> L[Grep Search: exact / regex]
+        J --> M[RRF Fusion k=60]
         K --> M
         L --> M
-        M --> N[Graph Expansion\ncall_graph qualified-name\nimport_graph + type_edges]
-        N --> O[Reranker\nCohere | cross-encoder]
-        O --> P[Context Assembler\ngreedy | breadth_first]
+        M --> N[Graph Expansion: call_graph + imports + types]
+        N --> O[Reranker: Cohere / cross-encoder]
+        O --> P[Context Assembler: greedy / breadth_first]
         P --> Q{Context size?}
-        Q -->|≤8k tokens| R[Direct LLM Synthesis]
-        Q -->|>8k tokens| S[GraphRAG Map-Reduce\nmap → partial answers\nreduce → final answer]
+        Q -->|8k tokens or less| R[Direct LLM Synthesis]
+        Q -->|more than 8k tokens| S[GraphRAG Map-Reduce]
     end
 
     F --> J
