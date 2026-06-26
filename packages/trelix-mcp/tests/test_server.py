@@ -15,6 +15,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_result(
     file: str = "src/foo.py",
     symbol: str = "foo.bar",
@@ -50,23 +51,27 @@ def _make_mock_context(results: list[MagicMock]) -> MagicMock:
 # Module import + basic structure
 # ---------------------------------------------------------------------------
 
+
 def test_server_importable() -> None:
     import trelix_mcp.server as srv  # noqa: F401
 
 
 def test_mcp_attribute_exists() -> None:
     import trelix_mcp.server as srv
+
     assert hasattr(srv, "mcp"), "server.py must expose a top-level `mcp` object"
 
 
 def test_main_callable() -> None:
     import trelix_mcp.server as srv
+
     assert callable(srv.main)
 
 
 # ---------------------------------------------------------------------------
 # 4 tools registered
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_four_tools_registered() -> None:
@@ -82,6 +87,7 @@ async def test_four_tools_registered() -> None:
 # ---------------------------------------------------------------------------
 # search_code
 # ---------------------------------------------------------------------------
+
 
 def test_search_code_returns_list_of_dicts() -> None:
     import trelix_mcp.server as srv
@@ -99,7 +105,16 @@ def test_search_code_returns_list_of_dicts() -> None:
     assert isinstance(results, list)
     assert len(results) == 1
     item = results[0]
-    assert set(item.keys()) >= {"file", "symbol", "kind", "lines", "score", "source", "body", "language"}
+    assert set(item.keys()) >= {
+        "file",
+        "symbol",
+        "kind",
+        "lines",
+        "score",
+        "source",
+        "body",
+        "language",
+    }
 
 
 def test_search_code_respects_k_limit() -> None:
@@ -122,6 +137,7 @@ def test_search_code_respects_k_limit() -> None:
 # ---------------------------------------------------------------------------
 # index_codebase
 # ---------------------------------------------------------------------------
+
 
 def test_index_codebase_returns_dict() -> None:
     import trelix_mcp.server as srv
@@ -153,6 +169,7 @@ def test_index_codebase_returns_dict() -> None:
 # blast_radius deduplication
 # ---------------------------------------------------------------------------
 
+
 def test_blast_radius_deduplicates_files() -> None:
     """Two results sharing the same file should produce only one output entry."""
     import trelix_mcp.server as srv
@@ -179,6 +196,7 @@ def test_blast_radius_deduplicates_files() -> None:
 # ---------------------------------------------------------------------------
 # CRITICAL: no stdout bytes on import
 # ---------------------------------------------------------------------------
+
 
 def test_server_import_produces_no_stdout(capsys: pytest.CaptureFixture[str]) -> None:
     """Importing server.py must not write anything to stdout.
