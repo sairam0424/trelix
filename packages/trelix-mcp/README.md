@@ -1,5 +1,7 @@
 # trelix-mcp
 
+<!-- mcp-name: io.github.sairam0424/trelix -->
+
 MCP server for [trelix](https://github.com/sairam0424/trelix) — semantic code search for Claude Code, Cursor, Windsurf, and Continue.dev.
 
 ## Install
