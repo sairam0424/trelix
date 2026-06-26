@@ -55,3 +55,4 @@ Thumbs.db
 *.tar.gz
 *.whl
 MANIFEST
+.superpowers/

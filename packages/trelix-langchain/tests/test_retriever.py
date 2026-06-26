@@ -9,14 +9,12 @@ Strategy:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
-
 from trelix_langchain import TrelixRetriever
-
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal stubs that mimic trelix data-model shapes

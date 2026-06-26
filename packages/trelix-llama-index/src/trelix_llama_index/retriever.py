@@ -10,9 +10,10 @@ class TrelixIndexRetriever(BaseRetriever):
         super().__init__()
 
     def _get_trelix_retriever(self):
+        from typing import Literal, cast
+
         from trelix.core.config import EmbedderConfig, IndexConfig
         from trelix.retrieval.retriever import Retriever
-        from typing import Literal, cast
 
         config = IndexConfig(
             repo_path=self._repo_path,
