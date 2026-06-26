@@ -18,8 +18,8 @@ def hash_password(pwd: str) -> str:
 
     Example::
 
-        stored = hash_password("s3cr3t")
-        assert verify_password("s3cr3t", stored) is True
+        stored = hash_password("example-password")
+        assert verify_password("example-password", stored) is True
     """
     salt = secrets.token_hex(16)
     digest = hashlib.sha256(f"{salt}{pwd}".encode()).hexdigest()
@@ -44,9 +44,9 @@ def verify_password(pwd: str, hashed: str) -> bool:
 
     Example::
 
-        stored = hash_password("hunter2")
-        assert verify_password("hunter2", stored) is True
-        assert verify_password("wrong", stored) is False
+        stored = hash_password("example-password")
+        assert verify_password("example-password", stored) is True
+        assert verify_password("wrong-password", stored) is False
     """
     if ":" not in hashed:
         raise ValueError(f"Invalid hash format: {hashed!r}")
