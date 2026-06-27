@@ -1,18 +1,30 @@
 """
-Embedder abstraction — five providers, same interface.
+Embedder abstraction — seven providers, same interface.
 
-  local       → LocalEmbedder         (sentence-transformers, no API key needed)
-  openai      → OpenAIEmbedder        (standard OpenAI API)
-  azure       → AzureOpenAIEmbedder   (Azure OpenAI, uses AZURE_* env vars)
-  voyage      → VoyageEmbedder        (Voyage AI voyage-code-3, 1024 dims, 56.26 CoIR)
-  local-code  → LocalCodeEmbedder     (SFR-Embedding-Code-2B_R, 4096 dims, 67.41 CoIR)
+  local          → LocalEmbedder           (sentence-transformers, no API key)
+  openai         → OpenAIEmbedder          (text-embedding-3-large, 3072 dims)
+  azure          → AzureOpenAIEmbedder     (Azure OpenAI, AZURE_* env vars)
+  voyage         → VoyageEmbedder          (voyage-code-3, 1024 dims, 56.26 CoIR)
+  local-code     → LocalCodeEmbedder       (SFR-Embedding-Code-2B_R, 4096 dims, 67.41 CoIR)
+  bedrock-titan  → BedrockTitanEmbedder    (amazon.titan-embed-text-v2, 256/512/1024 dims)
+  bedrock-cohere → BedrockCohereEmbedder   (cohere.embed-english-v3, 1024 dims)
 
 The rest of the pipeline only ever calls embed() / embed_query().
-Switching provider = change one line in config (TRELIX_EMBEDDER_PROVIDER).
+Switching provider = set TRELIX_EMBEDDER_PROVIDER in .env — zero code changes.
+
+AWS credentials (bedrock-titan / bedrock-cohere):
+  Reuses AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY from .env (same as LLMConfig).
+  Base64-encoded credentials are decoded transparently.
+
+Titan dimension trade-off:
+  1024 → matches Voyage CoIR quality, 4× storage vs 256
+  512  → balanced quality/storage sweet spot for most repos
+  256  → minimum — good for large repos where storage matters
 
 Async support (U5):
   embed_async(texts) is available on all providers for concurrent batch API calls.
   OpenAI / Azure: true async via AsyncOpenAI / AsyncAzureOpenAI clients.
+  Bedrock: uses run_in_executor (boto3 is sync-only; one thread per batch chunk).
   Local / VoyageEmbedder (sync library): run_in_executor (CPU-bound or sync SDK).
   BaseEmbedder provides a default fallback via run_in_executor for any subclass
   that does not override embed_async.
@@ -330,12 +342,176 @@ class LocalCodeEmbedder(BaseEmbedder):
         return 4096
 
 
+class _BedrockEmbedderBase(BaseEmbedder):
+    """
+    Shared boto3 client setup and credential decode for both Bedrock embedders.
+
+    Bedrock embedding uses invoke_model (not Converse) — completely different
+    endpoint from the chat API. Credentials reuse AWS_* env vars already in .env.
+    """
+
+    @staticmethod
+    def _decode_credential(value: str) -> str:
+        """Transparently decode base64-encoded credentials stored in .env."""
+        import base64
+
+        try:
+            decoded = base64.b64decode(value).decode("utf-8")
+            if decoded.isprintable() and "\n" not in decoded:
+                return decoded
+        except Exception:  # noqa: BLE001
+            pass
+        return value
+
+    def _make_boto3_client(self, config: EmbedderConfig) -> Any:
+        try:
+            import boto3
+        except ImportError as exc:
+            raise ImportError(
+                "Bedrock embedders require boto3. Install it with: pip install 'trelix[bedrock]'"
+            ) from exc
+        session_kwargs: dict[str, Any] = {}
+        if config.bedrock_aws_profile:
+            session_kwargs["profile_name"] = config.bedrock_aws_profile
+        session = boto3.Session(**session_kwargs)
+        client_kwargs: dict[str, Any] = {"region_name": config.bedrock_aws_region}
+        if config.bedrock_aws_access_key_id:
+            client_kwargs["aws_access_key_id"] = self._decode_credential(
+                config.bedrock_aws_access_key_id
+            )
+        if config.bedrock_aws_secret_access_key:
+            client_kwargs["aws_secret_access_key"] = self._decode_credential(
+                config.bedrock_aws_secret_access_key
+            )
+        return session.client("bedrock-runtime", **client_kwargs)
+
+
+class BedrockTitanEmbedder(_BedrockEmbedderBase):
+    """
+    AWS Bedrock Titan Embed Text v2 embedder.
+
+    Model: amazon.titan-embed-text-v2:0
+    Dimensions: 256 | 512 | 1024 (configurable — default 1024)
+    Normalize: True (unit vectors — better cosine similarity)
+
+    Trade-offs vs other providers:
+      - No extra API key needed beyond AWS creds already in .env
+      - 1024 dims matches Voyage quality for general-purpose retrieval
+      - 256 dims: 4× lower storage, good for very large repos
+      - Batch limit: 1 document per invoke_model call (no batching in Titan)
+        → each text in the batch is a separate boto3 call, parallelised
+          in embed_async via asyncio.gather(run_in_executor) per text
+    """
+
+    # Titan API: one text per call — no native batching
+    _BATCH_SIZE = 1
+
+    def __init__(self, config: EmbedderConfig) -> None:
+        self._client = self._make_boto3_client(config)
+        self._model = config.bedrock_titan_model
+        self._dims = config.bedrock_titan_dimensions
+        self._normalize = config.bedrock_titan_normalize
+
+    def _embed_one(self, text: str) -> list[float]:
+        import json
+
+        body = json.dumps(
+            {
+                "inputText": text,
+                "dimensions": self._dims,
+                "normalize": self._normalize,
+            }
+        )
+        response = self._client.invoke_model(
+            modelId=self._model,
+            body=body,
+            contentType="application/json",
+            accept="application/json",
+        )
+        return json.loads(response["body"].read())["embedding"]  # type: ignore[no-any-return]
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed_one(t) for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed_one(text)
+
+    async def embed_async(self, texts: list[str]) -> list[list[float]]:
+        """Parallelise per-text boto3 calls in a thread pool."""
+        loop = asyncio.get_event_loop()
+        tasks = [loop.run_in_executor(_get_sync_executor(), self._embed_one, t) for t in texts]
+        return list(await asyncio.gather(*tasks))
+
+    @property
+    def dimension(self) -> int:
+        return self._dims
+
+
+class BedrockCohereEmbedder(_BedrockEmbedderBase):
+    """
+    AWS Bedrock Cohere Embed English v3 embedder.
+
+    Model: cohere.embed-english-v3
+    Dimensions: 1024 (fixed)
+    Batch limit: 96 texts per invoke_model call (Cohere API limit)
+
+    Distinguishes document vs query embeddings via input_type — same pattern
+    as VoyageEmbedder.  document embeddings use "search_document",
+    query embeddings use "search_query".
+
+    Why Cohere over Titan for code retrieval:
+      - Cohere embed-english-v3 is trained on diverse code/text datasets
+      - Asymmetric retrieval (doc vs query input_type) improves precision
+      - Fixed 1024 dims — predictable storage, no tuning needed
+    """
+
+    _BATCH_LIMIT = 96  # Cohere Bedrock API: max 96 texts per call
+
+    def __init__(self, config: EmbedderConfig) -> None:
+        self._client = self._make_boto3_client(config)
+        self._model = config.bedrock_cohere_model
+
+    def _embed_batch(self, texts: list[str], input_type: str) -> list[list[float]]:
+        import json
+
+        body = json.dumps(
+            {
+                "texts": texts,
+                "input_type": input_type,
+                "truncate": "END",  # silently truncate overlong inputs
+            }
+        )
+        response = self._client.invoke_model(
+            modelId=self._model,
+            body=body,
+            contentType="application/json",
+            accept="application/json",
+        )
+        return json.loads(response["body"].read())["embeddings"]  # type: ignore[no-any-return]
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        results: list[list[float]] = []
+        for i in range(0, len(texts), self._BATCH_LIMIT):
+            batch = texts[i : i + self._BATCH_LIMIT]
+            results.extend(self._embed_batch(batch, "search_document"))
+        return results
+
+    def embed_query(self, text: str) -> list[float]:
+        # Cohere distinguishes query from document — use search_query for queries
+        return self._embed_batch([text], "search_query")[0]
+
+    @property
+    def dimension(self) -> int:
+        return 1024
+
+
 def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
     """Factory — instantiate the right embedder from config.provider.
 
     Args:
         config: EmbedderConfig with provider set to one of:
-            "local", "openai", "azure", "voyage", "local-code".
+            "local", "openai", "azure", "voyage", "local-code",
+            "bedrock-titan", "bedrock-cohere".
 
     Returns:
         The appropriate BaseEmbedder subclass instance.
@@ -355,8 +531,13 @@ def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
             return VoyageEmbedder(config)
         case "local-code":
             return LocalCodeEmbedder(config)
+        case "bedrock-titan":
+            return BedrockTitanEmbedder(config)
+        case "bedrock-cohere":
+            return BedrockCohereEmbedder(config)
         case _:
             raise ValueError(
                 f"Unknown embedder provider: {config.provider!r}. "
-                "Expected one of: 'local', 'openai', 'azure', 'voyage', 'local-code'."
+                "Expected one of: 'local', 'openai', 'azure', 'voyage', "
+                "'local-code', 'bedrock-titan', 'bedrock-cohere'."
             )

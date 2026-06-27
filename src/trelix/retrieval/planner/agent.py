@@ -235,19 +235,41 @@ class AdaptiveRouter:
         Returns a list of 2–3 sub-question strings.
         Raises ValueError if parsing fails.
         """
+        from trelix.llm.client import ChatMessage, TrelixChatClient
+
         prompt = DECOMPOSITION_PROMPT.format(query=query)
 
-        assert planner._client is not None  # guaranteed by caller
-        response = planner._client.chat.completions.create(
-            model=planner._model_name(),
-            messages=[
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            timeout=15.0,
+        # Detect if a raw client was injected directly (e.g. by tests)
+        _backend_internal = (
+            getattr(planner._llm_client, "_client", None)
+            if isinstance(planner._llm_client, TrelixChatClient)
+            else None
         )
+        _use_raw = planner._client is not None and planner._client is not _backend_internal
 
-        raw = response.choices[0].message.content or ""
+        if isinstance(planner._llm_client, TrelixChatClient) and not _use_raw:
+            response = planner._llm_client.complete(
+                messages=[ChatMessage(role="user", content=prompt)],
+                max_tokens=256,
+                temperature=0.0,
+            )
+            raw = response.content
+        else:
+            # Legacy path: raw openai client (backward compat / test injection via _client)
+            assert planner._client is not None  # guaranteed by caller
+            legacy_response = planner._client.chat.completions.create(  # type: ignore[union-attr]
+                model=(
+                    planner._config.azure_chat_deployment
+                    if planner._config.provider == "azure"
+                    else planner._config.openai_chat_model
+                ),
+                messages=[
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                timeout=15.0,
+            )
+            raw = legacy_response.choices[0].message.content or ""
         # Strip markdown fences if the model wraps the JSON
         raw = raw.strip()
         if raw.startswith("```"):
@@ -297,7 +319,20 @@ class QueryPlanner:
 
     def __init__(self, config: EmbedderConfig) -> None:
         self._config = config
-        self._client = self._build_client(config)
+        # Build LLM client via factory
+        from trelix.core.config import LLMConfig
+        from trelix.llm.client import ChatMessage as _ChatMessage  # noqa: F401
+        from trelix.llm.factory import build_chat_client
+
+        llm_cfg = LLMConfig(
+            provider=config.provider if config.provider in ("openai", "azure") else "openai",
+            _env_file=None,  # type: ignore[call-arg]
+        )
+        self._llm_client = build_chat_client(llm_cfg)
+        # Keep _client for the None check in _plan_direct and AdaptiveRouter
+        self._client = (
+            self._llm_client._client if hasattr(self._llm_client, "_client") else self._llm_client
+        )
         # AdaptiveRouter is initialised lazily on first plan() call to avoid
         # circular reference issues during __init__ of the router itself.
         self._router: AdaptiveRouter | None = None
@@ -350,50 +385,6 @@ class QueryPlanner:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_client(self, config: EmbedderConfig) -> Any | None:
-        """
-        Instantiate the appropriate OpenAI client.
-
-        Returns None when no usable API key is present (e.g. provider=local),
-        which causes plan() to fall back immediately.
-        """
-        if config.provider == "azure":
-            if not config.azure_api_key or not config.azure_endpoint:
-                logger.debug("QueryPlanner: Azure credentials not set, planner disabled.")
-                return None
-            try:
-                from openai import AzureOpenAI
-
-                return AzureOpenAI(
-                    api_key=config.azure_api_key,
-                    azure_endpoint=config.azure_endpoint,
-                    api_version=config.azure_api_version,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("QueryPlanner: could not create AzureOpenAI client: %s", exc)
-                return None
-
-        if config.provider == "openai":
-            if not config.openai_api_key:
-                logger.debug("QueryPlanner: OPENAI_API_KEY not set, planner disabled.")
-                return None
-            try:
-                from openai import OpenAI
-
-                return OpenAI(api_key=config.openai_api_key)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("QueryPlanner: could not create OpenAI client: %s", exc)
-                return None
-
-        # provider == "local" — no chat API available
-        return None
-
-    def _model_name(self) -> str:
-        """Return the chat model name to use based on the configured provider."""
-        if self._config.provider == "azure":
-            return self._config.azure_chat_deployment
-        return self._config.openai_chat_model
-
     def _build_user_message(self, query: str, project_context: dict[str, Any] | None) -> str:
         """Construct the user message, optionally including project context."""
         if project_context:
@@ -407,26 +398,62 @@ class QueryPlanner:
 
         Raises on any failure so the caller can fall back cleanly.
         """
-        from openai import AzureOpenAI, OpenAI  # noqa: F401 — needed for type narrowing
+        from trelix.llm.client import ChatMessage
 
-        assert self._client is not None  # guaranteed by _plan_direct's None check
-        response = self._client.chat.completions.create(
-            model=self._model_name(),
+        result = self._llm_client.tool_call(
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": self._build_user_message(query, project_context)},
+                ChatMessage(role="system", content=SYSTEM_PROMPT),
+                ChatMessage(role="user", content=self._build_user_message(query, project_context)),
             ],
             tools=[PLANNER_TOOL_SCHEMA],
-            tool_choice={"type": "function", "function": {"name": "produce_query_plan"}},
-            temperature=0.0,
-            timeout=15.0,
+            force_tool="produce_query_plan",
+            max_tokens=512,
         )
+        return self._parse_tool_response(result.tool_arguments, query)
 
-        return self._parse_response(response, query)
+    def _parse_tool_response(self, args: dict[str, Any], raw_query: str) -> QueryPlan:
+        """
+        Parse an already-decoded tool_arguments dict into a QueryPlan.
+        Used by the new TrelixChatClient path in _call_llm.
+
+        Raises ValueError / KeyError on malformed output so the caller falls back.
+        """
+        intent_str: str = args["intent"]
+        intent = IntentType(intent_str)
+
+        if intent not in INTENT_STRATEGIES:
+            raise ValueError(f"Intent {intent!r} not in INTENT_STRATEGIES.")
+
+        strategy = INTENT_STRATEGIES[intent]
+        execution_mode: str = args.get("execution_mode", "parallel")
+
+        sub_queries: list[SubQuery] = []
+        for sq_raw in args["sub_queries"]:
+            sub_queries.append(
+                SubQuery(
+                    semantic_query=sq_raw["semantic_query"],
+                    hyde_snippet=sq_raw.get("hyde_snippet", ""),
+                    bm25_tokens=sq_raw.get("bm25_tokens", []),
+                    grep_hints=sq_raw.get("grep_hints", []),
+                    file_hints=sq_raw.get("file_hints", []),
+                    depends_on=sq_raw.get("depends_on", []),
+                )
+            )
+
+        if not sub_queries:
+            raise ValueError("LLM returned an empty sub_queries list.")
+
+        return QueryPlan(
+            intent=intent,
+            execution_mode=execution_mode,
+            strategy=strategy,
+            sub_queries=sub_queries,
+            raw_query=raw_query,
+        )
 
     def _parse_response(self, response: Any, raw_query: str) -> QueryPlan:
         """
-        Parse the LLM tool-call response into a QueryPlan.
+        Parse the LLM tool-call response into a QueryPlan (legacy raw-client path).
 
         Raises ValueError / KeyError on malformed output so the caller falls back.
         """
