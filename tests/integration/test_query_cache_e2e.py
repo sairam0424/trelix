@@ -5,14 +5,13 @@ These tests use mocked embedders — no real API calls. They verify that the
 Retriever calls embed_query() exactly once for repeated queries when the cache
 is enabled, and twice when it is disabled.
 """
+
 from __future__ import annotations
 
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
+from trelix.core.config import IndexConfig, RetrievalConfig
 
 
 def _make_config(tmp: str, cache_size: int = 256) -> IndexConfig:
@@ -27,7 +26,11 @@ def _mock_retriever_deps(retriever: object, vector: list[float]) -> MagicMock:
     from trelix.embedder.cache import CachingEmbedder
 
     # If cache is enabled, the underlying embedder is inside CachingEmbedder
-    raw = retriever.embedder._embedder if isinstance(retriever.embedder, CachingEmbedder) else retriever.embedder
+    raw = (
+        retriever.embedder._embedder
+        if isinstance(retriever.embedder, CachingEmbedder)
+        else retriever.embedder
+    )
     raw.embed_query = MagicMock(return_value=vector)
     # Patch vector store search to return empty (we only care about API call count)
     retriever.vector_store.search = MagicMock(return_value=[])
