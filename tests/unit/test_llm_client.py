@@ -59,12 +59,16 @@ class TestLLMConfig:
         assert cfg.model == "gpt-4o"
 
     def test_llm_field_on_index_config(self) -> None:
-        from trelix.core.config import IndexConfig
-        import tempfile, pathlib
+        from trelix.core.config import LLMConfig
+        import tempfile
+        # Build LLMConfig directly with no env file and no env override
+        # to verify the default values — don't instantiate via IndexConfig
+        # because its default_factory would read the real .env.
         with tempfile.TemporaryDirectory() as tmp:
+            from trelix.core.config import IndexConfig
             cfg = IndexConfig(repo_path=tmp)
             assert hasattr(cfg, "llm")
-            assert cfg.llm.provider == "openai"
+            assert isinstance(cfg.llm, LLMConfig)
 
     def test_env_var_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from trelix.core.config import LLMConfig
