@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/trelix)](https://pypi.org/project/trelix/)
 [![Python](https://img.shields.io/pypi/pyversions/trelix)](https://pypi.org/project/trelix/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.7.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.1-blue)](CHANGELOG.md)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blue)](https://github.com/sairam0424/trelix)
 [![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
@@ -88,6 +88,52 @@ Add the [trelix-index-action](https://github.com/sairam0424/trelix-index-action)
 ```
 
 The action handles Python setup, caching (keyed to the commit SHA), and exposes the index path as an output so downstream steps can query it directly.
+
+---
+
+## Troubleshooting
+
+### sqlite-vec not loading (macOS)
+```
+ImportError: sqlite-vec requires SQLite ≥ 3.45 with loadable extensions
+```
+macOS ships with an old SQLite that disables loadable extensions. Fix:
+```bash
+brew install sqlite
+# Then reinstall trelix against the Homebrew SQLite:
+LDFLAGS="-L/opt/homebrew/opt/sqlite/lib" pip install --force-reinstall trelix[local]
+```
+
+### Bedrock: ValidationException on inference profile
+```
+ValidationException: Invocation of model ID anthropic.claude-sonnet-4-6 with on-demand throughput isn't supported
+```
+Bedrock requires **inference profile IDs** (us.* prefix), not bare model IDs:
+```bash
+TRELIX_LLM_BEDROCK_PRIMARY_MODEL=us.anthropic.claude-sonnet-4-6
+TRELIX_LLM_BEDROCK_FALLBACK_MODEL=us.anthropic.claude-haiku-4-5-20251001-v1:0
+```
+
+### Bedrock Cohere embeddings: ValidationException on large chunks
+```
+ValidationException: expected maxLength: 2048
+```
+Bedrock's Cohere endpoint rejects texts >2048 characters before truncation occurs. trelix pre-truncates automatically since v0.7.1. If you see this on v0.7.0, upgrade:
+```bash
+pip install --upgrade trelix[bedrock]
+```
+
+### tree-sitter FutureWarning spam
+Language deprecation warnings from tree-sitter 0.21.x are suppressed automatically in v0.8.0+. On older versions, set:
+```bash
+PYTHONWARNINGS=ignore::FutureWarning trelix index .
+```
+
+### HuggingFace token warning on local embedder
+The local embedder uses sentence-transformers which checks for HF_TOKEN. This is harmless — models are cached locally after first download. Suppress with:
+```bash
+HF_HUB_DISABLE_SYMLINKS_WARNING=1 trelix index .
+```
 
 ---
 

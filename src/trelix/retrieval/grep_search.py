@@ -101,29 +101,75 @@ def _body_search(
     use_regex: bool,
     limit: int,
 ) -> list[tuple[int, float]]:
-    """Regex or substring search over symbol bodies."""
+    """Regex or substring search over symbol bodies.
+
+    Strategy (bounded — never fetches the full table unbounded):
+    1. Try FTS5 first: fast index lookup, capped at 500 rows.
+    2. If FTS5 returns nothing (e.g. regex/partial token not in index),
+       fall back to a LIMIT-2000 scan so memory exposure is bounded.
+    """
     conn = db._conn
+    _FTS_LIMIT = 500
+    _SCAN_LIMIT = 2000
 
-    if path_filter:
-        rows = conn.execute(
-            """
-            SELECT s.id, s.body FROM symbols s
-            JOIN files f ON s.file_id = f.id
-            WHERE f.rel_path LIKE ?
-            """,
-            (f"{path_filter}%",),
-        ).fetchall()
-    else:
-        rows = conn.execute("SELECT id, body FROM symbols").fetchall()
-
+    # Build the match function once (used against whichever candidate set wins)
     if use_regex:
         try:
             compiled = re.compile(pattern, re.MULTILINE)
             match_fn = lambda body: bool(compiled.search(body))  # noqa: E731
         except re.error:
-            match_fn = lambda body: pattern in body  # noqa: E731
+            match_fn = lambda body: pattern in (body or "")  # noqa: E731
     else:
         match_fn = lambda body: pattern in (body or "")  # noqa: E731
+
+    # --- 1. FTS5 path (bounded) ---
+    # FTS5 MATCH uses its own tokenizer so it won't match all regex patterns,
+    # but it's a great pre-filter for plain-text queries.
+    try:
+        if path_filter:
+            rows = conn.execute(
+                """
+                SELECT s.id, s.body FROM symbols s
+                JOIN symbols_fts f ON s.id = f.rowid
+                JOIN files fi ON s.file_id = fi.id
+                WHERE symbols_fts MATCH ?
+                  AND fi.rel_path LIKE ?
+                LIMIT ?
+                """,
+                (pattern, f"{path_filter}%", _FTS_LIMIT),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT s.id, s.body FROM symbols s
+                JOIN symbols_fts f ON s.id = f.rowid
+                WHERE symbols_fts MATCH ?
+                LIMIT ?
+                """,
+                (pattern, _FTS_LIMIT),
+            ).fetchall()
+    except Exception:
+        # FTS5 MATCH will raise if the query string is syntactically invalid
+        # (e.g. bare regex operators). Treat as no FTS5 results.
+        rows = []
+
+    # --- 2. Bounded fallback scan if FTS5 found nothing ---
+    if not rows:
+        if path_filter:
+            rows = conn.execute(
+                """
+                SELECT s.id, s.body FROM symbols s
+                JOIN files f ON s.file_id = f.id
+                WHERE f.rel_path LIKE ?
+                LIMIT ?
+                """,
+                (f"{path_filter}%", _SCAN_LIMIT),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, body FROM symbols LIMIT ?",
+                (_SCAN_LIMIT,),
+            ).fetchall()
 
     matched: list[tuple[int, float]] = []
     for symbol_id, body in rows:

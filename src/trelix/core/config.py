@@ -77,7 +77,6 @@ class WalkerConfig(BaseSettings):
         ".idea",
         ".vscode",
         ".angular",
-        "19.2.17",
         # .NET build output
         "bin",
         "obj",

@@ -5,8 +5,10 @@ from trelix.embedder.base import (
     BaseEmbedder,
     BedrockCohereEmbedder,
     BedrockTitanEmbedder,
+    LocalCodeEmbedder,
     LocalEmbedder,
     OpenAIEmbedder,
+    VoyageEmbedder,
     make_embedder,
 )
 
@@ -15,6 +17,8 @@ __all__ = [
     "AzureOpenAIEmbedder",
     "OpenAIEmbedder",
     "LocalEmbedder",
+    "VoyageEmbedder",
+    "LocalCodeEmbedder",
     "BedrockTitanEmbedder",
     "BedrockCohereEmbedder",
     "make_embedder",

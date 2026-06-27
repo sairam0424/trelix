@@ -24,7 +24,7 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from trelix.core.config import EmbedderConfig, RetrievalConfig
+    from trelix.core.config import EmbedderConfig, LLMConfig, RetrievalConfig
     from trelix.core.models import RetrievedContext
 
 logger = logging.getLogger("trelix.retrieval.synthesizer")
@@ -110,29 +110,40 @@ class Synthesizer:
         self,
         config: EmbedderConfig,
         retrieval_config: RetrievalConfig | None = None,
+        llm_config: LLMConfig | None = None,
     ) -> None:
         self._config = config
-        # Build LLMConfig from EmbedderConfig for backward compat
-        from trelix.core.config import LLMConfig
         from trelix.llm.client import ChatMessage as _ChatMessage  # noqa: F401 – ensure import
         from trelix.llm.factory import build_chat_client
 
-        llm_cfg = LLMConfig(
-            provider=config.provider if config.provider in ("openai", "azure") else "openai",
-            _env_file=None,  # type: ignore[call-arg]
-        )
-        # Carry over credentials from EmbedderConfig
-        llm_cfg = llm_cfg.model_copy(
-            update={
-                "openai_api_key": config.openai_api_key,
-                "azure_api_key": config.azure_api_key,
-                "azure_endpoint": config.azure_endpoint,
-                "azure_api_version": config.azure_api_version,
-                "azure_chat_deployment": config.azure_chat_deployment,
-                "model": config.openai_chat_model,
-            }
-        )
-        self._llm_client = build_chat_client(llm_cfg)
+        if llm_config is not None:
+            # Use the explicitly supplied LLMConfig (e.g. IndexConfig.llm).
+            # This is the correct path for non-OpenAI providers such as
+            # Anthropic, Bedrock, and Vertex.
+            self._llm_client = build_chat_client(llm_config)
+        else:
+            # Backward-compat shim: rebuild LLMConfig from EmbedderConfig.
+            # Only valid when the embedder provider is openai or azure; all
+            # other providers silently fell back to provider="openai" before
+            # this fix, which caused failures without OPENAI_API_KEY.
+            from trelix.core.config import LLMConfig
+
+            shim_cfg = LLMConfig(
+                provider=config.provider if config.provider in ("openai", "azure") else "openai",
+                _env_file=None,  # type: ignore[call-arg]
+            )
+            shim_cfg = shim_cfg.model_copy(
+                update={
+                    "openai_api_key": config.openai_api_key,
+                    "azure_api_key": config.azure_api_key,
+                    "azure_endpoint": config.azure_endpoint,
+                    "azure_api_version": config.azure_api_version,
+                    "azure_chat_deployment": config.azure_chat_deployment,
+                    "model": config.openai_chat_model,
+                }
+            )
+            self._llm_client = build_chat_client(shim_cfg)
+
         # Keep _client for the None check used by synthesize()
         self._client = (
             self._llm_client._client if hasattr(self._llm_client, "_client") else self._llm_client

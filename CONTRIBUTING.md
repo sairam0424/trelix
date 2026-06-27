@@ -99,6 +99,35 @@ Use the GitHub issue templates:
 
 Open a [GitHub Discussion](https://github.com/sairam0424/trelix/discussions) for questions.
 
+## Versioning & Stability Policy
+
+trelix follows [Semantic Versioning 2.0.0](https://semver.org/).
+
+### Stable public API (guaranteed not to change without a major version bump)
+
+- **CLI commands and flags**: `trelix index`, `trelix search`, `trelix ask`, `trelix query`, `trelix stats`, `trelix watch`, `trelix update-index`, `trelix migrate-vectors` and all documented flags
+- **Python API**: `IndexConfig`, `EmbedderConfig`, `LLMConfig`, `Indexer`, `Retriever`, `TrelixChatClient`, `ChatMessage`, `ChatResponse`, `ToolCallResponse`, `build_chat_client`, `BaseEmbedder`, `make_embedder`
+- **Sub-package interfaces**: `TrelixRetriever` (trelix-langchain), `TrelixIndexRetriever` (trelix-llama-index), MCP tool signatures (trelix-mcp)
+- **Environment variable names**: all `TRELIX_*` env vars documented in `.env.example`
+
+### What counts as a breaking change
+
+- Removing or renaming a public class, method, or CLI flag
+- Changing a method signature in an incompatible way
+- Changing the SQLite schema in a way that requires re-indexing
+- Removing a previously supported Python version
+
+### Deprecation policy
+
+- Deprecated features are marked with `DeprecationWarning` and noted in the CHANGELOG
+- Deprecated features are maintained for at least **one minor version** before removal in a major version
+- The CLI will print a deprecation notice on first use of deprecated flags
+
+### Python version support
+
+- Supported: Python 3.11, 3.12
+- Dropped versions are announced one minor release in advance
+
 ---
 
 ## Working on Sub-packages
