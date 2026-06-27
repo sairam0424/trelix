@@ -656,6 +656,16 @@ class TestBedrockCohereEmbedder:
         # 200 texts → ceil(200/96) = 3 invoke_model calls
         assert embedder._client.invoke_model.call_count == 3
 
+    def test_texts_pre_truncated_to_2048_chars(self) -> None:
+        # Bedrock validates length before truncation — must pre-truncate client-side.
+        embedder = self._make()
+        long_text = "x" * 5000
+        embedder.embed([long_text, "short"])
+        import json
+        call_body = json.loads(embedder._client.invoke_model.call_args[1]["body"])
+        assert len(call_body["texts"][0]) == 2048, "Long text must be pre-truncated to 2048 chars"
+        assert call_body["texts"][1] == "short", "Short text must pass through unchanged"
+
     def test_factory_returns_cohere_embedder(self) -> None:
         config = EmbedderConfig(provider="bedrock-cohere")
         mock_boto3 = MagicMock()
