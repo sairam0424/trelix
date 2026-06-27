@@ -82,6 +82,7 @@ class Retriever:
         # embed_query() hits are returned in <1ms; embed() passthrough unchanged.
         if config.retrieval.query_cache_size > 0:
             from trelix.embedder.cache import CachingEmbedder
+
             self.embedder: BaseEmbedder = CachingEmbedder(
                 raw_embedder, max_size=config.retrieval.query_cache_size
             )

@@ -211,17 +211,20 @@ class TestIndexConfig:
 class TestRetrievalConfigQueryCache:
     def test_default_query_cache_size_is_256(self) -> None:
         from trelix.core.config import RetrievalConfig
+
         cfg = RetrievalConfig()
         assert cfg.query_cache_size == 256
 
     def test_zero_disables_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from trelix.core.config import RetrievalConfig
+
         monkeypatch.setenv("TRELIX_RETRIEVAL_QUERY_CACHE_SIZE", "0")
         cfg = RetrievalConfig()
         assert cfg.query_cache_size == 0
 
     def test_env_var_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from trelix.core.config import RetrievalConfig
+
         monkeypatch.setenv("TRELIX_RETRIEVAL_QUERY_CACHE_SIZE", "512")
         cfg = RetrievalConfig()
         assert cfg.query_cache_size == 512
