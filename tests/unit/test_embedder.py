@@ -11,6 +11,8 @@ from trelix.core.config import EmbedderConfig
 from trelix.embedder.base import (
     AzureOpenAIEmbedder,
     BaseEmbedder,
+    BedrockCohereEmbedder,
+    BedrockTitanEmbedder,
     LocalCodeEmbedder,
     LocalEmbedder,
     OpenAIEmbedder,
@@ -476,3 +478,200 @@ class TestLocalCodeEmbedder:
         assert call_kwargs.kwargs.get("trust_remote_code") is True or (
             len(call_kwargs.args) > 1 and call_kwargs.args[1] is True
         )
+
+
+# ---------------------------------------------------------------------------
+# BedrockTitanEmbedder (mocked — no real AWS calls)
+# ---------------------------------------------------------------------------
+
+def _make_mock_boto3(vectors: list[list[float]]) -> MagicMock:
+    """Return a mock boto3 bedrock-runtime client that yields preset vectors."""
+    import json
+    mock_client = MagicMock()
+    responses = iter(vectors)
+
+    def invoke_model(**kwargs: object) -> dict:
+        vec = next(responses, [0.0] * 1024)
+        body_bytes = json.dumps({"embedding": vec}).encode()
+        mock_body = MagicMock()
+        mock_body.read.return_value = body_bytes
+        return {"body": mock_body}
+
+    mock_client.invoke_model.side_effect = invoke_model
+    return mock_client
+
+
+class TestBedrockTitanEmbedder:
+    def _make(self, dims: int = 1024) -> BedrockTitanEmbedder:
+        config = EmbedderConfig(
+            provider="bedrock-titan",
+            bedrock_titan_dimensions=dims,
+        )
+        embedder = BedrockTitanEmbedder.__new__(BedrockTitanEmbedder)
+        embedder._model = config.bedrock_titan_model
+        embedder._dims = dims
+        embedder._normalize = config.bedrock_titan_normalize
+        embedder._client = _make_mock_boto3([[float(i) / dims for i in range(dims)]] * 10)
+        return embedder
+
+    def test_is_base_embedder(self) -> None:
+        assert issubclass(BedrockTitanEmbedder, BaseEmbedder)
+
+    def test_dimension_1024(self) -> None:
+        assert self._make(1024).dimension == 1024
+
+    def test_dimension_512(self) -> None:
+        assert self._make(512).dimension == 512
+
+    def test_dimension_256(self) -> None:
+        assert self._make(256).dimension == 256
+
+    def test_embed_returns_list_of_vectors(self) -> None:
+        embedder = self._make(1024)
+        result = embedder.embed(["hello", "world"])
+        assert len(result) == 2
+        assert len(result[0]) == 1024
+        assert len(result[1]) == 1024
+
+    def test_embed_query_returns_single_vector(self) -> None:
+        embedder = self._make(1024)
+        vec = embedder.embed_query("def login():")
+        assert isinstance(vec, list)
+        assert len(vec) == 1024
+
+    def test_invoke_model_called_per_text(self) -> None:
+        embedder = self._make(1024)
+        embedder.embed(["a", "b", "c"])
+        assert embedder._client.invoke_model.call_count == 3
+
+    def test_invoke_model_passes_correct_dims(self) -> None:
+        embedder = self._make(512)
+        embedder.embed(["test"])
+        import json
+        call_body = json.loads(
+            embedder._client.invoke_model.call_args[1]["body"]
+        )
+        assert call_body["dimensions"] == 512
+
+    def test_invoke_model_passes_normalize_true(self) -> None:
+        embedder = self._make(1024)
+        embedder.embed(["test"])
+        import json
+        call_body = json.loads(
+            embedder._client.invoke_model.call_args[1]["body"]
+        )
+        assert call_body["normalize"] is True
+
+    def test_factory_returns_titan_embedder(self) -> None:
+        config = EmbedderConfig(provider="bedrock-titan")
+        mock_boto3 = MagicMock()
+        mock_session = MagicMock()
+        mock_session.client.return_value = MagicMock()
+        mock_boto3.Session.return_value = mock_session
+        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+            embedder = make_embedder(config)
+        assert isinstance(embedder, BedrockTitanEmbedder)
+
+    def test_import_error_when_boto3_missing(self) -> None:
+        config = EmbedderConfig(provider="bedrock-titan")
+        with patch.dict(sys.modules, {"boto3": None}):  # type: ignore[dict-item]
+            with pytest.raises(ImportError, match="pip install"):
+                BedrockTitanEmbedder(config)
+
+    def test_effective_dimension_in_config(self) -> None:
+        config = EmbedderConfig(provider="bedrock-titan", bedrock_titan_dimensions=512)
+        assert config.effective_dimension == 512
+
+
+# ---------------------------------------------------------------------------
+# BedrockCohereEmbedder (mocked — no real AWS calls)
+# ---------------------------------------------------------------------------
+
+def _make_mock_cohere_boto3(num_texts: int = 2) -> MagicMock:
+    """Return a mock boto3 client that yields Cohere-style embeddings response."""
+    import json
+    mock_client = MagicMock()
+
+    def invoke_model(**kwargs: object) -> dict:
+        body = json.loads(kwargs["body"])
+        n = len(body.get("texts", []))
+        vecs = [[float(i) / 1024 for i in range(1024)] for _ in range(n)]
+        body_bytes = json.dumps({"embeddings": vecs}).encode()
+        mock_body = MagicMock()
+        mock_body.read.return_value = body_bytes
+        return {"body": mock_body}
+
+    mock_client.invoke_model.side_effect = invoke_model
+    return mock_client
+
+
+class TestBedrockCohereEmbedder:
+    def _make(self) -> BedrockCohereEmbedder:
+        config = EmbedderConfig(provider="bedrock-cohere")
+        embedder = BedrockCohereEmbedder.__new__(BedrockCohereEmbedder)
+        embedder._model = config.bedrock_cohere_model
+        embedder._client = _make_mock_cohere_boto3()
+        return embedder
+
+    def test_is_base_embedder(self) -> None:
+        assert issubclass(BedrockCohereEmbedder, BaseEmbedder)
+
+    def test_dimension_is_1024(self) -> None:
+        assert self._make().dimension == 1024
+
+    def test_embed_returns_correct_count(self) -> None:
+        embedder = self._make()
+        result = embedder.embed(["hello", "world"])
+        assert len(result) == 2
+        assert all(len(v) == 1024 for v in result)
+
+    def test_embed_uses_search_document_input_type(self) -> None:
+        embedder = self._make()
+        embedder.embed(["some code"])
+        import json
+        call_body = json.loads(
+            embedder._client.invoke_model.call_args[1]["body"]
+        )
+        assert call_body["input_type"] == "search_document"
+
+    def test_embed_query_uses_search_query_input_type(self) -> None:
+        embedder = self._make()
+        embedder.embed_query("find authentication")
+        import json
+        call_body = json.loads(
+            embedder._client.invoke_model.call_args[1]["body"]
+        )
+        assert call_body["input_type"] == "search_query"
+
+    def test_embed_query_returns_single_vector(self) -> None:
+        embedder = self._make()
+        vec = embedder.embed_query("find auth")
+        assert isinstance(vec, list)
+        assert len(vec) == 1024
+
+    def test_large_batch_splits_at_96(self) -> None:
+        embedder = self._make()
+        texts = [f"text {i}" for i in range(200)]
+        embedder.embed(texts)
+        # 200 texts → ceil(200/96) = 3 invoke_model calls
+        assert embedder._client.invoke_model.call_count == 3
+
+    def test_factory_returns_cohere_embedder(self) -> None:
+        config = EmbedderConfig(provider="bedrock-cohere")
+        mock_boto3 = MagicMock()
+        mock_session = MagicMock()
+        mock_session.client.return_value = MagicMock()
+        mock_boto3.Session.return_value = mock_session
+        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+            embedder = make_embedder(config)
+        assert isinstance(embedder, BedrockCohereEmbedder)
+
+    def test_import_error_when_boto3_missing(self) -> None:
+        config = EmbedderConfig(provider="bedrock-cohere")
+        with patch.dict(sys.modules, {"boto3": None}):  # type: ignore[dict-item]
+            with pytest.raises(ImportError, match="pip install"):
+                BedrockCohereEmbedder(config)
+
+    def test_effective_dimension_in_config(self) -> None:
+        config = EmbedderConfig(provider="bedrock-cohere")
+        assert config.effective_dimension == 1024

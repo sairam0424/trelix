@@ -243,3 +243,97 @@ def test_bedrock_haiku_tool_call() -> None:
     assert "city" in result.tool_arguments, (
         f"Expected 'city' in tool_arguments, got {result.tool_arguments!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Bedrock embedding tests (Titan v2 + Cohere embed-english-v3)
+# ---------------------------------------------------------------------------
+
+_CODE_DOCS = [
+    "def login(username: str, password: str) -> bool: return check_credentials(username, password)",
+    "class AuthService: def __init__(self): self.db = Database()",
+    "SELECT * FROM users WHERE email = $1 AND active = true",
+]
+_CODE_QUERY = "authentication login function"
+
+
+@_SKIP_BEDROCK
+def test_bedrock_titan_embed_1024() -> None:
+    """Titan v2 at 1024 dims returns correctly shaped vectors."""
+    from trelix.core.config import EmbedderConfig
+    from trelix.embedder.base import make_embedder
+
+    config = EmbedderConfig(provider="bedrock-titan", bedrock_titan_dimensions=1024)
+    embedder = make_embedder(config)
+    vecs = embedder.embed(_CODE_DOCS)
+    assert len(vecs) == 3
+    assert all(len(v) == 1024 for v in vecs)
+    qvec = embedder.embed_query(_CODE_QUERY)
+    assert len(qvec) == 1024
+
+
+@_SKIP_BEDROCK
+def test_bedrock_titan_embed_512() -> None:
+    """Titan v2 at 512 dims (storage-optimised) works correctly."""
+    from trelix.core.config import EmbedderConfig
+    from trelix.embedder.base import make_embedder
+
+    config = EmbedderConfig(provider="bedrock-titan", bedrock_titan_dimensions=512)
+    embedder = make_embedder(config)
+    vecs = embedder.embed(_CODE_DOCS[:1])
+    assert len(vecs[0]) == 512
+
+
+@_SKIP_BEDROCK
+def test_bedrock_titan_query_ranks_correctly() -> None:
+    """Query should rank login function above SQL."""
+    from trelix.core.config import EmbedderConfig
+    from trelix.embedder.base import make_embedder
+
+    config = EmbedderConfig(provider="bedrock-titan", bedrock_titan_dimensions=1024)
+    embedder = make_embedder(config)
+    vecs = embedder.embed(_CODE_DOCS)
+    qvec = embedder.embed_query(_CODE_QUERY)
+    sims = [sum(a * b for a, b in zip(qvec, v)) for v in vecs]
+    assert sims[0] > sims[2], f"Expected login_fn sim ({sims[0]:.4f}) > sql sim ({sims[2]:.4f})"
+
+
+@_SKIP_BEDROCK
+def test_bedrock_cohere_embed_returns_1024_dims() -> None:
+    """Cohere embed-english-v3 returns 1024-dim vectors."""
+    from trelix.core.config import EmbedderConfig
+    from trelix.embedder.base import make_embedder
+
+    config = EmbedderConfig(provider="bedrock-cohere")
+    embedder = make_embedder(config)
+    vecs = embedder.embed(_CODE_DOCS)
+    assert len(vecs) == 3
+    assert all(len(v) == 1024 for v in vecs)
+
+
+@_SKIP_BEDROCK
+def test_bedrock_cohere_query_ranks_correctly() -> None:
+    """Cohere query embedding should rank login_fn highest, SQL lowest."""
+    from trelix.core.config import EmbedderConfig
+    from trelix.embedder.base import make_embedder
+
+    config = EmbedderConfig(provider="bedrock-cohere")
+    embedder = make_embedder(config)
+    vecs = embedder.embed(_CODE_DOCS)
+    qvec = embedder.embed_query(_CODE_QUERY)
+    sims = [sum(a * b for a, b in zip(qvec, v)) for v in vecs]
+    assert sims[0] == max(sims), f"Expected login_fn first. sims={[f'{s:.4f}' for s in sims]}"
+    assert sims[2] == min(sims), f"Expected SQL last. sims={[f'{s:.4f}' for s in sims]}"
+
+
+@_SKIP_BEDROCK
+def test_bedrock_cohere_embed_vs_embed_query_differ() -> None:
+    """Document and query embeddings should differ (asymmetric retrieval)."""
+    from trelix.core.config import EmbedderConfig
+    from trelix.embedder.base import make_embedder
+
+    config = EmbedderConfig(provider="bedrock-cohere")
+    embedder = make_embedder(config)
+    doc_vec = embedder.embed([_CODE_QUERY])[0]
+    query_vec = embedder.embed_query(_CODE_QUERY)
+    assert doc_vec != query_vec, "Document and query embeddings should differ for the same text"

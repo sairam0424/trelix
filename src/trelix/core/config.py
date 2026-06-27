@@ -164,7 +164,7 @@ class EmbedderConfig(BaseSettings):
         populate_by_name=True,
     )
 
-    provider: Literal["openai", "azure", "local", "voyage", "local-code"] = "local"
+    provider: Literal["openai", "azure", "local", "voyage", "local-code", "bedrock-titan", "bedrock-cohere"] = "local"
 
     # ── OpenAI ───────────────────────────────────────────────────────────────
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
@@ -196,6 +196,22 @@ class EmbedderConfig(BaseSettings):
     local_code_model: str = "Salesforce/SFR-Embedding-Code-2B_R"
     local_code_dimensions: int = 4096
 
+    # ── AWS Bedrock (Titan v2 + Cohere) ──────────────────────────────────────
+    # Reuses AWS_* env vars — same credentials as BedrockBackend in LLMConfig.
+    # bedrock-titan: amazon.titan-embed-text-v2:0 — 256/512/1024 configurable dims
+    # bedrock-cohere: cohere.embed-english-v3 — 1024 dims, strong code retrieval
+    bedrock_aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+    bedrock_aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
+    bedrock_aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
+    bedrock_aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")
+    # Titan: configurable dims — 1024 matches voyage quality, 256 cuts storage 4×
+    bedrock_titan_model: str = "amazon.titan-embed-text-v2:0"
+    bedrock_titan_dimensions: int = 1024   # 256 | 512 | 1024
+    bedrock_titan_normalize: bool = True
+    # Cohere: fixed 1024 dims, input_type controls doc vs query embedding
+    bedrock_cohere_model: str = "cohere.embed-english-v3"
+    bedrock_cohere_dimensions: int = 1024
+
     batch_size: int = 64
 
     # ── Indexing performance / rate limiting ─────────────────────────────────
@@ -213,6 +229,10 @@ class EmbedderConfig(BaseSettings):
             return self.voyage_dimensions
         if self.provider == "local-code":
             return self.local_code_dimensions
+        if self.provider == "bedrock-titan":
+            return self.bedrock_titan_dimensions
+        if self.provider == "bedrock-cohere":
+            return self.bedrock_cohere_dimensions
         return 384  # all-MiniLM-L6-v2
 
 
