@@ -328,3 +328,25 @@ class TestRetrievalConfigFileTypeWeighting:
         cfg = RetrievalConfig()
         # Per-language override wins
         assert cfg.file_type_weights["markdown"] == 0.02
+
+
+class TestRetrievalConfigPlanCache:
+    def test_default_plan_cache_size_is_128(self) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        cfg = RetrievalConfig()
+        assert cfg.plan_cache_size == 128
+
+    def test_zero_disables_plan_cache(self) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        cfg = RetrievalConfig(plan_cache_size=0)
+        assert cfg.plan_cache_size == 0
+
+    def test_negative_plan_cache_size_raises(self) -> None:
+        from pydantic import ValidationError
+
+        from trelix.core.config import RetrievalConfig
+
+        with pytest.raises(ValidationError):
+            RetrievalConfig(plan_cache_size=-1)
