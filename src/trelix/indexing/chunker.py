@@ -25,6 +25,7 @@ import tiktoken
 
 from trelix.core.config import ChunkerConfig
 from trelix.core.models import Chunk, ImportEdge, Symbol
+from trelix.llm.client import ChatMessage, TrelixChatClient
 
 logger = logging.getLogger("trelix.indexing.chunker")
 
@@ -174,7 +175,7 @@ class ContextualChunker(Chunker):
     def __init__(
         self,
         config: ChunkerConfig,
-        llm_client: Any | None = None,  # openai.OpenAI or compatible
+        llm_client: Any | None = None,  # openai.OpenAI, TrelixChatClient, or None
     ) -> None:
         super().__init__(config)
         self._llm_client = llm_client
@@ -260,6 +261,15 @@ class ContextualChunker(Chunker):
         )
         try:
             assert self._llm_client is not None  # guaranteed by _contextual_enabled check
+            # New path: TrelixChatClient interface
+            if isinstance(self._llm_client, TrelixChatClient):
+                response = self._llm_client.complete(
+                    messages=[ChatMessage(role="user", content=prompt)],
+                    max_tokens=self.config.contextual_max_tokens,
+                    temperature=0,
+                )
+                return response.content.strip() or None
+            # Legacy path: raw openai client (backward compat)
             response = self._llm_client.chat.completions.create(
                 model=self.config.contextual_model,
                 messages=[{"role": "user", "content": prompt}],

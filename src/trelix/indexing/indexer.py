@@ -214,37 +214,21 @@ class Indexer:
         """
         if not config.chunker.contextual:
             return Chunker(config.chunker)
-
-        llm_client: Any | None = None
-        embedder_cfg = config.embedder
         try:
-            if embedder_cfg.provider == "azure":
-                from openai import AzureOpenAI
-
-                llm_client = AzureOpenAI(
-                    api_key=embedder_cfg.azure_api_key,
-                    azure_endpoint=embedder_cfg.azure_endpoint or "",
-                    api_version=embedder_cfg.azure_api_version,
-                )
-                logger.info(
-                    "ContextualChunker: using Azure OpenAI model=%s",
-                    config.chunker.contextual_model,
-                )
-            else:
-                from openai import OpenAI
-
-                llm_client = OpenAI(api_key=embedder_cfg.openai_api_key)
-                logger.info(
-                    "ContextualChunker: using OpenAI model=%s",
-                    config.chunker.contextual_model,
-                )
-        except Exception as exc:
+            from trelix.llm.factory import build_chat_client
+            llm_client = build_chat_client(config.llm)
+            logger.info(
+                "ContextualChunker: using %s provider, model=%s",
+                config.llm.provider,
+                config.llm.model,
+            )
+            return ContextualChunker(config.chunker, llm_client=llm_client)
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "ContextualChunker: could not build LLM client (%s) — falling back to base Chunker",
                 exc,
             )
-
-        return ContextualChunker(config.chunker, llm_client=llm_client)
+            return Chunker(config.chunker)
 
     def _report_progress(
         self,

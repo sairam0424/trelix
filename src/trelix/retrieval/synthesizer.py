@@ -112,7 +112,26 @@ class Synthesizer:
         retrieval_config: RetrievalConfig | None = None,
     ) -> None:
         self._config = config
-        self._client = self._build_client(config)
+        # Build LLMConfig from EmbedderConfig for backward compat
+        from trelix.core.config import LLMConfig
+        from trelix.llm.factory import build_chat_client
+        from trelix.llm.client import ChatMessage as _ChatMessage  # noqa: F401 – ensure import
+        llm_cfg = LLMConfig(
+            provider=config.provider if config.provider in ("openai", "azure") else "openai",
+            _env_file=None,  # type: ignore[call-arg]
+        )
+        # Carry over credentials from EmbedderConfig
+        llm_cfg = llm_cfg.model_copy(update={
+            "openai_api_key": config.openai_api_key,
+            "azure_api_key": config.azure_api_key,
+            "azure_endpoint": config.azure_endpoint,
+            "azure_api_version": config.azure_api_version,
+            "azure_chat_deployment": config.azure_chat_deployment,
+            "model": config.openai_chat_model,
+        })
+        self._llm_client = build_chat_client(llm_cfg)
+        # Keep _client for the None check used by synthesize()
+        self._client = self._llm_client._client if hasattr(self._llm_client, "_client") else self._llm_client
         # Lazy-import to avoid circular deps; default to RetrievalConfig() if not supplied.
         if retrieval_config is None:
             from trelix.core.config import RetrievalConfig as _RC
@@ -180,47 +199,6 @@ class Synthesizer:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_client(self, config: EmbedderConfig) -> Any | None:
-        """
-        Instantiate the appropriate OpenAI client.
-        Returns None for provider=local or when credentials are missing.
-        """
-        if config.provider == "azure":
-            if not config.azure_api_key or not config.azure_endpoint:
-                logger.debug("Synthesizer: Azure credentials not set.")
-                return None
-            try:
-                from openai import AzureOpenAI
-
-                return AzureOpenAI(
-                    api_key=config.azure_api_key,
-                    azure_endpoint=config.azure_endpoint,
-                    api_version=config.azure_api_version,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Synthesizer: could not create AzureOpenAI client: %s", exc)
-                return None
-
-        if config.provider == "openai":
-            if not config.openai_api_key:
-                logger.debug("Synthesizer: OPENAI_API_KEY not set.")
-                return None
-            try:
-                from openai import OpenAI
-
-                return OpenAI(api_key=config.openai_api_key)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Synthesizer: could not create OpenAI client: %s", exc)
-                return None
-
-        # provider == "local" — no chat API
-        return None
-
-    def _model_name(self) -> str:
-        if self._config.provider == "azure":
-            return self._config.azure_chat_deployment
-        return self._config.openai_chat_model
-
     def _system_prompt(self, intent: str) -> str:
         return _INTENT_PROMPTS.get(intent, _DEFAULT_SYSTEM_PROMPT)
 
@@ -228,35 +206,57 @@ class Synthesizer:
         """
         Call the chat API with streaming, print tokens to stdout, and return
         the full assembled text.
+
+        Uses TrelixChatClient when available; falls back to raw _client for
+        backward compat with tests that inject mock._client directly.
         """
+        from trelix.llm.client import ChatMessage, TrelixChatClient
         user_message = _USER_TEMPLATE.format(
             context_text=context.context_text,
             query=context.query,
         )
-
         max_tokens: int = getattr(config, "synthesis_max_tokens", 2048)
-
-        # max_completion_tokens is required for newer OpenAI/Azure models (o-series, gpt-4o);
-        # older deployments use max_tokens. Try max_completion_tokens first, fall back on error.
-        assert self._client is not None  # guaranteed by synthesize() None check above
-        stream = self._client.chat.completions.create(
-            model=self._model_name(),
-            messages=[
-                {"role": "system", "content": self._system_prompt(context.intent)},
-                {"role": "user", "content": user_message},
-            ],
-            max_completion_tokens=max_tokens,
-            temperature=0.2,
-            stream=True,
-        )
-
         collected: list[str] = []
-        for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                sys.stdout.write(delta.content)
+
+        # Detect if a raw client was injected directly (e.g. by tests) by checking
+        # whether _client is the same object as the backend's internal _client.
+        _backend_internal = getattr(self._llm_client, "_client", None) if isinstance(self._llm_client, TrelixChatClient) else None
+        _use_raw = self._client is not None and self._client is not _backend_internal
+
+        if isinstance(self._llm_client, TrelixChatClient) and not _use_raw:
+            for chunk in self._llm_client.stream(
+                messages=[ChatMessage(role="user", content=user_message)],
+                system=self._system_prompt(context.intent),
+                max_tokens=max_tokens,
+                temperature=0.2,
+            ):
+                sys.stdout.write(chunk)
                 sys.stdout.flush()
-                collected.append(delta.content)
+                collected.append(chunk)
+        else:
+            # Legacy path: raw openai client (backward compat / test injection via _client)
+            assert self._client is not None  # guaranteed by synthesize() None check
+            model = (
+                config.azure_chat_deployment
+                if config.provider == "azure"
+                else config.openai_chat_model
+            )
+            stream = self._client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": self._system_prompt(context.intent)},
+                    {"role": "user", "content": user_message},
+                ],
+                max_completion_tokens=max_tokens,
+                temperature=0.2,
+                stream=True,
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta and delta.content:
+                    sys.stdout.write(delta.content)
+                    sys.stdout.flush()
+                    collected.append(delta.content)
 
         # Ensure we end on a newline
         if collected and not collected[-1].endswith("\n"):
