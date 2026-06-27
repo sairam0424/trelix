@@ -295,12 +295,22 @@ class TestRetrieveWithExternalPlan:
             config = IndexConfig(repo_path=str(tmp_path))
             retriever = Retriever(config)
 
-        retriever._planner.plan.return_value = auto_plan  # type: ignore[attr-defined]
+        # When plan_cache_size > 0 (the default), _planner is a CachingPlanner
+        # wrapping the mock QueryPlanner. Reach through to the inner planner.
+        from trelix.retrieval.plan_cache import CachingPlanner
+
+        inner_planner = (
+            retriever._planner._planner  # type: ignore[attr-defined]
+            if isinstance(retriever._planner, CachingPlanner)
+            else retriever._planner
+        )
+        inner_planner.plan.return_value = auto_plan  # type: ignore[attr-defined]
 
         with patch.object(retriever, "_execute_plan", return_value=ctx):
             retriever.retrieve("how does auth work?")
 
-        retriever._planner.plan.assert_called_once_with("how does auth work?")  # type: ignore[attr-defined]
+        # CachingPlanner forwards (query, project_context=None) to the inner planner.
+        inner_planner.plan.assert_called_once_with("how does auth work?", None)  # type: ignore[attr-defined]
 
 
 class TestIntentRouting:
