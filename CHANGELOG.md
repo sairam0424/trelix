@@ -8,6 +8,41 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ---
 
+## [0.7.0] — 2026-06-27
+
+### Overview
+Universal LLM client factory — all 5 chat call sites migrated to a provider-agnostic
+`TrelixChatClient` ABC. Adding any new provider requires zero changes to business logic.
+
+### Added
+- **`src/trelix/llm/` package** — `TrelixChatClient` ABC, `ChatMessage`, `ChatResponse`,
+  `ToolCallResponse` dataclasses, `build_chat_client()` factory
+- **`LLMConfig`** — new config class for chat providers (separate from `EmbedderConfig`).
+  Added as `IndexConfig.llm` field.
+- **`OpenAIBackend`** — OpenAI + Azure. Auto-detects `max_completion_tokens` vs `max_tokens`
+  based on model family (gpt-4o→max_completion_tokens; gpt-4/gpt-3.5→max_tokens)
+- **`AnthropicBackend`** — Anthropic Claude direct. `max_tokens=`, `system=` separate param,
+  `input_schema` tool format, `end_turn`→`stop` normalization. `pip install trelix[anthropic]`
+- **`BedrockBackend`** — AWS Bedrock Converse API. `inferenceConfig.maxTokens` (nested camelCase),
+  `system=[{"text":...}]` top-level, content always list-of-dicts, `{"auto":{}}` tool choice.
+  `pip install trelix[bedrock]`
+- **`VertexBackend`** — Google Vertex AI / Gemini via google-genai SDK. `max_output_tokens` in
+  `GenerateContentConfig`, `system_instruction=` param. `pip install trelix[vertex]`
+- **`LiteLLMBackend`** — universal delegate for 100+ providers. `drop_params=True` suppresses
+  UnsupportedParamsError. Model strings: `"bedrock/claude-3-5-sonnet"`, `"gemini/gemini-2.0-flash"`.
+  `pip install trelix[litellm]`
+- New optional dep groups: `[anthropic]`, `[bedrock]`, `[vertex]`, `[litellm]`, `[llm-all]`
+
+### Changed
+- All 5 LLM call sites now use `TrelixChatClient` via factory — never import provider SDKs directly
+- `ContextualChunker` accepts `TrelixChatClient` (new) or raw openai client (backward compat)
+
+### Fixed
+- `_token_limit_param()` in OpenAIBackend correctly routes legacy models to `max_tokens=`
+  and modern models to `max_completion_tokens=` — eliminates the recurring parameter bug
+
+---
+
 ## [0.6.0] — 2026-06-27
 
 ### Overview
