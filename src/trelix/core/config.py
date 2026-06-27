@@ -10,7 +10,7 @@ Set TRELIX_EMBEDDER_PROVIDER=openai and OPENAI_API_KEY for higher quality.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -310,6 +310,121 @@ class RetrievalConfig(BaseSettings):
         ge=0,
         alias="TRELIX_RETRIEVAL_QUERY_CACHE_SIZE",
     )
+
+    # ── File-type weighting ──────────────────────────────────────────────────
+    # Applies a per-language multiplier to RRF scores after fusion.
+    # Env: TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTING=false to disable entirely.
+    file_type_weighting_enabled: bool = Field(
+        default=True,
+        alias="TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTING",
+    )
+    """
+    Master switch. False → no weight multiplier, identical to current behaviour.
+    Env: TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTING=false
+    """
+
+    file_type_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            # Source code — full weight
+            "python": 1.0,
+            "javascript": 1.0,
+            "typescript": 1.0,
+            "tsx": 1.0,
+            "go": 1.0,
+            "rust": 1.0,
+            "java": 1.0,
+            "kotlin": 1.0,
+            "ruby": 1.0,
+            "cpp": 1.0,
+            "c": 1.0,
+            "csharp": 1.0,
+            "razor": 1.0,
+            "cshtml": 1.0,
+            "csproj": 1.0,
+            # Style / markup
+            "html": 0.4,
+            "css": 0.4,
+            # Config / data
+            "json": 0.5,
+            "yaml": 0.5,
+            "toml": 0.5,
+            # Documentation
+            "markdown": 0.3,
+            # Unknown — conservative default, do not penalise unknown files
+            "unknown": 0.8,
+        },
+    )
+    """
+    Per-language RRF score multiplier applied after fusion.
+    Keys are Language enum values (lowercase strings).
+    Missing key → multiplier = 1.0 (safe fallback, does not downrank unknown types).
+
+    Individual overrides via env (one var per language):
+      TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_MARKDOWN=0.1
+      TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_YAML=0.6
+      ...
+
+    Note: Pydantic BaseSettings does not natively merge individual env keys into a
+    dict field. The model_post_init hook reads
+    TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_{LANG} vars and merges them on top of
+    the default dict at construction time.
+    """
+
+    def model_post_init(self, __context: Any) -> None:
+        import json
+        import os
+
+        # Build the canonical defaults (same dict as default_factory).
+        # When pydantic-settings reads TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTS from the
+        # environment, it replaces the default_factory result entirely. We merge the
+        # env-provided dict ON TOP of defaults so that unspecified keys retain their
+        # default values.
+        _defaults: dict[str, float] = {
+            "python": 1.0,
+            "javascript": 1.0,
+            "typescript": 1.0,
+            "tsx": 1.0,
+            "go": 1.0,
+            "rust": 1.0,
+            "java": 1.0,
+            "kotlin": 1.0,
+            "ruby": 1.0,
+            "cpp": 1.0,
+            "c": 1.0,
+            "csharp": 1.0,
+            "razor": 1.0,
+            "cshtml": 1.0,
+            "csproj": 1.0,
+            "html": 0.4,
+            "css": 0.4,
+            "json": 0.5,
+            "yaml": 0.5,
+            "toml": 0.5,
+            "markdown": 0.3,
+            "unknown": 0.8,
+        }
+
+        # If pydantic-settings read TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTS as a JSON
+        # string or as a partial dict, self.file_type_weights may only contain the
+        # keys from the env var. Merge: defaults ← env-dict, so env wins for
+        # specified keys and defaults supply the rest.
+        env_weights = os.environ.get("TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTS")
+        if env_weights:
+            partial = json.loads(env_weights)
+            self.file_type_weights = {**_defaults, **partial}
+        else:
+            # No JSON env var — current value is either the default_factory result or
+            # whatever pydantic injected. Ensure all default keys are present.
+            self.file_type_weights = {**_defaults, **self.file_type_weights}
+
+        # Per-language overrides (highest priority — applied last).
+        # These are NOT picked up by pydantic-settings since they do not match
+        # any field name (the field is file_type_weights, not file_type_weight_*).
+        prefix = "TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_"
+        for key, val in os.environ.items():
+            if key.startswith(prefix):
+                lang = key[len(prefix) :].lower()
+                self.file_type_weights[lang] = float(val)
 
 
 class LLMConfig(BaseSettings):

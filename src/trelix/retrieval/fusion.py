@@ -20,16 +20,21 @@ from trelix.core.models import SearchResult
 def reciprocal_rank_fusion(
     ranked_lists: list[list[SearchResult]],
     k: int = 60,
+    weights: dict[str, float] | None = None,
 ) -> list[SearchResult]:
     """
-    Fuse multiple ranked result lists using RRF.
+    Fuse multiple ranked result lists using RRF, then optionally apply
+    per-language file-type weight multipliers.
 
     Args:
         ranked_lists: list of result lists, each sorted by relevance (best first)
-        k: RRF constant (default 60 from the original paper)
+        k:            RRF constant (default 60, Cormack et al. 2009)
+        weights:      optional dict mapping Language enum value (str) to a
+                      multiplicative weight applied after RRF accumulation.
+                      None or empty dict → no weighting (backward compatible).
 
     Returns:
-        Single merged list sorted by fused RRF score, best first.
+        Single merged list sorted by fused (weighted) RRF score, best first.
     """
     # Map chunk_id → accumulated RRF score
     rrf_scores: dict[int, float] = defaultdict(float)
@@ -46,6 +51,13 @@ def reciprocal_rank_fusion(
             # vector (0.7–0.95 range) over BM25 (0.05–0.5 range).
             if chunk_id not in best_result:
                 best_result[chunk_id] = result
+
+    # Apply file-type weight multiplier (new step — skipped when weights is None/empty)
+    if weights:
+        for chunk_id, result in best_result.items():
+            lang = result.file.language  # Language enum (StrEnum → str)
+            multiplier = weights.get(str(lang), 1.0)
+            rrf_scores[chunk_id] *= multiplier
 
     # Sort by fused score descending
     sorted_ids = sorted(rrf_scores, key=lambda cid: rrf_scores[cid], reverse=True)

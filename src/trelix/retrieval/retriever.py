@@ -265,9 +265,11 @@ class Retriever:
             },
         )
 
+        _weights = cfg.file_type_weights if cfg.file_type_weighting_enabled else None
         fused = reciprocal_rank_fusion(
             [vector_results, bm25_results, grep_results],
             k=cfg.rrf_k,
+            weights=_weights,
         )
 
         # -- Trace: post-fusion ranking --

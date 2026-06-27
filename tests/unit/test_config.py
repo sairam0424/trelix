@@ -228,3 +228,103 @@ class TestRetrievalConfigQueryCache:
         monkeypatch.setenv("TRELIX_RETRIEVAL_QUERY_CACHE_SIZE", "512")
         cfg = RetrievalConfig()
         assert cfg.query_cache_size == 512
+
+
+class TestRetrievalConfigFileTypeWeighting:
+    def test_file_type_weighting_enabled_default_true(self) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        cfg = RetrievalConfig()
+        assert cfg.file_type_weighting_enabled is True
+
+    def test_weighting_disabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        monkeypatch.setenv("TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTING", "false")
+        cfg = RetrievalConfig()
+        assert cfg.file_type_weighting_enabled is False
+
+    def test_default_weights_contain_all_expected_languages(self) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        cfg = RetrievalConfig()
+        expected_languages = {
+            "python",
+            "javascript",
+            "typescript",
+            "tsx",
+            "go",
+            "rust",
+            "java",
+            "kotlin",
+            "ruby",
+            "cpp",
+            "c",
+            "csharp",
+            "razor",
+            "cshtml",
+            "csproj",
+            "html",
+            "css",
+            "json",
+            "yaml",
+            "toml",
+            "markdown",
+            "unknown",
+        }
+        assert expected_languages.issubset(set(cfg.file_type_weights.keys()))
+
+    def test_default_python_weight_is_1_0(self) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        cfg = RetrievalConfig()
+        assert cfg.file_type_weights["python"] == 1.0
+
+    def test_default_markdown_weight_is_0_3(self) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        cfg = RetrievalConfig()
+        assert cfg.file_type_weights["markdown"] == 0.3
+
+    def test_default_unknown_weight_is_0_8(self) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        cfg = RetrievalConfig()
+        assert cfg.file_type_weights["unknown"] == 0.8
+
+    def test_per_language_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        monkeypatch.setenv("TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_MARKDOWN", "0.1")
+        cfg = RetrievalConfig()
+        assert cfg.file_type_weights["markdown"] == 0.1
+        # Other keys must still be at defaults
+        assert cfg.file_type_weights["python"] == 1.0
+
+    def test_full_json_dict_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        monkeypatch.setenv(
+            "TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTS",
+            '{"markdown": 0.05, "yaml": 0.6}',
+        )
+        cfg = RetrievalConfig()
+        assert cfg.file_type_weights["markdown"] == 0.05
+        assert cfg.file_type_weights["yaml"] == 0.6
+        # Defaults for other keys untouched
+        assert cfg.file_type_weights["python"] == 1.0
+
+    def test_per_language_override_beats_json_dict_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Per-language env var is highest priority — applied after JSON dict override."""
+        from trelix.core.config import RetrievalConfig
+
+        monkeypatch.setenv(
+            "TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTS",
+            '{"markdown": 0.15}',
+        )
+        monkeypatch.setenv("TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_MARKDOWN", "0.02")
+        cfg = RetrievalConfig()
+        # Per-language override wins
+        assert cfg.file_type_weights["markdown"] == 0.02
