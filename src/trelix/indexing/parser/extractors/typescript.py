@@ -24,11 +24,11 @@ from __future__ import annotations
 
 import re
 
-import tree_sitter_languages
-from tree_sitter import Node, Parser
+from tree_sitter import Node
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 
+from .._grammar import load_language, make_parser
 from ..base import BaseParser, ParseResult
 
 
@@ -42,9 +42,8 @@ class TypeScriptParser(BaseParser):
 
     def __init__(self, tsx: bool = False) -> None:
         lang_name = "tsx" if tsx else "typescript"
-        self._ts_language = tree_sitter_languages.get_language(lang_name)
-        self._parser = Parser()
-        self._parser.set_language(self._ts_language)
+        self._ts_language = load_language(lang_name)
+        self._parser = make_parser(lang_name)
         self._tsx = tsx
 
     @property

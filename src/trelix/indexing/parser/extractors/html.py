@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import re
 
-import tree_sitter_languages
-from tree_sitter import Node, Parser
+from tree_sitter import Node
 
 from trelix.core.models import ImportEdge, Symbol, SymbolKind
+from trelix.indexing.parser._grammar import load_language, make_parser
 from trelix.indexing.parser.base import BaseParser, ParseResult
 
 # Vue.js directive attribute prefixes / names
@@ -94,9 +94,8 @@ class HtmlParser(BaseParser):
     """Tree-sitter based HTML parser for structural and Angular template analysis."""
 
     def __init__(self) -> None:
-        self._ts_language = tree_sitter_languages.get_language("html")
-        self._parser = Parser()
-        self._parser.set_language(self._ts_language)
+        self._ts_language = load_language("html")
+        self._parser = make_parser("html")
 
     @property
     def language_name(self) -> str:
