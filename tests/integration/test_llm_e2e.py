@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -375,8 +376,6 @@ def test_bedrock_default_model_is_sonnet() -> None:
 # Bedrock embedder full-pipeline indexing tests (end-to-end)
 # Indexes a tiny synthetic repo using Bedrock providers and verifies search.
 # ---------------------------------------------------------------------------
-
-import tempfile
 
 
 def _make_tiny_repo(tmp_path: Path) -> None:
