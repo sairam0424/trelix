@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -369,3 +370,86 @@ def test_bedrock_default_model_is_sonnet() -> None:
     )
     assert resp.content.strip(), "Expected non-empty response"
     assert resp.input_tokens > 0
+
+
+# ---------------------------------------------------------------------------
+# Bedrock embedder full-pipeline indexing tests (end-to-end)
+# Indexes a tiny synthetic repo using Bedrock providers and verifies search.
+# ---------------------------------------------------------------------------
+
+
+def _make_tiny_repo(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "auth.py").write_text(
+        "class AuthService:\n"
+        "    def login(self, username: str, password: str) -> bool:\n"
+        "        return self._check(username, password)\n"
+        "    def _check(self, u, p):\n"
+        "        return u == 'admin'\n"
+    )
+    (src / "db.py").write_text(
+        "class Database:\n"
+        "    def __init__(self, path: str):\n"
+        "        self.path = path\n"
+        "    def query(self, sql: str) -> list:\n"
+        "        return []\n"
+    )
+    (src / "utils.py").write_text(
+        "def hash_password(password: str) -> str:\n"
+        "    import hashlib\n"
+        "    return hashlib.sha256(password.encode()).hexdigest()\n"
+        "\n"
+        "def validate_email(email: str) -> bool:\n"
+        "    return '@' in email\n"
+    )
+
+
+@_SKIP_BEDROCK
+def test_bedrock_cohere_full_index_and_search() -> None:
+    """bedrock-cohere: index a tiny repo then search — verifies full pipeline."""
+    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.indexing.indexer import Indexer
+    from trelix.retrieval.retriever import Retriever
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        _make_tiny_repo(tmp_path)
+
+        config = IndexConfig(
+            repo_path=str(tmp_path),
+            embedder=EmbedderConfig(provider="bedrock-cohere"),
+        )
+        stats = Indexer(config).index()
+        assert stats.get("files_indexed", 0) >= 2, f"Expected >=2 files indexed, got {stats}"
+        assert stats.get("symbols_extracted", 0) >= 4, f"Expected >=4 symbols, got {stats}"
+
+        ctx = Retriever(config).retrieve("authentication login")
+        assert len(ctx.results) > 0, "bedrock-cohere search returned no results"
+        files = [r.file.rel_path for r in ctx.results]
+        assert any("auth" in f for f in files), f"Expected auth.py in results, got {files}"
+
+
+@_SKIP_BEDROCK
+def test_bedrock_titan_full_index_and_search() -> None:
+    """bedrock-titan 512-dim: index a tiny repo then search — verifies full pipeline."""
+    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.indexing.indexer import Indexer
+    from trelix.retrieval.retriever import Retriever
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        _make_tiny_repo(tmp_path)
+
+        config = IndexConfig(
+            repo_path=str(tmp_path),
+            embedder=EmbedderConfig(provider="bedrock-titan", bedrock_titan_dimensions=512),
+        )
+        stats = Indexer(config).index()
+        assert stats.get("files_indexed", 0) >= 2, f"Expected >=2 files, got {stats}"
+        assert stats.get("symbols_extracted", 0) >= 4, f"Expected >=4 symbols, got {stats}"
+
+        ctx = Retriever(config).retrieve("hash password utility")
+        assert len(ctx.results) > 0, "bedrock-titan search returned no results"
+        files = [r.file.rel_path for r in ctx.results]
+        assert any("utils" in f for f in files), f"Expected utils.py in results, got {files}"
