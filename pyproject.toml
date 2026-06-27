@@ -135,6 +135,9 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--tb=short"
 pythonpath = ["src", "."]
+filterwarnings = [
+    "ignore::FutureWarning:tree_sitter",
+]
 
 [tool.coverage.run]
 source = ["src/trelix"]
