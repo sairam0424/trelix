@@ -3,12 +3,12 @@
   "name": "io.github.sairam0424/trelix",
   "title": "trelix",
   "description": "Semantic code search for AI agents — hybrid BM25+vector, call-graph, 20+ languages.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "trelix-mcp",
-      "version": "0.7.0",
+      "version": "0.7.1",
       "transport": {
         "type": "stdio",
         "command": "trelix-mcp",
