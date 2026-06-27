@@ -221,14 +221,10 @@ class TestFileTypeWeightingRecall:
     the overall recall must remain ≥ 70%.
     """
 
-    def test_recall_with_weighting_enabled_meets_threshold(
-        self, retriever: Retriever
-    ) -> None:
+    def test_recall_with_weighting_enabled_meets_threshold(self, retriever: Retriever) -> None:
         """Recall@5 >= 70% with file-type weighting enabled (default config)."""
         passed = sum(
-            1
-            for case in EVAL_CASES
-            if _file_in_top_k(retriever, case.query, case.expected_file)
+            1 for case in EVAL_CASES if _file_in_top_k(retriever, case.query, case.expected_file)
         )
         recall_pct = passed / len(EVAL_CASES) * 100
         assert recall_pct >= 70.0, (
@@ -252,13 +248,9 @@ class TestFileTypeWeightingRecall:
         )
         disabled_retriever = Retriever(config)
         context = disabled_retriever.retrieve("how does authentication work")
-        assert len(context.results) > 0, (
-            "Retriever with weighting disabled returned no results"
-        )
+        assert len(context.results) > 0, "Retriever with weighting disabled returned no results"
 
-    def test_python_source_files_ranked_ahead_of_config_files(
-        self, retriever: Retriever
-    ) -> None:
+    def test_python_source_files_ranked_ahead_of_config_files(self, retriever: Retriever) -> None:
         """
         For a query that returns both Python source and JSON/YAML config,
         at least one Python file must appear in top-5 ahead of all config-only files.

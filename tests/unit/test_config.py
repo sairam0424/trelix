@@ -249,10 +249,28 @@ class TestRetrievalConfigFileTypeWeighting:
 
         cfg = RetrievalConfig()
         expected_languages = {
-            "python", "javascript", "typescript", "tsx", "go", "rust",
-            "java", "kotlin", "ruby", "cpp", "c", "csharp", "razor",
-            "cshtml", "csproj", "html", "css", "json", "yaml", "toml",
-            "markdown", "unknown",
+            "python",
+            "javascript",
+            "typescript",
+            "tsx",
+            "go",
+            "rust",
+            "java",
+            "kotlin",
+            "ruby",
+            "cpp",
+            "c",
+            "csharp",
+            "razor",
+            "cshtml",
+            "csproj",
+            "html",
+            "css",
+            "json",
+            "yaml",
+            "toml",
+            "markdown",
+            "unknown",
         }
         assert expected_languages.issubset(set(cfg.file_type_weights.keys()))
 
