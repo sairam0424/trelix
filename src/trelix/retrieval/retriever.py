@@ -95,6 +95,14 @@ class Retriever:
         # Instantiate the LLM query planner. Falls back gracefully to
         # default_plan() when no API key is set (provider=local).
         self._planner = QueryPlanner(config.embedder)
+        # Wrap with LRU plan cache when enabled (default: 128 entries).
+        # plan() hits are returned in <1ms; cold misses delegate to the LLM unchanged.
+        if config.retrieval.plan_cache_size > 0:
+            from trelix.retrieval.plan_cache import CachingPlanner
+
+            self._planner = CachingPlanner(  # type: ignore[assignment]
+                self._planner, max_size=config.retrieval.plan_cache_size
+            )
 
         # Debug output dir: <repo_root>/.trelix/debug/
         self._debug_dir = Path(config.repo_path) / ".trelix" / "debug"
@@ -265,9 +273,11 @@ class Retriever:
             },
         )
 
+        _weights = cfg.file_type_weights if cfg.file_type_weighting_enabled else None
         fused = reciprocal_rank_fusion(
             [vector_results, bm25_results, grep_results],
             k=cfg.rrf_k,
+            weights=_weights,
         )
 
         # -- Trace: post-fusion ranking --
@@ -584,6 +594,117 @@ class Retriever:
         return SearchResult(
             chunk=chunk, symbol=symbol, file=file, score=score, rank=rank, source=source
         )
+
+    # ------------------------------------------------------------------
+    # Public graph API
+    # ------------------------------------------------------------------
+
+    def _hydrate_symbol_id(self, symbol_id: int, source: str) -> SearchResult | None:
+        """
+        Hydrate a raw symbol_id into a SearchResult.
+        Returns None when the symbol is no longer in the db (stale index).
+        Score is fixed at 1.0 — graph queries are exact, not ranked.
+        """
+        sym_file = self.db.get_symbol_with_file(symbol_id)
+        if sym_file is None:
+            return None
+        symbol, file = sym_file
+        chunk = self.db.get_first_chunk_for_symbol(symbol_id)
+        if chunk is None:
+            chunk = Chunk(
+                symbol_id=symbol_id,
+                chunk_text=symbol.body[:2000],
+                token_count=0,
+            )
+        return SearchResult(
+            chunk=chunk,
+            symbol=symbol,
+            file=file,
+            score=1.0,
+            rank=0,
+            source=source,
+        )
+
+    def get_callers(self, symbol_name: str) -> list[SearchResult]:
+        """
+        Return the symbols that call ``symbol_name`` (1-hop incoming call edges).
+
+        ``symbol_name`` may be a bare name (``"retrieve"``) or a qualified name
+        (``"Retriever.retrieve"``).  All matching symbols are tried; results are
+        deduplicated by symbol id and sorted by file path + line for determinism.
+
+        Returns an empty list when the symbol is not found or has no callers.
+        """
+        symbols = self.db.get_symbol_by_name(symbol_name)
+        if not symbols:
+            return []
+        caller_ids: set[int] = set()
+        for sym in symbols:
+            if sym.id is not None:
+                caller_ids.update(self.db.get_callers(sym.id))
+        results: list[SearchResult] = []
+        for cid in caller_ids:
+            r = self._hydrate_symbol_id(cid, "graph_callers")
+            if r is not None:
+                results.append(r)
+        results.sort(key=lambda r: (r.file.rel_path, r.symbol.line_start))
+        for i, r in enumerate(results, start=1):
+            r.rank = i
+        return results
+
+    def get_callees(self, symbol_name: str) -> list[SearchResult]:
+        """
+        Return the symbols that ``symbol_name`` calls (1-hop outgoing call edges,
+        resolved internal calls only — external/stdlib calls are excluded).
+
+        Same name resolution and deduplication rules as ``get_callers``.
+        """
+        symbols = self.db.get_symbol_by_name(symbol_name)
+        if not symbols:
+            return []
+        callee_ids: set[int] = set()
+        for sym in symbols:
+            if sym.id is not None:
+                callee_ids.update(self.db.get_callees(sym.id))
+        results: list[SearchResult] = []
+        for cid in callee_ids:
+            r = self._hydrate_symbol_id(cid, "graph_callees")
+            if r is not None:
+                results.append(r)
+        results.sort(key=lambda r: (r.file.rel_path, r.symbol.line_start))
+        for i, r in enumerate(results, start=1):
+            r.rank = i
+        return results
+
+    def get_importers(self, module_path: str) -> list[SearchResult]:
+        """
+        Return the top symbol from each file that imports ``module_path``.
+
+        ``module_path`` is matched against ``files.rel_path`` by suffix.
+        For each importing file, only the first symbol (lowest line_start) is
+        returned.
+
+        Returns an empty list when the module is not indexed or has no importers.
+        """
+        file_id = self.db.get_file_by_rel_path_suffix(module_path)
+        if file_id is None:
+            return []
+        importer_file_ids = self.db.get_files_importing(file_id)
+        results: list[SearchResult] = []
+        for fid in importer_file_ids:
+            syms = self.db.get_symbols_for_file(fid)
+            if not syms:
+                continue
+            first_sym = min(syms, key=lambda s: s.line_start)
+            if first_sym.id is None:
+                continue
+            r = self._hydrate_symbol_id(first_sym.id, "graph_importers")
+            if r is not None:
+                results.append(r)
+        results.sort(key=lambda r: r.file.rel_path)
+        for i, r in enumerate(results, start=1):
+            r.rank = i
+        return results
 
     # ------------------------------------------------------------------
     # Dedup + assemble

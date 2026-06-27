@@ -25,10 +25,10 @@ from __future__ import annotations
 
 import re
 
-import tree_sitter_languages
-from tree_sitter import Node, Parser
+from tree_sitter import Node
 
 from trelix.core.models import ImportEdge, Symbol, SymbolKind
+from trelix.indexing.parser._grammar import load_language, make_parser
 from trelix.indexing.parser.base import BaseParser, ParseResult
 
 # Cap to prevent massive generated CSS files from flooding the symbol table
@@ -40,9 +40,8 @@ class CssParser(BaseParser):
     """Tree-sitter based CSS parser. Also handles SCSS/SASS/LESS (best-effort)."""
 
     def __init__(self) -> None:
-        self._ts_language = tree_sitter_languages.get_language("css")
-        self._parser = Parser()
-        self._parser.set_language(self._ts_language)
+        self._ts_language = load_language("css")
+        self._parser = make_parser("css")
 
     @property
     def language_name(self) -> str:

@@ -72,12 +72,9 @@ class JsonParser(BaseParser):
 
     def _parse_json_treesitter(self, source: str, file_id: int) -> ParseResult:
         try:
-            import tree_sitter_languages
-            from tree_sitter import Parser as TSParser
+            from trelix.indexing.parser._grammar import make_parser
 
-            lang = tree_sitter_languages.get_language("json")
-            parser = TSParser()
-            parser.set_language(lang)
+            parser = make_parser("json")
         except Exception:
             return ParseResult(
                 symbols=[], call_edges=[], import_edges=[], parse_errors=1, type_edges=[]
