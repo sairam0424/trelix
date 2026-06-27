@@ -38,7 +38,10 @@ def test_help():
 def test_index_help():
     result = runner.invoke(app, ["index", "--help"])
     assert result.exit_code == 0
-    assert "--provider" in result.output
+    # Strip ANSI codes before asserting — CliRunner with color enabled wraps flags
+    import re
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--provider" in plain
 
 
 def test_search_help():
