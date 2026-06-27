@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/trelix)](https://pypi.org/project/trelix/)
 [![Python](https://img.shields.io/pypi/pyversions/trelix)](https://pypi.org/project/trelix/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.7.1-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](CHANGELOG.md)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blue)](https://github.com/sairam0424/trelix)
 [![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
@@ -21,15 +21,16 @@ trelix stats  ./my-repo
 
 ---
 
-## What's New in v0.7.0 — Universal LLM Factory
+## What's New in v1.0.0 — First Stable Release
 
 | Upgrade | What it adds | Impact |
 |---------|-------------|--------|
-| **Universal LLM Factory** | TrelixChatClient ABC — complete(), stream(), tool_call() | Switch providers with one env var |
-| **Bedrock Chat** | AWS Bedrock Converse API — sonnet-4-6 default, haiku fallback | No external API key beyond AWS |
-| **Bedrock Embeddings** | Titan v2 (256/512/1024 dims) + Cohere embed-english-v3 | Best retrieval quality on Bedrock |
-| **Anthropic Direct** | Claude 3.5/4 via Anthropic API | Direct API without AWS routing |
-| **Vertex AI / Gemini** | Google Vertex AI + LiteLLM (100+ providers) | Any provider in one line |
+| **Stable Public API** | `from trelix import IndexConfig, Indexer, Retriever` | Drop-in Python library |
+| **Universal LLM Factory** | TrelixChatClient ABC — 5 backends (OpenAI/Azure/Anthropic/Bedrock/Vertex) | One env var to switch providers |
+| **Bedrock Chat** | Default sonnet-4-6, transparent haiku fallback | No extra key beyond AWS |
+| **Bedrock Embeddings** | Titan v2 (256/512/1024 dims) + Cohere embed-english-v3 | Best retrieval on Bedrock |
+| **trelix --version** | Version flag | Basic CLI hygiene |
+| **Coverage gate** | fail_under=75, 1127 unit tests | Production quality signal |
 | **Contextual Chunking** | LLM summary prepended to each chunk | 67% retrieval failure reduction |
 | **Voyage / local-code** | voyage-code-3 or SFR-Embedding-Code-2B_R | +49% quality vs Ada-002 on CoIR |
 
@@ -124,7 +125,7 @@ pip install --upgrade trelix[bedrock]
 ```
 
 ### tree-sitter FutureWarning spam
-Language deprecation warnings from tree-sitter 0.21.x are suppressed automatically in v0.8.0+. On older versions, set:
+Language deprecation warnings from tree-sitter 0.21.x are not yet suppressed automatically. Suppress them with:
 ```bash
 PYTHONWARNINGS=ignore::FutureWarning trelix index .
 ```
