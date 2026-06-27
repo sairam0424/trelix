@@ -95,6 +95,14 @@ class Retriever:
         # Instantiate the LLM query planner. Falls back gracefully to
         # default_plan() when no API key is set (provider=local).
         self._planner = QueryPlanner(config.embedder)
+        # Wrap with LRU plan cache when enabled (default: 128 entries).
+        # plan() hits are returned in <1ms; cold misses delegate to the LLM unchanged.
+        if config.retrieval.plan_cache_size > 0:
+            from trelix.retrieval.plan_cache import CachingPlanner
+
+            self._planner = CachingPlanner(  # type: ignore[assignment]
+                self._planner, max_size=config.retrieval.plan_cache_size
+            )
 
         # Debug output dir: <repo_root>/.trelix/debug/
         self._debug_dir = Path(config.repo_path) / ".trelix" / "debug"
