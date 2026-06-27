@@ -1,8 +1,8 @@
 """Tests for VertexBackend (mocked — google-genai not required)."""
+
 from __future__ import annotations
 
 import sys
-import types
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -39,6 +39,7 @@ class TestVertexBackend:
             mods.update(extra_mods)
         with patch.dict("sys.modules", mods):
             from trelix.llm.providers.vertex_backend import VertexBackend
+
             cfg = LLMConfig(
                 provider="vertex",
                 model="gemini-2.0-flash",
@@ -51,6 +52,7 @@ class TestVertexBackend:
         mods = _google_genai_modules()
         with patch.dict("sys.modules", mods):
             from trelix.llm.providers.vertex_backend import VertexBackend
+
             cfg = LLMConfig(
                 provider="vertex",
                 model="gemini-2.0-flash",
@@ -82,6 +84,7 @@ class TestVertexBackend:
                 del sys.modules[key]
         with patch.dict("sys.modules", {"google": None, "google.genai": None}):
             from trelix.llm.providers.vertex_backend import VertexBackend
+
             cfg = LLMConfig(provider="vertex", _env_file=None)  # type: ignore[call-arg]
             with pytest.raises(ImportError, match="pip install"):
                 VertexBackend(cfg)

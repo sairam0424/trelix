@@ -216,6 +216,7 @@ class Indexer:
             return Chunker(config.chunker)
         try:
             from trelix.llm.factory import build_chat_client
+
             llm_client = build_chat_client(config.llm)
             logger.info(
                 "ContextualChunker: using %s provider, model=%s",

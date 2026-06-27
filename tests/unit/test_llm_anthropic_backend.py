@@ -1,4 +1,5 @@
 """Tests for AnthropicBackend (mocked — no real API calls)."""
+
 from __future__ import annotations
 
 import sys
@@ -8,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from trelix.core.config import LLMConfig
-from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse
+from trelix.llm.client import ChatMessage, ChatResponse
 
 # Fake key for testing — not a real credential
 _FAKE_ANT_KEY = "test-anthropic-api-key-fake"
@@ -34,6 +35,7 @@ def mock_anthropic(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 class TestAnthropicBackend:
     def _make_backend(self, mock_anthropic_module: MagicMock):
         from trelix.llm.providers.anthropic_backend import AnthropicBackend
+
         cfg = LLMConfig(
             provider="anthropic",
             anthropic_api_key=_FAKE_ANT_KEY,
@@ -118,6 +120,7 @@ class TestAnthropicBackend:
 
     def test_import_error_when_anthropic_not_installed(self) -> None:
         from trelix.llm.providers.anthropic_backend import AnthropicBackend
+
         cfg = LLMConfig(
             provider="anthropic",
             anthropic_api_key=_FAKE_ANT_KEY,

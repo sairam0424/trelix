@@ -236,10 +236,15 @@ class AdaptiveRouter:
         Raises ValueError if parsing fails.
         """
         from trelix.llm.client import ChatMessage, TrelixChatClient
+
         prompt = DECOMPOSITION_PROMPT.format(query=query)
 
         # Detect if a raw client was injected directly (e.g. by tests)
-        _backend_internal = getattr(planner._llm_client, "_client", None) if isinstance(planner._llm_client, TrelixChatClient) else None
+        _backend_internal = (
+            getattr(planner._llm_client, "_client", None)
+            if isinstance(planner._llm_client, TrelixChatClient)
+            else None
+        )
         _use_raw = planner._client is not None and planner._client is not _backend_internal
 
         if isinstance(planner._llm_client, TrelixChatClient) and not _use_raw:
@@ -252,8 +257,12 @@ class AdaptiveRouter:
         else:
             # Legacy path: raw openai client (backward compat / test injection via _client)
             assert planner._client is not None  # guaranteed by caller
-            legacy_response = planner._client.chat.completions.create(
-                model=planner._config.azure_chat_deployment if planner._config.provider == "azure" else planner._config.openai_chat_model,
+            legacy_response = planner._client.chat.completions.create(  # type: ignore[union-attr]
+                model=(
+                    planner._config.azure_chat_deployment
+                    if planner._config.provider == "azure"
+                    else planner._config.openai_chat_model
+                ),
                 messages=[
                     {"role": "user", "content": prompt},
                 ],
@@ -312,15 +321,18 @@ class QueryPlanner:
         self._config = config
         # Build LLM client via factory
         from trelix.core.config import LLMConfig
-        from trelix.llm.factory import build_chat_client
         from trelix.llm.client import ChatMessage as _ChatMessage  # noqa: F401
+        from trelix.llm.factory import build_chat_client
+
         llm_cfg = LLMConfig(
             provider=config.provider if config.provider in ("openai", "azure") else "openai",
             _env_file=None,  # type: ignore[call-arg]
         )
         self._llm_client = build_chat_client(llm_cfg)
         # Keep _client for the None check in _plan_direct and AdaptiveRouter
-        self._client = self._llm_client._client if hasattr(self._llm_client, "_client") else self._llm_client
+        self._client = (
+            self._llm_client._client if hasattr(self._llm_client, "_client") else self._llm_client
+        )
         # AdaptiveRouter is initialised lazily on first plan() call to avoid
         # circular reference issues during __init__ of the router itself.
         self._router: AdaptiveRouter | None = None
@@ -387,6 +399,7 @@ class QueryPlanner:
         Raises on any failure so the caller can fall back cleanly.
         """
         from trelix.llm.client import ChatMessage
+
         result = self._llm_client.tool_call(
             messages=[
                 ChatMessage(role="system", content=SYSTEM_PROMPT),

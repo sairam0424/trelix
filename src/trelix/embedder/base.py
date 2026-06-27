@@ -354,6 +354,7 @@ class _BedrockEmbedderBase(BaseEmbedder):
     def _decode_credential(value: str) -> str:
         """Transparently decode base64-encoded credentials stored in .env."""
         import base64
+
         try:
             decoded = base64.b64decode(value).decode("utf-8")
             if decoded.isprintable() and "\n" not in decoded:
@@ -367,8 +368,7 @@ class _BedrockEmbedderBase(BaseEmbedder):
             import boto3
         except ImportError as exc:
             raise ImportError(
-                "Bedrock embedders require boto3. "
-                "Install it with: pip install 'trelix[bedrock]'"
+                "Bedrock embedders require boto3. Install it with: pip install 'trelix[bedrock]'"
             ) from exc
         session_kwargs: dict[str, Any] = {}
         if config.bedrock_aws_profile:
@@ -414,11 +414,14 @@ class BedrockTitanEmbedder(_BedrockEmbedderBase):
 
     def _embed_one(self, text: str) -> list[float]:
         import json
-        body = json.dumps({
-            "inputText": text,
-            "dimensions": self._dims,
-            "normalize": self._normalize,
-        })
+
+        body = json.dumps(
+            {
+                "inputText": text,
+                "dimensions": self._dims,
+                "normalize": self._normalize,
+            }
+        )
         response = self._client.invoke_model(
             modelId=self._model,
             body=body,
@@ -436,10 +439,7 @@ class BedrockTitanEmbedder(_BedrockEmbedderBase):
     async def embed_async(self, texts: list[str]) -> list[list[float]]:
         """Parallelise per-text boto3 calls in a thread pool."""
         loop = asyncio.get_event_loop()
-        tasks = [
-            loop.run_in_executor(_get_sync_executor(), self._embed_one, t)
-            for t in texts
-        ]
+        tasks = [loop.run_in_executor(_get_sync_executor(), self._embed_one, t) for t in texts]
         return list(await asyncio.gather(*tasks))
 
     @property
@@ -471,15 +471,16 @@ class BedrockCohereEmbedder(_BedrockEmbedderBase):
         self._client = self._make_boto3_client(config)
         self._model = config.bedrock_cohere_model
 
-    def _embed_batch(
-        self, texts: list[str], input_type: str
-    ) -> list[list[float]]:
+    def _embed_batch(self, texts: list[str], input_type: str) -> list[list[float]]:
         import json
-        body = json.dumps({
-            "texts": texts,
-            "input_type": input_type,
-            "truncate": "END",  # silently truncate overlong inputs
-        })
+
+        body = json.dumps(
+            {
+                "texts": texts,
+                "input_type": input_type,
+                "truncate": "END",  # silently truncate overlong inputs
+            }
+        )
         response = self._client.invoke_model(
             modelId=self._model,
             body=body,

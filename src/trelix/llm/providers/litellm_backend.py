@@ -1,10 +1,12 @@
 """LiteLLM universal backend for TrelixChatClient (100+ providers)."""
+
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
-from trelix.llm.client import ChatMessage, ChatResponse, TrelixChatClient, ToolCallResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -23,40 +25,37 @@ class LiteLLMBackend(TrelixChatClient):
     drop_params=True suppresses UnsupportedParamsError for provider-unsupported params.
     """
 
-    def __init__(self, config: "LLMConfig") -> None:
+    def __init__(self, config: LLMConfig) -> None:
         self._config = config
         try:
             import litellm as _litellm
+
             _litellm.drop_params = config.litellm_drop_params
             self._litellm = _litellm
         except ImportError as exc:
             raise ImportError(
-                "LiteLLM backend requires litellm. "
-                "Install it with: pip install 'trelix[litellm]'"
+                "LiteLLM backend requires litellm. Install it with: pip install 'trelix[litellm]'"
             ) from exc
         self._model = config.litellm_model or config.model
 
     def _build_messages(
-        self, messages: list[ChatMessage], system: Optional[str]
+        self, messages: list[ChatMessage], system: str | None
     ) -> list[dict[str, str]]:
         result: list[dict[str, str]] = []
-        effective_system = system or next(
-            (m.content for m in messages if m.role == "system"), None
-        )
+        effective_system = system or next((m.content for m in messages if m.role == "system"), None)
         if effective_system:
             result.append({"role": "system", "content": effective_system})
         result.extend(
-            {"role": m.role, "content": m.content}
-            for m in messages if m.role != "system"
+            {"role": m.role, "content": m.content} for m in messages if m.role != "system"
         )
         return result
 
     def complete(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system: Optional[str] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system: str | None = None,
     ) -> ChatResponse:
         response = self._litellm.completion(
             model=self._model,
@@ -76,9 +75,9 @@ class LiteLLMBackend(TrelixChatClient):
     def stream(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system: Optional[str] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system: str | None = None,
     ) -> Iterator[str]:
         response = self._litellm.completion(
             model=self._model,
@@ -95,13 +94,13 @@ class LiteLLMBackend(TrelixChatClient):
         self,
         messages: list[ChatMessage],
         tools: list[dict[str, Any]],
-        force_tool: Optional[str] = None,
-        max_tokens: Optional[int] = None,
+        force_tool: str | None = None,
+        max_tokens: int | None = None,
     ) -> ToolCallResponse:
         import json
+
         tool_choice: Any = (
-            {"type": "function", "function": {"name": force_tool}}
-            if force_tool else "auto"
+            {"type": "function", "function": {"name": force_tool}} if force_tool else "auto"
         )
         response = self._litellm.completion(
             model=self._model,

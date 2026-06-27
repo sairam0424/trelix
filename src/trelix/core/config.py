@@ -10,7 +10,7 @@ Set TRELIX_EMBEDDER_PROVIDER=openai and OPENAI_API_KEY for higher quality.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -164,7 +164,9 @@ class EmbedderConfig(BaseSettings):
         populate_by_name=True,
     )
 
-    provider: Literal["openai", "azure", "local", "voyage", "local-code", "bedrock-titan", "bedrock-cohere"] = "local"
+    provider: Literal[
+        "openai", "azure", "local", "voyage", "local-code", "bedrock-titan", "bedrock-cohere"
+    ] = "local"
 
     # ── OpenAI ───────────────────────────────────────────────────────────────
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
@@ -206,7 +208,7 @@ class EmbedderConfig(BaseSettings):
     bedrock_aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")
     # Titan: configurable dims — 1024 matches voyage quality, 256 cuts storage 4×
     bedrock_titan_model: str = "amazon.titan-embed-text-v2:0"
-    bedrock_titan_dimensions: int = 1024   # 256 | 512 | 1024
+    bedrock_titan_dimensions: int = 1024  # 256 | 512 | 1024
     bedrock_titan_normalize: bool = True
     # Cohere: fixed 1024 dims, input_type controls doc vs query embedding
     bedrock_cohere_model: str = "cohere.embed-english-v3"
@@ -307,6 +309,7 @@ class LLMConfig(BaseSettings):
     Separate from EmbedderConfig — you can embed with Azure and synthesize
     with Anthropic, for example.
     """
+
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_LLM_",
         env_file=".env",
@@ -319,22 +322,22 @@ class LLMConfig(BaseSettings):
     model: str = "gpt-4o"
 
     # ── OpenAI ──────────────────────────────────────────────────────────────
-    openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
 
     # ── Azure OpenAI ─────────────────────────────────────────────────────────
-    azure_api_key: Optional[str] = Field(default=None, alias="AZURE_API_KEY")
-    azure_endpoint: Optional[str] = Field(default=None, alias="AZURE_ENDPOINT")
+    azure_api_key: str | None = Field(default=None, alias="AZURE_API_KEY")
+    azure_endpoint: str | None = Field(default=None, alias="AZURE_ENDPOINT")
     azure_api_version: str = Field(default="2025-04-01-preview", alias="AZURE_API_VERSION")
     azure_chat_deployment: str = Field(default="gpt-4o", alias="AZURE_CHAT_MODEL")
 
     # ── Anthropic ────────────────────────────────────────────────────────────
-    anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
 
     # ── AWS Bedrock ───────────────────────────────────────────────────────────
     aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
-    aws_access_key_id: Optional[str] = Field(default=None, alias="AWS_ACCESS_KEY_ID")
-    aws_secret_access_key: Optional[str] = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
-    aws_profile: Optional[str] = Field(default=None, alias="AWS_PROFILE")
+    aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
+    aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")
     # Inference profile IDs (us.* prefix required for on-demand throughput).
     # Primary is tried first; if Bedrock returns a ValidationException (model not
     # available in the region or throughput tier), the backend retries with fallback.
@@ -348,12 +351,12 @@ class LLMConfig(BaseSettings):
     )
 
     # ── Vertex AI / Gemini ────────────────────────────────────────────────────
-    google_project_id: Optional[str] = Field(default=None, alias="GOOGLE_CLOUD_PROJECT")
+    google_project_id: str | None = Field(default=None, alias="GOOGLE_CLOUD_PROJECT")
     google_location: str = Field(default="us-central1", alias="GOOGLE_CLOUD_LOCATION")
-    google_api_key: Optional[str] = Field(default=None, alias="GOOGLE_API_KEY")
+    google_api_key: str | None = Field(default=None, alias="GOOGLE_API_KEY")
 
     # ── LiteLLM passthrough ───────────────────────────────────────────────────
-    litellm_model: Optional[str] = Field(default=None, alias="TRELIX_LLM_LITELLM_MODEL")
+    litellm_model: str | None = Field(default=None, alias="TRELIX_LLM_LITELLM_MODEL")
     litellm_drop_params: bool = True
 
     # ── Common ────────────────────────────────────────────────────────────────

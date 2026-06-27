@@ -1,8 +1,10 @@
 """Tests for BedrockBackend (mocked — no real AWS calls)."""
+
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from trelix.core.config import LLMConfig
 from trelix.llm.client import ChatMessage, ChatResponse
@@ -24,6 +26,7 @@ def _make_boto3_mock() -> MagicMock:
 class TestBedrockBackend:
     def _make_backend(self, model: str = "us.anthropic.claude-sonnet-4-6"):
         from trelix.llm.providers.bedrock_backend import BedrockBackend
+
         cfg = LLMConfig(
             provider="bedrock",
             model=model,
@@ -109,17 +112,23 @@ class TestBedrockBackend:
         backend = self._make_backend()
         mock_client = MagicMock()
         mock_client.converse.return_value = {
-            "output": {"message": {
-                "content": [{"toolUse": {"toolUseId": "1", "name": "fn", "input": {"x": 1}}}],
-                "role": "assistant",
-            }},
+            "output": {
+                "message": {
+                    "content": [{"toolUse": {"toolUseId": "1", "name": "fn", "input": {"x": 1}}}],
+                    "role": "assistant",
+                }
+            },
             "stopReason": "tool_use",
             "usage": {"inputTokens": 1, "outputTokens": 1},
         }
         backend._client = mock_client
 
-        tools = [{"type": "function", "function": {"name": "fn",
-                   "parameters": {"type": "object", "properties": {}}}}]
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "fn", "parameters": {"type": "object", "properties": {}}},
+            }
+        ]
         backend.tool_call([ChatMessage(role="user", content="hi")], tools=tools)
 
         call_kwargs = mock_client.converse.call_args[1]
@@ -127,6 +136,7 @@ class TestBedrockBackend:
 
     def test_import_error_when_boto3_not_installed(self) -> None:
         from trelix.llm.providers.bedrock_backend import BedrockBackend
+
         cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
         with patch.dict("sys.modules", {"boto3": None}):
             with pytest.raises(ImportError, match="pip install"):
@@ -139,6 +149,7 @@ class TestBedrockDefaultModels:
     def _make_backend_with_mock_client(self, model: str | None = None):
         """Build a BedrockBackend with a mock boto3 client. model=None uses config default."""
         from trelix.llm.providers.bedrock_backend import BedrockBackend
+
         kwargs: dict = {"provider": "bedrock", "_env_file": None}
         if model is not None:
             kwargs["model"] = model
@@ -177,11 +188,15 @@ class TestBedrockDefaultModels:
         }
 
         call_count = 0
+
         def converse_side_effect(**kwargs):
             nonlocal call_count
             call_count += 1
             if kwargs.get("modelId") == "us.anthropic.claude-sonnet-4-6":
-                raise _ValidationException("ValidationException: Invocation of model ID with on-demand throughput not supported")
+                raise _ValidationException(
+                    "ValidationException: Invocation of model ID "
+                    "with on-demand throughput not supported"
+                )
             return fallback_resp
 
         mock_client.converse.side_effect = converse_side_effect
@@ -235,14 +250,16 @@ class TestBedrockDefaultModels:
         def converse_side_effect(**kwargs):
             call_models.append(kwargs.get("modelId"))
             if kwargs.get("modelId") == "us.anthropic.claude-sonnet-4-6":
-                raise _ValidationException("ValidationException: on-demand throughput not supported")
+                raise _ValidationException(
+                    "ValidationException: on-demand throughput not supported"
+                )
             return ok_resp
 
         mock_client.converse.side_effect = converse_side_effect
         backend._client = mock_client
 
-        backend.complete([ChatMessage(role="user", content="first")])   # triggers fallback
-        backend.complete([ChatMessage(role="user", content="second")])  # should use fallback directly
+        backend.complete([ChatMessage(role="user", content="first")])  # triggers fallback
+        backend.complete([ChatMessage(role="user", content="second")])  # uses fallback directly
 
         # First call: primary + fallback; second call: fallback only
         assert call_models == [
@@ -254,6 +271,7 @@ class TestBedrockDefaultModels:
     def test_config_fields_override_defaults(self) -> None:
         """TRELIX_LLM_BEDROCK_PRIMARY_MODEL / FALLBACK_MODEL env vars override defaults."""
         from trelix.llm.providers.bedrock_backend import BedrockBackend
+
         cfg = LLMConfig(
             provider="bedrock",
             bedrock_primary_model="us.anthropic.claude-opus-4-8",

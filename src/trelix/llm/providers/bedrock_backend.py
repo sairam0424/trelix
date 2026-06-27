@@ -1,11 +1,13 @@
 """AWS Bedrock Converse API backend for TrelixChatClient."""
+
 from __future__ import annotations
 
 import base64
 import logging
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
-from trelix.llm.client import ChatMessage, ChatResponse, TrelixChatClient, ToolCallResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -20,7 +22,7 @@ _STOP_REASON_MAP = {
 }
 
 
-def _resolve_bedrock_model(config: "LLMConfig") -> tuple[str, str]:
+def _resolve_bedrock_model(config: LLMConfig) -> tuple[str, str]:
     """
     Return (primary_model_id, fallback_model_id) for Bedrock.
 
@@ -46,8 +48,10 @@ class BedrockBackend(TrelixChatClient):
     TrelixChatClient backed by AWS Bedrock Converse API.
 
     Model selection:
-      Default primary:  us.anthropic.claude-sonnet-4-6  (via TRELIX_LLM_BEDROCK_PRIMARY_MODEL)
-      Default fallback: us.anthropic.claude-haiku-4-5-20251001-v1:0  (via TRELIX_LLM_BEDROCK_FALLBACK_MODEL)
+      Default primary:  us.anthropic.claude-sonnet-4-6
+                        (via TRELIX_LLM_BEDROCK_PRIMARY_MODEL)
+      Default fallback: us.anthropic.claude-haiku-4-5-20251001-v1:0
+                        (via TRELIX_LLM_BEDROCK_FALLBACK_MODEL)
 
       On ValidationException (model not available / throughput tier mismatch),
       every call transparently retries once with the fallback model and logs a
@@ -60,7 +64,7 @@ class BedrockBackend(TrelixChatClient):
     - Tool choice: {"auto": {}} / {"any": {}} / {"tool": {"name": "fn"}}
     """
 
-    def __init__(self, config: "LLMConfig") -> None:
+    def __init__(self, config: LLMConfig) -> None:
         self._config = config
         self._primary_model, self._fallback_model = _resolve_bedrock_model(config)
         self._model = self._primary_model  # active model — may switch on fallback
@@ -80,13 +84,12 @@ class BedrockBackend(TrelixChatClient):
             pass
         return value
 
-    def _build_client(self, config: "LLMConfig") -> Any:
+    def _build_client(self, config: LLMConfig) -> Any:
         try:
             import boto3
         except ImportError as exc:
             raise ImportError(
-                "Bedrock backend requires boto3. "
-                "Install it with: pip install 'trelix[bedrock]'"
+                "Bedrock backend requires boto3. Install it with: pip install 'trelix[bedrock]'"
             ) from exc
         session_kwargs: dict[str, Any] = {}
         if config.aws_profile:
@@ -96,20 +99,20 @@ class BedrockBackend(TrelixChatClient):
         if config.aws_access_key_id:
             client_kwargs["aws_access_key_id"] = self._decode_credential(config.aws_access_key_id)
         if config.aws_secret_access_key:
-            client_kwargs["aws_secret_access_key"] = self._decode_credential(config.aws_secret_access_key)
+            client_kwargs["aws_secret_access_key"] = self._decode_credential(
+                config.aws_secret_access_key
+            )
         return session.client("bedrock-runtime", **client_kwargs)
 
     def _build_request(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int],
-        system: Optional[str],
-        tools: Optional[list[dict[str, Any]]] = None,
-        force_tool: Optional[str] = None,
+        max_tokens: int | None,
+        system: str | None,
+        tools: list[dict[str, Any]] | None = None,
+        force_tool: str | None = None,
     ) -> dict[str, Any]:
-        effective_system = system or next(
-            (m.content for m in messages if m.role == "system"), None
-        )
+        effective_system = system or next((m.content for m in messages if m.role == "system"), None)
         request: dict[str, Any] = {
             "modelId": self._model,
             "inferenceConfig": {
@@ -121,7 +124,8 @@ class BedrockBackend(TrelixChatClient):
                     "role": m.role,
                     "content": [{"text": m.content}],  # always list-of-dicts
                 }
-                for m in messages if m.role != "system"
+                for m in messages
+                if m.role != "system"
             ],
         }
         if effective_system:
@@ -129,9 +133,7 @@ class BedrockBackend(TrelixChatClient):
         if tools:
             request["toolConfig"] = {
                 "tools": [self._convert_tool(t) for t in tools],
-                "toolChoice": (
-                    {"tool": {"name": force_tool}} if force_tool else {"auto": {}}
-                ),
+                "toolChoice": ({"tool": {"name": force_tool}} if force_tool else {"auto": {}}),
             }
         return request
 
@@ -151,13 +153,8 @@ class BedrockBackend(TrelixChatClient):
     def _is_model_unavailable(self, exc: Exception) -> bool:
         """True when Bedrock signals the model isn't available on-demand."""
         msg = str(exc)
-        return (
-            "ValidationException" in type(exc).__name__
-            or "ValidationException" in msg
-        ) and (
-            "on-demand throughput" in msg
-            or "inference profile" in msg
-            or "not supported" in msg
+        return ("ValidationException" in type(exc).__name__ or "ValidationException" in msg) and (
+            "on-demand throughput" in msg or "inference profile" in msg or "not supported" in msg
         )
 
     def _try_with_fallback(self, fn: Any, request: dict[str, Any]) -> Any:
@@ -183,18 +180,16 @@ class BedrockBackend(TrelixChatClient):
     def complete(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system: Optional[str] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system: str | None = None,
     ) -> ChatResponse:
         request = self._build_request(messages, max_tokens, system)
         if temperature is not None:
             request["inferenceConfig"]["temperature"] = temperature
         response = self._try_with_fallback(self._client.converse, request)
         output_msg = response["output"]["message"]
-        content = next(
-            (block["text"] for block in output_msg["content"] if "text" in block), ""
-        )
+        content = next((block["text"] for block in output_msg["content"] if "text" in block), "")
         usage = response.get("usage", {})
         return ChatResponse(
             content=content,
@@ -207,9 +202,9 @@ class BedrockBackend(TrelixChatClient):
     def stream(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system: Optional[str] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system: str | None = None,
     ) -> Iterator[str]:
         request = self._build_request(messages, max_tokens, system)
         if temperature is not None:
@@ -226,8 +221,8 @@ class BedrockBackend(TrelixChatClient):
         self,
         messages: list[ChatMessage],
         tools: list[dict[str, Any]],
-        force_tool: Optional[str] = None,
-        max_tokens: Optional[int] = None,
+        force_tool: str | None = None,
+        max_tokens: int | None = None,
     ) -> ToolCallResponse:
         request = self._build_request(messages, max_tokens, None, tools, force_tool)
         response = self._try_with_fallback(self._client.converse, request)

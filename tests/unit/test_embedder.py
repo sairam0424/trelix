@@ -484,9 +484,11 @@ class TestLocalCodeEmbedder:
 # BedrockTitanEmbedder (mocked — no real AWS calls)
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_boto3(vectors: list[list[float]]) -> MagicMock:
     """Return a mock boto3 bedrock-runtime client that yields preset vectors."""
     import json
+
     mock_client = MagicMock()
     responses = iter(vectors)
 
@@ -548,18 +550,16 @@ class TestBedrockTitanEmbedder:
         embedder = self._make(512)
         embedder.embed(["test"])
         import json
-        call_body = json.loads(
-            embedder._client.invoke_model.call_args[1]["body"]
-        )
+
+        call_body = json.loads(embedder._client.invoke_model.call_args[1]["body"])
         assert call_body["dimensions"] == 512
 
     def test_invoke_model_passes_normalize_true(self) -> None:
         embedder = self._make(1024)
         embedder.embed(["test"])
         import json
-        call_body = json.loads(
-            embedder._client.invoke_model.call_args[1]["body"]
-        )
+
+        call_body = json.loads(embedder._client.invoke_model.call_args[1]["body"])
         assert call_body["normalize"] is True
 
     def test_factory_returns_titan_embedder(self) -> None:
@@ -587,9 +587,11 @@ class TestBedrockTitanEmbedder:
 # BedrockCohereEmbedder (mocked — no real AWS calls)
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_cohere_boto3(num_texts: int = 2) -> MagicMock:
     """Return a mock boto3 client that yields Cohere-style embeddings response."""
     import json
+
     mock_client = MagicMock()
 
     def invoke_model(**kwargs: object) -> dict:
@@ -629,18 +631,16 @@ class TestBedrockCohereEmbedder:
         embedder = self._make()
         embedder.embed(["some code"])
         import json
-        call_body = json.loads(
-            embedder._client.invoke_model.call_args[1]["body"]
-        )
+
+        call_body = json.loads(embedder._client.invoke_model.call_args[1]["body"])
         assert call_body["input_type"] == "search_document"
 
     def test_embed_query_uses_search_query_input_type(self) -> None:
         embedder = self._make()
         embedder.embed_query("find authentication")
         import json
-        call_body = json.loads(
-            embedder._client.invoke_model.call_args[1]["body"]
-        )
+
+        call_body = json.loads(embedder._client.invoke_model.call_args[1]["body"])
         assert call_body["input_type"] == "search_query"
 
     def test_embed_query_returns_single_vector(self) -> None:

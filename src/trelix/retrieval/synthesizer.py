@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig, RetrievalConfig
@@ -114,24 +114,29 @@ class Synthesizer:
         self._config = config
         # Build LLMConfig from EmbedderConfig for backward compat
         from trelix.core.config import LLMConfig
-        from trelix.llm.factory import build_chat_client
         from trelix.llm.client import ChatMessage as _ChatMessage  # noqa: F401 – ensure import
+        from trelix.llm.factory import build_chat_client
+
         llm_cfg = LLMConfig(
             provider=config.provider if config.provider in ("openai", "azure") else "openai",
             _env_file=None,  # type: ignore[call-arg]
         )
         # Carry over credentials from EmbedderConfig
-        llm_cfg = llm_cfg.model_copy(update={
-            "openai_api_key": config.openai_api_key,
-            "azure_api_key": config.azure_api_key,
-            "azure_endpoint": config.azure_endpoint,
-            "azure_api_version": config.azure_api_version,
-            "azure_chat_deployment": config.azure_chat_deployment,
-            "model": config.openai_chat_model,
-        })
+        llm_cfg = llm_cfg.model_copy(
+            update={
+                "openai_api_key": config.openai_api_key,
+                "azure_api_key": config.azure_api_key,
+                "azure_endpoint": config.azure_endpoint,
+                "azure_api_version": config.azure_api_version,
+                "azure_chat_deployment": config.azure_chat_deployment,
+                "model": config.openai_chat_model,
+            }
+        )
         self._llm_client = build_chat_client(llm_cfg)
         # Keep _client for the None check used by synthesize()
-        self._client = self._llm_client._client if hasattr(self._llm_client, "_client") else self._llm_client
+        self._client = (
+            self._llm_client._client if hasattr(self._llm_client, "_client") else self._llm_client
+        )
         # Lazy-import to avoid circular deps; default to RetrievalConfig() if not supplied.
         if retrieval_config is None:
             from trelix.core.config import RetrievalConfig as _RC
@@ -211,6 +216,7 @@ class Synthesizer:
         backward compat with tests that inject mock._client directly.
         """
         from trelix.llm.client import ChatMessage, TrelixChatClient
+
         user_message = _USER_TEMPLATE.format(
             context_text=context.context_text,
             query=context.query,
@@ -220,7 +226,11 @@ class Synthesizer:
 
         # Detect if a raw client was injected directly (e.g. by tests) by checking
         # whether _client is the same object as the backend's internal _client.
-        _backend_internal = getattr(self._llm_client, "_client", None) if isinstance(self._llm_client, TrelixChatClient) else None
+        _backend_internal = (
+            getattr(self._llm_client, "_client", None)
+            if isinstance(self._llm_client, TrelixChatClient)
+            else None
+        )
         _use_raw = self._client is not None and self._client is not _backend_internal
 
         if isinstance(self._llm_client, TrelixChatClient) and not _use_raw:
@@ -241,7 +251,7 @@ class Synthesizer:
                 if config.provider == "azure"
                 else config.openai_chat_model
             )
-            stream = self._client.chat.completions.create(
+            stream = self._client.chat.completions.create(  # type: ignore[union-attr]
                 model=model,
                 messages=[
                     {"role": "system", "content": self._system_prompt(context.intent)},

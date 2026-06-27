@@ -1,20 +1,22 @@
 """OpenAI and Azure OpenAI backend for TrelixChatClient."""
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
-from trelix.llm.client import ChatMessage, ChatResponse, TrelixChatClient, ToolCallResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
 
 logger = logging.getLogger("trelix.llm.openai_backend")
 
-# Module-level imports so patch() can target trelix.llm.providers.openai_backend.OpenAI / AzureOpenAI
+# Module-level imports so patch() can target openai_backend.OpenAI / AzureOpenAI
 try:
-    from openai import OpenAI, AzureOpenAI  # noqa: F401
+    from openai import AzureOpenAI, OpenAI  # noqa: F401
 except ImportError:  # pragma: no cover
     OpenAI = None  # type: ignore[assignment,misc]
     AzureOpenAI = None  # type: ignore[assignment,misc]
@@ -45,13 +47,13 @@ class OpenAIBackend(TrelixChatClient):
     - Tool calls via tools= + tool_choice=
     """
 
-    def __init__(self, config: "LLMConfig") -> None:
+    def __init__(self, config: LLMConfig) -> None:
         self._config = config
         self._is_azure = config.provider == "azure"
         self._model = config.azure_chat_deployment if self._is_azure else config.model
         self._client = self._build_client(config)
 
-    def _build_client(self, config: "LLMConfig") -> Any | None:
+    def _build_client(self, config: LLMConfig) -> Any | None:
         if self._is_azure:
             if not config.azure_api_key or not config.azure_endpoint:
                 logger.debug("OpenAIBackend: Azure credentials not set.")
@@ -76,28 +78,24 @@ class OpenAIBackend(TrelixChatClient):
                 return None
 
     def _build_messages(
-        self, messages: list[ChatMessage], system: Optional[str]
+        self, messages: list[ChatMessage], system: str | None
     ) -> list[dict[str, str]]:
         result: list[dict[str, str]] = []
         # Inject system prompt first
-        effective_system = system or next(
-            (m.content for m in messages if m.role == "system"), None
-        )
+        effective_system = system or next((m.content for m in messages if m.role == "system"), None)
         if effective_system:
             result.append({"role": "system", "content": effective_system})
         result.extend(
-            {"role": m.role, "content": m.content}
-            for m in messages
-            if m.role != "system"
+            {"role": m.role, "content": m.content} for m in messages if m.role != "system"
         )
         return result
 
     def complete(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system: Optional[str] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system: str | None = None,
     ) -> ChatResponse:
         if self._client is None:
             return ChatResponse(
@@ -105,9 +103,7 @@ class OpenAIBackend(TrelixChatClient):
                 model="none",
                 finish_reason="stop",
             )
-        token_kwarg = _token_limit_param(
-            self._model, max_tokens or self._config.max_tokens
-        )
+        token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
         response = self._client.chat.completions.create(
             model=self._model,
             messages=self._build_messages(messages, system),
@@ -126,16 +122,14 @@ class OpenAIBackend(TrelixChatClient):
     def stream(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system: Optional[str] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system: str | None = None,
     ) -> Iterator[str]:
         if self._client is None:
             yield "[trelix] LLM not configured — set OPENAI_API_KEY or AZURE_API_KEY."
             return
-        token_kwarg = _token_limit_param(
-            self._model, max_tokens or self._config.max_tokens
-        )
+        token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
         stream = self._client.chat.completions.create(
             model=self._model,
             messages=self._build_messages(messages, system),
@@ -151,21 +145,15 @@ class OpenAIBackend(TrelixChatClient):
         self,
         messages: list[ChatMessage],
         tools: list[dict[str, Any]],
-        force_tool: Optional[str] = None,
-        max_tokens: Optional[int] = None,
+        force_tool: str | None = None,
+        max_tokens: int | None = None,
     ) -> ToolCallResponse:
         if self._client is None:
-            raise RuntimeError(
-                "LLM not configured — set OPENAI_API_KEY or AZURE_API_KEY."
-            )
+            raise RuntimeError("LLM not configured — set OPENAI_API_KEY or AZURE_API_KEY.")
         tool_choice: Any = (
-            {"type": "function", "function": {"name": force_tool}}
-            if force_tool
-            else "auto"
+            {"type": "function", "function": {"name": force_tool}} if force_tool else "auto"
         )
-        token_kwarg = _token_limit_param(
-            self._model, max_tokens or self._config.max_tokens
-        )
+        token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
         response = self._client.chat.completions.create(
             model=self._model,
             messages=self._build_messages(messages, None),

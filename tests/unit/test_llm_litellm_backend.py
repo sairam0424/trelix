@@ -1,4 +1,5 @@
 """Tests for LiteLLMBackend (mocked — litellm not required)."""
+
 from __future__ import annotations
 
 import sys
@@ -22,6 +23,7 @@ class TestLiteLLMBackend:
         mock_litellm = _litellm_module()
         with patch.dict("sys.modules", {"litellm": mock_litellm}):
             from trelix.llm.providers.litellm_backend import LiteLLMBackend
+
             cfg = LLMConfig(
                 provider="litellm",
                 litellm_model="bedrock/claude-3-5-sonnet",
@@ -68,6 +70,7 @@ class TestLiteLLMBackend:
                 del sys.modules[key]
         with patch.dict("sys.modules", {"litellm": None}):
             from trelix.llm.providers.litellm_backend import LiteLLMBackend
+
             cfg = LLMConfig(provider="litellm", _env_file=None)  # type: ignore[call-arg]
             with pytest.raises(ImportError, match="pip install"):
                 LiteLLMBackend(cfg)

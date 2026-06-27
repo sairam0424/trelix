@@ -1,9 +1,8 @@
 """Tests for OpenAIBackend (mocked — no real API calls)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from trelix.core.config import LLMConfig
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse
@@ -94,9 +93,9 @@ class TestOpenAIBackendComplete:
             chunk.choices[0].delta.content = text
             return chunk
 
-        mock_client.chat.completions.create.return_value = iter([
-            make_chunk("hel"), make_chunk("lo"), make_chunk("!")
-        ])
+        mock_client.chat.completions.create.return_value = iter(
+            [make_chunk("hel"), make_chunk("lo"), make_chunk("!")]
+        )
         backend._client = mock_client
 
         chunks = list(backend.stream([ChatMessage(role="user", content="hi")]))
@@ -114,8 +113,15 @@ class TestOpenAIBackendComplete:
         mock_client.chat.completions.create.return_value = mock_response
         backend._client = mock_client
 
-        tools = [{"type": "function", "function": {"name": "search_code",
-                   "parameters": {"type": "object", "properties": {}}}}]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_code",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
         result = backend.tool_call(
             [ChatMessage(role="user", content="search for auth")],
             tools=tools,
@@ -139,5 +145,5 @@ class TestOpenAIBackendComplete:
         cfg = cfg.model_copy(update={"azure_api_key": _FAKE_KEY})
         with patch("trelix.llm.providers.openai_backend.AzureOpenAI") as MockAzure:
             MockAzure.return_value = MagicMock()
-            backend = OpenAIBackend(cfg)
+            OpenAIBackend(cfg)
             assert MockAzure.called

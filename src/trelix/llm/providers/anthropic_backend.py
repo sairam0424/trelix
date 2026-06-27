@@ -1,10 +1,12 @@
 """Anthropic Claude backend for TrelixChatClient."""
+
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
-from trelix.llm.client import ChatMessage, ChatResponse, TrelixChatClient, ToolCallResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -30,12 +32,12 @@ class AnthropicBackend(TrelixChatClient):
     - finish_reason: "end_turn" normalized to "stop"
     """
 
-    def __init__(self, config: "LLMConfig") -> None:
+    def __init__(self, config: LLMConfig) -> None:
         self._config = config
         self._model = config.model
         self._client = self._build_client(config)
 
-    def _build_client(self, config: "LLMConfig") -> Any:
+    def _build_client(self, config: LLMConfig) -> Any:
         try:
             import anthropic
         except ImportError as exc:
@@ -49,15 +51,10 @@ class AnthropicBackend(TrelixChatClient):
         return anthropic.Anthropic(api_key=config.anthropic_api_key)
 
     def _extract_system(
-        self, messages: list[ChatMessage], system: Optional[str]
-    ) -> tuple[Optional[str], list[dict[str, str]]]:
-        effective = system or next(
-            (m.content for m in messages if m.role == "system"), None
-        )
-        user_msgs = [
-            {"role": m.role, "content": m.content}
-            for m in messages if m.role != "system"
-        ]
+        self, messages: list[ChatMessage], system: str | None
+    ) -> tuple[str | None, list[dict[str, str]]]:
+        effective = system or next((m.content for m in messages if m.role == "system"), None)
+        user_msgs = [{"role": m.role, "content": m.content} for m in messages if m.role != "system"]
         return effective, user_msgs
 
     def _normalize_finish_reason(self, stop_reason: str) -> str:
@@ -66,9 +63,9 @@ class AnthropicBackend(TrelixChatClient):
     def complete(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system: Optional[str] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system: str | None = None,
     ) -> ChatResponse:
         if self._client is None:
             return ChatResponse(
@@ -99,9 +96,9 @@ class AnthropicBackend(TrelixChatClient):
     def stream(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system: Optional[str] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system: str | None = None,
     ) -> Iterator[str]:
         if self._client is None:
             yield "[trelix] Anthropic not configured — set ANTHROPIC_API_KEY."
@@ -117,15 +114,14 @@ class AnthropicBackend(TrelixChatClient):
             temperature=temperature if temperature is not None else self._config.temperature,
             **kwargs,
         ) as stream:
-            for text in stream.text_stream:
-                yield text
+            yield from stream.text_stream
 
     def tool_call(
         self,
         messages: list[ChatMessage],
         tools: list[dict[str, Any]],
-        force_tool: Optional[str] = None,
-        max_tokens: Optional[int] = None,
+        force_tool: str | None = None,
+        max_tokens: int | None = None,
     ) -> ToolCallResponse:
         if self._client is None:
             raise RuntimeError("Anthropic not configured — set ANTHROPIC_API_KEY.")
@@ -146,9 +142,7 @@ class AnthropicBackend(TrelixChatClient):
             max_tokens=max_tokens or self._config.max_tokens,
             **kwargs,
         )
-        tool_use = next(
-            (block for block in response.content if block.type == "tool_use"), None
-        )
+        tool_use = next((block for block in response.content if block.type == "tool_use"), None)
         if not tool_use:
             raise RuntimeError("Anthropic did not return a tool_use block.")
         return ToolCallResponse(

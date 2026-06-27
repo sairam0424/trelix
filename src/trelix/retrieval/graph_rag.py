@@ -79,8 +79,13 @@ class GraphRAGSynthesizer:
     def __init__(self, embedder_config: EmbedderConfig, retrieval_config: RetrievalConfig) -> None:
         self._embedder_config = embedder_config
         self._retrieval_config = retrieval_config
+        from trelix.llm.client import TrelixChatClient as _TC
+
+        self._llm_client: _TC | None = None
+        self._client: Any = None
         from trelix.core.config import LLMConfig
         from trelix.llm.factory import build_chat_client
+
         _provider = embedder_config.provider
         if _provider in ("openai", "azure"):
             llm_cfg = LLMConfig(
@@ -88,17 +93,23 @@ class GraphRAGSynthesizer:
                 _env_file=None,  # type: ignore[call-arg]
             )
             # Carry over credentials
-            llm_cfg = llm_cfg.model_copy(update={
-                "openai_api_key": embedder_config.openai_api_key,
-                "azure_api_key": embedder_config.azure_api_key,
-                "azure_endpoint": embedder_config.azure_endpoint,
-                "azure_api_version": embedder_config.azure_api_version,
-                "azure_chat_deployment": embedder_config.azure_chat_deployment,
-                "model": embedder_config.openai_chat_model,
-            })
+            llm_cfg = llm_cfg.model_copy(
+                update={
+                    "openai_api_key": embedder_config.openai_api_key,
+                    "azure_api_key": embedder_config.azure_api_key,
+                    "azure_endpoint": embedder_config.azure_endpoint,
+                    "azure_api_version": embedder_config.azure_api_version,
+                    "azure_chat_deployment": embedder_config.azure_chat_deployment,
+                    "model": embedder_config.openai_chat_model,
+                }
+            )
             self._llm_client = build_chat_client(llm_cfg)
             # Keep _client for the None check in should_use() and synthesize()
-            self._client = self._llm_client._client if hasattr(self._llm_client, "_client") else self._llm_client
+            self._client = (
+                self._llm_client._client
+                if hasattr(self._llm_client, "_client")
+                else self._llm_client
+            )
         else:
             # provider == "local" — no chat API
             self._llm_client = None
@@ -212,8 +223,13 @@ class GraphRAGSynthesizer:
         backward compat with tests that inject mock._client directly.
         """
         from trelix.llm.client import ChatMessage, TrelixChatClient
+
         # Detect if a raw client was injected directly (e.g. by tests)
-        _backend_internal = getattr(self._llm_client, "_client", None) if isinstance(self._llm_client, TrelixChatClient) else None
+        _backend_internal = (
+            getattr(self._llm_client, "_client", None)
+            if isinstance(self._llm_client, TrelixChatClient)
+            else None
+        )
         _use_raw = self._client is not None and self._client is not _backend_internal
 
         if isinstance(self._llm_client, TrelixChatClient) and not _use_raw:

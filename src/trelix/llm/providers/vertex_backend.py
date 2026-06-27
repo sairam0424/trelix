@@ -1,10 +1,12 @@
 """Google Vertex AI / Gemini backend for TrelixChatClient."""
+
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
-from trelix.llm.client import ChatMessage, ChatResponse, TrelixChatClient, ToolCallResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -22,12 +24,12 @@ class VertexBackend(TrelixChatClient):
     - google.genai.types.Tool for function definitions
     """
 
-    def __init__(self, config: "LLMConfig") -> None:
+    def __init__(self, config: LLMConfig) -> None:
         self._config = config
         self._model = config.model
         self._client = self._build_client(config)
 
-    def _build_client(self, config: "LLMConfig") -> Any:
+    def _build_client(self, config: LLMConfig) -> Any:
         try:
             from google import genai
         except (ImportError, TypeError) as exc:
@@ -49,15 +51,16 @@ class VertexBackend(TrelixChatClient):
     def _build_contents(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         return [
             {"role": "user" if m.role == "user" else "model", "parts": [{"text": m.content}]}
-            for m in messages if m.role != "system"
+            for m in messages
+            if m.role != "system"
         ]
 
     def complete(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system: Optional[str] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system: str | None = None,
     ) -> ChatResponse:
         if self._client is None:
             return ChatResponse(
@@ -65,10 +68,9 @@ class VertexBackend(TrelixChatClient):
                 model="none",
                 finish_reason="stop",
             )
-        from google.genai import types  # type: ignore[import]
-        effective_system = system or next(
-            (m.content for m in messages if m.role == "system"), None
-        )
+        from google.genai import types
+
+        effective_system = system or next((m.content for m in messages if m.role == "system"), None)
         gen_config = types.GenerateContentConfig(
             max_output_tokens=max_tokens or self._config.max_tokens,
             temperature=temperature if temperature is not None else self._config.temperature,
@@ -79,8 +81,16 @@ class VertexBackend(TrelixChatClient):
             contents=self._build_contents(messages),
             config=gen_config,
         )
-        finish = response.candidates[0].finish_reason.name.lower() if response.candidates else "stop"
-        normalized = "stop" if finish in ("stop", "1") else "length" if finish in ("max_tokens", "2") else "stop"
+        finish = (
+            response.candidates[0].finish_reason.name.lower() if response.candidates else "stop"
+        )
+        normalized = (
+            "stop"
+            if finish in ("stop", "1")
+            else "length"
+            if finish in ("max_tokens", "2")
+            else "stop"
+        )
         return ChatResponse(
             content=response.text or "",
             model=self._model,
@@ -92,17 +102,16 @@ class VertexBackend(TrelixChatClient):
     def stream(
         self,
         messages: list[ChatMessage],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system: Optional[str] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system: str | None = None,
     ) -> Iterator[str]:
         if self._client is None:
             yield "[trelix] Vertex AI not configured."
             return
-        from google.genai import types  # type: ignore[import]
-        effective_system = system or next(
-            (m.content for m in messages if m.role == "system"), None
-        )
+        from google.genai import types
+
+        effective_system = system or next((m.content for m in messages if m.role == "system"), None)
         gen_config = types.GenerateContentConfig(
             max_output_tokens=max_tokens or self._config.max_tokens,
             temperature=temperature if temperature is not None else self._config.temperature,
@@ -120,20 +129,23 @@ class VertexBackend(TrelixChatClient):
         self,
         messages: list[ChatMessage],
         tools: list[dict[str, Any]],
-        force_tool: Optional[str] = None,
-        max_tokens: Optional[int] = None,
+        force_tool: str | None = None,
+        max_tokens: int | None = None,
     ) -> ToolCallResponse:
         if self._client is None:
             raise RuntimeError("Vertex AI not configured.")
-        from google.genai import types  # type: ignore[import]
+        from google.genai import types
+
         vertex_tools = [
-            types.Tool(function_declarations=[
-                types.FunctionDeclaration(
-                    name=t["function"]["name"],
-                    description=t["function"].get("description", ""),
-                    parameters=t["function"].get("parameters", {}),
-                )
-            ])
+            types.Tool(
+                function_declarations=[
+                    types.FunctionDeclaration(
+                        name=t["function"]["name"],
+                        description=t["function"].get("description", ""),
+                        parameters=t["function"].get("parameters", {}),
+                    )
+                ]
+            )
             for t in tools
         ]
         gen_config = types.GenerateContentConfig(
@@ -145,7 +157,7 @@ class VertexBackend(TrelixChatClient):
             contents=self._build_contents(messages),
             config=gen_config,
         )
-        for part in (response.candidates[0].content.parts if response.candidates else []):
+        for part in response.candidates[0].content.parts if response.candidates else []:
             if part.function_call:
                 return ToolCallResponse(
                     tool_name=part.function_call.name,

@@ -99,16 +99,18 @@ _TOOL_MESSAGES = [
 
 
 def _make_azure_backend() -> Any:
-    from trelix.llm.factory import build_chat_client
     from trelix.core.config import LLMConfig
+    from trelix.llm.factory import build_chat_client
+
     # LLMConfig reads from env automatically via pydantic-settings aliases
     config = LLMConfig(provider="azure", max_tokens=256, temperature=0.0)
     return build_chat_client(config)
 
 
 def _make_bedrock_backend(model_id: str) -> Any:
-    from trelix.llm.factory import build_chat_client
     from trelix.core.config import LLMConfig
+    from trelix.llm.factory import build_chat_client
+
     config = LLMConfig(provider="bedrock", model=model_id, max_tokens=256, temperature=0.0)
     return build_chat_client(config)
 
@@ -343,6 +345,7 @@ def test_bedrock_cohere_embed_vs_embed_query_differ() -> None:
 # Bedrock default model selection (no explicit model — uses primary/fallback)
 # ---------------------------------------------------------------------------
 
+
 @_SKIP_BEDROCK
 def test_bedrock_default_model_is_sonnet() -> None:
     """With provider=bedrock and no explicit model, should use sonnet-4-6 as primary."""
@@ -356,9 +359,11 @@ def test_bedrock_default_model_is_sonnet() -> None:
     assert client._fallback_model == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
     resp = client.complete(
-        [__import__("trelix.llm.client", fromlist=["ChatMessage"]).ChatMessage(
-            role="user", content="Reply: BEDROCK_DEFAULT_OK"
-        )],
+        [
+            __import__("trelix.llm.client", fromlist=["ChatMessage"]).ChatMessage(
+                role="user", content="Reply: BEDROCK_DEFAULT_OK"
+            )
+        ],
         max_tokens=20,
         temperature=0,
     )
