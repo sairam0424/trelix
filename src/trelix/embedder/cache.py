@@ -69,7 +69,10 @@ class CachingEmbedder(BaseEmbedder):
                 if len(self._cache) >= self._max_size:
                     self._cache.popitem(last=False)  # evict LRU (first item)
                 self._cache[key] = vector
-            self._misses += 1
+                self._misses += 1
+            else:
+                # Another thread populated the cache while we computed
+                self._hits += 1
             logger.debug(
                 "embed_query cache_hit=False key=%r latency_ms=%s", key, elapsed_ms
             )

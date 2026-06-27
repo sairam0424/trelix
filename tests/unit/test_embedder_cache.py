@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -62,6 +62,18 @@ class TestCachingEmbedderBasics:
         cache = CachingEmbedder(mock, max_size=256)
 
         assert cache.dimension == 1536
+
+    @pytest.mark.asyncio
+    async def test_passthrough_embed_async_not_cached(self) -> None:
+        from unittest.mock import AsyncMock
+        mock = _make_mock_embedder()
+        mock.embed_async = AsyncMock(return_value=[[0.1, 0.2, 0.3, 0.4]])
+        cache = CachingEmbedder(mock, max_size=256)
+
+        await cache.embed_async(["hello"])
+        await cache.embed_async(["hello"])
+
+        assert mock.embed_async.call_count == 2
 
 
 class TestCachingEmbedderLRU:
