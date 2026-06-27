@@ -2,27 +2,27 @@
 End-to-end integration tests for LLM backends (Azure + Bedrock).
 
 Each test skips automatically when credentials are absent.
-Failures observed on 2026-06-27:
 
-  Bedrock sonnet-4-6  -> ValidationException: Invocation of model ID
-      anthropic.claude-sonnet-4-6-20251101-v1:0 with on-demand throughput isn't
-      supported.  Use an inference-profile ARN instead.
-
-  Bedrock haiku-4-5   -> ValidationException: Invocation of model ID
-      anthropic.claude-haiku-4-5-20251001-v1:0 with on-demand throughput isn't
-      supported.  Use an inference-profile ARN instead.
-
-Tests for the failing Bedrock models are marked xfail with the exact error
-message so CI records the known-bad state without blocking.
+Bedrock models require inference profile IDs (us.* prefix), NOT bare model IDs.
+Bare model IDs (e.g. anthropic.claude-sonnet-4-6) fail with:
+  ValidationException: on-demand throughput not supported — use an inference profile ARN.
+Correct IDs verified 2026-06-27:
+  us.anthropic.claude-sonnet-4-6
+  us.anthropic.claude-haiku-4-5-20251001-v1:0
 """
 
 from __future__ import annotations
 
 import base64
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
+from dotenv import load_dotenv
+
+# Load .env from repo root so tests work when run directly (not via CI env injection)
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 # ---------------------------------------------------------------------------
 # Credential helpers
@@ -99,36 +99,18 @@ _TOOL_MESSAGES = [
 
 
 def _make_azure_backend() -> Any:
+    from trelix.llm.factory import build_chat_client
     from trelix.core.config import LLMConfig
-    from trelix.llm.providers.openai_backend import OpenAIBackend
-
-    config = LLMConfig(
-        provider="azure",
-        model=os.environ.get("AZURE_CHAT_MODEL", "gpt-4o"),
-        AZURE_API_KEY=_env("AZURE_API_KEY"),
-        AZURE_ENDPOINT=_env("AZURE_ENDPOINT"),
-        AZURE_API_VERSION=os.environ.get("AZURE_API_VERSION", "2025-04-01-preview"),
-        AZURE_CHAT_MODEL=os.environ.get("AZURE_CHAT_MODEL", "gpt-4o"),
-        max_tokens=256,
-        temperature=0.0,
-    )
-    return OpenAIBackend(config)
+    # LLMConfig reads from env automatically via pydantic-settings aliases
+    config = LLMConfig(provider="azure", max_tokens=256, temperature=0.0)
+    return build_chat_client(config)
 
 
 def _make_bedrock_backend(model_id: str) -> Any:
+    from trelix.llm.factory import build_chat_client
     from trelix.core.config import LLMConfig
-    from trelix.llm.providers.bedrock_backend import BedrockBackend
-
-    config = LLMConfig(
-        provider="bedrock",
-        model=model_id,
-        AWS_ACCESS_KEY_ID=_env("AWS_ACCESS_KEY_ID"),
-        AWS_SECRET_ACCESS_KEY=_env("AWS_SECRET_ACCESS_KEY"),
-        AWS_REGION=os.environ.get("AWS_REGION", "us-east-1"),
-        max_tokens=256,
-        temperature=0.0,
-    )
-    return BedrockBackend(config)
+    config = LLMConfig(provider="bedrock", model=model_id, max_tokens=256, temperature=0.0)
+    return build_chat_client(config)
 
 
 def _chat_messages(raw: list[dict[str, str]]) -> list[Any]:
@@ -179,53 +161,31 @@ def test_azure_tool_call() -> None:
 
 # ---------------------------------------------------------------------------
 # Bedrock sonnet-4-6 tests
-#
-# KNOWN FAILURE (2026-06-27): on-demand throughput not supported for this
-# model ID.  Mark xfail so CI captures the state without blocking.
-# Use inference-profile ARN (e.g. us.anthropic.claude-sonnet-4-6-...) to fix.
+# Model: us.anthropic.claude-sonnet-4-6  (inference profile — verified 2026-06-27)
 # ---------------------------------------------------------------------------
 
-_BEDROCK_SONNET_MODEL = "anthropic.claude-sonnet-4-6-20251101-v1:0"
-_BEDROCK_SONNET_XFAIL_REASON = (
-    "ValidationException: Invocation of model ID "
-    "anthropic.claude-sonnet-4-6-20251101-v1:0 with on-demand throughput isn't "
-    "supported. Retry your request with the ID or ARN of an inference profile "
-    "that contains this model."
-)
+_BEDROCK_SONNET_MODEL = "us.anthropic.claude-sonnet-4-6"
 
 
 @_SKIP_BEDROCK
-@pytest.mark.xfail(
-    reason=_BEDROCK_SONNET_XFAIL_REASON,
-    raises=Exception,
-    strict=False,
-)
 def test_bedrock_sonnet_complete() -> None:
     """Bedrock sonnet-4-6: complete() returns non-empty content."""
     backend = _make_bedrock_backend(_BEDROCK_SONNET_MODEL)
     response = backend.complete(_chat_messages(_HELLO_MESSAGES))
     assert response.content, f"Bedrock sonnet complete() returned empty content: {response!r}"
+    assert response.input_tokens > 0, "Expected input_tokens > 0"
 
 
 @_SKIP_BEDROCK
-@pytest.mark.xfail(
-    reason=_BEDROCK_SONNET_XFAIL_REASON,
-    raises=Exception,
-    strict=False,
-)
 def test_bedrock_sonnet_stream() -> None:
     """Bedrock sonnet-4-6: stream() yields at least one chunk."""
     backend = _make_bedrock_backend(_BEDROCK_SONNET_MODEL)
     chunks = list(backend.stream(_chat_messages(_HELLO_MESSAGES)))
     assert chunks, "Bedrock sonnet stream() yielded no chunks"
+    assert "".join(chunks).strip(), "Bedrock sonnet stream() chunks were all empty"
 
 
 @_SKIP_BEDROCK
-@pytest.mark.xfail(
-    reason=_BEDROCK_SONNET_XFAIL_REASON,
-    raises=Exception,
-    strict=False,
-)
 def test_bedrock_sonnet_tool_call() -> None:
     """Bedrock sonnet-4-6: tool_call() returns get_weather tool."""
     backend = _make_bedrock_backend(_BEDROCK_SONNET_MODEL)
@@ -244,52 +204,31 @@ def test_bedrock_sonnet_tool_call() -> None:
 
 # ---------------------------------------------------------------------------
 # Bedrock haiku-4-5 tests
-#
-# KNOWN FAILURE (2026-06-27): on-demand throughput not supported for this
-# model ID.  Mark xfail.  Use inference-profile ARN to fix.
+# Model: us.anthropic.claude-haiku-4-5-20251001-v1:0  (inference profile — verified 2026-06-27)
 # ---------------------------------------------------------------------------
 
-_BEDROCK_HAIKU_MODEL = "anthropic.claude-haiku-4-5-20251001-v1:0"
-_BEDROCK_HAIKU_XFAIL_REASON = (
-    "ValidationException: Invocation of model ID "
-    "anthropic.claude-haiku-4-5-20251001-v1:0 with on-demand throughput isn't "
-    "supported. Retry your request with the ID or ARN of an inference profile "
-    "that contains this model."
-)
+_BEDROCK_HAIKU_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
 @_SKIP_BEDROCK
-@pytest.mark.xfail(
-    reason=_BEDROCK_HAIKU_XFAIL_REASON,
-    raises=Exception,
-    strict=False,
-)
 def test_bedrock_haiku_complete() -> None:
     """Bedrock haiku-4-5: complete() returns non-empty content."""
     backend = _make_bedrock_backend(_BEDROCK_HAIKU_MODEL)
     response = backend.complete(_chat_messages(_HELLO_MESSAGES))
     assert response.content, f"Bedrock haiku complete() returned empty content: {response!r}"
+    assert response.input_tokens > 0, "Expected input_tokens > 0"
 
 
 @_SKIP_BEDROCK
-@pytest.mark.xfail(
-    reason=_BEDROCK_HAIKU_XFAIL_REASON,
-    raises=Exception,
-    strict=False,
-)
 def test_bedrock_haiku_stream() -> None:
     """Bedrock haiku-4-5: stream() yields at least one chunk."""
     backend = _make_bedrock_backend(_BEDROCK_HAIKU_MODEL)
     chunks = list(backend.stream(_chat_messages(_HELLO_MESSAGES)))
     assert chunks, "Bedrock haiku stream() yielded no chunks"
+    assert "".join(chunks).strip(), "Bedrock haiku stream() chunks were all empty"
 
 
 @_SKIP_BEDROCK
-@pytest.mark.xfail(
-    reason=_BEDROCK_HAIKU_XFAIL_REASON,
-    raises=Exception,
-    strict=False,
-)
 def test_bedrock_haiku_tool_call() -> None:
     """Bedrock haiku-4-5: tool_call() returns get_weather tool."""
     backend = _make_bedrock_backend(_BEDROCK_HAIKU_MODEL)
