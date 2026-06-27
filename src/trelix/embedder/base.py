@@ -466,6 +466,7 @@ class BedrockCohereEmbedder(_BedrockEmbedderBase):
     """
 
     _BATCH_LIMIT = 96  # Cohere Bedrock API: max 96 texts per call
+    _MAX_CHARS = 2048  # Bedrock validates length BEFORE truncation — must pre-truncate
 
     def __init__(self, config: EmbedderConfig) -> None:
         self._client = self._make_boto3_client(config)
@@ -474,11 +475,14 @@ class BedrockCohereEmbedder(_BedrockEmbedderBase):
     def _embed_batch(self, texts: list[str], input_type: str) -> list[list[float]]:
         import json
 
+        # Pre-truncate: Bedrock rejects texts >2048 chars with ValidationException
+        # even when truncate="END" is set — the validation fires before truncation.
+        safe = [t[: self._MAX_CHARS] for t in texts]
         body = json.dumps(
             {
-                "texts": texts,
+                "texts": safe,
                 "input_type": input_type,
-                "truncate": "END",  # silently truncate overlong inputs
+                "truncate": "END",
             }
         )
         response = self._client.invoke_model(

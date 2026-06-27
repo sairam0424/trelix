@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/trelix)](https://pypi.org/project/trelix/)
 [![Python](https://img.shields.io/pypi/pyversions/trelix)](https://pypi.org/project/trelix/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.4.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-blue)](CHANGELOG.md)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blue)](https://github.com/sairam0424/trelix)
 [![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
@@ -21,20 +21,17 @@ trelix stats  ./my-repo
 
 ---
 
-## What's New in v0.4.0 — Beast Mode
+## What's New in v0.7.0 — Universal LLM Factory
 
 | Upgrade | What it adds | Impact |
 |---------|-------------|--------|
-| **Contextual Chunking** | LLM summary prepended to each chunk before embedding + BM25 | 67% retrieval failure reduction |
-| **Voyage / local-code Embedder** | `voyage-code-3` or `SFR-Embedding-Code-2B_R` (2B params) | +49% quality vs Ada-002 on CoIR |
-| **Filterable HNSW** | O(log n) vector search via sqlite-vec HNSW index | Unblocks 1M+ chunk scale |
-| **Qdrant Backend** | Optional drop-in for >500k chunks | Enterprise-scale deployments |
-| **Async Pipeline** | 4 concurrent embed batches via asyncio | ~3-4x indexing speedup |
-| **File Watcher** | `trelix watch` — auto-reindex on file save | Zero-latency incremental updates |
-| **Adaptive Router** | 3-tier: direct / single-step / multi-step decomposition | Smarter routing per query complexity |
-| **GraphRAG Synthesis** | Map-reduce for large result sets (>20 results / >8k tokens) | Handles arbitrarily large codebases |
-| **Call Graph Precision** | Qualified-name + type-hint resolution | ~40% fewer false-positive edges |
-| **Production Eval Harness** | MRR, Recall@1/5/10, NDCG@10 on 50 queries | CI regression gate |
+| **Universal LLM Factory** | TrelixChatClient ABC — complete(), stream(), tool_call() | Switch providers with one env var |
+| **Bedrock Chat** | AWS Bedrock Converse API — sonnet-4-6 default, haiku fallback | No external API key beyond AWS |
+| **Bedrock Embeddings** | Titan v2 (256/512/1024 dims) + Cohere embed-english-v3 | Best retrieval quality on Bedrock |
+| **Anthropic Direct** | Claude 3.5/4 via Anthropic API | Direct API without AWS routing |
+| **Vertex AI / Gemini** | Google Vertex AI + LiteLLM (100+ providers) | Any provider in one line |
+| **Contextual Chunking** | LLM summary prepended to each chunk | 67% retrieval failure reduction |
+| **Voyage / local-code** | voyage-code-3 or SFR-Embedding-Code-2B_R | +49% quality vs Ada-002 on CoIR |
 
 ---
 
@@ -46,6 +43,7 @@ trelix stats  ./my-repo
 - **Call-graph + import expansion** — PageRank-weighted graph traversal with qualified-name precision
 - **Reranking** — Cohere or cross-encoder reranker for final precision
 - **LLM synthesis** — `trelix ask` with GraphRAG map-reduce for large corpora
+- **Universal LLM client** — OpenAI, Azure, Anthropic, Bedrock, Vertex AI, LiteLLM (100+ providers)
 - **Zero-infra default** — single SQLite file (`.trelix/index.db`) with sqlite-vec HNSW + FTS5 BM25
 - **Real-time watching** — `trelix watch` auto-indexes on every file save
 - **Works offline** — `--provider local` uses sentence-transformers, no API key needed
@@ -126,6 +124,14 @@ pip install "trelix[qdrant]"
 # With file watcher (real-time incremental indexing)
 pip install "trelix[watch]"
 
+# LLM provider extras (v0.7.0)
+pip install trelix               # OpenAI + Azure (default)
+pip install "trelix[bedrock]"    # + AWS Bedrock (chat + embeddings)
+pip install "trelix[anthropic]"  # + Anthropic direct
+pip install "trelix[vertex]"     # + Google Vertex AI / Gemini
+pip install "trelix[litellm]"    # + LiteLLM (100+ providers)
+pip install "trelix[llm-all]"    # all LLM providers
+
 # Everything
 pip install "trelix[all]"
 ```
@@ -136,11 +142,40 @@ pip install "trelix[all]"
 
 All settings via environment variables or a `.env` file in the working directory.
 
+### LLM Provider (v0.7.0)
+
+Switch chat provider with a single env var — no code changes required.
+
+```bash
+# Switch chat provider (one env var)
+TRELIX_LLM_PROVIDER=bedrock     # Claude sonnet-4-6 default, haiku fallback
+TRELIX_LLM_PROVIDER=azure       # Azure OpenAI (existing .env unchanged)
+TRELIX_LLM_PROVIDER=anthropic   # Direct Anthropic API
+
+# Switch embedding provider
+TRELIX_EMBEDDER_PROVIDER=bedrock-cohere  # Cohere 1024-dim (best retrieval)
+TRELIX_EMBEDDER_PROVIDER=bedrock-titan   # Titan v2 (256/512/1024 dims)
+TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default)
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_LLM_PROVIDER` | `openai` | `openai` \| `azure` \| `anthropic` \| `bedrock` \| `vertex` \| `litellm` |
+| `TRELIX_LLM_MODEL` | `gpt-4o` | Chat model override |
+| `TRELIX_LLM_BEDROCK_PRIMARY_MODEL` | `us.anthropic.claude-sonnet-4-6` | Bedrock primary model |
+| `TRELIX_LLM_BEDROCK_FALLBACK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock fallback on ValidationException |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key (`trelix[anthropic]`) |
+| `GOOGLE_CLOUD_PROJECT` | — | Google Cloud project (`trelix[vertex]`) |
+| `GOOGLE_API_KEY` | — | Google AI Studio API key (`trelix[vertex]`) |
+| `AWS_ACCESS_KEY_ID` | — | AWS credentials (`trelix[bedrock]`) |
+| `AWS_SECRET_ACCESS_KEY` | — | AWS credentials (`trelix[bedrock]`) |
+| `AWS_REGION` | `us-east-1` | AWS region (`trelix[bedrock]`) |
+
 ### Embedding Providers
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_EMBEDDER_PROVIDER` | `local` | `local` \| `openai` \| `azure` \| `voyage` \| `local-code` |
+| `TRELIX_EMBEDDER_PROVIDER` | `local` | `local` \| `openai` \| `azure` \| `voyage` \| `local-code` \| `bedrock-titan` \| `bedrock-cohere` |
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `OPENAI_MODEL` | `gpt-4o` | Chat model for planner + synthesis |
 | `AZURE_API_KEY` | — | Azure OpenAI API key |
@@ -208,6 +243,8 @@ Markdown (heading sections), HTML (custom elements), CSS/SCSS
 | `openai` | text-embedding-3-large | 3072 | ~45 | Best general-purpose |
 | `azure` | text-embedding-3-large | 3072 | ~45 | Azure-hosted OpenAI |
 | `voyage` | voyage-code-3 | 1024 | **56.26** | Best API-based code model |
+| `bedrock-titan` | amazon.titan-embed-text-v2:0 | 256/512/1024 | — | AWS Bedrock, configurable dims |
+| `bedrock-cohere` | cohere.embed-english-v3 | 1024 | — | AWS Bedrock, asymmetric doc/query |
 
 CoIR benchmark scores from [archersama.github.io/coir](https://archersama.github.io/coir/) (ACL 2025).
 
@@ -221,7 +258,7 @@ flowchart TD
         A[Repository] --> B[FileWalker]
         B --> C[Tree-sitter Parser: 20 languages]
         C --> D[ContextualChunker: LLM summary + breadcrumb]
-        D --> E[Embedder: voyage / local-code / openai / azure / local]
+        D --> E[Embedder: voyage / local-code / openai / azure / bedrock / local]
         E --> F[(sqlite-vec HNSW or Qdrant)]
         C --> G[(SQLite: symbols, call_graph, FTS5 BM25)]
     end
@@ -303,16 +340,16 @@ Single SQLite file (`.trelix/index.db`) — zero external infrastructure by defa
 
 | Query | Expected file | Result |
 |-------|--------------|--------|
-| how does authentication work | auth.py | ✅ PASS |
-| user repository get by id | user.py | ✅ PASS |
-| hash password function | utils.py | ✅ PASS |
-| login method | auth.py | ✅ PASS |
-| validate token | auth.py | ✅ PASS |
-| User dataclass | user.py | ✅ PASS |
-| main entry point | main.py | ✅ PASS |
-| delete user | user.py | ✅ PASS |
-| verify password | utils.py | ✅ PASS |
-| create user | user.py | ✅ PASS |
+| how does authentication work | auth.py | PASS |
+| user repository get by id | user.py | PASS |
+| hash password function | utils.py | PASS |
+| login method | auth.py | PASS |
+| validate token | auth.py | PASS |
+| User dataclass | user.py | PASS |
+| main entry point | main.py | PASS |
+| delete user | user.py | PASS |
+| verify password | utils.py | PASS |
+| create user | user.py | PASS |
 
 **Recall@5: 10/10 = 100%**
 
@@ -363,7 +400,7 @@ docs = retriever.invoke("how does authentication work?")
 git clone https://github.com/sairam0424/trelix
 cd trelix
 make install-dev
-make test        # 860 unit + 39 integration tests
+make test        # 929 unit + 16 integration tests
 make lint
 make eval        # recall eval on mini_repo
 make eval-full   # full 50-query MRR/NDCG eval (requires Azure/OpenAI)
