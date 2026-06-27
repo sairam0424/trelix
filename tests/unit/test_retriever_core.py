@@ -742,9 +742,7 @@ class TestRetrieverIntentRouting:
 class TestRetrieverResultHydration:
     """hydrate_symbol and _hydrate_chunk build correct SearchResult objects."""
 
-    def test_hydrate_symbol_uses_synthetic_chunk_when_db_returns_none(
-        self, tmp_path: Path
-    ) -> None:
+    def test_hydrate_symbol_uses_synthetic_chunk_when_db_returns_none(self, tmp_path: Path) -> None:
         """When get_first_chunk_for_symbol returns None, a synthetic Chunk is built from body."""
         retriever = _build_retriever(str(tmp_path))
         sym = _make_symbol(sym_id=7, file_id=3, name="my_handler")
@@ -1015,9 +1013,7 @@ class TestRetrieverCallGraphExpansion:
 
         mock_seed.assert_called_once()
 
-    def test_retrieve_standard_skips_reranker_when_strategy_says_so(
-        self, tmp_path: Path
-    ) -> None:
+    def test_retrieve_standard_skips_reranker_when_strategy_says_so(self, tmp_path: Path) -> None:
         """skip_reranker=True means the reranker module is never called."""
         from trelix.retrieval.planner.models import RetrievalStrategy
 

@@ -5,6 +5,7 @@ These tests verify that:
 - Each subcommand exposes its --help without error.
 - Error paths (missing args, bad paths) exit non-zero.
 """
+
 from __future__ import annotations
 
 from typer.testing import CliRunner

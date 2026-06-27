@@ -31,9 +31,7 @@ from trelix.retrieval.planner.models import (
     QueryPlan,
     RoutingTier,
     SubQuery,
-    default_plan,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -208,7 +206,7 @@ class TestParseToolResponse:
 class TestCallLLMToolCallPath:
     def _mock_llm_client(self, plan_args: dict[str, Any]):
         """Return a mock TrelixChatClient whose tool_call returns a ToolCallResponse."""
-        from trelix.llm.client import TrelixChatClient, ToolCallResponse
+        from trelix.llm.client import ToolCallResponse, TrelixChatClient
 
         mock = MagicMock(spec=TrelixChatClient)
         mock.tool_call.return_value = ToolCallResponse(
@@ -294,7 +292,7 @@ class TestPlanDirectFallback:
 
     def test_fallback_returns_valid_plan_on_parse_error(self) -> None:
         """_plan_direct catches ValueError from _parse_tool_response."""
-        from trelix.llm.client import TrelixChatClient, ToolCallResponse
+        from trelix.llm.client import ToolCallResponse, TrelixChatClient
 
         planner = _make_planner()
         mock = MagicMock(spec=TrelixChatClient)
@@ -363,7 +361,7 @@ class TestMultiStepPlanDecompositionFallback:
         planner = router._get_planner()
 
         # Provide a real-looking LLM client so planner._client is non-None
-        from trelix.llm.client import TrelixChatClient, ToolCallResponse
+        from trelix.llm.client import ToolCallResponse, TrelixChatClient
 
         mock_client = MagicMock(spec=TrelixChatClient)
         mock_client._client = mock_client
@@ -384,7 +382,7 @@ class TestMultiStepPlanDecompositionFallback:
         router = _make_router()
         planner = router._get_planner()
 
-        from trelix.llm.client import TrelixChatClient, ToolCallResponse
+        from trelix.llm.client import ToolCallResponse, TrelixChatClient
 
         mock_client = MagicMock(spec=TrelixChatClient)
         mock_client._client = mock_client
@@ -413,7 +411,7 @@ class TestMultiStepPlanEmptySubqueriesFallback:
         router = _make_router()
         planner = router._get_planner()
 
-        from trelix.llm.client import TrelixChatClient, ToolCallResponse
+        from trelix.llm.client import ToolCallResponse, TrelixChatClient
 
         mock_client = MagicMock(spec=TrelixChatClient)
         mock_client._client = mock_client
@@ -572,9 +570,7 @@ class TestDecomposeViaLLMLegacyPath:
 def _make_legacy_response(args: dict[str, Any]) -> Any:
     """Build a fake openai-style response object for _parse_response."""
     args_json = json.dumps(args)
-    tool_call = types.SimpleNamespace(
-        function=types.SimpleNamespace(arguments=args_json)
-    )
+    tool_call = types.SimpleNamespace(function=types.SimpleNamespace(arguments=args_json))
     message = types.SimpleNamespace(tool_calls=[tool_call])
     choice = types.SimpleNamespace(message=message)
     return types.SimpleNamespace(choices=[choice])
@@ -668,7 +664,7 @@ class TestParseResponseLegacy:
 
 class TestQueryPlannerEndToEndMocked:
     def _inject_mock_tool_call(self, planner, plan_args: dict[str, Any]) -> None:
-        from trelix.llm.client import TrelixChatClient, ToolCallResponse
+        from trelix.llm.client import ToolCallResponse, TrelixChatClient
 
         mock_client = MagicMock(spec=TrelixChatClient)
         mock_client.tool_call.return_value = ToolCallResponse(

@@ -16,9 +16,9 @@ import pytest
 
 from trelix.core.models import SymbolKind
 from trelix.indexing.parser.extractors.cpp import CppParser
-from trelix.indexing.parser.extractors.css import CssParser
 from trelix.indexing.parser.extractors.cshtml import CshtmlParser
 from trelix.indexing.parser.extractors.csproj import CsprojParser
+from trelix.indexing.parser.extractors.css import CssParser
 from trelix.indexing.parser.extractors.html import HtmlParser
 from trelix.indexing.parser.extractors.razor import RazorParser
 
