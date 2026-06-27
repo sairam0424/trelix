@@ -7,7 +7,7 @@ packages = ["src/trelix"]
 
 [project]
 name = "trelix"
-version = "0.4.0"
+version = "0.7.0"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -92,6 +92,11 @@ binary = [
     "pyinstaller>=6.0.0",
     "sentence-transformers>=3.0.0",   # local embedder bundled into the binary
 ]
+anthropic = ["anthropic>=0.40.0"]
+bedrock   = ["boto3>=1.35.0"]
+vertex    = ["google-genai>=1.0.0"]
+litellm   = ["litellm>=1.50.0"]
+llm-all   = ["trelix[anthropic,bedrock,vertex,litellm]"]
 all = [
     "trelix[local,rerank,voyage,qdrant,watch]",
 ]
@@ -105,6 +110,9 @@ Repository = "https://github.com/sairam0424/trelix"
 Documentation = "https://github.com/sairam0424/trelix#readme"
 Changelog = "https://github.com/sairam0424/trelix/blob/main/CHANGELOG.md"
 "Bug Tracker" = "https://github.com/sairam0424/trelix/issues"
+"MCP Server" = "https://pypi.org/project/trelix-mcp/"
+"LangChain" = "https://pypi.org/project/trelix-langchain/"
+"LlamaIndex" = "https://pypi.org/project/trelix-llama-index/"
 
 # ---------------------------------------------------------------------------
 # Tooling

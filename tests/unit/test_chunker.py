@@ -456,5 +456,5 @@ class TestContextualChunker:
 
         call_kwargs = mock_client.chat.completions.create.call_args
         assert call_kwargs.kwargs["model"] == "gpt-4o-mini"
-        assert call_kwargs.kwargs["max_tokens"] == 100
+        assert call_kwargs.kwargs["max_completion_tokens"] == 100
         assert call_kwargs.kwargs["temperature"] == 0

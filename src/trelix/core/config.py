@@ -164,7 +164,9 @@ class EmbedderConfig(BaseSettings):
         populate_by_name=True,
     )
 
-    provider: Literal["openai", "azure", "local", "voyage", "local-code"] = "local"
+    provider: Literal[
+        "openai", "azure", "local", "voyage", "local-code", "bedrock-titan", "bedrock-cohere"
+    ] = "local"
 
     # ── OpenAI ───────────────────────────────────────────────────────────────
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
@@ -196,6 +198,22 @@ class EmbedderConfig(BaseSettings):
     local_code_model: str = "Salesforce/SFR-Embedding-Code-2B_R"
     local_code_dimensions: int = 4096
 
+    # ── AWS Bedrock (Titan v2 + Cohere) ──────────────────────────────────────
+    # Reuses AWS_* env vars — same credentials as BedrockBackend in LLMConfig.
+    # bedrock-titan: amazon.titan-embed-text-v2:0 — 256/512/1024 configurable dims
+    # bedrock-cohere: cohere.embed-english-v3 — 1024 dims, strong code retrieval
+    bedrock_aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+    bedrock_aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
+    bedrock_aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
+    bedrock_aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")
+    # Titan: configurable dims — 1024 matches voyage quality, 256 cuts storage 4×
+    bedrock_titan_model: str = "amazon.titan-embed-text-v2:0"
+    bedrock_titan_dimensions: int = 1024  # 256 | 512 | 1024
+    bedrock_titan_normalize: bool = True
+    # Cohere: fixed 1024 dims, input_type controls doc vs query embedding
+    bedrock_cohere_model: str = "cohere.embed-english-v3"
+    bedrock_cohere_dimensions: int = 1024
+
     batch_size: int = 64
 
     # ── Indexing performance / rate limiting ─────────────────────────────────
@@ -213,6 +231,10 @@ class EmbedderConfig(BaseSettings):
             return self.voyage_dimensions
         if self.provider == "local-code":
             return self.local_code_dimensions
+        if self.provider == "bedrock-titan":
+            return self.bedrock_titan_dimensions
+        if self.provider == "bedrock-cohere":
+            return self.bedrock_cohere_dimensions
         return 384  # all-MiniLM-L6-v2
 
 
@@ -281,6 +303,68 @@ class RetrievalConfig(BaseSettings):
     graph_rag_threshold_results: int = 20
 
 
+class LLMConfig(BaseSettings):
+    """
+    Chat/synthesis LLM provider config.
+    Separate from EmbedderConfig — you can embed with Azure and synthesize
+    with Anthropic, for example.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_LLM_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    provider: Literal["openai", "azure", "anthropic", "bedrock", "vertex", "litellm"] = "openai"
+    model: str = "gpt-4o"
+
+    # ── OpenAI ──────────────────────────────────────────────────────────────
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+
+    # ── Azure OpenAI ─────────────────────────────────────────────────────────
+    azure_api_key: str | None = Field(default=None, alias="AZURE_API_KEY")
+    azure_endpoint: str | None = Field(default=None, alias="AZURE_ENDPOINT")
+    azure_api_version: str = Field(default="2025-04-01-preview", alias="AZURE_API_VERSION")
+    azure_chat_deployment: str = Field(default="gpt-4o", alias="AZURE_CHAT_MODEL")
+
+    # ── Anthropic ────────────────────────────────────────────────────────────
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+
+    # ── AWS Bedrock ───────────────────────────────────────────────────────────
+    aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+    aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
+    aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")
+    # Inference profile IDs (us.* prefix required for on-demand throughput).
+    # Primary is tried first; if Bedrock returns a ValidationException (model not
+    # available in the region or throughput tier), the backend retries with fallback.
+    bedrock_primary_model: str = Field(
+        default="us.anthropic.claude-sonnet-4-6",
+        alias="TRELIX_LLM_BEDROCK_PRIMARY_MODEL",
+    )
+    bedrock_fallback_model: str = Field(
+        default="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        alias="TRELIX_LLM_BEDROCK_FALLBACK_MODEL",
+    )
+
+    # ── Vertex AI / Gemini ────────────────────────────────────────────────────
+    google_project_id: str | None = Field(default=None, alias="GOOGLE_CLOUD_PROJECT")
+    google_location: str = Field(default="us-central1", alias="GOOGLE_CLOUD_LOCATION")
+    google_api_key: str | None = Field(default=None, alias="GOOGLE_API_KEY")
+
+    # ── LiteLLM passthrough ───────────────────────────────────────────────────
+    litellm_model: str | None = Field(default=None, alias="TRELIX_LLM_LITELLM_MODEL")
+    litellm_drop_params: bool = True
+
+    # ── Common ────────────────────────────────────────────────────────────────
+    max_tokens: int = 2048
+    temperature: float = 0.0
+    timeout: float = 30.0
+
+
 # ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------
@@ -311,6 +395,7 @@ class IndexConfig(BaseSettings):
     embedder: EmbedderConfig = Field(default_factory=EmbedderConfig)
     store: StoreConfig = Field(default_factory=StoreConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
 
     @field_validator("repo_path")
     @classmethod

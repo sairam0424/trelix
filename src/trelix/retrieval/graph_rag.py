@@ -79,7 +79,41 @@ class GraphRAGSynthesizer:
     def __init__(self, embedder_config: EmbedderConfig, retrieval_config: RetrievalConfig) -> None:
         self._embedder_config = embedder_config
         self._retrieval_config = retrieval_config
-        self._client = self._build_client(embedder_config)
+        from trelix.llm.client import TrelixChatClient as _TC
+
+        self._llm_client: _TC | None = None
+        self._client: Any = None
+        from trelix.core.config import LLMConfig
+        from trelix.llm.factory import build_chat_client
+
+        _provider = embedder_config.provider
+        if _provider in ("openai", "azure"):
+            llm_cfg = LLMConfig(
+                provider=_provider,
+                _env_file=None,  # type: ignore[call-arg]
+            )
+            # Carry over credentials
+            llm_cfg = llm_cfg.model_copy(
+                update={
+                    "openai_api_key": embedder_config.openai_api_key,
+                    "azure_api_key": embedder_config.azure_api_key,
+                    "azure_endpoint": embedder_config.azure_endpoint,
+                    "azure_api_version": embedder_config.azure_api_version,
+                    "azure_chat_deployment": embedder_config.azure_chat_deployment,
+                    "model": embedder_config.openai_chat_model,
+                }
+            )
+            self._llm_client = build_chat_client(llm_cfg)
+            # Keep _client for the None check in should_use() and synthesize()
+            self._client = (
+                self._llm_client._client
+                if hasattr(self._llm_client, "_client")
+                else self._llm_client
+            )
+        else:
+            # provider == "local" — no chat API
+            self._llm_client = None
+            self._client = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -184,9 +218,39 @@ class GraphRAGSynthesizer:
         """
         Make a single non-streaming chat completion call.
         Returns the response text or raises on error.
+
+        Uses TrelixChatClient when available; falls back to raw _client for
+        backward compat with tests that inject mock._client directly.
         """
-        model = self._model_name()
+        from trelix.llm.client import ChatMessage, TrelixChatClient
+
+        # Detect if a raw client was injected directly (e.g. by tests)
+        _backend_internal = (
+            getattr(self._llm_client, "_client", None)
+            if isinstance(self._llm_client, TrelixChatClient)
+            else None
+        )
+        _use_raw = self._client is not None and self._client is not _backend_internal
+
+        if isinstance(self._llm_client, TrelixChatClient) and not _use_raw:
+            response = self._llm_client.complete(
+                messages=[ChatMessage(role="user", content=prompt)],
+                system=(
+                    "You are an expert software engineer answering questions about a "
+                    "codebase. Base your answer strictly on the provided code context. "
+                    "Be concise and precise."
+                ),
+                max_tokens=max_tokens,
+                temperature=0.1,
+            )
+            return response.content
+        # Legacy path: raw openai client (backward compat / test injection via _client)
         assert self._client is not None  # guaranteed by caller (should_use checks None)
+        model = (
+            self._embedder_config.azure_chat_deployment
+            if self._embedder_config.provider == "azure"
+            else self._embedder_config.openai_chat_model
+        )
         response = self._client.chat.completions.create(
             model=model,
             messages=[
@@ -206,45 +270,3 @@ class GraphRAGSynthesizer:
         )
         content = response.choices[0].message.content or ""
         return content
-
-    def _model_name(self) -> str:
-        if self._embedder_config.provider == "azure":
-            return self._embedder_config.azure_chat_deployment
-        return self._embedder_config.openai_chat_model
-
-    def _build_client(self, config: EmbedderConfig) -> Any | None:
-        """
-        Instantiate the appropriate OpenAI client.
-        Mirrors the pattern used in Synthesizer._build_client().
-        Returns None for provider=local or missing credentials.
-        """
-        if config.provider == "azure":
-            if not config.azure_api_key or not config.azure_endpoint:
-                logger.debug("GraphRAGSynthesizer: Azure credentials not set.")
-                return None
-            try:
-                from openai import AzureOpenAI
-
-                return AzureOpenAI(
-                    api_key=config.azure_api_key,
-                    azure_endpoint=config.azure_endpoint,
-                    api_version=config.azure_api_version,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("GraphRAGSynthesizer: could not create AzureOpenAI client: %s", exc)
-                return None
-
-        if config.provider == "openai":
-            if not config.openai_api_key:
-                logger.debug("GraphRAGSynthesizer: OPENAI_API_KEY not set.")
-                return None
-            try:
-                from openai import OpenAI
-
-                return OpenAI(api_key=config.openai_api_key)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("GraphRAGSynthesizer: could not create OpenAI client: %s", exc)
-                return None
-
-        # provider == "local" — no chat API
-        return None

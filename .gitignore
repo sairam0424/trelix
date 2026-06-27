@@ -56,3 +56,5 @@ Thumbs.db
 *.whl
 MANIFEST
 .superpowers/
+packages/trelix-mcp/mcp-publisher
+scratch-pad/
