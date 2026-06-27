@@ -1,4 +1,5 @@
 """Unit tests for CachingEmbedder."""
+
 from __future__ import annotations
 
 import threading
@@ -66,6 +67,7 @@ class TestCachingEmbedderBasics:
     @pytest.mark.asyncio
     async def test_passthrough_embed_async_not_cached(self) -> None:
         from unittest.mock import AsyncMock
+
         mock = _make_mock_embedder()
         mock.embed_async = AsyncMock(return_value=[[0.1, 0.2, 0.3, 0.4]])
         cache = CachingEmbedder(mock, max_size=256)
@@ -108,16 +110,21 @@ class TestCachingEmbedderLRU:
 
         assert mock.embed_query.call_count == 3  # every call goes to API
 
+    def test_negative_max_size_raises(self) -> None:
+        mock = _make_mock_embedder()
+        with pytest.raises(ValueError, match="max_size must be >= 0"):
+            CachingEmbedder(mock, max_size=-1)
+
 
 class TestCachingEmbedderStats:
     def test_hit_miss_counts(self) -> None:
         mock = _make_mock_embedder()
         cache = CachingEmbedder(mock, max_size=256)
 
-        cache.embed_query("first")   # miss
+        cache.embed_query("first")  # miss
         cache.embed_query("second")  # miss
-        cache.embed_query("first")   # hit
-        cache.embed_query("first")   # hit
+        cache.embed_query("first")  # hit
+        cache.embed_query("first")  # hit
 
         assert cache.miss_count == 2
         assert cache.hit_count == 2
@@ -161,11 +168,12 @@ class TestCachingEmbedderThreadSafety:
         mock = _make_mock_embedder()
         cache = CachingEmbedder(mock, max_size=256)
 
+        results: list[list[float]] = []
         errors: list[Exception] = []
 
         def worker() -> None:
             try:
-                cache.embed_query("same query for all threads")
+                results.append(cache.embed_query("same query for all threads"))
             except Exception as exc:  # noqa: BLE001
                 errors.append(exc)
 
@@ -175,6 +183,9 @@ class TestCachingEmbedderThreadSafety:
         for t in threads:
             t.join()
 
+        # All threads must have received the same vector
+        assert len(results) == 20
+        assert all(r == results[0] for r in results), "All threads must receive same cached vector"
         assert not errors, f"Thread errors: {errors}"
         # At most 2 calls due to race on first insert; never 20
         assert mock.embed_query.call_count <= 2

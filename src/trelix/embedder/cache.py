@@ -10,6 +10,7 @@ Eviction: LRU via OrderedDict. When full, least-recently-used entry removed.
 Thread safety: single Lock guards all reads and writes.
 Scope: per-CachingEmbedder instance (lives with the Retriever).
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,6 +35,8 @@ class CachingEmbedder(BaseEmbedder):
     """
 
     def __init__(self, embedder: BaseEmbedder, max_size: int = 256) -> None:
+        if max_size < 0:
+            raise ValueError(f"max_size must be >= 0, got {max_size}")
         self._embedder = embedder
         self._max_size = max_size
         self._cache: OrderedDict[str, list[float]] = OrderedDict()
@@ -64,18 +67,18 @@ class CachingEmbedder(BaseEmbedder):
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
 
         with self._lock:
-            # Re-check: another thread may have populated it while we computed
             if key not in self._cache:
                 if len(self._cache) >= self._max_size:
-                    self._cache.popitem(last=False)  # evict LRU (first item)
+                    self._cache.popitem(last=False)
                 self._cache[key] = vector
                 self._misses += 1
+                logger.debug("embed_query cache_hit=False key=%r latency_ms=%s", key, elapsed_ms)
             else:
                 # Another thread populated the cache while we computed
                 self._hits += 1
-            logger.debug(
-                "embed_query cache_hit=False key=%r latency_ms=%s", key, elapsed_ms
-            )
+                logger.debug(
+                    "embed_query concurrent_hit=True key=%r latency_ms=%s", key, elapsed_ms
+                )
 
         return vector
 

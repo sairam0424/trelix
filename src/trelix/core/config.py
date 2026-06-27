@@ -307,6 +307,7 @@ class RetrievalConfig(BaseSettings):
     # 0 = disabled. Default 256 covers a typical interactive session.
     query_cache_size: int = Field(
         default=256,
+        ge=0,
         alias="TRELIX_RETRIEVAL_QUERY_CACHE_SIZE",
     )
 

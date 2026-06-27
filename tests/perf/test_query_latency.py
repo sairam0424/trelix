@@ -52,7 +52,7 @@ def run_queries(retriever: object, label: str) -> list[float]:
         latencies.append((time.perf_counter() - t0) * 1000)
     lat = sorted(latencies)
     p50 = lat[len(lat) // 2]
-    p95 = lat[int(len(lat) * 0.95)]
+    p95 = lat[min(int(len(lat) * 0.95), len(lat) - 1)]
     print(f"{label}: P50={p50:.0f}ms  P95={p95:.0f}ms  Max={max(lat):.0f}ms")
     return latencies
 
