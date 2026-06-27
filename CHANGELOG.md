@@ -8,6 +8,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ---
 
+## [1.0.0] — 2026-06-27
+
+### Overview
+First stable release of trelix. Public Python API stabilised, all hard blockers
+resolved, coverage gate at 75%, full v1 stability guarantees in effect.
+
+### Added
+- Public Python API: `from trelix import IndexConfig, Indexer, Retriever, TrelixChatClient`
+- `trelix --version` / `trelix -V` flag
+- SECURITY.md with responsible disclosure policy
+- Versioning & Stability Policy in CONTRIBUTING.md
+- Troubleshooting section in README
+- trelix-langchain README.md (PyPI listing)
+- Unit tests for retriever, reranker, indexer, planner, CLI, and 6 parser extractors
+
+### Fixed
+- `trelix ask` with Anthropic/Bedrock/Vertex no longer silently falls back to OpenAI
+- `grep_search._body_search` bounded — eliminates OOM on large repos
+- Incremental watch: debounced cross-file resolution passes
+- Raw pydantic ValidationError replaced with clean user-facing messages
+- Ctrl+C during indexing shows "Indexing cancelled." cleanly
+- Empty search results show "No results found." instead of blank table
+- `bedrock-titan` and `bedrock-cohere` now selectable via `--provider` flag
+- requires-python tightened to <3.13 (honest — cp313 tree-sitter-languages unavailable)
+
+### Changed
+- Development Status: 4 - Beta → 5 - Production/Stable
+- Coverage gate: fail_under = 75
+- `dist/` added to .gitignore
+
+---
+
 ## [0.7.1] — 2026-06-27
 
 ### Fixed
