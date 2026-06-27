@@ -77,7 +77,17 @@ class Retriever:
     def __init__(self, config: IndexConfig) -> None:
         self.config = config
         self.db = Database(config.db_path_absolute)
-        self.embedder: BaseEmbedder = make_embedder(config.embedder)
+        raw_embedder: BaseEmbedder = make_embedder(config.embedder)
+        # Wrap with LRU query cache when enabled (default: 256 entries).
+        # embed_query() hits are returned in <1ms; embed() passthrough unchanged.
+        if config.retrieval.query_cache_size > 0:
+            from trelix.embedder.cache import CachingEmbedder
+
+            self.embedder: BaseEmbedder = CachingEmbedder(
+                raw_embedder, max_size=config.retrieval.query_cache_size
+            )
+        else:
+            self.embedder = raw_embedder
         self.vector_store: BaseVectorStore = make_vector_store(
             config=config,
             dimension=self.embedder.dimension,
