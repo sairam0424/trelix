@@ -100,7 +100,7 @@ class Retriever:
         if config.retrieval.plan_cache_size > 0:
             from trelix.retrieval.plan_cache import CachingPlanner
 
-            self._planner = CachingPlanner(
+            self._planner = CachingPlanner(  # type: ignore[assignment]
                 self._planner, max_size=config.retrieval.plan_cache_size
             )
 

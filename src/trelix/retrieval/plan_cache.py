@@ -40,9 +40,7 @@ class CachingPlanner:
         self._hits = 0
         self._misses = 0
 
-    def plan(
-        self, query: str, project_context: dict[str, Any] | None = None
-    ) -> QueryPlan:
+    def plan(self, query: str, project_context: dict[str, Any] | None = None) -> QueryPlan:
         """Return cached QueryPlan for query, or delegate and cache the result."""
         if self._max_size == 0:
             return self._planner.plan(query, project_context)
@@ -67,15 +65,11 @@ class CachingPlanner:
                     self._cache.popitem(last=False)
                 self._cache[key] = result
                 self._misses += 1
-                logger.debug(
-                    "plan cache_hit=False key=%r latency_ms=%s", key, elapsed_ms
-                )
+                logger.debug("plan cache_hit=False key=%r latency_ms=%s", key, elapsed_ms)
             else:
                 # Concurrent thread populated the cache while we were calling LLM
                 self._hits += 1
-                logger.debug(
-                    "plan concurrent_hit=True key=%r latency_ms=%s", key, elapsed_ms
-                )
+                logger.debug("plan concurrent_hit=True key=%r latency_ms=%s", key, elapsed_ms)
 
         return result
 

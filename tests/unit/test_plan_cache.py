@@ -93,10 +93,10 @@ class TestCachingPlannerStats:
         mock = _make_mock_planner()
         cache = CachingPlanner(mock, max_size=128)
 
-        cache.plan("first")   # miss
+        cache.plan("first")  # miss
         cache.plan("second")  # miss
-        cache.plan("first")   # hit
-        cache.plan("first")   # hit
+        cache.plan("first")  # hit
+        cache.plan("first")  # hit
 
         assert cache.miss_count == 2
         assert cache.hit_count == 2
