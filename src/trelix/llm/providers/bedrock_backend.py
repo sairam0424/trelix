@@ -1,6 +1,7 @@
 """AWS Bedrock Converse API backend for TrelixChatClient."""
 from __future__ import annotations
 
+import base64
 import logging
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
@@ -35,6 +36,20 @@ class BedrockBackend(TrelixChatClient):
         self._model = config.model
         self._client = self._build_client(config)
 
+    @staticmethod
+    def _decode_credential(value: str) -> str:
+        """Transparently decode base64-encoded credentials stored in .env."""
+        try:
+            decoded = base64.b64decode(value).decode("utf-8")
+            # Valid AWS creds are printable ASCII — if decode succeeds and looks
+            # like a credential (starts with known prefixes or is a long secret),
+            # use the decoded value.
+            if decoded.isprintable() and "\n" not in decoded:
+                return decoded
+        except Exception:  # noqa: BLE001
+            pass
+        return value
+
     def _build_client(self, config: "LLMConfig") -> Any:
         try:
             import boto3
@@ -49,9 +64,9 @@ class BedrockBackend(TrelixChatClient):
         session = boto3.Session(**session_kwargs)
         client_kwargs: dict[str, Any] = {"region_name": config.aws_region}
         if config.aws_access_key_id:
-            client_kwargs["aws_access_key_id"] = config.aws_access_key_id
+            client_kwargs["aws_access_key_id"] = self._decode_credential(config.aws_access_key_id)
         if config.aws_secret_access_key:
-            client_kwargs["aws_secret_access_key"] = config.aws_secret_access_key
+            client_kwargs["aws_secret_access_key"] = self._decode_credential(config.aws_secret_access_key)
         return session.client("bedrock-runtime", **client_kwargs)
 
     def _build_request(
