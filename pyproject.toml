@@ -12,7 +12,7 @@ description = "Fast, reliable code indexing and retrieval — contextual hybrid 
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Trelix Contributors" }]
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.13"
 keywords = [
     "code-search", "code-intelligence", "tree-sitter", "semantic-search",
     "hybrid-search", "llm", "rag", "developer-tools", "code-indexing",
