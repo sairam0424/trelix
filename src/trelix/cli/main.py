@@ -369,6 +369,96 @@ def query(
 
 
 # ---------------------------------------------------------------------------
+# graph
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def graph(
+    repo: str = typer.Argument(..., help="Path to the indexed repository"),
+    symbol: str = typer.Argument(..., help="Symbol name or module path to inspect"),
+    provider: str = typer.Option("local", help=_PROVIDER_HELP),
+    direction: str = typer.Option(
+        "all",
+        "--direction",
+        "-d",
+        help="callers | callees | importers | all",
+    ),
+) -> None:
+    """Show call graph and import edges for a symbol or module."""
+    _setup_logging(False)
+
+    from pydantic import ValidationError as _PydanticValidationError
+
+    from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
+    from trelix.core.models import SearchResult as _SearchResult
+    from trelix.retrieval.retriever import Retriever
+
+    try:
+        config = IndexConfig(
+            repo_path=str(Path(repo).resolve()),
+            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
+            retrieval=RetrievalConfig(rerank=False),
+        )
+    except _PydanticValidationError as exc:
+        first_err = exc.errors()[0]
+        msg = first_err.get("msg", str(exc))
+        field = " -> ".join(str(x) for x in first_err.get("loc", []))
+        detail = f"{field}: {msg}" if field else msg
+        err_console.print(f"[red]Configuration error[/red]: {detail}")
+        raise typer.Exit(1) from exc
+    except (ValueError, FileNotFoundError) as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    try:
+        retriever = Retriever(config)
+    except Exception as exc:
+        err_console.print(f"[red]Failed to open index:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"\n[bold] Graph:[/bold] {symbol}\n")
+
+    def _render_table(title: str, results: list[_SearchResult]) -> None:
+        tbl = Table(show_header=True, header_style="bold cyan", title=title)
+        tbl.add_column("File", style="dim", max_width=45)
+        tbl.add_column("Symbol", style="bold")
+        tbl.add_column("Lines", justify="right")
+        tbl.add_column("Kind")
+        if results:
+            for r in results:
+                tbl.add_row(
+                    r.file.rel_path,
+                    r.symbol.qualified_name or r.symbol.name,
+                    f"{r.symbol.line_start}-{r.symbol.line_end}",
+                    r.symbol.kind.value if hasattr(r.symbol.kind, "value") else str(r.symbol.kind),
+                )
+        else:
+            tbl.add_row("[dim](none)[/dim]", "", "", "")
+        console.print(tbl)
+
+    valid_directions = {"callers", "callees", "importers", "all"}
+    if direction not in valid_directions:
+        err_console.print(
+            f"[red]Invalid direction[/red] {direction!r}. "
+            f"Choose from: {', '.join(sorted(valid_directions))}"
+        )
+        raise typer.Exit(1)
+
+    if direction in ("callers", "all"):
+        callers = retriever.get_callers(symbol)
+        _render_table(f"Callers ({len(callers)})", callers)
+
+    if direction in ("callees", "all"):
+        callees = retriever.get_callees(symbol)
+        _render_table(f"Callees ({len(callees)})", callees)
+
+    if direction in ("importers", "all"):
+        importers = retriever.get_importers(symbol)
+        _render_table(f'Importers of "{symbol}" ({len(importers)})', importers)
+
+
+# ---------------------------------------------------------------------------
 # stats
 # ---------------------------------------------------------------------------
 
