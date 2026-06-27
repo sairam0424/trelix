@@ -8,6 +8,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ---
 
+## [0.7.1] — 2026-06-27
+
+### Fixed
+- **`BedrockCohereEmbedder` chunk truncation** — Bedrock validates text length before
+  applying `truncate="END"`, so texts >2048 characters raised `ValidationException` at
+  the API level. Now pre-truncates client-side to 2048 chars before each `invoke_model`
+  call. Found during live end-to-end indexing with default `max_tokens_per_chunk=512`
+  (code chunks with docstrings routinely exceed 2048 characters).
+
+### Added
+- **Bedrock full-pipeline e2e tests** — `tests/integration/test_llm_e2e.py` now includes
+  two tests that index a synthetic Python repo end-to-end (walk → parse → chunk → embed
+  via Bedrock → store → search) for both `bedrock-cohere` and `bedrock-titan` providers.
+- **`trelix-llama-index` README** — PyPI listing now shows description and usage examples.
+
+---
+
 ## [0.7.0] — 2026-06-27
 
 ### Overview
