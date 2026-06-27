@@ -329,7 +329,10 @@ class Database:
         return cursor.lastrowid  # type: ignore[return-value]
 
     def get_symbol_by_name(self, name: str) -> list[Symbol]:
-        rows = self._conn.execute("SELECT * FROM symbols WHERE name = ?", (name,)).fetchall()
+        rows = self._conn.execute(
+            "SELECT * FROM symbols WHERE name = ? OR qualified_name = ?",
+            (name, name),
+        ).fetchall()
         return [self._row_to_symbol(r) for r in rows]
 
     def get_symbols_for_file(self, file_id: int) -> list[Symbol]:
@@ -732,6 +735,21 @@ class Database:
             (file_id,),
         ).fetchall()
         return [r[0] for r in rows]
+
+    def get_file_by_rel_path_suffix(self, suffix: str) -> int | None:
+        """
+        Return the file_id whose rel_path ends with ``suffix``.
+        Strips a leading slash from ``suffix`` before matching.
+        Returns None if zero or multiple files match (ambiguous).
+        """
+        suffix = suffix.lstrip("/")
+        rows = self._conn.execute(
+            "SELECT id FROM files WHERE rel_path = ? OR rel_path LIKE ?",
+            (suffix, f"%/{suffix}"),
+        ).fetchall()
+        if len(rows) == 1:
+            return int(rows[0][0])
+        return None
 
     # ------------------------------------------------------------------
     # Type edges
