@@ -1640,3 +1640,32 @@ class TestRetrieverCacheWiring:
             )
             retriever = Retriever(config)
             assert not isinstance(retriever.embedder, CachingEmbedder)
+
+    def test_plan_cache_enabled_by_default(self) -> None:
+        """Retriever wraps _planner with CachingPlanner when plan_cache_size > 0."""
+        import tempfile
+
+        from trelix.retrieval.plan_cache import CachingPlanner
+        from trelix.retrieval.retriever import Retriever
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = IndexConfig(repo_path=tmp)
+            assert config.retrieval.plan_cache_size == 128
+            retriever = Retriever(config)
+            assert isinstance(retriever._planner, CachingPlanner)
+
+    def test_plan_cache_disabled_when_size_zero(self) -> None:
+        """When plan_cache_size=0, Retriever does NOT wrap _planner with CachingPlanner."""
+        import tempfile
+
+        from trelix.core.config import RetrievalConfig
+        from trelix.retrieval.plan_cache import CachingPlanner
+        from trelix.retrieval.retriever import Retriever
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = IndexConfig(
+                repo_path=tmp,
+                retrieval=RetrievalConfig(plan_cache_size=0),
+            )
+            retriever = Retriever(config)
+            assert not isinstance(retriever._planner, CachingPlanner)
