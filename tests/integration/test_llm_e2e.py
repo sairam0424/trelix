@@ -348,12 +348,16 @@ def test_bedrock_cohere_embed_vs_embed_query_differ() -> None:
 
 
 @_SKIP_BEDROCK
-def test_bedrock_default_model_is_sonnet() -> None:
-    """With provider=bedrock and no explicit model, should use sonnet-4-6 as primary."""
+def test_bedrock_default_model_is_sonnet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Code default (no env override) should use sonnet-4-6 as primary."""
+    # Remove any env override so we test the code default, not local .env
+    monkeypatch.delenv("TRELIX_LLM_BEDROCK_PRIMARY_MODEL", raising=False)
+    monkeypatch.delenv("TRELIX_LLM_BEDROCK_FALLBACK_MODEL", raising=False)
+
     from trelix.core.config import LLMConfig
     from trelix.llm.factory import build_chat_client
 
-    cfg = LLMConfig(provider="bedrock")
+    cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
     client = build_chat_client(cfg)
 
     assert client._primary_model == "us.anthropic.claude-sonnet-4-6"
