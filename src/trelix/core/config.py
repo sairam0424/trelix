@@ -311,6 +311,16 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_QUERY_CACHE_SIZE",
     )
 
+    # ── QueryPlan LLM call cache ──────────────────────────────────────────────
+    # Caches QueryPlan objects in-memory (LRU, per-Retriever session).
+    # 0 = disabled. Default 128: query diversity in a session is lower than
+    # embedding diversity, so 128 covers all realistic interactive workloads.
+    plan_cache_size: int = Field(
+        default=128,
+        ge=0,
+        alias="TRELIX_RETRIEVAL_PLAN_CACHE_SIZE",
+    )
+
 
 class LLMConfig(BaseSettings):
     """

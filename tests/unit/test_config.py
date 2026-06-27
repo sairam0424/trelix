@@ -228,3 +228,25 @@ class TestRetrievalConfigQueryCache:
         monkeypatch.setenv("TRELIX_RETRIEVAL_QUERY_CACHE_SIZE", "512")
         cfg = RetrievalConfig()
         assert cfg.query_cache_size == 512
+
+
+class TestRetrievalConfigPlanCache:
+    def test_default_plan_cache_size_is_128(self) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        cfg = RetrievalConfig()
+        assert cfg.plan_cache_size == 128
+
+    def test_zero_disables_plan_cache(self) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        cfg = RetrievalConfig(plan_cache_size=0)
+        assert cfg.plan_cache_size == 0
+
+    def test_negative_plan_cache_size_raises(self) -> None:
+        from pydantic import ValidationError
+
+        from trelix.core.config import RetrievalConfig
+
+        with pytest.raises(ValidationError):
+            RetrievalConfig(plan_cache_size=-1)
