@@ -27,10 +27,10 @@ Parent linkage:
 
 from __future__ import annotations
 
-import tree_sitter_languages
-from tree_sitter import Node, Parser
+from tree_sitter import Node
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
+from trelix.indexing.parser._grammar import load_language, make_parser
 from trelix.indexing.parser.base import BaseParser, ParseResult
 
 
@@ -41,9 +41,8 @@ class CppParser(BaseParser):
     MAX_CLASS_FIELDS: int = 30
 
     def __init__(self) -> None:
-        self._ts_lang = tree_sitter_languages.get_language("cpp")
-        self._parser = Parser()
-        self._parser.set_language(self._ts_lang)
+        self._ts_lang = load_language("cpp")
+        self._parser = make_parser("cpp")
 
     @property
     def language_name(self) -> str:

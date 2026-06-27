@@ -25,10 +25,10 @@ from __future__ import annotations
 
 import re
 
-import tree_sitter_languages
-from tree_sitter import Node, Parser
+from tree_sitter import Node
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
+from trelix.indexing.parser._grammar import load_language, make_parser
 from trelix.indexing.parser.base import BaseParser, ParseResult
 
 MAX_STRUCT_FIELDS = 30
@@ -39,9 +39,8 @@ class RustParser(BaseParser):
     """Tree-sitter based Rust parser using direct AST traversal."""
 
     def __init__(self) -> None:
-        self._ts_language = tree_sitter_languages.get_language("rust")
-        self._parser = Parser()
-        self._parser.set_language(self._ts_language)
+        self._ts_language = load_language("rust")
+        self._parser = make_parser("rust")
 
     @property
     def language_name(self) -> str:

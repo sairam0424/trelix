@@ -22,11 +22,11 @@ from __future__ import annotations
 
 import re
 
-import tree_sitter_languages
-from tree_sitter import Node, Parser
+from tree_sitter import Node
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 
+from .._grammar import load_language, make_parser
 from ..base import BaseParser, ParseResult
 
 
@@ -37,9 +37,8 @@ class JavaScriptParser(BaseParser):
     MAX_CLASS_FIELDS: int = 30
 
     def __init__(self) -> None:
-        self._ts_language = tree_sitter_languages.get_language("javascript")
-        self._parser = Parser()
-        self._parser.set_language(self._ts_language)
+        self._ts_language = load_language("javascript")
+        self._parser = make_parser("javascript")
 
     @property
     def language_name(self) -> str:

@@ -37,47 +37,12 @@ from __future__ import annotations
 
 import re
 
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Node
 
 from trelix.core.models import CallEdge, ImportEdge, Symbol, SymbolKind, TypeEdge
 
+from .._grammar import load_language, make_parser
 from ..base import BaseParser, ParseResult
-
-
-def _get_python_language() -> Language:
-    """
-    Load the Python grammar, trying tree_sitter_languages first (0.21-era
-    bundled grammars), then falling back to the modern tree-sitter-python
-    package (tree-sitter >=0.22).
-    """
-    try:
-        import tree_sitter_languages  # noqa: F401
-
-        return tree_sitter_languages.get_language("python")  # type: ignore[no-any-return]
-    except ImportError:
-        import tree_sitter_python  # noqa: F401
-
-        return Language(tree_sitter_python.language())  # type: ignore[call-arg]
-
-
-def _make_parser(language: Language) -> Parser:
-    """
-    Construct a tree-sitter Parser, compatible with both the 0.21 API
-    (parser.set_language(lang)) and the 0.22+ API (Parser(lang)).
-
-    On tree-sitter 0.21, Parser(lang) does not raise TypeError but silently
-    creates a parser with no language set (parse() then raises ValueError).
-    We detect this by checking for the set_language attribute, which exists
-    only on the 0.21 Parser API, and prefer that path when available.
-    """
-    try:
-        # tree-sitter 0.21 — Parser has set_language method
-        p = Parser()
-        p.set_language(language)
-        return p
-    except (TypeError, AttributeError):
-        # tree-sitter >=0.22 — Language is passed to the constructor
-        return Parser(language)  # type: ignore[call-arg]
 
 
 class PythonParser(BaseParser):
@@ -93,8 +58,8 @@ class PythonParser(BaseParser):
     _PROTOCOL_BASES: frozenset[str] = frozenset({"Protocol"})
 
     def __init__(self) -> None:
-        self._ts_lang = _get_python_language()
-        self._parser = _make_parser(self._ts_lang)
+        self._ts_lang = load_language("python")
+        self._parser = make_parser("python")
 
     @property
     def language_name(self) -> str:
