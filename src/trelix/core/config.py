@@ -10,7 +10,7 @@ Set TRELIX_EMBEDDER_PROVIDER=openai and OPENAI_API_KEY for higher quality.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -281,6 +281,56 @@ class RetrievalConfig(BaseSettings):
     graph_rag_threshold_results: int = 20
 
 
+class LLMConfig(BaseSettings):
+    """
+    Chat/synthesis LLM provider config.
+    Separate from EmbedderConfig — you can embed with Azure and synthesize
+    with Anthropic, for example.
+    """
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_LLM_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    provider: Literal["openai", "azure", "anthropic", "bedrock", "vertex", "litellm"] = "openai"
+    model: str = "gpt-4o"
+
+    # ── OpenAI ──────────────────────────────────────────────────────────────
+    openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
+
+    # ── Azure OpenAI ─────────────────────────────────────────────────────────
+    azure_api_key: Optional[str] = Field(default=None, alias="AZURE_API_KEY")
+    azure_endpoint: Optional[str] = Field(default=None, alias="AZURE_ENDPOINT")
+    azure_api_version: str = Field(default="2025-04-01-preview", alias="AZURE_API_VERSION")
+    azure_chat_deployment: str = Field(default="gpt-4o", alias="AZURE_CHAT_MODEL")
+
+    # ── Anthropic ────────────────────────────────────────────────────────────
+    anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
+
+    # ── AWS Bedrock ───────────────────────────────────────────────────────────
+    aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+    aws_access_key_id: Optional[str] = Field(default=None, alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: Optional[str] = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
+    aws_profile: Optional[str] = Field(default=None, alias="AWS_PROFILE")
+
+    # ── Vertex AI / Gemini ────────────────────────────────────────────────────
+    google_project_id: Optional[str] = Field(default=None, alias="GOOGLE_CLOUD_PROJECT")
+    google_location: str = Field(default="us-central1", alias="GOOGLE_CLOUD_LOCATION")
+    google_api_key: Optional[str] = Field(default=None, alias="GOOGLE_API_KEY")
+
+    # ── LiteLLM passthrough ───────────────────────────────────────────────────
+    litellm_model: Optional[str] = Field(default=None, alias="TRELIX_LLM_LITELLM_MODEL")
+    litellm_drop_params: bool = True
+
+    # ── Common ────────────────────────────────────────────────────────────────
+    max_tokens: int = 2048
+    temperature: float = 0.0
+    timeout: float = 30.0
+
+
 # ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------
@@ -311,6 +361,7 @@ class IndexConfig(BaseSettings):
     embedder: EmbedderConfig = Field(default_factory=EmbedderConfig)
     store: StoreConfig = Field(default_factory=StoreConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
 
     @field_validator("repo_path")
     @classmethod
