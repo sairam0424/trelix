@@ -40,6 +40,7 @@ def test_index_help():
     assert result.exit_code == 0
     # Strip ANSI codes before asserting — CliRunner with color enabled wraps flags
     import re
+
     plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
     assert "--provider" in plain
 
