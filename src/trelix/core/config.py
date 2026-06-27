@@ -301,6 +301,14 @@ class RetrievalConfig(BaseSettings):
     graph_rag_threshold_tokens: int = 8000
     graph_rag_threshold_results: int = 20
 
+    # ── Query embedding cache ─────────────────────────────────────────────────
+    # Caches embed_query() results in-memory (LRU, per-Retriever session).
+    # 0 = disabled. Default 256 covers a typical interactive session.
+    query_cache_size: int = Field(
+        default=256,
+        alias="TRELIX_RETRIEVAL_QUERY_CACHE_SIZE",
+    )
+
 
 class LLMConfig(BaseSettings):
     """

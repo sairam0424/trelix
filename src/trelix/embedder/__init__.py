@@ -11,6 +11,7 @@ from trelix.embedder.base import (
     VoyageEmbedder,
     make_embedder,
 )
+from trelix.embedder.cache import CachingEmbedder
 
 __all__ = [
     "BaseEmbedder",
@@ -21,5 +22,6 @@ __all__ = [
     "LocalCodeEmbedder",
     "BedrockTitanEmbedder",
     "BedrockCohereEmbedder",
+    "CachingEmbedder",
     "make_embedder",
 ]
