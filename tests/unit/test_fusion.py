@@ -203,3 +203,182 @@ class TestRRFScoring:
         list_c = [sym_a, _make_result(400, 0.6)]
         fused = reciprocal_rank_fusion([list_a, list_b, list_c])
         assert fused[0].chunk.symbol_id == 100
+
+
+# ---------------------------------------------------------------------------
+# File-type weight multiplier
+# ---------------------------------------------------------------------------
+
+
+def _make_result_lang(
+    symbol_id: int,
+    score: float,
+    language: Language,
+    source: str = "bm25",
+    file_id: int | None = None,
+) -> SearchResult:
+    """Build a SearchResult with a specific language — for weighting tests."""
+    chunk = Chunk(symbol_id=symbol_id, chunk_text=f"body_{symbol_id}", token_count=10)
+    symbol = Symbol(
+        id=symbol_id,
+        file_id=file_id or symbol_id,
+        name=f"sym_{symbol_id}",
+        qualified_name=f"mod.sym_{symbol_id}",
+        kind=SymbolKind.FUNCTION,
+        line_start=1,
+        line_end=5,
+        signature=f"def sym_{symbol_id}()",
+        body=f"def sym_{symbol_id}(): pass",
+    )
+    file = IndexedFile(
+        id=file_id or symbol_id,
+        path=f"/repo/file_{symbol_id}.py",
+        rel_path=f"file_{symbol_id}.py",
+        language=language,
+        hash="abc",
+        size_bytes=100,
+    )
+    return SearchResult(chunk=chunk, symbol=symbol, file=file, score=score, rank=1, source=source)
+
+
+class TestFileTypeWeighting:
+    def test_weights_none_produces_identical_output_to_unweighted(self) -> None:
+        """weights=None must give bit-for-bit identical scores to calling without weights."""
+        k = 60
+        list_a = [_make_result(1, 0.9), _make_result(2, 0.8), _make_result(3, 0.7)]
+        list_b = [_make_result(2, 0.85), _make_result(1, 0.75), _make_result(4, 0.6)]
+
+        fused_unweighted = reciprocal_rank_fusion([list_a, list_b], k=k)
+        fused_none = reciprocal_rank_fusion([list_a, list_b], k=k, weights=None)
+
+        assert len(fused_unweighted) == len(fused_none)
+        for a, b in zip(fused_unweighted, fused_none):
+            assert a.chunk.symbol_id == b.chunk.symbol_id
+            assert a.score == b.score  # exact float equality — no arithmetic difference
+
+    def test_empty_weights_dict_produces_identical_output(self) -> None:
+        """weights={} (empty dict) is falsy → multiplier step skipped, same as weights=None."""
+        k = 60
+        results = [_make_result(i, 1.0 / i) for i in range(1, 5)]
+        fused_none = reciprocal_rank_fusion([results], k=k, weights=None)
+        fused_empty = reciprocal_rank_fusion([results], k=k, weights={})
+        for a, b in zip(fused_none, fused_empty):
+            assert a.chunk.symbol_id == b.chunk.symbol_id
+            assert a.score == b.score
+
+    def test_weight_multiplier_applied_to_rrf_score_python(self) -> None:
+        """Python at rank 1, weight 1.0 → score = 1/(60+1) * 1.0."""
+        py_result = _make_result_lang(symbol_id=1, score=0.9, language=Language.PYTHON)
+        fused = reciprocal_rank_fusion([[py_result]], k=60, weights={"python": 1.0})
+        expected = (1.0 / (60 + 1)) * 1.0
+        assert abs(fused[0].score - expected) < 1e-12
+
+    def test_weight_multiplier_applied_to_rrf_score_markdown(self) -> None:
+        """Markdown at rank 1, weight 0.3 → score = 1/(60+1) * 0.3."""
+        md_result = _make_result_lang(symbol_id=2, score=0.9, language=Language.MARKDOWN)
+        fused = reciprocal_rank_fusion([[md_result]], k=60, weights={"markdown": 0.3})
+        expected = (1.0 / (60 + 1)) * 0.3
+        assert abs(fused[0].score - expected) < 1e-12
+
+    def test_markdown_downweighted_below_python(self) -> None:
+        """
+        README.md (markdown) outranks the Python file in raw BM25 — rank 1 vs rank 2.
+        After file-type weighting, the Python file must rank above the README.
+
+        Without weights:
+          markdown_score = 1/(60+1) ≈ 0.01639
+          python_score   = 1/(60+2) ≈ 0.01613
+          → markdown wins
+
+        With weights={markdown: 0.3, python: 1.0}:
+          markdown_score = 1/61 * 0.3 ≈ 0.00492
+          python_score   = 1/62 * 1.0 ≈ 0.01613
+          → python wins
+        """
+        md = _make_result_lang(symbol_id=10, score=0.95, language=Language.MARKDOWN)
+        py = _make_result_lang(symbol_id=20, score=0.80, language=Language.PYTHON)
+
+        # BM25 leg: markdown at rank 1, python at rank 2
+        bm25_leg = [md, py]
+
+        weights = {"python": 1.0, "markdown": 0.3}
+        fused = reciprocal_rank_fusion([bm25_leg], k=60, weights=weights)
+
+        ranked_ids = [r.chunk.symbol_id for r in fused]
+        assert ranked_ids[0] == 20, (
+            f"Expected python (id=20) at rank 1 after weighting, "
+            f"but got {ranked_ids[0]} — markdown still winning"
+        )
+
+    def test_missing_language_key_defaults_to_1_0(self) -> None:
+        """
+        A Language value not present in the weights dict must NOT be penalised.
+        weights.get(lang, 1.0) must return 1.0 for unknown languages.
+        """
+        # Use a language explicitly absent from the weights dict
+        go_result = _make_result_lang(symbol_id=5, score=0.9, language=Language.GO)
+        # weights dict has no "go" key
+        weights = {"python": 1.0, "markdown": 0.3}
+        fused = reciprocal_rank_fusion([[go_result]], k=60, weights=weights)
+        expected = 1.0 / (60 + 1) * 1.0  # fallback multiplier = 1.0
+        assert abs(fused[0].score - expected) < 1e-12
+
+    def test_multiple_legs_weights_applied_after_accumulation(self) -> None:
+        """
+        Python chunk appears in both vector (rank 1) and BM25 (rank 2).
+        Markdown chunk appears only in BM25 (rank 1).
+
+        Accumulated RRF before weighting:
+          python  = 1/61 + 1/62 ≈ 0.03252
+          markdown = 1/61      ≈ 0.01639
+
+        After weights {python: 1.0, markdown: 0.3}:
+          python  = 0.03252 * 1.0 ≈ 0.03252
+          markdown = 0.01639 * 0.3 ≈ 0.00492
+
+        Python must rank first.
+        """
+        py = _make_result_lang(symbol_id=1, score=0.9, language=Language.PYTHON)
+        md = _make_result_lang(symbol_id=2, score=0.85, language=Language.MARKDOWN)
+
+        # vector leg: python at rank 1 only
+        # bm25 leg: markdown at rank 1, python at rank 2
+        vector_leg = [py]
+        bm25_leg = [md, py]
+
+        weights = {"python": 1.0, "markdown": 0.3}
+        fused = reciprocal_rank_fusion([vector_leg, bm25_leg], k=60, weights=weights)
+
+        assert fused[0].chunk.symbol_id == 1, "Python must outrank Markdown after weighting"
+
+        # Verify exact scores
+        k = 60
+        expected_python = (1.0 / (k + 1) + 1.0 / (k + 2)) * 1.0
+        expected_markdown = (1.0 / (k + 1)) * 0.3
+        fused_map = {r.chunk.symbol_id: r.score for r in fused}
+        assert abs(fused_map[1] - expected_python) < 1e-12
+        assert abs(fused_map[2] - expected_markdown) < 1e-12
+
+    def test_html_css_downweighted_below_source(self) -> None:
+        """HTML at rank 1 (weight 0.4) must fall below Python at rank 2 (weight 1.0)."""
+        html = _make_result_lang(symbol_id=30, score=0.9, language=Language.HTML)
+        py = _make_result_lang(symbol_id=31, score=0.8, language=Language.PYTHON)
+        bm25_leg = [html, py]
+        weights = {"html": 0.4, "python": 1.0}
+        fused = reciprocal_rank_fusion([bm25_leg], k=60, weights=weights)
+        # html: 1/61 * 0.4 = 0.00656   python: 1/62 * 1.0 = 0.01613 → python wins
+        assert fused[0].chunk.symbol_id == 31
+
+    def test_scores_still_positive_after_weighting(self) -> None:
+        """All weighted scores must remain strictly positive."""
+        md = _make_result_lang(symbol_id=100, score=0.9, language=Language.MARKDOWN)
+        fused = reciprocal_rank_fusion([[md]], k=60, weights={"markdown": 0.3})
+        assert fused[0].score > 0.0
+
+    def test_rank_field_updated_after_weighting(self) -> None:
+        """rank fields on weighted fused output must be 1-indexed and sequential."""
+        py = _make_result_lang(symbol_id=1, score=0.9, language=Language.PYTHON)
+        md = _make_result_lang(symbol_id=2, score=0.8, language=Language.MARKDOWN)
+        fused = reciprocal_rank_fusion([[md, py]], k=60, weights={"python": 1.0, "markdown": 0.3})
+        for expected_rank, result in enumerate(fused, start=1):
+            assert result.rank == expected_rank
