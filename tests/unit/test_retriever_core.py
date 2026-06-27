@@ -165,6 +165,7 @@ def _make_retriever(tmp_path: str) -> object:
 class TestRetrieverInit:
     def test_init_sets_config_and_components(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """Retriever.__init__ assigns config, db, embedder, vector_store, planner."""
+        from trelix.core.config import RetrievalConfig
         from trelix.retrieval.retriever import Retriever
 
         with (
@@ -180,7 +181,11 @@ class TestRetrieverInit:
             mock_make_vs.return_value = MagicMock()
             mock_db_cls.return_value = MagicMock()
 
-            config = IndexConfig(repo_path=str(tmp_path))
+            # Disable cache so retriever.embedder is the raw mock (not a CachingEmbedder wrapper)
+            config = IndexConfig(
+                repo_path=str(tmp_path),
+                retrieval=RetrievalConfig(query_cache_size=0),
+            )
             retriever = Retriever(config)
 
         assert retriever.config is config
@@ -647,7 +652,12 @@ class TestHydrateSymbol:
 
 
 def _build_retriever(tmp_path):
-    """Return a Retriever whose DB, embedder, vector_store, and planner are MagicMocks."""
+    """Return a Retriever whose DB, embedder, vector_store, and planner are MagicMocks.
+
+    Cache is disabled (query_cache_size=0) so retriever.embedder is the raw MagicMock
+    rather than a CachingEmbedder wrapper — keeps existing mock-based assertions intact.
+    """
+    from trelix.core.config import RetrievalConfig
     from trelix.retrieval.retriever import Retriever
 
     with (
@@ -670,7 +680,10 @@ def _build_retriever(tmp_path):
         mock_planner = MagicMock()
         mock_planner_cls.return_value = mock_planner
 
-        config = IndexConfig(repo_path=str(tmp_path))
+        config = IndexConfig(
+            repo_path=str(tmp_path),
+            retrieval=RetrievalConfig(query_cache_size=0),
+        )
         retriever = Retriever(config)
 
     # Stash mocks for assertions
@@ -1591,3 +1604,39 @@ class TestRetrieverTracing:
         retriever._debug_dir.touch()  # block directory creation
 
         retriever._flush_trace()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Cache wiring tests (Task 3)
+# ---------------------------------------------------------------------------
+
+
+class TestRetrieverCacheWiring:
+    def test_cache_enabled_by_default(self) -> None:
+        """Retriever wraps embedder with CachingEmbedder when query_cache_size > 0."""
+        import tempfile
+
+        from trelix.embedder.cache import CachingEmbedder
+        from trelix.retrieval.retriever import Retriever
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = IndexConfig(repo_path=tmp)
+            assert config.retrieval.query_cache_size == 256
+            retriever = Retriever(config)
+            assert isinstance(retriever.embedder, CachingEmbedder)
+
+    def test_cache_disabled_when_size_zero(self) -> None:
+        """When query_cache_size=0, Retriever does NOT wrap with CachingEmbedder."""
+        import tempfile
+
+        from trelix.core.config import RetrievalConfig
+        from trelix.embedder.cache import CachingEmbedder
+        from trelix.retrieval.retriever import Retriever
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = IndexConfig(
+                repo_path=tmp,
+                retrieval=RetrievalConfig(query_cache_size=0),
+            )
+            retriever = Retriever(config)
+            assert not isinstance(retriever.embedder, CachingEmbedder)

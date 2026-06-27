@@ -272,6 +272,7 @@ class RetrievalConfig(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     top_k_vector: int = 20
@@ -300,6 +301,15 @@ class RetrievalConfig(BaseSettings):
     graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")
     graph_rag_threshold_tokens: int = 8000
     graph_rag_threshold_results: int = 20
+
+    # ── Query embedding cache ─────────────────────────────────────────────────
+    # Caches embed_query() results in-memory (LRU, per-Retriever session).
+    # 0 = disabled. Default 256 covers a typical interactive session.
+    query_cache_size: int = Field(
+        default=256,
+        ge=0,
+        alias="TRELIX_RETRIEVAL_QUERY_CACHE_SIZE",
+    )
 
 
 class LLMConfig(BaseSettings):
