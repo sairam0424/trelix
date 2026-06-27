@@ -465,8 +465,8 @@ class BedrockCohereEmbedder(_BedrockEmbedderBase):
       - Fixed 1024 dims — predictable storage, no tuning needed
     """
 
-    _BATCH_LIMIT = 96   # Cohere Bedrock API: max 96 texts per call
-    _MAX_CHARS = 2048   # Bedrock validates length BEFORE truncation — must pre-truncate
+    _BATCH_LIMIT = 96  # Cohere Bedrock API: max 96 texts per call
+    _MAX_CHARS = 2048  # Bedrock validates length BEFORE truncation — must pre-truncate
 
     def __init__(self, config: EmbedderConfig) -> None:
         self._client = self._make_boto3_client(config)

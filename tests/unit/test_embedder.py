@@ -662,6 +662,7 @@ class TestBedrockCohereEmbedder:
         long_text = "x" * 5000
         embedder.embed([long_text, "short"])
         import json
+
         call_body = json.loads(embedder._client.invoke_model.call_args[1]["body"])
         assert len(call_body["texts"][0]) == 2048, "Long text must be pre-truncated to 2048 chars"
         assert call_body["texts"][1] == "short", "Short text must pass through unchanged"
