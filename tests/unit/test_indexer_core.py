@@ -19,16 +19,12 @@ Covered:
 from __future__ import annotations
 
 import pathlib
-import tempfile
 from contextlib import contextmanager
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from trelix.core.config import EmbedderConfig, IndexConfig, StoreConfig
 from trelix.store.db import Database
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures / helpers
@@ -79,7 +75,7 @@ def _patch_rich_progress():
         yield mock_progress
 
 
-def _make_indexer(tmp_dir: str) -> "Indexer":  # noqa: F821
+def _make_indexer(tmp_dir: str) -> Indexer:  # noqa: F821
     """
     Build an Indexer with fake embedder + vector store so no ML models are
     loaded.  Uses a real SQLite Database so stat counters are exercised.

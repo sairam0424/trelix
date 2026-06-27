@@ -27,7 +27,7 @@ from __future__ import annotations
 from trelix.core.config import EmbedderConfig, IndexConfig, LLMConfig
 from trelix.embedder.base import BaseEmbedder, make_embedder
 from trelix.indexing.indexer import Indexer
-from trelix.llm.client import ChatMessage, ChatResponse, TrelixChatClient, ToolCallResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 from trelix.llm.factory import build_chat_client
 from trelix.retrieval.retriever import Retriever
 

@@ -21,7 +21,6 @@ import pytest
 from trelix.core.config import RetrievalConfig
 from trelix.core.models import Chunk, IndexedFile, Language, SearchResult, Symbol, SymbolKind
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -137,9 +136,9 @@ class TestCrossEncoderReranker:
         from trelix.retrieval.reranker import rerank
 
         results = [
-            _make_result("doc low",  score=0.9, rank=1),
+            _make_result("doc low", score=0.9, rank=1),
             _make_result("doc high", score=0.1, rank=2),
-            _make_result("doc mid",  score=0.5, rank=3),
+            _make_result("doc mid", score=0.5, rank=3),
         ]
         # predict returns scores positionally: low=0.1, high=0.9, mid=0.5
         mock_model = MagicMock()
@@ -217,7 +216,7 @@ class TestCrossEncoderReranker:
 
         results = [_make_result(f"doc {i}", score=0.5, rank=i + 1) for i in range(3)]
         original_scores = [r.score for r in results]
-        original_ranks  = [r.rank  for r in results]
+        original_ranks = [r.rank for r in results]
 
         mock_model = MagicMock()
         mock_model.predict.return_value = [0.9, 0.1, 0.5]
@@ -231,7 +230,7 @@ class TestCrossEncoderReranker:
             rerank("q", results, cfg, top_n=3)
 
         assert [r.score for r in results] == original_scores
-        assert [r.rank  for r in results] == original_ranks
+        assert [r.rank for r in results] == original_ranks
 
 
 # ---------------------------------------------------------------------------
@@ -249,8 +248,7 @@ class TestCohereReranker:
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json.return_value = {
             "results": [
-                {"index": idx, "relevance_score": score}
-                for idx, score in zip(order, scores)
+                {"index": idx, "relevance_score": score} for idx, score in zip(order, scores)
             ]
         }
         return mock_resp

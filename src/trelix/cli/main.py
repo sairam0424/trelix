@@ -2,7 +2,8 @@
 trelix CLI — Phase 14 full implementation.
 
 Commands:
-    trelix index  <repo> [--provider local|openai|azure|voyage|local-code|bedrock-titan|bedrock-cohere] [-v]
+    trelix index  <repo> [--provider local|openai|azure|voyage|local-code
+                          |bedrock-titan|bedrock-cohere] [-v]
     trelix search <repo> <query> [--provider ...] [--json]
     trelix ask    <repo> <query> [--provider ...]
     trelix query  <repo> <query> [--provider ...]
@@ -48,6 +49,7 @@ err_console = Console(stderr=True)
 def _version_callback(value: bool) -> None:
     if value:
         import trelix
+
         typer.echo(f"trelix {trelix.__version__}")
         raise typer.Exit()
 
@@ -65,7 +67,15 @@ def main(
 ) -> None:
     """trelix — fast, reliable code indexing and retrieval."""
 
-_EmbedderProvider = Literal["openai", "azure", "local", "voyage", "local-code", "bedrock-titan", "bedrock-cohere"]
+
+_EmbedderProvider = Literal[
+    "openai", "azure", "local", "voyage", "local-code", "bedrock-titan", "bedrock-cohere"
+]
+
+_PROVIDER_HELP = (
+    "Embedding provider: local | openai | azure | voyage"
+    " | local-code | bedrock-titan | bedrock-cohere"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +103,7 @@ def _setup_logging(verbose: bool = False) -> None:
 @app.command()
 def index(
     repo: str = typer.Argument(..., help="Path to the repository to index"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | voyage | local-code | bedrock-titan | bedrock-cohere"),
+    provider: str = typer.Option("local", help=_PROVIDER_HELP),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
 ) -> None:
     """Index a repository — builds the search index at <repo>/.trelix/index.db"""
@@ -113,9 +123,8 @@ def index(
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        err_console.print(
-            f"[red]Configuration error[/red]: {field}: {msg}" if field else f"[red]Configuration error[/red]: {msg}"
-        )
+        detail = f"{field}: {msg}" if field else msg
+        err_console.print(f"[red]Configuration error[/red]: {detail}")
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
@@ -159,7 +168,7 @@ def index(
 def search(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query: str = typer.Argument(..., help="Natural language query"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | voyage | local-code | bedrock-titan | bedrock-cohere"),
+    provider: str = typer.Option("local", help=_PROVIDER_HELP),
     json_output: bool = typer.Option(False, "--json", help="Output raw JSON"),
 ) -> None:
     """Search for code — returns ranked results as a table or JSON"""
@@ -180,9 +189,8 @@ def search(
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        err_console.print(
-            f"[red]Configuration error[/red]: {field}: {msg}" if field else f"[red]Configuration error[/red]: {msg}"
-        )
+        detail = f"{field}: {msg}" if field else msg
+        err_console.print(f"[red]Configuration error[/red]: {detail}")
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
@@ -238,7 +246,7 @@ def search(
 def ask(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query: str = typer.Argument(..., help="Question to answer about the codebase"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | voyage | local-code | bedrock-titan | bedrock-cohere"),
+    provider: str = typer.Option("local", help=_PROVIDER_HELP),
 ) -> None:
     """Ask a question — retrieval + LLM synthesis (requires OPENAI_API_KEY for full synthesis)"""
     _setup_logging(False)
@@ -259,9 +267,8 @@ def ask(
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        err_console.print(
-            f"[red]Configuration error[/red]: {field}: {msg}" if field else f"[red]Configuration error[/red]: {msg}"
-        )
+        detail = f"{field}: {msg}" if field else msg
+        err_console.print(f"[red]Configuration error[/red]: {detail}")
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
@@ -300,7 +307,7 @@ def ask(
 def query(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query_str: str = typer.Argument(..., metavar="QUERY", help="Natural language query"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | voyage | local-code | bedrock-titan | bedrock-cohere"),
+    provider: str = typer.Option("local", help=_PROVIDER_HELP),
 ) -> None:
     """Query a repository — human-readable Rich terminal output (no LLM synthesis)"""
     _setup_logging(False)
@@ -320,9 +327,8 @@ def query(
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        err_console.print(
-            f"[red]Configuration error[/red]: {field}: {msg}" if field else f"[red]Configuration error[/red]: {msg}"
-        )
+        detail = f"{field}: {msg}" if field else msg
+        err_console.print(f"[red]Configuration error[/red]: {detail}")
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
@@ -383,9 +389,8 @@ def stats(
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        err_console.print(
-            f"[red]Configuration error[/red]: {field}: {msg}" if field else f"[red]Configuration error[/red]: {msg}"
-        )
+        detail = f"{field}: {msg}" if field else msg
+        err_console.print(f"[red]Configuration error[/red]: {detail}")
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
@@ -432,7 +437,7 @@ def stats(
 def update_index(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     file: str = typer.Argument(..., help="File to re-index (absolute or relative to repo)"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | voyage | local-code | bedrock-titan | bedrock-cohere"),
+    provider: str = typer.Option("local", help=_PROVIDER_HELP),
 ) -> None:
     """Re-index a single file after editing"""
     _setup_logging(False)
@@ -451,9 +456,8 @@ def update_index(
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        err_console.print(
-            f"[red]Configuration error[/red]: {field}: {msg}" if field else f"[red]Configuration error[/red]: {msg}"
-        )
+        detail = f"{field}: {msg}" if field else msg
+        err_console.print(f"[red]Configuration error[/red]: {detail}")
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
@@ -506,9 +510,8 @@ def migrate_vectors(
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        err_console.print(
-            f"[red]Configuration error[/red]: {field}: {msg}" if field else f"[red]Configuration error[/red]: {msg}"
-        )
+        detail = f"{field}: {msg}" if field else msg
+        err_console.print(f"[red]Configuration error[/red]: {detail}")
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")
@@ -610,7 +613,7 @@ def migrate_vectors(
 @app.command()
 def watch(
     repo: str = typer.Argument(..., help="Path to the repository to watch"),
-    provider: str = typer.Option("local", help="Embedding provider: local | openai | azure | voyage | local-code | bedrock-titan | bedrock-cohere"),
+    provider: str = typer.Option("local", help=_PROVIDER_HELP),
 ) -> None:
     """Watch repo for changes and auto-update index. Ctrl+C to stop."""
     _setup_logging(False)
@@ -630,9 +633,8 @@ def watch(
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        err_console.print(
-            f"[red]Configuration error[/red]: {field}: {msg}" if field else f"[red]Configuration error[/red]: {msg}"
-        )
+        detail = f"{field}: {msg}" if field else msg
+        err_console.print(f"[red]Configuration error[/red]: {detail}")
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         err_console.print(f"[red]Error:[/red] {exc}")

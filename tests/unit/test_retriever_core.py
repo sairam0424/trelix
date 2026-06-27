@@ -13,13 +13,13 @@ Covers:
 from __future__ import annotations
 
 import os
-import tempfile
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
+from trelix.core.config import IndexConfig
 from trelix.core.models import (
     Chunk,
     IndexedFile,
@@ -30,14 +30,12 @@ from trelix.core.models import (
     SymbolKind,
 )
 from trelix.retrieval.planner.models import (
+    INTENT_STRATEGIES,
     IntentType,
     QueryPlan,
     RoutingTier,
     SubQuery,
-    default_plan,
-    INTENT_STRATEGIES,
 )
-
 
 # ---------------------------------------------------------------------------
 # Shared test helpers
@@ -79,9 +77,7 @@ def _make_chunk(sym_id: int = 1, text: str = "def my_func(): pass") -> Chunk:
     )
 
 
-def _make_search_result(
-    idx: int = 1, score: float = 0.9, source: str = "vector"
-) -> SearchResult:
+def _make_search_result(idx: int = 1, score: float = 0.9, source: str = "vector") -> SearchResult:
     file = _make_file(idx)
     sym = _make_symbol(idx, idx, name=f"func_{idx}")
     chunk = _make_chunk(idx, text=f"def func_{idx}(): pass")
@@ -125,7 +121,7 @@ def _make_retrieved_context(
     )
 
 
-def _make_retriever(tmp_path: str) -> "object":
+def _make_retriever(tmp_path: str) -> object:
     """Build a Retriever with all heavy deps mocked out."""
     from trelix.retrieval.retriever import Retriever
 
@@ -167,7 +163,7 @@ def _make_retriever(tmp_path: str) -> "object":
 
 
 class TestRetrieverInit:
-    def test_init_sets_config_and_components(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_init_sets_config_and_components(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """Retriever.__init__ assigns config, db, embedder, vector_store, planner."""
         from trelix.retrieval.retriever import Retriever
 
@@ -192,9 +188,10 @@ class TestRetrieverInit:
         assert retriever.embedder is mock_embedder
         assert retriever.vector_store is mock_make_vs.return_value
 
-    def test_init_creates_debug_dir_path(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_init_creates_debug_dir_path(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """_debug_dir is set to <repo_path>/.trelix/debug."""
         from pathlib import Path
+
         from trelix.retrieval.retriever import Retriever
 
         with (
@@ -216,7 +213,7 @@ class TestRetrieverInit:
 
 
 class TestRetrieveWithExternalPlan:
-    def test_retrieve_returns_retrieved_context(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_retrieve_returns_retrieved_context(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """retrieve() with an external plan returns a RetrievedContext."""
         from trelix.retrieval.retriever import Retriever
 
@@ -245,7 +242,7 @@ class TestRetrieveWithExternalPlan:
         assert isinstance(result, RetrievedContext)
         assert result.query == expected_ctx.query
 
-    def test_retrieve_sets_elapsed_seconds(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_retrieve_sets_elapsed_seconds(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """retrieve() attaches elapsed_seconds to the returned context."""
         from trelix.retrieval.retriever import Retriever
 
@@ -272,7 +269,7 @@ class TestRetrieveWithExternalPlan:
 
         assert result.elapsed_seconds >= 0.0
 
-    def test_retrieve_calls_planner_when_no_plan_given(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_retrieve_calls_planner_when_no_plan_given(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """retrieve() calls _planner.plan() when no external plan is supplied."""
         from trelix.retrieval.retriever import Retriever
 
@@ -302,7 +299,7 @@ class TestRetrieveWithExternalPlan:
 
 
 class TestIntentRouting:
-    def test_tier1_direct_routes_to_project_overview(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_tier1_direct_routes_to_project_overview(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """Tier 1 DIRECT routing tier calls _retrieve_project_overview."""
         from trelix.retrieval.retriever import Retriever
 
@@ -329,7 +326,7 @@ class TestIntentRouting:
         mock_po.assert_called_once_with(plan)
         assert result is ctx
 
-    def test_file_overview_intent_routes_correctly(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_file_overview_intent_routes_correctly(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """FILE_OVERVIEW intent calls _retrieve_file_overview."""
         from trelix.retrieval.retriever import Retriever
 
@@ -356,7 +353,7 @@ class TestIntentRouting:
         mock_fo.assert_called_once_with(plan)
         assert result is ctx
 
-    def test_project_overview_intent_routes_correctly(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_project_overview_intent_routes_correctly(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """PROJECT_OVERVIEW intent calls _retrieve_project_overview."""
         from trelix.retrieval.retriever import Retriever
 
@@ -383,7 +380,7 @@ class TestIntentRouting:
         mock_po.assert_called_once_with(plan)
         assert result is ctx
 
-    def test_config_lookup_intent_routes_correctly(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_config_lookup_intent_routes_correctly(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """CONFIG_LOOKUP intent calls _retrieve_config."""
         from trelix.retrieval.retriever import Retriever
 
@@ -410,7 +407,7 @@ class TestIntentRouting:
         mock_cfg.assert_called_once_with(plan)
         assert result is ctx
 
-    def test_feature_flow_intent_routes_to_standard(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_feature_flow_intent_routes_to_standard(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """FEATURE_FLOW intent calls _retrieve_standard."""
         from trelix.retrieval.retriever import Retriever
 
@@ -440,7 +437,8 @@ class TestIntentRouting:
 
 class TestEmptyResults:
     def test_project_overview_falls_back_to_standard_when_empty(
-        self, tmp_path: "Path"  # type: ignore[name-defined]
+        self,
+        tmp_path: Path,  # type: ignore[name-defined]
     ) -> None:
         """_retrieve_project_overview falls back to _retrieve_standard when DB has no symbols."""
         from trelix.retrieval.retriever import Retriever
@@ -471,7 +469,8 @@ class TestEmptyResults:
         assert result is fallback_ctx
 
     def test_file_overview_falls_back_to_standard_when_no_file_matched(
-        self, tmp_path: "Path"  # type: ignore[name-defined]
+        self,
+        tmp_path: Path,  # type: ignore[name-defined]
     ) -> None:
         """_retrieve_file_overview falls back when no file matches the hint."""
         from trelix.retrieval.retriever import Retriever
@@ -516,7 +515,7 @@ class TestEmptyResults:
 
 
 class TestDedup:
-    def test_dedup_removes_duplicate_symbol_ids(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_dedup_removes_duplicate_symbol_ids(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """_dedup keeps highest-score result when symbol_id is repeated."""
         from trelix.retrieval.retriever import Retriever
 
@@ -548,7 +547,7 @@ class TestDedup:
         result_for_1 = next(r for r in deduped if r.chunk.symbol_id == 1)
         assert result_for_1.score == pytest.approx(0.95)
 
-    def test_dedup_preserves_sort_order_by_score(self, tmp_path: "Path") -> None:  # type: ignore[name-defined]
+    def test_dedup_preserves_sort_order_by_score(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """_dedup returns results sorted descending by score."""
         from trelix.retrieval.retriever import Retriever
 
@@ -578,7 +577,8 @@ class TestDedup:
 
 class TestHydrateSymbol:
     def test_hydrate_symbol_returns_none_when_db_returns_none(
-        self, tmp_path: "Path"  # type: ignore[name-defined]
+        self,
+        tmp_path: Path,  # type: ignore[name-defined]
     ) -> None:
         """hydrate_symbol returns None when get_symbol_with_file returns None."""
         from trelix.retrieval.retriever import Retriever
@@ -603,7 +603,8 @@ class TestHydrateSymbol:
         assert result is None
 
     def test_hydrate_symbol_builds_search_result_from_db_row(
-        self, tmp_path: "Path"  # type: ignore[name-defined]
+        self,
+        tmp_path: Path,  # type: ignore[name-defined]
     ) -> None:
         """hydrate_symbol returns a SearchResult when the symbol exists in the DB."""
         from trelix.retrieval.retriever import Retriever
