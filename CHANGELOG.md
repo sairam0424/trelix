@@ -40,6 +40,21 @@ Universal LLM client factory — all 5 chat call sites migrated to a provider-ag
 ### Fixed
 - `_token_limit_param()` in OpenAIBackend correctly routes legacy models to `max_tokens=`
   and modern models to `max_completion_tokens=` — eliminates the recurring parameter bug
+- `BedrockBackend`: base64-encoded AWS credentials (stored in `.env`) decoded transparently
+- `BedrockBackend`: bare model IDs rejected by Bedrock — now uses `us.*` inference profile IDs
+- Unit test isolation: `test_llm_field_on_index_config` no longer leaks `.env` provider state
+
+### Added (post-task additions)
+- **`BedrockTitanEmbedder`** — `amazon.titan-embed-text-v2:0`, configurable 256/512/1024 dims,
+  normalize=True. Set `TRELIX_EMBEDDER_PROVIDER=bedrock-titan`. `pip install trelix[bedrock]`
+- **`BedrockCohereEmbedder`** — `cohere.embed-english-v3`, 1024 dims, asymmetric doc/query
+  retrieval (`search_document` vs `search_query` input_type). `pip install trelix[bedrock]`
+- **Bedrock model fallback** — `BedrockBackend` defaults to `us.anthropic.claude-sonnet-4-6`
+  (primary) with transparent auto-fallback to `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+  on `ValidationException`. Override via `TRELIX_LLM_BEDROCK_PRIMARY_MODEL` /
+  `TRELIX_LLM_BEDROCK_FALLBACK_MODEL`.
+- **Live e2e tests** — `tests/integration/test_llm_e2e.py`: 16 tests covering Azure + Bedrock
+  chat (complete/stream/tool_call) + Bedrock embeddings. Skip gracefully when creds absent.
 
 ---
 
