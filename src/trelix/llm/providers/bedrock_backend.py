@@ -20,11 +20,40 @@ _STOP_REASON_MAP = {
 }
 
 
+def _resolve_bedrock_model(config: "LLMConfig") -> tuple[str, str]:
+    """
+    Return (primary_model_id, fallback_model_id) for Bedrock.
+
+    When config.model is its zero-value default ("gpt-4o") and provider is
+    "bedrock", it was never explicitly set — use the Bedrock-specific fields
+    (bedrock_primary_model / bedrock_fallback_model) which default to
+    sonnet-4-6 / haiku-4-5.
+
+    If the caller explicitly set TRELIX_LLM_MODEL, that value wins as primary
+    and the fallback still comes from bedrock_fallback_model.
+    """
+    primary = (
+        config.bedrock_primary_model
+        if config.model == "gpt-4o"  # never overridden from LLMConfig default
+        else config.model
+    )
+    fallback = config.bedrock_fallback_model
+    return primary, fallback
+
+
 class BedrockBackend(TrelixChatClient):
     """
     TrelixChatClient backed by AWS Bedrock Converse API.
 
-    Key differences (research-verified, 3-0 vote):
+    Model selection:
+      Default primary:  us.anthropic.claude-sonnet-4-6  (via TRELIX_LLM_BEDROCK_PRIMARY_MODEL)
+      Default fallback: us.anthropic.claude-haiku-4-5-20251001-v1:0  (via TRELIX_LLM_BEDROCK_FALLBACK_MODEL)
+
+      On ValidationException (model not available / throughput tier mismatch),
+      every call transparently retries once with the fallback model and logs a
+      warning. The active model is updated so subsequent calls skip the retry.
+
+    Key API differences from OpenAI (research-verified):
     - Token limit: inferenceConfig.maxTokens (camelCase, nested)
     - System prompt: system=[{"text": "..."}] at top level
     - Message content: always list-of-dicts [{"text": "..."}]
@@ -33,7 +62,8 @@ class BedrockBackend(TrelixChatClient):
 
     def __init__(self, config: "LLMConfig") -> None:
         self._config = config
-        self._model = config.model
+        self._primary_model, self._fallback_model = _resolve_bedrock_model(config)
+        self._model = self._primary_model  # active model — may switch on fallback
         self._client = self._build_client(config)
 
     @staticmethod
@@ -118,6 +148,38 @@ class BedrockBackend(TrelixChatClient):
     def _normalize_finish_reason(self, stop_reason: str) -> str:
         return _STOP_REASON_MAP.get(stop_reason, "stop")
 
+    def _is_model_unavailable(self, exc: Exception) -> bool:
+        """True when Bedrock signals the model isn't available on-demand."""
+        msg = str(exc)
+        return (
+            "ValidationException" in type(exc).__name__
+            or "ValidationException" in msg
+        ) and (
+            "on-demand throughput" in msg
+            or "inference profile" in msg
+            or "not supported" in msg
+        )
+
+    def _try_with_fallback(self, fn: Any, request: dict[str, Any]) -> Any:
+        """
+        Call fn(request). On ValidationException for the primary model, swap
+        to the fallback, update the active model, and retry once.
+        """
+        try:
+            return fn(**request)
+        except Exception as exc:  # noqa: BLE001
+            if not self._is_model_unavailable(exc) or self._model == self._fallback_model:
+                raise
+            logger.warning(
+                "Bedrock model %r unavailable (%s). Falling back to %r.",
+                self._model,
+                exc,
+                self._fallback_model,
+            )
+            self._model = self._fallback_model
+            request["modelId"] = self._fallback_model
+            return fn(**request)
+
     def complete(
         self,
         messages: list[ChatMessage],
@@ -128,7 +190,7 @@ class BedrockBackend(TrelixChatClient):
         request = self._build_request(messages, max_tokens, system)
         if temperature is not None:
             request["inferenceConfig"]["temperature"] = temperature
-        response = self._client.converse(**request)
+        response = self._try_with_fallback(self._client.converse, request)
         output_msg = response["output"]["message"]
         content = next(
             (block["text"] for block in output_msg["content"] if "text" in block), ""
@@ -152,7 +214,7 @@ class BedrockBackend(TrelixChatClient):
         request = self._build_request(messages, max_tokens, system)
         if temperature is not None:
             request["inferenceConfig"]["temperature"] = temperature
-        response = self._client.converse_stream(**request)
+        response = self._try_with_fallback(self._client.converse_stream, request)
         stream = response.get("stream")
         if stream:
             for event in stream:
@@ -168,7 +230,7 @@ class BedrockBackend(TrelixChatClient):
         max_tokens: Optional[int] = None,
     ) -> ToolCallResponse:
         request = self._build_request(messages, max_tokens, None, tools, force_tool)
-        response = self._client.converse(**request)
+        response = self._try_with_fallback(self._client.converse, request)
         output_msg = response["output"]["message"]
         tool_use = next(
             (block["toolUse"] for block in output_msg["content"] if "toolUse" in block),

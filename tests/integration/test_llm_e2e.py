@@ -337,3 +337,30 @@ def test_bedrock_cohere_embed_vs_embed_query_differ() -> None:
     doc_vec = embedder.embed([_CODE_QUERY])[0]
     query_vec = embedder.embed_query(_CODE_QUERY)
     assert doc_vec != query_vec, "Document and query embeddings should differ for the same text"
+
+
+# ---------------------------------------------------------------------------
+# Bedrock default model selection (no explicit model — uses primary/fallback)
+# ---------------------------------------------------------------------------
+
+@_SKIP_BEDROCK
+def test_bedrock_default_model_is_sonnet() -> None:
+    """With provider=bedrock and no explicit model, should use sonnet-4-6 as primary."""
+    from trelix.core.config import LLMConfig
+    from trelix.llm.factory import build_chat_client
+
+    cfg = LLMConfig(provider="bedrock")
+    client = build_chat_client(cfg)
+
+    assert client._primary_model == "us.anthropic.claude-sonnet-4-6"
+    assert client._fallback_model == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+    resp = client.complete(
+        [__import__("trelix.llm.client", fromlist=["ChatMessage"]).ChatMessage(
+            role="user", content="Reply: BEDROCK_DEFAULT_OK"
+        )],
+        max_tokens=20,
+        temperature=0,
+    )
+    assert resp.content.strip(), "Expected non-empty response"
+    assert resp.input_tokens > 0

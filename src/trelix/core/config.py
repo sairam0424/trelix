@@ -335,6 +335,17 @@ class LLMConfig(BaseSettings):
     aws_access_key_id: Optional[str] = Field(default=None, alias="AWS_ACCESS_KEY_ID")
     aws_secret_access_key: Optional[str] = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
     aws_profile: Optional[str] = Field(default=None, alias="AWS_PROFILE")
+    # Inference profile IDs (us.* prefix required for on-demand throughput).
+    # Primary is tried first; if Bedrock returns a ValidationException (model not
+    # available in the region or throughput tier), the backend retries with fallback.
+    bedrock_primary_model: str = Field(
+        default="us.anthropic.claude-sonnet-4-6",
+        alias="TRELIX_LLM_BEDROCK_PRIMARY_MODEL",
+    )
+    bedrock_fallback_model: str = Field(
+        default="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        alias="TRELIX_LLM_BEDROCK_FALLBACK_MODEL",
+    )
 
     # ── Vertex AI / Gemini ────────────────────────────────────────────────────
     google_project_id: Optional[str] = Field(default=None, alias="GOOGLE_CLOUD_PROJECT")
