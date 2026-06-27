@@ -7,7 +7,7 @@ packages = ["src/trelix_langchain"]
 
 [project]
 name = "trelix-langchain"
-version = "0.5.0"
+version = "0.7.0"
 description = "LangChain retriever for trelix code intelligence"
 requires-python = ">=3.11"
 dependencies = ["trelix>=0.4.0", "langchain-core>=0.1.0"]
