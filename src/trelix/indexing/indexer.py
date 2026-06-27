@@ -186,6 +186,12 @@ class Indexer:
         4: (0.95, 1.00),  # resolve
     }
 
+    # Minimum number of files changed in a single index_file() call-site batch
+    # before the O(total_calls + total_imports) global resolve passes run.
+    # For single-file watch events this is 1, so resolve is skipped; the next
+    # full index() run (or a batch >= this threshold) will catch any new edges.
+    _FULL_RESOLVE_THRESHOLD = 5
+
     def __init__(
         self,
         config: IndexConfig,
@@ -690,13 +696,26 @@ class Indexer:
     # Single-file update (called by `trelix update-index`)
     # ──────────────────────────────────────────────────────────────────────
 
-    def index_file(self, file_path: str) -> dict[str, Any]:
+    def index_file(
+        self,
+        file_path: str,
+        *,
+        files_in_batch: int = 1,
+    ) -> dict[str, Any]:
         """
         Re-index a single file.  Faster than a full `--incremental` run because
         it skips the repo walk entirely.
 
         Args:
             file_path: absolute path to the file, or path relative to repo root.
+            files_in_batch: total number of files being updated in this watch
+                event batch.  When the batch size is below
+                ``_FULL_RESOLVE_THRESHOLD`` the four O(N) global resolve passes
+                are skipped — they are already correct from the last full index()
+                run and the benefit of re-running them for a single changed file
+                is marginal compared to the cost.  Callers processing a large
+                burst (e.g. a branch checkout) should pass the actual count so
+                the resolve still fires when it matters.
 
         Returns:
             {"status": "ok", "symbols_updated": N, "chunks_updated": N, "ms": N}
@@ -771,12 +790,30 @@ class Indexer:
             if pending:
                 self._batch_embed_and_store(pending, inner_stats)
 
-            # Re-run cross-file resolution so edges involving this file stay fresh.
-            # These are idempotent UPDATE queries — safe to call after any single-file change.
-            self.db.resolve_cross_file_calls()
-            self.db.resolve_import_file_ids()
-            self.db.resolve_cross_file_type_edges()
-            self.db.resolve_angular_selectors()
+            # Cross-file resolution: all four passes are O(total_calls + total_imports)
+            # regardless of how many files changed, so skipping them for small watch
+            # events is a significant win.  The resolve state from the last full
+            # index() run remains valid — a single changed file rarely adds edges
+            # that were previously unresolvable across the whole codebase.
+            # We only pay the full cost when the batch is large enough that new
+            # symbols are likely to unlock previously unresolved edges.
+            if files_in_batch >= self._FULL_RESOLVE_THRESHOLD:
+                self.db.resolve_cross_file_calls()
+                self.db.resolve_import_file_ids()
+                self.db.resolve_cross_file_type_edges()
+                self.db.resolve_angular_selectors()
+                logger.debug(
+                    "index_file: ran full cross-file resolve (batch=%d >= threshold=%d)",
+                    files_in_batch,
+                    self._FULL_RESOLVE_THRESHOLD,
+                )
+            else:
+                logger.debug(
+                    "index_file: skipped cross-file resolve (batch=%d < threshold=%d); "
+                    "next full index() will reconcile any new edges",
+                    files_in_batch,
+                    self._FULL_RESOLVE_THRESHOLD,
+                )
 
             return {
                 "status": "ok",
