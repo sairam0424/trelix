@@ -287,6 +287,8 @@ Markdown (heading sections), HTML (custom elements), CSS/SCSS
 |---|---|---|---|---|
 | `local` | all-MiniLM-L6-v2 | 384 | baseline | No API key, CPU |
 | `local-code` | SFR-Embedding-Code-2B_R | 4096 | **67.41** | No API key, ~8GB RAM/GPU |
+| `bge-code` | BAAI/bge-code-v1 | 768 | **81.77** | CoIR SOTA 2025, `pip install trelix[bge-code]` |
+| `nomic-code` | nomic-ai/nomic-embed-code | 768 | — | No new deps (uses sentence-transformers), included in `trelix[local]` |
 | `openai` | text-embedding-3-large | 3072 | ~45 | Best general-purpose |
 | `azure` | text-embedding-3-large | 3072 | ~45 | Azure-hosted OpenAI |
 | `voyage` | voyage-code-3 | 1024 | **56.26** | Best API-based code model |
@@ -294,6 +296,8 @@ Markdown (heading sections), HTML (custom elements), CSS/SCSS
 | `bedrock-cohere` | cohere.embed-english-v3 | 1024 | — | AWS Bedrock, asymmetric doc/query |
 
 CoIR benchmark scores from [archersama.github.io/coir](https://archersama.github.io/coir/) (ACL 2025).
+
+> **voyage-code-3 Matryoshka:** Set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for 2× faster HNSW search with minimal quality loss.
 
 ---
 

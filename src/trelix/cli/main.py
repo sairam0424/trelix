@@ -69,12 +69,20 @@ def main(
 
 
 _EmbedderProvider = Literal[
-    "openai", "azure", "local", "voyage", "local-code", "bedrock-titan", "bedrock-cohere"
+    "openai",
+    "azure",
+    "local",
+    "voyage",
+    "local-code",
+    "bge-code",
+    "nomic-code",
+    "bedrock-titan",
+    "bedrock-cohere",
 ]
 
 _PROVIDER_HELP = (
     "Embedding provider: local | openai | azure | voyage"
-    " | local-code | bedrock-titan | bedrock-cohere"
+    " | local-code | bge-code | nomic-code | bedrock-titan | bedrock-cohere"
 )
 
 
