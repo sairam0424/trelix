@@ -69,6 +69,9 @@ local = [
 rerank = [
     "cohere>=5.5.0",                  # Cohere reranker (best quality)
 ]
+plaid = [
+    "ragatouille>=0.0.8",             # PLAID ColBERT late-interaction reranker
+]
 voyage = [
     "voyageai>=0.2.0",               # VoyageEmbedder (voyage-code-3, 56.26 CoIR)
 ]
