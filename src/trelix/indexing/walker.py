@@ -82,7 +82,7 @@ class FileWalker:
         if not self.config.walker.respect_gitignore or not gitignore_path.exists():
             return None
         patterns = gitignore_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-        return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+        return pathspec.PathSpec.from_lines("gitignore", patterns)
 
     def _is_ignored_dir(self, dir_path: Path) -> bool:
         if dir_path.name in self.config.walker.extra_ignore_dirs:
