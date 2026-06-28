@@ -36,6 +36,7 @@ from typing import Any
 # Patching these via patch("trelix.api.app.Retriever") / patch("trelix.api.app.IndexConfig")
 # only works when they are resolved at import time, not inside the function body.
 # Neither module requires fastapi, so this file stays importable without trelix[serve].
+from trelix import __version__
 from trelix.core.config import IndexConfig
 from trelix.retrieval.retriever import Retriever
 
@@ -59,11 +60,11 @@ def create_app():  # noqa: ANN201
             "Install with: pip install 'trelix[serve]'"
         ) from e
 
-    app = FastAPI(title="trelix API", version="1.1.0")
+    app = FastAPI(title="trelix API", version=__version__)
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok", "version": "1.1.0"}
+        return {"status": "ok", "version": __version__}
 
     @app.get("/search")
     def search(query: str, repo: str, k: int = 10) -> list[dict[str, Any]]:
