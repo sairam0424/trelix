@@ -67,3 +67,25 @@ class TestTrelixAPI:
             assert len(data) == 1
             assert data[0]["file"] == "src/auth.py"
             assert data[0]["score"] == pytest.approx(0.9)
+
+    def test_ask_endpoint_returns_sse_stream(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """GET /ask must return 200 with content-type text/event-stream (SSE)."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+
+        with (
+            patch("trelix.api.app.Retriever") as MockRetriever,
+            patch("trelix.retrieval.synthesizer.Synthesizer") as MockSynth,
+        ):
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            MockSynth.return_value.stream.return_value = iter(["Hello", " world"])
+            app = create_app()
+            # stream_response=False so TestClient consumes the full SSE body
+            client = TestClient(app)
+            resp = client.get(f"/ask?query=hello&repo={tmp_path}")
+            assert resp.status_code == 200
+            assert "text/event-stream" in resp.headers["content-type"]

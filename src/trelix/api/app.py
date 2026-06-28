@@ -16,12 +16,26 @@ Endpoints:
     GET  /ask?query=&repo=          — LLM synthesis, SSE stream
     POST /index                    — index a repository (body: {"repo_path": "..."})
     GET  /stats?repo=               — index statistics
+
+Import contract
+---------------
+``IndexConfig`` and ``Retriever`` are imported at *module level* (not inside
+``create_app``) as an intentional design decision: it allows test code to patch
+them via ``patch("trelix.api.app.Retriever")`` before ``create_app()`` is
+called, which is the standard ``unittest.mock`` patching idiom.  These two
+modules have no dependency on FastAPI, so the module remains importable without
+``trelix[serve]`` installed.  FastAPI itself **is** imported lazily inside
+``create_app()`` — that is the only optional dependency gated by this module.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
+# Intentionally at module scope — see "Import contract" in the module docstring.
+# Patching these via patch("trelix.api.app.Retriever") / patch("trelix.api.app.IndexConfig")
+# only works when they are resolved at import time, not inside the function body.
+# Neither module requires fastapi, so this file stays importable without trelix[serve].
 from trelix.core.config import IndexConfig
 from trelix.retrieval.retriever import Retriever
 
@@ -31,8 +45,10 @@ logger = logging.getLogger("trelix.api")
 def create_app():  # noqa: ANN201
     """Create and return the FastAPI application.
 
-    FastAPI is imported lazily so this module is importable even without
-    fastapi installed (``trelix[serve]`` is the optional extra that adds it).
+    FastAPI is imported lazily inside this function so the module is importable
+    even without fastapi installed (``trelix[serve]`` is the optional extra that
+    provides it).  The trelix core imports (``IndexConfig``, ``Retriever``) are
+    at module scope intentionally — see the module-level docstring for details.
     """
     try:
         from fastapi import FastAPI

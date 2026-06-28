@@ -789,7 +789,8 @@ def serve(
 ) -> None:
     """Start a REST API server for trelix search and synthesis."""
     try:
-        import uvicorn  # noqa: F401
+        import uvicorn
+
         from trelix.api.app import create_app
     except ImportError:
         typer.echo("trelix serve requires: pip install 'trelix[serve]'")
@@ -797,9 +798,7 @@ def serve(
 
     api_app = create_app()
     typer.echo(f"trelix API serving {repo_path} at http://{host}:{port}")
-    import uvicorn as _uvicorn
-
-    _uvicorn.run(api_app, host=host, port=port)
+    uvicorn.run(api_app, host=host, port=port)
 
 
 # ---------------------------------------------------------------------------

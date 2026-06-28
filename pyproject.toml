@@ -104,6 +104,7 @@ dev = [
     "build>=1.0.0",
     "twine>=5.0.0",
     "pyinstaller>=6.0.0",
+    "httpx>=0.27",  # FastAPI TestClient (used in tests/unit/test_api.py) requires httpx
 ]
 binary = [
     "pyinstaller>=6.0.0",
