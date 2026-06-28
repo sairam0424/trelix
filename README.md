@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/trelix)](https://pypi.org/project/trelix/)
 [![Python](https://img.shields.io/pypi/pyversions/trelix)](https://pypi.org/project/trelix/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue)](CHANGELOG.md)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blue)](https://github.com/sairam0424/trelix)
 [![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
@@ -21,18 +21,18 @@ trelix stats  ./my-repo
 
 ---
 
-## What's New in v1.0.0 — First Stable Release
+## What's New in v2.0.0
 
-| Upgrade | What it adds | Impact |
-|---------|-------------|--------|
-| **Stable Public API** | `from trelix import IndexConfig, Indexer, Retriever` | Drop-in Python library |
-| **Universal LLM Factory** | TrelixChatClient ABC — 5 backends (OpenAI/Azure/Anthropic/Bedrock/Vertex) | One env var to switch providers |
-| **Bedrock Chat** | Default sonnet-4-6, transparent haiku fallback | No extra key beyond AWS |
-| **Bedrock Embeddings** | Titan v2 (256/512/1024 dims) + Cohere embed-english-v3 | Best retrieval on Bedrock |
-| **trelix --version** | Version flag | Basic CLI hygiene |
-| **Coverage gate** | fail_under=75, 1127 unit tests | Production quality signal |
-| **Contextual Chunking** | LLM summary prepended to each chunk | 67% retrieval failure reduction |
-| **Voyage / local-code** | voyage-code-3 or SFR-Embedding-Code-2B_R | +49% quality vs Ada-002 on CoIR |
+| Phase | Upgrade | What it adds | Impact |
+|-------|---------|-------------|--------|
+| 1 | **BGE-Code-v1 / Nomic CodeRankEmbed** | `bge-code` and `nomic-code` embedding providers | CoIR SOTA: 81.77 avg (BGE-Code-v1) |
+| 1 | **Voyage Matryoshka** | `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` | 2× faster HNSW, smaller storage |
+| 1 | **LLM-as-judge eval** | `LLMJudge.score()` semantic quality measurement | 0.0–1.0 retrieval quality score |
+| 2 | **PLAID reranker** | `rerank_provider=plaid` via RAGatouille (`trelix[plaid]`) | 7–45× faster ColBERT quality |
+| 2 | **Multi-granularity indexing** | `TRELIX_FILE_SUMMARIES_ENABLED=true` file-level LLM summaries | "Explain codebase" queries work |
+| 2 | **Streaming synthesis** | `trelix ask` streams tokens live; `GET /ask` SSE endpoint | No more waiting for full response |
+| 3 | **LanceDB backend** | `TRELIX_STORE_BACKEND=lance` (`trelix[lance]`) | 3–5× faster insert at 100k+ chunks |
+| 3 | **REST API** | `trelix serve ./repo --port 8765` (`trelix[serve]`) | Remote deployments, web integrations |
 
 ---
 
@@ -42,12 +42,19 @@ trelix stats  ./my-repo
 - **Contextual hybrid search** — contextual embeddings + contextual BM25 + grep via Reciprocal Rank Fusion
 - **3-tier adaptive query planner** — direct (skip retrieval) → single-step (8-intent) → multi-step decomposition
 - **Call-graph + import expansion** — PageRank-weighted graph traversal with qualified-name precision
-- **Reranking** — Cohere or cross-encoder reranker for final precision
-- **LLM synthesis** — `trelix ask` with GraphRAG map-reduce for large corpora
+- **Reranking** — Cohere, cross-encoder, or PLAID late-interaction reranker for final precision
+- **LLM synthesis** — `trelix ask` streams tokens live; GraphRAG map-reduce for large corpora
 - **Universal LLM client** — OpenAI, Azure, Anthropic, Bedrock, Vertex AI, LiteLLM (100+ providers)
 - **Zero-infra default** — single SQLite file (`.trelix/index.db`) with sqlite-vec HNSW + FTS5 BM25
 - **Real-time watching** — `trelix watch` auto-indexes on every file save
 - **Works offline** — `--provider local` uses sentence-transformers, no API key needed
+- **BGE-Code-v1 / Nomic CodeRankEmbed** — CoIR SOTA embedding models (`bge-code`, `nomic-code` providers)
+- **Matryoshka voyage embeddings** — compact 256/512-dim voyage-code-3 via `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS`
+- **PLAID late-interaction reranker** — 7–45× faster ColBERT via RAGatouille (`rerank_provider=plaid`)
+- **Multi-granularity indexing** — LLM file-level summaries alongside symbol chunks (`TRELIX_FILE_SUMMARIES_ENABLED=true`)
+- **Streaming synthesis** — `trelix ask` streams tokens live; `GET /ask` SSE endpoint
+- **REST API** — `trelix serve ./repo --port 8765` exposes `/search`, `/ask`, `/index`, `/health`
+- **LanceDB backend** — 3–5× faster vector insert at 100k+ chunks (`TRELIX_STORE_BACKEND=lance`)
 
 ---
 
@@ -165,8 +172,17 @@ pip install "trelix[local-code]"   # requires ~8GB RAM/GPU
 pip install "trelix[rerank]"
 export COHERE_API_KEY=...
 
+# With PLAID ColBERT late-interaction reranker
+pip install "trelix[plaid]"
+
+# With LanceDB vector backend (3-5x faster insert at 100k+ chunks)
+pip install "trelix[lance]"
+
 # With Qdrant vector backend (>500k chunk scale)
 pip install "trelix[qdrant]"
+
+# With REST API server
+pip install "trelix[serve]"
 
 # With file watcher (real-time incremental indexing)
 pip install "trelix[watch]"
@@ -222,7 +238,7 @@ TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_EMBEDDER_PROVIDER` | `local` | `local` \| `openai` \| `azure` \| `voyage` \| `local-code` \| `bedrock-titan` \| `bedrock-cohere` |
+| `TRELIX_EMBEDDER_PROVIDER` | `local` | `local` \| `openai` \| `azure` \| `voyage` \| `local-code` \| `bge-code` \| `nomic-code` \| `bedrock-titan` \| `bedrock-cohere` |
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `OPENAI_MODEL` | `gpt-4o` | Chat model for planner + synthesis |
 | `AZURE_API_KEY` | — | Azure OpenAI API key |
@@ -239,17 +255,46 @@ TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default
 | `TRELIX_CHUNKER_CONTEXTUAL_MODEL` | `gpt-4o-mini` | Model for generating summaries |
 | `TRELIX_CHUNKER_CONTEXTUAL_MAX_TOKENS` | `100` | Max tokens per context summary |
 
-### Vector Store (v0.4.0)
+### Vector Store (v0.4.0 / v2.0.0)
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_STORE_BACKEND` | `sqlite` | `sqlite` \| `qdrant` |
+| `TRELIX_STORE_BACKEND` | `sqlite` | `sqlite` \| `qdrant` \| `lance` |
 | `TRELIX_STORE_HNSW` | `true` | Enable HNSW index (sqlite backend) |
 | `TRELIX_STORE_HNSW_M` | `16` | HNSW M parameter |
 | `TRELIX_STORE_HNSW_EF_SEARCH` | `50` | HNSW ef_search at query time |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
 | `QDRANT_API_KEY` | — | Qdrant API key (cloud) |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
+
+### Multi-Granularity Indexing (v2.0.0)
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM file-level summaries alongside symbol chunks (RAPTOR-inspired) |
+| `TRELIX_FILE_SUMMARIES_MODEL` | `gpt-4o-mini` | Model for generating file-level summaries |
+
+### Reranking
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_RETRIEVAL_RERANK_PROVIDER` | — | `cohere` \| `cross-encoder` \| `plaid` |
+| `TRELIX_RETRIEVAL_PLAID_MODEL` | `colbert-ir/colbertv2.0` | RAGatouille PLAID model (`trelix[plaid]`) |
+
+### REST API (v2.0.0)
+
+Start the REST server:
+
+```bash
+trelix serve ./my-repo --port 8765
+```
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/search` | POST | Hybrid code search |
+| `/ask` | GET | Streaming synthesis (SSE) |
+| `/index` | POST | Index or re-index the repository |
 
 ### Retrieval Tuning
 
