@@ -46,8 +46,24 @@ class TestFileSummarizer:
         mock_client = MagicMock()
         mock_client.complete.side_effect = Exception("API error")
         summarizer = FileSummarizer(client=mock_client)
-        result = summarizer.summarize("src/auth.py", [], Language.PYTHON)
+        # Pass at least one symbol so the guard `if not symbols` is bypassed
+        # and the LLM call is actually attempted — this verifies the crash-safe
+        # contract: summarize() returns "" on any LLM failure, never raises.
+        symbols = [
+            Symbol(
+                file_id=1,
+                name="login",
+                qualified_name="login",
+                kind=SymbolKind.FUNCTION,
+                line_start=1,
+                line_end=10,
+                signature="def login(user, pwd)",
+                body="def login(u, p): pass",
+            )
+        ]
+        result = summarizer.summarize("src/auth.py", symbols, Language.PYTHON)
         assert result == ""
+        assert mock_client.complete.called
 
     def test_summarize_truncates_to_max_symbols(self) -> None:
         from trelix.indexing.file_summarizer import FileSummarizer
@@ -69,5 +85,16 @@ class TestFileSummarizer:
             for i in range(10)
         ]
         summarizer.summarize("src/big.py", symbols, Language.PYTHON)
-        # Verify that only max_symbols worth of content was sent
         assert mock_client.complete.called
+        # Inspect the prompt sent to complete() and verify that symbols beyond
+        # max_symbols=2 are absent.  A regression that removes the
+        # `symbols[:self._max_symbols]` slice would include 'fn2'..'fn9' and
+        # fail this assertion.
+        call_kwargs = mock_client.complete.call_args[1]
+        messages = call_kwargs.get("messages") or mock_client.complete.call_args[0][0]
+        # messages is a list of ChatMessage objects; grab the user message content
+        prompt_text = messages[0].content
+        assert "fn0" in prompt_text, "first symbol should be in truncated prompt"
+        assert "fn1" in prompt_text, "second symbol should be in truncated prompt"
+        assert "fn2" not in prompt_text, "symbol beyond max_symbols=2 must not be in prompt"
+        assert "fn9" not in prompt_text, "symbol beyond max_symbols=2 must not be in prompt"

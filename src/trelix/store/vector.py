@@ -278,6 +278,30 @@ class SQLiteVectorStore(BaseVectorStore):
     def _pack(self, embedding: list[float]) -> bytes:
         return struct.pack(f"{len(embedding)}f", *embedding)
 
+    def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
+        """
+        Insert or replace a file-level summary embedding.
+
+        Uses the same vec0 virtual table as symbol chunks but stores the
+        file_id as a *negative* chunk_id sentinel so the retriever can
+        distinguish file-summary entries from symbol-chunk entries.
+
+        Convention: chunk_id = -(file_id) for file-summary rows.
+        This avoids a separate virtual table while keeping the search
+        interface identical.
+        """
+        sentinel_id = -file_id
+        packed = self._pack(embedding)
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM chunk_embeddings WHERE chunk_id = ?", (sentinel_id,)
+            )
+            self._conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedding) VALUES (?, ?)",
+                (sentinel_id, packed),
+            )
+            self._conn.commit()
+
     def close(self) -> None:
         self._conn.close()
 
