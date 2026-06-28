@@ -164,7 +164,15 @@ class EmbedderConfig(BaseSettings):
     )
 
     provider: Literal[
-        "openai", "azure", "local", "voyage", "local-code", "bedrock-titan", "bedrock-cohere"
+        "openai",
+        "azure",
+        "local",
+        "voyage",
+        "local-code",
+        "bedrock-titan",
+        "bedrock-cohere",
+        "bge-code",
+        "nomic-code",
     ] = "local"
 
     # ── OpenAI ───────────────────────────────────────────────────────────────
@@ -196,6 +204,16 @@ class EmbedderConfig(BaseSettings):
     # ── Local-code (SFR-Embedding-Code-2B_R) ─────────────────────────────────
     local_code_model: str = "Salesforce/SFR-Embedding-Code-2B_R"
     local_code_dimensions: int = 4096
+
+    # ── BGE-Code-v1 (BAAI, CoIR SOTA 2025) ────────────────────────────────────
+    # Uses FlagEmbedding library. pip install trelix[bge-code]
+    bge_code_model: str = "BAAI/bge-code-v1"
+    bge_code_dimensions: int = 768  # BGE-Code-v1 default embedding dim
+
+    # ── Nomic CodeRankEmbed ────────────────────────────────────────────────────
+    # Uses sentence-transformers. pip install trelix[local]
+    nomic_code_model: str = "nomic-ai/CodeRankEmbed"
+    nomic_code_dimensions: int = 768  # CodeRankEmbed default embedding dim
 
     # ── AWS Bedrock (Titan v2 + Cohere) ──────────────────────────────────────
     # Reuses AWS_* env vars — same credentials as BedrockBackend in LLMConfig.
@@ -234,6 +252,10 @@ class EmbedderConfig(BaseSettings):
             return self.bedrock_titan_dimensions
         if self.provider == "bedrock-cohere":
             return self.bedrock_cohere_dimensions
+        if self.provider == "bge-code":
+            return self.bge_code_dimensions
+        if self.provider == "nomic-code":
+            return self.nomic_code_dimensions
         return 384  # all-MiniLM-L6-v2
 
 

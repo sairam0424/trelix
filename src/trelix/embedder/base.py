@@ -539,9 +539,13 @@ def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
             return BedrockTitanEmbedder(config)
         case "bedrock-cohere":
             return BedrockCohereEmbedder(config)
+        case "bge-code":
+            from trelix.embedder.bge_code import BGECodeEmbedder
+
+            return BGECodeEmbedder(config)
         case _:
             raise ValueError(
                 f"Unknown embedder provider: {config.provider!r}. "
                 "Expected one of: 'local', 'openai', 'azure', 'voyage', "
-                "'local-code', 'bedrock-titan', 'bedrock-cohere'."
+                "'local-code', 'bedrock-titan', 'bedrock-cohere', 'bge-code', 'nomic-code'."
             )
