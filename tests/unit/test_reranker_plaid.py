@@ -48,7 +48,8 @@ class TestPlaidReranker:
             {"content": "def fn(): pass", "score": 0.9, "result_index": 0},
             {"content": "def fn(): pass", "score": 0.7, "result_index": 1},
         ]
-        mock_ragatouille = MagicMock(return_value=mock_model_instance)
+        mock_ragatouille = MagicMock()
+        mock_ragatouille.from_pretrained.return_value = mock_model_instance
         with patch("trelix.retrieval.reranker_plaid.RAGPretrainedModel", mock_ragatouille):
             cfg = RetrievalConfig(rerank_provider="plaid")
             results = [_make_result(0.5), _make_result(0.3)]
@@ -63,7 +64,8 @@ class TestPlaidReranker:
         mock_model_instance.rerank.return_value = [
             {"content": "def fn(): pass", "score": 0.95, "result_index": 0},
         ]
-        mock_ragatouille = MagicMock(return_value=mock_model_instance)
+        mock_ragatouille = MagicMock()
+        mock_ragatouille.from_pretrained.return_value = mock_model_instance
         with patch("trelix.retrieval.reranker_plaid.RAGPretrainedModel", mock_ragatouille):
             cfg = RetrievalConfig(rerank_provider="plaid")
             results = [_make_result(0.1)]

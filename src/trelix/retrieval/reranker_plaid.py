@@ -57,7 +57,7 @@ class PlaidReranker:
                 )
                 return None
             try:
-                self._model = RAGPretrainedModel(self._model_name)
+                self._model = RAGPretrainedModel.from_pretrained(self._model_name)
             except Exception as exc:
                 logger.warning(
                     "PLAID model load failed (%s) — reranking disabled. "
