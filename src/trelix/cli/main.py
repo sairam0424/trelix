@@ -777,6 +777,32 @@ def watch(
 
 
 # ---------------------------------------------------------------------------
+# serve
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def serve(
+    repo_path: str = typer.Argument(..., help="Repository to serve"),
+    host: str = typer.Option("127.0.0.1", help="Host to bind"),
+    port: int = typer.Option(8765, help="Port to bind"),
+) -> None:
+    """Start a REST API server for trelix search and synthesis."""
+    try:
+        import uvicorn  # noqa: F401
+        from trelix.api.app import create_app
+    except ImportError:
+        typer.echo("trelix serve requires: pip install 'trelix[serve]'")
+        raise typer.Exit(1)
+
+    api_app = create_app()
+    typer.echo(f"trelix API serving {repo_path} at http://{host}:{port}")
+    import uvicorn as _uvicorn
+
+    _uvicorn.run(api_app, host=host, port=port)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
