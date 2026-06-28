@@ -1,7 +1,9 @@
 """Tests for streaming synthesis."""
 from __future__ import annotations
+
 from unittest.mock import MagicMock, patch
-from trelix.core.models import RetrievedContext, SearchResult
+
+from trelix.core.models import RetrievedContext
 
 
 def _make_context() -> RetrievedContext:
@@ -19,8 +21,8 @@ class TestSynthesizerStream:
         assert hasattr(Synthesizer, "stream")
 
     def test_stream_yields_strings(self) -> None:
-        from trelix.retrieval.synthesizer import Synthesizer
         from trelix.core.config import EmbedderConfig, RetrievalConfig
+        from trelix.retrieval.synthesizer import Synthesizer
         mock_client = MagicMock()
         mock_client.stream.return_value = iter(["The ", "auth ", "flow ", "is..."])
 
@@ -33,8 +35,8 @@ class TestSynthesizerStream:
             assert all(isinstance(t, str) for t in tokens)
 
     def test_stream_falls_back_on_no_api_key(self) -> None:
-        from trelix.retrieval.synthesizer import Synthesizer
         from trelix.core.config import EmbedderConfig, RetrievalConfig
+        from trelix.retrieval.synthesizer import Synthesizer
         mock_client = MagicMock()
         mock_client.stream.side_effect = Exception("No API key")
 
@@ -43,3 +45,37 @@ class TestSynthesizerStream:
             tokens = list(synth.stream(_make_context(), RetrievalConfig()))
             # Should yield one error message token, not raise
             assert len(tokens) >= 1
+
+    def test_stream_reuses_llm_client_from_init(self) -> None:
+        """stream() must use self._llm_client built in __init__, not create a new one.
+
+        Regression test for: stream() was constructing a fresh LLMConfig() +
+        build_chat_client() on every call, silently ignoring any llm_config=
+        kwarg passed to Synthesizer().
+
+        We verify this by directly injecting the mock as self._llm_client after
+        construction (bypassing factory routing) and confirming stream() calls
+        the injected client — not a newly-created one.
+        """
+        from trelix.core.config import EmbedderConfig, RetrievalConfig
+        from trelix.retrieval.synthesizer import Synthesizer
+
+        mock_client = MagicMock()
+        mock_client.stream.return_value = iter(["custom-provider-token"])
+
+        with patch("trelix.retrieval.synthesizer.build_chat_client", return_value=mock_client):
+            synth = Synthesizer(EmbedderConfig(_env_file=None))
+
+            # Directly replace _llm_client with a DIFFERENT mock to prove stream()
+            # uses self._llm_client — if it constructed a new client internally,
+            # it would use the patched factory mock, not this replacement.
+            replacement_client = MagicMock()
+            replacement_client.stream.return_value = iter(["injected-token"])
+            synth._llm_client = replacement_client
+
+            tokens = list(synth.stream(_make_context(), RetrievalConfig()))
+
+            # Must have called the replacement client, not the factory mock
+            replacement_client.stream.assert_called_once()
+            mock_client.stream.assert_not_called()
+            assert tokens == ["injected-token"]

@@ -118,7 +118,6 @@ class Synthesizer:
     ) -> None:
         self._config = config
         from trelix.llm.client import ChatMessage as _ChatMessage  # noqa: F401 – ensure import
-        from trelix.llm.factory import build_chat_client
 
         if llm_config is not None:
             # Use the explicitly supplied LLMConfig (e.g. IndexConfig.llm).
@@ -240,12 +239,9 @@ class Synthesizer:
         max_tokens: int = getattr(config, "synthesis_max_tokens", 2048)
 
         try:
-            from trelix.core.config import LLMConfig
             from trelix.llm.client import ChatMessage
 
-            llm_cfg = LLMConfig()
-            client = build_chat_client(llm_cfg)
-            yield from client.stream(
+            yield from self._llm_client.stream(
                 messages=[ChatMessage(role="user", content=user_message)],
                 system=system_prompt,
                 max_tokens=max_tokens,
