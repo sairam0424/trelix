@@ -325,6 +325,9 @@ def make_vector_store(config: IndexConfig, dimension: int) -> BaseVectorStore:
     Backend is selected by config.store.backend:
       "sqlite"  (default) → SQLiteVectorStore backed by <repo>/.trelix/index.db
       "qdrant"             → QdrantVectorStore backed by a running Qdrant instance
+      "lance"              → LanceVectorStore backed by a LanceDB directory at
+                             config.store.lance_uri (default: <repo>/.trelix/lance).
+                             Requires ``pip install 'trelix[lance]'``.
 
     Args:
         config:    IndexConfig instance (provides store sub-config and db_path).
