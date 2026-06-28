@@ -200,6 +200,9 @@ class EmbedderConfig(BaseSettings):
     voyage_api_key: str | None = Field(default=None, alias="VOYAGE_API_KEY")
     voyage_model: str = Field(default="voyage-code-3", alias="TRELIX_EMBEDDER_VOYAGE_MODEL")
     voyage_dimensions: int = 1024
+    # Matryoshka output dimension (voyage-code-3 supports 256/512/1024/2048).
+    # None = use full voyage_dimensions. Set smaller for faster HNSW search.
+    voyage_output_dimensions: int | None = None
 
     # ── Local-code (SFR-Embedding-Code-2B_R) ─────────────────────────────────
     local_code_model: str = "Salesforce/SFR-Embedding-Code-2B_R"
@@ -245,7 +248,7 @@ class EmbedderConfig(BaseSettings):
         if self.provider == "openai":
             return self.openai_dimensions
         if self.provider == "voyage":
-            return self.voyage_dimensions
+            return self.voyage_output_dimensions or self.voyage_dimensions
         if self.provider == "local-code":
             return self.local_code_dimensions
         if self.provider == "bedrock-titan":
