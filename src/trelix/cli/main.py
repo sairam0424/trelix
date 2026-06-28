@@ -300,7 +300,9 @@ def ask(
 
     try:
         synth = Synthesizer(config.embedder, llm_config=config.llm)
-        synth.synthesize(context)
+        for token in synth.stream(context, config.retrieval):
+            console.print(token, end="", highlight=False)
+        console.print()  # final newline
     except Exception as exc:
         err_console.print(f"[red]Synthesis failed:[/red] {exc}")
         raise typer.Exit(1) from exc
