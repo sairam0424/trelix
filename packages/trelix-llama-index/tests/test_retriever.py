@@ -16,7 +16,7 @@ def test_import_package():
     import trelix_llama_index
 
     assert hasattr(trelix_llama_index, "TrelixIndexRetriever")
-    assert trelix_llama_index.__version__ == "2.0.0"
+    assert trelix_llama_index.__version__ == "1.1.0"
 
 
 def test_import_retriever_class():
