@@ -81,3 +81,4 @@ class EvalResult:
     mrr: float  # reciprocal rank for this query
     ndcg_at_10: float
     rank: int  # 1-based rank of first match, -1 if not found
+    judge_score: float | None = None  # LLM-as-judge score (0.0–1.0); None if judge not run
