@@ -108,6 +108,16 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol_id ON chunks(symbol_id);
 
+CREATE TABLE IF NOT EXISTS file_summaries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id     INTEGER NOT NULL UNIQUE REFERENCES files(id) ON DELETE CASCADE,
+    summary     TEXT    NOT NULL,
+    chunk_id    INTEGER REFERENCES chunks(id) ON DELETE SET NULL,
+    created_at  TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_summaries_file_id ON file_summaries(file_id);
+
 -- FTS5 for BM25 keyword search over symbol content
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name,
@@ -206,6 +216,20 @@ class Database:
             self._conn.commit()
 
         # type_edges table is idempotent (CREATE TABLE IF NOT EXISTS in DDL)
+
+        # Phase 2 migration: add file_summaries if not present
+        # IF NOT EXISTS is safe on existing DBs — no-op when table already exists
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS file_summaries ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "file_id INTEGER NOT NULL UNIQUE REFERENCES files(id) ON DELETE CASCADE, "
+            "summary TEXT NOT NULL, chunk_id INTEGER REFERENCES chunks(id) ON DELETE SET NULL, "
+            "created_at TEXT DEFAULT (datetime('now')))"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_summaries_file_id ON file_summaries(file_id)"
+        )
+        self._conn.commit()
 
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Connection, None, None]:
@@ -396,6 +420,28 @@ class Database:
             (chunk.symbol_id, chunk.chunk_text, chunk.token_count),
         )
         return cursor.lastrowid  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
+    # File summaries (Phase 2: RAPTOR-style multi-granularity indexing)
+    # ------------------------------------------------------------------
+
+    def upsert_file_summary(self, file_id: int, summary: str, chunk_id: int | None = None) -> int:
+        """Insert or replace a file-level summary. Returns the row id."""
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO file_summaries (file_id, summary, chunk_id) VALUES (?, ?, ?) "
+                "ON CONFLICT(file_id) DO UPDATE SET summary=excluded.summary, "
+                "chunk_id=excluded.chunk_id, created_at=datetime('now')",
+                (file_id, summary, chunk_id),
+            )
+        return cur.lastrowid or 0
+
+    def get_file_summary(self, file_id: int) -> str | None:
+        """Return the stored summary for a file, or None if not found."""
+        row = self._conn.execute(
+            "SELECT summary FROM file_summaries WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        return row[0] if row else None
 
     # ------------------------------------------------------------------
     # BM25 search (FTS5)

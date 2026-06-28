@@ -556,6 +556,13 @@ class IndexConfig(BaseSettings):
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
 
+    # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
+    # Requires LLM API access. Off by default — zero cost when disabled.
+    file_summaries_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_FILE_SUMMARIES_ENABLED",
+    )
+
     @field_validator("repo_path")
     @classmethod
     def repo_must_exist(cls, v: str) -> str:
