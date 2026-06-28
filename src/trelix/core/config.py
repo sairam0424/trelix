@@ -280,7 +280,7 @@ class StoreConfig(BaseSettings):
     hnsw_ef_search: int = Field(default=50, alias="TRELIX_STORE_HNSW_EF_SEARCH")
 
     # ── Backend selection ────────────────────────────────────────────────────
-    backend: Literal["sqlite", "qdrant"] = Field(
+    backend: Literal["sqlite", "qdrant", "lance"] = Field(
         default="sqlite",
         validation_alias="TRELIX_STORE_BACKEND",
     )
@@ -289,6 +289,10 @@ class StoreConfig(BaseSettings):
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
     qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
     qdrant_collection: str = Field(default="trelix", alias="QDRANT_COLLECTION")
+
+    # ── LanceDB connection ───────────────────────────────────────────────────
+    lance_uri: str = Field(default=".trelix/lance", alias="LANCE_URI")
+    lance_table: str = Field(default="chunks", alias="LANCE_TABLE")
 
 
 class RetrievalConfig(BaseSettings):

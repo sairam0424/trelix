@@ -293,9 +293,7 @@ class SQLiteVectorStore(BaseVectorStore):
         sentinel_id = -file_id
         packed = self._pack(embedding)
         with self._lock:
-            self._conn.execute(
-                "DELETE FROM chunk_embeddings WHERE chunk_id = ?", (sentinel_id,)
-            )
+            self._conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (sentinel_id,))
             self._conn.execute(
                 "INSERT INTO chunk_embeddings (chunk_id, embedding) VALUES (?, ?)",
                 (sentinel_id, packed),
@@ -333,6 +331,17 @@ def make_vector_store(config: IndexConfig, dimension: int) -> BaseVectorStore:
         dimension: Embedding dimension (must match the embedder being used).
     """
     backend = getattr(config.store, "backend", "sqlite")
+    if backend == "lance":
+        from trelix.store.vector_lance import LanceVectorStore
+
+        uri = config.store.lance_uri
+        if not Path(uri).is_absolute():
+            uri = str(Path(config.repo_path) / uri)
+        return LanceVectorStore(
+            uri=uri,
+            table_name=config.store.lance_table,
+            dimension=dimension,
+        )
     if backend == "qdrant":
         from trelix.store.vector_qdrant import QdrantVectorStore
 
