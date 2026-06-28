@@ -543,6 +543,10 @@ def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
             from trelix.embedder.bge_code import BGECodeEmbedder
 
             return BGECodeEmbedder(config)
+        case "nomic-code":
+            from trelix.embedder.nomic_code import NomicCodeEmbedder
+
+            return NomicCodeEmbedder(config)
         case _:
             raise ValueError(
                 f"Unknown embedder provider: {config.provider!r}. "

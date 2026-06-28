@@ -75,6 +75,9 @@ voyage = [
 bge-code = [
     "FlagEmbedding>=1.3.0",           # BGE-Code-v1 and family
 ]
+nomic-code = [
+    "sentence-transformers>=3.0.0",  # already in [local], duplicated for clarity
+]
 qdrant = [
     "qdrant-client>=1.9.0",           # Qdrant HNSW vector backend (optional)
 ]
