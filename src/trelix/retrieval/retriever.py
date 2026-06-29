@@ -337,7 +337,7 @@ class Retriever:
                     max_results=cfg.graph_search_max_results,
                 )
             except Exception as exc:
-                logger.debug("Graph search leg failed (non-fatal): %s", exc)
+                logger.warning("Graph search leg failed (non-fatal): %s", exc)
 
         candidates = self._dedup(
             fused
