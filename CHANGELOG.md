@@ -4,6 +4,25 @@ All notable changes to trelix are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Knowledge Graph**: new `trelix/graph/` module unifying call/import/type edges into a traversable `CodeGraph` (NetworkX MultiDiGraph)
+- **Community Detection**: Louvain algorithm clusters codebase into architectural modules; `trelix graph ./repo` CLI command shows top communities
+- **Semantic Concepts**: `ConceptExtractor` — LLM-powered extraction of architectural concepts from symbol batches (crash-safe, returns `[]` on any failure)
+- **Graph Visualization**: `GraphVisualizer.export_html()` — Pyvis interactive HTML with community coloring and edge-type coloring; `pip install trelix[knowledge-graph]`
+- **4th Retrieval Leg**: `graph_search_enabled=True` in `RetrievalConfig` enables CodeGraph BFS as a 4th search leg after RRF fusion
+- **REST API**: `GET /graph`, `GET /graph/communities`, `GET /graph/visualize`, `GET /graph/search` endpoints
+- **MCP Tools**: `build_knowledge_graph` and `graph_search_mcp` tools in `trelix-mcp`
+- **Graph Persistence**: `graph_metadata` SQLite table stores community and degree centrality per symbol
+
+### Breaking Changes
+- **CLI**: `trelix graph` renamed to `trelix call-graph` (the old call-graph/callers display).
+  The name `trelix graph` now refers to the new knowledge graph build command.
+  Update any scripts using `trelix graph <repo> <symbol>` to use `trelix call-graph <repo> <symbol>`.
+
+---
+
 ## [2.0.0] — 2026-06-28
 
 ### Overview
