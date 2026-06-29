@@ -99,12 +99,13 @@ dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0",
-    "ruff>=0.5.0",
+    "ruff>=0.15.0",
     "mypy>=1.10.0",
     "build>=1.0.0",
     "twine>=5.0.0",
     "pyinstaller>=6.0.0",
-    "httpx>=0.27",  # FastAPI TestClient (used in tests/unit/test_api.py) requires httpx
+    "httpx>=0.27",      # FastAPI TestClient requires httpx
+    "fastapi>=0.111.0", # REST API tests (tests/unit/test_api.py)
 ]
 binary = [
     "pyinstaller>=6.0.0",
