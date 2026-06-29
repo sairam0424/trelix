@@ -3,6 +3,14 @@
 Research basis: 108-agent deep research, 730 tool uses, adversarial verification (June 2026).  
 Target audience: AI agent developers + IDE users + DevOps/CI engineers (all three simultaneously).
 
+**Latest updates (v2.0.0 — June 2026):**
+- ✅ LanceDB backend shipped
+- ✅ PLAID reranker shipped
+- ✅ REST API shipped
+- ✅ Streaming synthesis shipped
+- ✅ BGE-Code-v1 embedder shipped
+- ✅ Nomic CodeRankEmbed shipped
+
 ---
 
 ## Priority Stack (highest → lowest discovery ROI)
@@ -418,6 +426,17 @@ Week 3:  VS Code extension (Tier 3.1) + Homebrew tap (Tier 3.2)
 Week 3:  Docker Hub (Tier 3.3)
 Week 4:  Awesome list PRs (Tier 4.1) + Product Hunt launch (Tier 4.2)
 ```
+
+---
+
+## v2.1.0 Backlog
+
+**Planned research & integration work:**
+
+| Item | Status | Notes |
+|---|---|---|
+| BGE double-prefix investigation | 📋 Backlog | Evaluate BGE double-prefix strategy for improved code semantics retrieval |
+| LanceDB + Qdrant file summary retrieval leg integration | 📋 Backlog | Integrate file-level summaries with hybrid LanceDB/Qdrant retrieval pipeline |
 
 ---
 
