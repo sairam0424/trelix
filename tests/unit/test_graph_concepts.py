@@ -1,30 +1,37 @@
 """Tests for ConceptExtractor — LLM semantic concept extraction."""
+
 from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from trelix.core.config import LLMConfig
-from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
-from trelix.graph.concepts import ConceptExtractor, SemanticConcept, save_concepts, load_concepts
+from trelix.core.models import Symbol, SymbolKind
+from trelix.graph.concepts import ConceptExtractor, SemanticConcept, load_concepts, save_concepts
 from trelix.store.db import Database
 
 
 def _make_symbols() -> list[Symbol]:
     return [
         Symbol(
-            id=1, file_id=1, name="authenticate_user",
+            id=1,
+            file_id=1,
+            name="authenticate_user",
             qualified_name="AuthService.authenticate_user",
-            kind=SymbolKind.METHOD, line_start=10, line_end=30,
+            kind=SymbolKind.METHOD,
+            line_start=10,
+            line_end=30,
             signature="def authenticate_user(self, token: str) -> User",
             body="def authenticate_user(self, token: str) -> User:\n    ...",
         ),
         Symbol(
-            id=2, file_id=1, name="refresh_token",
+            id=2,
+            file_id=1,
+            name="refresh_token",
             qualified_name="AuthService.refresh_token",
-            kind=SymbolKind.METHOD, line_start=35, line_end=55,
+            kind=SymbolKind.METHOD,
+            line_start=35,
+            line_end=55,
             signature="def refresh_token(self, token: str) -> str",
             body="def refresh_token(self, token: str) -> str:\n    ...",
         ),
@@ -75,11 +82,19 @@ class TestConceptExtractor:
         db = Database(tmp_path / "index.db")
         # Insert a dummy file and symbol so DB is valid
         from trelix.core.models import IndexedFile, Language
-        fid = db.upsert_file(IndexedFile(path="/r/a.py", rel_path="a.py",
-                                         language=Language.PYTHON, hash="x", size_bytes=10))
+
+        db.upsert_file(
+            IndexedFile(
+                path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10
+            )
+        )
         concepts = [
-            SemanticConcept(name="jwt auth", category="security", importance=5, source_symbol_ids=[1, 2]),
-            SemanticConcept(name="token refresh", category="concept", importance=3, source_symbol_ids=[2]),
+            SemanticConcept(
+                name="jwt auth", category="security", importance=5, source_symbol_ids=[1, 2]
+            ),
+            SemanticConcept(
+                name="token refresh", category="concept", importance=3, source_symbol_ids=[2]
+            ),
         ]
         save_concepts(db, concepts)
         loaded = load_concepts(db)
