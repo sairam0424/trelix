@@ -1,6 +1,6 @@
 """trelix Knowledge Graph — unified code property graph over indexed codebases."""
 
-from trelix.graph.builder import GraphBuildResult, GraphBuilder
+from trelix.graph.builder import GraphBuilder, GraphBuildResult
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import assign_communities, detect_communities, get_community_summary
 from trelix.graph.concepts import ConceptExtractor, SemanticConcept, load_concepts, save_concepts

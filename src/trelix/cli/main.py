@@ -806,7 +806,13 @@ def serve(
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@app.command(
+    help=(
+        "Build the knowledge graph for an indexed repository.\n\n"
+        "NOTE: The old call-graph display command has been renamed to 'trelix call-graph'. "
+        "See 'trelix call-graph --help'."
+    )
+)
 def graph(
     repo_path: str = typer.Argument(..., help="Path to indexed repository"),
     visualize: bool = typer.Option(False, "--visualize", "-v", help="Export Pyvis HTML"),
@@ -816,7 +822,11 @@ def graph(
     concepts: bool = typer.Option(False, "--concepts", "-c", help="Extract LLM semantic concepts"),
     json_output: bool = typer.Option(False, "--json", help="Output stats as JSON"),
 ) -> None:
-    """Build the knowledge graph for an indexed repository."""
+    """Build the knowledge graph for an indexed repository.
+
+    NOTE: The old 'trelix graph <repo> <symbol>' command for call-graph display has been
+    renamed to 'trelix call-graph'. See 'trelix call-graph --help'.
+    """
     from pathlib import Path as _Path
 
     from trelix.core.config import IndexConfig

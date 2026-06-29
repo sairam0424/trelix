@@ -62,16 +62,18 @@ class GraphBuilder:
         save_graph_metadata(self._db, cg)
 
         # Step 4: optional concept extraction
+        _MAX_CONCEPT_SYMBOLS = 200
+        _CONCEPT_BATCH_SIZE = 20
         concept_count = 0
         if extract_concepts:
             symbols_with_files = self._db.iter_all_symbols_with_files()
             symbols = [s for s, _ in symbols_with_files]
             if symbols:
                 extractor = ConceptExtractor(self._config.llm)
-                # Batch into groups of 20, cap at 200 symbols total
+                # Batch into groups of _CONCEPT_BATCH_SIZE, cap at _MAX_CONCEPT_SYMBOLS total
                 concepts = []
-                for i in range(0, min(len(symbols), 200), 20):
-                    batch = symbols[i : i + 20]
+                for i in range(0, min(len(symbols), _MAX_CONCEPT_SYMBOLS), _CONCEPT_BATCH_SIZE):
+                    batch = symbols[i : i + _CONCEPT_BATCH_SIZE]
                     concepts.extend(extractor.extract_from_symbols(batch))
                 if concepts:
                     save_concepts(self._db, concepts)

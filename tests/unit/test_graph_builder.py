@@ -93,4 +93,4 @@ class TestGraphBuilder:
         repo = _populated_repo(tmp_path)
         config = IndexConfig(repo_path=str(repo))
         result = GraphBuilder(config).build(extract_concepts=False)
-        assert result.elapsed_seconds >= 0.0
+        assert result.elapsed_seconds > 0
