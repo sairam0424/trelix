@@ -363,13 +363,13 @@ from trelix.cli.main import app as trelix_app  # noqa: E402
 class TestGraphCLI:
     def test_graph_help_exits_zero(self) -> None:
         runner = CliRunner()
-        result = runner.invoke(trelix_app, ["graph", "--help"])
+        result = runner.invoke(trelix_app, ["call-graph", "--help"])
         assert result.exit_code == 0
-        assert "graph" in result.output.lower() or "symbol" in result.output.lower()
+        assert "symbol" in result.output.lower()
 
     def test_graph_missing_args_exits_nonzero(self) -> None:
         runner = CliRunner()
-        result = runner.invoke(trelix_app, ["graph"])
+        result = runner.invoke(trelix_app, ["call-graph"])
         # Missing required positional args — typer exits 2
         assert result.exit_code != 0
 
