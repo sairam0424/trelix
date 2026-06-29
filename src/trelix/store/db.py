@@ -422,9 +422,14 @@ class Database:
         return cursor.lastrowid  # type: ignore[return-value]
 
     def insert_chunk_for_symbol(self, symbol_id: int, chunk_text: str, token_count: int) -> int:
-        """Insert a chunk directly for a symbol — test/graph helper."""
+        """Insert a chunk for a symbol — test/graph helper. Skips if symbol_id already has a chunk."""
+        existing = self._conn.execute(
+            "SELECT id FROM chunks WHERE symbol_id = ?", (symbol_id,)
+        ).fetchone()
+        if existing:
+            return existing[0]
         cur = self._conn.execute(
-            "INSERT OR IGNORE INTO chunks (symbol_id, chunk_text, token_count) VALUES (?, ?, ?)",
+            "INSERT INTO chunks (symbol_id, chunk_text, token_count) VALUES (?, ?, ?)",
             (symbol_id, chunk_text, token_count),
         )
         self._conn.commit()

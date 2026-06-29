@@ -210,11 +210,12 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict]:
     - "Find the blast radius of a class" — who calls or imports it?
     - "What lives in the same architectural cluster as X?"
     """
+    from pathlib import Path as _Path
+
     from trelix.core.config import IndexConfig
     from trelix.graph.builder import GraphBuilder
     from trelix.graph.search import graph_search
     from trelix.retrieval.retriever import Retriever
-    from trelix.store.db import Database
 
     _log.info("graph_search_mcp query=%r repo=%s k=%d", query, repo_path, k)
     config = IndexConfig(repo_path=repo_path)
@@ -226,9 +227,9 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict]:
     if not seed_ids:
         return []
 
-    # Then expand via graph
+    # Then expand via graph — reuse the DB already opened by GraphBuilder/CodeGraph
     build_result = GraphBuilder(config).build(extract_concepts=False)
-    db = Database(config.db_path_absolute)
+    db = build_result.code_graph._db
     graph_results = graph_search(db, build_result.code_graph, seed_ids, depth=2, max_results=k)
 
     return [
