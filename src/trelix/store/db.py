@@ -1104,6 +1104,18 @@ class Database:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def count_files(self) -> int:
+        """Return the total number of indexed files."""
+        return int(self._conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
+
+    def count_symbols(self) -> int:
+        """Return the total number of indexed symbols."""
+        return int(self._conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0])
+
+    def count_chunks(self) -> int:
+        """Return the total number of indexed chunks."""
+        return int(self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+
     def close(self) -> None:
         self._conn.close()
 

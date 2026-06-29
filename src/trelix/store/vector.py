@@ -60,6 +60,10 @@ class BaseVectorStore(ABC):
     def count(self) -> int:
         """Return the total number of stored embeddings."""
 
+    @abstractmethod
+    def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
+        """Insert or replace a file-level summary embedding."""
+
 
 # ---------------------------------------------------------------------------
 # SQLite backend (default)

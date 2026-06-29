@@ -31,6 +31,7 @@ modules have no dependency on FastAPI, so the module remains importable without
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from typing import Any
 
 # Intentionally at module scope — see "Import contract" in the module docstring.
@@ -44,7 +45,7 @@ from trelix.retrieval.retriever import Retriever
 logger = logging.getLogger("trelix.api")
 
 
-def create_app():  # noqa: ANN201
+def create_app() -> Any:  # noqa: ANN201
     """Create and return the FastAPI application.
 
     FastAPI is imported lazily inside this function so the module is importable
@@ -85,10 +86,10 @@ def create_app():  # noqa: ANN201
         ]
 
     @app.get("/ask")
-    def ask(query: str, repo: str):  # noqa: ANN201
+    def ask(query: str, repo: str) -> Any:  # noqa: ANN201
         from fastapi.responses import StreamingResponse
 
-        def _generate():
+        def _generate() -> Generator[str, None, None]:
             try:
                 from trelix.retrieval.synthesizer import Synthesizer
 

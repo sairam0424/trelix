@@ -23,10 +23,15 @@ from trelix.store.vector import BaseVectorStore
 
 logger = logging.getLogger("trelix.store.lance")
 
+_lancedb: Any | None
 try:
-    import lancedb
+    import lancedb as _lancedb_module
+
+    _lancedb = _lancedb_module
 except ImportError:
-    lancedb = None  # type: ignore[assignment]
+    _lancedb = None
+
+lancedb = _lancedb
 
 
 class LanceVectorStore(BaseVectorStore):
@@ -113,6 +118,9 @@ class LanceVectorStore(BaseVectorStore):
     def count(self) -> int:
         """Return the total number of stored embeddings."""
         try:
-            return self._table.count_rows()
+            return int(self._table.count_rows())
         except Exception:
             return 0
+
+    def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
+        """No-op stub — LanceDB backend does not store file-summary embeddings."""

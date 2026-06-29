@@ -14,17 +14,22 @@ Usage:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from trelix.embedder.base import BaseEmbedder
 
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig
 
+_SentenceTransformer: Any | None
 try:
-    from sentence_transformers import SentenceTransformer
+    from sentence_transformers import SentenceTransformer as _ST_cls
+
+    _SentenceTransformer = _ST_cls
 except ImportError:  # pragma: no cover
-    SentenceTransformer = None  # type: ignore[assignment,misc]
+    _SentenceTransformer = None
+
+SentenceTransformer = _SentenceTransformer
 
 _DOC_PREFIX = "search_document: "
 _QUERY_PREFIX = "search_query: "

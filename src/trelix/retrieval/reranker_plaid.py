@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from trelix.core.config import RetrievalConfig
@@ -29,10 +29,15 @@ logger = logging.getLogger("trelix.retrieval.reranker_plaid")
 # Top-level name for patch target in tests.
 # When ragatouille is not installed this will be None; the class guards against
 # that in _get_model().
+_RAGPretrainedModel: Any | None
 try:
-    from ragatouille import RAGPretrainedModel
+    from ragatouille import RAGPretrainedModel as _RAGPretrainedModel_cls
+
+    _RAGPretrainedModel = _RAGPretrainedModel_cls
 except ImportError:
-    RAGPretrainedModel = None  # type: ignore[assignment,misc]
+    _RAGPretrainedModel = None
+
+RAGPretrainedModel = _RAGPretrainedModel
 
 
 class PlaidReranker:
@@ -48,7 +53,7 @@ class PlaidReranker:
         self._top_n = config.rerank_top_n
         self._model = None  # lazy-loaded
 
-    def _get_model(self):
+    def _get_model(self) -> Any:
         if self._model is None:
             if RAGPretrainedModel is None:
                 logger.warning(

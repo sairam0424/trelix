@@ -282,7 +282,7 @@ class VoyageEmbedder(BaseEmbedder):
         results: list[list[float]] = []
         for i in range(0, len(texts), self._BATCH_LIMIT):
             batch = texts[i : i + self._BATCH_LIMIT]
-            kwargs: dict = {"model": self._model, "input_type": "document"}
+            kwargs: dict[str, object] = {"model": self._model, "input_type": "document"}
             if self._output_dimensions is not None:
                 kwargs["output_dimension"] = self._output_dimensions
             response = self._client.embed(batch, **kwargs)
@@ -290,7 +290,7 @@ class VoyageEmbedder(BaseEmbedder):
         return results
 
     def embed_query(self, text: str) -> list[float]:
-        kwargs: dict = {"model": self._model, "input_type": "query"}
+        kwargs: dict[str, object] = {"model": self._model, "input_type": "query"}
         if self._output_dimensions is not None:
             kwargs["output_dimension"] = self._output_dimensions
         response = self._client.embed([text], **kwargs)

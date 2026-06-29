@@ -16,17 +16,22 @@ Usage:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from trelix.embedder.base import BaseEmbedder
 
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig
 
+_FlagModel: Any | None
 try:
-    from FlagEmbedding import FlagModel
+    from FlagEmbedding import FlagModel as _FM_cls
+
+    _FlagModel = _FM_cls
 except ImportError:  # pragma: no cover
-    FlagModel = None  # type: ignore[assignment,misc]
+    _FlagModel = None
+
+FlagModel = _FlagModel
 
 _QUERY_INSTRUCTION = "Represent this query for searching relevant code: "
 
