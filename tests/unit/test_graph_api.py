@@ -375,8 +375,9 @@ class TestGraphCLI:
 
     def test_graph_bad_repo_exits_one(self, tmp_path) -> None:
         runner = CliRunner()
+        # "call-graph" is the renamed command that takes repo + symbol args
         result = runner.invoke(
             trelix_app,
-            ["graph", str(tmp_path / "does_not_exist"), "some_symbol"],
+            ["call-graph", str(tmp_path / "does_not_exist"), "some_symbol"],
         )
         assert result.exit_code == 1
