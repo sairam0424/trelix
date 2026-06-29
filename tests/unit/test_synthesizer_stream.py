@@ -1,4 +1,5 @@
 """Tests for streaming synthesis."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -18,11 +19,13 @@ def _make_context() -> RetrievedContext:
 class TestSynthesizerStream:
     def test_stream_method_exists(self) -> None:
         from trelix.retrieval.synthesizer import Synthesizer
+
         assert hasattr(Synthesizer, "stream")
 
     def test_stream_yields_strings(self) -> None:
         from trelix.core.config import EmbedderConfig, RetrievalConfig
         from trelix.retrieval.synthesizer import Synthesizer
+
         mock_client = MagicMock()
         mock_client.stream.return_value = iter(["The ", "auth ", "flow ", "is..."])
 
@@ -37,6 +40,7 @@ class TestSynthesizerStream:
     def test_stream_falls_back_on_no_api_key(self) -> None:
         from trelix.core.config import EmbedderConfig, RetrievalConfig
         from trelix.retrieval.synthesizer import Synthesizer
+
         mock_client = MagicMock()
         mock_client.stream.side_effect = Exception("No API key")
 

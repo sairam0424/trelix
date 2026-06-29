@@ -10,7 +10,7 @@ rel_path that should appear in the results), returning a float in [0, 1].
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from trelix.core.models import SearchResult
 
@@ -82,3 +82,6 @@ class EvalResult:
     ndcg_at_10: float
     rank: int  # 1-based rank of first match, -1 if not found
     judge_score: float | None = None  # LLM-as-judge score (0.0–1.0); None if judge not run
+    retrieved_files: list[str] = field(
+        default_factory=list
+    )  # rel_paths of retrieved files (optional)
