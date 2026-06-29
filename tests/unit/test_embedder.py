@@ -392,6 +392,53 @@ class TestVoyageEmbedder:
 
 
 # ---------------------------------------------------------------------------
+# TestVoyageMatryoshka — Voyage Matryoshka dimension support
+# ---------------------------------------------------------------------------
+
+
+class TestVoyageMatryoshka:
+    """Tests for Voyage Matryoshka dimension support (voyage-code-3)."""
+
+    def test_embed_passes_output_dimension(self) -> None:
+        """VoyageEmbedder passes output_dimension to API when set."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.embeddings = [[0.1] * 512]
+        mock_client.embed.return_value = mock_response
+        mock_voyage_module = MagicMock()
+        mock_voyage_module.Client.return_value = mock_client
+        with patch.dict(sys.modules, {"voyageai": mock_voyage_module}):
+            cfg = EmbedderConfig(
+                provider="voyage",
+                voyage_api_key=_FAKE_VOYAGE_KEY,
+                voyage_output_dimensions=512,
+                _env_file=None,
+            )
+            emb = VoyageEmbedder(cfg)
+        emb._client = mock_client  # noqa: SLF001
+        emb.embed(["def foo(): pass"])
+        call_kwargs = mock_client.embed.call_args[1]
+        assert call_kwargs.get("output_dimension") == 512
+
+    def test_effective_dimension_with_output_dimensions(self) -> None:
+        cfg = EmbedderConfig(
+            provider="voyage",
+            voyage_api_key=_FAKE_VOYAGE_KEY,
+            voyage_output_dimensions=256,
+            _env_file=None,
+        )
+        assert cfg.effective_dimension == 256
+
+    def test_effective_dimension_without_output_dimensions(self) -> None:
+        cfg = EmbedderConfig(
+            provider="voyage",
+            voyage_api_key=_FAKE_VOYAGE_KEY,
+            _env_file=None,
+        )
+        assert cfg.effective_dimension == 1024  # voyage_dimensions default
+
+
+# ---------------------------------------------------------------------------
 # LocalCodeEmbedder
 # ---------------------------------------------------------------------------
 

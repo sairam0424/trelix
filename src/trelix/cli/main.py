@@ -69,12 +69,20 @@ def main(
 
 
 _EmbedderProvider = Literal[
-    "openai", "azure", "local", "voyage", "local-code", "bedrock-titan", "bedrock-cohere"
+    "openai",
+    "azure",
+    "local",
+    "voyage",
+    "local-code",
+    "bge-code",
+    "nomic-code",
+    "bedrock-titan",
+    "bedrock-cohere",
 ]
 
 _PROVIDER_HELP = (
     "Embedding provider: local | openai | azure | voyage"
-    " | local-code | bedrock-titan | bedrock-cohere"
+    " | local-code | bge-code | nomic-code | bedrock-titan | bedrock-cohere"
 )
 
 
@@ -292,7 +300,9 @@ def ask(
 
     try:
         synth = Synthesizer(config.embedder, llm_config=config.llm)
-        synth.synthesize(context)
+        for token in synth.stream(context, config.retrieval):
+            console.print(token, end="", highlight=False)
+        console.print()  # final newline
     except Exception as exc:
         err_console.print(f"[red]Synthesis failed:[/red] {exc}")
         raise typer.Exit(1) from exc
@@ -764,6 +774,31 @@ def watch(
     finally:
         watcher.stop()
         console.print("\n[dim]Watch stopped.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# serve
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def serve(
+    repo_path: str = typer.Argument(..., help="Repository to serve"),
+    host: str = typer.Option("127.0.0.1", help="Host to bind"),
+    port: int = typer.Option(8765, help="Port to bind"),
+) -> None:
+    """Start a REST API server for trelix search and synthesis."""
+    try:
+        import uvicorn
+
+        from trelix.api.app import create_app
+    except ImportError:
+        typer.echo("trelix serve requires: pip install 'trelix[serve]'")
+        raise typer.Exit(1)
+
+    api_app = create_app()
+    typer.echo(f"trelix API serving {repo_path} at http://{host}:{port}")
+    uvicorn.run(api_app, host=host, port=port)
 
 
 # ---------------------------------------------------------------------------

@@ -276,22 +276,29 @@ class VoyageEmbedder(BaseEmbedder):
         self._client = voyageai.Client(api_key=config.voyage_api_key)
         self._model = config.voyage_model
         self._dimensions = config.voyage_dimensions
+        self._output_dimensions = config.voyage_output_dimensions
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         results: list[list[float]] = []
         for i in range(0, len(texts), self._BATCH_LIMIT):
             batch = texts[i : i + self._BATCH_LIMIT]
-            response = self._client.embed(batch, model=self._model, input_type="document")
+            kwargs: dict[str, object] = {"model": self._model, "input_type": "document"}
+            if self._output_dimensions is not None:
+                kwargs["output_dimension"] = self._output_dimensions
+            response = self._client.embed(batch, **kwargs)
             results.extend(response.embeddings)
         return results
 
     def embed_query(self, text: str) -> list[float]:
-        response = self._client.embed([text], model=self._model, input_type="query")
+        kwargs: dict[str, object] = {"model": self._model, "input_type": "query"}
+        if self._output_dimensions is not None:
+            kwargs["output_dimension"] = self._output_dimensions
+        response = self._client.embed([text], **kwargs)
         return response.embeddings[0]  # type: ignore[no-any-return]
 
     @property
     def dimension(self) -> int:
-        return self._dimensions
+        return self._output_dimensions or self._dimensions
 
 
 class LocalCodeEmbedder(BaseEmbedder):
@@ -539,9 +546,17 @@ def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
             return BedrockTitanEmbedder(config)
         case "bedrock-cohere":
             return BedrockCohereEmbedder(config)
+        case "bge-code":
+            from trelix.embedder.bge_code import BGECodeEmbedder
+
+            return BGECodeEmbedder(config)
+        case "nomic-code":
+            from trelix.embedder.nomic_code import NomicCodeEmbedder
+
+            return NomicCodeEmbedder(config)
         case _:
             raise ValueError(
                 f"Unknown embedder provider: {config.provider!r}. "
                 "Expected one of: 'local', 'openai', 'azure', 'voyage', "
-                "'local-code', 'bedrock-titan', 'bedrock-cohere'."
+                "'local-code', 'bedrock-titan', 'bedrock-cohere', 'bge-code', 'nomic-code'."
             )

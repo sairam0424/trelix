@@ -21,11 +21,15 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig, LLMConfig, RetrievalConfig
     from trelix.core.models import RetrievedContext
+
+# Module-level import so tests can patch "trelix.retrieval.synthesizer.build_chat_client"
+from trelix.llm.factory import build_chat_client  # noqa: E402
 
 logger = logging.getLogger("trelix.retrieval.synthesizer")
 
@@ -114,7 +118,6 @@ class Synthesizer:
     ) -> None:
         self._config = config
         from trelix.llm.client import ChatMessage as _ChatMessage  # noqa: F401 – ensure import
-        from trelix.llm.factory import build_chat_client
 
         if llm_config is not None:
             # Use the explicitly supplied LLMConfig (e.g. IndexConfig.llm).
@@ -210,6 +213,43 @@ class Synthesizer:
             logger.warning(msg)
             print(f"\n{msg}", flush=True)
             return ""
+
+    def stream(
+        self,
+        context: RetrievedContext,
+        config: RetrievalConfig,
+    ) -> Iterator[str]:
+        """
+        Stream synthesis tokens to the caller.
+
+        Yields str tokens as they arrive from the LLM.
+        Yields a single error message string on failure (never raises).
+
+        Usage::
+            for token in synth.stream(context, config):
+                print(token, end="", flush=True)
+        """
+        intent = getattr(context, "intent", None) or "feature_flow"
+        system_prompt = _INTENT_PROMPTS.get(intent, _DEFAULT_SYSTEM_PROMPT)
+
+        user_message = _USER_TEMPLATE.format(
+            context_text=context.context_text,
+            query=context.query,
+        )
+        max_tokens: int = getattr(config, "synthesis_max_tokens", 2048)
+
+        try:
+            from trelix.llm.client import ChatMessage
+
+            yield from self._llm_client.stream(
+                messages=[ChatMessage(role="user", content=user_message)],
+                system=system_prompt,
+                max_tokens=max_tokens,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            logger.warning("Streaming synthesis failed: %s", exc)
+            yield f"\n[trelix: synthesis unavailable — {exc}]"
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -20,7 +20,9 @@ jobs:
       - name: Ruff check
         run: ruff check src/ tests/
       - name: Ruff format check
-        run: ruff format --check src/ tests/
+        run: |
+          ruff format src/ tests/
+          git diff --exit-code -- src/ tests/ || (echo "ruff format changed files — commit the formatted output" && exit 1)
       - name: Mypy
         run: mypy src/trelix/ --ignore-missing-imports
 
