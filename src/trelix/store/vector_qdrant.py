@@ -145,3 +145,6 @@ class QdrantVectorStore(BaseVectorStore):
         """Return the number of vectors stored in the collection."""
         info = self._client.get_collection(self._collection)
         return info.vectors_count or 0
+
+    def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
+        """No-op stub — Qdrant backend does not store file-summary embeddings."""

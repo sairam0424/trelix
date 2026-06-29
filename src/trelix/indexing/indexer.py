@@ -211,6 +211,7 @@ class Indexer:
         )
         self.chunker = self._build_chunker(config)
         self.walker = FileWalker(config)
+        self._file_summarizer = self._build_file_summarizer(config)
 
     def _build_chunker(self, config: IndexConfig) -> Chunker:
         """
@@ -236,6 +237,35 @@ class Indexer:
                 exc,
             )
             return Chunker(config.chunker)
+
+    def _build_file_summarizer(self, config: IndexConfig) -> object | None:
+        """
+        Return a FileSummarizer when file_summaries_enabled=True, else None.
+
+        The LLM client is shared with the contextual chunker where possible —
+        if that client was already built it is recreated here (cheap; clients
+        are thin wrappers). Returns None on any build failure so that the
+        indexer degrades gracefully without crashing.
+        """
+        if not config.file_summaries_enabled:
+            return None
+        try:
+            from trelix.indexing.file_summarizer import FileSummarizer
+            from trelix.llm.factory import build_chat_client
+
+            llm_client = build_chat_client(config.llm)
+            logger.info(
+                "FileSummarizer: enabled, using %s provider, model=%s",
+                config.llm.provider,
+                config.llm.model,
+            )
+            return FileSummarizer(client=llm_client)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "FileSummarizer: could not build LLM client (%s) — file summaries disabled",
+                exc,
+            )
+            return None
 
     def _report_progress(
         self,
@@ -519,6 +549,32 @@ class Indexer:
                         chunk_text=chunk.chunk_text,
                         token_count=chunk.token_count,
                     )
+                )
+
+        # ── Phase 2.5: generate file-level summary (RAPTOR-style) ────────────
+        # Runs only when file_summaries_enabled=True and an LLM client is
+        # available.  Failures are swallowed inside FileSummarizer.summarize()
+        # so a single flaky LLM call never aborts the whole indexing pass.
+        if self._file_summarizer is not None:
+            from trelix.indexing.file_summarizer import FileSummarizer
+
+            summarizer: FileSummarizer = self._file_summarizer  # type: ignore[assignment]
+            summary = summarizer.summarize(
+                rel_path=file.rel_path,
+                symbols=parse_result.symbols,
+                language=file.language,
+            )
+            if summary:
+                summary_row_id = self.db.upsert_file_summary(file_id, summary)
+                # Embed the summary and store in the vector index so the
+                # retriever can surface file-level context via the 4th leg.
+                summary_embedding = self.embedder.embed([summary])[0]
+                self.vector_store.upsert_file_summary_embedding(file_id, summary_embedding)
+                logger.debug(
+                    "File summary stored for %s (row_id=%d, len=%d chars)",
+                    file.rel_path,
+                    summary_row_id,
+                    len(summary),
                 )
 
         return pending

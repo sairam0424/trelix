@@ -79,6 +79,11 @@ class EvalReport:
     def mean_ndcg_at_10(self) -> float:
         return _mean(r.ndcg_at_10 for r in self.results)
 
+    @property
+    def mean_judge_score(self) -> float | None:
+        scores = [r.judge_score for r in self.results if r.judge_score is not None]
+        return sum(scores) / len(scores) if scores else None
+
 
 def _mean(values) -> float:
     items = list(values)

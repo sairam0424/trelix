@@ -60,6 +60,10 @@ class BaseVectorStore(ABC):
     def count(self) -> int:
         """Return the total number of stored embeddings."""
 
+    @abstractmethod
+    def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
+        """Insert or replace a file-level summary embedding."""
+
 
 # ---------------------------------------------------------------------------
 # SQLite backend (default)
@@ -278,6 +282,28 @@ class SQLiteVectorStore(BaseVectorStore):
     def _pack(self, embedding: list[float]) -> bytes:
         return struct.pack(f"{len(embedding)}f", *embedding)
 
+    def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
+        """
+        Insert or replace a file-level summary embedding.
+
+        Uses the same vec0 virtual table as symbol chunks but stores the
+        file_id as a *negative* chunk_id sentinel so the retriever can
+        distinguish file-summary entries from symbol-chunk entries.
+
+        Convention: chunk_id = -(file_id) for file-summary rows.
+        This avoids a separate virtual table while keeping the search
+        interface identical.
+        """
+        sentinel_id = -file_id
+        packed = self._pack(embedding)
+        with self._lock:
+            self._conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (sentinel_id,))
+            self._conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedding) VALUES (?, ?)",
+                (sentinel_id, packed),
+            )
+            self._conn.commit()
+
     def close(self) -> None:
         self._conn.close()
 
@@ -303,12 +329,26 @@ def make_vector_store(config: IndexConfig, dimension: int) -> BaseVectorStore:
     Backend is selected by config.store.backend:
       "sqlite"  (default) → SQLiteVectorStore backed by <repo>/.trelix/index.db
       "qdrant"             → QdrantVectorStore backed by a running Qdrant instance
+      "lance"              → LanceVectorStore backed by a LanceDB directory at
+                             config.store.lance_uri (default: <repo>/.trelix/lance).
+                             Requires ``pip install 'trelix[lance]'``.
 
     Args:
         config:    IndexConfig instance (provides store sub-config and db_path).
         dimension: Embedding dimension (must match the embedder being used).
     """
     backend = getattr(config.store, "backend", "sqlite")
+    if backend == "lance":
+        from trelix.store.vector_lance import LanceVectorStore
+
+        uri = config.store.lance_uri
+        if not Path(uri).is_absolute():
+            uri = str(Path(config.repo_path) / uri)
+        return LanceVectorStore(
+            uri=uri,
+            table_name=config.store.lance_table,
+            dimension=dimension,
+        )
     if backend == "qdrant":
         from trelix.store.vector_qdrant import QdrantVectorStore
 

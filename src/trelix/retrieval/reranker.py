@@ -41,6 +41,10 @@ def rerank(
         return []
 
     match config.rerank_provider:
+        case "plaid":
+            from trelix.retrieval.reranker_plaid import PlaidReranker
+
+            return PlaidReranker(config).rerank(query, results, top_n=top_n)
         case "cross_encoder":
             return _cross_encoder_rerank(query, results, config.rerank_model, top_n)
         case "cohere":

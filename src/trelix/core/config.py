@@ -164,7 +164,15 @@ class EmbedderConfig(BaseSettings):
     )
 
     provider: Literal[
-        "openai", "azure", "local", "voyage", "local-code", "bedrock-titan", "bedrock-cohere"
+        "openai",
+        "azure",
+        "local",
+        "voyage",
+        "local-code",
+        "bedrock-titan",
+        "bedrock-cohere",
+        "bge-code",
+        "nomic-code",
     ] = "local"
 
     # ── OpenAI ───────────────────────────────────────────────────────────────
@@ -192,10 +200,23 @@ class EmbedderConfig(BaseSettings):
     voyage_api_key: str | None = Field(default=None, alias="VOYAGE_API_KEY")
     voyage_model: str = Field(default="voyage-code-3", alias="TRELIX_EMBEDDER_VOYAGE_MODEL")
     voyage_dimensions: int = 1024
+    # Matryoshka output dimension (voyage-code-3 supports 256/512/1024/2048).
+    # None = use full voyage_dimensions. Set smaller for faster HNSW search.
+    voyage_output_dimensions: int | None = None
 
     # ── Local-code (SFR-Embedding-Code-2B_R) ─────────────────────────────────
     local_code_model: str = "Salesforce/SFR-Embedding-Code-2B_R"
     local_code_dimensions: int = 4096
+
+    # ── BGE-Code-v1 (BAAI, CoIR SOTA 2025) ────────────────────────────────────
+    # Uses FlagEmbedding library. pip install trelix[bge-code]
+    bge_code_model: str = "BAAI/bge-code-v1"
+    bge_code_dimensions: int = 768  # BGE-Code-v1 default embedding dim
+
+    # ── Nomic CodeRankEmbed ────────────────────────────────────────────────────
+    # Uses sentence-transformers. pip install trelix[local]
+    nomic_code_model: str = "nomic-ai/CodeRankEmbed"
+    nomic_code_dimensions: int = 768  # CodeRankEmbed default embedding dim
 
     # ── AWS Bedrock (Titan v2 + Cohere) ──────────────────────────────────────
     # Reuses AWS_* env vars — same credentials as BedrockBackend in LLMConfig.
@@ -227,13 +248,17 @@ class EmbedderConfig(BaseSettings):
         if self.provider == "openai":
             return self.openai_dimensions
         if self.provider == "voyage":
-            return self.voyage_dimensions
+            return self.voyage_output_dimensions or self.voyage_dimensions
         if self.provider == "local-code":
             return self.local_code_dimensions
         if self.provider == "bedrock-titan":
             return self.bedrock_titan_dimensions
         if self.provider == "bedrock-cohere":
             return self.bedrock_cohere_dimensions
+        if self.provider == "bge-code":
+            return self.bge_code_dimensions
+        if self.provider == "nomic-code":
+            return self.nomic_code_dimensions
         return 384  # all-MiniLM-L6-v2
 
 
@@ -255,7 +280,7 @@ class StoreConfig(BaseSettings):
     hnsw_ef_search: int = Field(default=50, alias="TRELIX_STORE_HNSW_EF_SEARCH")
 
     # ── Backend selection ────────────────────────────────────────────────────
-    backend: Literal["sqlite", "qdrant"] = Field(
+    backend: Literal["sqlite", "qdrant", "lance"] = Field(
         default="sqlite",
         validation_alias="TRELIX_STORE_BACKEND",
     )
@@ -264,6 +289,10 @@ class StoreConfig(BaseSettings):
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
     qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
     qdrant_collection: str = Field(default="trelix", alias="QDRANT_COLLECTION")
+
+    # ── LanceDB connection ───────────────────────────────────────────────────
+    lance_uri: str = Field(default=".trelix/lance", alias="LANCE_URI")
+    lance_table: str = Field(default="chunks", alias="LANCE_TABLE")
 
 
 class RetrievalConfig(BaseSettings):
@@ -285,9 +314,16 @@ class RetrievalConfig(BaseSettings):
     rrf_k: int = 60
 
     rerank: bool = True
-    rerank_provider: Literal["cohere", "cross_encoder"] = "cohere"
+    rerank_provider: Literal["cohere", "cross_encoder", "plaid"] = "cohere"
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     rerank_top_n: int = 15
+
+    # PLAID late-interaction reranker (ColBERT via RAGatouille)
+    # pip install trelix[plaid]
+    plaid_model: str = Field(
+        default="colbert-ir/colbertv2.0",
+        alias="TRELIX_RETRIEVAL_PLAID_MODEL",
+    )
 
     # Cohere reranker
     cohere_api_key: str | None = Field(default=None, alias="COHERE_API_KEY")
@@ -530,6 +566,13 @@ class IndexConfig(BaseSettings):
     store: StoreConfig = Field(default_factory=StoreConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+
+    # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
+    # Requires LLM API access. Off by default — zero cost when disabled.
+    file_summaries_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_FILE_SUMMARIES_ENABLED",
+    )
 
     @field_validator("repo_path")
     @classmethod
