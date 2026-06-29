@@ -853,6 +853,75 @@ class Database:
         return cursor.rowcount
 
     # ------------------------------------------------------------------
+    # Graph iteration helpers (used by CodeGraph)
+    # ------------------------------------------------------------------
+
+    def iter_all_symbols_with_files(
+        self,
+    ) -> list[tuple[Symbol, IndexedFile]]:
+        """Return (Symbol, IndexedFile) for every symbol in the DB."""
+        rows = self._conn.execute(
+            """
+            SELECT s.id, s.file_id, s.name, s.qualified_name, s.kind,
+                   s.line_start, s.line_end, s.signature, s.docstring,
+                   s.context_summary, s.decorators, s.is_public, s.parent_id, s.body,
+                   f.id, f.path, f.rel_path, f.language, f.hash, f.size_bytes
+            FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            """
+        ).fetchall()
+        result: list[tuple[Symbol, IndexedFile]] = []
+        for row in rows:
+            sym = Symbol(
+                id=row[0], file_id=row[1], name=row[2], qualified_name=row[3],
+                kind=SymbolKind(row[4]), line_start=row[5], line_end=row[6],
+                signature=row[7] or "", docstring=row[8], context_summary=row[9],
+                decorators=json.loads(row[10] or "[]"),
+                is_public=bool(row[11]), parent_id=row[12], body=row[13] or "",
+            )
+            fi = IndexedFile(
+                id=row[14], path=row[15], rel_path=row[16],
+                language=Language(row[17]), hash=row[18], size_bytes=row[19],
+            )
+            result.append((sym, fi))
+        return result
+
+    def iter_resolved_calls(self) -> list[tuple[int, int]]:
+        """Return (caller_id, callee_id) for all resolved call edges."""
+        rows = self._conn.execute(
+            "SELECT caller_id, callee_id FROM calls WHERE callee_id IS NOT NULL"
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def iter_resolved_imports(self) -> list[tuple[int, int]]:
+        """Return (file_id, imported_file_id) for all resolved import edges."""
+        rows = self._conn.execute(
+            "SELECT file_id, imported_file_id FROM imports WHERE imported_file_id IS NOT NULL"
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def iter_resolved_type_edges(self) -> list[tuple[int, str, int]]:
+        """Return (from_symbol_id, edge_kind, to_symbol_id) for all resolved type edges."""
+        rows = self._conn.execute(
+            "SELECT from_symbol_id, edge_kind, to_symbol_id FROM type_edges"
+            " WHERE to_symbol_id IS NOT NULL"
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    def get_file_by_id(self, file_id: int) -> IndexedFile | None:
+        """Fetch a file record by primary key."""
+        row = self._conn.execute(
+            "SELECT id, path, rel_path, language, hash, size_bytes FROM files WHERE id = ?",
+            (file_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return IndexedFile(
+            id=row[0], path=row[1], rel_path=row[2],
+            language=Language(row[3]), hash=row[4], size_bytes=row[5],
+        )
+
+    # ------------------------------------------------------------------
     # Angular selector resolution (second pass after all files indexed)
     # ------------------------------------------------------------------
 
