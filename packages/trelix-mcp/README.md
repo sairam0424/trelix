@@ -2,27 +2,27 @@
 
 <!-- mcp-name: io.github.sairam0424/trelix -->
 
-MCP server for [trelix](https://github.com/sairam0424/trelix) v0.7.0 — semantic code search for Claude Code, Cursor, Windsurf, and Continue.dev.
+MCP server for [trelix](https://github.com/sairam0424/trelix) v2.0.0 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
 
 ## Install
 
 ```bash
-pip install trelix-mcp
+pip install trelix-mcp==2.0.0
 ```
 
 To use Bedrock embeddings or synthesis (no extra API key beyond AWS credentials):
 
 ```bash
-pip install "trelix-mcp" "trelix[bedrock]"
+pip install "trelix-mcp==2.0.0" "trelix[bedrock]"
 ```
 
 Other optional LLM provider extras:
 
 ```bash
-pip install "trelix-mcp" "trelix[anthropic]"   # Anthropic Claude direct
-pip install "trelix-mcp" "trelix[vertex]"       # Google Vertex AI / Gemini
-pip install "trelix-mcp" "trelix[litellm]"      # 100+ providers via LiteLLM
-pip install "trelix-mcp" "trelix[llm-all]"      # all LLM providers
+pip install "trelix-mcp==2.0.0" "trelix[anthropic]"   # Anthropic Claude direct
+pip install "trelix-mcp==2.0.0" "trelix[vertex]"       # Google Vertex AI / Gemini
+pip install "trelix-mcp==2.0.0" "trelix[litellm]"      # 100+ providers via LiteLLM
+pip install "trelix-mcp==2.0.0" "trelix[llm-all]"      # all LLM providers
 ```
 
 ## Usage
@@ -69,6 +69,12 @@ Set environment variables before starting the MCP server. All variables are opti
 ```bash
 # Local sentence-transformers — no API key (default)
 TRELIX_EMBEDDER_PROVIDER=local
+
+# Local BGE Code (v1.5) — superior code retrieval, no API key
+TRELIX_EMBEDDER_PROVIDER=bge-code
+
+# Local Nomic Code — competitive code embeddings, no API key
+TRELIX_EMBEDDER_PROVIDER=nomic-code
 
 # Azure OpenAI embeddings
 TRELIX_EMBEDDER_PROVIDER=azure
@@ -135,3 +141,4 @@ TRELIX_LLM_MODEL=bedrock/claude-3-5-sonnet
 | `index_codebase` | Index a repository so it can be searched |
 | `get_symbol` | Look up a symbol by qualified name |
 | `blast_radius` | Find all files that depend on a symbol |
+| `ask` | Streaming chat endpoint for conversational code exploration (v2.0.0+) |
