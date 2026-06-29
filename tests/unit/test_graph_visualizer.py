@@ -1,10 +1,9 @@
 """Tests for GraphVisualizer — Pyvis HTML export."""
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-
-import pytest
 
 from trelix.core.models import CallEdge, IndexedFile, Language, Symbol, SymbolKind
 from trelix.graph.builder import GraphBuildResult
@@ -16,14 +15,35 @@ from trelix.store.db import Database
 
 def _build_simple_graph(tmp_path: Path) -> tuple[Database, CodeGraph]:
     db = Database(tmp_path / "index.db")
-    fid = db.upsert_file(IndexedFile(path="/r/a.py", rel_path="a.py",
-                                      language=Language.PYTHON, hash="x", size_bytes=10))
-    sid1 = db.insert_symbol(Symbol(file_id=fid, name="fn_a", qualified_name="fn_a",
-                                    kind=SymbolKind.FUNCTION, line_start=1, line_end=5,
-                                    signature="def fn_a()", body="def fn_a(): pass"))
-    sid2 = db.insert_symbol(Symbol(file_id=fid, name="fn_b", qualified_name="fn_b",
-                                    kind=SymbolKind.FUNCTION, line_start=7, line_end=12,
-                                    signature="def fn_b()", body="def fn_b(): pass"))
+    fid = db.upsert_file(
+        IndexedFile(
+            path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10
+        )
+    )
+    sid1 = db.insert_symbol(
+        Symbol(
+            file_id=fid,
+            name="fn_a",
+            qualified_name="fn_a",
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=5,
+            signature="def fn_a()",
+            body="def fn_a(): pass",
+        )
+    )
+    sid2 = db.insert_symbol(
+        Symbol(
+            file_id=fid,
+            name="fn_b",
+            qualified_name="fn_b",
+            kind=SymbolKind.FUNCTION,
+            line_start=7,
+            line_end=12,
+            signature="def fn_b()",
+            body="def fn_b(): pass",
+        )
+    )
     db.insert_call_edges([CallEdge(caller_id=sid1, callee_name="fn_b", callee_id=sid2, line=3)])
     cg = CodeGraph(db)
     mapping = detect_communities(cg)
@@ -60,6 +80,7 @@ class TestGraphVisualizer:
     def test_export_community_report_json(self, tmp_path: Path) -> None:
         _, cg = _build_simple_graph(tmp_path)
         from trelix.graph.community import get_community_summary
+
         result = GraphBuildResult(
             code_graph=cg,
             community_count=1,
