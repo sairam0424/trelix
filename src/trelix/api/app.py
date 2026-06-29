@@ -151,13 +151,27 @@ def create_app() -> Any:  # noqa: ANN201
         """Build graph and export Pyvis HTML. Returns path and node count."""
         from pathlib import Path as _Path
 
+        from fastapi import HTTPException
+
         from trelix.graph.builder import GraphBuilder
         from trelix.graph.visualizer import GraphVisualizer
 
         config = IndexConfig(repo_path=repo)
         result = GraphBuilder(config).build(extract_concepts=False)
-        out = output or str(_Path(repo) / ".trelix" / "graph.html")
-        path = GraphVisualizer().export_html(result.code_graph, out)
+        repo_root = _Path(repo).resolve()
+        if output:
+            requested = _Path(output).resolve()
+            allowed = repo_root / ".trelix"
+            if not str(requested).startswith(str(allowed)):
+                raise HTTPException(
+                    status_code=400,
+                    detail="output path must be inside <repo>/.trelix/",
+                )
+            out = str(requested)
+        else:
+            out = str(repo_root / ".trelix" / "graph.html")
+        viz = GraphVisualizer()
+        path = viz.export_html(result.code_graph, out)
         return {"path": path, "node_count": result.node_count}
 
     @app.get("/graph/search")
@@ -167,6 +181,7 @@ def create_app() -> Any:  # noqa: ANN201
         from trelix.graph.search import graph_search
         from trelix.store.db import Database
 
+        depth = max(1, min(depth, 10))
         config = IndexConfig(repo_path=repo)
         result = GraphBuilder(config).build(extract_concepts=False)
         db = Database(config.db_path_absolute)
