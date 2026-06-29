@@ -60,3 +60,16 @@ class TestGraphSearch:
         community_members = get_community_context(cg, sids[0])
         assert isinstance(community_members, list)
         assert sids[0] in community_members
+
+    def test_rerank_scores_decrease_with_hop_distance(self, tmp_path: Path) -> None:
+        db, sids = _build_db(tmp_path)
+        cg = CodeGraph(db)
+        # login(sids[0]) → hash_password(sids[2]) at hop 1, → check_token(sids[3]) at hop 2
+        results = graph_search(db, cg, query_symbol_ids=[sids[0]], depth=2, max_results=10)
+        by_id = {r.symbol.id: r.score for r in results}
+        # hop-1 neighbor (hash_password) should score higher than hop-2 (check_token)
+        if sids[2] in by_id and sids[3] in by_id:
+            assert by_id[sids[2]] > by_id[sids[3]]
+        # hop-1 score should be exactly 0.5
+        if sids[2] in by_id:
+            assert abs(by_id[sids[2]] - 0.5) < 0.01

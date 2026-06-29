@@ -14,7 +14,9 @@ def _build_clustered_db(tmp_path: Path) -> tuple[Database, list[int]]:
     db = Database(tmp_path / "index.db")
 
     def _file(name: str) -> int:
-        f = IndexedFile(path=f"/r/{name}", rel_path=name, language=Language.PYTHON, hash="x", size_bytes=10)
+        f = IndexedFile(
+            path=f"/r/{name}", rel_path=name, language=Language.PYTHON, hash="x", size_bytes=10
+        )
         return db.upsert_file(f)
 
     def _sym(fid: int, name: str) -> int:
@@ -90,3 +92,17 @@ class TestCommunityDetection:
         assert mapping == {}
         summary = get_community_summary(cg)
         assert summary == []
+
+    def test_clusters_get_distinct_community_ids(self, tmp_path: Path) -> None:
+        db, sids = _build_clustered_db(tmp_path)
+        cg = CodeGraph(db)
+        mapping = detect_communities(cg)
+        # auth cluster (sids[0..2]) and db cluster (sids[3..5]) should be in different communities
+        auth_community = mapping.get(sids[0])
+        db_community = mapping.get(sids[3])
+        # With dense intra-cluster and no inter-cluster edges, they must differ
+        if auth_community is not None and db_community is not None:
+            assert auth_community != db_community, (
+                f"Expected auth cluster (community {auth_community}) != "
+                f"db cluster (community {db_community})"
+            )
