@@ -1,6 +1,6 @@
 # trelix-langchain
 
-LangChain retriever for [trelix](https://github.com/sairam0424/trelix) — semantic code search using Tree-sitter AST parsing, hybrid BM25+vector search, and call-graph expansion.
+LangChain retriever for [trelix](https://github.com/sairam0424/trelix) — semantic code search using Tree-sitter AST parsing, hybrid BM25+vector search, call-graph expansion, and streaming synthesis support.
 
 ## Install
 
@@ -12,6 +12,12 @@ For AWS Bedrock embeddings (Cohere or Titan):
 
 ```bash
 pip install "trelix-langchain[bedrock]"
+```
+
+For code-optimized embeddings (BGE-Code, Nomic-Code, or Lance backend):
+
+```bash
+pip install "trelix-langchain[code-embeddings]"
 ```
 
 ## Basic Usage
@@ -102,7 +108,7 @@ for doc in result["source_documents"]:
 
 | Env var | Default | Description |
 |---|---|---|
-| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider: `local` \| `local-code` \| `openai` \| `azure` \| `voyage` \| `bedrock-cohere` \| `bedrock-titan` |
+| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider: `local` \| `local-code` \| `bge-code` \| `nomic-code` \| `lance` \| `openai` \| `azure` \| `voyage` \| `bedrock-cohere` \| `bedrock-titan` |
 | `OPENAI_API_KEY` | — | Required for `openai` provider |
 | `AZURE_API_KEY` | — | Required for `azure` provider |
 | `AWS_ACCESS_KEY_ID` | — | Required for Bedrock providers |
@@ -115,10 +121,16 @@ You can also set the provider directly on the retriever instance:
 retriever = TrelixRetriever(repo_path="/path/to/repo", provider="openai", k=10)
 ```
 
-## Provider Switching (v0.7.0+)
+## Provider Switching (v2.0.0+)
 
 ```bash
-# Use Bedrock Cohere embeddings (best retrieval quality, reuses AWS credentials)
+# Use code-optimized BGE-Code embeddings (best for code semantics)
+TRELIX_EMBEDDER_PROVIDER=bge-code trelix index /path/to/repo
+
+# Use Nomic-Code embeddings
+TRELIX_EMBEDDER_PROVIDER=nomic-code trelix index /path/to/repo
+
+# Use Bedrock Cohere embeddings (reuses AWS credentials)
 TRELIX_EMBEDDER_PROVIDER=bedrock-cohere trelix index /path/to/repo
 
 # Use Azure OpenAI embeddings
@@ -129,6 +141,25 @@ TRELIX_EMBEDDER_PROVIDER=local trelix index /path/to/repo
 ```
 
 The index and the retriever must use the same provider — re-index whenever you switch.
+
+## Streaming Synthesis (v2.0.0+)
+
+v2.0.0 introduces streaming synthesis support for real-time code context generation:
+
+```python
+from trelix_langchain import TrelixRetriever, StreamingSynthesizer
+from langchain_openai import ChatOpenAI
+
+retriever = TrelixRetriever(repo_path="/path/to/repo", k=8)
+synthesizer = StreamingSynthesizer(
+    llm=ChatOpenAI(model="gpt-4o"),
+    retriever=retriever
+)
+
+# Streamed synthesis output
+for chunk in synthesizer.synthesize_stream("How does the auth flow work?"):
+    print(chunk, end="", flush=True)
+```
 
 ## Links
 
