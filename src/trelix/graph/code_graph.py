@@ -76,6 +76,8 @@ class CodeGraph:
 
         # --- TYPE edges (EXTENDS / IMPLEMENTS / TRAIT_IMPL / EMBEDDED) ---
         for from_id, edge_kind, to_id in self._db.iter_resolved_type_edges():
+            if edge_kind not in _EDGE_KINDS_TO_LABEL:
+                logger.debug("Unknown edge_kind %r, using TYPE_REL fallback", edge_kind)
             label = _EDGE_KINDS_TO_LABEL.get(edge_kind, "TYPE_REL")
             if from_id in self._g and to_id in self._g:
                 self._g.add_edge(from_id, to_id, label=label)
