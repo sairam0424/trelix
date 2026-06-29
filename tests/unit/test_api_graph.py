@@ -1,4 +1,5 @@
 """Tests for graph REST API endpoints."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -119,9 +120,7 @@ class TestGraphApiEndpoints:
                 body="def fn_b(): pass",
             )
         )
-        db.insert_call_edges(
-            [CallEdge(caller_id=sid1, callee_name="fn_b", callee_id=sid2, line=2)]
-        )
+        db.insert_call_edges([CallEdge(caller_id=sid1, callee_name="fn_b", callee_id=sid2, line=2)])
         db.insert_chunk_for_symbol(sid1, "def fn_a(): pass", 5)
         db.insert_chunk_for_symbol(sid2, "def fn_b(): pass", 5)
         db._conn.commit()

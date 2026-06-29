@@ -185,9 +185,7 @@ def create_app() -> Any:  # noqa: ANN201
         config = IndexConfig(repo_path=repo)
         result = GraphBuilder(config).build(extract_concepts=False)
         db = Database(config.db_path_absolute)
-        results = graph_search(
-            db, result.code_graph, [symbol_id], depth=depth, max_results=20
-        )
+        results = graph_search(db, result.code_graph, [symbol_id], depth=depth, max_results=20)
         return [
             {
                 "symbol": r.symbol.qualified_name,

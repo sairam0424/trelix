@@ -1,4 +1,5 @@
 """Tests for community detection on CodeGraph."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,8 +21,16 @@ def _build_clustered_db(tmp_path: Path) -> tuple[Database, list[int]]:
         return db.upsert_file(f)
 
     def _sym(fid: int, name: str) -> int:
-        s = Symbol(file_id=fid, name=name, qualified_name=name, kind=SymbolKind.FUNCTION,
-                   line_start=1, line_end=5, signature=f"def {name}()", body="pass")
+        s = Symbol(
+            file_id=fid,
+            name=name,
+            qualified_name=name,
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=5,
+            signature=f"def {name}()",
+            body="pass",
+        )
         return db.insert_symbol(s)
 
     # Cluster A: auth module (3 symbols, densely connected)
@@ -37,12 +46,14 @@ def _build_clustered_db(tmp_path: Path) -> tuple[Database, list[int]]:
     b3 = _sym(fid_b, "connect")
 
     # Dense intra-cluster edges
-    db.insert_call_edges([
-        CallEdge(caller_id=a1, callee_name="hash_password", callee_id=a3, line=2),
-        CallEdge(caller_id=a2, callee_name="hash_password", callee_id=a3, line=3),
-        CallEdge(caller_id=b1, callee_name="connect", callee_id=b3, line=2),
-        CallEdge(caller_id=b2, callee_name="connect", callee_id=b3, line=3),
-    ])
+    db.insert_call_edges(
+        [
+            CallEdge(caller_id=a1, callee_name="hash_password", callee_id=a3, line=2),
+            CallEdge(caller_id=a2, callee_name="hash_password", callee_id=a3, line=3),
+            CallEdge(caller_id=b1, callee_name="connect", callee_id=b3, line=2),
+            CallEdge(caller_id=b2, callee_name="connect", callee_id=b3, line=3),
+        ]
+    )
 
     return db, [a1, a2, a3, b1, b2, b3]
 

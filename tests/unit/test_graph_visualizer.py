@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from trelix.core.models import CallEdge, IndexedFile, Language, Symbol, SymbolKind
 from trelix.graph.builder import GraphBuildResult
@@ -11,6 +13,27 @@ from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import assign_communities, detect_communities
 from trelix.graph.visualizer import GraphVisualizer
 from trelix.store.db import Database
+
+
+def _make_pyvis_mock() -> MagicMock:
+    """Inject a fake pyvis.network module so visualizer tests run without pyvis installed."""
+
+    def _save_graph(path: str) -> None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text("<html><body>graph</body></html>")
+
+    mock_net = MagicMock()
+    mock_net.save_graph.side_effect = _save_graph
+
+    mock_network_mod = MagicMock()
+    mock_network_mod.Network.return_value = mock_net
+
+    mock_pyvis_mod = MagicMock()
+    mock_pyvis_mod.network = mock_network_mod
+
+    sys.modules.setdefault("pyvis", mock_pyvis_mod)
+    sys.modules.setdefault("pyvis.network", mock_network_mod)
+    return mock_net
 
 
 def _build_simple_graph(tmp_path: Path) -> tuple[Database, CodeGraph]:
@@ -53,6 +76,7 @@ def _build_simple_graph(tmp_path: Path) -> tuple[Database, CodeGraph]:
 
 class TestGraphVisualizer:
     def test_export_html_creates_file(self, tmp_path: Path) -> None:
+        _make_pyvis_mock()
         _, cg = _build_simple_graph(tmp_path)
         out = str(tmp_path / "graph.html")
         viz = GraphVisualizer()
@@ -62,6 +86,7 @@ class TestGraphVisualizer:
         assert "<html" in content.lower()
 
     def test_export_html_max_nodes_truncates(self, tmp_path: Path) -> None:
+        _make_pyvis_mock()
         _, cg = _build_simple_graph(tmp_path)
         out = str(tmp_path / "graph_small.html")
         viz = GraphVisualizer()
@@ -70,6 +95,7 @@ class TestGraphVisualizer:
         assert Path(result_path).exists()
 
     def test_export_html_empty_graph(self, tmp_path: Path) -> None:
+        _make_pyvis_mock()
         db = Database(tmp_path / "index.db")
         cg = CodeGraph(db)
         out = str(tmp_path / "empty.html")

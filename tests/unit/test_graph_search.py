@@ -1,4 +1,5 @@
 """Tests for graph-aware search using CodeGraph traversal."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,19 +13,36 @@ from trelix.store.db import Database
 
 def _build_db(tmp_path: Path) -> tuple[Database, list[int]]:
     db = Database(tmp_path / "index.db")
-    fid = db.upsert_file(IndexedFile(path="/r/auth.py", rel_path="auth.py",
-                                      language=Language.PYTHON, hash="x", size_bytes=100))
+    fid = db.upsert_file(
+        IndexedFile(
+            path="/r/auth.py",
+            rel_path="auth.py",
+            language=Language.PYTHON,
+            hash="x",
+            size_bytes=100,
+        )
+    )
     sids = []
     for name in ["login", "logout", "hash_password", "check_token"]:
-        s = Symbol(file_id=fid, name=name, qualified_name=name, kind=SymbolKind.FUNCTION,
-                   line_start=1, line_end=5, signature=f"def {name}()", body=f"def {name}(): pass")
+        s = Symbol(
+            file_id=fid,
+            name=name,
+            qualified_name=name,
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=5,
+            signature=f"def {name}()",
+            body=f"def {name}(): pass",
+        )
         sids.append(db.insert_symbol(s))
         db.insert_chunk_for_symbol(sids[-1], f"def {name}(): pass", 5)
     # login → hash_password → check_token
-    db.insert_call_edges([
-        CallEdge(caller_id=sids[0], callee_name="hash_password", callee_id=sids[2], line=3),
-        CallEdge(caller_id=sids[2], callee_name="check_token", callee_id=sids[3], line=2),
-    ])
+    db.insert_call_edges(
+        [
+            CallEdge(caller_id=sids[0], callee_name="hash_password", callee_id=sids[2], line=3),
+            CallEdge(caller_id=sids[2], callee_name="check_token", callee_id=sids[3], line=2),
+        ]
+    )
     return db, sids
 
 

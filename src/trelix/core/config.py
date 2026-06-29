@@ -335,7 +335,7 @@ class RetrievalConfig(BaseSettings):
 
     # CodeGraph BFS retrieval (4th leg — off by default)
     graph_search_enabled: bool = False  # Enable CodeGraph as 4th retrieval leg
-    graph_search_depth: int = 2         # BFS depth for graph expansion
+    graph_search_depth: int = 2  # BFS depth for graph expansion
     graph_search_max_results: int = 15  # Max results from graph search leg
 
     # GraphRAG map-reduce synthesis

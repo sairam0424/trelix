@@ -1,4 +1,5 @@
 """Graph-aware search: BFS over CodeGraph to surface structurally related symbols."""
+
 from __future__ import annotations
 
 import logging
@@ -65,7 +66,7 @@ def graph_search(
                 token_count=len(symbol.body.split()),
                 id=None,
             )
-        score = 0.5 ** hop
+        score = 0.5**hop
         results.append(
             SearchResult(
                 chunk=chunk,
@@ -88,7 +89,5 @@ def get_community_context(cg: CodeGraph, symbol_id: int) -> list[int]:
     if target_community is None:
         return [symbol_id]
     return [
-        nid
-        for nid, attrs in cg.nx.nodes(data=True)
-        if attrs.get("community") == target_community
+        nid for nid, attrs in cg.nx.nodes(data=True) if attrs.get("community") == target_community
     ]
