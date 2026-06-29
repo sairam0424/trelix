@@ -147,4 +147,24 @@ class QdrantVectorStore(BaseVectorStore):
         return info.vectors_count or 0
 
     def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
-        """No-op stub — Qdrant backend does not store file-summary embeddings."""
+        """
+        Insert or replace a file-level summary embedding.
+
+        Uses point_id = -(file_id) as a negative sentinel to distinguish
+        file-summary entries from regular chunk entries — same convention as
+        SQLiteVectorStore.  Payload carries type and file_id for filtering.
+        """
+        try:
+            from qdrant_client.models import PointStruct
+        except ImportError as exc:
+            raise ImportError(_QDRANT_MISSING_MSG) from exc
+
+        point = PointStruct(
+            id=-(file_id),
+            vector=embedding,
+            payload={"type": "file_summary", "file_id": file_id},
+        )
+        self._client.upsert(
+            collection_name=self._collection,
+            points=[point],
+        )

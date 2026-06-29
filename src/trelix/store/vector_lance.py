@@ -123,4 +123,11 @@ class LanceVectorStore(BaseVectorStore):
             return 0
 
     def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
-        """No-op stub — LanceDB backend does not store file-summary embeddings."""
+        """
+        Insert or replace a file-level summary embedding.
+
+        Uses chunk_id = -(file_id) as a negative sentinel to distinguish
+        file-summary entries from regular chunk entries — same convention as
+        SQLiteVectorStore.
+        """
+        self.upsert_batch([(-(file_id), embedding)])
