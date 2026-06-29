@@ -27,6 +27,7 @@ modules have no dependency on FastAPI, so the module remains importable without
 ``trelix[serve]`` installed.  FastAPI itself **is** imported lazily inside
 ``create_app()`` — that is the only optional dependency gated by this module.
 """
+
 from __future__ import annotations
 
 import logging
@@ -56,8 +57,7 @@ def create_app():  # noqa: ANN201
         from fastapi.responses import StreamingResponse  # noqa: F401
     except ImportError as e:
         raise ImportError(
-            "FastAPI is required for trelix serve. "
-            "Install with: pip install 'trelix[serve]'"
+            "FastAPI is required for trelix serve. Install with: pip install 'trelix[serve]'"
         ) from e
 
     app = FastAPI(title="trelix API", version=__version__)
