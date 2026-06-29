@@ -45,14 +45,16 @@ def detect_communities(
             communities = nx.community.louvain_communities(G_connected, seed=42)
         elif algorithm == "girvan_newman":
             gen = nx.community.girvan_newman(G_connected)
-            # Take 3 levels of splitting for reasonable granularity
+            last_communities = None
             try:
-                next(gen)
-                next(gen)
-                communities_tuple = next(gen)
-                communities = [set(c) for c in communities_tuple]
+                for _ in range(3):
+                    communities_tuple = next(gen)
+                    last_communities = [set(c) for c in communities_tuple]
             except StopIteration:
-                communities = [set(G_connected.nodes())]
+                pass
+            communities = (
+                last_communities if last_communities is not None else [set(G_connected.nodes())]
+            )
         elif algorithm == "label_prop":
             communities = list(nx.community.label_propagation_communities(G_connected))
         else:
