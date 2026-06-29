@@ -23,16 +23,17 @@ trelix stats  ./my-repo
 
 ## What's New in v2.0.0
 
-| Phase | Upgrade | What it adds | Impact |
-|-------|---------|-------------|--------|
-| 1 | **BGE-Code-v1 / Nomic CodeRankEmbed** | `bge-code` and `nomic-code` embedding providers | CoIR SOTA: 81.77 avg (BGE-Code-v1) |
-| 1 | **Voyage Matryoshka** | `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` | 2× faster HNSW, smaller storage |
-| 1 | **LLM-as-judge eval** | `LLMJudge.score()` semantic quality measurement | 0.0–1.0 retrieval quality score |
-| 2 | **PLAID reranker** | `rerank_provider=plaid` via RAGatouille (`trelix[plaid]`) | 7–45× faster ColBERT quality |
-| 2 | **Multi-granularity indexing** | `TRELIX_FILE_SUMMARIES_ENABLED=true` file-level LLM summaries | "Explain codebase" queries work |
-| 2 | **Streaming synthesis** | `trelix ask` streams tokens live; `GET /ask` SSE endpoint | No more waiting for full response |
-| 3 | **LanceDB backend** | `TRELIX_STORE_BACKEND=lance` (`trelix[lance]`) | 3–5× faster insert at 100k+ chunks |
-| 3 | **REST API** | `trelix serve ./repo --port 8765` (`trelix[serve]`) | Remote deployments, web integrations |
+| Phase | Upgrade | Impact |
+|-------|---------|--------|
+| **Embeddings** | BGE-Code-v1 (CoIR SOTA, 81.77 avg) | Best code retrieval quality |
+| **Embeddings** | Nomic CodeRankEmbed (no new deps) | Code-specialized, zero extra cost |
+| **Embeddings** | Voyage Matryoshka dims (256/512/1024/2048) | 2× faster HNSW, smaller storage |
+| **Eval** | LLM-as-judge scorer (0.0–1.0) | Semantic quality measurement |
+| **Retrieval** | RAPTOR-style file summaries | "Explain this codebase" queries work |
+| **Retrieval** | PLAID reranker (7–45× faster ColBERT) | Production-speed late interaction |
+| **Synthesis** | Streaming synthesis | Live token output, no 10s wait |
+| **Storage** | LanceDB backend (3–5× faster at 100k+ chunks) | Large-scale deployments |
+| **Platform** | REST API + SSE streaming | Remote deployments, web integrations |
 
 ---
 
@@ -84,6 +85,18 @@ trelix update-index ./my-repo src/auth/middleware.py
 
 # Migrate to Qdrant for large-scale deployments
 trelix migrate-vectors --to qdrant --url http://localhost:6333
+
+# Start REST API server
+trelix serve ./my-repo --port 8765
+
+# Use PLAID reranker (faster ColBERT)
+TRELIX_RETRIEVAL_RERANK_PROVIDER=plaid trelix ask ./my-repo "how does auth work?"
+
+# Enable file-level summaries (RAPTOR-style)
+TRELIX_FILE_SUMMARIES_ENABLED=true trelix index ./my-repo
+
+# Use LanceDB for large repos (100k+ chunks)
+TRELIX_STORE_BACKEND=lance trelix index ./my-repo
 ```
 
 ### GitHub Actions — index in CI
@@ -167,6 +180,9 @@ export VOYAGE_API_KEY=...
 
 # With local code-specialized embeddings (2B model, no API key)
 pip install "trelix[local-code]"   # requires ~8GB RAM/GPU
+
+# With BGE-Code-v1 embeddings (CoIR SOTA 2025)
+pip install "trelix[bge-code]"
 
 # With Cohere reranker (best precision)
 pip install "trelix[rerank]"
@@ -328,21 +344,42 @@ Markdown (heading sections), HTML (custom elements), CSS/SCSS
 
 ## Embedding Providers
 
-| Provider | Model | Dim | CoIR Score | Notes |
-|---|---|---|---|---|
-| `local` | all-MiniLM-L6-v2 | 384 | baseline | No API key, CPU |
-| `local-code` | SFR-Embedding-Code-2B_R | 4096 | **67.41** | No API key, ~8GB RAM/GPU |
-| `bge-code` | BAAI/bge-code-v1 | 768 | **81.77** | CoIR SOTA 2025, `pip install trelix[bge-code]` |
-| `nomic-code` | nomic-ai/nomic-embed-code | 768 | — | No new deps (uses sentence-transformers), included in `trelix[local]` |
-| `openai` | text-embedding-3-large | 3072 | ~45 | Best general-purpose |
-| `azure` | text-embedding-3-large | 3072 | ~45 | Azure-hosted OpenAI |
-| `voyage` | voyage-code-3 | 1024 | **56.26** | Best API-based code model |
-| `bedrock-titan` | amazon.titan-embed-text-v2:0 | 256/512/1024 | — | AWS Bedrock, configurable dims |
-| `bedrock-cohere` | cohere.embed-english-v3 | 1024 | — | AWS Bedrock, asymmetric doc/query |
+| Provider | Model | Dims | Quality | Install |
+|----------|-------|------|---------|---------|
+| local | all-MiniLM-L6-v2 | 384 | Baseline | included |
+| openai | text-embedding-3-large | 3072 | High | included |
+| azure | text-embedding-3-large | 3072 | High | included |
+| voyage | voyage-code-3 (Matryoshka) | 256–2048 | Very High | trelix[voyage] |
+| local-code | SFR-Embedding-Code-2B_R | 4096 | Very High | trelix[local] |
+| bge-code | BAAI/bge-code-v1 | 768 | SOTA 2025 | trelix[bge-code] |
+| nomic-code | nomic-ai/nomic-embed-code | 768 | High | trelix[local] |
+| bedrock-titan | amazon.titan-embed-text-v2:0 | 256–1024 | High | trelix[bedrock] |
+| bedrock-cohere | cohere.embed-english-v3 | 1024 | High | trelix[bedrock] |
 
 CoIR benchmark scores from [archersama.github.io/coir](https://archersama.github.io/coir/) (ACL 2025).
 
 > **voyage-code-3 Matryoshka:** Set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for 2× faster HNSW search with minimal quality loss.
+
+---
+
+## Vector Store Backends
+
+| Backend | Best for | Install |
+|---------|----------|---------|
+| SQLite (default) | Repos up to ~100k chunks | included |
+| Qdrant | 500k+ chunks, multi-repo | trelix[qdrant] |
+| LanceDB | 100k+ chunks, ARM/Apple Silicon | trelix[lance] |
+
+---
+
+## REST API
+
+```bash
+pip install "trelix[serve]"
+trelix serve ./my-repo --port 8765
+```
+
+Endpoints: GET /search, GET /ask (SSE streaming), POST /index, GET /health, GET /stats
 
 ---
 
