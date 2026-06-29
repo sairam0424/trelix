@@ -1,4 +1,5 @@
 """Tests for graph persistence — save/load community assignments."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,11 +12,19 @@ from trelix.store.db import Database
 
 def _make_db_with_symbol(tmp_path: Path) -> tuple[Database, int]:
     db = Database(tmp_path / "index.db")
-    f = IndexedFile(path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10)
+    f = IndexedFile(
+        path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10
+    )
     fid = db.upsert_file(f)
     s = Symbol(
-        file_id=fid, name="fn", qualified_name="fn", kind=SymbolKind.FUNCTION,
-        line_start=1, line_end=5, signature="def fn()", body="def fn(): pass",
+        file_id=fid,
+        name="fn",
+        qualified_name="fn",
+        kind=SymbolKind.FUNCTION,
+        line_start=1,
+        line_end=5,
+        signature="def fn()",
+        body="def fn(): pass",
     )
     sid = db.insert_symbol(s)
     return db, sid
@@ -58,6 +67,7 @@ class TestGraphPersistence:
 
         # New graph with no nodes — load should not crash
         import networkx as nx
+
         cg_empty = CodeGraph.__new__(CodeGraph)
         cg_empty._g = nx.MultiDiGraph()
         cg_empty._db = db

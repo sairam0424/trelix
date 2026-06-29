@@ -210,8 +210,6 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict]:
     - "Find the blast radius of a class" — who calls or imports it?
     - "What lives in the same architectural cluster as X?"
     """
-    from pathlib import Path as _Path
-
     from trelix.core.config import IndexConfig
     from trelix.graph.builder import GraphBuilder
     from trelix.graph.search import graph_search

@@ -422,7 +422,7 @@ class Database:
         return cursor.lastrowid  # type: ignore[return-value]
 
     def insert_chunk_for_symbol(self, symbol_id: int, chunk_text: str, token_count: int) -> int:
-        """Insert a chunk for a symbol — test/graph helper. Skips if symbol_id already has a chunk."""
+        """Insert a chunk for a symbol — graph/test helper. No-op if symbol already has a chunk."""
         existing = self._conn.execute(
             "SELECT id FROM chunks WHERE symbol_id = ?", (symbol_id,)
         ).fetchone()
@@ -887,15 +887,28 @@ class Database:
         result: list[tuple[Symbol, IndexedFile]] = []
         for row in rows:
             sym = Symbol(
-                id=row[0], file_id=row[1], name=row[2], qualified_name=row[3],
-                kind=SymbolKind(row[4]), line_start=row[5], line_end=row[6],
-                signature=row[7] or "", docstring=row[8], context_summary=row[9],
+                id=row[0],
+                file_id=row[1],
+                name=row[2],
+                qualified_name=row[3],
+                kind=SymbolKind(row[4]),
+                line_start=row[5],
+                line_end=row[6],
+                signature=row[7] or "",
+                docstring=row[8],
+                context_summary=row[9],
                 decorators=json.loads(row[10] or "[]"),
-                is_public=bool(row[11]), parent_id=row[12], body=row[13] or "",
+                is_public=bool(row[11]),
+                parent_id=row[12],
+                body=row[13] or "",
             )
             fi = IndexedFile(
-                id=row[14], path=row[15], rel_path=row[16],
-                language=Language(row[17]), hash=row[18], size_bytes=row[19],
+                id=row[14],
+                path=row[15],
+                rel_path=row[16],
+                language=Language(row[17]),
+                hash=row[18],
+                size_bytes=row[19],
             )
             result.append((sym, fi))
         return result
@@ -931,8 +944,12 @@ class Database:
         if row is None:
             return None
         return IndexedFile(
-            id=row[0], path=row[1], rel_path=row[2],
-            language=Language(row[3]), hash=row[4], size_bytes=row[5],
+            id=row[0],
+            path=row[1],
+            rel_path=row[2],
+            language=Language(row[3]),
+            hash=row[4],
+            size_bytes=row[5],
         )
 
     # ------------------------------------------------------------------
