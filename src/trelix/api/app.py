@@ -123,4 +123,65 @@ def create_app() -> Any:  # noqa: ANN201
             "chunks": db.count_chunks(),
         }
 
+    @app.get("/graph")
+    def graph_stats(repo: str) -> Any:
+        """Build CodeGraph and return stats."""
+        from trelix.graph.builder import GraphBuilder
+
+        config = IndexConfig(repo_path=repo)
+        result = GraphBuilder(config).build(extract_concepts=False)
+        return {
+            "node_count": result.node_count,
+            "edge_count": result.edge_count,
+            "community_count": result.community_count,
+            "elapsed_seconds": round(result.elapsed_seconds, 3),
+        }
+
+    @app.get("/graph/communities")
+    def graph_communities(repo: str) -> Any:
+        """Return community summary list."""
+        from trelix.graph.builder import GraphBuilder
+
+        config = IndexConfig(repo_path=repo)
+        result = GraphBuilder(config).build(extract_concepts=False)
+        return result.community_summary
+
+    @app.get("/graph/visualize")
+    def graph_visualize(repo: str, output: str = "") -> Any:
+        """Build graph and export Pyvis HTML. Returns path and node count."""
+        from pathlib import Path as _Path
+
+        from trelix.graph.builder import GraphBuilder
+        from trelix.graph.visualizer import GraphVisualizer
+
+        config = IndexConfig(repo_path=repo)
+        result = GraphBuilder(config).build(extract_concepts=False)
+        out = output or str(_Path(repo) / ".trelix" / "graph.html")
+        path = GraphVisualizer().export_html(result.code_graph, out)
+        return {"path": path, "node_count": result.node_count}
+
+    @app.get("/graph/search")
+    def graph_search_endpoint(repo: str, symbol_id: int, depth: int = 2) -> Any:
+        """BFS graph search starting from a symbol ID."""
+        from trelix.graph.builder import GraphBuilder
+        from trelix.graph.search import graph_search
+        from trelix.store.db import Database
+
+        config = IndexConfig(repo_path=repo)
+        result = GraphBuilder(config).build(extract_concepts=False)
+        db = Database(config.db_path_absolute)
+        results = graph_search(
+            db, result.code_graph, [symbol_id], depth=depth, max_results=20
+        )
+        return [
+            {
+                "symbol": r.symbol.qualified_name,
+                "file": r.file.rel_path,
+                "kind": r.symbol.kind.value,
+                "score": round(r.score, 4),
+                "source": r.source,
+            }
+            for r in results
+        ]
+
     return app
