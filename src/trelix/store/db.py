@@ -421,6 +421,15 @@ class Database:
         )
         return cursor.lastrowid  # type: ignore[return-value]
 
+    def insert_chunk_for_symbol(self, symbol_id: int, chunk_text: str, token_count: int) -> int:
+        """Insert a chunk directly for a symbol — test/graph helper."""
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO chunks (symbol_id, chunk_text, token_count) VALUES (?, ?, ?)",
+            (symbol_id, chunk_text, token_count),
+        )
+        self._conn.commit()
+        return cur.lastrowid or 0
+
     # ------------------------------------------------------------------
     # File summaries (Phase 2: RAPTOR-style multi-granularity indexing)
     # ------------------------------------------------------------------

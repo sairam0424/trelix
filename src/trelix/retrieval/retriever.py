@@ -320,18 +320,43 @@ class Retriever:
                     self.db, patterns, max_extra=strategy.import_max_extra
                 )
 
+        # Graph search leg (optional 4th retrieval leg — CodeGraph BFS)
+        graph_search_results: list[SearchResult] = []
+        if cfg.graph_search_enabled:
+            try:
+                from trelix.graph.code_graph import CodeGraph
+                from trelix.graph.search import graph_search
+
+                cg = CodeGraph(self.db)
+                seed_ids = [r.chunk.symbol_id for r in fused[:10] if r.chunk.symbol_id]
+                graph_search_results = graph_search(
+                    db=self.db,
+                    cg=cg,
+                    query_symbol_ids=seed_ids,
+                    depth=cfg.graph_search_depth,
+                    max_results=cfg.graph_search_max_results,
+                )
+            except Exception as exc:
+                logger.debug("Graph search leg failed (non-fatal): %s", exc)
+
         candidates = self._dedup(
-            fused + call_expanded + import_expanded + type_expanded + import_path_seeded
+            fused
+            + call_expanded
+            + import_expanded
+            + type_expanded
+            + import_path_seeded
+            + graph_search_results
         )
 
         logger.info(
             "Post-expansion candidates: fused=%d call_exp=%d import_exp=%d "
-            "type_exp=%d path_seed=%d total=%d",
+            "type_exp=%d path_seed=%d graph_search=%d total=%d",
             len(fused),
             len(call_expanded),
             len(import_expanded),
             len(type_expanded),
             len(import_path_seeded),
+            len(graph_search_results),
             len(candidates),
         )
 

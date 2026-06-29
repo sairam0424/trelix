@@ -333,6 +333,11 @@ class RetrievalConfig(BaseSettings):
     context_token_budget: int = 12_000
     synthesis_max_tokens: int = 12_000
 
+    # CodeGraph BFS retrieval (4th leg — off by default)
+    graph_search_enabled: bool = False  # Enable CodeGraph as 4th retrieval leg
+    graph_search_depth: int = 2         # BFS depth for graph expansion
+    graph_search_max_results: int = 15  # Max results from graph search leg
+
     # GraphRAG map-reduce synthesis
     graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")
     graph_rag_threshold_tokens: int = 8000
