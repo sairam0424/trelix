@@ -12,9 +12,15 @@ cd trelix
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# Install in editable mode with all dev + optional deps
+# Install in editable mode with all dev + optional deps (v2.0.0)
 make install-dev
-# equivalent: pip install -e ".[local,rerank,dev]"
+# equivalent: pip install -e ".[bge-code,plaid,lance,serve,dev]"
+# Optional extras:
+#   [bge-code]  — BGE-Code embeddings (requires torch, transformers)
+#   [plaid]     — Plaid financial data integration
+#   [lance]     — LanceDB vector store for large-scale deployments
+#   [serve]     — REST API server (FastAPI + Uvicorn)
+#   [dev]       — testing, linting, type-checking (always included)
 
 # Copy environment template
 cp .env.example .env
@@ -26,10 +32,12 @@ cp .env.example .env
 ```bash
 make test           # full suite with coverage (929 unit + 16 integration tests)
 make test-fast      # unit tests only (no API calls, fast)
-make lint           # ruff check
+make lint           # ruff check + ruff format (auto-formats before diff-check, cross-platform safe)
 make format         # ruff format
 make typecheck      # mypy
 ```
+
+**Note on CI checks (v2.0.0):** The ruff format step now runs as part of linting — files are auto-formatted before the diff-check, ensuring cross-platform consistency (Windows CRLF vs Unix LF).
 
 ### Running specific test subsets
 
@@ -67,7 +75,24 @@ main          ← stable releases only (do not push directly)
 6. Add `Language.YOURLANG` to `WalkerConfig.languages` default list in `src/trelix/core/config.py`
 7. Write tests in `tests/unit/test_parser_<language>.py` with fixture files
 
-### Adding a New LLM Provider (v0.7.0)
+### Embedder Providers
+
+trelix v2.0.0 ships with built-in support for multiple embedding backends:
+
+- **Local embeddings** (`local`) — Uses transformers library (default, no API keys needed)
+- **BGE-Code-v1** (`bge-code`) — BAAI General Embedding for code, optimized for semantic code search
+- **Nomic CodeRankEmbed** (`code-rank`) — Open-source embeddings specialized for code ranking
+- **Azure OpenAI Embeddings** — Enterprise deployment via Azure; set `TRELIX_EMBEDDER_PROVIDER=azure`
+- **Bedrock** — AWS-hosted embeddings via Bedrock
+
+To use BGE-Code or CodeRank embeddings, install the optional extra:
+
+```bash
+pip install -e ".[bge-code]"
+# Then set TRELIX_EMBEDDER_PROVIDER=bge-code in .env
+```
+
+### Adding a New LLM Provider (v2.0.0)
 
 trelix uses a provider-agnostic `TrelixChatClient` ABC (`src/trelix/llm/client.py`). All five built-in backends (`OpenAIBackend`, `AnthropicBackend`, `BedrockBackend`, `VertexBackend`, `LiteLLMBackend`) implement the same three methods: `complete()`, `stream()`, and `tool_call()`. Adding a new provider requires zero changes to business logic (chunker, synthesizer, planner, graph_rag).
 
@@ -101,7 +126,7 @@ Open a [GitHub Discussion](https://github.com/sairam0424/trelix/discussions) for
 
 ## Versioning & Stability Policy
 
-trelix follows [Semantic Versioning 2.0.0](https://semver.org/).
+trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.0.0**.
 
 ### Stable public API (guaranteed not to change without a major version bump)
 
