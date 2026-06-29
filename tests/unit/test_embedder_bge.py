@@ -43,22 +43,19 @@ class TestBGECodeEmbedder:
             assert len(result[0]) == 768
 
     def test_embed_query_uses_query_instruction(self) -> None:
-        from trelix.embedder.bge_code import _QUERY_INSTRUCTION, BGECodeEmbedder
+        from trelix.embedder.bge_code import BGECodeEmbedder
 
         mock_model = MagicMock()
         mock_model.get_sentence_embedding_dimension.return_value = 768
-        mock_model.encode.return_value = [[0.1] * 768]
+        mock_model.encode_queries.return_value = [[0.1] * 768]
         with patch("trelix.embedder.bge_code.FlagModel", return_value=mock_model):
             cfg = EmbedderConfig(provider="bge-code", _env_file=None)
             emb = BGECodeEmbedder(cfg)
             emb.embed_query("how does auth work")
-            call_args = mock_model.encode.call_args
-            # BGE query embedding should use instruction prefix
-            assert call_args is not None
-            # Verify instruction was prepended to the query text
-            called_texts = call_args[0][0]  # positional arg is a list of strings
-            assert len(called_texts) == 1
-            assert called_texts[0] == _QUERY_INSTRUCTION + "how does auth work"
+            assert mock_model.encode_queries.called
+            called_texts = mock_model.encode_queries.call_args[0][0]
+            # no manual prefix — encode_queries adds it internally
+            assert called_texts == ["how does auth work"]
 
     def test_make_embedder_returns_bge(self) -> None:
         from trelix.embedder.base import make_embedder

@@ -63,8 +63,9 @@ class BGECodeEmbedder(BaseEmbedder):
         return [list(v) for v in vecs]
 
     def embed_query(self, text: str) -> list[float]:
-        # Prepend instruction prefix as BGE-Code-v1 training protocol specifies
-        vecs = self._model.encode([_QUERY_INSTRUCTION + text], batch_size=1)
+        # encode_queries() handles the instruction prefix internally via
+        # query_instruction_for_retrieval — no manual prepend needed.
+        vecs = self._model.encode_queries([text])
         return list(vecs[0])
 
     @property
