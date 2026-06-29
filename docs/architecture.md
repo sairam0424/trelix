@@ -1,4 +1,4 @@
-# Trelix Architecture (v0.7.0)
+# Trelix Architecture (v2.0.0)
 
 ## Indexing Pipeline (offline — `trelix index`)
 
@@ -8,8 +8,8 @@ Repository
        └─ Tree-sitter Parser  (20 languages → symbols + call/import/type edges)
             ├─ ContextualChunker  (LLM context summary + breadcrumb header)
             │    └─ Embedder  (voyage | local-code | azure | openai | local |
-            │    │             bedrock-titan | bedrock-cohere)
-            │         └─ sqlite-vec HNSW  (O(log n) ANN — or Qdrant for >500k)
+            │    │             bedrock-titan | bedrock-cohere | bge-code | nomic-code)
+            │         └─ sqlite-vec HNSW  (O(log n) ANN — or Qdrant / LanceDB for >500k)
             └─ SQLite DB   (files, symbols, call_graph, imports, FTS5 BM25)
 ```
 
@@ -57,7 +57,7 @@ User Query
                                 ├─ call_graph (qualified-name + type-hint precision)
                                 ├─ import_graph (forward/reverse, depth 1-2)
                                 └─ type_edges (extends/implements/trait_impl)
-                                     └─ Reranker (Cohere | cross-encoder)
+                                     └─ Reranker (Cohere | cross-encoder | PLAID)
                                           └─ Context Assembler (greedy | breadth_first)
                                                └─ Synthesis (via TrelixChatClient)
                                                     ├─ ≤8k tokens: Direct LLM call
@@ -96,6 +96,13 @@ results (N > 20)
   REDUCE: merge partial answers
           → LLM synthesizes final: "Synthesize these partial answers: {partial_answers}"
 ```
+
+### Streaming Synthesis
+
+`Synthesizer.stream(query, context)` returns an `Iterator[str]` — each yielded token
+is flushed immediately to the caller. Used by the `/ask` SSE endpoint and the
+`trelix ask --stream` CLI flag. GraphRAG map-reduce switches to non-streaming for
+the MAP phase (parallel LLM calls) and streams only the final REDUCE step.
 
 ---
 
@@ -141,9 +148,9 @@ Primary model: `us.anthropic.claude-sonnet-4-6` (override: `TRELIX_LLM_BEDROCK_P
 Automatic fallback to `us.anthropic.claude-haiku-4-5-20251001-v1:0` on `ValidationException`
 (override: `TRELIX_LLM_BEDROCK_FALLBACK_MODEL`). Fallback is transparent — no caller change needed.
 
-### LLM call sites (all migrated in v0.7.0)
+### LLM call sites (all migrated in v0.7.0, extended in v2.0.0)
 
-All 5 call sites now use `TrelixChatClient` via `build_chat_client()`:
+All call sites use `TrelixChatClient` via `build_chat_client()`:
 
 1. `ContextualChunker` — per-symbol context summary generation
 2. `Indexer` — coordinating chunker during indexing
@@ -182,6 +189,7 @@ Single file (`.trelix/index.db`) with WAL mode + FTS5 + sqlite-vec HNSW.
 | `imports` | id, file_id, imported_from, imported_names, imported_file_id | Import edges |
 | `type_edges` | id, from_symbol_id, to_type_name, edge_kind, to_symbol_id | Inheritance / trait / embed |
 | `chunks` | id, symbol_id, chunk_text, token_count | Embeddable text units |
+| `file_summaries` | id, file_id, summary, created_at | LLM-generated 2–4 sentence file descriptions (RAPTOR) |
 | `symbols_fts` | FTS5 virtual table over name, qualified_name, docstring, body, **context_summary** | BM25 keyword search |
 | `vec_chunks` | sqlite-vec HNSW virtual table | ANN vector search |
 
@@ -192,6 +200,23 @@ Drop-in `QdrantVectorStore` via `BaseVectorStore` ABC. Set `TRELIX_STORE_BACKEND
 Collection config: HNSW m=16, ef_construct=200, filterable by file_id.
 
 Migration: `trelix migrate-vectors --to qdrant --url http://localhost:6333`
+
+### LanceDB (optional — embedded columnar store)
+
+Drop-in `LanceDBVectorStore` via `BaseVectorStore` ABC. Set `TRELIX_STORE_BACKEND=lancedb`.
+
+LanceDB stores all chunk vectors in a Lance columnar format under `.trelix/lancedb/`.
+File-level summary vectors use a **sentinel chunk_id** of `-(file_id)` — a negative file
+ID that cannot collide with any real chunk row — so summary entries and code-chunk entries
+share the same table without a separate column.
+
+```python
+# sentinel convention
+SENTINEL_CHUNK_ID = -(file_id)   # e.g. file_id=42 → chunk_id=-42
+```
+
+Install: `pip install trelix[lancedb]`  
+Migration: `trelix migrate-vectors --to lancedb --path .trelix/lancedb`
 
 ---
 
@@ -206,8 +231,31 @@ Migration: `trelix migrate-vectors --to qdrant --url http://localhost:6333`
 | `voyage` | voyage-code-3 | 1024 | **56.26** | `trelix[voyage]` |
 | `bedrock-titan` | amazon.titan-embed-text-v2:0 | 256/512/1024 | — | `trelix[bedrock]` |
 | `bedrock-cohere` | cohere.embed-english-v3 | 1024 | — | `trelix[bedrock]` |
+| `bge-code` | BGE-Code-v1 | 1536 | **63.10** | `trelix[bge-code]` |
+| `nomic-code` | nomic-embed-code (CodeRankEmbed) | 768 | **58.40** | `trelix[nomic-code]` |
 
 CoIR (Code Information Retrieval) benchmark — ACL 2025. Higher is better.
+
+### BGE-Code-v1 (v2.0.0)
+
+**BGECodeEmbedder** (`bge-code`): FlagEmbedding-based code embedder producing 1536-dim vectors.
+Instruction-tuned for code retrieval — prepend `"Represent this code for retrieval: "` at
+query time (handled internally). Lazy-loaded on first call.
+
+```bash
+pip install trelix[bge-code]   # installs FlagEmbedding + torch
+```
+
+### Nomic CodeRankEmbed (v2.0.0)
+
+**NomicCodeEmbedder** (`nomic-code`): sentence-transformers wrapper around
+`nomic-ai/nomic-embed-code` (CodeRankEmbed). 768-dim, ~137M params, Apache 2.0 license.
+Asymmetric: query prefix `"search_query: "` / document prefix `"search_document: "` applied
+automatically. Runs fully offline — no API key required.
+
+```bash
+pip install trelix[nomic-code]   # installs sentence-transformers + torch
+```
 
 ### Bedrock embedders (v0.7.0)
 
@@ -221,6 +269,40 @@ retrieval precision.
 
 Both reuse `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` from `.env` —
 no extra credentials beyond what `BedrockBackend` already requires.
+
+---
+
+## Reranking
+
+### Cohere / cross-encoder (existing)
+
+`CohereReranker` and `CrossEncoderReranker` are the default reranking backends,
+selected via `TRELIX_RERANKER` env var (`cohere` | `cross-encoder`).
+
+### PLAID Reranker (v2.0.0)
+
+**PlaidReranker** uses [RAGatouille](https://github.com/bclavie/RAGatouille) to run a
+ColBERT late-interaction reranker (PLAID index engine) locally.
+
+Key behaviours:
+- **Lazy model loading**: the ColBERT model is loaded on the first `rerank()` call, not at
+  import time — cold start is ~2s on first use, instant thereafter.
+- **Graceful fallback**: if `ragatouille` is not installed or model loading fails, the
+  reranker falls back to score-passthrough (results returned in their original order) and
+  logs a warning rather than raising.
+- **from_pretrained() API**: model is loaded via
+  `RAGPretrainedModel.from_pretrained("colbert-ir/colbertv2.0")` (override:
+  `TRELIX_RERANKER_PLAID_MODEL`).
+
+```bash
+pip install trelix[plaid]   # installs ragatouille + faiss-cpu
+```
+
+```python
+# env var selection
+TRELIX_RERANKER=plaid
+TRELIX_RERANKER_PLAID_MODEL=colbert-ir/colbertv2.0   # optional override
+```
 
 ---
 
@@ -243,6 +325,37 @@ Expected impact: ~40% reduction in false-positive cross-file call edges.
 
 ---
 
+## File-Level Summaries — RAPTOR (v2.0.0)
+
+`FileSummarizer` generates a concise 2–4 sentence LLM description of each file during
+indexing, inspired by the RAPTOR hierarchical retrieval approach (abstractive summarisation
+at multiple granularities).
+
+### Storage
+
+- **DB table**: `file_summaries` (columns: `id`, `file_id`, `summary`, `created_at`)
+- **Vector index**: each summary is embedded and stored alongside chunk vectors.  
+  In the LanceDB backend the sentinel `chunk_id = -(file_id)` is used so no separate
+  table or column is needed. In the SQLite backend a dedicated `vec_file_summaries`
+  virtual table is used.
+
+### Retrieval integration
+
+File-summary vectors participate in the `file_overview` and `project_overview` retrieval
+strategies — they are retrieved first, then individual chunk results are merged in.
+
+### Feature flag
+
+Gated by `TRELIX_FILE_SUMMARIES_ENABLED` (default: `false`). Set to `true` to enable
+during indexing. Re-indexing is required when the flag is first enabled on an existing
+index.
+
+```bash
+TRELIX_FILE_SUMMARIES_ENABLED=true trelix index .
+```
+
+---
+
 ## File Watcher (`trelix watch`)
 
 ```
@@ -259,22 +372,59 @@ Requires `pip install trelix[watch]` (watchdog).
 
 ---
 
-## Test Coverage (v0.7.0)
+## Test Coverage (v2.0.0)
 
 | Suite | Count | What's covered |
 |-------|-------|---------------|
 | Unit tests (core) | **929** | All modules, all parsers, all providers, LLM factory |
 | Integration tests (live) | **16** | Azure + Bedrock chat (complete/stream/tool_call) + Bedrock embeddings; skip gracefully when creds absent |
-| Eval harness | 50 queries | MRR, Recall@1/5/10, NDCG@10 on trelix-self |
+| Eval harness | 50 queries | MRR, Recall@1/5/10, NDCG@10 on trelix-self; LLM-as-judge score per result |
 | trelix-mcp tests | **9** | 4 tools, stdout-clean MCP protocol test |
 | trelix-langchain tests | **19** | BaseRetriever, Document structure, metadata keys |
 | trelix-llama-index tests | **10** | BaseRetriever, NodeWithScore structure |
+
+### LLM-as-Judge Eval (v2.0.0)
+
+`LLMJudge` in `tests/eval/llm_judge.py` scores each retrieval result on a 0–1 relevance
+scale using a secondary LLM call (default: `gpt-4o-mini`). Scores are integrated into
+the eval harness pipeline:
+
+- `EvalResult.judge_score` — per-query float (0.0–1.0)
+- `EvalReport.mean_judge_score` — aggregate mean across all 50 eval queries
+
+`LLMJudge` is optional — the eval harness runs without it if `TRELIX_EVAL_LLM_JUDGE=false`
+(default: `false`). When enabled, it adds ~$0.02 per full eval run at gpt-4o-mini pricing.
 
 Python 3.11 and 3.12 supported.
 
 ---
 
-## Ecosystem Packages (v0.7.0)
+## REST API (v2.0.0)
+
+`trelix.api.app.create_app()` returns a FastAPI application that exposes the full
+retrieval + indexing surface over HTTP. Start it with:
+
+```bash
+pip install trelix[api]   # installs fastapi + uvicorn + sse-starlette
+uvicorn trelix.api.app:app --host 0.0.0.0 --port 8080
+```
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/search` | Keyword + vector hybrid search; body: `{query, repo_path, k}` |
+| `POST` | `/ask` | SSE streaming answer; body: `{query, repo_path}`; response: `text/event-stream` |
+| `POST` | `/index` | Trigger (re-)indexing of a repo; body: `{repo_path, provider}` |
+| `GET`  | `/health` | Liveness check; returns `{"status": "ok"}` |
+| `GET`  | `/stats` | Index statistics (file count, symbol count, chunk count, last_indexed) |
+
+The `/ask` endpoint uses `Synthesizer.stream()` internally — each SSE `data:` event is a
+single yielded token, terminated by a `data: [DONE]` sentinel.
+
+---
+
+## Ecosystem Packages (v2.0.0)
 
 | Package | PyPI | Purpose |
 |---------|------|---------|
@@ -294,9 +444,14 @@ pip install trelix[litellm]      # + LiteLLM (100+ providers)
 pip install trelix[llm-all]      # all LLM providers
 pip install trelix[local]        # + local sentence-transformers (no API key)
 pip install trelix[local-code]   # + SFR-Embedding-Code-2B_R (no API key, ~8GB RAM)
+pip install trelix[bge-code]     # + BGE-Code-v1 embedder (FlagEmbedding, no API key)
+pip install trelix[nomic-code]   # + Nomic CodeRankEmbed embedder (no API key)
 pip install trelix[voyage]       # + Voyage AI code embeddings
 pip install trelix[rerank]       # + Cohere reranker
+pip install trelix[plaid]        # + PLAID/ColBERT reranker (RAGatouille)
 pip install trelix[qdrant]       # + Qdrant vector backend
+pip install trelix[lancedb]      # + LanceDB columnar vector backend
+pip install trelix[api]          # + FastAPI REST server (uvicorn + sse-starlette)
 pip install trelix[watch]        # + file watcher (watchdog)
 pip install trelix[all]          # everything
 ```
