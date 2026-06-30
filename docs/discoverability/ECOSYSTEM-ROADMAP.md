@@ -10,6 +10,7 @@ Target audience: AI agent developers + IDE users + DevOps/CI engineers (all thre
 - ✅ Streaming synthesis shipped
 - ✅ BGE-Code-v1 embedder shipped
 - ✅ Nomic CodeRankEmbed shipped
+- ✅ Knowledge Graph shipped (v2.0.0) — CodeGraph, Louvain communities, Pyvis viz, 4th retrieval leg, MCP tools
 
 ---
 
@@ -55,6 +56,8 @@ A separate Python package published to PyPI as `trelix-mcp`.
 | `get_symbol` | Resource | DB lookup by qualified_name |
 | `list_languages` | Resource | Walker language list |
 | `repo_stats` | Resource | `trelix stats` output |
+| `build_knowledge_graph` | Tool | `GraphBuilder.build()` — ✅ shipped v2.0.0 |
+| `graph_search_mcp` | Tool | `graph_search(query, depth)` — ✅ shipped v2.0.0 |
 
 **Implementation pattern** (FastMCP + Streamable HTTP — research finding [1]):
 ```python
@@ -157,6 +160,7 @@ keywords = [
     "mcp", "model-context-protocol", "ast", "vector-search", "bm25",
     "call-graph", "embeddings", "openai", "langchain", "llama-index",
     "code-assistant", "code-retrieval", "static-analysis",               # ← NEW
+    "knowledge-graph", "graph-search", "community-detection",            # ← NEW (v2.0.0)
 ]
 ```
 
@@ -368,8 +372,9 @@ docker run -v /your/repo:/repo -p 8000:8000 sairam0424/trelix
 
 [trelix](https://github.com/sairam0424/trelix) is a Python library and CLI for 
 code intelligence: indexes 20+ languages via Tree-sitter AST, hybrid 
-BM25+vector search, call-graph expansion, adaptive query planning, and LLM 
-synthesis. Zero infrastructure (SQLite). MCP-compatible.
+BM25+vector search, call-graph expansion, knowledge graph with Louvain community 
+detection, adaptive query planning, and LLM synthesis. Zero infrastructure 
+(SQLite). MCP-compatible.
 
 `pip install trelix` | MIT License
 ```
@@ -378,13 +383,14 @@ synthesis. Zero infrastructure (SQLite). MCP-compatible.
 
 ## Tier 4.2 — Product Hunt + Show HN
 
-**Product Hunt**: Launch on a Tuesday/Wednesday. Key sections: tagline (≤60 chars), description, gallery screenshots of `trelix search` and `trelix ask` output. Request maker comment first.
+**Product Hunt**: Launch on a Tuesday/Wednesday. Key sections: tagline (≤60 chars), description, gallery screenshots of `trelix search`, `trelix ask` output, and the Pyvis knowledge-graph visualization. Request maker comment first.
 
 **Tagline options:**
 - "Search any codebase like you talk to a developer"
 - "Code intelligence that understands calls, imports, and types"
+- "From code search to code intelligence — with knowledge graphs"
 
-**Show HN title**: `Show HN: trelix – hybrid code search with Tree-sitter, BM25+vectors, and call graphs`
+**Show HN title**: `Show HN: trelix – hybrid code search with Tree-sitter, BM25+vectors, call graphs, and knowledge graph`
 
 ---
 
@@ -415,6 +421,96 @@ paths:
 
 ---
 
+## Knowledge Graph Ecosystem
+
+The v2.0.0 knowledge graph feature opens new discoverability and positioning angles that go beyond standard code search.
+
+### Live dry-run numbers (trelix indexing itself)
+
+| Metric | Value |
+|---|---|
+| Graph nodes | 4,599 |
+| Graph edges | 4,945 |
+| Louvain communities | 2,409 |
+| Graph build time | 0.34s |
+| Top node degree | 438 (`parse`) |
+| Retriever results with graph enabled | 30 (5 graph + 19 vector + 4 BM25 + 2 graph_expansion) |
+
+### Graph visualization as a demo asset
+
+The `trelix graph ./repo --visualize` command produces an interactive Pyvis HTML file. This is screenshot-friendly for:
+
+- **Product Hunt gallery**: an interactive graph of a well-known OSS repo (e.g., FastAPI or Pydantic) is a compelling visual that communicates "code intelligence" immediately.
+- **Show HN post**: embedding or linking to a hosted Pyvis HTML is a low-friction live demo — viewers can pan/zoom a real call graph without installing anything.
+- **Social media (Twitter/X, LinkedIn)**: a graph screenshot of a large repo (thousands of nodes, visible cluster colors) is attention-grabbing and shareable with no context required.
+- **README hero image**: replace or supplement the current ASCII output with a graph screenshot to signal sophistication at first glance.
+
+### "Architecture understanding" as a distinct use-case angle
+
+Most code-search tools are positioned around "find the relevant snippet." The knowledge graph enables a second, orthogonal positioning:
+
+- **Onboarding**: "Understand a new codebase's architecture in 30 seconds" — generate a community-clustered graph, each cluster labeled with its dominant concept. This targets staff engineers, new-hire onboarding workflows, and open-source contributors.
+- **Blast radius analysis**: graph traversal makes it possible to answer "what else does this module touch?" structurally, not just lexically.
+- **Refactoring planning**: community boundaries are natural refactoring seams. Messaging this to senior engineers and architects is a differentiated angle no BM25+vector tool can match.
+
+This framing lets trelix appeal simultaneously to:
+- Juniors / new hires (onboarding)
+- Staff engineers (architecture review)
+- AI agent developers (graph_search MCP tool for richer context)
+
+### MCP tools usage patterns (Claude Code / Cursor)
+
+The two shipped MCP tools create concrete agent workflows that can be featured in docs and demos:
+
+```
+# Workflow 1 — Understand a new repo
+build_knowledge_graph(repo_path="./my-repo", detect_communities=True)
+→ Returns: node count, edge count, top communities with descriptions
+
+# Workflow 2 — Graph-aware code search
+graph_search_mcp(query="authentication flow", repo_path="./my-repo", depth=2)
+→ Returns: 10 structurally adjacent results from degree-438 hub nodes
+```
+
+These patterns are worth publishing as Claude Code usage examples and adding to the Smithery/mcp.so listing descriptions — they differentiate trelix from simple retrieval MCP servers.
+
+### Install path for graph features
+
+```bash
+# Full knowledge-graph install
+pip install 'trelix[knowledge-graph]'   # pyvis>=0.3.2, networkx>=3.3.0
+
+# Alias
+pip install 'trelix[graph-viz]'         # same deps
+
+# Opt-in config (zero impact when off)
+graph_search_enabled: bool = False      # set True to activate 4th retrieval leg
+graph_search_depth: int = 2
+graph_search_max_results: int = 15
+
+# Or via env var
+TRELIX_GRAPH_SEARCH_ENABLED=true
+```
+
+### Breaking change note (v2.0.0)
+
+`trelix graph <repo> <symbol>` (old call-graph display) is now `trelix call-graph <repo> <symbol>`. The `trelix graph` command now invokes the knowledge graph builder. Document this prominently in migration guides and PyPI changelog.
+
+### Blog post: "From code search to code intelligence: trelix's knowledge graph"
+
+Proposed outline for a technical blog post targeting senior engineers and AI agent builders:
+
+1. **The problem**: vector search finds semantically similar symbols but misses structural relationships — a function called by 438 other symbols is not inherently more "relevant" by embedding alone.
+2. **The approach**: build a NetworkX MultiDiGraph from Tree-sitter AST call/import/type edges, run Louvain community detection, persist to SQLite.
+3. **The numbers**: 4,599 nodes, 4,945 edges, 2,409 communities, 0.34s build on trelix itself.
+4. **The retrieval impact**: with `graph_search_enabled=True`, the retriever fuses graph BFS results with vector and BM25 hits — 30 results across 4 legs vs. the baseline.
+5. **MCP integration**: two new tools (`build_knowledge_graph`, `graph_search_mcp`) let Claude Code and Cursor agents query the graph directly.
+6. **Visualization**: Pyvis HTML — paste the generated file into a browser for an interactive exploration of your codebase.
+
+Publish on: personal site (canonical) → Medium import → Dev.to with `canonical_url` → LinkedIn carousel.
+
+---
+
 ## Implementation Order
 
 ```
@@ -425,6 +521,7 @@ Week 2:  GitHub Action (Tier 2.3) — sairam0424/trelix-index-action
 Week 3:  VS Code extension (Tier 3.1) + Homebrew tap (Tier 3.2)
 Week 3:  Docker Hub (Tier 3.3)
 Week 4:  Awesome list PRs (Tier 4.1) + Product Hunt launch (Tier 4.2)
+Week 4:  Knowledge graph blog post + Pyvis demo page (Knowledge Graph Ecosystem section)
 ```
 
 ---
@@ -437,6 +534,8 @@ Week 4:  Awesome list PRs (Tier 4.1) + Product Hunt launch (Tier 4.2)
 |---|---|---|
 | BGE double-prefix investigation | 📋 Backlog | Evaluate BGE double-prefix strategy for improved code semantics retrieval |
 | LanceDB + Qdrant file summary retrieval leg integration | 📋 Backlog | Integrate file-level summaries with hybrid LanceDB/Qdrant retrieval pipeline |
+| Knowledge graph — LLM-powered concept labeling per community | 📋 Backlog | Use ConceptExtractor to auto-label Louvain clusters for richer onboarding output |
+| Knowledge graph — incremental re-index on file change | 📋 Backlog | Only rebuild affected subgraph nodes instead of full rebuild |
 
 ---
 
@@ -451,4 +550,5 @@ Week 4:  Awesome list PRs (Tier 4.1) + Product Hunt launch (Tier 4.2)
 | GitHub Actions Marketplace | DevOps engineers | 100k+ |
 | Homebrew | macOS developers | 50k+ |
 | Awesome lists | All developers | 200k+ |
-| **Total** | | **~2M potential touchpoints** |
+| Knowledge graph blog post + demo | Engineers & AI builders | 10k–50k (launch) |
+| **Total** | | **~2M+ potential touchpoints** |
