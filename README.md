@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/trelix)](https://pypi.org/project/trelix/)
 [![Python](https://img.shields.io/pypi/pyversions/trelix)](https://pypi.org/project/trelix/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.1.0-blue)](CHANGELOG.md)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blue)](https://github.com/sairam0424/trelix)
 [![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
@@ -13,12 +13,17 @@
 
 > **v2.0.0 Breaking Change:** The `trelix graph <repo> <symbol>` call-graph display command has been renamed to `trelix call-graph <repo> <symbol>`.
 
+> **v2.1.0:** Beast-mode retrieval — file-summary 5th leg, HyDE expansion, FLARE confidence-gated re-retrieval, PageRank symbol boost, incremental graph updater, query telemetry, and CoIR eval harness. All opt-in via env flags.
+
 ```
-trelix index  ./my-repo
-trelix ask    ./my-repo "how does authentication work?"
-trelix search ./my-repo "JWT validation"
-trelix watch  ./my-repo          # real-time incremental indexing
-trelix stats  ./my-repo
+trelix index     ./my-repo
+trelix ask       ./my-repo "how does authentication work?"
+trelix search    ./my-repo "JWT validation"
+trelix watch     ./my-repo          # real-time incremental indexing + graph updater
+trelix stats     ./my-repo
+trelix telemetry ./my-repo          # query performance telemetry
+trelix eval      ./my-repo --golden queries.jsonl   # CoIR eval harness
+trelix call-graph ./my-repo <symbol>
 ```
 
 ---
@@ -37,6 +42,20 @@ trelix stats  ./my-repo
 | **Storage** | LanceDB backend (3–5× faster at 100k+ chunks) | Large-scale deployments |
 | **Platform** | REST API + SSE streaming | Remote deployments, web integrations |
 | **Knowledge Graph** | Unified code property graph, Louvain community detection, Pyvis visualization, BFS 4th retrieval leg | Architecture understanding queries work |
+
+---
+
+## What's New in v2.1.0
+
+| Category | Upgrade | Activation |
+|----------|---------|------------|
+| **Retrieval** | File-summary 5th retrieval leg — semantic search over LLM-generated file summaries | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true` |
+| **Retrieval** | HyDE query expansion — generates a hypothetical code snippet to improve ANN recall | `TRELIX_RETRIEVAL_HYDE_FALLBACK=true` |
+| **Retrieval** | FLARE confidence-gated re-retrieval — re-queries when synthesis confidence is low | `TRELIX_RETRIEVAL_FLARE=true` |
+| **Retrieval** | PageRank symbol boost — promotes highly-connected symbols in graph ranking | `TRELIX_RETRIEVAL_PAGERANK_BOOST=true` |
+| **Indexing** | Incremental graph updater — `trelix watch` automatically patches the knowledge graph on file changes | automatic with `trelix watch` |
+| **Observability** | Query telemetry — latency, hit rates, and retrieval leg breakdown per query | `TRELIX_TELEMETRY_ENABLED=true` / `trelix telemetry` CLI |
+| **Eval** | CoIR eval harness — `trelix eval` measures Recall@k / MRR against a golden set | `trelix eval --golden <file>` |
 
 ---
 
@@ -60,6 +79,13 @@ trelix stats  ./my-repo
 - **REST API** — `trelix serve ./repo --port 8765` exposes `/search`, `/ask`, `/index`, `/health`
 - **LanceDB backend** — 3–5× faster vector insert at 100k+ chunks (`TRELIX_STORE_BACKEND=lance`)
 - **Knowledge Graph** — `trelix graph ./repo` builds a Code Property Graph (calls + imports + type hierarchy) as a NetworkX MultiDiGraph; Louvain community detection clusters the codebase into architectural modules; Pyvis interactive HTML visualization; graph-aware BFS as 4th retrieval leg (`TRELIX_GRAPH_SEARCH_ENABLED=true`); `pip install 'trelix[knowledge-graph]'`
+- **File-summary 5th retrieval leg** — semantic search over LLM file summaries surfaces high-level architecture answers (`TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true`)
+- **HyDE query expansion** — synthesizes a hypothetical code answer as the ANN query vector, improving recall on abstract questions (`TRELIX_RETRIEVAL_HYDE_FALLBACK=true`)
+- **FLARE confidence-gated re-retrieval** — detects low-confidence synthesis spans and re-queries before finalising the answer (`TRELIX_RETRIEVAL_FLARE=true`)
+- **PageRank symbol boost** — weights retrieval candidates by graph centrality so hub symbols surface first (`TRELIX_RETRIEVAL_PAGERANK_BOOST=true`)
+- **Incremental graph updater** — `trelix watch` automatically patches the Code Property Graph on every file save (no manual `trelix graph` re-run needed)
+- **Query telemetry** — per-query latency breakdown, retrieval leg hit rates, and token usage via `trelix telemetry` CLI or `TRELIX_TELEMETRY_ENABLED=true`
+- **CoIR eval harness** — `trelix eval ./repo --golden <path>` measures Recall@1/5/10, MRR, and NDCG against a JSONL golden set
 
 ---
 
@@ -110,6 +136,27 @@ trelix graph ./my-repo --visualize
 
 # Enable graph as 4th search leg
 TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "explain the auth architecture"
+
+# --- v2.1.0 ---
+
+# View query telemetry (latency, hit rates, leg breakdown)
+trelix telemetry ./my-repo
+trelix telemetry ./my-repo --limit 50
+
+# Run CoIR eval harness against a golden query set
+trelix eval ./my-repo --golden eval/golden.jsonl
+
+# Enable HyDE expansion for abstract queries
+TRELIX_RETRIEVAL_HYDE_FALLBACK=true trelix ask ./my-repo "how does the event pipeline work?"
+
+# Enable FLARE confidence-gated re-retrieval
+TRELIX_RETRIEVAL_FLARE=true trelix ask ./my-repo "trace the full request lifecycle"
+
+# Enable PageRank symbol boost
+TRELIX_RETRIEVAL_PAGERANK_BOOST=true trelix ask ./my-repo "what are the core abstractions?"
+
+# Enable file-summary 5th retrieval leg
+TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true trelix ask ./my-repo "give me a high-level architecture overview"
 ```
 
 ### GitHub Actions — index in CI
@@ -122,6 +169,44 @@ Add the [trelix-index-action](https://github.com/sairam0424/trelix-index-action)
 ```
 
 The action handles Python setup, caching (keyed to the commit SHA), and exposes the index path as an output so downstream steps can query it directly.
+
+---
+
+## Beast-Mode Activation (v2.1.0)
+
+Enable every retrieval enhancement at once. Copy this block into your `.env` and run the three commands in order.
+
+```bash
+# .env — beast-mode flags
+TRELIX_GRAPH_SEARCH_ENABLED=true          # 4th leg: graph BFS
+TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true    # 5th leg: file-summary semantic search
+TRELIX_RETRIEVAL_HYDE_FALLBACK=true       # HyDE query expansion
+TRELIX_RETRIEVAL_FLARE=true               # FLARE confidence-gated re-retrieval
+TRELIX_RETRIEVAL_PAGERANK_BOOST=true      # PageRank symbol boost
+TRELIX_TELEMETRY_ENABLED=true             # Per-query telemetry
+TRELIX_FILE_SUMMARIES_ENABLED=true        # Generate LLM file summaries at index time
+```
+
+### Activation order
+
+```bash
+# 1. Index — builds chunks, embeddings, and file summaries
+trelix index ./my-repo
+
+# 2. Graph — builds Code Property Graph + community detection
+#    trelix watch will keep the graph in sync automatically from here
+trelix graph ./my-repo
+pip install 'trelix[knowledge-graph]'   # if not already installed
+
+# 3. Query — all five retrieval legs active
+trelix ask ./my-repo "explain the full request lifecycle"
+
+# 4. Inspect telemetry
+trelix telemetry ./my-repo --limit 20
+
+# 5. Measure quality
+trelix eval ./my-repo --golden eval/golden.jsonl
+```
 
 ---
 
@@ -337,6 +422,27 @@ trelix serve ./my-repo --port 8765
 | `TRELIX_RETRIEVAL_GRAPH_RAG_THRESHOLD_TOKENS` | `8000` | Token threshold to activate GraphRAG |
 | `TRELIX_RETRIEVAL_GRAPH_RAG_THRESHOLD_RESULTS` | `20` | Result count threshold to activate GraphRAG |
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel threads for parsing phase |
+
+### Beast-Mode Retrieval (v2.1.0)
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable 5th retrieval leg: ANN search over LLM file summaries |
+| `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Enable HyDE — generate a hypothetical code answer as the ANN query vector |
+| `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE — re-retrieve when synthesis confidence falls below threshold |
+| `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Boost retrieval candidates by PageRank graph centrality score |
+
+### Query Telemetry (v2.1.0)
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_TELEMETRY_ENABLED` | `false` | Record per-query latency, leg hit rates, and token usage to `.trelix/telemetry.db` |
+
+```bash
+# CLI — inspect stored telemetry
+trelix telemetry ./my-repo              # last 20 queries
+trelix telemetry ./my-repo --limit 100  # last 100 queries
+```
 
 See `.env.example` for the full reference.
 
@@ -559,7 +665,7 @@ Single SQLite file (`.trelix/index.db`) — zero external infrastructure by defa
 
 **Recall@5: 10/10 = 100%**
 
-### Run the full eval harness (v0.4.0)
+### Run the full eval harness (v0.4.0 / v2.1.0)
 
 ```bash
 # Quick eval (mini_repo, 10 queries)
@@ -567,6 +673,10 @@ make eval
 
 # Full eval (trelix-self, 50 queries, MRR + Recall@1/5/10 + NDCG@10)
 make eval-full
+
+# CoIR eval harness (v2.1.0) — run against your own golden set
+# golden.jsonl format: {"query": "...", "expected_file": "path/to/file.py"}
+trelix eval ./my-repo --golden eval/golden.jsonl
 ```
 
 ---
