@@ -58,8 +58,18 @@ class GraphBuilder:
         community_summary = get_community_summary(cg)
         logger.info("Detected %d communities", community_count)
 
-        # Step 3: persist metadata
+        # Step 3: persist metadata (community assignments)
         save_graph_metadata(self._db, cg)
+
+        # Step 3b: Compute and persist PageRank centrality scores
+        from trelix.graph.community import compute_pagerank
+        pr_scores = compute_pagerank(cg)
+        for node_id, score in pr_scores.items():
+            if node_id in cg.nx.nodes:
+                cg.nx.nodes[node_id]["centrality"] = score
+        # Re-save metadata now that centrality attrs are set on nodes
+        save_graph_metadata(self._db, cg)
+        logger.info("Computed PageRank for %d nodes", len(pr_scores))
 
         # Step 4: optional concept extraction
         _MAX_CONCEPT_SYMBOLS = 200

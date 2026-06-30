@@ -417,6 +417,9 @@ class Retriever:
                 },
             )
 
+        # PageRank boost — applied post-rerank, pre-assemble
+        candidates = self._apply_pagerank_boost(candidates)
+
         return self._assemble(
             plan.raw_query,
             candidates,
@@ -798,6 +801,39 @@ class Retriever:
         for i, r in enumerate(results, start=1):
             r.rank = i
         return results
+
+    # ------------------------------------------------------------------
+    # PageRank boost
+    # ------------------------------------------------------------------
+
+    def _apply_pagerank_boost(self, results: list[SearchResult]) -> list[SearchResult]:
+        """Boost RRF scores for high-centrality symbols (post-rerank, pre-assemble)."""
+        cfg = self.config.retrieval
+        if not cfg.pagerank_boost_enabled:
+            return results
+        try:
+            from trelix.graph.persistence import get_top_central_symbols
+
+            top_ids = set(get_top_central_symbols(self.db, top_n=200))
+            boosted: list[SearchResult] = []
+            for r in results:
+                if r.symbol.id in top_ids:
+                    boosted.append(
+                        SearchResult(
+                            chunk=r.chunk,
+                            symbol=r.symbol,
+                            file=r.file,
+                            score=r.score * cfg.pagerank_boost_factor,
+                            rank=r.rank,
+                            source=r.source,
+                        )
+                    )
+                else:
+                    boosted.append(r)
+            return sorted(boosted, key=lambda x: x.score, reverse=True)
+        except Exception as exc:
+            logger.debug("PageRank boost failed (non-fatal): %s", exc)
+            return results
 
     # ------------------------------------------------------------------
     # Dedup + assemble

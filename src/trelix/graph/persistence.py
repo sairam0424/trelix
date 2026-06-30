@@ -27,12 +27,19 @@ def _ensure_table(db: Database) -> None:
 
 
 def save_graph_metadata(db: Database, cg: CodeGraph) -> None:
-    """Write community and centrality for all nodes into graph_metadata table."""
+    """Write community and centrality for all nodes into graph_metadata table.
+
+    Centrality is read from node attrs (``cg.nx.nodes[id]["centrality"]``) when
+    available — this allows the caller to pre-compute PageRank and store it by
+    setting the node attribute before calling this function.  Falls back to
+    ``nx.degree_centrality`` when the attr is absent.
+    """
     _ensure_table(db)
 
-    centrality: dict[int, float] = {}
+    # Fall back to degree_centrality for any node that has no "centrality" attr.
+    degree_centrality: dict[int, float] = {}
     try:
-        centrality = nx.degree_centrality(cg.nx)
+        degree_centrality = nx.degree_centrality(cg.nx)
     except Exception:
         pass
 
@@ -40,7 +47,7 @@ def save_graph_metadata(db: Database, cg: CodeGraph) -> None:
         (
             node_id,
             attrs.get("community"),
-            centrality.get(node_id, 0.0),
+            attrs.get("centrality", degree_centrality.get(node_id, 0.0)),
             attrs.get("type", "symbol"),
         )
         for node_id, attrs in cg.nx.nodes(data=True)
@@ -70,3 +77,12 @@ def load_graph_metadata(db: Database, cg: CodeGraph) -> None:
         if symbol_id in cg.nx:
             cg.nx.nodes[symbol_id]["community"] = community
             cg.nx.nodes[symbol_id]["centrality"] = centrality
+
+
+def get_top_central_symbols(db: Database, top_n: int = 100) -> list[int]:
+    """Return symbol_ids sorted by centrality DESC from graph_metadata table."""
+    rows = db._conn.execute(
+        "SELECT symbol_id FROM graph_metadata ORDER BY centrality DESC LIMIT ?",
+        (top_n,),
+    ).fetchall()
+    return [int(row[0]) for row in rows]

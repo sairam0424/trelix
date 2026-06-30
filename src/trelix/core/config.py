@@ -380,6 +380,18 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_FLARE_MAX_ITER",
     )
 
+    # PageRank-based symbol importance boost
+    pagerank_boost_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_PAGERANK_BOOST",
+    )
+    pagerank_boost_factor: float = Field(
+        default=1.3,
+        ge=1.0,
+        le=3.0,
+        alias="TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR",
+    )
+
     # GraphRAG map-reduce synthesis
     graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")
     graph_rag_threshold_tokens: int = 8000

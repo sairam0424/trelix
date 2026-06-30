@@ -79,6 +79,36 @@ def assign_communities(cg: CodeGraph, communities: dict[int, int]) -> None:
             cg.nx.nodes[node_id]["community"] = community_id
 
 
+def compute_pagerank(cg: "CodeGraph", alpha: float = 0.85) -> dict[int, float]:
+    """
+    Compute PageRank over the code graph. Returns node_id → normalized score.
+
+    High-PageRank nodes are called/imported by many others — architecturally central.
+    Scores are normalized to [0, 1] by dividing by the max score.
+
+    Args:
+        cg: CodeGraph instance (networkx MultiDiGraph under the hood)
+        alpha: damping factor (default 0.85, standard PageRank value)
+
+    Returns:
+        dict[int, float] — empty dict if graph has no edges
+    """
+    g = cg.nx
+    if g.number_of_nodes() == 0:
+        return {}
+
+    try:
+        raw: dict[int, float] = nx.pagerank(g, alpha=alpha, max_iter=100)
+    except nx.PowerIterationFailedConvergence:
+        raw = nx.pagerank(g, alpha=alpha, max_iter=500, tol=1e-4)
+
+    # Normalize to [0, 1]
+    max_score = max(raw.values()) if raw else 1.0
+    if max_score == 0.0:
+        return {k: 0.0 for k in raw}
+    return {k: v / max_score for k, v in raw.items()}
+
+
 def get_community_summary(cg: CodeGraph) -> list[dict[str, Any]]:
     """Return summary info per detected community."""
     if cg.node_count == 0:
