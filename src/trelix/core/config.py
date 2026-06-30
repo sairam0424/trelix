@@ -349,6 +349,25 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_FILE_SUMMARY_TOP_K",
     )
 
+    # HyDE fallback — for no-LLM Tier 1 queries, generate a synthetic snippet
+    # using the LLM before embedding (requires LLM config).
+    # When the planner already set hyde_snippet, this is skipped (no double-call).
+    hyde_fallback_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_HYDE_FALLBACK",
+    )
+    # Multi-query expansion — generate N query variants, run each as a sub-query
+    multi_query_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_MULTI_QUERY",
+    )
+    multi_query_count: int = Field(
+        default=2,
+        ge=1,
+        le=4,
+        alias="TRELIX_RETRIEVAL_MULTI_QUERY_COUNT",
+    )
+
     # GraphRAG map-reduce synthesis
     graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")
     graph_rag_threshold_tokens: int = 8000

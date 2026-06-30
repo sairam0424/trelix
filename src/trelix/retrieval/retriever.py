@@ -566,6 +566,14 @@ class Retriever:
         if "vector" in strategy.legs:
             # HyDE: embed the hypothetical code snippet if the planner provided one.
             embed_text = sq.hyde_snippet if sq.hyde_snippet.strip() else sq.semantic_query
+            # HyDE fallback: if planner left hyde_snippet empty and fallback is enabled,
+            # generate a synthetic snippet now (single LLM call, result replaces
+            # semantic_query embed). Skipped when planner already set a snippet.
+            if cfg.hyde_fallback_enabled and not sq.hyde_snippet.strip():
+                from trelix.retrieval.query_expansion import HyDEExpander
+                snippet = HyDEExpander(self.config.llm).expand(sq.semantic_query)
+                if snippet:
+                    embed_text = snippet
             embedding = self.embedder.embed_query(embed_text)
             out["vector"] = self._vector_search(embedding, k=cfg.top_k_vector)
 
