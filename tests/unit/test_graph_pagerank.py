@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from trelix.core.models import CallEdge, IndexedFile, Language, Symbol, SymbolKind
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import compute_pagerank
@@ -16,7 +14,13 @@ def _build_star_graph(tmp_path: Path) -> tuple[Database, CodeGraph, int]:
     """Build a star graph: hub calls 3 leaves. Hub should have highest PageRank."""
     db = Database(tmp_path / "index.db")
     fid = db.upsert_file(
-        IndexedFile(path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10)
+        IndexedFile(
+            path="/r/a.py",
+            rel_path="a.py",
+            language=Language.PYTHON,
+            hash="x",
+            size_bytes=10,
+        )
     )
     hub = db.insert_symbol(Symbol(file_id=fid, name="hub", qualified_name="hub",
         kind=SymbolKind.FUNCTION, line_start=1, line_end=5, signature="def hub()", body=""))
