@@ -300,9 +300,16 @@ def ask(
 
     try:
         synth = Synthesizer(config.embedder, llm_config=config.llm)
-        for token in synth.stream(context, config.retrieval):
-            console.print(token, end="", highlight=False)
-        console.print()  # final newline
+        if config.retrieval.flare_enabled:
+            from trelix.retrieval.flare import FLARELoop
+
+            loop = FLARELoop(retriever, synth, config)
+            answer = loop.run(query)
+            console.print(answer)
+        else:
+            for token in synth.stream(context, config.retrieval):
+                console.print(token, end="", highlight=False)
+            console.print()  # final newline
     except Exception as exc:
         err_console.print(f"[red]Synthesis failed:[/red] {exc}")
         raise typer.Exit(1) from exc

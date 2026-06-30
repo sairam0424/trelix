@@ -368,6 +368,18 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_MULTI_QUERY_COUNT",
     )
 
+    # FLARE-style confidence-gated re-retrieval
+    flare_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_FLARE",
+    )
+    flare_max_iterations: int = Field(
+        default=1,
+        ge=1,
+        le=3,
+        alias="TRELIX_RETRIEVAL_FLARE_MAX_ITER",
+    )
+
     # GraphRAG map-reduce synthesis
     graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")
     graph_rag_threshold_tokens: int = 8000
