@@ -1,14 +1,10 @@
 """Tests for the file-summary 5th retrieval leg."""
 from __future__ import annotations
 
-import math
 from pathlib import Path
-from unittest.mock import MagicMock
 
-import pytest
-
-from trelix.core.config import IndexConfig, RetrievalConfig
-from trelix.core.models import IndexedFile, Language, SearchResult, Symbol, SymbolKind
+from trelix.core.config import IndexConfig
+from trelix.core.models import IndexedFile, Language
 from trelix.store.db import Database
 from trelix.store.vector import SQLiteVectorStore
 

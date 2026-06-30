@@ -65,7 +65,9 @@ class BaseVectorStore(ABC):
         """Insert or replace a file-level summary embedding."""
 
     @abstractmethod
-    def search_file_summaries(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:
+    def search_file_summaries(
+        self, query_embedding: list[float], k: int
+    ) -> list[tuple[int, float]]:
         """Search file-summary embeddings only. Returns (file_id, score) pairs.
 
         Convention: summary embeddings are stored with chunk_id = -(file_id).
@@ -312,41 +314,34 @@ class SQLiteVectorStore(BaseVectorStore):
             )
             self._conn.commit()
 
-    def search_file_summaries(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:
-        """Search only file-summary rows (chunk_id < 0), return (file_id, score) pairs."""
+    def search_file_summaries(
+        self, query_embedding: list[float], k: int
+    ) -> list[tuple[int, float]]:
+        """Search file-summary embeddings only. Returns (file_id, score) pairs.
+
+        Summary rows are stored with chunk_id = -(file_id). This method fetches
+        all summary-row embeddings, computes L2 distance in Python, and returns
+        the top-k pairs as (file_id, score) where score is (1 / (1 + distance)).
+        """
         with self._lock:
-            try:
-                vec_bytes = struct.pack(f"{len(query_embedding)}f", *query_embedding)
-                rows = self._conn.execute(
-                    """
-                    SELECT chunk_id, distance
-                    FROM chunk_embeddings
-                    WHERE chunk_id < 0
-                      AND chunk_embeddings MATCH ?
-                      AND k = ?
-                    ORDER BY distance
-                    """,
-                    (vec_bytes, k),
-                ).fetchall()
-                # chunk_id = -(file_id), so file_id = -(chunk_id)
-                return [(-int(row[0]), float(row[1])) for row in rows]
-            except Exception:
-                # Flat fallback: fetch all negative-id rows, compute distance manually
-                all_rows = self._conn.execute(
-                    "SELECT chunk_id, embedding FROM chunk_embeddings WHERE chunk_id < 0"
-                ).fetchall()
-                if not all_rows:
-                    return []
-                scored: list[tuple[int, float]] = []
-                for row in all_rows:
-                    cid = int(row[0])
-                    emb_bytes = row[1]
-                    n = len(query_embedding)
-                    stored = list(struct.unpack(f"{n}f", emb_bytes))
-                    dist = sum((a - b) ** 2 for a, b in zip(query_embedding, stored)) ** 0.5
-                    scored.append((-cid, dist))
-                scored.sort(key=lambda x: x[1])
-                return scored[:k]
+            rows = self._conn.execute(
+                "SELECT chunk_id, embedding FROM chunk_embeddings WHERE chunk_id < 0"
+            ).fetchall()
+        if not rows:
+            return []
+        q = query_embedding
+        scored: list[tuple[int, float]] = []
+        for chunk_id, emb_blob in rows:
+            if isinstance(emb_blob, bytes):
+                n = len(emb_blob) // 4
+                emb = list(struct.unpack(f"{n}f", emb_blob))
+            else:
+                emb = list(emb_blob)
+            dist = sum((a - b) ** 2 for a, b in zip(q, emb)) ** 0.5
+            score = 1.0 / (1.0 + dist)
+            scored.append((-int(chunk_id), score))  # chunk_id = -file_id, so file_id = -chunk_id
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:k]
 
     def close(self) -> None:
         self._conn.close()
