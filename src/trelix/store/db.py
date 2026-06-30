@@ -427,13 +427,13 @@ class Database:
             "SELECT id FROM chunks WHERE symbol_id = ?", (symbol_id,)
         ).fetchone()
         if existing:
-            return existing[0]
+            return int(existing[0])
         cur = self._conn.execute(
             "INSERT INTO chunks (symbol_id, chunk_text, token_count) VALUES (?, ?, ?)",
             (symbol_id, chunk_text, token_count),
         )
         self._conn.commit()
-        return cur.lastrowid or 0
+        return int(cur.lastrowid or 0)
 
     # ------------------------------------------------------------------
     # File summaries (Phase 2: RAPTOR-style multi-granularity indexing)
