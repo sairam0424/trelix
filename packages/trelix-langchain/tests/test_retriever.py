@@ -80,7 +80,7 @@ def test_version_exposed():
     import trelix_langchain
 
     assert hasattr(trelix_langchain, "__version__")
-    assert trelix_langchain.__version__ == "1.1.0"
+    assert trelix_langchain.__version__ == "2.0.0"
 
 
 # ---------------------------------------------------------------------------
