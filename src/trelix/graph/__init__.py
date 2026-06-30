@@ -10,6 +10,7 @@ from trelix.graph.community import (
 )
 from trelix.graph.concepts import ConceptExtractor, SemanticConcept, load_concepts, save_concepts
 from trelix.graph.persistence import load_graph_metadata, save_graph_metadata
+from trelix.graph.updater import GraphUpdater
 
 __all__ = [
     "CodeGraph",
@@ -25,4 +26,5 @@ __all__ = [
     "load_graph_metadata",
     "save_concepts",
     "load_concepts",
+    "GraphUpdater",
 ]
