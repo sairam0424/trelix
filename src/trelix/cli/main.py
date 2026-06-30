@@ -284,19 +284,9 @@ def ask(
 
     try:
         retriever = Retriever(config)
-        context = retriever.retrieve(query)
     except Exception as exc:
         err_console.print(f"[red]Retrieval failed:[/red] {exc}")
         raise typer.Exit(1) from exc
-
-    # If provider=local (no API key), print the context text directly
-    if provider == "local":
-        console.print(Panel(f"[bold cyan]Context for:[/bold cyan] {query}", expand=False))
-        if context.context_text:
-            console.print(context.context_text)
-        else:
-            console.print("[yellow]No relevant code found.[/yellow]")
-        return
 
     try:
         synth = Synthesizer(config.embedder, llm_config=config.llm)
@@ -307,6 +297,15 @@ def ask(
             answer = loop.run(query)
             console.print(answer)
         else:
+            context = retriever.retrieve(query)
+            # If provider=local (no API key), print the context text directly
+            if provider == "local":
+                console.print(Panel(f"[bold cyan]Context for:[/bold cyan] {query}", expand=False))
+                if context.context_text:
+                    console.print(context.context_text)
+                else:
+                    console.print("[yellow]No relevant code found.[/yellow]")
+                return
             for token in synth.stream(context, config.retrieval):
                 console.print(token, end="", highlight=False)
             console.print()  # final newline

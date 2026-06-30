@@ -622,7 +622,7 @@ class Retriever:
                 # Build a synthetic Chunk representing the file-level summary
                 synthetic_chunk = Chunk(
                     id=-(file_id),  # negative = summary sentinel
-                    symbol_id=0,
+                    symbol_id=-(file_id),  # unique per file so dedup keeps all summaries
                     chunk_text=summary_text,
                     token_count=len(summary_text.split()),
                 )

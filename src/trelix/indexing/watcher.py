@@ -159,12 +159,11 @@ class FileWatcher:
                 print(f"[trelix] Error indexing {rel}: {result.get('error', 'unknown')}")
 
             # Refresh graph metadata incrementally
-            if self._indexer.config.file_summaries_enabled or True:  # always refresh graph if it exists
-                try:
-                    from trelix.graph.updater import GraphUpdater
-                    GraphUpdater(self._indexer.db).update_file(rel)
-                except Exception as exc:
-                    logger.debug("GraphUpdater watcher hook failed (non-fatal): %s", exc)
+            try:
+                from trelix.graph.updater import GraphUpdater
+                GraphUpdater(self._indexer.db).update_file(rel)
+            except Exception as exc:
+                logger.debug("GraphUpdater watcher hook failed (non-fatal): %s", exc)
 
         except Exception as exc:
             logger.error("Unexpected error re-indexing %s: %s", abs_path, exc)
