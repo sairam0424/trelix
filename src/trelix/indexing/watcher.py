@@ -158,6 +158,14 @@ class FileWatcher:
             else:
                 print(f"[trelix] Error indexing {rel}: {result.get('error', 'unknown')}")
 
+            # Refresh graph metadata incrementally
+            try:
+                from trelix.graph.updater import GraphUpdater
+
+                GraphUpdater(self._indexer.db).update_file(rel)
+            except Exception as exc:
+                logger.debug("GraphUpdater watcher hook failed (non-fatal): %s", exc)
+
         except Exception as exc:
             logger.error("Unexpected error re-indexing %s: %s", abs_path, exc)
             print(f"[trelix] Error indexing {abs_path}: {exc}")

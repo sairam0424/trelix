@@ -21,6 +21,7 @@ import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from trelix.core.models import (
     CallEdge,
@@ -228,6 +229,21 @@ class Database:
         )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_summaries_file_id ON file_summaries(file_id)"
+        )
+        self._conn.commit()
+
+        # Task 6 migration: add query_telemetry table for observability
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS query_telemetry ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts TEXT NOT NULL DEFAULT (datetime('now')), "
+            "query TEXT NOT NULL, "
+            "intent TEXT DEFAULT '', "
+            "elapsed_ms REAL DEFAULT 0.0, "
+            "result_count INTEGER DEFAULT 0, "
+            "leg_sizes TEXT DEFAULT '{}', "
+            "thumbs_up INTEGER DEFAULT NULL"
+            ")"
         )
         self._conn.commit()
 
@@ -1215,6 +1231,52 @@ class Database:
     def count_chunks(self) -> int:
         """Return the total number of indexed chunks."""
         return int(self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+
+    # ------------------------------------------------------------------
+    # Query telemetry (Task 6)
+    # ------------------------------------------------------------------
+
+    def insert_query_telemetry(
+        self,
+        query: str,
+        intent: str,
+        elapsed_ms: float,
+        result_count: int,
+        leg_sizes: dict[str, int] | None = None,
+    ) -> int:
+        """Insert one telemetry row. Returns row id."""
+        import json
+
+        cur = self._conn.execute(
+            "INSERT INTO query_telemetry (query, intent, elapsed_ms, result_count, leg_sizes) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (query, intent, elapsed_ms, result_count, json.dumps(leg_sizes or {})),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def get_recent_telemetry(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return most recent telemetry rows as list of dicts."""
+        import json
+
+        rows = self._conn.execute(
+            "SELECT id, ts, query, intent, elapsed_ms, result_count, leg_sizes, thumbs_up "
+            "FROM query_telemetry ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "id": int(row[0]),
+                "ts": row[1],
+                "query": row[2],
+                "intent": row[3],
+                "elapsed_ms": float(row[4]),
+                "result_count": int(row[5]),
+                "leg_sizes": json.loads(row[6] or "{}"),
+                "thumbs_up": row[7],
+            }
+            for row in rows
+        ]
 
     def close(self) -> None:
         self._conn.close()

@@ -4,6 +4,35 @@ All notable changes to trelix are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] — 2026-06-30
+
+### Overview
+Beast-mode upgrade: seven research-grounded features added across three phases. All gated
+by `IndexConfig` flags that default to `False` — zero regression when disabled.
+
+### Added
+- **HyDE fallback** (`hyde_fallback_enabled`) — Hypothetical Document Embeddings (arXiv:2212.10496):
+  generates a synthetic answer, embeds it, and re-retrieves on low-confidence queries
+- **Multi-query expansion** (`multi_query_enabled`) — decomposes a query into 3 sub-queries,
+  retrieves independently, then RRF-fuses for broader recall
+- **FLARE re-retrieval loop** (`flare_enabled`) — confidence-gated iterative retrieval
+  (arXiv:2305.06983): re-retrieves when synthesis token probabilities fall below threshold
+- **PageRank symbol boosting** (`pagerank_boost_enabled`) — scores symbols by import-graph
+  centrality (NetworkX `pagerank`); injects a `pagerank_boost` multiplier into RRF fusion
+- **Incremental graph updater** — `GraphUpdater.update_file()` patches call/import edges for
+  a single changed file without full graph rebuild; wired into the file watcher
+- **Query telemetry** (`telemetry_enabled`) — `TelemetryWriter` writes per-query rows
+  (latency ms, intent, result count) to a SQLite `query_telemetry` table; `trelix telemetry`
+  CLI command shows recent queries in a Rich table
+- **CoIR evaluation harness** — `trelix eval` CLI command runs a golden JSONL file through
+  retrieval and reports nDCG@10, Recall@10, MRR (CoIR benchmark format, ACL 2025 arXiv:2407.02883);
+  pure-Python metric functions in `trelix.eval.ndcg` (no pandas dependency)
+
+### Breaking Changes
+None — all new features are opt-in via config flags.
+
+---
+
 ## [Unreleased]
 
 ### Added

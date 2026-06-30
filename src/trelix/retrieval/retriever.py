@@ -194,6 +194,14 @@ class Retriever:
             context.retrieval_sources,
             context.elapsed_seconds,
         )
+
+        # Telemetry — record timing and result count (no-op when disabled)
+        if self.config.telemetry_enabled:
+            from trelix.retrieval.telemetry import TelemetryWriter
+
+            elapsed_ms = (time.perf_counter() - t_start) * 1000
+            TelemetryWriter(self.db, enabled=True).record(context, elapsed_ms=elapsed_ms)
+
         return context
 
     # ------------------------------------------------------------------
@@ -243,11 +251,23 @@ class Retriever:
         bm25_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["bm25"]]
         grep_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["grep"]]
 
+        # 5th leg: file-summary search (RAPTOR-style, off by default)
+        summary_results: list[SearchResult] = []
+        if cfg.file_summary_leg_enabled and plan.sub_queries:
+            embed_text = (
+                plan.sub_queries[0].hyde_snippet
+                if plan.sub_queries[0].hyde_snippet.strip()
+                else plan.sub_queries[0].semantic_query
+            )
+            query_embedding: list[float] = self.embedder.embed_query(embed_text)
+            summary_results = self._summary_search(query_embedding, k=cfg.top_k_file_summary)
+
         logger.info(
-            "Pre-fusion leg sizes: vector=%d bm25=%d grep=%d",
+            "Pre-fusion leg sizes: vector=%d bm25=%d grep=%d summary=%d",
             len(vector_results),
             len(bm25_results),
             len(grep_results),
+            len(summary_results),
         )
 
         # -- Trace: per-leg results --
@@ -258,6 +278,7 @@ class Retriever:
                 "vector_count": len(vector_results),
                 "bm25_count": len(bm25_results),
                 "grep_count": len(grep_results),
+                "summary_count": len(summary_results),
                 "top_vector": [
                     {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
                     for r in vector_results[:5]
@@ -270,12 +291,16 @@ class Retriever:
                     {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
                     for r in grep_results[:5]
                 ],
+                "top_summary": [
+                    {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
+                    for r in summary_results[:5]
+                ],
             },
         )
 
         _weights = cfg.file_type_weights if cfg.file_type_weighting_enabled else None
         fused = reciprocal_rank_fusion(
-            [vector_results, bm25_results, grep_results],
+            [vector_results, bm25_results, grep_results, summary_results],
             k=cfg.rrf_k,
             weights=_weights,
         )
@@ -399,6 +424,9 @@ class Retriever:
                     ],
                 },
             )
+
+        # PageRank boost — applied post-rerank, pre-assemble
+        candidates = self._apply_pagerank_boost(candidates)
 
         return self._assemble(
             plan.raw_query,
@@ -549,6 +577,15 @@ class Retriever:
         if "vector" in strategy.legs:
             # HyDE: embed the hypothetical code snippet if the planner provided one.
             embed_text = sq.hyde_snippet if sq.hyde_snippet.strip() else sq.semantic_query
+            # HyDE fallback: if planner left hyde_snippet empty and fallback is enabled,
+            # generate a synthetic snippet now (single LLM call, result replaces
+            # semantic_query embed). Skipped when planner already set a snippet.
+            if cfg.hyde_fallback_enabled and not sq.hyde_snippet.strip():
+                from trelix.retrieval.query_expansion import HyDEExpander
+
+                snippet = HyDEExpander(self.config.llm).expand(sq.semantic_query)
+                if snippet:
+                    embed_text = snippet
             embedding = self.embedder.embed_query(embed_text)
             out["vector"] = self._vector_search(embedding, k=cfg.top_k_vector)
 
@@ -566,6 +603,49 @@ class Retriever:
     # ------------------------------------------------------------------
     # Vector search
     # ------------------------------------------------------------------
+
+    def _summary_search(self, query_embedding: list[float], k: int) -> list[SearchResult]:
+        """Search file-summary embeddings (5th retrieval leg).
+
+        Returns SearchResult objects where the symbol is the first symbol in the file
+        (used as a representative for the file-level summary context).
+        Returns empty list when no summaries are indexed or file_summary_leg_enabled=False.
+        """
+        results: list[SearchResult] = []
+        try:
+            pairs = self.vector_store.search_file_summaries(query_embedding, k=k)
+            for file_id, score in pairs:
+                file_obj = self.db.get_file_by_id(file_id)
+                if file_obj is None:
+                    continue
+                summary_text = self.db.get_file_summary(file_id)
+                if not summary_text:
+                    continue
+                # Build a synthetic Chunk representing the file-level summary
+                synthetic_chunk = Chunk(
+                    id=-(file_id),  # negative = summary sentinel
+                    symbol_id=-(file_id),  # unique per file so dedup keeps all summaries
+                    chunk_text=summary_text,
+                    token_count=len(summary_text.split()),
+                )
+                # Pick the first symbol in the file as the representative symbol
+                symbols = self.db.get_symbols_for_file(file_id)
+                if not symbols:
+                    continue
+                rep_symbol = min(symbols, key=lambda s: s.line_start)
+                results.append(
+                    SearchResult(
+                        chunk=synthetic_chunk,
+                        symbol=rep_symbol,
+                        file=file_obj,
+                        score=score,
+                        rank=0,
+                        source="file_summary",
+                    )
+                )
+        except Exception as exc:
+            logger.warning("File summary leg failed (non-fatal): %s", exc)
+        return results
 
     def _vector_search(self, query_embedding: list[float], k: int) -> list[SearchResult]:
         raw = self.vector_store.search(query_embedding, k=k)
@@ -730,6 +810,39 @@ class Retriever:
         for i, r in enumerate(results, start=1):
             r.rank = i
         return results
+
+    # ------------------------------------------------------------------
+    # PageRank boost
+    # ------------------------------------------------------------------
+
+    def _apply_pagerank_boost(self, results: list[SearchResult]) -> list[SearchResult]:
+        """Boost RRF scores for high-centrality symbols (post-rerank, pre-assemble)."""
+        cfg = self.config.retrieval
+        if not cfg.pagerank_boost_enabled:
+            return results
+        try:
+            from trelix.graph.persistence import get_top_central_symbols
+
+            top_ids = set(get_top_central_symbols(self.db, top_n=200))
+            boosted: list[SearchResult] = []
+            for r in results:
+                if r.symbol.id is not None and r.symbol.id in top_ids:
+                    boosted.append(
+                        SearchResult(
+                            chunk=r.chunk,
+                            symbol=r.symbol,
+                            file=r.file,
+                            score=r.score * cfg.pagerank_boost_factor,
+                            rank=r.rank,
+                            source=r.source,
+                        )
+                    )
+                else:
+                    boosted.append(r)
+            return sorted(boosted, key=lambda x: x.score, reverse=True)
+        except Exception as exc:
+            logger.debug("PageRank boost failed (non-fatal): %s", exc)
+            return results
 
     # ------------------------------------------------------------------
     # Dedup + assemble

@@ -18,7 +18,7 @@ import logging
 import time
 import warnings
 from pathlib import Path
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
 
 import typer
 from rich.console import Console
@@ -284,25 +284,31 @@ def ask(
 
     try:
         retriever = Retriever(config)
-        context = retriever.retrieve(query)
     except Exception as exc:
         err_console.print(f"[red]Retrieval failed:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    # If provider=local (no API key), print the context text directly
-    if provider == "local":
-        console.print(Panel(f"[bold cyan]Context for:[/bold cyan] {query}", expand=False))
-        if context.context_text:
-            console.print(context.context_text)
-        else:
-            console.print("[yellow]No relevant code found.[/yellow]")
-        return
-
     try:
         synth = Synthesizer(config.embedder, llm_config=config.llm)
-        for token in synth.stream(context, config.retrieval):
-            console.print(token, end="", highlight=False)
-        console.print()  # final newline
+        if config.retrieval.flare_enabled:
+            from trelix.retrieval.flare import FLARELoop
+
+            loop = FLARELoop(retriever, synth, config)
+            answer = loop.run(query)
+            console.print(answer)
+        else:
+            context = retriever.retrieve(query)
+            # If provider=local (no API key), print the context text directly
+            if provider == "local":
+                console.print(Panel(f"[bold cyan]Context for:[/bold cyan] {query}", expand=False))
+                if context.context_text:
+                    console.print(context.context_text)
+                else:
+                    console.print("[yellow]No relevant code found.[/yellow]")
+                return
+            for token in synth.stream(context, config.retrieval):
+                console.print(token, end="", highlight=False)
+            console.print()  # final newline
     except Exception as exc:
         err_console.print(f"[red]Synthesis failed:[/red] {exc}")
         raise typer.Exit(1) from exc
@@ -871,6 +877,85 @@ def graph(
         viz = GraphVisualizer()
         path = viz.export_html(result.code_graph, out)
         console.print(f"\n[blue]Graph visualization:[/blue] {path}")
+
+
+# ---------------------------------------------------------------------------
+# telemetry
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def telemetry(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")] = ".",
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Rows to show")] = 20,
+) -> None:
+    """Show recent query telemetry (latency, result counts, intent breakdown)."""
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
+
+    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    db = Database(config.db_path_absolute)
+    rows = db.get_recent_telemetry(limit=limit)
+
+    if not rows:
+        console.print(
+            "[yellow]No telemetry recorded. "
+            "Set TRELIX_TELEMETRY_ENABLED=true and run queries.[/yellow]"
+        )
+        return
+
+    table = Table(title=f"Recent Queries (last {len(rows)})")
+    table.add_column("ts", style="dim")
+    table.add_column("query", max_width=50)
+    table.add_column("intent")
+    table.add_column("ms", justify="right")
+    table.add_column("results", justify="right")
+
+    for row in rows:
+        table.add_row(
+            row["ts"],
+            row["query"][:50],
+            row["intent"],
+            f"{row['elapsed_ms']:.0f}",
+            str(row["result_count"]),
+        )
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# eval
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def eval(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")] = ".",
+    golden: Annotated[
+        str, typer.Option("--golden", "-g", help="Path to golden JSONL file.")
+    ] = ".trelix/golden.jsonl",
+) -> None:
+    """Evaluate retrieval quality against a golden query set (nDCG@10, Recall@10, MRR)."""
+    from trelix.core.config import IndexConfig
+    from trelix.eval.harness import EvalHarness
+
+    config = IndexConfig(repo_path=repo)
+    harness = EvalHarness(config)
+    try:
+        metrics = harness.run(golden)
+    except FileNotFoundError:
+        console.print(f"[red]Golden file not found: {golden}[/red]")
+        console.print("Create a golden.jsonl with lines like:")
+        console.print('  {"query": "how does auth work", "relevant_files": ["src/auth.py"]}')
+        raise typer.Exit(1)
+
+    table = Table(title="Retrieval Evaluation Results")
+    table.add_column("Metric", style="bold")
+    table.add_column("Score", justify="right")
+    table.add_row("nDCG@10", f"{metrics['ndcg@10']:.4f}")
+    table.add_row("Recall@10", f"{metrics['recall@10']:.4f}")
+    table.add_row("MRR", f"{metrics['mrr']:.4f}")
+    table.add_row("Queries evaluated", str(int(metrics["n_queries"])))
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------
