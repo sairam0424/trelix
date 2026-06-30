@@ -4,7 +4,7 @@ All notable changes to trelix are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic Versioning](https://semver.org/).
 
-## [3.0.0] — 2026-06-30
+## [2.1.0] — 2026-06-30
 
 ### Overview
 Beast-mode upgrade: seven research-grounded features added across three phases. All gated
