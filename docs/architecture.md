@@ -192,6 +192,8 @@ Single file (`.trelix/index.db`) with WAL mode + FTS5 + sqlite-vec HNSW.
 | `file_summaries` | id, file_id, summary, created_at | LLM-generated 2–4 sentence file descriptions (RAPTOR) |
 | `symbols_fts` | FTS5 virtual table over name, qualified_name, docstring, body, **context_summary** | BM25 keyword search |
 | `vec_chunks` | sqlite-vec HNSW virtual table | ANN vector search |
+| `graph_metadata` | symbol_id INTEGER PRIMARY KEY, community INTEGER, centrality REAL, node_type TEXT | Knowledge-graph community assignments and degree centrality (v2.0.0) |
+| `graph_concepts` | name TEXT, category TEXT, importance REAL, source_symbol_ids TEXT | LLM-extracted architectural concepts (v2.0.0, optional) |
 
 ### Qdrant (optional — for >500k chunks)
 
@@ -453,55 +455,197 @@ pip install trelix[qdrant]       # + Qdrant vector backend
 pip install trelix[lancedb]      # + LanceDB columnar vector backend
 pip install trelix[api]          # + FastAPI REST server (uvicorn + sse-starlette)
 pip install trelix[watch]        # + file watcher (watchdog)
-pip install trelix[all]          # everything
+pip install trelix[knowledge-graph]  # + knowledge graph (pyvis, networkx)
+pip install trelix[graph-viz]        # alias for trelix[knowledge-graph]
+pip install trelix[all]              # everything
 ```
 
 ### MCP Server Tools
 
 ```
 trelix-mcp (stdio transport)
-  ├── search_code(query, repo_path, k=10)      → list[dict]
-  ├── index_codebase(repo_path, provider)       → dict (stats)
-  ├── get_symbol(qualified_name, repo_path)     → dict | None
-  └── blast_radius(symbol_name, repo_path)      → list[dict]
+  ├── search_code(query, repo_path, k=10)                                     → list[dict]
+  ├── index_codebase(repo_path, provider)                                      → dict (stats)
+  ├── get_symbol(qualified_name, repo_path)                                    → dict | None
+  ├── blast_radius(symbol_name, repo_path)                                     → list[dict]
+  ├── build_knowledge_graph(repo_path, detect_communities, extract_concepts)   → dict (stats)  [v2.0.0]
+  └── graph_search_mcp(query, repo_path, depth, max_results)                  → list[dict]    [v2.0.0]
 ```
 
 ---
 
 ## Knowledge Graph Layer
 
-trelix v3.0 adds a Knowledge Graph layer on top of the existing call/import/type edge tables.
+Added in **v2.0.0**. A new `trelix/graph/` module wraps the existing SQLite edge tables
+into a unified Code Property Graph backed by NetworkX, with community detection, LLM
+concept extraction, graph-aware BFS retrieval, and an interactive Pyvis visualizer.
 
-### CodeGraph (trelix/graph/code_graph.py)
-Wraps three SQLite tables into a unified NetworkX MultiDiGraph:
-- `calls` → CALLS edges (caller_id → callee_id)
-- `imports` → IMPORTS edges (file_id → imported_file_id)
-- `type_edges` → EXTENDS / IMPLEMENTS / TRAIT_IMPL / EMBEDDED edges
+**Breaking change**: the old `trelix graph <repo> <symbol>` call-graph display command is
+renamed to `trelix call-graph <repo> <symbol>`. The `trelix graph` subcommand now builds
+and queries the full knowledge graph.
 
-### Community Detection (trelix/graph/community.py)
-Louvain algorithm (fast, O(n log n)) or Girvan-Newman (quality) clusters the graph into
-architectural communities. Communities represent logical module groupings — auth layer,
-data layer, API layer — without any human labeling.
+### Graph Structure — CodeGraph (`trelix/graph/code_graph.py`)
 
-### Semantic Concepts (trelix/graph/concepts.py)
-LLM extracts high-level concepts (JWT authentication, event sourcing, CQRS pattern) from
-symbol batches. Stored in `graph_concepts` SQLite table. Crash-safe: returns `[]` if LLM
-is unavailable.
+`CodeGraph` holds a `networkx.MultiDiGraph`. Every symbol (function, class, method) and
+file in the index is a node; every static relationship is a typed directed edge.
 
-### Graph-Aware Search (trelix/graph/search.py)
-4th retrieval leg: BFS over CodeGraph starting from top RRF results.
-Score = 0.5^hop (closer = higher). Enabled via `graph_search_enabled=True`.
+**Node attributes**
 
-### Visualization (trelix/graph/visualizer.py)
-Pyvis interactive HTML with:
-- Community-colored nodes (pastel palette)
-- Edge-type-colored arrows (CALLS=blue, IMPORTS=purple, EXTENDS=green)
-- Physics simulation (Force Atlas 2)
-- Node sizing by degree
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `name` | str | Simple symbol or file name |
+| `qualified_name` | str | Fully-qualified identifier |
+| `kind` | str | `function` \| `class` \| `method` \| `file` \| … |
+| `file` | str | Source file path |
+| `language` | str | Language detected by Tree-sitter |
+| `community` | int | Community ID set after detection (default -1) |
 
-Install: `pip install 'trelix[knowledge-graph]'`
-CLI: `trelix graph ./repo --visualize`
-REST: `GET /graph/visualize?repo=...`
+**Edge types**
+
+| Label | Source table | Direction |
+|-------|-------------|-----------|
+| `CALLS` | `calls` | caller → callee |
+| `IMPORTS` | `imports` | file → imported\_file |
+| `EXTENDS` | `type_edges` (extends) | child → parent |
+| `IMPLEMENTS` | `type_edges` (implements) | implementor → interface |
+| `TRAIT_IMPL` | `type_edges` (trait\_impl) | struct → trait |
+| `EMBEDDED` | `type_edges` (embedded) | struct → embedded |
+
+**Live stats on the trelix codebase (dry run)**
+
+| Metric | Value |
+|--------|-------|
+| Nodes | 4,599 |
+| Edges | 4,945 |
+| Communities (Louvain) | 2,409 |
+| Build time | 0.34 s |
+| Top node degree | 438 (`parse`) |
+
+### Community Detection (`trelix/graph/community.py`)
+
+Three algorithms selectable at runtime:
+
+| Algorithm | Complexity | Best for |
+|-----------|-----------|---------|
+| `louvain` (default) | O(n log n) | General use; fast on large graphs |
+| `girvan_newman` | O(n³) | Quality-oriented; small/medium graphs |
+| `label_prop` | O(n) | Very large graphs (>100k nodes) |
+
+Output: a `{symbol_id: community_id}` mapping. After detection, each node's `community`
+attribute is set in-memory and written to the `graph_metadata` SQLite table.
+
+Communities represent logical module groupings (auth layer, data layer, API layer) inferred
+purely from structural connectivity — no human labeling required.
+
+### Graph Persistence (`trelix/graph/persistence.py`)
+
+**Table: `graph_metadata`**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `symbol_id` | INTEGER PRIMARY KEY | Foreign key to `symbols.id` |
+| `community` | INTEGER | Community assignment from detection |
+| `centrality` | REAL | Degree centrality computed at save time |
+| `node_type` | TEXT | Node kind (mirrors `symbols.kind`) |
+
+`GraphPersistence.save()` upserts all rows in a single transaction. Degree centrality is
+pre-computed so graph-adjacent queries do not require loading the full graph.
+
+### Semantic Concepts — optional (`trelix/graph/concepts.py`)
+
+`ConceptExtractor` sends batches of symbol names and signatures to the configured LLM and
+extracts architectural concepts (e.g. "JWT authentication", "event sourcing", "CQRS").
+
+**Table: `graph_concepts`**
+
+| Column | Type |
+|--------|------|
+| `name` | TEXT |
+| `category` | TEXT |
+| `importance` | REAL |
+| `source_symbol_ids` | TEXT (JSON array) |
+
+Enabled via `--concepts` flag on `trelix graph` or `ConceptExtractorConfig.enabled=True`.
+**Crash-safe**: any LLM failure returns `[]` without aborting the graph build.
+
+### Graph-Aware Search — 4th retrieval leg (`trelix/graph/search.py`)
+
+BFS from the top results of the existing RRF fusion step, traversing the `CodeGraph` to
+surface structurally adjacent symbols that plain vector/BM25/grep search misses.
+
+**Score decay**: `score = 0.5^hop` — nodes one hop away score 0.5, two hops 0.25, etc.
+
+**Config** (`RetrievalConfig`)
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `graph_search_enabled` | `False` | Opt-in flag — zero impact when off |
+| `graph_search_depth` | `2` | BFS depth from seed nodes |
+| `graph_search_max_results` | `15` | Cap on graph-sourced results |
+
+**Env var**: `TRELIX_GRAPH_SEARCH_ENABLED=true`
+
+**Live retrieval mix** with `graph_search_enabled=True`: 30 results total
+(5 graph, 19 vector, 4 BM25, 2 graph\_expansion).
+
+When disabled, the retrieval pipeline is identical to v1.x — no performance regression.
+
+### Visualization (`trelix/graph/visualizer.py`)
+
+`GraphVisualizer.export_html()` writes a Pyvis interactive HTML file to
+`<repo>/.trelix/graph.html`.
+
+**Visual encoding**
+
+| Attribute | Encoding |
+|-----------|---------|
+| Node color | Community % 10 → 10-color pastel palette |
+| Node size | Proportional to degree (more connections = larger) |
+| `CALLS` edges | Blue |
+| `IMPORTS` edges | Purple |
+| `EXTENDS` edges | Green |
+| `IMPLEMENTS` edges | Teal |
+| Physics layout | ForceAtlas2 |
+
+**Security**: the output path is constrained to `<repo>/.trelix/` — path traversal
+attempts (e.g. `../../etc/passwd`) are rejected with HTTP 400.
+
+### REST Endpoints (added in v2.0.0)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/graph` | Return graph stats (node count, edge count, top-degree nodes) |
+| `GET` | `/graph/communities` | Community listing with member counts |
+| `GET` | `/graph/visualize` | Stream the Pyvis HTML file |
+| `GET` | `/graph/search` | BFS graph search; params: `query`, `repo_path`, `depth` |
+
+### MCP Tools (added in v2.0.0)
+
+```
+trelix-mcp (stdio transport)
+  ├── build_knowledge_graph(repo_path, detect_communities, extract_concepts)  → dict (stats)
+  └── graph_search_mcp(query, repo_path, depth, max_results)                  → list[dict]
+```
+
+### CLI
+
+```bash
+# Build graph (+ optional community detection and concept extraction)
+trelix graph ./repo
+trelix graph ./repo --visualize          # also write Pyvis HTML
+trelix graph ./repo --concepts           # also run LLM concept extraction
+trelix graph ./repo --json               # machine-readable stats to stdout
+
+# Old call-graph display (RENAMED — breaking change)
+trelix call-graph ./repo MyClass.method
+```
+
+### Install
+
+```bash
+pip install 'trelix[knowledge-graph]'   # pyvis>=0.3.2, networkx>=3.3.0
+pip install 'trelix[graph-viz]'         # alias for the same extras
+```
 
 ---
 
