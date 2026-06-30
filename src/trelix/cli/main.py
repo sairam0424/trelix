@@ -900,7 +900,8 @@ def telemetry(
 
     if not rows:
         console.print(
-            "[yellow]No telemetry recorded. Set TRELIX_TELEMETRY_ENABLED=true and run queries.[/yellow]"
+            "[yellow]No telemetry recorded. "
+            "Set TRELIX_TELEMETRY_ENABLED=true and run queries.[/yellow]"
         )
         return
 
@@ -919,6 +920,42 @@ def telemetry(
             f"{row['elapsed_ms']:.0f}",
             str(row["result_count"]),
         )
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# eval
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def eval(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")] = ".",
+    golden: Annotated[
+        str, typer.Option("--golden", "-g", help="Path to golden JSONL file.")
+    ] = ".trelix/golden.jsonl",
+) -> None:
+    """Evaluate retrieval quality against a golden query set (nDCG@10, Recall@10, MRR)."""
+    from trelix.core.config import IndexConfig
+    from trelix.eval.harness import EvalHarness
+
+    config = IndexConfig(repo_path=repo)
+    harness = EvalHarness(config)
+    try:
+        metrics = harness.run(golden)
+    except FileNotFoundError:
+        console.print(f"[red]Golden file not found: {golden}[/red]")
+        console.print("Create a golden.jsonl with lines like:")
+        console.print('  {"query": "how does auth work", "relevant_files": ["src/auth.py"]}')
+        raise typer.Exit(1)
+
+    table = Table(title="Retrieval Evaluation Results")
+    table.add_column("Metric", style="bold")
+    table.add_column("Score", justify="right")
+    table.add_row("nDCG@10", f"{metrics['ndcg@10']:.4f}")
+    table.add_row("Recall@10", f"{metrics['recall@10']:.4f}")
+    table.add_row("MRR", f"{metrics['mrr']:.4f}")
+    table.add_row("Queries evaluated", str(int(metrics["n_queries"])))
     console.print(table)
 
 
