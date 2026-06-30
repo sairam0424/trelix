@@ -11,6 +11,8 @@
 
 **Fast, reliable code indexing and retrieval.** Given a user query and a repository, trelix finds the most relevant code — using a 3-tier adaptive query planner, contextual hybrid search (semantic + keyword + grep), call-graph expansion, reranking, and LLM synthesis.
 
+> **v2.0.0 Breaking Change:** The `trelix graph <repo> <symbol>` call-graph display command has been renamed to `trelix call-graph <repo> <symbol>`.
+
 ```
 trelix index  ./my-repo
 trelix ask    ./my-repo "how does authentication work?"
@@ -34,6 +36,7 @@ trelix stats  ./my-repo
 | **Synthesis** | Streaming synthesis | Live token output, no 10s wait |
 | **Storage** | LanceDB backend (3–5× faster at 100k+ chunks) | Large-scale deployments |
 | **Platform** | REST API + SSE streaming | Remote deployments, web integrations |
+| **Knowledge Graph** | Unified code property graph, Louvain community detection, Pyvis visualization, BFS 4th retrieval leg | Architecture understanding queries work |
 
 ---
 
@@ -56,7 +59,7 @@ trelix stats  ./my-repo
 - **Streaming synthesis** — `trelix ask` streams tokens live; `GET /ask` SSE endpoint
 - **REST API** — `trelix serve ./repo --port 8765` exposes `/search`, `/ask`, `/index`, `/health`
 - **LanceDB backend** — 3–5× faster vector insert at 100k+ chunks (`TRELIX_STORE_BACKEND=lance`)
-- **Knowledge Graph** — `trelix graph ./repo` builds a unified NetworkX MultiDiGraph over call/import/type edges; Louvain community detection clusters the codebase into architectural modules; Pyvis interactive HTML visualization; graph-aware BFS as a 4th retrieval leg (`graph_search_enabled=True`)
+- **Knowledge Graph** — `trelix graph ./repo` builds a Code Property Graph (calls + imports + type hierarchy) as a NetworkX MultiDiGraph; Louvain community detection clusters the codebase into architectural modules; Pyvis interactive HTML visualization; graph-aware BFS as 4th retrieval leg (`TRELIX_GRAPH_SEARCH_ENABLED=true`); `pip install 'trelix[knowledge-graph]'`
 
 ---
 
@@ -98,6 +101,15 @@ TRELIX_FILE_SUMMARIES_ENABLED=true trelix index ./my-repo
 
 # Use LanceDB for large repos (100k+ chunks)
 TRELIX_STORE_BACKEND=lance trelix index ./my-repo
+
+# Build knowledge graph (requires trelix[knowledge-graph])
+trelix graph ./my-repo
+
+# With interactive visualization
+trelix graph ./my-repo --visualize
+
+# Enable graph as 4th search leg
+TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "explain the auth architecture"
 ```
 
 ### GitHub Actions — index in CI
@@ -389,19 +401,39 @@ Endpoints: GET /search, GET /ask (SSE streaming), POST /index, GET /health, GET 
 
 ## Knowledge Graph
 
-Build a unified code graph over call/import/type edges and explore architectural structure:
+trelix v2.0.0 adds a Knowledge Graph layer that turns your indexed codebase into a traversable Code Property Graph.
+
+### What it builds
+
+- **CodeGraph** — unifies call edges, import edges, and type hierarchy (extends/implements) into a single NetworkX MultiDiGraph
+- **Community detection** — Louvain algorithm clusters symbols into architectural modules (auth layer, data layer, API layer) in ~0.34s
+- **Graph-aware search** — BFS from semantic seeds surfaces structurally related code that pure vector search misses
+- **Interactive visualization** — Pyvis HTML with community-colored nodes and edge-type arrows
+
+### Quick commands
 
 ```bash
-pip install "trelix[knowledge-graph]"
+pip install 'trelix[knowledge-graph]'
 
-# Build graph and show community summary
-trelix graph ./my-repo
+trelix graph ./repo                    # build graph, show community summary
+trelix graph ./repo --visualize        # also export interactive HTML
+trelix graph ./repo --json             # machine-readable stats
+trelix graph ./repo --concepts         # extract LLM semantic concepts (needs LLM config)
+```
 
-# Build graph and export interactive HTML visualization
-trelix graph ./my-repo --visualize
+### REST API
 
-# JSON output for scripting
-trelix graph ./my-repo --json
+```
+GET /graph?repo=             → {node_count, edge_count, community_count}
+GET /graph/communities?repo= → community summary list
+GET /graph/visualize?repo=   → export Pyvis HTML, return path
+GET /graph/search?repo=&symbol_id=&depth= → BFS from symbol
+```
+
+### Enable as 4th retrieval leg
+
+```bash
+TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./repo "how does auth relate to the data layer?"
 ```
 
 | Feature | Description |
@@ -409,10 +441,18 @@ trelix graph ./my-repo --json
 | **CodeGraph** | NetworkX MultiDiGraph unifying calls, imports, and type edges |
 | **Community Detection** | Louvain algorithm clusters codebase into logical modules (auth layer, data layer, etc.) |
 | **Semantic Concepts** | LLM extracts high-level architectural concepts (crash-safe) |
-| **Graph-Aware Search** | BFS as a 4th retrieval leg; enable with `graph_search_enabled=True` |
+| **Graph-Aware Search** | BFS as a 4th retrieval leg; enable with `TRELIX_GRAPH_SEARCH_ENABLED=true` |
 | **Visualization** | Pyvis interactive HTML with community-colored nodes and edge-type arrows |
 | **REST endpoints** | `GET /graph`, `GET /graph/communities`, `GET /graph/visualize`, `GET /graph/search` |
 | **MCP tools** | `build_knowledge_graph` and `graph_search_mcp` in `trelix-mcp` |
+
+### Knowledge Graph configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_GRAPH_SEARCH_ENABLED` | `false` | Enable graph-aware BFS as 4th retrieval leg |
+| `TRELIX_GRAPH_SEARCH_DEPTH` | `2` | BFS traversal depth from seed nodes |
+| `TRELIX_GRAPH_SEARCH_MAX_RESULTS` | `15` | Max results returned from graph leg |
 
 ---
 
