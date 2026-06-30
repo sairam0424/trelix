@@ -16,11 +16,19 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 make install-dev
 # equivalent: pip install -e ".[bge-code,plaid,lance,serve,dev]"
 # Optional extras:
-#   [bge-code]  — BGE-Code embeddings (requires torch, transformers)
-#   [plaid]     — Plaid financial data integration
-#   [lance]     — LanceDB vector store for large-scale deployments
-#   [serve]     — REST API server (FastAPI + Uvicorn)
-#   [dev]       — testing, linting, type-checking (always included)
+#   [bge-code]        — BGE-Code embeddings (requires torch, transformers)
+#   [plaid]           — Plaid financial data integration
+#   [lance]           — LanceDB vector store for large-scale deployments
+#   [serve]           — REST API server (FastAPI + Uvicorn)
+#   [knowledge-graph] — Knowledge graph + visualization (pyvis>=0.3.2, networkx>=3.3.0)
+#   [graph-viz]       — Alias for [knowledge-graph]
+#   [dev]             — testing, linting, type-checking (always included)
+
+# Standard dev setup (no graph visualization)
+pip install -e ".[local,dev]"
+
+# Include graph visualization (pyvis + networkx)
+pip install -e ".[local,dev,knowledge-graph]"
 
 # Copy environment template
 cp .env.example .env
@@ -64,6 +72,37 @@ main          ← stable releases only (do not push directly)
 3. Open a PR targeting `develop` (not `main`)
 
 ## Extension Points
+
+### trelix/graph/ — Knowledge Graph module
+
+The graph module lives at `src/trelix/graph/` and is organized as:
+
+| File | Responsibility |
+|------|----------------|
+| `code_graph.py` | CodeGraph — NetworkX MultiDiGraph over SQLite edge tables |
+| `community.py` | Community detection (Louvain/Girvan-Newman) |
+| `persistence.py` | Save/load community + centrality to graph_metadata table |
+| `concepts.py` | LLM semantic concept extraction (crash-safe) |
+| `builder.py` | GraphBuilder — orchestrates the full pipeline |
+| `visualizer.py` | Pyvis HTML export (requires `trelix[knowledge-graph]`) |
+| `search.py` | BFS graph_search function (4th retrieval leg) |
+
+Tests live in `tests/unit/test_graph_*.py`. All graph tests can run without pyvis or any LLM configured.
+
+**Opt-in config keys** (all default to off — zero impact when disabled):
+
+| Key | Default | Env var |
+|-----|---------|---------|
+| `graph_search_enabled` | `False` | `TRELIX_GRAPH_SEARCH_ENABLED=true` |
+| `graph_search_depth` | `2` | — |
+| `graph_search_max_results` | `15` | — |
+
+**Adding a new graph algorithm:**
+
+1. Add the implementation to the most appropriate existing file or create a new file under `src/trelix/graph/`
+2. Expose it through `GraphBuilder` in `builder.py` so the pipeline can call it
+3. If it requires a new optional dependency, add an extras group to `pyproject.toml` and document it here
+4. Write tests in `tests/unit/test_graph_<name>.py` — mock any LLM calls; do not require pyvis
 
 ### Adding a New Language Parser
 
@@ -141,6 +180,8 @@ trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version
 - Changing a method signature in an incompatible way
 - Changing the SQLite schema in a way that requires re-indexing
 - Removing a previously supported Python version
+
+**CLI command renames** (e.g. `trelix graph` → `trelix call-graph` in v2.0.0) are breaking changes and must be documented under a `### Breaking Changes` heading in `CHANGELOG.md` for the relevant release, alongside a migration note showing the old and new invocation.
 
 ### Deprecation policy
 
