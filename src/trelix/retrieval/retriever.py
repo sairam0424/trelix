@@ -243,11 +243,23 @@ class Retriever:
         bm25_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["bm25"]]
         grep_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["grep"]]
 
+        # 5th leg: file-summary search (RAPTOR-style, off by default)
+        summary_results: list[SearchResult] = []
+        if cfg.file_summary_leg_enabled and plan.sub_queries:
+            embed_text = (
+                plan.sub_queries[0].hyde_snippet
+                if plan.sub_queries[0].hyde_snippet.strip()
+                else plan.sub_queries[0].semantic_query
+            )
+            query_embedding: list[float] = self.embedder.embed_query(embed_text)
+            summary_results = self._summary_search(query_embedding, k=cfg.top_k_file_summary)
+
         logger.info(
-            "Pre-fusion leg sizes: vector=%d bm25=%d grep=%d",
+            "Pre-fusion leg sizes: vector=%d bm25=%d grep=%d summary=%d",
             len(vector_results),
             len(bm25_results),
             len(grep_results),
+            len(summary_results),
         )
 
         # -- Trace: per-leg results --
@@ -258,6 +270,7 @@ class Retriever:
                 "vector_count": len(vector_results),
                 "bm25_count": len(bm25_results),
                 "grep_count": len(grep_results),
+                "summary_count": len(summary_results),
                 "top_vector": [
                     {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
                     for r in vector_results[:5]
@@ -270,12 +283,16 @@ class Retriever:
                     {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
                     for r in grep_results[:5]
                 ],
+                "top_summary": [
+                    {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
+                    for r in summary_results[:5]
+                ],
             },
         )
 
         _weights = cfg.file_type_weights if cfg.file_type_weighting_enabled else None
         fused = reciprocal_rank_fusion(
-            [vector_results, bm25_results, grep_results],
+            [vector_results, bm25_results, grep_results, summary_results],
             k=cfg.rrf_k,
             weights=_weights,
         )
@@ -566,6 +583,49 @@ class Retriever:
     # ------------------------------------------------------------------
     # Vector search
     # ------------------------------------------------------------------
+
+    def _summary_search(self, query_embedding: list[float], k: int) -> list[SearchResult]:
+        """Search file-summary embeddings (5th retrieval leg).
+
+        Returns SearchResult objects where the symbol is the first symbol in the file
+        (used as a representative for the file-level summary context).
+        Returns empty list when no summaries are indexed or file_summary_leg_enabled=False.
+        """
+        results: list[SearchResult] = []
+        try:
+            pairs = self.vector_store.search_file_summaries(query_embedding, k=k)
+            for file_id, score in pairs:
+                file_obj = self.db.get_file_by_id(file_id)
+                if file_obj is None:
+                    continue
+                summary_text = self.db.get_file_summary(file_id)
+                if not summary_text:
+                    continue
+                # Build a synthetic Chunk representing the file-level summary
+                synthetic_chunk = Chunk(
+                    id=-(file_id),  # negative = summary sentinel
+                    symbol_id=0,
+                    chunk_text=summary_text,
+                    token_count=len(summary_text.split()),
+                )
+                # Pick the first symbol in the file as the representative symbol
+                symbols = self.db.get_symbols_for_file(file_id)
+                if not symbols:
+                    continue
+                rep_symbol = min(symbols, key=lambda s: s.line_start)
+                results.append(
+                    SearchResult(
+                        chunk=synthetic_chunk,
+                        symbol=rep_symbol,
+                        file=file_obj,
+                        score=score,
+                        rank=0,
+                        source="file_summary",
+                    )
+                )
+        except Exception as exc:
+            logger.warning("File summary leg failed (non-fatal): %s", exc)
+        return results
 
     def _vector_search(self, query_embedding: list[float], k: int) -> list[SearchResult]:
         raw = self.vector_store.search(query_embedding, k=k)

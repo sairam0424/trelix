@@ -64,6 +64,14 @@ class BaseVectorStore(ABC):
     def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
         """Insert or replace a file-level summary embedding."""
 
+    @abstractmethod
+    def search_file_summaries(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:
+        """Search file-summary embeddings only. Returns (file_id, score) pairs.
+
+        Convention: summary embeddings are stored with chunk_id = -(file_id).
+        This method filters to negative chunk_ids and maps back to file_id.
+        """
+
 
 # ---------------------------------------------------------------------------
 # SQLite backend (default)
@@ -303,6 +311,42 @@ class SQLiteVectorStore(BaseVectorStore):
                 (sentinel_id, packed),
             )
             self._conn.commit()
+
+    def search_file_summaries(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:
+        """Search only file-summary rows (chunk_id < 0), return (file_id, score) pairs."""
+        with self._lock:
+            try:
+                vec_bytes = struct.pack(f"{len(query_embedding)}f", *query_embedding)
+                rows = self._conn.execute(
+                    """
+                    SELECT chunk_id, distance
+                    FROM chunk_embeddings
+                    WHERE chunk_id < 0
+                      AND chunk_embeddings MATCH ?
+                      AND k = ?
+                    ORDER BY distance
+                    """,
+                    (vec_bytes, k),
+                ).fetchall()
+                # chunk_id = -(file_id), so file_id = -(chunk_id)
+                return [(-int(row[0]), float(row[1])) for row in rows]
+            except Exception:
+                # Flat fallback: fetch all negative-id rows, compute distance manually
+                all_rows = self._conn.execute(
+                    "SELECT chunk_id, embedding FROM chunk_embeddings WHERE chunk_id < 0"
+                ).fetchall()
+                if not all_rows:
+                    return []
+                scored: list[tuple[int, float]] = []
+                for row in all_rows:
+                    cid = int(row[0])
+                    emb_bytes = row[1]
+                    n = len(query_embedding)
+                    stored = list(struct.unpack(f"{n}f", emb_bytes))
+                    dist = sum((a - b) ** 2 for a, b in zip(query_embedding, stored)) ** 0.5
+                    scored.append((-cid, dist))
+                scored.sort(key=lambda x: x[1])
+                return scored[:k]
 
     def close(self) -> None:
         self._conn.close()
