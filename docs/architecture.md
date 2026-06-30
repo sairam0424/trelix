@@ -670,3 +670,209 @@ GitHub Actions CI
 Homebrew (macOS)
   └── brew tap sairam0424/trelix && brew install trelix
 ```
+
+---
+
+## v2.1.0 Beast-Mode Retrieval Pipeline
+
+v2.1.0 upgrades the retrieval core from a 3-leg to a **5-leg parallel architecture** with
+a query enhancement pre-pass, post-rerank signal boosting, and a full observability layer.
+
+### 5-Leg Retrieval Architecture
+
+All five legs run in parallel for every query. Results from all legs are fused via
+Reciprocal Rank Fusion (RRF, k=60), then passed through graph expansion before reranking.
+
+```
+User Query
+  └─ Query Enhancement Layer  (HyDE + multi-query)
+       └─ 5-Leg Parallel Retrieval
+            ├─ Leg 1: Vector    (HNSW, sqlite-vec) — ANN over chunk embeddings
+            ├─ Leg 2: BM25      (FTS5) — keyword frequency over symbols_fts
+            ├─ Leg 3: Grep      (exact / regex) — literal symbol name match
+            ├─ Leg 4: CodeGraph BFS  (graph_search_enabled) — structural neighbours
+            └─ Leg 5: File-Summary   (file_summary_leg_enabled) — RAPTOR-style
+                 └─ RRF Fusion  (all 5 legs, k=60)
+                      └─ Graph Expansion  (call / import / type edges)
+                           └─ Reranker  (Cohere | cross-encoder | PLAID)
+                                └─ Post-Rerank Enhancement
+                                     ├─ PageRank Boost  (centrality × 1.3)
+                                     └─ FLARE Loop      (uncertainty → re-retrieve)
+```
+
+#### Leg 1 — Vector (HNSW, sqlite-vec)
+
+ANN search over `vec_chunks` using the configured embedding provider. When HyDE is enabled,
+the query is replaced by a synthetic code snippet before embedding (see Query Enhancement
+Layer below). This is the primary semantic leg.
+
+#### Leg 2 — BM25 (FTS5)
+
+Keyword frequency search over the `symbols_fts` virtual table, which indexes `name`,
+`qualified_name`, `docstring`, `body`, and `context_summary`. Complements the vector leg
+for identifier-exact queries where semantic similarity underperforms.
+
+#### Leg 3 — Grep (exact / regex)
+
+Direct SQL `LIKE` or regex match on `symbols.name` and `symbols.qualified_name`. Zero
+latency, no embedding required. Highest precision for `symbol_lookup` intent.
+
+#### Leg 4 — CodeGraph BFS (`graph_search_enabled`)
+
+BFS traversal of the in-memory `CodeGraph` from the top-N seeds produced by the first
+three legs. Score decay `0.5^hop` as in v2.0.0. Surfaces callee/caller/import neighbours
+invisible to embedding or keyword search. Controlled by `graph_search_enabled` flag.
+
+#### Leg 5 — File-Summary (`file_summary_leg_enabled`)
+
+RAPTOR-style retrieval over `file_summaries` vectors. At query time, the query is embedded
+and matched against per-file summary vectors stored in `vec_file_summaries` (SQLite backend)
+or via the sentinel `chunk_id = -(file_id)` convention (LanceDB backend). Returns whole-file
+context candidates that are merged into the RRF fusion step alongside chunk-level results.
+Gated by `file_summary_leg_enabled`; requires `TRELIX_FILE_SUMMARIES_ENABLED=true` at index
+time to populate the underlying `file_summaries` table.
+
+---
+
+### Query Enhancement Layer
+
+Applied **before** retrieval. Both techniques are opt-in and compose independently.
+
+#### HyDE (Hypothetical Document Embeddings)
+
+When `hyde_fallback_enabled=True`, the raw user query is sent to the configured LLM with
+the prompt: `"Write a short Python/TypeScript code snippet that would answer: {query}"`.
+The synthetic snippet is embedded and used as the vector query instead of the raw query
+string. This bridges the query–document vocabulary gap for code retrieval.
+
+```
+User query (natural language)
+  → LLM: "Write a code snippet that answers: {query}"
+  → Synthetic code snippet
+  → Embed snippet → ANN search (Leg 1)
+```
+
+HyDE adds one LLM call per query. On cache hit (same query hash), the synthetic snippet is
+reused without an extra LLM call. Falls back to raw query embedding on any LLM error.
+
+#### Multi-Query
+
+When `multi_query_enabled=True`, the query planner generates N variant phrasings of the
+original query (default N=3) via an LLM call. Each variant is retrieved independently
+across all enabled legs. The N result sets are merged with a final RRF pass before reranking.
+
+```
+User query
+  → LLM: generate N=3 variant queries
+  → Retrieve each variant independently (all 5 legs each)
+  → RRF merge of N result sets
+  → Single ranked list → Reranker
+```
+
+Multi-query is most effective for ambiguous natural-language queries where a single phrasing
+misses the optimal lexical or semantic match.
+
+---
+
+### Post-Rerank Enhancement
+
+Applied **after** the reranker returns its final scored list.
+
+#### PageRank Boost
+
+Symbols with high degree centrality (stored in `graph_metadata.centrality`) receive a score
+multiplier of **1.3**. Centrality is pre-computed at graph-build time (`trelix graph`) and
+read at query time with a single indexed lookup — no graph traversal at query time.
+
+Rationale: highly-connected symbols (e.g. a core `parse` function called by 438 other
+symbols) are disproportionately important to understanding the codebase and deserve higher
+ranking even when their textual similarity to the query is moderate.
+
+Controlled by `pagerank_boost_enabled`. No effect when centrality data is absent
+(graph not yet built or `graph_search_enabled=False`).
+
+#### FLARE Loop (Forward-Looking Active Retrieval)
+
+When `flare_enabled=True`, the synthesizer monitors token-level generation uncertainty.
+If the LLM emits a low-confidence span (probability below `TRELIX_FLARE_THRESHOLD`,
+default 0.3), synthesis is paused and a targeted re-retrieval is triggered using the
+uncertain span as a new query. The supplemental results are injected into the context
+window before generation resumes.
+
+```
+Synthesis in progress
+  → LLM token probability < FLARE_THRESHOLD?
+       YES → extract uncertain span
+             → re-retrieve (all enabled legs)
+             → inject new results into context
+             → resume synthesis
+       NO  → continue normally
+```
+
+FLARE is best suited for long `feature_flow` and `blast_radius` queries where the
+synthesizer must reason across many files. It adds variable latency (0–2 extra LLM calls
+per query) and is disabled by default.
+
+---
+
+### Observability
+
+#### Query Telemetry
+
+Every call to `retrieve()` writes one row to the `query_telemetry` table in `.trelix/index.db`.
+
+**Table: `query_telemetry`**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PRIMARY KEY | Auto-increment |
+| `query` | TEXT | Raw user query string |
+| `query_hash` | TEXT | SHA-256 of query (cache key) |
+| `legs_used` | TEXT | JSON array of leg names that returned results |
+| `rrf_score_p50` | REAL | Median RRF score across fused results |
+| `reranker_top1_score` | REAL | Top-1 reranker score |
+| `pagerank_boost_applied` | INTEGER | 1 if boost was applied, 0 otherwise |
+| `flare_iterations` | INTEGER | Number of FLARE re-retrieval loops executed |
+| `latency_ms` | REAL | Wall-clock retrieval latency in milliseconds |
+| `result_count` | INTEGER | Number of results returned to the caller |
+| `created_at` | TEXT | ISO-8601 timestamp (UTC) |
+
+Telemetry is gated by `telemetry_enabled` (`TRELIX_TELEMETRY_ENABLED`, default `false`).
+When disabled, the table is not created and no rows are written — zero overhead.
+
+#### Eval Harness (`trelix eval`)
+
+```bash
+trelix eval --golden tests/eval/golden.jsonl --report eval-report.json
+```
+
+Runs the full 5-leg retrieval pipeline against a golden query set and reports:
+
+| Metric | Description |
+|--------|-------------|
+| `nDCG@10` | Normalised Discounted Cumulative Gain at rank 10 |
+| `Recall@10` | Fraction of relevant symbols appearing in top-10 results |
+| `MRR` | Mean Reciprocal Rank of the first relevant result |
+
+The golden file format is one JSON object per line:
+`{"query": "...", "relevant_qualified_names": ["mod.func", ...]}`.
+
+The eval harness respects all `RetrievalConfig` flags — run it with different flag
+combinations to measure the incremental impact of each beast-mode leg.
+
+---
+
+### v2.1.0 Config Flags
+
+All flags live in `RetrievalConfig` and are readable from environment variables.
+
+| Flag | Env var | Default | Description |
+|------|---------|---------|-------------|
+| `file_summary_leg_enabled` | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable Leg 5 (RAPTOR file-summary retrieval) |
+| `hyde_fallback_enabled` | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Replace query with LLM-generated code snippet before embedding |
+| `flare_enabled` | `TRELIX_RETRIEVAL_FLARE` | `false` | Uncertainty-triggered re-retrieval during synthesis |
+| `pagerank_boost_enabled` | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Multiply centrality-high symbol scores by 1.3 |
+| `telemetry_enabled` | `TRELIX_TELEMETRY_ENABLED` | `false` | Write per-query telemetry rows to `query_telemetry` |
+
+All five flags are independent and compose freely. The safe upgrade path is to enable them
+one at a time and validate with `trelix eval --golden` before enabling the next.
