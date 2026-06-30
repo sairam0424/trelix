@@ -194,6 +194,13 @@ class Retriever:
             context.retrieval_sources,
             context.elapsed_seconds,
         )
+
+        # Telemetry — record timing and result count (no-op when disabled)
+        if self.config.telemetry_enabled:
+            from trelix.retrieval.telemetry import TelemetryWriter
+            elapsed_ms = (time.perf_counter() - t_start) * 1000
+            TelemetryWriter(self.db, enabled=True).record(context, elapsed_ms=elapsed_ms)
+
         return context
 
     # ------------------------------------------------------------------

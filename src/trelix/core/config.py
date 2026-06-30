@@ -633,6 +633,13 @@ class IndexConfig(BaseSettings):
         alias="TRELIX_FILE_SUMMARIES_ENABLED",
     )
 
+    # Query telemetry: record every retrieve() call to query_telemetry table.
+    # Off by default — zero overhead when disabled.
+    telemetry_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_TELEMETRY_ENABLED",
+    )
+
     @field_validator("repo_path")
     @classmethod
     def repo_must_exist(cls, v: str) -> str:

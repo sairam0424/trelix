@@ -18,7 +18,7 @@ import logging
 import time
 import warnings
 from pathlib import Path
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
 
 import typer
 from rich.console import Console
@@ -878,6 +878,48 @@ def graph(
         viz = GraphVisualizer()
         path = viz.export_html(result.code_graph, out)
         console.print(f"\n[blue]Graph visualization:[/blue] {path}")
+
+
+# ---------------------------------------------------------------------------
+# telemetry
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def telemetry(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")] = ".",
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Rows to show")] = 20,
+) -> None:
+    """Show recent query telemetry (latency, result counts, intent breakdown)."""
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
+
+    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    db = Database(config.db_path_absolute)
+    rows = db.get_recent_telemetry(limit=limit)
+
+    if not rows:
+        console.print(
+            "[yellow]No telemetry recorded. Set TRELIX_TELEMETRY_ENABLED=true and run queries.[/yellow]"
+        )
+        return
+
+    table = Table(title=f"Recent Queries (last {len(rows)})")
+    table.add_column("ts", style="dim")
+    table.add_column("query", max_width=50)
+    table.add_column("intent")
+    table.add_column("ms", justify="right")
+    table.add_column("results", justify="right")
+
+    for row in rows:
+        table.add_row(
+            row["ts"],
+            row["query"][:50],
+            row["intent"],
+            f"{row['elapsed_ms']:.0f}",
+            str(row["result_count"]),
+        )
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------
