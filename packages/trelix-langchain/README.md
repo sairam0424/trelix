@@ -20,6 +20,12 @@ For code-optimized embeddings (BGE-Code, Nomic-Code, or Lance backend):
 pip install "trelix-langchain[code-embeddings]"
 ```
 
+With knowledge graph support (NetworkX BFS retrieval leg):
+
+```bash
+pip install trelix-langchain 'trelix[knowledge-graph]'
+```
+
 ## Basic Usage
 
 ```python
@@ -47,6 +53,58 @@ Each returned `Document` carries rich metadata:
 | `lines` | `"42-78"` |
 | `score` | `0.91` |
 | `retrieval_source` | `"hybrid"` |
+
+## Graph-Enhanced Retrieval
+
+Enable the knowledge graph as a 4th retrieval leg for architecture-aware queries:
+
+```python
+from trelix_langchain import TrelixRetriever
+
+# Standard hybrid retrieval
+retriever = TrelixRetriever(repo_path="/path/to/repo", k=10)
+
+# With graph-aware BFS (requires trelix[knowledge-graph])
+retriever = TrelixRetriever(
+    repo_path="/path/to/repo",
+    k=10,
+    graph_search_enabled=True,   # enables 4th BFS retrieval leg
+    graph_search_depth=2,
+)
+
+# Each Document.metadata includes graph source info
+docs = retriever.invoke("how does auth relate to the data layer?")
+for doc in docs:
+    print(doc.metadata["retrieval_source"])  # "graph_search", "vector", "bm25"
+```
+
+When `graph_search_enabled=True`, the retriever merges results from four legs:
+
+| Leg | Source | Typical share |
+|---|---|---|
+| vector | semantic embedding similarity | majority |
+| bm25 | keyword / BM25 full-text | secondary |
+| graph_expansion | call-graph neighbourhood | supplementary |
+| graph_search | BFS over NetworkX knowledge graph | up to `k//2` |
+
+Graph BFS surfaces structurally related symbols even when semantic similarity is low — useful for cross-cutting concerns like auth, logging, and rate-limiting that touch many modules.
+
+### Graph config options
+
+| Parameter | Default | Description |
+|---|---|---|
+| `graph_search_enabled` | `False` | Opt-in — zero overhead when off |
+| `graph_search_depth` | `2` | BFS depth from seed nodes |
+| `graph_search_max_results` | `15` | Cap on graph leg results |
+
+You can also set these via environment variables:
+
+```bash
+TRELIX_GRAPH_SEARCH_ENABLED=true trelix index /path/to/repo
+```
+
+> **Prerequisite**: build the knowledge graph before querying — `trelix graph /path/to/repo`.
+> The graph is persisted in `<repo>/.trelix/` and reused across retriever calls.
 
 ## LangChain RAG Chain (LCEL)
 
