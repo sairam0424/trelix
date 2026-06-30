@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, call
-
-import pytest
+from unittest.mock import MagicMock
 
 from trelix.retrieval.flare import FLARELoop, _contains_uncertainty
 
@@ -20,7 +18,10 @@ class TestUncertaintyDetection:
         assert _contains_uncertainty("There is no information about JWT in the codebase.") is True
 
     def test_confident_answer_not_flagged(self) -> None:
-        assert _contains_uncertainty("The authenticate() function in auth.py handles this.") is False
+        assert (
+            _contains_uncertainty("The authenticate() function in auth.py handles this.")
+            is False
+        )
 
     def test_case_insensitive(self) -> None:
         assert _contains_uncertainty("NO INFORMATION available") is True
@@ -71,7 +72,7 @@ class TestFLARELoop:
         mock_config.retrieval.flare_enabled = True
         mock_config.retrieval.flare_max_iterations = 2
         loop = FLARELoop(mock_retriever, mock_synthesizer, mock_config)
-        result = loop.run("how does auth work")
+        loop.run("how does auth work")
         # max_iterations=2 means at most 2 synthesis calls (1 initial + 1 retry)
         assert mock_synthesizer.synthesize.call_count <= 2
 
