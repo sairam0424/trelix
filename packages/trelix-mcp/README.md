@@ -2,12 +2,12 @@
 
 <!-- mcp-name: io.github.sairam0424/trelix -->
 
-MCP server for [trelix](https://github.com/sairam0424/trelix) v2.0.0 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+MCP server for [trelix](https://github.com/sairam0424/trelix) v2.1.0 — semantic code search with streaming /ask endpoint, REST API integration, and beast-mode retrieval optimization for Claude Code, Cursor, Windsurf, and Continue.dev.
 
 ## Install
 
 ```bash
-pip install trelix-mcp==2.0.0
+pip install trelix-mcp==2.1.0
 ```
 
 To use Bedrock embeddings or synthesis (no extra API key beyond AWS credentials):
@@ -135,15 +135,15 @@ TRELIX_LLM_MODEL=bedrock/claude-3-5-sonnet
 
 ## Tools
 
-| Tool | Description |
-|------|-------------|
-| `search_code` | Semantic hybrid search over an indexed codebase |
-| `index_codebase` | Index a repository so it can be searched |
-| `get_symbol` | Look up a symbol by qualified name |
-| `blast_radius` | Find all files that depend on a symbol |
-| `ask` | Streaming chat endpoint for conversational code exploration (v2.0.0+) |
-| `build_knowledge_graph(repo_path, extract_concepts=False)` | Build Code Property Graph, detect communities, return stats + community summary |
-| `graph_search_mcp(query, repo_path, k=10)` | Vector-seeded graph BFS — finds structurally related code by following call/import/type edges |
+| Tool | Version | Description |
+|------|---------|-------------|
+| `search_code` | v2.1.0 | Semantic hybrid search over an indexed codebase with 5-leg retrieval (base, summaries, HyDE, FLARE, PageRank boost) |
+| `index_codebase` | v2.1.0 | Index a repository with optional file summaries and knowledge graph |
+| `get_symbol` | v2.1.0 | Look up a symbol by qualified name |
+| `blast_radius` | v2.1.0 | Find all files that depend on a symbol |
+| `ask` | v2.1.0 | Streaming chat endpoint for conversational code exploration |
+| `build_knowledge_graph` | v2.1.0 | Build Code Property Graph, detect communities, return stats + community summary |
+| `graph_search_mcp` | v2.1.0 | Vector-seeded graph BFS — finds structurally related code by following call/import/type edges |
 
 ## Knowledge Graph Tools
 
@@ -180,3 +180,70 @@ Install the knowledge graph extra for full functionality:
 ```bash
 pip install 'trelix-mcp' 'trelix[knowledge-graph]'
 ```
+
+## Beast-Mode Configuration (v2.1.0)
+
+All beast-mode features are opt-in via environment variables. Set them before starting trelix-mcp to enable advanced retrieval optimization and codebase intelligence:
+
+### Environment Variables
+
+```bash
+# File Summaries — generate semantic summaries during indexing
+TRELIX_FILE_SUMMARIES_ENABLED=true
+
+# 5-Leg Retrieval — use file summaries as an additional retrieval dimension
+TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true
+
+# HyDE Fallback — synthesize hypothetical snippets when semantic results are weak
+TRELIX_RETRIEVAL_HYDE_FALLBACK=true
+
+# FLARE Re-retrieval — confidence-gated follow-up retrieval for ambiguous queries
+TRELIX_RETRIEVAL_FLARE=true
+
+# PageRank Boosting — amplify results for architecturally central symbols
+TRELIX_RETRIEVAL_PAGERANK_BOOST=true
+
+# Telemetry — record search queries and performance metrics (privacy: local only)
+TRELIX_TELEMETRY_ENABLED=true
+```
+
+### Activation Workflow
+
+For first-time setup with beast-mode enabled:
+
+```bash
+# 1. Index the repository with file summaries (one-time, requires LLM API)
+#    Adds ~30-50% to index time but produces richer context
+trelix index /path/to/repo
+
+# 2. Build knowledge graph and PageRank centrality scores
+#    Enables structural graph analysis and architecture-aware boosting
+trelix graph /path/to/repo
+
+# 3. MCP server now automatically uses all 5 retrieval legs
+#    Start the server and beast-mode is active
+trelix-mcp
+```
+
+### Five-Leg Retrieval Architecture (v2.1.0)
+
+`search_code` now combines five independent retrieval paths:
+
+| Leg | Enabled by | When it helps |
+|-----|-----------|---------------|
+| **Base** | Always | Exact semantic matches |
+| **File Summaries** | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true` | Broad topic queries ("where's auth?") |
+| **HyDE Synthetic** | `TRELIX_RETRIEVAL_HYDE_FALLBACK=true` | Weak embedding match or novel vocabulary |
+| **FLARE Re-retrieval** | `TRELIX_RETRIEVAL_FLARE=true` | Ambiguous multi-intent queries |
+| **PageRank Boost** | `TRELIX_RETRIEVAL_PAGERANK_BOOST=true` | Architecture-aware results (central modules first) |
+
+All five legs run in parallel and results are merged by relevance score.
+
+### Performance Notes
+
+- **Index time**: +30–50% with `TRELIX_FILE_SUMMARIES_ENABLED=true` (LLM API calls)
+- **Query latency**: +5–15ms per query with all legs enabled (negligible for interactive use)
+- **Storage**: ~15–20% larger index with summaries
+- **Cost**: Proportional to file count during indexing; queries have minimal ongoing cost
+
+Disable individual legs via env vars to find your latency/quality sweet spot.
