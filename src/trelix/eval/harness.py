@@ -40,7 +40,7 @@ class EvalHarness:
 
         queries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
         if not queries:
-            return {"ndcg@10": 0.0, "recall@10": 0.0, "mrr": 0.0, "n_queries": 0}
+            return {"ndcg@10": 0.0, "recall@10": 0.0, "mrr": 0.0, "n_queries": 0.0}
 
         ndcg_scores: list[float] = []
         recall_scores: list[float] = []
@@ -74,7 +74,7 @@ class EvalHarness:
 
         n = len(ndcg_scores)
         if n == 0:
-            return {"ndcg@10": 0.0, "recall@10": 0.0, "mrr": 0.0, "n_queries": 0}
+            return {"ndcg@10": 0.0, "recall@10": 0.0, "mrr": 0.0, "n_queries": 0.0}
 
         return {
             "ndcg@10": sum(ndcg_scores) / n,
