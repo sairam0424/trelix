@@ -142,3 +142,41 @@ TRELIX_LLM_MODEL=bedrock/claude-3-5-sonnet
 | `get_symbol` | Look up a symbol by qualified name |
 | `blast_radius` | Find all files that depend on a symbol |
 | `ask` | Streaming chat endpoint for conversational code exploration (v2.0.0+) |
+| `build_knowledge_graph(repo_path, extract_concepts=False)` | Build Code Property Graph, detect communities, return stats + community summary |
+| `graph_search_mcp(query, repo_path, k=10)` | Vector-seeded graph BFS — finds structurally related code by following call/import/type edges |
+
+## Knowledge Graph Tools
+
+Two new tools in v2.0.0 expose the knowledge graph layer to AI agents:
+
+### build_knowledge_graph
+
+Builds a Code Property Graph over an indexed repo. Returns node/edge counts, community count, and a summary of top architectural clusters.
+
+```
+build_knowledge_graph(repo_path="/path/to/repo")
+→ {node_count: 4599, edge_count: 4945, community_count: 2409, community_summary: [...]}
+```
+
+Use this before `graph_search_mcp` for best results — or let `graph_search_mcp` call it automatically.
+
+### graph_search_mcp
+
+Hybrid search: first retrieves semantic seeds, then expands via BFS over call/import/type edges.
+
+```
+graph_search_mcp(query="how does auth relate to the user model?", repo_path="/path/to/repo", k=10)
+→ [{file, symbol, kind, score, source, body}, ...]
+```
+
+**When to use `graph_search_mcp` instead of `search_code`:**
+- "What does X depend on?"
+- "What would break if I change Y?"
+- "How does module A connect to module B?"
+- Architecture understanding queries where structural relationships matter
+
+Install the knowledge graph extra for full functionality:
+
+```bash
+pip install 'trelix-mcp' 'trelix[knowledge-graph]'
+```
