@@ -52,6 +52,38 @@ for text_chunk in response:
     print(text_chunk, end="", flush=True)
 ```
 
+## Beast-mode retrieval (v2.1.0+)
+
+v2.1.0 activates enhanced retrieval features via environment variables. Enable HyDE synthetic snippet embedding and PageRank-based symbol boosting for architecturally central symbols:
+
+```python
+from trelix_llama_index import TrelixIndexRetriever
+from llama_index.core.query_engine import RetrieverQueryEngine
+
+# v2.1.0: Beast-mode features active via env vars
+# TRELIX_RETRIEVAL_HYDE_FALLBACK=true — HyDE synthetic snippet embedding
+# TRELIX_RETRIEVAL_PAGERANK_BOOST=true — boost architecturally central symbols
+
+retriever = TrelixIndexRetriever(
+    repo_path="/path/to/repo",
+    k=10,
+)
+nodes = retriever.retrieve("how does the payment processing work?")
+```
+
+Enable beast-mode via environment:
+
+```bash
+# HyDE fallback: generate synthetic query augmentation if real embeddings underperform
+TRELIX_RETRIEVAL_HYDE_FALLBACK=true trelix index /path/to/repo
+
+# PageRank boost: weight results by architectural centrality
+TRELIX_RETRIEVAL_PAGERANK_BOOST=true trelix index /path/to/repo
+
+# Both enabled (recommended for complex monorepos)
+TRELIX_RETRIEVAL_HYDE_FALLBACK=true TRELIX_RETRIEVAL_PAGERANK_BOOST=true trelix index /path/to/repo
+```
+
 ## Configuration
 
 | Env var | Default | Description |
@@ -79,14 +111,15 @@ TRELIX_EMBEDDER_PROVIDER=voyage VOYAGE_API_KEY=pa-... trelix index /path/to/repo
 TRELIX_EMBEDDER_PROVIDER=local trelix index /path/to/repo
 ```
 
-## Graph-Enhanced Retrieval
+## Graph-Enhanced Retrieval (v2.1.0+)
 
-Enable the knowledge graph as a 4th retrieval leg for architecture-aware queries:
+Enable the knowledge graph as a 4th retrieval leg for architecture-aware queries. v2.1.0 integrates beast-mode features for optimal performance:
 
 ```python
 from trelix_llama_index import TrelixIndexRetriever
 
 # With graph-aware BFS (requires trelix[knowledge-graph])
+# v2.1.0: HyDE + PageRank boost activate automatically in this mode
 retriever = TrelixIndexRetriever(
     repo_path="/path/to/repo",
     k=10,
@@ -159,6 +192,23 @@ trelix graph ./repo                          # build graph, print summary
 trelix graph ./repo --visualize              # open Pyvis HTML in browser
 trelix graph ./repo --concepts               # run LLM concept extraction
 trelix graph ./repo --json                   # emit graph stats as JSON
+```
+
+## Evaluation
+
+Use `trelix eval --golden golden.jsonl` to measure nDCG@10, Recall@10, and MRR on a golden query set. This harness is recommended before and after enabling beast-mode features (HyDE, PageRank boost) to quantify retrieval quality improvements:
+
+```bash
+# Create golden queries (JSONL: {"query": "...", "relevant_files": ["file1.py", "file2.py"]})
+trelix eval --golden golden.jsonl --config index.db
+
+# Output: nDCG@10, Recall@10, MRR, per-query breakdowns
+```
+
+Example golden.jsonl:
+```json
+{"query": "how does authentication middleware work?", "relevant_files": ["src/auth/middleware.py", "src/auth/decorators.py"]}
+{"query": "payment processing flow", "relevant_files": ["src/payment/processor.py", "src/payment/handler.py"]}
 ```
 
 ## Links
