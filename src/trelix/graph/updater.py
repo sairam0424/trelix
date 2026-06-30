@@ -32,7 +32,11 @@ class GraphUpdater:
         """
         try:
             from trelix.graph.code_graph import CodeGraph
-            from trelix.graph.community import assign_communities, compute_pagerank, detect_communities
+            from trelix.graph.community import (
+                assign_communities,
+                compute_pagerank,
+                detect_communities,
+            )
             from trelix.graph.persistence import save_graph_metadata
 
             cg = CodeGraph(self._db)
