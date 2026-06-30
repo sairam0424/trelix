@@ -7,35 +7,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 ## [2.1.0] — 2026-06-30
 
 ### Overview
-Beast-mode upgrade: seven research-grounded features added across three phases. All gated
-by `IndexConfig` flags that default to `False` — zero regression when disabled.
+Two major feature sets landing together. Phase A ships the Knowledge Graph layer (v2.0.0 development).
+Phase B is the Beast-Mode Upgrade: seven research-grounded retrieval improvements, all opt-in via
+config flags that default to `False` — zero regression when disabled.
 
-### Added
-- **HyDE fallback** (`hyde_fallback_enabled`) — Hypothetical Document Embeddings (arXiv:2212.10496):
-  generates a synthetic answer, embeds it, and re-retrieves on low-confidence queries
-- **Multi-query expansion** (`multi_query_enabled`) — decomposes a query into 3 sub-queries,
-  retrieves independently, then RRF-fuses for broader recall
-- **FLARE re-retrieval loop** (`flare_enabled`) — confidence-gated iterative retrieval
-  (arXiv:2305.06983): re-retrieves when synthesis token probabilities fall below threshold
-- **PageRank symbol boosting** (`pagerank_boost_enabled`) — scores symbols by import-graph
-  centrality (NetworkX `pagerank`); injects a `pagerank_boost` multiplier into RRF fusion
-- **Incremental graph updater** — `GraphUpdater.update_file()` patches call/import edges for
-  a single changed file without full graph rebuild; wired into the file watcher
-- **Query telemetry** (`telemetry_enabled`) — `TelemetryWriter` writes per-query rows
-  (latency ms, intent, result count) to a SQLite `query_telemetry` table; `trelix telemetry`
-  CLI command shows recent queries in a Rich table
-- **CoIR evaluation harness** — `trelix eval` CLI command runs a golden JSONL file through
-  retrieval and reports nDCG@10, Recall@10, MRR (CoIR benchmark format, ACL 2025 arXiv:2407.02883);
-  pure-Python metric functions in `trelix.eval.ndcg` (no pandas dependency)
-
-### Breaking Changes
-None — all new features are opt-in via config flags.
-
----
-
-## [Unreleased]
-
-### Added
+### Added — Knowledge Graph (Phase A)
 - **Knowledge Graph**: new `trelix/graph/` module unifying call/import/type edges into a traversable `CodeGraph` (NetworkX MultiDiGraph)
 - **Community Detection**: Louvain algorithm clusters codebase into architectural modules; `trelix graph ./repo` CLI command shows top communities
 - **Semantic Concepts**: `ConceptExtractor` — LLM-powered extraction of architectural concepts from symbol batches (crash-safe, returns `[]` on any failure)
@@ -44,11 +20,21 @@ None — all new features are opt-in via config flags.
 - **REST API**: `GET /graph`, `GET /graph/communities`, `GET /graph/visualize`, `GET /graph/search` endpoints
 - **MCP Tools**: `build_knowledge_graph` and `graph_search_mcp` tools in `trelix-mcp`
 - **Graph Persistence**: `graph_metadata` SQLite table stores community and degree centrality per symbol
+- **PageRank symbol boosting** (`pagerank_boost_enabled`) — scores symbols by import-graph centrality; boosts high-centrality symbols post-rerank
+- **Incremental graph updater** — `GraphUpdater.update_file()` refreshes community + PageRank for a changed file; wired into `trelix watch`
+
+### Added — Beast-Mode Retrieval (Phase B)
+- **File-summary 5th retrieval leg** (`file_summary_leg_enabled`) — RAPTOR-style file-level embeddings used as a 5th RRF leg (arXiv:2401.18059); requires `TRELIX_FILE_SUMMARIES_ENABLED=true` at index time
+- **HyDE fallback** (`hyde_fallback_enabled`) — Hypothetical Document Embeddings (arXiv:2212.10496): generates a synthetic code snippet, embeds it instead of the raw NL query
+- **Multi-query expansion** (`multi_query_enabled`) — decomposes a query into N variants, retrieves independently, RRF-fuses for broader recall
+- **FLARE re-retrieval loop** (`flare_enabled`) — confidence-gated iterative retrieval (arXiv:2305.06983): re-retrieves when synthesis output contains uncertainty phrases
+- **Query telemetry** (`telemetry_enabled`) — `TelemetryWriter` writes per-query rows (latency, intent, result count) to `query_telemetry` SQLite table; `trelix telemetry` CLI shows recent queries
+- **CoIR evaluation harness** — `trelix eval --golden <file>` reports nDCG@10, Recall@10, MRR (CoIR format, ACL 2025 arXiv:2407.02883); pure-Python `trelix.eval.ndcg` with no pandas dependency
 
 ### Breaking Changes
 - **CLI**: `trelix graph` renamed to `trelix call-graph` (the old call-graph/callers display).
-  The name `trelix graph` now refers to the new knowledge graph build command.
-  Update any scripts using `trelix graph <repo> <symbol>` to use `trelix call-graph <repo> <symbol>`.
+  The name `trelix graph` now refers to the knowledge graph build command.
+  Update any scripts using `trelix graph <repo> <symbol>` to `trelix call-graph <repo> <symbol>`.
 
 ---
 
@@ -353,7 +339,7 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.0.0...HEAD
+[2.1.0]: https://github.com/sairam0424/trelix/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/sairam0424/trelix/releases/tag/v2.0.0
 [1.1.0]: https://github.com/sairam0424/trelix/releases/tag/v1.1.0
 [1.0.0]: https://github.com/sairam0424/trelix/releases/tag/v1.0.0
