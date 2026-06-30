@@ -3,14 +3,9 @@
 Research basis: 108-agent deep research, 730 tool uses, adversarial verification (June 2026).  
 Target audience: AI agent developers + IDE users + DevOps/CI engineers (all three simultaneously).
 
-**Latest updates (v2.0.0 — June 2026):**
-- ✅ LanceDB backend shipped
-- ✅ PLAID reranker shipped
-- ✅ REST API shipped
-- ✅ Streaming synthesis shipped
-- ✅ BGE-Code-v1 embedder shipped
-- ✅ Nomic CodeRankEmbed shipped
-- ✅ Knowledge Graph shipped (v2.0.0) — CodeGraph, Louvain communities, Pyvis viz, 4th retrieval leg, MCP tools
+**Latest updates:**
+- ✅ **v2.1.0 (June 2026)** — Beast-mode retrieval: HyDE query expansion, FLARE re-retrieval, file-summary 5th leg, PageRank symbol boost, incremental graph updater, query telemetry, CoIR eval harness. All opt-in via env flags. Zero regression.
+- ✅ **v2.0.0 (June 2026)** — LanceDB backend, PLAID reranker, REST API, streaming synthesis, BGE-Code-v1 embedder, Nomic CodeRankEmbed, knowledge graph (CodeGraph, Louvain communities, Pyvis viz, 4th retrieval leg, MCP tools)
 
 ---
 
@@ -526,16 +521,30 @@ Week 4:  Knowledge graph blog post + Pyvis demo page (Knowledge Graph Ecosystem 
 
 ---
 
-## v2.1.0 Backlog
+## Feature Roadmap
+
+| Feature | v2.1.0 | Status | Notes |
+|---|---|---|---|
+| HyDE query expansion | ✅ | Shipped | Generates hypothetical document variations to expand retrieval context |
+| FLARE re-retrieval | ✅ | Shipped | Adaptive retrieval loop for ambiguous/complex queries |
+| File-summary 5th retrieval leg | ✅ | Shipped | LanceDB/Qdrant file-level summary indexing and scoring |
+| PageRank symbol boost | ✅ | Shipped | Boosts retrieval scores for high-degree call-graph nodes |
+| Incremental graph updater | ✅ | Shipped | Rebuild only affected subgraph on file changes instead of full rebuild |
+| Query telemetry | ✅ | Shipped | Per-query instrumentation: latency, leg contribution breakdown, reranker deltas |
+| CoIR evaluation harness | ✅ | Shipped | `trelix eval` command with NDCG/MAP/MRR metrics and comparative analysis |
+
+## v3.x Backlog
 
 **Planned research & integration work:**
 
-| Item | Status | Notes |
+| Item | Priority | Notes |
 |---|---|---|
+| Wire `multi_query_enabled` into retriever | Medium | Allow callers to toggle HyDE expansion per query instead of global env flag |
+| Rename `flare_max_retries` for clarity | Low | Consider `flare_adaptive_depth` or `flare_loop_threshold` for semantics |
+| LanceDB/Qdrant `search_file_summaries` score normalization | High | Normalize file-summary scores to 0–1 range; fuse with BM25/vector consistently |
 | BGE double-prefix investigation | 📋 Backlog | Evaluate BGE double-prefix strategy for improved code semantics retrieval |
-| LanceDB + Qdrant file summary retrieval leg integration | 📋 Backlog | Integrate file-level summaries with hybrid LanceDB/Qdrant retrieval pipeline |
 | Knowledge graph — LLM-powered concept labeling per community | 📋 Backlog | Use ConceptExtractor to auto-label Louvain clusters for richer onboarding output |
-| Knowledge graph — incremental re-index on file change | 📋 Backlog | Only rebuild affected subgraph nodes instead of full rebuild |
+| Multi-language semantic matching | 📋 Backlog | Extend query expansion to polyglot repos (e.g., TypeScript + Python calls) |
 
 ---
 
