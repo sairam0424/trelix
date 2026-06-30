@@ -19,7 +19,8 @@ from __future__ import annotations
 import logging
 
 from trelix.core.config import LLMConfig
-from trelix.llm.factory import build_chat_client  # noqa: F401 — imported for patch target
+from trelix.llm.client import TrelixChatClient
+from trelix.llm.factory import build_chat_client
 
 logger = logging.getLogger("trelix.retrieval.query_expansion")
 
@@ -41,9 +42,9 @@ class HyDEExpander:
 
     def __init__(self, llm_config: LLMConfig | None) -> None:
         self._llm_config = llm_config
-        self._client = None  # lazy-init
+        self._client: TrelixChatClient | None = None
 
-    def _get_client(self) -> object | None:
+    def _get_client(self) -> TrelixChatClient | None:
         if self._llm_config is None:
             return None
         if self._client is None:
@@ -61,13 +62,13 @@ class HyDEExpander:
             return ""
         try:
             from trelix.llm.client import ChatMessage
-            resp = client.complete(  # type: ignore[union-attr]
+            resp = client.complete(
                 messages=[ChatMessage(role="user", content=query)],
                 max_tokens=150,
                 temperature=0.1,
                 system=_HYDE_SYSTEM,
             )
-            return resp.content.strip()
+            return str(resp.content).strip()
         except Exception as exc:
             logger.debug("HyDE expansion failed for query %r: %s", query, exc)
             return ""
@@ -79,9 +80,9 @@ class MultiQueryExpander:
     def __init__(self, llm_config: LLMConfig | None, n: int = 2) -> None:
         self._llm_config = llm_config
         self._n = n
-        self._client = None  # lazy-init
+        self._client: TrelixChatClient | None = None
 
-    def _get_client(self) -> object | None:
+    def _get_client(self) -> TrelixChatClient | None:
         if self._llm_config is None:
             return None
         if self._client is None:
@@ -100,7 +101,7 @@ class MultiQueryExpander:
         try:
             from trelix.llm.client import ChatMessage
             system = _MULTI_QUERY_SYSTEM.format(n=self._n)
-            resp = client.complete(  # type: ignore[union-attr]
+            resp = client.complete(
                 messages=[ChatMessage(role="user", content=query)],
                 max_tokens=200,
                 temperature=0.3,

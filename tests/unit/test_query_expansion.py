@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from trelix.retrieval.query_expansion import HyDEExpander, MultiQueryExpander
 
 
@@ -63,6 +61,15 @@ class TestMultiQueryExpander:
             expander = MultiQueryExpander(llm_config=LLMConfig(), n=2)
             result = expander.expand("what handles JWT tokens")
         assert len(result) == len(set(result))  # no duplicates
+
+    def test_returns_original_on_llm_failure(self) -> None:
+        mock_client = MagicMock()
+        mock_client.complete.side_effect = RuntimeError("API down")
+        with patch("trelix.retrieval.query_expansion.build_chat_client", return_value=mock_client):
+            from trelix.core.config import LLMConfig
+            expander = MultiQueryExpander(llm_config=LLMConfig(), n=2)
+            result = expander.expand("what handles JWT tokens")
+        assert result == ["what handles JWT tokens"]
 
     def test_config_flags_default_off(self, tmp_path) -> None:
         from trelix.core.config import IndexConfig
