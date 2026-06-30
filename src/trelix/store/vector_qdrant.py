@@ -169,7 +169,9 @@ class QdrantVectorStore(BaseVectorStore):
             points=[point],
         )
 
-    def search_file_summaries(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:
+    def search_file_summaries(
+        self, query_embedding: list[float], k: int
+    ) -> list[tuple[int, float]]:
         """Search file-summary rows (negative point IDs). Returns (file_id, score) pairs."""
         results = self.search(query_embedding, k=k * 5)
         return [(-cid, score) for cid, score in results if cid < 0][:k]
