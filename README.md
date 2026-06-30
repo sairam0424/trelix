@@ -56,6 +56,7 @@ trelix stats  ./my-repo
 - **Streaming synthesis** — `trelix ask` streams tokens live; `GET /ask` SSE endpoint
 - **REST API** — `trelix serve ./repo --port 8765` exposes `/search`, `/ask`, `/index`, `/health`
 - **LanceDB backend** — 3–5× faster vector insert at 100k+ chunks (`TRELIX_STORE_BACKEND=lance`)
+- **Knowledge Graph** — `trelix graph ./repo` builds a unified NetworkX MultiDiGraph over call/import/type edges; Louvain community detection clusters the codebase into architectural modules; Pyvis interactive HTML visualization; graph-aware BFS as a 4th retrieval leg (`graph_search_enabled=True`)
 
 ---
 
@@ -202,6 +203,9 @@ pip install "trelix[serve]"
 
 # With file watcher (real-time incremental indexing)
 pip install "trelix[watch]"
+
+# With knowledge graph (NetworkX + Pyvis visualization + community detection)
+pip install "trelix[knowledge-graph]"
 
 # LLM provider extras (v0.7.0)
 pip install trelix               # OpenAI + Azure (default)
@@ -380,6 +384,35 @@ trelix serve ./my-repo --port 8765
 ```
 
 Endpoints: GET /search, GET /ask (SSE streaming), POST /index, GET /health, GET /stats
+
+---
+
+## Knowledge Graph
+
+Build a unified code graph over call/import/type edges and explore architectural structure:
+
+```bash
+pip install "trelix[knowledge-graph]"
+
+# Build graph and show community summary
+trelix graph ./my-repo
+
+# Build graph and export interactive HTML visualization
+trelix graph ./my-repo --visualize
+
+# JSON output for scripting
+trelix graph ./my-repo --json
+```
+
+| Feature | Description |
+|---------|-------------|
+| **CodeGraph** | NetworkX MultiDiGraph unifying calls, imports, and type edges |
+| **Community Detection** | Louvain algorithm clusters codebase into logical modules (auth layer, data layer, etc.) |
+| **Semantic Concepts** | LLM extracts high-level architectural concepts (crash-safe) |
+| **Graph-Aware Search** | BFS as a 4th retrieval leg; enable with `graph_search_enabled=True` |
+| **Visualization** | Pyvis interactive HTML with community-colored nodes and edge-type arrows |
+| **REST endpoints** | `GET /graph`, `GET /graph/communities`, `GET /graph/visualize`, `GET /graph/search` |
+| **MCP tools** | `build_knowledge_graph` and `graph_search_mcp` in `trelix-mcp` |
 
 ---
 

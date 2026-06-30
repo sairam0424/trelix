@@ -383,8 +383,8 @@ def query(
 # ---------------------------------------------------------------------------
 
 
-@app.command()
-def graph(
+@app.command("call-graph")
+def call_graph(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     symbol: str = typer.Argument(..., help="Symbol name or module path to inspect"),
     provider: str = typer.Option("local", help=_PROVIDER_HELP),
@@ -799,6 +799,78 @@ def serve(
     api_app = create_app()
     typer.echo(f"trelix API serving {repo_path} at http://{host}:{port}")
     uvicorn.run(api_app, host=host, port=port)
+
+
+# ---------------------------------------------------------------------------
+# graph (knowledge graph build)
+# ---------------------------------------------------------------------------
+
+
+@app.command(
+    help=(
+        "Build the knowledge graph for an indexed repository.\n\n"
+        "NOTE: The old call-graph display command has been renamed to 'trelix call-graph'. "
+        "See 'trelix call-graph --help'."
+    )
+)
+def graph(
+    repo_path: str = typer.Argument(..., help="Path to indexed repository"),
+    visualize: bool = typer.Option(False, "--visualize", "-v", help="Export Pyvis HTML"),
+    output: str = typer.Option(
+        "", "--output", "-o", help="Output path for HTML (default: .trelix/graph.html)"
+    ),
+    concepts: bool = typer.Option(False, "--concepts", "-c", help="Extract LLM semantic concepts"),
+    json_output: bool = typer.Option(False, "--json", help="Output stats as JSON"),
+) -> None:
+    """Build the knowledge graph for an indexed repository.
+
+    NOTE: The old 'trelix graph <repo> <symbol>' command for call-graph display has been
+    renamed to 'trelix call-graph'. See 'trelix call-graph --help'.
+    """
+    from pathlib import Path as _Path
+
+    from trelix.core.config import IndexConfig
+    from trelix.graph.builder import GraphBuilder
+
+    config = IndexConfig(repo_path=str(_Path(repo_path).resolve()))
+    builder = GraphBuilder(config)
+
+    with console.status("Building knowledge graph..."):
+        result = builder.build(extract_concepts=concepts)
+
+    if json_output:
+        import json as _json
+
+        data = {
+            "node_count": result.node_count,
+            "edge_count": result.edge_count,
+            "community_count": result.community_count,
+            "concept_count": result.concept_count,
+        }
+        console.print(_json.dumps(data))
+        return
+
+    console.print("[green]Knowledge Graph built[/green]")
+    console.print(f"  Nodes      : {result.node_count}")
+    console.print(f"  Edges      : {result.edge_count}")
+    console.print(f"  Communities: {result.community_count}")
+    if concepts:
+        console.print(f"  Concepts   : {result.concept_count}")
+    console.print(f"  Time       : {result.elapsed_seconds:.2f}s")
+
+    if result.community_summary:
+        console.print("\n[bold]Top Communities:[/bold]")
+        for c in result.community_summary[:5]:
+            files = ", ".join(c["top_files"][:3])
+            console.print(f"  [{c['community_id']}] {c['size']} nodes — {files}")
+
+    if visualize:
+        from trelix.graph.visualizer import GraphVisualizer
+
+        out = output or str(_Path(repo_path) / ".trelix" / "graph.html")
+        viz = GraphVisualizer()
+        path = viz.export_html(result.code_graph, out)
+        console.print(f"\n[blue]Graph visualization:[/blue] {path}")
 
 
 # ---------------------------------------------------------------------------

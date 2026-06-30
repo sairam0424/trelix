@@ -466,6 +466,45 @@ trelix-mcp (stdio transport)
   └── blast_radius(symbol_name, repo_path)      → list[dict]
 ```
 
+---
+
+## Knowledge Graph Layer
+
+trelix v3.0 adds a Knowledge Graph layer on top of the existing call/import/type edge tables.
+
+### CodeGraph (trelix/graph/code_graph.py)
+Wraps three SQLite tables into a unified NetworkX MultiDiGraph:
+- `calls` → CALLS edges (caller_id → callee_id)
+- `imports` → IMPORTS edges (file_id → imported_file_id)
+- `type_edges` → EXTENDS / IMPLEMENTS / TRAIT_IMPL / EMBEDDED edges
+
+### Community Detection (trelix/graph/community.py)
+Louvain algorithm (fast, O(n log n)) or Girvan-Newman (quality) clusters the graph into
+architectural communities. Communities represent logical module groupings — auth layer,
+data layer, API layer — without any human labeling.
+
+### Semantic Concepts (trelix/graph/concepts.py)
+LLM extracts high-level concepts (JWT authentication, event sourcing, CQRS pattern) from
+symbol batches. Stored in `graph_concepts` SQLite table. Crash-safe: returns `[]` if LLM
+is unavailable.
+
+### Graph-Aware Search (trelix/graph/search.py)
+4th retrieval leg: BFS over CodeGraph starting from top RRF results.
+Score = 0.5^hop (closer = higher). Enabled via `graph_search_enabled=True`.
+
+### Visualization (trelix/graph/visualizer.py)
+Pyvis interactive HTML with:
+- Community-colored nodes (pastel palette)
+- Edge-type-colored arrows (CALLS=blue, IMPORTS=purple, EXTENDS=green)
+- Physics simulation (Force Atlas 2)
+- Node sizing by degree
+
+Install: `pip install 'trelix[knowledge-graph]'`
+CLI: `trelix graph ./repo --visualize`
+REST: `GET /graph/visualize?repo=...`
+
+---
+
 ### Integration Surface
 
 ```

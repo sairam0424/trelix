@@ -363,20 +363,21 @@ from trelix.cli.main import app as trelix_app  # noqa: E402
 class TestGraphCLI:
     def test_graph_help_exits_zero(self) -> None:
         runner = CliRunner()
-        result = runner.invoke(trelix_app, ["graph", "--help"])
+        result = runner.invoke(trelix_app, ["call-graph", "--help"])
         assert result.exit_code == 0
-        assert "graph" in result.output.lower() or "symbol" in result.output.lower()
+        assert "symbol" in result.output.lower()
 
     def test_graph_missing_args_exits_nonzero(self) -> None:
         runner = CliRunner()
-        result = runner.invoke(trelix_app, ["graph"])
+        result = runner.invoke(trelix_app, ["call-graph"])
         # Missing required positional args — typer exits 2
         assert result.exit_code != 0
 
     def test_graph_bad_repo_exits_one(self, tmp_path) -> None:
         runner = CliRunner()
+        # "call-graph" is the renamed command that takes repo + symbol args
         result = runner.invoke(
             trelix_app,
-            ["graph", str(tmp_path / "does_not_exist"), "some_symbol"],
+            ["call-graph", str(tmp_path / "does_not_exist"), "some_symbol"],
         )
         assert result.exit_code == 1
