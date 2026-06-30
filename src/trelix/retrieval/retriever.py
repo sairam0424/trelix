@@ -817,7 +817,7 @@ class Retriever:
             top_ids = set(get_top_central_symbols(self.db, top_n=200))
             boosted: list[SearchResult] = []
             for r in results:
-                if r.symbol.id in top_ids:
+                if r.symbol.id is not None and r.symbol.id in top_ids:
                     boosted.append(
                         SearchResult(
                             chunk=r.chunk,

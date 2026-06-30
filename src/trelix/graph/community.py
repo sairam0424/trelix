@@ -79,7 +79,7 @@ def assign_communities(cg: CodeGraph, communities: dict[int, int]) -> None:
             cg.nx.nodes[node_id]["community"] = community_id
 
 
-def compute_pagerank(cg: "CodeGraph", alpha: float = 0.85) -> dict[int, float]:
+def compute_pagerank(cg: CodeGraph, alpha: float = 0.85) -> dict[int, float]:
     """
     Compute PageRank over the code graph. Returns node_id → normalized score.
 
