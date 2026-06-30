@@ -7,7 +7,7 @@ packages = ["src/trelix"]
 
 [project]
 name = "trelix"
-version = "2.0.0"
+version = "2.1.0"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -104,7 +104,7 @@ dev = [
     "build>=1.0.0",
     "twine>=5.0.0",
     "pyinstaller>=6.0.0",
-    "httpx>=0.27",      # FastAPI TestClient requires httpx
+    "httpx2>=0.27",     # FastAPI TestClient (httpx2 replaces httpx for Starlette compatibility)
     "fastapi>=0.111.0", # REST API tests (tests/unit/test_api.py)
 ]
 binary = [
@@ -116,6 +116,8 @@ bedrock   = ["boto3>=1.35.0"]
 vertex    = ["google-genai>=1.0.0"]
 litellm   = ["litellm>=1.50.0"]
 llm-all   = ["trelix[anthropic,bedrock,vertex,litellm]"]
+graph-viz = ["pyvis>=0.3.2"]
+knowledge-graph = ["networkx>=3.3.0", "pyvis>=0.3.2"]
 all = [
     "trelix[local,rerank,voyage,qdrant,watch]",
 ]

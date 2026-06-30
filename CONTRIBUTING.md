@@ -12,9 +12,23 @@ cd trelix
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# Install in editable mode with all dev + optional deps
+# Install in editable mode with all dev + optional deps (v2.1.0)
 make install-dev
-# equivalent: pip install -e ".[local,rerank,dev]"
+# equivalent: pip install -e ".[bge-code,plaid,lance,serve,dev]"
+# Optional extras:
+#   [bge-code]        — BGE-Code embeddings (requires torch, transformers)
+#   [plaid]           — Plaid financial data integration
+#   [lance]           — LanceDB vector store for large-scale deployments
+#   [serve]           — REST API server (FastAPI + Uvicorn)
+#   [knowledge-graph] — Knowledge graph + visualization (pyvis>=0.3.2, networkx>=3.3.0)
+#   [graph-viz]       — Alias for [knowledge-graph]
+#   [dev]             — testing, linting, type-checking (always included)
+
+# Standard dev setup (no graph visualization)
+pip install -e ".[local,dev]"
+
+# Include graph visualization (pyvis + networkx)
+pip install -e ".[local,dev,knowledge-graph]"
 
 # Copy environment template
 cp .env.example .env
@@ -24,12 +38,14 @@ cp .env.example .env
 ## Running Tests
 
 ```bash
-make test           # full suite with coverage (929 unit + 16 integration tests)
+make test           # full suite with coverage (1325 unit + 16 integration tests)
 make test-fast      # unit tests only (no API calls, fast)
-make lint           # ruff check
+make lint           # ruff check + ruff format (auto-formats before diff-check, cross-platform safe)
 make format         # ruff format
 make typecheck      # mypy
 ```
+
+**Note on CI checks (v2.1.0):** The ruff format step now runs as part of linting — files are auto-formatted before the diff-check, ensuring cross-platform consistency (Windows CRLF vs Unix LF).
 
 ### Running specific test subsets
 
@@ -57,6 +73,91 @@ main          ← stable releases only (do not push directly)
 
 ## Extension Points
 
+### trelix/graph/ — Knowledge Graph module
+
+The graph module lives at `src/trelix/graph/` and is organized as:
+
+| File | Responsibility |
+|------|----------------|
+| `code_graph.py` | CodeGraph — NetworkX MultiDiGraph over SQLite edge tables |
+| `community.py` | Community detection (Louvain/Girvan-Newman) |
+| `persistence.py` | Save/load community + centrality to graph_metadata table |
+| `concepts.py` | LLM semantic concept extraction (crash-safe) |
+| `builder.py` | GraphBuilder — orchestrates the full pipeline |
+| `visualizer.py` | Pyvis HTML export (requires `trelix[knowledge-graph]`) |
+| `search.py` | BFS graph_search function (4th retrieval leg) |
+
+Tests live in `tests/unit/test_graph_*.py`. All graph tests can run without pyvis or any LLM configured.
+
+**Opt-in config keys** (all default to off — zero impact when disabled):
+
+| Key | Default | Env var |
+|-----|---------|---------|
+| `graph_search_enabled` | `False` | `TRELIX_GRAPH_SEARCH_ENABLED=true` |
+| `graph_search_depth` | `2` | — |
+| `graph_search_max_results` | `15` | — |
+
+**Adding a new graph algorithm:**
+
+1. Add the implementation to the most appropriate existing file or create a new file under `src/trelix/graph/`
+2. Expose it through `GraphBuilder` in `builder.py` so the pipeline can call it
+3. If it requires a new optional dependency, add an extras group to `pyproject.toml` and document it here
+4. Write tests in `tests/unit/test_graph_<name>.py` — mock any LLM calls; do not require pyvis
+
+### trelix/retrieval/ — Query Enhancement Modules
+
+The retrieval enhancement modules live at `src/trelix/retrieval/` and are organized as:
+
+| File | Responsibility |
+|------|----------------|
+| `query_expansion.py` | HyDEExpander (synthetic snippet embedding), MultiQueryExpander (N-variant recall) |
+| `flare.py` | FLARELoop — confidence-gated re-retrieval, _contains_uncertainty phrase check |
+| `telemetry.py` | TelemetryWriter — crash-safe per-query latency/intent recorder |
+
+All three modules are crash-safe (return empty/original on any failure) and gated by config flags.
+
+**Opt-in config keys** (all default to off — zero impact when disabled):
+
+| Key | Default | Env var |
+|-----|---------|---------|
+| `query_expansion_enabled` | `False` | `TRELIX_QUERY_EXPANSION_ENABLED=true` |
+| `flare_enabled` | `False` | `TRELIX_FLARE_ENABLED=true` |
+| `telemetry_enabled` | `False` | `TRELIX_TELEMETRY_ENABLED=true` |
+
+**Adding a new query enhancement:**
+
+1. Add the implementation under `src/trelix/retrieval/`
+2. Ensure any failure path returns the original query or empty results — never raises
+3. Gate the feature with a config flag defaulting to `False`
+4. Write tests in `tests/unit/test_retrieval_<name>.py` — mock any LLM calls
+
+### trelix/eval/ — Evaluation Harness
+
+The evaluation harness lives at `src/trelix/eval/` and is organized as:
+
+| File | Responsibility |
+|------|----------------|
+| `ndcg.py` | Pure-Python ndcg_at_k, recall_at_k, mrr — no pandas dependency |
+| `harness.py` | EvalHarness.run(golden_path) — reads JSONL, retrieves, returns aggregate metrics |
+
+**Usage:**
+
+```bash
+trelix eval --golden .trelix/golden.jsonl
+```
+
+**Golden file format** (one line per query):
+
+```json
+{"query": "how does auth work", "relevant_files": ["src/auth.py"]}
+```
+
+**Adding new metrics:**
+
+1. Add the pure-Python metric function to `src/trelix/eval/ndcg.py`
+2. Wire it into `EvalHarness.run()` in `src/trelix/eval/harness.py`
+3. Write tests in `tests/unit/test_eval_<name>.py` — no LLM calls required for metric functions
+
 ### Adding a New Language Parser
 
 1. Create `src/trelix/indexing/parser/extractors/<language>.py`
@@ -67,7 +168,24 @@ main          ← stable releases only (do not push directly)
 6. Add `Language.YOURLANG` to `WalkerConfig.languages` default list in `src/trelix/core/config.py`
 7. Write tests in `tests/unit/test_parser_<language>.py` with fixture files
 
-### Adding a New LLM Provider (v0.7.0)
+### Embedder Providers
+
+trelix v2.1.0 ships with built-in support for multiple embedding backends:
+
+- **Local embeddings** (`local`) — Uses transformers library (default, no API keys needed)
+- **BGE-Code-v1** (`bge-code`) — BAAI General Embedding for code, optimized for semantic code search
+- **Nomic CodeRankEmbed** (`nomic-code`) — Open-source embeddings specialized for code ranking
+- **Azure OpenAI Embeddings** — Enterprise deployment via Azure; set `TRELIX_EMBEDDER_PROVIDER=azure`
+- **Bedrock** — AWS-hosted embeddings via Bedrock
+
+To use BGE-Code or CodeRank embeddings, install the optional extra:
+
+```bash
+pip install -e ".[bge-code]"
+# Then set TRELIX_EMBEDDER_PROVIDER=bge-code in .env
+```
+
+### Adding a New LLM Provider (v2.1.0)
 
 trelix uses a provider-agnostic `TrelixChatClient` ABC (`src/trelix/llm/client.py`). All five built-in backends (`OpenAIBackend`, `AnthropicBackend`, `BedrockBackend`, `VertexBackend`, `LiteLLMBackend`) implement the same three methods: `complete()`, `stream()`, and `tool_call()`. Adding a new provider requires zero changes to business logic (chunker, synthesizer, planner, graph_rag).
 
@@ -101,7 +219,7 @@ Open a [GitHub Discussion](https://github.com/sairam0424/trelix/discussions) for
 
 ## Versioning & Stability Policy
 
-trelix follows [Semantic Versioning 2.0.0](https://semver.org/).
+trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.1.0**.
 
 ### Stable public API (guaranteed not to change without a major version bump)
 
@@ -116,6 +234,8 @@ trelix follows [Semantic Versioning 2.0.0](https://semver.org/).
 - Changing a method signature in an incompatible way
 - Changing the SQLite schema in a way that requires re-indexing
 - Removing a previously supported Python version
+
+**CLI command renames** (e.g. `trelix graph` → `trelix call-graph` in v2.0.0) are breaking changes and must be documented under a `### Breaking Changes` heading in `CHANGELOG.md` for the relevant release, alongside a migration note showing the old and new invocation.
 
 ### Deprecation policy
 

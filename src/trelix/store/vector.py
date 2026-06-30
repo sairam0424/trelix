@@ -64,6 +64,16 @@ class BaseVectorStore(ABC):
     def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
         """Insert or replace a file-level summary embedding."""
 
+    @abstractmethod
+    def search_file_summaries(
+        self, query_embedding: list[float], k: int
+    ) -> list[tuple[int, float]]:
+        """Search file-summary embeddings only. Returns (file_id, score) pairs.
+
+        Convention: summary embeddings are stored with chunk_id = -(file_id).
+        This method filters to negative chunk_ids and maps back to file_id.
+        """
+
 
 # ---------------------------------------------------------------------------
 # SQLite backend (default)
@@ -303,6 +313,35 @@ class SQLiteVectorStore(BaseVectorStore):
                 (sentinel_id, packed),
             )
             self._conn.commit()
+
+    def search_file_summaries(
+        self, query_embedding: list[float], k: int
+    ) -> list[tuple[int, float]]:
+        """Search file-summary embeddings only. Returns (file_id, score) pairs.
+
+        Summary rows are stored with chunk_id = -(file_id). This method fetches
+        all summary-row embeddings, computes L2 distance in Python, and returns
+        the top-k pairs as (file_id, score) where score is (1 / (1 + distance)).
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT chunk_id, embedding FROM chunk_embeddings WHERE chunk_id < 0"
+            ).fetchall()
+        if not rows:
+            return []
+        q = query_embedding
+        scored: list[tuple[int, float]] = []
+        for chunk_id, emb_blob in rows:
+            if isinstance(emb_blob, bytes):
+                n = len(emb_blob) // 4
+                emb = list(struct.unpack(f"{n}f", emb_blob))
+            else:
+                emb = list(emb_blob)
+            dist = sum((a - b) ** 2 for a, b in zip(q, emb)) ** 0.5
+            score = 1.0 / (1.0 + dist)
+            scored.append((-int(chunk_id), score))  # chunk_id = -file_id, so file_id = -chunk_id
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:k]
 
     def close(self) -> None:
         self._conn.close()

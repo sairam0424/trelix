@@ -1,4 +1,4 @@
-# Trelix Architecture (v0.7.0)
+# Trelix Architecture (v2.0.0)
 
 ## Indexing Pipeline (offline — `trelix index`)
 
@@ -8,8 +8,8 @@ Repository
        └─ Tree-sitter Parser  (20 languages → symbols + call/import/type edges)
             ├─ ContextualChunker  (LLM context summary + breadcrumb header)
             │    └─ Embedder  (voyage | local-code | azure | openai | local |
-            │    │             bedrock-titan | bedrock-cohere)
-            │         └─ sqlite-vec HNSW  (O(log n) ANN — or Qdrant for >500k)
+            │    │             bedrock-titan | bedrock-cohere | bge-code | nomic-code)
+            │         └─ sqlite-vec HNSW  (O(log n) ANN — or Qdrant / LanceDB for >500k)
             └─ SQLite DB   (files, symbols, call_graph, imports, FTS5 BM25)
 ```
 
@@ -57,7 +57,7 @@ User Query
                                 ├─ call_graph (qualified-name + type-hint precision)
                                 ├─ import_graph (forward/reverse, depth 1-2)
                                 └─ type_edges (extends/implements/trait_impl)
-                                     └─ Reranker (Cohere | cross-encoder)
+                                     └─ Reranker (Cohere | cross-encoder | PLAID)
                                           └─ Context Assembler (greedy | breadth_first)
                                                └─ Synthesis (via TrelixChatClient)
                                                     ├─ ≤8k tokens: Direct LLM call
@@ -96,6 +96,13 @@ results (N > 20)
   REDUCE: merge partial answers
           → LLM synthesizes final: "Synthesize these partial answers: {partial_answers}"
 ```
+
+### Streaming Synthesis
+
+`Synthesizer.stream(query, context)` returns an `Iterator[str]` — each yielded token
+is flushed immediately to the caller. Used by the `/ask` SSE endpoint and the
+`trelix ask --stream` CLI flag. GraphRAG map-reduce switches to non-streaming for
+the MAP phase (parallel LLM calls) and streams only the final REDUCE step.
 
 ---
 
@@ -141,9 +148,9 @@ Primary model: `us.anthropic.claude-sonnet-4-6` (override: `TRELIX_LLM_BEDROCK_P
 Automatic fallback to `us.anthropic.claude-haiku-4-5-20251001-v1:0` on `ValidationException`
 (override: `TRELIX_LLM_BEDROCK_FALLBACK_MODEL`). Fallback is transparent — no caller change needed.
 
-### LLM call sites (all migrated in v0.7.0)
+### LLM call sites (all migrated in v0.7.0, extended in v2.0.0)
 
-All 5 call sites now use `TrelixChatClient` via `build_chat_client()`:
+All call sites use `TrelixChatClient` via `build_chat_client()`:
 
 1. `ContextualChunker` — per-symbol context summary generation
 2. `Indexer` — coordinating chunker during indexing
@@ -182,8 +189,11 @@ Single file (`.trelix/index.db`) with WAL mode + FTS5 + sqlite-vec HNSW.
 | `imports` | id, file_id, imported_from, imported_names, imported_file_id | Import edges |
 | `type_edges` | id, from_symbol_id, to_type_name, edge_kind, to_symbol_id | Inheritance / trait / embed |
 | `chunks` | id, symbol_id, chunk_text, token_count | Embeddable text units |
+| `file_summaries` | id, file_id, summary, created_at | LLM-generated 2–4 sentence file descriptions (RAPTOR) |
 | `symbols_fts` | FTS5 virtual table over name, qualified_name, docstring, body, **context_summary** | BM25 keyword search |
 | `vec_chunks` | sqlite-vec HNSW virtual table | ANN vector search |
+| `graph_metadata` | symbol_id INTEGER PRIMARY KEY, community INTEGER, centrality REAL, node_type TEXT | Knowledge-graph community assignments and degree centrality (v2.0.0) |
+| `graph_concepts` | name TEXT, category TEXT, importance REAL, source_symbol_ids TEXT | LLM-extracted architectural concepts (v2.0.0, optional) |
 
 ### Qdrant (optional — for >500k chunks)
 
@@ -192,6 +202,23 @@ Drop-in `QdrantVectorStore` via `BaseVectorStore` ABC. Set `TRELIX_STORE_BACKEND
 Collection config: HNSW m=16, ef_construct=200, filterable by file_id.
 
 Migration: `trelix migrate-vectors --to qdrant --url http://localhost:6333`
+
+### LanceDB (optional — embedded columnar store)
+
+Drop-in `LanceDBVectorStore` via `BaseVectorStore` ABC. Set `TRELIX_STORE_BACKEND=lancedb`.
+
+LanceDB stores all chunk vectors in a Lance columnar format under `.trelix/lancedb/`.
+File-level summary vectors use a **sentinel chunk_id** of `-(file_id)` — a negative file
+ID that cannot collide with any real chunk row — so summary entries and code-chunk entries
+share the same table without a separate column.
+
+```python
+# sentinel convention
+SENTINEL_CHUNK_ID = -(file_id)   # e.g. file_id=42 → chunk_id=-42
+```
+
+Install: `pip install trelix[lancedb]`  
+Migration: `trelix migrate-vectors --to lancedb --path .trelix/lancedb`
 
 ---
 
@@ -206,8 +233,31 @@ Migration: `trelix migrate-vectors --to qdrant --url http://localhost:6333`
 | `voyage` | voyage-code-3 | 1024 | **56.26** | `trelix[voyage]` |
 | `bedrock-titan` | amazon.titan-embed-text-v2:0 | 256/512/1024 | — | `trelix[bedrock]` |
 | `bedrock-cohere` | cohere.embed-english-v3 | 1024 | — | `trelix[bedrock]` |
+| `bge-code` | BGE-Code-v1 | 1536 | **63.10** | `trelix[bge-code]` |
+| `nomic-code` | nomic-embed-code (CodeRankEmbed) | 768 | **58.40** | `trelix[nomic-code]` |
 
 CoIR (Code Information Retrieval) benchmark — ACL 2025. Higher is better.
+
+### BGE-Code-v1 (v2.0.0)
+
+**BGECodeEmbedder** (`bge-code`): FlagEmbedding-based code embedder producing 1536-dim vectors.
+Instruction-tuned for code retrieval — prepend `"Represent this code for retrieval: "` at
+query time (handled internally). Lazy-loaded on first call.
+
+```bash
+pip install trelix[bge-code]   # installs FlagEmbedding + torch
+```
+
+### Nomic CodeRankEmbed (v2.0.0)
+
+**NomicCodeEmbedder** (`nomic-code`): sentence-transformers wrapper around
+`nomic-ai/nomic-embed-code` (CodeRankEmbed). 768-dim, ~137M params, Apache 2.0 license.
+Asymmetric: query prefix `"search_query: "` / document prefix `"search_document: "` applied
+automatically. Runs fully offline — no API key required.
+
+```bash
+pip install trelix[nomic-code]   # installs sentence-transformers + torch
+```
 
 ### Bedrock embedders (v0.7.0)
 
@@ -221,6 +271,40 @@ retrieval precision.
 
 Both reuse `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` from `.env` —
 no extra credentials beyond what `BedrockBackend` already requires.
+
+---
+
+## Reranking
+
+### Cohere / cross-encoder (existing)
+
+`CohereReranker` and `CrossEncoderReranker` are the default reranking backends,
+selected via `TRELIX_RERANKER` env var (`cohere` | `cross-encoder`).
+
+### PLAID Reranker (v2.0.0)
+
+**PlaidReranker** uses [RAGatouille](https://github.com/bclavie/RAGatouille) to run a
+ColBERT late-interaction reranker (PLAID index engine) locally.
+
+Key behaviours:
+- **Lazy model loading**: the ColBERT model is loaded on the first `rerank()` call, not at
+  import time — cold start is ~2s on first use, instant thereafter.
+- **Graceful fallback**: if `ragatouille` is not installed or model loading fails, the
+  reranker falls back to score-passthrough (results returned in their original order) and
+  logs a warning rather than raising.
+- **from_pretrained() API**: model is loaded via
+  `RAGPretrainedModel.from_pretrained("colbert-ir/colbertv2.0")` (override:
+  `TRELIX_RERANKER_PLAID_MODEL`).
+
+```bash
+pip install trelix[plaid]   # installs ragatouille + faiss-cpu
+```
+
+```python
+# env var selection
+TRELIX_RERANKER=plaid
+TRELIX_RERANKER_PLAID_MODEL=colbert-ir/colbertv2.0   # optional override
+```
 
 ---
 
@@ -243,6 +327,37 @@ Expected impact: ~40% reduction in false-positive cross-file call edges.
 
 ---
 
+## File-Level Summaries — RAPTOR (v2.0.0)
+
+`FileSummarizer` generates a concise 2–4 sentence LLM description of each file during
+indexing, inspired by the RAPTOR hierarchical retrieval approach (abstractive summarisation
+at multiple granularities).
+
+### Storage
+
+- **DB table**: `file_summaries` (columns: `id`, `file_id`, `summary`, `created_at`)
+- **Vector index**: each summary is embedded and stored alongside chunk vectors.  
+  In the LanceDB backend the sentinel `chunk_id = -(file_id)` is used so no separate
+  table or column is needed. In the SQLite backend a dedicated `vec_file_summaries`
+  virtual table is used.
+
+### Retrieval integration
+
+File-summary vectors participate in the `file_overview` and `project_overview` retrieval
+strategies — they are retrieved first, then individual chunk results are merged in.
+
+### Feature flag
+
+Gated by `TRELIX_FILE_SUMMARIES_ENABLED` (default: `false`). Set to `true` to enable
+during indexing. Re-indexing is required when the flag is first enabled on an existing
+index.
+
+```bash
+TRELIX_FILE_SUMMARIES_ENABLED=true trelix index .
+```
+
+---
+
 ## File Watcher (`trelix watch`)
 
 ```
@@ -259,22 +374,59 @@ Requires `pip install trelix[watch]` (watchdog).
 
 ---
 
-## Test Coverage (v0.7.0)
+## Test Coverage (v2.0.0)
 
 | Suite | Count | What's covered |
 |-------|-------|---------------|
 | Unit tests (core) | **929** | All modules, all parsers, all providers, LLM factory |
 | Integration tests (live) | **16** | Azure + Bedrock chat (complete/stream/tool_call) + Bedrock embeddings; skip gracefully when creds absent |
-| Eval harness | 50 queries | MRR, Recall@1/5/10, NDCG@10 on trelix-self |
+| Eval harness | 50 queries | MRR, Recall@1/5/10, NDCG@10 on trelix-self; LLM-as-judge score per result |
 | trelix-mcp tests | **9** | 4 tools, stdout-clean MCP protocol test |
 | trelix-langchain tests | **19** | BaseRetriever, Document structure, metadata keys |
 | trelix-llama-index tests | **10** | BaseRetriever, NodeWithScore structure |
+
+### LLM-as-Judge Eval (v2.0.0)
+
+`LLMJudge` in `tests/eval/llm_judge.py` scores each retrieval result on a 0–1 relevance
+scale using a secondary LLM call (default: `gpt-4o-mini`). Scores are integrated into
+the eval harness pipeline:
+
+- `EvalResult.judge_score` — per-query float (0.0–1.0)
+- `EvalReport.mean_judge_score` — aggregate mean across all 50 eval queries
+
+`LLMJudge` is optional — the eval harness runs without it if `TRELIX_EVAL_LLM_JUDGE=false`
+(default: `false`). When enabled, it adds ~$0.02 per full eval run at gpt-4o-mini pricing.
 
 Python 3.11 and 3.12 supported.
 
 ---
 
-## Ecosystem Packages (v0.7.0)
+## REST API (v2.0.0)
+
+`trelix.api.app.create_app()` returns a FastAPI application that exposes the full
+retrieval + indexing surface over HTTP. Start it with:
+
+```bash
+pip install trelix[api]   # installs fastapi + uvicorn + sse-starlette
+uvicorn trelix.api.app:app --host 0.0.0.0 --port 8080
+```
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/search` | Keyword + vector hybrid search; body: `{query, repo_path, k}` |
+| `POST` | `/ask` | SSE streaming answer; body: `{query, repo_path}`; response: `text/event-stream` |
+| `POST` | `/index` | Trigger (re-)indexing of a repo; body: `{repo_path, provider}` |
+| `GET`  | `/health` | Liveness check; returns `{"status": "ok"}` |
+| `GET`  | `/stats` | Index statistics (file count, symbol count, chunk count, last_indexed) |
+
+The `/ask` endpoint uses `Synthesizer.stream()` internally — each SSE `data:` event is a
+single yielded token, terminated by a `data: [DONE]` sentinel.
+
+---
+
+## Ecosystem Packages (v2.0.0)
 
 | Package | PyPI | Purpose |
 |---------|------|---------|
@@ -294,22 +446,208 @@ pip install trelix[litellm]      # + LiteLLM (100+ providers)
 pip install trelix[llm-all]      # all LLM providers
 pip install trelix[local]        # + local sentence-transformers (no API key)
 pip install trelix[local-code]   # + SFR-Embedding-Code-2B_R (no API key, ~8GB RAM)
+pip install trelix[bge-code]     # + BGE-Code-v1 embedder (FlagEmbedding, no API key)
+pip install trelix[nomic-code]   # + Nomic CodeRankEmbed embedder (no API key)
 pip install trelix[voyage]       # + Voyage AI code embeddings
 pip install trelix[rerank]       # + Cohere reranker
+pip install trelix[plaid]        # + PLAID/ColBERT reranker (RAGatouille)
 pip install trelix[qdrant]       # + Qdrant vector backend
+pip install trelix[lancedb]      # + LanceDB columnar vector backend
+pip install trelix[api]          # + FastAPI REST server (uvicorn + sse-starlette)
 pip install trelix[watch]        # + file watcher (watchdog)
-pip install trelix[all]          # everything
+pip install trelix[knowledge-graph]  # + knowledge graph (pyvis, networkx)
+pip install trelix[graph-viz]        # alias for trelix[knowledge-graph]
+pip install trelix[all]              # everything
 ```
 
 ### MCP Server Tools
 
 ```
 trelix-mcp (stdio transport)
-  ├── search_code(query, repo_path, k=10)      → list[dict]
-  ├── index_codebase(repo_path, provider)       → dict (stats)
-  ├── get_symbol(qualified_name, repo_path)     → dict | None
-  └── blast_radius(symbol_name, repo_path)      → list[dict]
+  ├── search_code(query, repo_path, k=10)                                     → list[dict]
+  ├── index_codebase(repo_path, provider)                                      → dict (stats)
+  ├── get_symbol(qualified_name, repo_path)                                    → dict | None
+  ├── blast_radius(symbol_name, repo_path)                                     → list[dict]
+  ├── build_knowledge_graph(repo_path, detect_communities, extract_concepts)   → dict (stats)  [v2.0.0]
+  └── graph_search_mcp(query, repo_path, depth, max_results)                  → list[dict]    [v2.0.0]
 ```
+
+---
+
+## Knowledge Graph Layer
+
+Added in **v2.0.0**. A new `trelix/graph/` module wraps the existing SQLite edge tables
+into a unified Code Property Graph backed by NetworkX, with community detection, LLM
+concept extraction, graph-aware BFS retrieval, and an interactive Pyvis visualizer.
+
+**Breaking change**: the old `trelix graph <repo> <symbol>` call-graph display command is
+renamed to `trelix call-graph <repo> <symbol>`. The `trelix graph` subcommand now builds
+and queries the full knowledge graph.
+
+### Graph Structure — CodeGraph (`trelix/graph/code_graph.py`)
+
+`CodeGraph` holds a `networkx.MultiDiGraph`. Every symbol (function, class, method) and
+file in the index is a node; every static relationship is a typed directed edge.
+
+**Node attributes**
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `name` | str | Simple symbol or file name |
+| `qualified_name` | str | Fully-qualified identifier |
+| `kind` | str | `function` \| `class` \| `method` \| `file` \| … |
+| `file` | str | Source file path |
+| `language` | str | Language detected by Tree-sitter |
+| `community` | int | Community ID set after detection (default -1) |
+
+**Edge types**
+
+| Label | Source table | Direction |
+|-------|-------------|-----------|
+| `CALLS` | `calls` | caller → callee |
+| `IMPORTS` | `imports` | file → imported\_file |
+| `EXTENDS` | `type_edges` (extends) | child → parent |
+| `IMPLEMENTS` | `type_edges` (implements) | implementor → interface |
+| `TRAIT_IMPL` | `type_edges` (trait\_impl) | struct → trait |
+| `EMBEDDED` | `type_edges` (embedded) | struct → embedded |
+
+**Live stats on the trelix codebase (dry run)**
+
+| Metric | Value |
+|--------|-------|
+| Nodes | 4,599 |
+| Edges | 4,945 |
+| Communities (Louvain) | 2,409 |
+| Build time | 0.34 s |
+| Top node degree | 438 (`parse`) |
+
+### Community Detection (`trelix/graph/community.py`)
+
+Three algorithms selectable at runtime:
+
+| Algorithm | Complexity | Best for |
+|-----------|-----------|---------|
+| `louvain` (default) | O(n log n) | General use; fast on large graphs |
+| `girvan_newman` | O(n³) | Quality-oriented; small/medium graphs |
+| `label_prop` | O(n) | Very large graphs (>100k nodes) |
+
+Output: a `{symbol_id: community_id}` mapping. After detection, each node's `community`
+attribute is set in-memory and written to the `graph_metadata` SQLite table.
+
+Communities represent logical module groupings (auth layer, data layer, API layer) inferred
+purely from structural connectivity — no human labeling required.
+
+### Graph Persistence (`trelix/graph/persistence.py`)
+
+**Table: `graph_metadata`**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `symbol_id` | INTEGER PRIMARY KEY | Foreign key to `symbols.id` |
+| `community` | INTEGER | Community assignment from detection |
+| `centrality` | REAL | Degree centrality computed at save time |
+| `node_type` | TEXT | Node kind (mirrors `symbols.kind`) |
+
+`GraphPersistence.save()` upserts all rows in a single transaction. Degree centrality is
+pre-computed so graph-adjacent queries do not require loading the full graph.
+
+### Semantic Concepts — optional (`trelix/graph/concepts.py`)
+
+`ConceptExtractor` sends batches of symbol names and signatures to the configured LLM and
+extracts architectural concepts (e.g. "JWT authentication", "event sourcing", "CQRS").
+
+**Table: `graph_concepts`**
+
+| Column | Type |
+|--------|------|
+| `name` | TEXT |
+| `category` | TEXT |
+| `importance` | REAL |
+| `source_symbol_ids` | TEXT (JSON array) |
+
+Enabled via `--concepts` flag on `trelix graph` or `ConceptExtractorConfig.enabled=True`.
+**Crash-safe**: any LLM failure returns `[]` without aborting the graph build.
+
+### Graph-Aware Search — 4th retrieval leg (`trelix/graph/search.py`)
+
+BFS from the top results of the existing RRF fusion step, traversing the `CodeGraph` to
+surface structurally adjacent symbols that plain vector/BM25/grep search misses.
+
+**Score decay**: `score = 0.5^hop` — nodes one hop away score 0.5, two hops 0.25, etc.
+
+**Config** (`RetrievalConfig`)
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `graph_search_enabled` | `False` | Opt-in flag — zero impact when off |
+| `graph_search_depth` | `2` | BFS depth from seed nodes |
+| `graph_search_max_results` | `15` | Cap on graph-sourced results |
+
+**Env var**: `TRELIX_GRAPH_SEARCH_ENABLED=true`
+
+**Live retrieval mix** with `graph_search_enabled=True`: 30 results total
+(5 graph, 19 vector, 4 BM25, 2 graph\_expansion).
+
+When disabled, the retrieval pipeline is identical to v1.x — no performance regression.
+
+### Visualization (`trelix/graph/visualizer.py`)
+
+`GraphVisualizer.export_html()` writes a Pyvis interactive HTML file to
+`<repo>/.trelix/graph.html`.
+
+**Visual encoding**
+
+| Attribute | Encoding |
+|-----------|---------|
+| Node color | Community % 10 → 10-color pastel palette |
+| Node size | Proportional to degree (more connections = larger) |
+| `CALLS` edges | Blue |
+| `IMPORTS` edges | Purple |
+| `EXTENDS` edges | Green |
+| `IMPLEMENTS` edges | Teal |
+| Physics layout | ForceAtlas2 |
+
+**Security**: the output path is constrained to `<repo>/.trelix/` — path traversal
+attempts (e.g. `../../etc/passwd`) are rejected with HTTP 400.
+
+### REST Endpoints (added in v2.0.0)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/graph` | Return graph stats (node count, edge count, top-degree nodes) |
+| `GET` | `/graph/communities` | Community listing with member counts |
+| `GET` | `/graph/visualize` | Stream the Pyvis HTML file |
+| `GET` | `/graph/search` | BFS graph search; params: `query`, `repo_path`, `depth` |
+
+### MCP Tools (added in v2.0.0)
+
+```
+trelix-mcp (stdio transport)
+  ├── build_knowledge_graph(repo_path, detect_communities, extract_concepts)  → dict (stats)
+  └── graph_search_mcp(query, repo_path, depth, max_results)                  → list[dict]
+```
+
+### CLI
+
+```bash
+# Build graph (+ optional community detection and concept extraction)
+trelix graph ./repo
+trelix graph ./repo --visualize          # also write Pyvis HTML
+trelix graph ./repo --concepts           # also run LLM concept extraction
+trelix graph ./repo --json               # machine-readable stats to stdout
+
+# Old call-graph display (RENAMED — breaking change)
+trelix call-graph ./repo MyClass.method
+```
+
+### Install
+
+```bash
+pip install 'trelix[knowledge-graph]'   # pyvis>=0.3.2, networkx>=3.3.0
+pip install 'trelix[graph-viz]'         # alias for the same extras
+```
+
+---
 
 ### Integration Surface
 
@@ -332,3 +670,209 @@ GitHub Actions CI
 Homebrew (macOS)
   └── brew tap sairam0424/trelix && brew install trelix
 ```
+
+---
+
+## v2.1.0 Beast-Mode Retrieval Pipeline
+
+v2.1.0 upgrades the retrieval core from a 3-leg to a **5-leg parallel architecture** with
+a query enhancement pre-pass, post-rerank signal boosting, and a full observability layer.
+
+### 5-Leg Retrieval Architecture
+
+All five legs run in parallel for every query. Results from all legs are fused via
+Reciprocal Rank Fusion (RRF, k=60), then passed through graph expansion before reranking.
+
+```
+User Query
+  └─ Query Enhancement Layer  (HyDE + multi-query)
+       └─ 5-Leg Parallel Retrieval
+            ├─ Leg 1: Vector    (HNSW, sqlite-vec) — ANN over chunk embeddings
+            ├─ Leg 2: BM25      (FTS5) — keyword frequency over symbols_fts
+            ├─ Leg 3: Grep      (exact / regex) — literal symbol name match
+            ├─ Leg 4: CodeGraph BFS  (graph_search_enabled) — structural neighbours
+            └─ Leg 5: File-Summary   (file_summary_leg_enabled) — RAPTOR-style
+                 └─ RRF Fusion  (all 5 legs, k=60)
+                      └─ Graph Expansion  (call / import / type edges)
+                           └─ Reranker  (Cohere | cross-encoder | PLAID)
+                                └─ Post-Rerank Enhancement
+                                     ├─ PageRank Boost  (centrality × 1.3)
+                                     └─ FLARE Loop      (uncertainty → re-retrieve)
+```
+
+#### Leg 1 — Vector (HNSW, sqlite-vec)
+
+ANN search over `vec_chunks` using the configured embedding provider. When HyDE is enabled,
+the query is replaced by a synthetic code snippet before embedding (see Query Enhancement
+Layer below). This is the primary semantic leg.
+
+#### Leg 2 — BM25 (FTS5)
+
+Keyword frequency search over the `symbols_fts` virtual table, which indexes `name`,
+`qualified_name`, `docstring`, `body`, and `context_summary`. Complements the vector leg
+for identifier-exact queries where semantic similarity underperforms.
+
+#### Leg 3 — Grep (exact / regex)
+
+Direct SQL `LIKE` or regex match on `symbols.name` and `symbols.qualified_name`. Zero
+latency, no embedding required. Highest precision for `symbol_lookup` intent.
+
+#### Leg 4 — CodeGraph BFS (`graph_search_enabled`)
+
+BFS traversal of the in-memory `CodeGraph` from the top-N seeds produced by the first
+three legs. Score decay `0.5^hop` as in v2.0.0. Surfaces callee/caller/import neighbours
+invisible to embedding or keyword search. Controlled by `graph_search_enabled` flag.
+
+#### Leg 5 — File-Summary (`file_summary_leg_enabled`)
+
+RAPTOR-style retrieval over `file_summaries` vectors. At query time, the query is embedded
+and matched against per-file summary vectors stored in `vec_file_summaries` (SQLite backend)
+or via the sentinel `chunk_id = -(file_id)` convention (LanceDB backend). Returns whole-file
+context candidates that are merged into the RRF fusion step alongside chunk-level results.
+Gated by `file_summary_leg_enabled`; requires `TRELIX_FILE_SUMMARIES_ENABLED=true` at index
+time to populate the underlying `file_summaries` table.
+
+---
+
+### Query Enhancement Layer
+
+Applied **before** retrieval. Both techniques are opt-in and compose independently.
+
+#### HyDE (Hypothetical Document Embeddings)
+
+When `hyde_fallback_enabled=True`, the raw user query is sent to the configured LLM with
+the prompt: `"Write a short Python/TypeScript code snippet that would answer: {query}"`.
+The synthetic snippet is embedded and used as the vector query instead of the raw query
+string. This bridges the query–document vocabulary gap for code retrieval.
+
+```
+User query (natural language)
+  → LLM: "Write a code snippet that answers: {query}"
+  → Synthetic code snippet
+  → Embed snippet → ANN search (Leg 1)
+```
+
+HyDE adds one LLM call per query. On cache hit (same query hash), the synthetic snippet is
+reused without an extra LLM call. Falls back to raw query embedding on any LLM error.
+
+#### Multi-Query
+
+When `multi_query_enabled=True`, the query planner generates N variant phrasings of the
+original query (default N=3) via an LLM call. Each variant is retrieved independently
+across all enabled legs. The N result sets are merged with a final RRF pass before reranking.
+
+```
+User query
+  → LLM: generate N=3 variant queries
+  → Retrieve each variant independently (all 5 legs each)
+  → RRF merge of N result sets
+  → Single ranked list → Reranker
+```
+
+Multi-query is most effective for ambiguous natural-language queries where a single phrasing
+misses the optimal lexical or semantic match.
+
+---
+
+### Post-Rerank Enhancement
+
+Applied **after** the reranker returns its final scored list.
+
+#### PageRank Boost
+
+Symbols with high degree centrality (stored in `graph_metadata.centrality`) receive a score
+multiplier of **1.3**. Centrality is pre-computed at graph-build time (`trelix graph`) and
+read at query time with a single indexed lookup — no graph traversal at query time.
+
+Rationale: highly-connected symbols (e.g. a core `parse` function called by 438 other
+symbols) are disproportionately important to understanding the codebase and deserve higher
+ranking even when their textual similarity to the query is moderate.
+
+Controlled by `pagerank_boost_enabled`. No effect when centrality data is absent
+(graph not yet built or `graph_search_enabled=False`).
+
+#### FLARE Loop (Forward-Looking Active Retrieval)
+
+When `flare_enabled=True`, the synthesizer monitors token-level generation uncertainty.
+If the LLM emits a low-confidence span (probability below `TRELIX_FLARE_THRESHOLD`,
+default 0.3), synthesis is paused and a targeted re-retrieval is triggered using the
+uncertain span as a new query. The supplemental results are injected into the context
+window before generation resumes.
+
+```
+Synthesis in progress
+  → LLM token probability < FLARE_THRESHOLD?
+       YES → extract uncertain span
+             → re-retrieve (all enabled legs)
+             → inject new results into context
+             → resume synthesis
+       NO  → continue normally
+```
+
+FLARE is best suited for long `feature_flow` and `blast_radius` queries where the
+synthesizer must reason across many files. It adds variable latency (0–2 extra LLM calls
+per query) and is disabled by default.
+
+---
+
+### Observability
+
+#### Query Telemetry
+
+Every call to `retrieve()` writes one row to the `query_telemetry` table in `.trelix/index.db`.
+
+**Table: `query_telemetry`**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PRIMARY KEY | Auto-increment |
+| `query` | TEXT | Raw user query string |
+| `query_hash` | TEXT | SHA-256 of query (cache key) |
+| `legs_used` | TEXT | JSON array of leg names that returned results |
+| `rrf_score_p50` | REAL | Median RRF score across fused results |
+| `reranker_top1_score` | REAL | Top-1 reranker score |
+| `pagerank_boost_applied` | INTEGER | 1 if boost was applied, 0 otherwise |
+| `flare_iterations` | INTEGER | Number of FLARE re-retrieval loops executed |
+| `latency_ms` | REAL | Wall-clock retrieval latency in milliseconds |
+| `result_count` | INTEGER | Number of results returned to the caller |
+| `created_at` | TEXT | ISO-8601 timestamp (UTC) |
+
+Telemetry is gated by `telemetry_enabled` (`TRELIX_TELEMETRY_ENABLED`, default `false`).
+When disabled, the table is not created and no rows are written — zero overhead.
+
+#### Eval Harness (`trelix eval`)
+
+```bash
+trelix eval --golden tests/eval/golden.jsonl --report eval-report.json
+```
+
+Runs the full 5-leg retrieval pipeline against a golden query set and reports:
+
+| Metric | Description |
+|--------|-------------|
+| `nDCG@10` | Normalised Discounted Cumulative Gain at rank 10 |
+| `Recall@10` | Fraction of relevant symbols appearing in top-10 results |
+| `MRR` | Mean Reciprocal Rank of the first relevant result |
+
+The golden file format is one JSON object per line:
+`{"query": "...", "relevant_qualified_names": ["mod.func", ...]}`.
+
+The eval harness respects all `RetrievalConfig` flags — run it with different flag
+combinations to measure the incremental impact of each beast-mode leg.
+
+---
+
+### v2.1.0 Config Flags
+
+All flags live in `RetrievalConfig` and are readable from environment variables.
+
+| Flag | Env var | Default | Description |
+|------|---------|---------|-------------|
+| `file_summary_leg_enabled` | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable Leg 5 (RAPTOR file-summary retrieval) |
+| `hyde_fallback_enabled` | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Replace query with LLM-generated code snippet before embedding |
+| `flare_enabled` | `TRELIX_RETRIEVAL_FLARE` | `false` | Uncertainty-triggered re-retrieval during synthesis |
+| `pagerank_boost_enabled` | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Multiply centrality-high symbol scores by 1.3 |
+| `telemetry_enabled` | `TRELIX_TELEMETRY_ENABLED` | `false` | Write per-query telemetry rows to `query_telemetry` |
+
+All five flags are independent and compose freely. The safe upgrade path is to enable them
+one at a time and validate with `trelix eval --golden` before enabling the next.

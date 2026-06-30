@@ -1,6 +1,6 @@
 # trelix-langchain
 
-LangChain retriever for [trelix](https://github.com/sairam0424/trelix) — semantic code search using Tree-sitter AST parsing, hybrid BM25+vector search, and call-graph expansion.
+LangChain retriever for [trelix](https://github.com/sairam0424/trelix) — semantic code search using Tree-sitter AST parsing, hybrid BM25+vector search, call-graph expansion, and streaming synthesis support.
 
 ## Install
 
@@ -12,6 +12,18 @@ For AWS Bedrock embeddings (Cohere or Titan):
 
 ```bash
 pip install "trelix-langchain[bedrock]"
+```
+
+For code-optimized embeddings (BGE-Code, Nomic-Code, or Lance backend):
+
+```bash
+pip install "trelix-langchain[code-embeddings]"
+```
+
+With knowledge graph support (NetworkX BFS retrieval leg):
+
+```bash
+pip install trelix-langchain 'trelix[knowledge-graph]'
 ```
 
 ## Basic Usage
@@ -41,6 +53,72 @@ Each returned `Document` carries rich metadata:
 | `lines` | `"42-78"` |
 | `score` | `0.91` |
 | `retrieval_source` | `"hybrid"` |
+
+## Graph-Enhanced Retrieval
+
+Enable the knowledge graph as a 4th retrieval leg for architecture-aware queries:
+
+```python
+from trelix_langchain import TrelixRetriever
+
+# Standard hybrid retrieval (v2.1.0: all beast-mode flags default to false)
+retriever = TrelixRetriever(repo_path="/path/to/repo", k=10)
+
+# With graph-aware BFS (requires trelix[knowledge-graph])
+retriever = TrelixRetriever(
+    repo_path="/path/to/repo",
+    k=10,
+    graph_search_enabled=True,   # enables 4th BFS retrieval leg
+    graph_search_depth=2,
+)
+
+# v2.1.0: Combine graph search with beast-mode retrieval legs
+# (Enable via env vars BEFORE constructing retriever)
+retriever = TrelixRetriever(
+    repo_path="/path/to/repo",
+    k=10,
+    graph_search_enabled=True,
+)
+
+# Each Document.metadata includes graph source info
+docs = retriever.invoke("how does auth relate to the data layer?")
+for doc in docs:
+    print(doc.metadata["retrieval_source"])  # "graph_search", "file_summary", "vector", "bm25", "pagerank"
+```
+
+When `graph_search_enabled=True`, the retriever merges results from multiple legs (v2.1.0 adds optional file-summary and PageRank):
+
+| Leg | Source | Typical share |
+|---|---|---|
+| vector | semantic embedding similarity | majority |
+| bm25 | keyword / BM25 full-text | secondary |
+| graph_expansion | call-graph neighbourhood | supplementary |
+| graph_search | BFS over NetworkX knowledge graph | up to `k//2` |
+| file_summary (v2.1.0+) | index-time file summaries | optional, cross-file context |
+| pagerank (v2.1.0+) | call-graph centrality boosting | optional, hub-symbol promotion |
+
+Graph BFS surfaces structurally related symbols even when semantic similarity is low — useful for cross-cutting concerns like auth, logging, and rate-limiting that touch many modules.
+
+### Graph config options
+
+| Parameter | Default | Description |
+|---|---|---|
+| `graph_search_enabled` | `False` | Opt-in — zero overhead when off |
+| `graph_search_depth` | `2` | BFS depth from seed nodes |
+| `graph_search_max_results` | `15` | Cap on graph leg results |
+
+You can also set these via environment variables (v2.1.0+):
+
+```bash
+# Enable graph search and all v2.1.0 beast-mode legs
+TRELIX_GRAPH_SEARCH_ENABLED=true \
+TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true \
+TRELIX_RETRIEVAL_PAGERANK_BOOST=true \
+trelix index /path/to/repo
+```
+
+> **Prerequisite**: build the knowledge graph before querying — `trelix graph /path/to/repo`.
+> The graph is persisted in `<repo>/.trelix/` and reused across retriever calls.
 
 ## LangChain RAG Chain (LCEL)
 
@@ -102,7 +180,7 @@ for doc in result["source_documents"]:
 
 | Env var | Default | Description |
 |---|---|---|
-| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider: `local` \| `local-code` \| `openai` \| `azure` \| `voyage` \| `bedrock-cohere` \| `bedrock-titan` |
+| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider: `local` \| `local-code` \| `bge-code` \| `nomic-code` \| `lance` \| `openai` \| `azure` \| `voyage` \| `bedrock-cohere` \| `bedrock-titan` |
 | `OPENAI_API_KEY` | — | Required for `openai` provider |
 | `AZURE_API_KEY` | — | Required for `azure` provider |
 | `AWS_ACCESS_KEY_ID` | — | Required for Bedrock providers |
@@ -115,10 +193,16 @@ You can also set the provider directly on the retriever instance:
 retriever = TrelixRetriever(repo_path="/path/to/repo", provider="openai", k=10)
 ```
 
-## Provider Switching (v0.7.0+)
+## Provider Switching (v2.0.0+)
 
 ```bash
-# Use Bedrock Cohere embeddings (best retrieval quality, reuses AWS credentials)
+# Use code-optimized BGE-Code embeddings (best for code semantics)
+TRELIX_EMBEDDER_PROVIDER=bge-code trelix index /path/to/repo
+
+# Use Nomic-Code embeddings
+TRELIX_EMBEDDER_PROVIDER=nomic-code trelix index /path/to/repo
+
+# Use Bedrock Cohere embeddings (reuses AWS credentials)
 TRELIX_EMBEDDER_PROVIDER=bedrock-cohere trelix index /path/to/repo
 
 # Use Azure OpenAI embeddings
@@ -129,6 +213,54 @@ TRELIX_EMBEDDER_PROVIDER=local trelix index /path/to/repo
 ```
 
 The index and the retriever must use the same provider — re-index whenever you switch.
+
+## Beast-Mode Retrieval (v2.1.0+)
+
+trelix v2.1.0 adds five opt-in retrieval improvements — HyDE (hypothetical document expansion), FLARE (active retrieval), file-summary leg, PageRank boost, and telemetry — all activated via environment variables. No code changes needed:
+
+```python
+from trelix_langchain import TrelixRetriever
+
+# v2.1.0: Enable beast-mode features via env vars before constructing retriever
+# Export any or all of these (all default to false):
+# TRELIX_RETRIEVAL_HYDE_FALLBACK=true        # HyDE: expand queries with hypothetical docs
+# TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true    # Add file-summary retrieval leg
+# TRELIX_RETRIEVAL_PAGERANK_BOOST=true      # Boost symbols by PageRank centrality
+# TRELIX_RETRIEVAL_TELEMETRY=true           # Emit retrieval metrics
+
+retriever = TrelixRetriever(
+    repo_path="/path/to/repo",
+    provider="azure",  # or "local", "openai"
+    k=10,
+)
+docs = retriever.invoke("how does the authentication system work?")
+```
+
+**What's New in v2.1.0:**
+- **HyDE fallback**: If semantic search scores are low, generate hypothetical docs and re-score
+- **File-summary leg**: Index-time file summaries as a 5th retrieval source (cross-file context)
+- **PageRank boost**: Upweight symbols in call-graph "hub" positions
+- **Telemetry**: Opt-in metrics on retrieval latency, source distribution, and cache hit rates
+- All features are **zero-overhead when off** — use env vars to opt in per deployment
+
+## Streaming Synthesis (v2.0.0+)
+
+v2.0.0+ includes streaming synthesis support for real-time code context generation:
+
+```python
+from trelix_langchain import TrelixRetriever, StreamingSynthesizer
+from langchain_openai import ChatOpenAI
+
+retriever = TrelixRetriever(repo_path="/path/to/repo", k=8)
+synthesizer = StreamingSynthesizer(
+    llm=ChatOpenAI(model="gpt-4o"),
+    retriever=retriever
+)
+
+# Streamed synthesis output
+for chunk in synthesizer.synthesize_stream("How does the auth flow work?"):
+    print(chunk, end="", flush=True)
+```
 
 ## Links
 

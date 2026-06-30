@@ -4,7 +4,41 @@ All notable changes to trelix are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic Versioning](https://semver.org/).
 
-## [2.0.0] — 2026-06-29
+## [2.1.0] — 2026-06-30
+
+### Overview
+Two major feature sets landing together. Phase A ships the Knowledge Graph layer (v2.0.0 development).
+Phase B is the Beast-Mode Upgrade: seven research-grounded retrieval improvements, all opt-in via
+config flags that default to `False` — zero regression when disabled.
+
+### Added — Knowledge Graph (Phase A)
+- **Knowledge Graph**: new `trelix/graph/` module unifying call/import/type edges into a traversable `CodeGraph` (NetworkX MultiDiGraph)
+- **Community Detection**: Louvain algorithm clusters codebase into architectural modules; `trelix graph ./repo` CLI command shows top communities
+- **Semantic Concepts**: `ConceptExtractor` — LLM-powered extraction of architectural concepts from symbol batches (crash-safe, returns `[]` on any failure)
+- **Graph Visualization**: `GraphVisualizer.export_html()` — Pyvis interactive HTML with community coloring and edge-type coloring; `pip install trelix[knowledge-graph]`
+- **4th Retrieval Leg**: `graph_search_enabled=True` in `RetrievalConfig` enables CodeGraph BFS as a 4th search leg after RRF fusion
+- **REST API**: `GET /graph`, `GET /graph/communities`, `GET /graph/visualize`, `GET /graph/search` endpoints
+- **MCP Tools**: `build_knowledge_graph` and `graph_search_mcp` tools in `trelix-mcp`
+- **Graph Persistence**: `graph_metadata` SQLite table stores community and degree centrality per symbol
+- **PageRank symbol boosting** (`pagerank_boost_enabled`) — scores symbols by import-graph centrality; boosts high-centrality symbols post-rerank
+- **Incremental graph updater** — `GraphUpdater.update_file()` refreshes community + PageRank for a changed file; wired into `trelix watch`
+
+### Added — Beast-Mode Retrieval (Phase B)
+- **File-summary 5th retrieval leg** (`file_summary_leg_enabled`) — RAPTOR-style file-level embeddings used as a 5th RRF leg (arXiv:2401.18059); requires `TRELIX_FILE_SUMMARIES_ENABLED=true` at index time
+- **HyDE fallback** (`hyde_fallback_enabled`) — Hypothetical Document Embeddings (arXiv:2212.10496): generates a synthetic code snippet, embeds it instead of the raw NL query
+- **Multi-query expansion** (`multi_query_enabled`) — decomposes a query into N variants, retrieves independently, RRF-fuses for broader recall
+- **FLARE re-retrieval loop** (`flare_enabled`) — confidence-gated iterative retrieval (arXiv:2305.06983): re-retrieves when synthesis output contains uncertainty phrases
+- **Query telemetry** (`telemetry_enabled`) — `TelemetryWriter` writes per-query rows (latency, intent, result count) to `query_telemetry` SQLite table; `trelix telemetry` CLI shows recent queries
+- **CoIR evaluation harness** — `trelix eval --golden <file>` reports nDCG@10, Recall@10, MRR (CoIR format, ACL 2025 arXiv:2407.02883); pure-Python `trelix.eval.ndcg` with no pandas dependency
+
+### Breaking Changes
+- **CLI**: `trelix graph` renamed to `trelix call-graph` (the old call-graph/callers display).
+  The name `trelix graph` now refers to the knowledge graph build command.
+  Update any scripts using `trelix graph <repo> <symbol>` to `trelix call-graph <repo> <symbol>`.
+
+---
+
+## [2.0.0] — 2026-06-28
 
 ### Overview
 Major feature release spanning three research-grounded upgrade phases. Phase 1 delivers CoIR SOTA embedding models (BGE-Code-v1 at 81.77, Nomic CodeRankEmbed) and Voyage Matryoshka compact dimensions. Phase 2 adds RAPTOR-style multi-granularity file summaries, the PLAID ColBERT late-interaction reranker (7–45× faster than exact ColBERT), and live streaming synthesis for `trelix ask`. Phase 3 ships a LanceDB vector backend (3–5× faster insert at 100k+ chunks) and a production-ready REST API (`trelix serve`) with SSE streaming and full CRUD index management. An LLM-as-judge evaluator rounds out the quality measurement story.
@@ -305,7 +339,7 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.0.0...HEAD
+[2.1.0]: https://github.com/sairam0424/trelix/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/sairam0424/trelix/releases/tag/v2.0.0
 [1.1.0]: https://github.com/sairam0424/trelix/releases/tag/v1.1.0
 [1.0.0]: https://github.com/sairam0424/trelix/releases/tag/v1.0.0

@@ -333,6 +333,65 @@ class RetrievalConfig(BaseSettings):
     context_token_budget: int = 12_000
     synthesis_max_tokens: int = 12_000
 
+    # CodeGraph BFS retrieval (4th leg — off by default)
+    graph_search_enabled: bool = False  # Enable CodeGraph as 4th retrieval leg
+    graph_search_depth: int = 2  # BFS depth for graph expansion
+    graph_search_max_results: int = 15  # Max results from graph search leg
+
+    # File-summary retrieval leg (5th leg — RAPTOR-style, off by default)
+    # Requires file_summaries_enabled=True at index time to have any summaries stored.
+    file_summary_leg_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_FILE_SUMMARY_LEG",
+    )
+    top_k_file_summary: int = Field(
+        default=5,
+        alias="TRELIX_RETRIEVAL_FILE_SUMMARY_TOP_K",
+    )
+
+    # HyDE fallback — for no-LLM Tier 1 queries, generate a synthetic snippet
+    # using the LLM before embedding (requires LLM config).
+    # When the planner already set hyde_snippet, this is skipped (no double-call).
+    hyde_fallback_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_HYDE_FALLBACK",
+    )
+    # Multi-query expansion — generate N query variants, run each as a sub-query
+    multi_query_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_MULTI_QUERY",
+    )
+    multi_query_count: int = Field(
+        default=2,
+        ge=1,
+        le=4,
+        alias="TRELIX_RETRIEVAL_MULTI_QUERY_COUNT",
+    )
+
+    # FLARE-style confidence-gated re-retrieval
+    flare_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_FLARE",
+    )
+    flare_max_iterations: int = Field(
+        default=1,
+        ge=1,
+        le=3,
+        alias="TRELIX_RETRIEVAL_FLARE_MAX_ITER",
+    )
+
+    # PageRank-based symbol importance boost
+    pagerank_boost_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_PAGERANK_BOOST",
+    )
+    pagerank_boost_factor: float = Field(
+        default=1.3,
+        ge=1.0,
+        le=3.0,
+        alias="TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR",
+    )
+
     # GraphRAG map-reduce synthesis
     graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")
     graph_rag_threshold_tokens: int = 8000
@@ -572,6 +631,13 @@ class IndexConfig(BaseSettings):
     file_summaries_enabled: bool = Field(
         default=False,
         alias="TRELIX_FILE_SUMMARIES_ENABLED",
+    )
+
+    # Query telemetry: record every retrieve() call to query_telemetry table.
+    # Off by default — zero overhead when disabled.
+    telemetry_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_TELEMETRY_ENABLED",
     )
 
     @field_validator("repo_path")
