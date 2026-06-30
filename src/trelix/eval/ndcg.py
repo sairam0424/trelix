@@ -4,6 +4,7 @@ Pure metric functions for retrieval evaluation.
 All functions are stateless, dependency-free, and O(k log k).
 Compatible with CoIR benchmark format (arXiv:2407.02883).
 """
+
 from __future__ import annotations
 
 import math
@@ -26,9 +27,7 @@ def ndcg_at_k(ranked_ids: list[int], relevant_ids: set[int], k: int = 10) -> flo
 
     def dcg(ids: list[int], rel: set[int], k: int) -> float:
         return sum(
-            1.0 / math.log2(rank + 2)
-            for rank, doc_id in enumerate(ids[:k])
-            if doc_id in rel
+            1.0 / math.log2(rank + 2) for rank, doc_id in enumerate(ids[:k]) if doc_id in rel
         )
 
     actual = dcg(ranked_ids, relevant_ids, k)

@@ -6,6 +6,7 @@ Only rebuilds nodes/edges touching the changed file, then re-saves graph_metadat
 (community + centrality) for those nodes. This avoids rebuilding the full graph
 on every file-save event.
 """
+
 from __future__ import annotations
 
 import logging

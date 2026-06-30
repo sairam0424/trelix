@@ -1,4 +1,5 @@
 """Tests for PageRank symbol importance scoring."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,20 +23,62 @@ def _build_star_graph(tmp_path: Path) -> tuple[Database, CodeGraph, int]:
             size_bytes=10,
         )
     )
-    hub = db.insert_symbol(Symbol(file_id=fid, name="hub", qualified_name="hub",
-        kind=SymbolKind.FUNCTION, line_start=1, line_end=5, signature="def hub()", body=""))
-    leaf1 = db.insert_symbol(Symbol(file_id=fid, name="leaf1", qualified_name="leaf1",
-        kind=SymbolKind.FUNCTION, line_start=10, line_end=14, signature="def leaf1()", body=""))
-    leaf2 = db.insert_symbol(Symbol(file_id=fid, name="leaf2", qualified_name="leaf2",
-        kind=SymbolKind.FUNCTION, line_start=20, line_end=24, signature="def leaf2()", body=""))
-    leaf3 = db.insert_symbol(Symbol(file_id=fid, name="leaf3", qualified_name="leaf3",
-        kind=SymbolKind.FUNCTION, line_start=30, line_end=34, signature="def leaf3()", body=""))
+    hub = db.insert_symbol(
+        Symbol(
+            file_id=fid,
+            name="hub",
+            qualified_name="hub",
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=5,
+            signature="def hub()",
+            body="",
+        )
+    )
+    leaf1 = db.insert_symbol(
+        Symbol(
+            file_id=fid,
+            name="leaf1",
+            qualified_name="leaf1",
+            kind=SymbolKind.FUNCTION,
+            line_start=10,
+            line_end=14,
+            signature="def leaf1()",
+            body="",
+        )
+    )
+    leaf2 = db.insert_symbol(
+        Symbol(
+            file_id=fid,
+            name="leaf2",
+            qualified_name="leaf2",
+            kind=SymbolKind.FUNCTION,
+            line_start=20,
+            line_end=24,
+            signature="def leaf2()",
+            body="",
+        )
+    )
+    leaf3 = db.insert_symbol(
+        Symbol(
+            file_id=fid,
+            name="leaf3",
+            qualified_name="leaf3",
+            kind=SymbolKind.FUNCTION,
+            line_start=30,
+            line_end=34,
+            signature="def leaf3()",
+            body="",
+        )
+    )
     # leaf1, leaf2, leaf3 all call hub (hub is the target, gets PageRank from incoming)
-    db.insert_call_edges([
-        CallEdge(caller_id=leaf1, callee_name="hub", callee_id=hub, line=11),
-        CallEdge(caller_id=leaf2, callee_name="hub", callee_id=hub, line=21),
-        CallEdge(caller_id=leaf3, callee_name="hub", callee_id=hub, line=31),
-    ])
+    db.insert_call_edges(
+        [
+            CallEdge(caller_id=leaf1, callee_name="hub", callee_id=hub, line=11),
+            CallEdge(caller_id=leaf2, callee_name="hub", callee_id=hub, line=21),
+            CallEdge(caller_id=leaf3, callee_name="hub", callee_id=hub, line=31),
+        ]
+    )
     cg = CodeGraph(db)
     return db, cg, hub
 

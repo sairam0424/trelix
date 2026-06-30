@@ -63,6 +63,7 @@ class GraphBuilder:
 
         # Step 3b: Compute and persist PageRank centrality scores
         from trelix.graph.community import compute_pagerank
+
         pr_scores = compute_pagerank(cg)
         for node_id, score in pr_scores.items():
             if node_id in cg.nx.nodes:

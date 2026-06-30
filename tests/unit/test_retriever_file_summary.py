@@ -1,4 +1,5 @@
 """Tests for the file-summary 5th retrieval leg."""
+
 from __future__ import annotations
 
 from pathlib import Path

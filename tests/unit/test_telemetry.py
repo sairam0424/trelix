@@ -1,4 +1,5 @@
 """Tests for query telemetry recording."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -43,5 +44,6 @@ class TestTelemetryWriter:
 
     def test_telemetry_disabled_by_default(self, tmp_path: Path) -> None:
         from trelix.core.config import IndexConfig
+
         cfg = IndexConfig(repo_path=str(tmp_path))
         assert cfg.telemetry_enabled is False

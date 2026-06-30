@@ -1,4 +1,5 @@
 """Tests for CoIR-style evaluation harness and metrics."""
+
 from __future__ import annotations
 
 import json

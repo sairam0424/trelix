@@ -1,4 +1,5 @@
 """Tests for FLARE-style confidence-gated re-retrieval."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,8 +20,7 @@ class TestUncertaintyDetection:
 
     def test_confident_answer_not_flagged(self) -> None:
         assert (
-            _contains_uncertainty("The authenticate() function in auth.py handles this.")
-            is False
+            _contains_uncertainty("The authenticate() function in auth.py handles this.") is False
         )
 
     def test_case_insensitive(self) -> None:
@@ -78,6 +78,7 @@ class TestFLARELoop:
 
     def test_config_defaults(self, tmp_path: Path) -> None:
         from trelix.core.config import IndexConfig
+
         cfg = IndexConfig(repo_path=str(tmp_path))
         assert cfg.retrieval.flare_enabled is False
         assert cfg.retrieval.flare_max_iterations == 1

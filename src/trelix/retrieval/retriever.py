@@ -198,6 +198,7 @@ class Retriever:
         # Telemetry — record timing and result count (no-op when disabled)
         if self.config.telemetry_enabled:
             from trelix.retrieval.telemetry import TelemetryWriter
+
             elapsed_ms = (time.perf_counter() - t_start) * 1000
             TelemetryWriter(self.db, enabled=True).record(context, elapsed_ms=elapsed_ms)
 
@@ -581,6 +582,7 @@ class Retriever:
             # semantic_query embed). Skipped when planner already set a snippet.
             if cfg.hyde_fallback_enabled and not sq.hyde_snippet.strip():
                 from trelix.retrieval.query_expansion import HyDEExpander
+
                 snippet = HyDEExpander(self.config.llm).expand(sq.semantic_query)
                 if snippet:
                     embed_text = snippet

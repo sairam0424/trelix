@@ -1,4 +1,5 @@
 """Tests for HyDE and multi-query expansion."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,7 @@ class TestHyDEExpander:
         mock_client.complete.return_value = MagicMock(content="def authenticate(user): ...")
         with patch("trelix.retrieval.query_expansion.build_chat_client", return_value=mock_client):
             from trelix.core.config import LLMConfig
+
             expander = HyDEExpander(llm_config=LLMConfig())
             result = expander.expand("how does authentication work")
         assert "def authenticate" in result
@@ -26,6 +28,7 @@ class TestHyDEExpander:
         mock_client.complete.side_effect = RuntimeError("API down")
         with patch("trelix.retrieval.query_expansion.build_chat_client", return_value=mock_client):
             from trelix.core.config import LLMConfig
+
             expander = HyDEExpander(llm_config=LLMConfig())
             result = expander.expand("how does X work")
         assert result == ""
@@ -44,6 +47,7 @@ class TestMultiQueryExpander:
         )
         with patch("trelix.retrieval.query_expansion.build_chat_client", return_value=mock_client):
             from trelix.core.config import LLMConfig
+
             expander = MultiQueryExpander(llm_config=LLMConfig(), n=2)
             result = expander.expand("what handles JWT tokens")
         # Original always included, plus up to n variants
@@ -58,6 +62,7 @@ class TestMultiQueryExpander:
         )
         with patch("trelix.retrieval.query_expansion.build_chat_client", return_value=mock_client):
             from trelix.core.config import LLMConfig
+
             expander = MultiQueryExpander(llm_config=LLMConfig(), n=2)
             result = expander.expand("what handles JWT tokens")
         assert len(result) == len(set(result))  # no duplicates
@@ -67,12 +72,14 @@ class TestMultiQueryExpander:
         mock_client.complete.side_effect = RuntimeError("API down")
         with patch("trelix.retrieval.query_expansion.build_chat_client", return_value=mock_client):
             from trelix.core.config import LLMConfig
+
             expander = MultiQueryExpander(llm_config=LLMConfig(), n=2)
             result = expander.expand("what handles JWT tokens")
         assert result == ["what handles JWT tokens"]
 
     def test_config_flags_default_off(self, tmp_path) -> None:
         from trelix.core.config import IndexConfig
+
         cfg = IndexConfig(repo_path=str(tmp_path))
         assert cfg.retrieval.hyde_fallback_enabled is False
         assert cfg.retrieval.multi_query_enabled is False

@@ -62,6 +62,7 @@ class HyDEExpander:
             return ""
         try:
             from trelix.llm.client import ChatMessage
+
             resp = client.complete(
                 messages=[ChatMessage(role="user", content=query)],
                 max_tokens=150,
@@ -100,6 +101,7 @@ class MultiQueryExpander:
             return [query]
         try:
             from trelix.llm.client import ChatMessage
+
             system = _MULTI_QUERY_SYSTEM.format(n=self._n)
             resp = client.complete(
                 messages=[ChatMessage(role="user", content=query)],

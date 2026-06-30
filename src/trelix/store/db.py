@@ -1246,6 +1246,7 @@ class Database:
     ) -> int:
         """Insert one telemetry row. Returns row id."""
         import json
+
         cur = self._conn.execute(
             "INSERT INTO query_telemetry (query, intent, elapsed_ms, result_count, leg_sizes) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -1257,6 +1258,7 @@ class Database:
     def get_recent_telemetry(self, limit: int = 100) -> list[dict[str, Any]]:
         """Return most recent telemetry rows as list of dicts."""
         import json
+
         rows = self._conn.execute(
             "SELECT id, ts, query, intent, elapsed_ms, result_count, leg_sizes, thumbs_up "
             "FROM query_telemetry ORDER BY id DESC LIMIT ?",

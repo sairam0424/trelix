@@ -161,6 +161,7 @@ class FileWatcher:
             # Refresh graph metadata incrementally
             try:
                 from trelix.graph.updater import GraphUpdater
+
                 GraphUpdater(self._indexer.db).update_file(rel)
             except Exception as exc:
                 logger.debug("GraphUpdater watcher hook failed (non-fatal): %s", exc)

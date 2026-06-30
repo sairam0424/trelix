@@ -9,6 +9,7 @@ Usage:
     metrics = harness.run("golden.jsonl")
     # -> {"ndcg@10": 0.74, "recall@10": 0.81, "mrr": 0.66, "n_queries": 12}
 """
+
 from __future__ import annotations
 
 import json

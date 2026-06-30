@@ -6,6 +6,7 @@ appends one row: query text, intent, elapsed_ms, result count.
 Used for: debugging slow queries, tracking improvement over time, computing
 nDCG@10 against a golden set via `trelix eval`.
 """
+
 from __future__ import annotations
 
 import logging

@@ -1,4 +1,5 @@
 """Tests for incremental graph updates after file changes."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,11 +16,18 @@ def _make_db(tmp_path: Path) -> tuple[Database, int, int]:
             path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="h1", size_bytes=50
         )
     )
-    sid = db.insert_symbol(Symbol(
-        file_id=fid, name="my_func", qualified_name="my_func",
-        kind=SymbolKind.FUNCTION, line_start=1, line_end=10,
-        signature="def my_func()", body="def my_func(): pass"
-    ))
+    sid = db.insert_symbol(
+        Symbol(
+            file_id=fid,
+            name="my_func",
+            qualified_name="my_func",
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=10,
+            signature="def my_func()",
+            body="def my_func(): pass",
+        )
+    )
     return db, fid, sid
 
 
