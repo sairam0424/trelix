@@ -61,7 +61,7 @@ Enable the knowledge graph as a 4th retrieval leg for architecture-aware queries
 ```python
 from trelix_langchain import TrelixRetriever
 
-# Standard hybrid retrieval
+# Standard hybrid retrieval (v2.1.0: all beast-mode flags default to false)
 retriever = TrelixRetriever(repo_path="/path/to/repo", k=10)
 
 # With graph-aware BFS (requires trelix[knowledge-graph])
@@ -72,13 +72,21 @@ retriever = TrelixRetriever(
     graph_search_depth=2,
 )
 
+# v2.1.0: Combine graph search with beast-mode retrieval legs
+# (Enable via env vars BEFORE constructing retriever)
+retriever = TrelixRetriever(
+    repo_path="/path/to/repo",
+    k=10,
+    graph_search_enabled=True,
+)
+
 # Each Document.metadata includes graph source info
 docs = retriever.invoke("how does auth relate to the data layer?")
 for doc in docs:
-    print(doc.metadata["retrieval_source"])  # "graph_search", "vector", "bm25"
+    print(doc.metadata["retrieval_source"])  # "graph_search", "file_summary", "vector", "bm25", "pagerank"
 ```
 
-When `graph_search_enabled=True`, the retriever merges results from four legs:
+When `graph_search_enabled=True`, the retriever merges results from multiple legs (v2.1.0 adds optional file-summary and PageRank):
 
 | Leg | Source | Typical share |
 |---|---|---|
@@ -86,6 +94,8 @@ When `graph_search_enabled=True`, the retriever merges results from four legs:
 | bm25 | keyword / BM25 full-text | secondary |
 | graph_expansion | call-graph neighbourhood | supplementary |
 | graph_search | BFS over NetworkX knowledge graph | up to `k//2` |
+| file_summary (v2.1.0+) | index-time file summaries | optional, cross-file context |
+| pagerank (v2.1.0+) | call-graph centrality boosting | optional, hub-symbol promotion |
 
 Graph BFS surfaces structurally related symbols even when semantic similarity is low — useful for cross-cutting concerns like auth, logging, and rate-limiting that touch many modules.
 
@@ -97,10 +107,14 @@ Graph BFS surfaces structurally related symbols even when semantic similarity is
 | `graph_search_depth` | `2` | BFS depth from seed nodes |
 | `graph_search_max_results` | `15` | Cap on graph leg results |
 
-You can also set these via environment variables:
+You can also set these via environment variables (v2.1.0+):
 
 ```bash
-TRELIX_GRAPH_SEARCH_ENABLED=true trelix index /path/to/repo
+# Enable graph search and all v2.1.0 beast-mode legs
+TRELIX_GRAPH_SEARCH_ENABLED=true \
+TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true \
+TRELIX_RETRIEVAL_PAGERANK_BOOST=true \
+trelix index /path/to/repo
 ```
 
 > **Prerequisite**: build the knowledge graph before querying — `trelix graph /path/to/repo`.
@@ -200,9 +214,38 @@ TRELIX_EMBEDDER_PROVIDER=local trelix index /path/to/repo
 
 The index and the retriever must use the same provider — re-index whenever you switch.
 
+## Beast-Mode Retrieval (v2.1.0+)
+
+trelix v2.1.0 adds five opt-in retrieval improvements — HyDE (hypothetical document expansion), FLARE (active retrieval), file-summary leg, PageRank boost, and telemetry — all activated via environment variables. No code changes needed:
+
+```python
+from trelix_langchain import TrelixRetriever
+
+# v2.1.0: Enable beast-mode features via env vars before constructing retriever
+# Export any or all of these (all default to false):
+# TRELIX_RETRIEVAL_HYDE_FALLBACK=true        # HyDE: expand queries with hypothetical docs
+# TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true    # Add file-summary retrieval leg
+# TRELIX_RETRIEVAL_PAGERANK_BOOST=true      # Boost symbols by PageRank centrality
+# TRELIX_RETRIEVAL_TELEMETRY=true           # Emit retrieval metrics
+
+retriever = TrelixRetriever(
+    repo_path="/path/to/repo",
+    provider="azure",  # or "local", "openai"
+    k=10,
+)
+docs = retriever.invoke("how does the authentication system work?")
+```
+
+**What's New in v2.1.0:**
+- **HyDE fallback**: If semantic search scores are low, generate hypothetical docs and re-score
+- **File-summary leg**: Index-time file summaries as a 5th retrieval source (cross-file context)
+- **PageRank boost**: Upweight symbols in call-graph "hub" positions
+- **Telemetry**: Opt-in metrics on retrieval latency, source distribution, and cache hit rates
+- All features are **zero-overhead when off** — use env vars to opt in per deployment
+
 ## Streaming Synthesis (v2.0.0+)
 
-v2.0.0 introduces streaming synthesis support for real-time code context generation:
+v2.0.0+ includes streaming synthesis support for real-time code context generation:
 
 ```python
 from trelix_langchain import TrelixRetriever, StreamingSynthesizer
