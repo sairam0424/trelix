@@ -120,7 +120,7 @@ trelix v2.0.0 ships with built-in support for multiple embedding backends:
 
 - **Local embeddings** (`local`) — Uses transformers library (default, no API keys needed)
 - **BGE-Code-v1** (`bge-code`) — BAAI General Embedding for code, optimized for semantic code search
-- **Nomic CodeRankEmbed** (`code-rank`) — Open-source embeddings specialized for code ranking
+- **Nomic CodeRankEmbed** (`nomic-code`) — Open-source embeddings specialized for code ranking
 - **Azure OpenAI Embeddings** — Enterprise deployment via Azure; set `TRELIX_EMBEDDER_PROVIDER=azure`
 - **Bedrock** — AWS-hosted embeddings via Bedrock
 
