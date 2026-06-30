@@ -36,6 +36,13 @@ trelix processes local repository contents and makes network calls to configured
 - **File system access** — reads only files under the indexed `repo_path`; does not follow symlinks outside the repo boundary
 - **Tree-sitter parsing** — parses user code with C-extension parsers; malformed inputs are caught and logged
 
+### REST API — /graph/visualize output path constraint
+
+The `output` query parameter on `GET /graph/visualize` is validated server-side:
+- The resolved output path must be inside `<repo>/.trelix/`
+- Paths outside this directory are rejected with HTTP 400
+- This prevents arbitrary file writes to sensitive locations
+
 ## Out of Scope
 
 - Vulnerabilities in third-party dependencies (report to upstream)
