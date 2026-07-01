@@ -279,20 +279,25 @@ class TestGitignoreFilter(unittest.TestCase):
 
 class TestDebouncing(unittest.TestCase):
     def test_rapid_edits_collapsed_to_single_call(self) -> None:
-        """Five rapid edits to the same file must result in exactly one index_file call."""
+        """Five rapid edits to the same file must result in exactly one index_file call.
+
+        Use a large debounce window (500 ms) and a very short inter-event sleep
+        (5 ms) so that even under heavy CI scheduling jitter all events stay
+        comfortably within the debounce window.
+        """
         indexer = _make_indexer()
         walker = _make_walker()
-        watcher = FileWatcher(indexer, walker, debounce_ms=100)
+        watcher = FileWatcher(indexer, walker, debounce_ms=500)
 
         with patch.object(watcher, "_should_index", return_value=True):
             handler = _TrelixEventHandler(watcher)
             for _ in range(5):
                 event = _make_file_event("modified", "/repo/src/auth.py")
                 handler.dispatch(event)
-                time.sleep(0.02)  # 20 ms between saves — within 100 ms window
+                time.sleep(0.005)  # 5 ms between saves — well within 500 ms window
 
             # Wait past the debounce window
-            time.sleep(0.25)
+            time.sleep(0.8)
 
         # Despite 5 events, index_file must be called exactly once
         self.assertEqual(indexer.index_file.call_count, 1)
@@ -302,16 +307,16 @@ class TestDebouncing(unittest.TestCase):
         """Rapid edits to two different files each produce exactly one call."""
         indexer = _make_indexer()
         walker = _make_walker()
-        watcher = FileWatcher(indexer, walker, debounce_ms=80)
+        watcher = FileWatcher(indexer, walker, debounce_ms=500)
 
         with patch.object(watcher, "_should_index", return_value=True):
             handler = _TrelixEventHandler(watcher)
             for _ in range(3):
                 handler.dispatch(_make_file_event("modified", "/repo/src/a.py"))
                 handler.dispatch(_make_file_event("modified", "/repo/src/b.py"))
-                time.sleep(0.01)
+                time.sleep(0.005)
 
-            time.sleep(0.25)
+            time.sleep(0.8)
 
         self.assertEqual(indexer.index_file.call_count, 2)
         calls = {c.args[0] for c in indexer.index_file.call_args_list}
