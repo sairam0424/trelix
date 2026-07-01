@@ -4,6 +4,58 @@ All notable changes to trelix are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-07-01
+
+### Overview
+Four research-grounded intelligence upgrades across three phases. All gated by config flags
+defaulting to `False` — zero regression when disabled. 33 new files, 45 new tests.
+
+### Added — Agentic ReAct Loop (PR #31)
+- **`trelix/agent/` package** — `AgentAction`, `ActionType`, `Observation`, `Turn` dataclasses
+- **`TurnHistory` + `HistoryCompressor`** — multi-turn context management with token-budget trimming
+- **Agent tool schemas** — 4 tools in OpenAI function-calling format: `retrieve`, `grep`, `get_symbol`, `done`
+- **`AgentLoop(config).run(query) -> str`** — ReAct orchestrator: Thought → Action → Observation → repeat until `done` or `agent_max_turns`
+- **CLI**: `trelix ask --agentic` flag OR `TRELIX_RETRIEVAL_AGENTIC=true` activates multi-turn loop
+- Config: `agentic_enabled=False` (TRELIX_RETRIEVAL_AGENTIC), `agent_max_turns=8`, `agent_token_budget=6000`
+- Research basis: CodeAct (arXiv:2402.01030, 3-0 adversarial vote), OpenHands (arXiv:2407.16741, 3-0 vote)
+
+### Added — Inter-procedural Data-Flow & Taint Analysis (PR #29)
+- **`trelix/analysis/defuse.py`** — `DataFlowExtractor` extracts def-use chains per function via tree-sitter AST walk; crash-safe, returns `[]` on any failure
+- **`trelix/analysis/taint.py`** — `TaintAnalyzer(repo_path, tier).run()` wraps Semgrep CLI; 3 tiers: default (intraprocedural), intrafile, interfile; returns `[]` when semgrep absent
+- **DB tables**: `def_use_edges` (variable definition/use pairs), `taint_flows` (source→sink paths)
+- **CLI**: `trelix taint <repo> [--tier intrafile] [--severity ERROR]` shows taint flows in Rich table
+- **`[taint]` extra**: `pip install trelix[taint]` adds `semgrep>=1.60.0`
+- Config: `dataflow_enabled=False` (TRELIX_PARSER_DATAFLOW), `taint_enabled=False` (TRELIX_PARSER_TAINT)
+- Research basis: CodeQL inter-procedural data-flow (3-0 vote), Semgrep taint tiers (2-1 vote)
+
+### Added — SPLADE-Code Sparse+Dense Hybrid Retrieval (PR #30)
+- **`trelix/embedder/sparse.py`** — `SparseEmbedder(model, top_k=128)` produces `{token_id: weight}` sparse vectors via `naver-splab/splade-code-distil`; graceful degradation when torch absent
+- **`trelix/store/sparse_store.py`** — `SparseStore` SQLite inverted index; dot-product similarity search; thread-safe; clean overwrite on upsert
+- **`trelix/retrieval/sparse_search.py`** — 6th RRF retrieval leg with `source="sparse"`
+- **`SparseConfig`**: `model`, `top_k_tokens=128`, `batch_size=16`
+- **`[sparse]` extra**: `pip install trelix[sparse]` adds `transformers>=4.40`, `torch>=2.2`
+- Config: `sparse_enabled=False` (TRELIX_RETRIEVAL_SPARSE), `top_k_sparse=20`
+- Research basis: SPLADE-Code (arXiv:2603.22008, 3-0 vote) — fixes BM25's identifier subword-fragmentation failures
+
+### Added — MGS3-Style Multi-Granularity Sub-Symbol Indexing (PR #32)
+- **`trelix/indexing/multi_granularity.py`** — `Granularity` enum (FUNCTION/BLOCK/STATEMENT), `SubSymbolChunk` dataclass, `MultiGranularityChunker.extract_sub_chunks()` via tree-sitter; crash-safe
+- **`sub_chunks` DB table** — parent_symbol_id, granularity, chunk_text, line range
+- **Vector store** — `upsert_sub_chunk_embedding` / `search_sub_chunks` (10M offset sentinel); stubs on LanceDB + Qdrant backends
+- **7th RRF retrieval leg** — `source="sub_chunk"`
+- Config: `multi_granularity_enabled=False` (TRELIX_CHUNKER_MULTI_GRANULARITY), `multi_granularity_levels=["block","statement"]`, `sub_chunk_search_enabled=False` (TRELIX_RETRIEVAL_SUB_CHUNK), `top_k_sub_chunk=10`
+- Research basis: MGS3 (arXiv:2505.24274, KDD 2025, 2-1 vote) — block-level queries fail function-level retrieval
+
+### Breaking Changes
+None — all new features are opt-in via config flags.
+
+### v2.3.0 Backlog
+- Wire `multi_query_enabled` into `_run_subquery_legs`
+- `flare_max_iterations` rename → `flare_max_retries` for clearer semantics
+- MCP resources exposure (currently tools-only)
+- Dimension guard for embedding provider switches
+
+---
+
 ## [2.1.0] — 2026-06-30
 
 ### Overview
@@ -339,6 +391,7 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
+[2.2.0]: https://github.com/sairam0424/trelix/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/sairam0424/trelix/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/sairam0424/trelix/releases/tag/v2.0.0
 [1.1.0]: https://github.com/sairam0424/trelix/releases/tag/v1.1.0
