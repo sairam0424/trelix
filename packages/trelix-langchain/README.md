@@ -262,6 +262,19 @@ for chunk in synthesizer.synthesize_stream("How does the auth flow work?"):
     print(chunk, end="", flush=True)
 ```
 
+## v2.2.0 Intelligence Upgrades
+
+trelix v2.2.0 adds agentic multi-turn retrieval, data-flow analysis, SPLADE-Code sparse+dense hybrid, and block-level sub-symbol indexing.
+All activated via environment variables — the LangChain TrelixRetriever interface is unchanged.
+
+```bash
+# Activate the agentic loop for longer Q&A sessions
+TRELIX_RETRIEVAL_AGENTIC=true
+
+# Enable sparse+dense hybrid (requires pip install trelix[sparse])
+TRELIX_RETRIEVAL_SPARSE=true
+```
+
 ## Links
 
 - [trelix on GitHub](https://github.com/sairam0424/trelix)
