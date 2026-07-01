@@ -23,7 +23,9 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Natural-language or keyword query describing the code to find.",
+                        "description": (
+                            "Natural-language or keyword query describing the code to find."
+                        ),
                     }
                 },
                 "required": ["query"],
