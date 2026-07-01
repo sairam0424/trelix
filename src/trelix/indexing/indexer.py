@@ -213,6 +213,20 @@ class Indexer:
         self.walker = FileWalker(config)
         self._file_summarizer = self._build_file_summarizer(config)
 
+        # Dimension guard: detect provider switch mismatches at startup
+        try:
+            from trelix.store.dimension_guard import DimensionGuard, DimensionMismatchError
+
+            DimensionGuard.check(
+                self.db,
+                current_dimension=self.embedder.dimension,
+                provider=config.embedder.provider,
+            )
+        except DimensionMismatchError:
+            raise  # Re-raise with the clear user-facing message
+        except Exception as exc:
+            logger.debug("DimensionGuard.check failed (non-fatal): %s", exc)
+
     def _build_chunker(self, config: IndexConfig) -> Chunker:
         """
         Return a ContextualChunker if contextual=True in ChunkerConfig,
