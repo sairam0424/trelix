@@ -45,17 +45,28 @@ trelix call-graph ./my-repo <symbol>
 
 ---
 
-## What's New in v2.1.0
+## What's New
+
+### v2.2.0 — Intelligence Upgrades
+
+| Feature | Enable | What it does |
+|---------|--------|--------------|
+| Agentic ReAct loop | `TRELIX_RETRIEVAL_AGENTIC=true` | Multi-turn retrieve→observe→re-retrieve with self-correction |
+| Data-flow analysis | `TRELIX_PARSER_DATAFLOW=true` | Def-use chains per function via tree-sitter AST walk |
+| Taint analysis | `pip install trelix[taint]` then `trelix taint .` | Semgrep source→sink flow detection |
+| Sparse+dense hybrid | `TRELIX_RETRIEVAL_SPARSE=true` | SPLADE-Code 6th RRF leg alongside BM25 |
+| Multi-granularity | `TRELIX_CHUNKER_MULTI_GRANULARITY=true` | Block+statement level indexing as 7th RRF leg |
+
+### v2.1.0 — Beast-Mode Retrieval
 
 | Category | Upgrade | Activation |
 |----------|---------|------------|
-| **Retrieval** | File-summary 5th retrieval leg — semantic search over LLM-generated file summaries | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true` |
-| **Retrieval** | HyDE query expansion — generates a hypothetical code snippet to improve ANN recall | `TRELIX_RETRIEVAL_HYDE_FALLBACK=true` |
-| **Retrieval** | FLARE confidence-gated re-retrieval — re-queries when synthesis confidence is low | `TRELIX_RETRIEVAL_FLARE=true` |
-| **Retrieval** | PageRank symbol boost — promotes highly-connected symbols in graph ranking | `TRELIX_RETRIEVAL_PAGERANK_BOOST=true` |
-| **Indexing** | Incremental graph updater — `trelix watch` automatically patches the knowledge graph on file changes | automatic with `trelix watch` |
-| **Observability** | Query telemetry — latency, hit rates, and retrieval leg breakdown per query | `TRELIX_TELEMETRY_ENABLED=true` / `trelix telemetry` CLI |
-| **Eval** | CoIR eval harness — `trelix eval` measures Recall@k / MRR against a golden set | `trelix eval --golden <file>` |
+| **Retrieval** | File-summary 5th retrieval leg | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true` |
+| **Retrieval** | HyDE query expansion | `TRELIX_RETRIEVAL_HYDE_FALLBACK=true` |
+| **Retrieval** | FLARE confidence-gated re-retrieval | `TRELIX_RETRIEVAL_FLARE=true` |
+| **Retrieval** | PageRank symbol boost | `TRELIX_RETRIEVAL_PAGERANK_BOOST=true` |
+| **Observability** | Query telemetry | `TRELIX_TELEMETRY_ENABLED=true` |
+| **Eval** | CoIR eval harness | `trelix eval --golden <file>` |
 
 ---
 
@@ -137,26 +148,24 @@ trelix graph ./my-repo --visualize
 # Enable graph as 4th search leg
 TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "explain the auth architecture"
 
+# --- v2.2.0 ---
+
+# Agentic multi-turn Q&A (ReAct loop)
+trelix ask --agentic ./my-repo "how does the auth flow connect to the data layer?"
+
+# Run Semgrep taint analysis (requires trelix[taint])
+trelix taint ./my-repo
+
 # --- v2.1.0 ---
 
-# View query telemetry (latency, hit rates, leg breakdown)
+# View query telemetry
 trelix telemetry ./my-repo
-trelix telemetry ./my-repo --limit 50
 
-# Run CoIR eval harness against a golden query set
+# Run CoIR eval harness
 trelix eval ./my-repo --golden eval/golden.jsonl
 
-# Enable HyDE expansion for abstract queries
-TRELIX_RETRIEVAL_HYDE_FALLBACK=true trelix ask ./my-repo "how does the event pipeline work?"
-
-# Enable FLARE confidence-gated re-retrieval
-TRELIX_RETRIEVAL_FLARE=true trelix ask ./my-repo "trace the full request lifecycle"
-
-# Enable PageRank symbol boost
-TRELIX_RETRIEVAL_PAGERANK_BOOST=true trelix ask ./my-repo "what are the core abstractions?"
-
-# Enable file-summary 5th retrieval leg
-TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true trelix ask ./my-repo "give me a high-level architecture overview"
+# Enable HyDE + FLARE for complex queries
+TRELIX_RETRIEVAL_HYDE_FALLBACK=true TRELIX_RETRIEVAL_FLARE=true trelix ask ./my-repo "trace the request lifecycle"
 ```
 
 ### GitHub Actions — index in CI

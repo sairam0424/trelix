@@ -21,7 +21,10 @@ import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from trelix.indexing.multi_granularity import SubSymbolChunk
 
 from trelix.core.models import (
     CallEdge,
@@ -33,6 +36,10 @@ from trelix.core.models import (
     SymbolKind,
     TypeEdge,
 )
+
+if TYPE_CHECKING:
+    from trelix.analysis.defuse import DefUseEdge
+    from trelix.analysis.taint import TaintFlow
 
 DDL = """
 PRAGMA journal_mode = WAL;
@@ -108,6 +115,18 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol_id ON chunks(symbol_id);
+
+CREATE TABLE IF NOT EXISTS sub_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_symbol_id INTEGER NOT NULL,
+    granularity TEXT NOT NULL CHECK(granularity IN ('function','block','statement')),
+    chunk_text TEXT NOT NULL,
+    line_start INTEGER NOT NULL,
+    line_end INTEGER NOT NULL,
+    token_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_sub_chunks_symbol ON sub_chunks(parent_symbol_id);
 
 CREATE TABLE IF NOT EXISTS file_summaries (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,6 +251,22 @@ class Database:
         )
         self._conn.commit()
 
+        # MGS3 migration: add sub_chunks table for multi-granularity indexing
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS sub_chunks ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "parent_symbol_id INTEGER NOT NULL, "
+            "granularity TEXT NOT NULL CHECK(granularity IN ('function','block','statement')), "
+            "chunk_text TEXT NOT NULL, "
+            "line_start INTEGER NOT NULL, "
+            "line_end INTEGER NOT NULL, "
+            "token_count INTEGER NOT NULL DEFAULT 0)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sub_chunks_symbol ON sub_chunks(parent_symbol_id)"
+        )
+        self._conn.commit()
+
         # Task 6 migration: add query_telemetry table for observability
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS query_telemetry ("
@@ -244,6 +279,51 @@ class Database:
             "leg_sizes TEXT DEFAULT '{}', "
             "thumbs_up INTEGER DEFAULT NULL"
             ")"
+        )
+        self._conn.commit()
+
+        # v2.2 migration: def-use chains (data-flow analysis)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS def_use_edges ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "symbol_id INTEGER NOT NULL, "
+            "var_name TEXT NOT NULL, "
+            "def_line INTEGER NOT NULL, "
+            "use_line INTEGER NOT NULL, "
+            "edge_type TEXT NOT NULL CHECK(edge_type IN ('def', 'use'))"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_def_use_symbol ON def_use_edges(symbol_id)"
+        )
+        self._conn.commit()
+
+        # v2.2 migration: taint flows (semgrep integration)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS taint_flows ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "source_file TEXT NOT NULL, "
+            "source_line INTEGER NOT NULL, "
+            "sink_file TEXT NOT NULL, "
+            "sink_line INTEGER NOT NULL, "
+            "rule_id TEXT NOT NULL, "
+            "severity TEXT NOT NULL DEFAULT 'INFO'"
+            ")"
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_taint_severity ON taint_flows(severity)")
+        self._conn.commit()
+
+        # v2.2 migration: sparse_embeddings inverted index for SPLADE-Code
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS sparse_embeddings (
+                chunk_id INTEGER NOT NULL,
+                token_id INTEGER NOT NULL,
+                weight REAL NOT NULL,
+                PRIMARY KEY (chunk_id, token_id)
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sparse_token ON sparse_embeddings(token_id)"
         )
         self._conn.commit()
 
@@ -450,6 +530,93 @@ class Database:
         )
         self._conn.commit()
         return int(cur.lastrowid or 0)
+
+    # ------------------------------------------------------------------
+    # Sub-symbol chunks (MGS3: multi-granularity sub-symbol indexing)
+    # ------------------------------------------------------------------
+
+    def insert_sub_chunks(self, chunks: list[SubSymbolChunk]) -> list[int]:
+        """Insert sub-symbol chunks. Returns list of inserted IDs."""
+        if not chunks:
+            return []
+        ids: list[int] = []
+        for chunk in chunks:
+            granularity_val = (
+                chunk.granularity.value
+                if hasattr(chunk.granularity, "value")
+                else chunk.granularity
+            )
+            cur = self._conn.execute(
+                "INSERT INTO sub_chunks "
+                "(parent_symbol_id, granularity, chunk_text, line_start, line_end, token_count) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    chunk.parent_symbol_id,
+                    granularity_val,
+                    chunk.chunk_text,
+                    chunk.line_start,
+                    chunk.line_end,
+                    chunk.token_count,
+                ),
+            )
+            ids.append(int(cur.lastrowid or 0))
+        self._conn.commit()
+        return ids
+
+    def get_sub_chunks_for_symbol(
+        self, symbol_id: int, granularity: str | None = None
+    ) -> list[SubSymbolChunk]:
+        """Return sub-chunks for a symbol, optionally filtered by granularity."""
+        from trelix.indexing.multi_granularity import Granularity, SubSymbolChunk
+
+        if granularity:
+            rows = self._conn.execute(
+                "SELECT id, parent_symbol_id, granularity, chunk_text, "
+                "line_start, line_end, token_count "
+                "FROM sub_chunks WHERE parent_symbol_id = ? AND granularity = ?",
+                (symbol_id, granularity),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT id, parent_symbol_id, granularity, chunk_text, "
+                "line_start, line_end, token_count "
+                "FROM sub_chunks WHERE parent_symbol_id = ?",
+                (symbol_id,),
+            ).fetchall()
+        return [
+            SubSymbolChunk(
+                id=int(row[0]),
+                parent_symbol_id=int(row[1]),
+                granularity=Granularity(row[2]),
+                chunk_text=row[3],
+                line_start=int(row[4]),
+                line_end=int(row[5]),
+                token_count=int(row[6]),
+            )
+            for row in rows
+        ]
+
+    def get_sub_chunk_by_id(self, sub_chunk_id: int) -> SubSymbolChunk | None:
+        """Return a single sub-chunk by primary key, or None if not found."""
+        from trelix.indexing.multi_granularity import Granularity, SubSymbolChunk
+
+        row = self._conn.execute(
+            "SELECT id, parent_symbol_id, granularity, chunk_text, "
+            "line_start, line_end, token_count "
+            "FROM sub_chunks WHERE id = ?",
+            (sub_chunk_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return SubSymbolChunk(
+            id=int(row[0]),
+            parent_symbol_id=int(row[1]),
+            granularity=Granularity(row[2]),
+            chunk_text=row[3],
+            line_start=int(row[4]),
+            line_end=int(row[5]),
+            token_count=int(row[6]),
+        )
 
     # ------------------------------------------------------------------
     # File summaries (Phase 2: RAPTOR-style multi-granularity indexing)
@@ -1275,6 +1442,92 @@ class Database:
                 "leg_sizes": json.loads(row[6] or "{}"),
                 "thumbs_up": row[7],
             }
+            for row in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # Def-use chains (v2.2 data-flow analysis)
+    # ------------------------------------------------------------------
+
+    def insert_def_use_edges(self, edges: list[DefUseEdge]) -> None:
+        """Bulk-insert def-use edges for a symbol."""
+        if not edges:
+            return
+        self._conn.executemany(
+            "INSERT INTO def_use_edges (symbol_id, var_name, def_line, use_line, edge_type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(e.symbol_id, e.var_name, e.def_line, e.use_line, e.edge_type) for e in edges],
+        )
+        self._conn.commit()
+
+    def get_data_flows(self, symbol_id: int) -> list[DefUseEdge]:
+        """Return all def-use edges for a symbol."""
+        from trelix.analysis.defuse import DefUseEdge
+
+        rows = self._conn.execute(
+            "SELECT symbol_id, var_name, def_line, use_line, edge_type "
+            "FROM def_use_edges WHERE symbol_id = ? ORDER BY def_line",
+            (symbol_id,),
+        ).fetchall()
+        return [
+            DefUseEdge(
+                symbol_id=int(row[0]),
+                var_name=row[1],
+                def_line=int(row[2]),
+                use_line=int(row[3]),
+                edge_type=row[4],
+            )
+            for row in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # Taint flows (v2.2 semgrep integration)
+    # ------------------------------------------------------------------
+
+    def insert_taint_flows(self, flows: list[TaintFlow]) -> None:
+        """Bulk-insert taint flows from a semgrep scan."""
+        if not flows:
+            return
+        self._conn.executemany(
+            "INSERT INTO taint_flows "
+            "(source_file, source_line, sink_file, sink_line, rule_id, severity) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (f.source_file, f.source_line, f.sink_file, f.sink_line, f.rule_id, f.severity)
+                for f in flows
+            ],
+        )
+        self._conn.commit()
+
+    def get_taint_flows(
+        self,
+        severity: str | None = None,
+        limit: int = 50,
+    ) -> list[TaintFlow]:
+        """Return taint flows, optionally filtered by severity."""
+        from trelix.analysis.taint import TaintFlow
+
+        if severity:
+            rows = self._conn.execute(
+                "SELECT source_file, source_line, sink_file, sink_line, rule_id, severity "
+                "FROM taint_flows WHERE severity = ? ORDER BY severity DESC LIMIT ?",
+                (severity, limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT source_file, source_line, sink_file, sink_line, rule_id, severity "
+                "FROM taint_flows ORDER BY severity DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            TaintFlow(
+                source_file=row[0],
+                source_line=int(row[1]),
+                sink_file=row[2],
+                sink_line=int(row[3]),
+                rule_id=row[4],
+                severity=row[5],
+            )
             for row in rows
         ]
 

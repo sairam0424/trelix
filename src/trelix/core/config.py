@@ -130,6 +130,16 @@ class ParserConfig(BaseSettings):
     extract_calls: bool = True
     extract_imports: bool = True
     max_symbol_lines: int = 500
+    # Data-flow analysis -- def-use chain extraction (no new deps)
+    dataflow_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_PARSER_DATAFLOW",
+    )
+    # Taint analysis -- requires pip install trelix[taint]
+    taint_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_PARSER_TAINT",
+    )
 
 
 class ChunkerConfig(BaseSettings):
@@ -144,6 +154,38 @@ class ChunkerConfig(BaseSettings):
     contextual: bool = False
     contextual_model: str = "gpt-4o-mini"
     contextual_max_tokens: int = 100
+
+    # Multi-granularity sub-symbol indexing (MGS3, off by default)
+    multi_granularity_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_CHUNKER_MULTI_GRANULARITY",
+    )
+    multi_granularity_levels: list[str] = Field(
+        default_factory=lambda: ["block", "statement"],
+        alias="TRELIX_CHUNKER_GRANULARITY_LEVELS",
+    )
+
+
+class SparseConfig(BaseSettings):
+    """Configuration for learned sparse embeddings (SPLADE-Code)."""
+
+    model_config = SettingsConfigDict(env_prefix="TRELIX_SPARSE_")
+
+    model: str = Field(
+        default="naver-splab/splade-code-distil",
+        alias="TRELIX_SPARSE_MODEL",
+    )
+    top_k_tokens: int = Field(
+        default=128,
+        ge=16,
+        le=512,
+        alias="TRELIX_SPARSE_TOP_K_TOKENS",
+    )
+    batch_size: int = Field(
+        default=16,
+        ge=1,
+        alias="TRELIX_SPARSE_BATCH_SIZE",
+    )
 
 
 class EmbedderConfig(BaseSettings):
@@ -349,6 +391,17 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_FILE_SUMMARY_TOP_K",
     )
 
+    # Sparse+dense hybrid retrieval leg (SPLADE-Code, 6th leg — off by default)
+    sparse_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_SPARSE",
+    )
+    top_k_sparse: int = Field(
+        default=20,
+        ge=1,
+        alias="TRELIX_RETRIEVAL_SPARSE_TOP_K",
+    )
+
     # HyDE fallback — for no-LLM Tier 1 queries, generate a synthetic snippet
     # using the LLM before embedding (requires LLM config).
     # When the planner already set hyde_snippet, this is skipped (no double-call).
@@ -392,10 +445,38 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR",
     )
 
+    # Agentic ReAct loop — multi-turn retrieve+observe+synthesize
+    agentic_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_AGENTIC",
+    )
+    agent_max_turns: int = Field(
+        default=8,
+        ge=1,
+        le=20,
+        alias="TRELIX_RETRIEVAL_AGENT_MAX_TURNS",
+    )
+    agent_token_budget: int = Field(
+        default=6000,
+        ge=1000,
+        alias="TRELIX_RETRIEVAL_AGENT_TOKEN_BUDGET",
+    )
+
     # GraphRAG map-reduce synthesis
     graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")
     graph_rag_threshold_tokens: int = 8000
     graph_rag_threshold_results: int = 20
+
+    # Sub-chunk search leg (MGS3 block/statement granularity, off by default)
+    sub_chunk_search_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_SUB_CHUNK",
+    )
+    top_k_sub_chunk: int = Field(
+        default=10,
+        ge=1,
+        alias="TRELIX_RETRIEVAL_SUB_CHUNK_TOP_K",
+    )
 
     # ── Query embedding cache ─────────────────────────────────────────────────
     # Caches embed_query() results in-memory (LRU, per-Retriever session).
@@ -625,6 +706,7 @@ class IndexConfig(BaseSettings):
     store: StoreConfig = Field(default_factory=StoreConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    sparse: SparseConfig = Field(default_factory=SparseConfig)
 
     # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
     # Requires LLM API access. Off by default — zero cost when disabled.

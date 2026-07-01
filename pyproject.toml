@@ -7,7 +7,7 @@ packages = ["src/trelix"]
 
 [project]
 name = "trelix"
-version = "2.1.0"
+version = "2.2.0"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -81,6 +81,10 @@ bge-code = [
 nomic-code = [
     "sentence-transformers>=3.0.0",  # already in [local], duplicated for clarity
 ]
+sparse = [
+    "transformers>=4.40.0",
+    "torch>=2.2.0",
+]
 qdrant = [
     "qdrant-client>=1.9.0",           # Qdrant HNSW vector backend (optional)
 ]
@@ -110,6 +114,9 @@ dev = [
 binary = [
     "pyinstaller>=6.0.0",
     "sentence-transformers>=3.0.0",   # local embedder bundled into the binary
+]
+taint = [
+    "semgrep>=1.60.0",
 ]
 anthropic = ["anthropic>=0.40.0"]
 bedrock   = ["boto3>=1.35.0"]

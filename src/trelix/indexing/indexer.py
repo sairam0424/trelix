@@ -342,6 +342,26 @@ class Indexer:
             self._report_progress(3, "Embedding chunks…", 0.0, stats)
             asyncio.run(self._batch_embed_and_store_async(pending, stats))
 
+        # ── Sparse embedding phase (SPLADE-Code) — runs when sparse_enabled=True ──
+        if self.config.retrieval.sparse_enabled and pending:
+            try:
+                from trelix.embedder.sparse import SparseEmbedder
+                from trelix.store.sparse_store import SparseStore
+
+                sparse_emb = SparseEmbedder(
+                    model_name=self.config.sparse.model,
+                    top_k=self.config.sparse.top_k_tokens,
+                )
+                sparse_store = SparseStore(self.config.db_path_absolute)
+                texts = [pc.chunk_text for pc in pending]
+                sparse_vecs = sparse_emb.embed(texts)
+                pairs = [(int(pc.chunk_id), vec) for pc, vec in zip(pending, sparse_vecs) if vec]
+                if pairs:
+                    sparse_store.upsert_batch(pairs)
+                    logger.info("Sparse embedding: indexed %d chunks", len(pairs))
+            except Exception as exc:
+                logger.debug("Sparse embedding phase failed (non-fatal): %s", exc)
+
         # ── Phase 4: cross-file resolution ──────────────────────────────────
         self._report_progress(4, "Resolving cross-file references…", 0.0, stats)
         resolved_calls = self.db.resolve_cross_file_calls()
@@ -511,6 +531,23 @@ class Indexer:
         if parse_result.type_edges:
             self._store_type_edges(parse_result.type_edges, local_to_db)
 
+        # ── Data-flow extraction (def-use chains) ─────────────────────
+        # Optional, zero cost when disabled. Runs after symbols are committed.
+        if self.config.parser.dataflow_enabled:
+            try:
+                from trelix.analysis.defuse import DataFlowExtractor
+
+                extractor = DataFlowExtractor()
+                for sym in parse_result.symbols:
+                    if sym.id is not None:
+                        edges = extractor.extract(sym)
+                        if edges:
+                            self.db.insert_def_use_edges(edges)
+            except Exception as exc:
+                logger.debug(
+                    "DataFlowExtractor failed for %s (non-fatal): %s", pf.file.rel_path, exc
+                )
+
         # ── Chunk ────────────────────────────────────────────────────────
         imports = self.db.get_imports_for_file(file_id)
         parent_map = {s.id: s for s in parse_result.symbols if s.id is not None}
@@ -576,6 +613,33 @@ class Indexer:
                     summary_row_id,
                     len(summary),
                 )
+
+        # ── Phase 2.6: multi-granularity sub-chunk extraction (MGS3) ──────────
+        # Runs only when multi_granularity_enabled=True. Failures are non-fatal —
+        # a crash inside MultiGranularityChunker returns [] and does not abort indexing.
+        if self.config.chunker.multi_granularity_enabled:
+            try:
+                from trelix.indexing.multi_granularity import (
+                    Granularity,
+                    MultiGranularityChunker,
+                )
+
+                mg_chunker = MultiGranularityChunker()
+                levels = [Granularity(lvl) for lvl in self.config.chunker.multi_granularity_levels]
+                for sym in parse_result.symbols:
+                    if sym.id is None:
+                        continue
+                    sub_chunks = mg_chunker.extract_sub_chunks(sym, granularities=levels)
+                    if not sub_chunks:
+                        continue
+                    ids = self.db.insert_sub_chunks(sub_chunks)
+                    texts = [sc.chunk_text for sc in sub_chunks]
+                    embeddings = self.embedder.embed(texts)
+                    for sc_id, emb in zip(ids, embeddings):
+                        if emb:
+                            self.vector_store.upsert_sub_chunk_embedding(sc_id, emb)
+            except Exception as exc:
+                logger.debug("Multi-granularity indexing failed (non-fatal): %s", exc)
 
         return pending
 

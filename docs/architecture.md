@@ -876,3 +876,44 @@ All flags live in `RetrievalConfig` and are readable from environment variables.
 
 All five flags are independent and compose freely. The safe upgrade path is to enable them
 one at a time and validate with `trelix eval --golden` before enabling the next.
+
+## v2.2.0 Architecture Additions
+
+### 7-Leg Retrieval Pipeline (v2.2.0)
+
+The pipeline now supports up to 7 independent RRF legs:
+
+| Leg | Source tag | Enable flag | Description |
+|-----|-----------|-------------|-------------|
+| 1 | `vector` | always on | HNSW ANN via sqlite-vec |
+| 2 | `bm25` | always on | FTS5 keyword search |
+| 3 | `grep` | always on | Exact/regex match |
+| 4 | `file_summary` | TRELIX_RETRIEVAL_FILE_SUMMARY_LEG | RAPTOR file-level summaries |
+| 5 | `graph_search` | TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED | CodeGraph BFS expansion |
+| 6 | `sparse` | TRELIX_RETRIEVAL_SPARSE | SPLADE-Code learned sparse |
+| 7 | `sub_chunk` | TRELIX_RETRIEVAL_SUB_CHUNK | Block/statement granularity |
+
+All legs are fused via RRF → graph expansion → PageRank boost → reranker.
+
+### Agentic ReAct Loop
+
+Wraps the Retriever+Synthesizer in a multi-turn loop:
+- Thought: LLM reasons about what to look up next
+- Action: one of retrieve/grep/get_symbol/done (OpenAI tool_call format)
+- Observation: action result injected back as context
+- Loop until 'done' action or agent_max_turns reached
+- TurnHistory compressed via HistoryCompressor to stay within agent_token_budget
+
+### Data-Flow Analysis Layer
+
+Two-tier program analysis on top of the AST:
+- Tier 1 (def-use): DataFlowExtractor — tree-sitter walk, intra-procedural, zero new deps
+- Tier 2 (taint): TaintAnalyzer — Semgrep CLI wrapper, inter-procedural, requires trelix[taint]
+- Results stored in def_use_edges + taint_flows SQLite tables
+
+### Sparse Embedding Store
+
+SparseStore: SQLite inverted index (chunk_id, token_id, weight).
+Search via dot-product SQL aggregation: SUM(doc_weight × query_weight) per chunk.
+SPLADE-Code model produces {token_id: weight} at index time.
+Handles BM25's identifier subword-fragmentation failure mode.

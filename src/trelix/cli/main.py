@@ -255,6 +255,9 @@ def ask(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query: str = typer.Argument(..., help="Question to answer about the codebase"),
     provider: str = typer.Option("local", help=_PROVIDER_HELP),
+    agentic: Annotated[
+        bool, typer.Option("--agentic", help="Enable multi-turn agentic ReAct loop.")
+    ] = False,
 ) -> None:
     """Ask a question — retrieval + LLM synthesis (requires OPENAI_API_KEY for full synthesis)"""
     _setup_logging(False)
@@ -282,7 +285,19 @@ def ask(
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
+    # --agentic flag overrides the config field
+    if agentic:
+        config.retrieval.agentic_enabled = True
+
     try:
+        if config.retrieval.agentic_enabled:
+            from trelix.agent import AgentLoop
+
+            agent_loop = AgentLoop(config)
+            answer = agent_loop.run(query)
+            console.print(answer)
+            return
+
         retriever = Retriever(config)
     except Exception as exc:
         err_console.print(f"[red]Retrieval failed:[/red] {exc}")
@@ -955,6 +970,82 @@ def eval(
     table.add_row("Recall@10", f"{metrics['recall@10']:.4f}")
     table.add_row("MRR", f"{metrics['mrr']:.4f}")
     table.add_row("Queries evaluated", str(int(metrics["n_queries"])))
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# taint
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def taint(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")] = ".",
+    tier: Annotated[
+        str, typer.Option("--tier", "-t", help="Taint tier: default|intrafile|interfile")
+    ] = "default",
+    severity: Annotated[
+        str, typer.Option("--severity", "-s", help="Filter: ERROR|WARNING|INFO")
+    ] = "",
+    json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON.")] = False,
+) -> None:
+    """Run Semgrep taint analysis and show source->sink flows.
+
+    Requires: pip install trelix[taint]
+    """
+    import json as _json
+
+    from trelix.analysis.taint import TaintAnalyzer
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
+
+    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    analyzer = TaintAnalyzer(repo_path=str(Path(repo).resolve()), tier=tier)
+    with console.status("Running Semgrep taint analysis..."):
+        flows = analyzer.run()
+
+    if not flows:
+        console.print(
+            "[yellow]No taint flows found. "
+            "Ensure semgrep is installed: pip install trelix[taint][/yellow]"
+        )
+        return
+
+    # Persist to DB
+    db = Database(config.db_path_absolute)
+    db.insert_taint_flows(flows)
+
+    filtered = [f for f in flows if not severity or f.severity == severity.upper()]
+
+    if json_output:
+        console.print(
+            _json.dumps(
+                [
+                    {
+                        "rule": f.rule_id,
+                        "severity": f.severity,
+                        "source": f"{f.source_file}:{f.source_line}",
+                        "sink": f"{f.sink_file}:{f.sink_line}",
+                    }
+                    for f in filtered
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    table = Table(title=f"Taint Flows ({len(filtered)} found)")
+    table.add_column("Severity", style="bold red")
+    table.add_column("Rule")
+    table.add_column("Source")
+    table.add_column("Sink")
+    for f in filtered[:50]:
+        table.add_row(
+            f.severity,
+            f.rule_id,
+            f"{f.source_file}:{f.source_line}",
+            f"{f.sink_file}:{f.sink_line}",
+        )
     console.print(table)
 
 
