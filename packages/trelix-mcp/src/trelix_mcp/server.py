@@ -65,6 +65,50 @@ def resource_symbol_source(repo_path: str, qualified_name: str) -> str:
     return get_symbol_source(repo_path, qualified_name)
 
 
+# ---------------------------------------------------------------------------
+# MCP Prompts (user-controlled reusable LLM interaction templates)
+# ---------------------------------------------------------------------------
+
+
+@mcp.prompt("trelix-search")
+def prompt_search(query: str, repo_path: str) -> list[dict[str, str]]:
+    """Structured prompt for semantic code search using trelix.
+
+    Args:
+        query: Natural-language or keyword search query.
+        repo_path: Absolute path to the repository root.
+    """
+    from trelix_mcp.prompts import build_search_prompt
+
+    return build_search_prompt(query=query, repo_path=repo_path)
+
+
+@mcp.prompt("trelix-explain")
+def prompt_explain(qualified_name: str, repo_path: str) -> list[dict[str, str]]:
+    """Structured prompt for explaining a specific code symbol.
+
+    Args:
+        qualified_name: Fully-qualified symbol name, e.g. ``AuthService.login``.
+        repo_path: Absolute path to the repository root.
+    """
+    from trelix_mcp.prompts import build_explain_prompt
+
+    return build_explain_prompt(qualified_name=qualified_name, repo_path=repo_path)
+
+
+@mcp.prompt("trelix-blast-radius")
+def prompt_blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, str]]:
+    """Structured prompt for impact analysis before refactoring a symbol.
+
+    Args:
+        symbol_name: Name or qualified name of the symbol to analyse.
+        repo_path: Absolute path to the repository root.
+    """
+    from trelix_mcp.prompts import build_blast_radius_prompt
+
+    return build_blast_radius_prompt(symbol_name=symbol_name, repo_path=repo_path)
+
+
 @mcp.tool()
 def search_code(query: str, repo_path: str, k: int = 10) -> list[dict[str, Any]]:
     """Search a codebase for symbols semantically relevant to *query*.
