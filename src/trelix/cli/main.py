@@ -1129,6 +1129,40 @@ def review(
 
     if not comments:
         console.print("[green]No issues found.[/green]")
+
+# ---------------------------------------------------------------------------
+# search-all (federated search)
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="search-all")
+def search_all(
+    query: Annotated[str, typer.Argument(help="Search query.")],
+    config_file: Annotated[
+        str | None, typer.Option("--config", help="Path to federation.json")
+    ] = None,
+    k: Annotated[int, typer.Option("--k", help="Results per repo.")] = 10,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Search across all registered repos (federated search)."""
+    import json as _json
+
+    from trelix.federation.registry import RepoRegistry
+    from trelix.federation.retriever import FederatedRetriever
+
+    registry = RepoRegistry.load(config_file)
+    if not registry.list():
+        console.print(
+            "[yellow]No repos registered. Use: trelix federation add <alias> <path>[/yellow]"
+        )
+        return
+
+    fed = FederatedRetriever(registry)
+    with console.status(f"Searching {len(registry.list())} repos..."):
+        results = fed.retrieve(query, k=k)
+
+    if not results:
+        console.print("[yellow]No results found.[/yellow]")
         return
 
     if json_output:
@@ -1161,6 +1195,65 @@ def review(
             f"[{color}]{c.severity}[/{color}]",
             c.comment,
         )
+    table = Table(title=f"Federated Search: '{query}' ({len(results)} results)")
+    table.add_column("Repo", style="dim")
+    table.add_column("File")
+    table.add_column("Symbol")
+    table.add_column("Score", justify="right")
+    for r in results[:20]:
+        repo_tag = r.source.split(":")[0] if ":" in r.source else ""
+        table.add_row(repo_tag, r.file.rel_path, r.symbol.qualified_name, f"{r.score:.4f}")
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# federation sub-app
+# ---------------------------------------------------------------------------
+
+federation_app = typer.Typer(help="Manage federated repo registry.")
+app.add_typer(federation_app, name="federation")
+
+
+@federation_app.command("add")
+def federation_add(
+    alias: Annotated[str, typer.Argument(help="Short alias for the repo.")],
+    path: Annotated[str, typer.Argument(help="Absolute path to the repo root.")],
+    weight: Annotated[
+        float, typer.Option("--weight", help="RRF weight (default 1.0).")
+    ] = 1.0,
+    config_file: Annotated[str | None, typer.Option("--config")] = None,
+) -> None:
+    """Register a repo for federated search."""
+    from trelix.federation.registry import RepoRegistry
+
+    registry = RepoRegistry.load(config_file)
+    try:
+        registry.add(alias, path, weight)
+        registry.save()
+        console.print(f"[green]Registered '{alias}' -> {path}[/green]")
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+
+@federation_app.command("list")
+def federation_list(
+    config_file: Annotated[str | None, typer.Option("--config")] = None,
+) -> None:
+    """List all registered repos."""
+    from trelix.federation.registry import RepoRegistry
+
+    registry = RepoRegistry.load(config_file)
+    entries = registry.list()
+    if not entries:
+        console.print("[yellow]No repos registered.[/yellow]")
+        return
+    table = Table(title="Registered Repos")
+    table.add_column("Alias")
+    table.add_column("Path")
+    table.add_column("Weight", justify="right")
+    for e in entries:
+        table.add_row(e.alias, e.path, str(e.weight))
     console.print(table)
 
 
