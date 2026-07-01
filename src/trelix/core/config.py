@@ -130,6 +130,16 @@ class ParserConfig(BaseSettings):
     extract_calls: bool = True
     extract_imports: bool = True
     max_symbol_lines: int = 500
+    # Data-flow analysis -- def-use chain extraction (no new deps)
+    dataflow_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_PARSER_DATAFLOW",
+    )
+    # Taint analysis -- requires pip install trelix[taint]
+    taint_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_PARSER_TAINT",
+    )
 
 
 class ChunkerConfig(BaseSettings):
