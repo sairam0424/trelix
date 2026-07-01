@@ -107,6 +107,13 @@ class Retriever:
         # Debug output dir: <repo_root>/.trelix/debug/
         self._debug_dir = Path(config.repo_path) / ".trelix" / "debug"
 
+        # Memoized SparseEmbedder — instantiated at most once per Retriever.
+        # _run_subquery_legs() is called once per sub-query; without this slot the
+        # SparseEmbedder lazy-loads the SPLADE model (several seconds via
+        # from_pretrained) on EVERY sub-query call when sparse_enabled=True.
+        # Initialised lazily on first use so the import remains optional.
+        self._sparse_embedder: object | None = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -620,7 +627,7 @@ len(sub_chunk_results),
             for hint in hints:
                 out["grep"].extend(grep_search(self.db, hint, k=cfg.top_k_grep))
 
-        # Sparse leg (SPLADE-Code, 6th leg — off by default)
+        # Sparse leg (SPLADE-Code, 7th leg — off by default)
         out["sparse"] = []
         if cfg.sparse_enabled:
             try:
@@ -628,10 +635,14 @@ len(sub_chunk_results),
                 from trelix.retrieval.sparse_search import sparse_search
                 from trelix.store.sparse_store import SparseStore
 
-                sparse_emb = SparseEmbedder(
-                    model_name=self.config.sparse.model,
-                    top_k=self.config.sparse.top_k_tokens,
-                )
+                # Reuse the memoized SparseEmbedder so the SPLADE model is only
+                # loaded once per Retriever instance, not once per sub-query call.
+                if self._sparse_embedder is None:
+                    self._sparse_embedder = SparseEmbedder(
+                        model_name=self.config.sparse.model,
+                        top_k=self.config.sparse.top_k_tokens,
+                    )
+                sparse_emb: SparseEmbedder = self._sparse_embedder  # type: ignore[assignment]
                 query_sparse = sparse_emb.embed_query(sq.semantic_query)
                 if query_sparse:
                     sparse_store = SparseStore(self.config.db_path_absolute)
