@@ -145,6 +145,16 @@ class ChunkerConfig(BaseSettings):
     contextual_model: str = "gpt-4o-mini"
     contextual_max_tokens: int = 100
 
+    # Multi-granularity sub-symbol indexing (MGS3, off by default)
+    multi_granularity_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_CHUNKER_MULTI_GRANULARITY",
+    )
+    multi_granularity_levels: list[str] = Field(
+        default_factory=lambda: ["block", "statement"],
+        alias="TRELIX_CHUNKER_GRANULARITY_LEVELS",
+    )
+
 
 class EmbedderConfig(BaseSettings):
     """
@@ -396,6 +406,17 @@ class RetrievalConfig(BaseSettings):
     graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")
     graph_rag_threshold_tokens: int = 8000
     graph_rag_threshold_results: int = 20
+
+    # Sub-chunk search leg (MGS3 block/statement granularity, off by default)
+    sub_chunk_search_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_SUB_CHUNK",
+    )
+    top_k_sub_chunk: int = Field(
+        default=10,
+        ge=1,
+        alias="TRELIX_RETRIEVAL_SUB_CHUNK_TOP_K",
+    )
 
     # ── Query embedding cache ─────────────────────────────────────────────────
     # Caches embed_query() results in-memory (LRU, per-Retriever session).

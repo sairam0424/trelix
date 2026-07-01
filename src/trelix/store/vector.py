@@ -74,6 +74,20 @@ class BaseVectorStore(ABC):
         This method filters to negative chunk_ids and maps back to file_id.
         """
 
+    @abstractmethod
+    def upsert_sub_chunk_embedding(self, sub_chunk_id: int, embedding: list[float]) -> None:
+        """Store embedding for a sub-symbol chunk.
+
+        Uses chunk_id = sub_chunk_id + _SUB_CHUNK_OFFSET sentinel to avoid collision
+        with regular chunk IDs (positive) and file-summary IDs (negative).
+        """
+
+    @abstractmethod
+    def search_sub_chunks(
+        self, query_embedding: list[float], k: int
+    ) -> list[tuple[int, float]]:
+        """Search sub-chunk embeddings only. Returns (sub_chunk_id, score) pairs."""
+
 
 # ---------------------------------------------------------------------------
 # SQLite backend (default)
@@ -340,6 +354,40 @@ class SQLiteVectorStore(BaseVectorStore):
             dist = sum((a - b) ** 2 for a, b in zip(q, emb)) ** 0.5
             score = 1.0 / (1.0 + dist)
             scored.append((-int(chunk_id), score))  # chunk_id = -file_id, so file_id = -chunk_id
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:k]
+
+    # Sub-chunk sentinel: stored as chunk_id + _SUB_CHUNK_OFFSET to avoid collision
+    # with regular chunk IDs (positive small ints) and summary IDs (negative ints).
+    _SUB_CHUNK_OFFSET = 10_000_000
+
+    def upsert_sub_chunk_embedding(self, sub_chunk_id: int, embedding: list[float]) -> None:
+        """Store sub-chunk embedding using chunk_id = sub_chunk_id + _SUB_CHUNK_OFFSET."""
+        self.upsert(chunk_id=sub_chunk_id + self._SUB_CHUNK_OFFSET, embedding=embedding)
+
+    def search_sub_chunks(
+        self, query_embedding: list[float], k: int
+    ) -> list[tuple[int, float]]:
+        """Search sub-chunk embeddings only. Returns (sub_chunk_id, score) pairs."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT chunk_id, embedding FROM chunk_embeddings WHERE chunk_id >= ?",
+                (self._SUB_CHUNK_OFFSET,),
+            ).fetchall()
+        if not rows:
+            return []
+        q = query_embedding
+        scored: list[tuple[int, float]] = []
+        for row in rows:
+            chunk_id, emb_blob = row
+            if isinstance(emb_blob, bytes):
+                n = len(emb_blob) // 4
+                emb = list(struct.unpack(f"{n}f", emb_blob))
+            else:
+                emb = list(emb_blob)
+            dist = sum((a - b) ** 2 for a, b in zip(q, emb)) ** 0.5
+            score = 1.0 / (1.0 + dist)
+            scored.append((int(chunk_id) - self._SUB_CHUNK_OFFSET, score))
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:k]
 
