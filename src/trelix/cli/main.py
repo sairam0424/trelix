@@ -1050,6 +1050,96 @@ def taint(
 
 
 # ---------------------------------------------------------------------------
+# review
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def review(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")] = ".",
+    diff: Annotated[
+        str | None,
+        typer.Option("--diff", "-d", help="Path to .diff file. If omitted, runs git diff."),
+    ] = None,
+    base: Annotated[str, typer.Option("--base", help="Base git ref for diff.")] = "HEAD~1",
+    head: Annotated[str, typer.Option("--head", help="Head git ref for diff.")] = "HEAD",
+    json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON.")] = False,
+    max_files: Annotated[int, typer.Option("--max-files", help="Max files to review.")] = 10,
+) -> None:
+    """Review a git diff using trelix retrieval-augmented analysis."""
+    import json as _json
+
+    from trelix.core.config import IndexConfig
+    from trelix.review.diff_parser import DiffParser
+    from trelix.review.reviewer import DiffReviewer
+
+    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    parser = DiffParser()
+
+    with console.status("Parsing diff..."):
+        if diff:
+            diff_text = Path(diff).read_text()
+            hunks = parser.parse(diff_text)
+        else:
+            hunks = parser.from_git(str(Path(repo).resolve()), base=base, head=head)
+
+    if not hunks:
+        console.print("[yellow]No changes found in diff.[/yellow]")
+        return
+
+    # Limit to max_files unique files
+    seen_files: set[str] = set()
+    filtered = []
+    for h in hunks:
+        if h.file_path not in seen_files:
+            seen_files.add(h.file_path)
+        if len(seen_files) <= max_files:
+            filtered.append(h)
+
+    console.print(f"Reviewing {len(filtered)} hunks across {len(seen_files)} files...")
+
+    reviewer = DiffReviewer(config)
+    with console.status("Retrieving context and generating review..."):
+        comments = reviewer.review(filtered)
+
+    if not comments:
+        console.print("[green]No issues found.[/green]")
+        return
+
+    if json_output:
+        console.print(
+            _json.dumps(
+                [
+                    {
+                        "file": c.file_path,
+                        "lines": f"{c.line_start}-{c.line_end}",
+                        "severity": c.severity,
+                        "comment": c.comment,
+                    }
+                    for c in comments
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    table = Table(title=f"Review Results ({len(comments)} comments)")
+    table.add_column("File", style="dim")
+    table.add_column("Lines")
+    table.add_column("Severity", style="bold")
+    table.add_column("Comment", max_width=80)
+    for c in comments:
+        color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
+        table.add_row(
+            c.file_path,
+            f"{c.line_start}-{c.line_end}",
+            f"[{color}]{c.severity}[/{color}]",
+            c.comment,
+        )
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
