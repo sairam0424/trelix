@@ -103,7 +103,9 @@ class AgentLoop:
         user_content = f"Question: {query}\n\n"
         if history_text:
             user_content += f"Previous turns:\n{history_text}\n\n"
-        user_content += "What is your next action? Think step by step, then call the appropriate tool."
+        user_content += (
+            "What is your next action? Think step by step, then call the appropriate tool."
+        )
 
         messages = [ChatMessage(role="user", content=user_content)]
         client = self._get_client()
@@ -172,7 +174,8 @@ class AgentLoop:
         if not results:
             return Observation(f"No matches for '{pattern}'.", "grep", False)
         lines = [
-            f"{r.file.rel_path}:{r.symbol.line_start} — {r.symbol.name}" for r in results[:max_results]
+            f"{r.file.rel_path}:{r.symbol.line_start} — {r.symbol.name}"
+            for r in results[:max_results]
         ]
         return Observation("\n".join(lines), "grep", True)
 
@@ -182,7 +185,8 @@ class AgentLoop:
         db = Database(self._config.db_path_absolute)
         symbols = db.get_symbol_by_name(qualified_name.split(".")[-1])
         exact = [s for s in symbols if s.qualified_name == qualified_name]
-        sym = (exact or symbols[:1] or [None])[0]
+        candidates = exact or symbols[:1]
+        sym = candidates[0] if candidates else None
         if sym is None:
             return Observation(f"Symbol '{qualified_name}' not found.", "get_symbol", False)
         return Observation(f"```\n{sym.body}\n```", "get_symbol", True)

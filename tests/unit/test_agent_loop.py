@@ -4,9 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
-from trelix.agent.actions import ActionType, AgentAction, Observation, Turn
 from trelix.agent.loop import AgentLoop
 
 
