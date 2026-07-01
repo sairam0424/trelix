@@ -5,12 +5,13 @@ Produces {token_id: weight} sparse vectors using a SPLADE-variant model.
 High weights indicate which vocabulary tokens are most important for a text.
 At search time, dot-product over overlapping tokens provides relevance scores.
 
-Research basis: SPLADE-Code (Lupart et al., NAVER Labs Europe, arXiv:2603.22008, 3-0 vote).
+Research basis: SPLADE-Code (Lupart et al., NAVER Labs Europe, arXiv:2603.22008).
 Addresses BM25's failures on code: identifier subword fragmentation and
 NL/code vocabulary mismatch.
 
 Requires: pip install trelix[sparse]  (installs transformers + torch)
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,6 +23,7 @@ logger = logging.getLogger("trelix.embedder.sparse")
 try:
     import torch  # noqa: F401
     from transformers import AutoModelForMaskedLM, AutoTokenizer  # noqa: F401
+
     _TORCH_AVAILABLE = True
 except ImportError:
     _TORCH_AVAILABLE = False
@@ -34,7 +36,8 @@ class SparseEmbedder:
     Returns sparse {token_id: weight} vectors. Only the top_k highest-weight
     tokens are kept to control index size.
 
-    Usage:
+    Usage::
+
         embedder = SparseEmbedder("naver-splab/splade-code-distil", top_k=128)
         sparse_vecs = embedder.embed(["def login(user, pw): ...", "..."])
         # Returns: [{token_id: weight, ...}, ...]
@@ -59,6 +62,7 @@ class SparseEmbedder:
             return False
         try:
             from transformers import AutoModelForMaskedLM, AutoTokenizer
+
             self._tokenizer = AutoTokenizer.from_pretrained(self._model_name)
             self._model = AutoModelForMaskedLM.from_pretrained(self._model_name)
             self._model.eval()
@@ -72,7 +76,8 @@ class SparseEmbedder:
         """
         Embed a batch of texts as sparse vectors.
 
-        Returns list of {token_id: weight} dicts. Returns [{} * len(texts)] on failure.
+        Returns list of {token_id: weight} dicts.
+        Returns [{} * len(texts)] on failure.
         """
         if not texts:
             return []
@@ -81,8 +86,8 @@ class SparseEmbedder:
 
         try:
             import torch
+
             results: list[dict[int, float]] = []
-            # Process in batch
             inputs = self._tokenizer(
                 texts,
                 return_tensors="pt",
