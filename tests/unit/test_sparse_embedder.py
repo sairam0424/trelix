@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 class TestSparseEmbedder:
     def test_import_without_torch(self) -> None:
@@ -14,6 +12,7 @@ class TestSparseEmbedder:
 
     def test_embed_returns_sparse_dicts_when_model_mocked(self) -> None:
         import torch
+
         from trelix.embedder.sparse import SparseEmbedder
 
         mock_model = MagicMock()
@@ -52,6 +51,7 @@ class TestSparseEmbedder:
 
     def test_embed_query_returns_dict(self) -> None:
         import torch
+
         from trelix.embedder.sparse import SparseEmbedder
 
         mock_model = MagicMock()
