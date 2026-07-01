@@ -8,6 +8,7 @@ cross-function tracking. For cross-function taint, see taint.py.
 Research basis: CodeQL data-flow documentation (3-0 adversarial vote):
 "nodes represent values at runtime, edges represent value movement."
 """
+
 from __future__ import annotations
 
 import logging
@@ -18,16 +19,18 @@ from trelix.core.models import Symbol
 logger = logging.getLogger("trelix.analysis.defuse")
 
 # Tree-sitter node types for assignments and identifiers (Python-focused)
-_ASSIGNMENT_TYPES: frozenset[str] = frozenset([
-    "assignment",           # x = 1
-    "augmented_assignment",  # x += 1
-    "named_expression",     # walrus :=
-    "for_statement",        # for x in ...
-    "with_statement",       # with open() as x
-    "import_statement",     # import x
-    "import_from_statement",
-    "parameters",           # function parameters
-])
+_ASSIGNMENT_TYPES: frozenset[str] = frozenset(
+    [
+        "assignment",  # x = 1
+        "augmented_assignment",  # x += 1
+        "named_expression",  # walrus :=
+        "for_statement",  # for x in ...
+        "with_statement",  # with open() as x
+        "import_statement",  # import x
+        "import_from_statement",
+        "parameters",  # function parameters
+    ]
+)
 
 
 @dataclass
@@ -42,8 +45,8 @@ class DefUseEdge:
 
     symbol_id: int
     var_name: str
-    def_line: int   # line of the assignment
-    use_line: int   # line of the read (same as def_line for pure defs)
+    def_line: int  # line of the assignment
+    use_line: int  # line of the read (same as def_line for pure defs)
     edge_type: str  # "def" | "use"
 
 
@@ -103,18 +106,18 @@ class DataFlowExtractor:
                         start_byte: int = getattr(child, "start_byte", 0)
                         end_byte: int = getattr(child, "end_byte", 0)
                         start_point: tuple[int, int] = getattr(child, "start_point", (0, 0))
-                        var_name = body[start_byte:end_byte].decode(
-                            "utf-8", errors="ignore"
-                        )
+                        var_name = body[start_byte:end_byte].decode("utf-8", errors="ignore")
                         line = start_point[0] + symbol.line_start
                         defined_vars[var_name] = line
-                        edges.append(DefUseEdge(
-                            symbol_id=symbol_id,
-                            var_name=var_name,
-                            def_line=line,
-                            use_line=line,
-                            edge_type="def",
-                        ))
+                        edges.append(
+                            DefUseEdge(
+                                symbol_id=symbol_id,
+                                var_name=var_name,
+                                def_line=line,
+                                use_line=line,
+                                edge_type="def",
+                            )
+                        )
             elif node_type == "identifier":
                 start_byte_n: int = getattr(node, "start_byte", 0)
                 end_byte_n: int = getattr(node, "end_byte", 0)
@@ -123,13 +126,15 @@ class DataFlowExtractor:
                 if var_name in defined_vars:
                     use_line = start_point_n[0] + symbol.line_start
                     if use_line != defined_vars[var_name]:  # skip self-references
-                        edges.append(DefUseEdge(
-                            symbol_id=symbol_id,
-                            var_name=var_name,
-                            def_line=defined_vars[var_name],
-                            use_line=use_line,
-                            edge_type="use",
-                        ))
+                        edges.append(
+                            DefUseEdge(
+                                symbol_id=symbol_id,
+                                var_name=var_name,
+                                def_line=defined_vars[var_name],
+                                use_line=use_line,
+                                edge_type="use",
+                            )
+                        )
             for child in getattr(node, "children", []):
                 walk(child)
 
@@ -139,6 +144,7 @@ class DataFlowExtractor:
     def _extract_regex_fallback(self, symbol: Symbol) -> list[DefUseEdge]:
         """Simple regex fallback when tree-sitter fails."""
         import re
+
         if not symbol.body or not symbol.id:
             return []
         edges: list[DefUseEdge] = []

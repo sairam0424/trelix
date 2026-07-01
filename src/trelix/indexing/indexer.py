@@ -516,6 +516,7 @@ class Indexer:
         if self.config.parser.dataflow_enabled:
             try:
                 from trelix.analysis.defuse import DataFlowExtractor
+
                 extractor = DataFlowExtractor()
                 for sym in parse_result.symbols:
                     if sym.id is not None:
