@@ -122,7 +122,7 @@ class FileWatcher:
                 args=(abs_path,),
             )
             self._timers[abs_path] = timer
-        timer.start()
+            timer.start()
 
     def _do_reindex(self, abs_path: str) -> None:
         """Called after the debounce window — actually re-indexes the file."""
