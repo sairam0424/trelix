@@ -1,4 +1,5 @@
 """Tests for TurnHistory and HistoryCompressor."""
+
 from __future__ import annotations
 
 from trelix.agent.actions import ActionType, AgentAction, Observation, Turn
