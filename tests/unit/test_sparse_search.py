@@ -2,9 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
-
-import pytest
 
 from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
 from trelix.retrieval.sparse_search import sparse_search
@@ -15,7 +12,9 @@ from trelix.store.sparse_store import SparseStore
 def _build_fixture(tmp_path: Path) -> tuple[Database, SparseStore, int]:
     db = Database(tmp_path / "index.db")
     fid = db.upsert_file(
-        IndexedFile(path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10)
+        IndexedFile(
+            path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10
+        )
     )
     sid = db.insert_symbol(Symbol(
         file_id=fid, name="login", qualified_name="login",
