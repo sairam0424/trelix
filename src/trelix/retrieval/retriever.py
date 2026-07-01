@@ -104,6 +104,20 @@ class Retriever:
                 self._planner, max_size=config.retrieval.plan_cache_size
             )
 
+        # Dimension guard: detect provider switch mismatches at startup
+        try:
+            from trelix.store.dimension_guard import DimensionGuard, DimensionMismatchError
+
+            DimensionGuard.check(
+                self.db,
+                current_dimension=self.embedder.dimension,
+                provider=config.embedder.provider,
+            )
+        except DimensionMismatchError:
+            raise  # Re-raise with the clear user-facing message
+        except Exception as exc:
+            logger.debug("DimensionGuard.check failed (non-fatal): %s", exc)
+
         # Debug output dir: <repo_root>/.trelix/debug/
         self._debug_dir = Path(config.repo_path) / ".trelix" / "debug"
 

@@ -606,6 +606,16 @@ def migrate_vectors(
     url: str = typer.Option("http://localhost:6333", help="Qdrant URL"),
     collection: str = typer.Option("trelix", help="Qdrant collection name"),
     api_key: str = typer.Option("", help="Qdrant API key (optional)"),
+    reset: Annotated[
+        bool,
+        typer.Option(
+            "--reset",
+            help=(
+                "Clear all stored embeddings and dimension metadata so trelix index starts fresh. "
+                "Use after switching embedding providers."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Migrate embeddings from SQLite to Qdrant (or another backend)."""
     _setup_logging(False)
@@ -617,6 +627,25 @@ def migrate_vectors(
 
     from trelix.core.config import IndexConfig, StoreConfig
     from trelix.store.vector_qdrant import QdrantVectorStore
+
+    if reset:
+        from trelix.core.config import IndexConfig as _IndexConfig
+        from trelix.store.db import Database as _Database
+        from trelix.store.dimension_guard import DimensionGuard as _DimensionGuard
+
+        cfg = _IndexConfig(repo_path=str(Path(repo).resolve()))
+        db = _Database(cfg.db_path_absolute)
+        _DimensionGuard.reset(db)
+        try:
+            db._conn.execute("DELETE FROM chunk_embeddings")
+            db._conn.commit()
+        except Exception:
+            pass  # chunk_embeddings is a sqlite-vec virtual table; may not exist yet
+        console.print(
+            "[green]Embeddings and dimension metadata cleared.[/green]\n"
+            "Run [bold]trelix index .[/bold] to re-embed with the new provider."
+        )
+        return
 
     if to != "qdrant":
         err_console.print(
