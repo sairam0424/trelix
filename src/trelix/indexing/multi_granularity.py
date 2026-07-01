@@ -119,8 +119,8 @@ class MultiGranularityChunker:
             node_type = getattr(node, "type", "")
 
             if Granularity.BLOCK in targets and node_type in _BLOCK_NODE_TYPES:
-                start_line = node.start_point[0]  # type: ignore[union-attr]
-                end_line = node.end_point[0]  # type: ignore[union-attr]
+                start_line = node.start_point[0]  # type: ignore[attr-defined]
+                end_line = node.end_point[0]  # type: ignore[attr-defined]
                 # Skip trivially small blocks (<=2 lines)
                 if end_line - start_line >= 2:
                     block_lines = lines[start_line:end_line + 1]
@@ -136,8 +136,8 @@ class MultiGranularityChunker:
                         ))
 
             elif Granularity.STATEMENT in targets and node_type in _STATEMENT_NODE_TYPES:
-                start_line = node.start_point[0]  # type: ignore[union-attr]
-                end_line = node.end_point[0]  # type: ignore[union-attr]
+                start_line = node.start_point[0]  # type: ignore[attr-defined]
+                end_line = node.end_point[0]  # type: ignore[attr-defined]
                 stmt_lines = lines[start_line:end_line + 1]
                 text = "\n".join(stmt_lines).strip()
                 # Skip trivially short statements (<=2 tokens)
