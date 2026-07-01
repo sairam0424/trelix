@@ -1,4 +1,5 @@
 """Tests for AgentAction, ActionType, Observation, Turn dataclasses."""
+
 from __future__ import annotations
 
 from trelix.agent.actions import ActionType, AgentAction, Observation, Turn

@@ -4,6 +4,7 @@ OpenAI-format tool schemas for the trelix ReAct agent.
 These four tools are the complete action space. The LLM must call exactly
 one per turn. 'done' terminates the loop with the final answer.
 """
+
 from __future__ import annotations
 
 from typing import Any

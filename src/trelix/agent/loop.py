@@ -9,6 +9,7 @@ Research basis:
   OpenHands (Xingyao et al., 2024, arXiv:2407.16741) — HistoryProcessor
   compression enables long multi-turn sessions within context limits.
 """
+
 from __future__ import annotations
 
 import logging

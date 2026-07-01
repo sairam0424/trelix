@@ -1,4 +1,5 @@
 """Turn history management and compression for the ReAct agent loop."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
