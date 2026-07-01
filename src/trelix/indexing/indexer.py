@@ -588,10 +588,7 @@ class Indexer:
                 )
 
                 mg_chunker = MultiGranularityChunker()
-                levels = [
-                    Granularity(lvl)
-                    for lvl in self.config.chunker.multi_granularity_levels
-                ]
+                levels = [Granularity(lvl) for lvl in self.config.chunker.multi_granularity_levels]
                 for sym in parse_result.symbols:
                     if sym.id is None:
                         continue

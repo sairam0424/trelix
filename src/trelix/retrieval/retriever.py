@@ -271,9 +271,7 @@ class Retriever:
                 else plan.sub_queries[0].semantic_query
             )
             sc_query_embedding: list[float] = self.embedder.embed_query(sc_embed_text)
-            sub_chunk_results = self._sub_chunk_search(
-                sc_query_embedding, k=cfg.top_k_sub_chunk
-            )
+            sub_chunk_results = self._sub_chunk_search(sc_query_embedding, k=cfg.top_k_sub_chunk)
 
         logger.info(
             "Pre-fusion leg sizes: vector=%d bm25=%d grep=%d summary=%d sub_chunk=%d",
