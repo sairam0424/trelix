@@ -255,6 +255,9 @@ def ask(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query: str = typer.Argument(..., help="Question to answer about the codebase"),
     provider: str = typer.Option("local", help=_PROVIDER_HELP),
+    agentic: Annotated[
+        bool, typer.Option("--agentic", help="Enable multi-turn agentic ReAct loop.")
+    ] = False,
 ) -> None:
     """Ask a question — retrieval + LLM synthesis (requires OPENAI_API_KEY for full synthesis)"""
     _setup_logging(False)
@@ -282,7 +285,19 @@ def ask(
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
+    # --agentic flag overrides the config field
+    if agentic:
+        config.retrieval.agentic_enabled = True
+
     try:
+        if config.retrieval.agentic_enabled:
+            from trelix.agent import AgentLoop
+
+            agent_loop = AgentLoop(config)
+            answer = agent_loop.run(query)
+            console.print(answer)
+            return
+
         retriever = Retriever(config)
     except Exception as exc:
         err_console.print(f"[red]Retrieval failed:[/red] {exc}")
