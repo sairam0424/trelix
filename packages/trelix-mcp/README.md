@@ -4,25 +4,29 @@
 
 MCP server for [trelix](https://github.com/sairam0424/trelix) v2.1.0 — semantic code search with streaming /ask endpoint, REST API integration, and beast-mode retrieval optimization for Claude Code, Cursor, Windsurf, and Continue.dev.
 
+MCP server for [trelix](https://github.com/sairam0424/trelix) v2.2.0 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+
 ## Install
 
 ```bash
 pip install trelix-mcp==2.1.0
+
+pip install trelix-mcp==2.2.0
 ```
 
 To use Bedrock embeddings or synthesis (no extra API key beyond AWS credentials):
 
 ```bash
-pip install "trelix-mcp==2.0.0" "trelix[bedrock]"
+pip install "trelix-mcp==2.2.0" "trelix[bedrock]"
 ```
 
 Other optional LLM provider extras:
 
 ```bash
-pip install "trelix-mcp==2.0.0" "trelix[anthropic]"   # Anthropic Claude direct
-pip install "trelix-mcp==2.0.0" "trelix[vertex]"       # Google Vertex AI / Gemini
-pip install "trelix-mcp==2.0.0" "trelix[litellm]"      # 100+ providers via LiteLLM
-pip install "trelix-mcp==2.0.0" "trelix[llm-all]"      # all LLM providers
+pip install "trelix-mcp==2.2.0" "trelix[anthropic]"   # Anthropic Claude direct
+pip install "trelix-mcp==2.2.0" "trelix[vertex]"       # Google Vertex AI / Gemini
+pip install "trelix-mcp==2.2.0" "trelix[litellm]"      # 100+ providers via LiteLLM
+pip install "trelix-mcp==2.2.0" "trelix[llm-all]"      # all LLM providers
 ```
 
 ## Usage
@@ -145,6 +149,20 @@ TRELIX_LLM_MODEL=bedrock/claude-3-5-sonnet
 | `build_knowledge_graph` | v2.1.0 | Build Code Property Graph, detect communities, return stats + community summary |
 | `graph_search_mcp` | v2.1.0 | Vector-seeded graph BFS — finds structurally related code by following call/import/type edges |
 
+## v2.2.0 — New CLI Commands
+
+### Multi-turn agentic Q&A
+```bash
+# Follows up automatically when uncertain — enables ReAct loop for complex reasoning
+trelix ask "how does authentication work?" --agentic
+```
+
+### Semgrep taint analysis
+```bash
+# Run inter-procedural taint analysis (requires pip install trelix[taint])
+trelix taint /path/to/repo --tier intrafile --severity ERROR
+```
+
 ## Knowledge Graph Tools
 
 Two new tools in v2.0.0 expose the knowledge graph layer to AI agents:
@@ -247,3 +265,21 @@ All five legs run in parallel and results are merged by relevance score.
 - **Cost**: Proportional to file count during indexing; queries have minimal ongoing cost
 
 Disable individual legs via env vars to find your latency/quality sweet spot.
+
+## Beast-Mode Configuration
+
+Enable advanced retrieval and indexing features via environment variables. All are optional — defaults use single-leg semantic search with local embeddings.
+
+```bash
+# v2.0.0+ features
+TRELIX_RETRIEVAL_HYBRID=true         # BM25 + semantic (Reciprocal Rank Fusion)
+TRELIX_RETRIEVAL_RERANK=true         # Cross-encoder reranking for top-k
+TRELIX_GRAPH_ENABLED=true            # Graph search alongside vector search
+
+# v2.2.0 additions
+TRELIX_RETRIEVAL_AGENTIC=true        # multi-turn ReAct loop for uncertain queries
+TRELIX_PARSER_DATAFLOW=true          # def-use chain extraction at index time
+TRELIX_RETRIEVAL_SPARSE=true         # SPLADE-Code 6th RRF leg (pip install trelix[sparse])
+TRELIX_CHUNKER_MULTI_GRANULARITY=true  # block+statement indexing
+TRELIX_RETRIEVAL_SUB_CHUNK=true      # use sub-symbol chunks as 7th RRF leg
+```
