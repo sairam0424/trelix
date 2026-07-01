@@ -478,6 +478,18 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_SUB_CHUNK_TOP_K",
     )
 
+    # ── Multi-repo federated search ───────────────────────────────────────────
+    federation_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_FEDERATION_ENABLED",
+    )
+    federation_max_workers: int = Field(
+        default=4,
+        ge=1,
+        le=16,
+        alias="TRELIX_FEDERATION_MAX_WORKERS",
+    )
+
     # ── Query embedding cache ─────────────────────────────────────────────────
     # Caches embed_query() results in-memory (LRU, per-Retriever session).
     # 0 = disabled. Default 256 covers a typical interactive session.
