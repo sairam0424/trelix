@@ -1,4 +1,5 @@
 """Tests for SparseStore inverted index."""
+
 from __future__ import annotations
 
 from pathlib import Path

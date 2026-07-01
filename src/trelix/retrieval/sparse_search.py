@@ -4,6 +4,7 @@ Sparse retrieval leg using learned sparse embeddings (SPLADE-style).
 Bridges SparseStore (inverted index) → SearchResult objects by hydrating
 chunk/symbol/file from the Database.
 """
+
 from __future__ import annotations
 
 import logging

@@ -48,16 +48,10 @@ class SparseStore:
     def upsert(self, chunk_id: int, sparse_vec: dict[int, float]) -> None:
         """Insert or replace the sparse vector for a chunk (clean overwrite)."""
         with self._lock:
-            self._conn.execute(
-                "DELETE FROM sparse_embeddings WHERE chunk_id = ?", (chunk_id,)
-            )
+            self._conn.execute("DELETE FROM sparse_embeddings WHERE chunk_id = ?", (chunk_id,))
             self._conn.executemany(
                 "INSERT INTO sparse_embeddings (chunk_id, token_id, weight) VALUES (?, ?, ?)",
-                [
-                    (chunk_id, tok_id, weight)
-                    for tok_id, weight in sparse_vec.items()
-                    if weight > 0
-                ],
+                [(chunk_id, tok_id, weight) for tok_id, weight in sparse_vec.items() if weight > 0],
             )
             self._conn.commit()
 

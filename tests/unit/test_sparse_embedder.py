@@ -1,4 +1,5 @@
 """Tests for SparseEmbedder (SPLADE-Code)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -8,6 +9,7 @@ class TestSparseEmbedder:
     def test_import_without_torch(self) -> None:
         """SparseEmbedder must be importable even without torch installed."""
         from trelix.embedder.sparse import SparseEmbedder
+
         assert SparseEmbedder is not None
 
     def test_embed_returns_sparse_dicts_when_model_mocked(self) -> None:
@@ -43,6 +45,7 @@ class TestSparseEmbedder:
 
     def test_embed_returns_empty_when_not_installed(self) -> None:
         from trelix.embedder.sparse import SparseEmbedder
+
         embedder = SparseEmbedder("test-model", top_k=128)
         # Without torch/transformers mocked as installed, should return empty dicts
         with patch("trelix.embedder.sparse._TORCH_AVAILABLE", False):

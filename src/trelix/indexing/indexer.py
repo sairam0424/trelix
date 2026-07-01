@@ -355,11 +355,7 @@ class Indexer:
                 sparse_store = SparseStore(self.config.db_path_absolute)
                 texts = [pc.chunk_text for pc in pending]
                 sparse_vecs = sparse_emb.embed(texts)
-                pairs = [
-                    (int(pc.chunk_id), vec)
-                    for pc, vec in zip(pending, sparse_vecs)
-                    if vec
-                ]
+                pairs = [(int(pc.chunk_id), vec) for pc, vec in zip(pending, sparse_vecs) if vec]
                 if pairs:
                     sparse_store.upsert_batch(pairs)
                     logger.info("Sparse embedding: indexed %d chunks", len(pairs))

@@ -284,12 +284,12 @@ class Retriever:
             sub_chunk_results = self._sub_chunk_search(sc_query_embedding, k=cfg.top_k_sub_chunk)
 
         logger.info(
-"Pre-fusion leg sizes: vector=%d bm25=%d grep=%d summary=%d sub_chunk=%d sparse=%d",
+            "Pre-fusion leg sizes: vector=%d bm25=%d grep=%d summary=%d sub_chunk=%d sparse=%d",
             len(vector_results),
             len(bm25_results),
             len(grep_results),
             len(summary_results),
-len(sub_chunk_results),
+            len(sub_chunk_results),
             len(sparse_results),
         )
 
@@ -302,7 +302,7 @@ len(sub_chunk_results),
                 "bm25_count": len(bm25_results),
                 "grep_count": len(grep_results),
                 "summary_count": len(summary_results),
-"sub_chunk_count": len(sub_chunk_results),
+                "sub_chunk_count": len(sub_chunk_results),
                 "sparse_count": len(sparse_results),
                 "top_vector": [
                     {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
@@ -329,7 +329,14 @@ len(sub_chunk_results),
 
         _weights = cfg.file_type_weights if cfg.file_type_weighting_enabled else None
         fused = reciprocal_rank_fusion(
-[vector_results, bm25_results, grep_results, summary_results, sub_chunk_results, sparse_results],
+            [
+                vector_results,
+                bm25_results,
+                grep_results,
+                summary_results,
+                sub_chunk_results,
+                sparse_results,
+            ],
             k=cfg.rrf_k,
             weights=_weights,
         )
