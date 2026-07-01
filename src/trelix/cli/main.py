@@ -1003,15 +1003,20 @@ def taint(
     filtered = [f for f in flows if not severity or f.severity == severity.upper()]
 
     if json_output:
-        console.print(_json.dumps([
-            {
-                "rule": f.rule_id,
-                "severity": f.severity,
-                "source": f"{f.source_file}:{f.source_line}",
-                "sink": f"{f.sink_file}:{f.sink_line}",
-            }
-            for f in filtered
-        ], indent=2))
+        console.print(
+            _json.dumps(
+                [
+                    {
+                        "rule": f.rule_id,
+                        "severity": f.severity,
+                        "source": f"{f.source_file}:{f.source_line}",
+                        "sink": f"{f.sink_file}:{f.sink_line}",
+                    }
+                    for f in filtered
+                ],
+                indent=2,
+            )
+        )
         return
 
     table = Table(title=f"Taint Flows ({len(filtered)} found)")
