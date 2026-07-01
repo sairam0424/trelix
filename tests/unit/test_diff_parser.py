@@ -4,9 +4,7 @@ from __future__ import annotations
 import textwrap
 from unittest.mock import patch
 
-import pytest
-
-from trelix.review.diff_parser import DiffHunk, DiffParser
+from trelix.review.diff_parser import DiffParser
 
 _SAMPLE_DIFF = textwrap.dedent("""\
     diff --git a/src/auth.py b/src/auth.py
