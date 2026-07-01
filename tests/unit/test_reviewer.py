@@ -4,8 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
 from trelix.review.diff_parser import DiffHunk
 from trelix.review.reviewer import DiffReviewer, ReviewComment
 
@@ -63,7 +61,6 @@ class TestDiffReviewer:
         assert isinstance(result, list)
 
     def test_review_with_mocked_retriever_and_llm(self, tmp_path: Path) -> None:
-        from unittest.mock import MagicMock, patch
 
         from trelix.core.config import IndexConfig
 
