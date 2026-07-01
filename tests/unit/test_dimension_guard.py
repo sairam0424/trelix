@@ -83,7 +83,7 @@ class TestIndexerDimensionGuard:
     def test_indexer_raises_on_dimension_mismatch(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock, patch
 
-        from trelix.core.config import EmbedderConfig, IndexConfig
+        from trelix.core.config import IndexConfig
         from trelix.indexing.indexer import Indexer
         from trelix.store.db import Database
         from trelix.store.dimension_guard import DimensionMismatchError
