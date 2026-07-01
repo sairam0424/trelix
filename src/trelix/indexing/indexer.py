@@ -342,6 +342,30 @@ class Indexer:
             self._report_progress(3, "Embedding chunks…", 0.0, stats)
             asyncio.run(self._batch_embed_and_store_async(pending, stats))
 
+        # ── Sparse embedding phase (SPLADE-Code) — runs when sparse_enabled=True ──
+        if self.config.retrieval.sparse_enabled and pending:
+            try:
+                from trelix.embedder.sparse import SparseEmbedder
+                from trelix.store.sparse_store import SparseStore
+
+                sparse_emb = SparseEmbedder(
+                    model_name=self.config.sparse.model,
+                    top_k=self.config.sparse.top_k_tokens,
+                )
+                sparse_store = SparseStore(self.config.db_path_absolute)
+                texts = [pc.chunk_text for pc in pending]
+                sparse_vecs = sparse_emb.embed(texts)
+                pairs = [
+                    (int(pc.chunk_id), vec)
+                    for pc, vec in zip(pending, sparse_vecs)
+                    if vec
+                ]
+                if pairs:
+                    sparse_store.upsert_batch(pairs)
+                    logger.info("Sparse embedding: indexed %d chunks", len(pairs))
+            except Exception as exc:
+                logger.debug("Sparse embedding phase failed (non-fatal): %s", exc)
+
         # ── Phase 4: cross-file resolution ──────────────────────────────────
         self._report_progress(4, "Resolving cross-file references…", 0.0, stats)
         resolved_calls = self.db.resolve_cross_file_calls()
