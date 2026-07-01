@@ -12,6 +12,7 @@ Research basis: Semgrep taint-mode docs (2-1 adversarial vote).
 This module wraps the semgrep CLI via subprocess. Semgrep is optional
 (pip install trelix[taint]). Returns [] if semgrep is not installed.
 """
+
 from __future__ import annotations
 
 import json
@@ -119,14 +120,16 @@ class TaintAnalyzer:
                 sink_file = sink_loc.get("path", source_file)
                 sink_line = sink_loc.get("start", {}).get("line", source_line)
 
-                flows.append(TaintFlow(
-                    source_file=source_file,
-                    source_line=int(source_line),
-                    sink_file=sink_file,
-                    sink_line=int(sink_line),
-                    rule_id=rule_id,
-                    severity=severity,
-                ))
+                flows.append(
+                    TaintFlow(
+                        source_file=source_file,
+                        source_line=int(source_line),
+                        sink_file=sink_file,
+                        sink_line=int(sink_line),
+                        rule_id=rule_id,
+                        severity=severity,
+                    )
+                )
             except Exception:
                 continue
 

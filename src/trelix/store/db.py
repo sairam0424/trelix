@@ -310,9 +310,7 @@ class Database:
             "severity TEXT NOT NULL DEFAULT 'INFO'"
             ")"
         )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_taint_severity ON taint_flows(severity)"
-        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_taint_severity ON taint_flows(severity)")
         self._conn.commit()
 
     @contextmanager
@@ -1451,6 +1449,7 @@ class Database:
     def get_data_flows(self, symbol_id: int) -> list[DefUseEdge]:
         """Return all def-use edges for a symbol."""
         from trelix.analysis.defuse import DefUseEdge
+
         rows = self._conn.execute(
             "SELECT symbol_id, var_name, def_line, use_line, edge_type "
             "FROM def_use_edges WHERE symbol_id = ? ORDER BY def_line",
@@ -1493,6 +1492,7 @@ class Database:
     ) -> list[TaintFlow]:
         """Return taint flows, optionally filtered by severity."""
         from trelix.analysis.taint import TaintFlow
+
         if severity:
             rows = self._conn.execute(
                 "SELECT source_file, source_line, sink_file, sink_line, rule_id, severity "
