@@ -83,9 +83,7 @@ class BaseVectorStore(ABC):
         """
 
     @abstractmethod
-    def search_sub_chunks(
-        self, query_embedding: list[float], k: int
-    ) -> list[tuple[int, float]]:
+    def search_sub_chunks(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:
         """Search sub-chunk embeddings only. Returns (sub_chunk_id, score) pairs."""
 
 
@@ -365,9 +363,7 @@ class SQLiteVectorStore(BaseVectorStore):
         """Store sub-chunk embedding using chunk_id = sub_chunk_id + _SUB_CHUNK_OFFSET."""
         self.upsert(chunk_id=sub_chunk_id + self._SUB_CHUNK_OFFSET, embedding=embedding)
 
-    def search_sub_chunks(
-        self, query_embedding: list[float], k: int
-    ) -> list[tuple[int, float]]:
+    def search_sub_chunks(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:
         """Search sub-chunk embeddings only. Returns (sub_chunk_id, score) pairs."""
         with self._lock:
             rows = self._conn.execute(
