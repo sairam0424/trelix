@@ -89,6 +89,10 @@ class DataFlowExtractor:
         edges: list[DefUseEdge] = []
         defined_vars: dict[str, int] = {}  # var_name -> def_line
 
+        # Narrow symbol.id to int once so the nested closure can reference it safely.
+        assert symbol.id is not None
+        symbol_id: int = symbol.id
+
         def walk(node: object) -> None:
             node_type = getattr(node, "type", "")
             if node_type in _ASSIGNMENT_TYPES:
@@ -96,25 +100,31 @@ class DataFlowExtractor:
                 children = getattr(node, "children", [])
                 for child in children:
                     if getattr(child, "type", "") == "identifier":
-                        var_name = body[child.start_byte:child.end_byte].decode(
+                        start_byte: int = getattr(child, "start_byte", 0)
+                        end_byte: int = getattr(child, "end_byte", 0)
+                        start_point: tuple[int, int] = getattr(child, "start_point", (0, 0))
+                        var_name = body[start_byte:end_byte].decode(
                             "utf-8", errors="ignore"
                         )
-                        line = child.start_point[0] + symbol.line_start
+                        line = start_point[0] + symbol.line_start
                         defined_vars[var_name] = line
                         edges.append(DefUseEdge(
-                            symbol_id=int(symbol.id),
+                            symbol_id=symbol_id,
                             var_name=var_name,
                             def_line=line,
                             use_line=line,
                             edge_type="def",
                         ))
             elif node_type == "identifier":
-                var_name = body[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
+                start_byte_n: int = getattr(node, "start_byte", 0)
+                end_byte_n: int = getattr(node, "end_byte", 0)
+                start_point_n: tuple[int, int] = getattr(node, "start_point", (0, 0))
+                var_name = body[start_byte_n:end_byte_n].decode("utf-8", errors="ignore")
                 if var_name in defined_vars:
-                    use_line = node.start_point[0] + symbol.line_start
+                    use_line = start_point_n[0] + symbol.line_start
                     if use_line != defined_vars[var_name]:  # skip self-references
                         edges.append(DefUseEdge(
-                            symbol_id=int(symbol.id),
+                            symbol_id=symbol_id,
                             var_name=var_name,
                             def_line=defined_vars[var_name],
                             use_line=use_line,

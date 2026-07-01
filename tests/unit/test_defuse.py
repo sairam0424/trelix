@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from trelix.analysis.defuse import DefUseEdge
 from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
 from trelix.store.db import Database
@@ -13,7 +11,9 @@ from trelix.store.db import Database
 def _make_db(tmp_path: Path) -> tuple[Database, int]:
     db = Database(tmp_path / "index.db")
     fid = db.upsert_file(
-        IndexedFile(path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10)
+        IndexedFile(
+            path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10
+        )
     )
     sid = db.insert_symbol(
         Symbol(file_id=fid, name="fn", qualified_name="fn", kind=SymbolKind.FUNCTION,
