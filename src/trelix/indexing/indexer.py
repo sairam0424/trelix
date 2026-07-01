@@ -511,6 +511,22 @@ class Indexer:
         if parse_result.type_edges:
             self._store_type_edges(parse_result.type_edges, local_to_db)
 
+        # ── Data-flow extraction (def-use chains) ─────────────────────
+        # Optional, zero cost when disabled. Runs after symbols are committed.
+        if self.config.parser.dataflow_enabled:
+            try:
+                from trelix.analysis.defuse import DataFlowExtractor
+                extractor = DataFlowExtractor()
+                for sym in parse_result.symbols:
+                    if sym.id is not None:
+                        edges = extractor.extract(sym)
+                        if edges:
+                            self.db.insert_def_use_edges(edges)
+            except Exception as exc:
+                logger.debug(
+                    "DataFlowExtractor failed for %s (non-fatal): %s", pf.file.rel_path, exc
+                )
+
         # ── Chunk ────────────────────────────────────────────────────────
         imports = self.db.get_imports_for_file(file_id)
         parent_map = {s.id: s for s in parse_result.symbols if s.id is not None}
