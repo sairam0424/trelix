@@ -313,6 +313,20 @@ class Database:
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_taint_severity ON taint_flows(severity)")
         self._conn.commit()
 
+        # v2.2 migration: sparse_embeddings inverted index for SPLADE-Code
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS sparse_embeddings (
+                chunk_id INTEGER NOT NULL,
+                token_id INTEGER NOT NULL,
+                weight REAL NOT NULL,
+                PRIMARY KEY (chunk_id, token_id)
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sparse_token ON sparse_embeddings(token_id)"
+        )
+        self._conn.commit()
+
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Connection, None, None]:
         try:
