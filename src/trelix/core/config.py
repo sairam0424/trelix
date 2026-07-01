@@ -166,6 +166,28 @@ class ChunkerConfig(BaseSettings):
     )
 
 
+class SparseConfig(BaseSettings):
+    """Configuration for learned sparse embeddings (SPLADE-Code)."""
+
+    model_config = SettingsConfigDict(env_prefix="TRELIX_SPARSE_")
+
+    model: str = Field(
+        default="naver-splab/splade-code-distil",
+        alias="TRELIX_SPARSE_MODEL",
+    )
+    top_k_tokens: int = Field(
+        default=128,
+        ge=16,
+        le=512,
+        alias="TRELIX_SPARSE_TOP_K_TOKENS",
+    )
+    batch_size: int = Field(
+        default=16,
+        ge=1,
+        alias="TRELIX_SPARSE_BATCH_SIZE",
+    )
+
+
 class EmbedderConfig(BaseSettings):
     """
     Embedding provider config.
@@ -367,6 +389,17 @@ class RetrievalConfig(BaseSettings):
     top_k_file_summary: int = Field(
         default=5,
         alias="TRELIX_RETRIEVAL_FILE_SUMMARY_TOP_K",
+    )
+
+    # Sparse+dense hybrid retrieval leg (SPLADE-Code, 6th leg — off by default)
+    sparse_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_SPARSE",
+    )
+    top_k_sparse: int = Field(
+        default=20,
+        ge=1,
+        alias="TRELIX_RETRIEVAL_SPARSE_TOP_K",
     )
 
     # HyDE fallback — for no-LLM Tier 1 queries, generate a synthetic snippet
@@ -656,6 +689,7 @@ class IndexConfig(BaseSettings):
     store: StoreConfig = Field(default_factory=StoreConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    sparse: SparseConfig = Field(default_factory=SparseConfig)
 
     # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
     # Requires LLM API access. Off by default — zero cost when disabled.

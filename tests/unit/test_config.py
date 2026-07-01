@@ -181,6 +181,17 @@ class TestRetrievalConfig:
         assert cfg.rerank is True
 
 
+class TestSparseConfig:
+    def test_sparse_defaults(self, tmp_path: Path) -> None:
+        from trelix.core.config import IndexConfig
+
+        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        assert cfg.retrieval.sparse_enabled is False
+        assert cfg.retrieval.top_k_sparse == 20
+        assert cfg.sparse.top_k_tokens == 128
+        assert "splade" in cfg.sparse.model.lower()
+
+
 class TestIndexConfig:
     def test_repo_must_exist(self, tmp_path: Path) -> None:
         cfg = IndexConfig(repo_path=str(tmp_path))
