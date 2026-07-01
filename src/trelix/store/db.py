@@ -21,7 +21,10 @@ import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from trelix.indexing.multi_granularity import SubSymbolChunk
 
 from trelix.core.models import (
     CallEdge,
@@ -108,6 +111,18 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol_id ON chunks(symbol_id);
+
+CREATE TABLE IF NOT EXISTS sub_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_symbol_id INTEGER NOT NULL,
+    granularity TEXT NOT NULL CHECK(granularity IN ('function','block','statement')),
+    chunk_text TEXT NOT NULL,
+    line_start INTEGER NOT NULL,
+    line_end INTEGER NOT NULL,
+    token_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_sub_chunks_symbol ON sub_chunks(parent_symbol_id);
 
 CREATE TABLE IF NOT EXISTS file_summaries (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,6 +244,22 @@ class Database:
         )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_summaries_file_id ON file_summaries(file_id)"
+        )
+        self._conn.commit()
+
+        # MGS3 migration: add sub_chunks table for multi-granularity indexing
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS sub_chunks ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "parent_symbol_id INTEGER NOT NULL, "
+            "granularity TEXT NOT NULL CHECK(granularity IN ('function','block','statement')), "
+            "chunk_text TEXT NOT NULL, "
+            "line_start INTEGER NOT NULL, "
+            "line_end INTEGER NOT NULL, "
+            "token_count INTEGER NOT NULL DEFAULT 0)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sub_chunks_symbol ON sub_chunks(parent_symbol_id)"
         )
         self._conn.commit()
 
@@ -450,6 +481,93 @@ class Database:
         )
         self._conn.commit()
         return int(cur.lastrowid or 0)
+
+    # ------------------------------------------------------------------
+    # Sub-symbol chunks (MGS3: multi-granularity sub-symbol indexing)
+    # ------------------------------------------------------------------
+
+    def insert_sub_chunks(self, chunks: list[SubSymbolChunk]) -> list[int]:
+        """Insert sub-symbol chunks. Returns list of inserted IDs."""
+        if not chunks:
+            return []
+        ids: list[int] = []
+        for chunk in chunks:
+            granularity_val = (
+                chunk.granularity.value
+                if hasattr(chunk.granularity, "value")
+                else chunk.granularity
+            )
+            cur = self._conn.execute(
+                "INSERT INTO sub_chunks "
+                "(parent_symbol_id, granularity, chunk_text, line_start, line_end, token_count) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    chunk.parent_symbol_id,
+                    granularity_val,
+                    chunk.chunk_text,
+                    chunk.line_start,
+                    chunk.line_end,
+                    chunk.token_count,
+                ),
+            )
+            ids.append(int(cur.lastrowid or 0))
+        self._conn.commit()
+        return ids
+
+    def get_sub_chunks_for_symbol(
+        self, symbol_id: int, granularity: str | None = None
+    ) -> list[SubSymbolChunk]:
+        """Return sub-chunks for a symbol, optionally filtered by granularity."""
+        from trelix.indexing.multi_granularity import Granularity, SubSymbolChunk
+
+        if granularity:
+            rows = self._conn.execute(
+                "SELECT id, parent_symbol_id, granularity, chunk_text, "
+                "line_start, line_end, token_count "
+                "FROM sub_chunks WHERE parent_symbol_id = ? AND granularity = ?",
+                (symbol_id, granularity),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT id, parent_symbol_id, granularity, chunk_text, "
+                "line_start, line_end, token_count "
+                "FROM sub_chunks WHERE parent_symbol_id = ?",
+                (symbol_id,),
+            ).fetchall()
+        return [
+            SubSymbolChunk(
+                id=int(row[0]),
+                parent_symbol_id=int(row[1]),
+                granularity=Granularity(row[2]),
+                chunk_text=row[3],
+                line_start=int(row[4]),
+                line_end=int(row[5]),
+                token_count=int(row[6]),
+            )
+            for row in rows
+        ]
+
+    def get_sub_chunk_by_id(self, sub_chunk_id: int) -> SubSymbolChunk | None:
+        """Return a single sub-chunk by primary key, or None if not found."""
+        from trelix.indexing.multi_granularity import Granularity, SubSymbolChunk
+
+        row = self._conn.execute(
+            "SELECT id, parent_symbol_id, granularity, chunk_text, "
+            "line_start, line_end, token_count "
+            "FROM sub_chunks WHERE id = ?",
+            (sub_chunk_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return SubSymbolChunk(
+            id=int(row[0]),
+            parent_symbol_id=int(row[1]),
+            granularity=Granularity(row[2]),
+            chunk_text=row[3],
+            line_start=int(row[4]),
+            line_end=int(row[5]),
+            token_count=int(row[6]),
+        )
 
     # ------------------------------------------------------------------
     # File summaries (Phase 2: RAPTOR-style multi-granularity indexing)
