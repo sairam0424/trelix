@@ -1,4 +1,5 @@
 """Tests for sparse_search retrieval function."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,11 +17,18 @@ def _build_fixture(tmp_path: Path) -> tuple[Database, SparseStore, int]:
             path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10
         )
     )
-    sid = db.insert_symbol(Symbol(
-        file_id=fid, name="login", qualified_name="login",
-        kind=SymbolKind.FUNCTION, line_start=1, line_end=5,
-        signature="def login()", body="def login(): pass"
-    ))
+    sid = db.insert_symbol(
+        Symbol(
+            file_id=fid,
+            name="login",
+            qualified_name="login",
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=5,
+            signature="def login()",
+            body="def login(): pass",
+        )
+    )
     # Store a chunk
     chunk_id = db.insert_chunk_for_symbol(sid, "def login(): pass", 5)
     store = SparseStore(tmp_path / "index.db")
