@@ -577,6 +577,36 @@ class Indexer:
                     len(summary),
                 )
 
+        # ── Phase 2.6: multi-granularity sub-chunk extraction (MGS3) ──────────
+        # Runs only when multi_granularity_enabled=True. Failures are non-fatal —
+        # a crash inside MultiGranularityChunker returns [] and does not abort indexing.
+        if self.config.chunker.multi_granularity_enabled:
+            try:
+                from trelix.indexing.multi_granularity import (
+                    Granularity,
+                    MultiGranularityChunker,
+                )
+
+                mg_chunker = MultiGranularityChunker()
+                levels = [
+                    Granularity(lvl)
+                    for lvl in self.config.chunker.multi_granularity_levels
+                ]
+                for sym in parse_result.symbols:
+                    if sym.id is None:
+                        continue
+                    sub_chunks = mg_chunker.extract_sub_chunks(sym, granularities=levels)
+                    if not sub_chunks:
+                        continue
+                    ids = self.db.insert_sub_chunks(sub_chunks)
+                    texts = [sc.chunk_text for sc in sub_chunks]
+                    embeddings = self.embedder.embed(texts)
+                    for sc_id, emb in zip(ids, embeddings):
+                        if emb:
+                            self.vector_store.upsert_sub_chunk_embedding(sc_id, emb)
+            except Exception as exc:
+                logger.debug("Multi-granularity indexing failed (non-fatal): %s", exc)
+
         return pending
 
     # ──────────────────────────────────────────────────────────────────────

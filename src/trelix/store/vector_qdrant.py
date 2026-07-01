@@ -175,3 +175,20 @@ class QdrantVectorStore(BaseVectorStore):
         """Search file-summary rows (negative point IDs). Returns (file_id, score) pairs."""
         results = self.search(query_embedding, k=k * 5)
         return [(-cid, score) for cid, score in results if cid < 0][:k]
+
+    _SUB_CHUNK_OFFSET = 10_000_000
+
+    def upsert_sub_chunk_embedding(self, sub_chunk_id: int, embedding: list[float]) -> None:
+        """Store sub-chunk embedding using point_id = sub_chunk_id + _SUB_CHUNK_OFFSET."""
+        self.upsert_batch([(sub_chunk_id + self._SUB_CHUNK_OFFSET, embedding)])
+
+    def search_sub_chunks(
+        self, query_embedding: list[float], k: int
+    ) -> list[tuple[int, float]]:
+        """Search sub-chunk embeddings only. Returns (sub_chunk_id, score) pairs."""
+        results = self.search(query_embedding, k=k * 5)
+        return [
+            (cid - self._SUB_CHUNK_OFFSET, score)
+            for cid, score in results
+            if cid >= self._SUB_CHUNK_OFFSET
+        ][:k]
