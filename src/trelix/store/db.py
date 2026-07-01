@@ -37,6 +37,10 @@ from trelix.core.models import (
     TypeEdge,
 )
 
+if TYPE_CHECKING:
+    from trelix.analysis.defuse import DefUseEdge
+    from trelix.analysis.taint import TaintFlow
+
 DDL = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -276,6 +280,37 @@ class Database:
             "thumbs_up INTEGER DEFAULT NULL"
             ")"
         )
+        self._conn.commit()
+
+        # v2.2 migration: def-use chains (data-flow analysis)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS def_use_edges ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "symbol_id INTEGER NOT NULL, "
+            "var_name TEXT NOT NULL, "
+            "def_line INTEGER NOT NULL, "
+            "use_line INTEGER NOT NULL, "
+            "edge_type TEXT NOT NULL CHECK(edge_type IN ('def', 'use'))"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_def_use_symbol ON def_use_edges(symbol_id)"
+        )
+        self._conn.commit()
+
+        # v2.2 migration: taint flows (semgrep integration)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS taint_flows ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "source_file TEXT NOT NULL, "
+            "source_line INTEGER NOT NULL, "
+            "sink_file TEXT NOT NULL, "
+            "sink_line INTEGER NOT NULL, "
+            "rule_id TEXT NOT NULL, "
+            "severity TEXT NOT NULL DEFAULT 'INFO'"
+            ")"
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_taint_severity ON taint_flows(severity)")
         self._conn.commit()
 
     @contextmanager
@@ -1393,6 +1428,92 @@ class Database:
                 "leg_sizes": json.loads(row[6] or "{}"),
                 "thumbs_up": row[7],
             }
+            for row in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # Def-use chains (v2.2 data-flow analysis)
+    # ------------------------------------------------------------------
+
+    def insert_def_use_edges(self, edges: list[DefUseEdge]) -> None:
+        """Bulk-insert def-use edges for a symbol."""
+        if not edges:
+            return
+        self._conn.executemany(
+            "INSERT INTO def_use_edges (symbol_id, var_name, def_line, use_line, edge_type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(e.symbol_id, e.var_name, e.def_line, e.use_line, e.edge_type) for e in edges],
+        )
+        self._conn.commit()
+
+    def get_data_flows(self, symbol_id: int) -> list[DefUseEdge]:
+        """Return all def-use edges for a symbol."""
+        from trelix.analysis.defuse import DefUseEdge
+
+        rows = self._conn.execute(
+            "SELECT symbol_id, var_name, def_line, use_line, edge_type "
+            "FROM def_use_edges WHERE symbol_id = ? ORDER BY def_line",
+            (symbol_id,),
+        ).fetchall()
+        return [
+            DefUseEdge(
+                symbol_id=int(row[0]),
+                var_name=row[1],
+                def_line=int(row[2]),
+                use_line=int(row[3]),
+                edge_type=row[4],
+            )
+            for row in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # Taint flows (v2.2 semgrep integration)
+    # ------------------------------------------------------------------
+
+    def insert_taint_flows(self, flows: list[TaintFlow]) -> None:
+        """Bulk-insert taint flows from a semgrep scan."""
+        if not flows:
+            return
+        self._conn.executemany(
+            "INSERT INTO taint_flows "
+            "(source_file, source_line, sink_file, sink_line, rule_id, severity) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (f.source_file, f.source_line, f.sink_file, f.sink_line, f.rule_id, f.severity)
+                for f in flows
+            ],
+        )
+        self._conn.commit()
+
+    def get_taint_flows(
+        self,
+        severity: str | None = None,
+        limit: int = 50,
+    ) -> list[TaintFlow]:
+        """Return taint flows, optionally filtered by severity."""
+        from trelix.analysis.taint import TaintFlow
+
+        if severity:
+            rows = self._conn.execute(
+                "SELECT source_file, source_line, sink_file, sink_line, rule_id, severity "
+                "FROM taint_flows WHERE severity = ? ORDER BY severity DESC LIMIT ?",
+                (severity, limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT source_file, source_line, sink_file, sink_line, rule_id, severity "
+                "FROM taint_flows ORDER BY severity DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            TaintFlow(
+                source_file=row[0],
+                source_line=int(row[1]),
+                sink_file=row[2],
+                sink_line=int(row[3]),
+                rule_id=row[4],
+                severity=row[5],
+            )
             for row in rows
         ]
 
