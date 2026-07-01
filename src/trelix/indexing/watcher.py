@@ -74,6 +74,11 @@ class FileWatcher:
         self._debounce_s = debounce_ms / 1000.0
         self._observer: object | None = None
         self._timers: dict[str, threading.Timer] = {}
+        # Generation counter per path: incremented each time a new timer
+        # supersedes an old one.  _do_reindex checks its captured generation
+        # against the current value and skips if it has been superseded,
+        # preventing a cancelled-but-already-running callback from double-firing.
+        self._generations: dict[str, int] = {}
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -99,6 +104,7 @@ class FileWatcher:
             for timer in self._timers.values():
                 timer.cancel()
             self._timers.clear()
+            self._generations.clear()
 
         if self._observer is not None:
             self._observer.stop()  # type: ignore[attr-defined]
@@ -116,17 +122,24 @@ class FileWatcher:
             existing = self._timers.get(abs_path)
             if existing is not None:
                 existing.cancel()
+            gen = self._generations.get(abs_path, 0) + 1
+            self._generations[abs_path] = gen
             timer = threading.Timer(
                 self._debounce_s,
                 self._do_reindex,
-                args=(abs_path,),
+                args=(abs_path, gen),
             )
             self._timers[abs_path] = timer
             timer.start()
 
-    def _do_reindex(self, abs_path: str) -> None:
+    def _do_reindex(self, abs_path: str, generation: int = 0) -> None:
         """Called after the debounce window — actually re-indexes the file."""
         with self._lock:
+            # Skip if a newer timer has superseded this one (cancel() may not
+            # prevent execution when the timer fires at the exact same moment
+            # as a replacement is being scheduled).
+            if self._generations.get(abs_path, 0) != generation:
+                return
             self._timers.pop(abs_path, None)
 
         if not self._should_index(abs_path):
