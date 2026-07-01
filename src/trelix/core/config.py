@@ -402,6 +402,23 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR",
     )
 
+    # Agentic ReAct loop — multi-turn retrieve+observe+synthesize
+    agentic_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_AGENTIC",
+    )
+    agent_max_turns: int = Field(
+        default=8,
+        ge=1,
+        le=20,
+        alias="TRELIX_RETRIEVAL_AGENT_MAX_TURNS",
+    )
+    agent_token_budget: int = Field(
+        default=6000,
+        ge=1000,
+        alias="TRELIX_RETRIEVAL_AGENT_TOKEN_BUDGET",
+    )
+
     # GraphRAG map-reduce synthesis
     graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")
     graph_rag_threshold_tokens: int = 8000
