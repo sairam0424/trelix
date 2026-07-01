@@ -1,3 +1,4 @@
+import json
 import logging
 import sys
 
@@ -19,6 +20,49 @@ from trelix.store.db import Database  # noqa: E402
 
 mcp = FastMCP("trelix")
 _log = logging.getLogger("trelix_mcp")
+
+
+# ---------------------------------------------------------------------------
+# MCP Resources (application-controlled URI-addressable data)
+# MCP spec: Resources are passive data; Tools are callable functions.
+# trelix:// is a custom URI scheme — fully permitted by the MCP spec.
+# ---------------------------------------------------------------------------
+
+
+@mcp.resource("trelix://index/stats")
+def resource_index_stats() -> str:
+    """Aggregate statistics for the active trelix index.
+
+    Returns JSON with a usage hint — use the manifest template for repo-specific
+    stats since direct resources cannot receive parameters.
+    """
+    return json.dumps(
+        {"hint": "Use trelix://repo/{repo_path}/manifest for repo-specific stats"}
+    )
+
+
+@mcp.resource("trelix://repo/{repo_path}/manifest")
+def resource_repo_manifest(repo_path: str) -> str:
+    """List all indexed files in the repository at *repo_path*.
+
+    Returns JSON with ``file_count`` and ``files[]`` list.
+    Example URI: ``trelix://repo//Users/you/myrepo/manifest``
+    """
+    from trelix_mcp.resources import get_repo_manifest
+
+    return get_repo_manifest(repo_path)
+
+
+@mcp.resource("trelix://repo/{repo_path}/symbols/{qualified_name}")
+def resource_symbol_source(repo_path: str, qualified_name: str) -> str:
+    """Get full source code of a symbol by its qualified name.
+
+    Returns JSON with ``qualified_name``, ``kind``, ``signature``, ``body``.
+    Example URI: ``trelix://repo//Users/you/myrepo/symbols/AuthService.login``
+    """
+    from trelix_mcp.resources import get_symbol_source
+
+    return get_symbol_source(repo_path, qualified_name)
 
 
 @mcp.tool()
