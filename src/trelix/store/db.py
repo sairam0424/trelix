@@ -37,6 +37,10 @@ from trelix.core.models import (
     TypeEdge,
 )
 
+if TYPE_CHECKING:
+    from trelix.analysis.defuse import DefUseEdge
+    from trelix.analysis.taint import TaintFlow
+
 DDL = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -1433,7 +1437,7 @@ class Database:
     # Def-use chains (v2.2 data-flow analysis)
     # ------------------------------------------------------------------
 
-    def insert_def_use_edges(self, edges: list["DefUseEdge"]) -> None:
+    def insert_def_use_edges(self, edges: list[DefUseEdge]) -> None:
         """Bulk-insert def-use edges for a symbol."""
         if not edges:
             return
@@ -1444,7 +1448,7 @@ class Database:
         )
         self._conn.commit()
 
-    def get_data_flows(self, symbol_id: int) -> list["DefUseEdge"]:
+    def get_data_flows(self, symbol_id: int) -> list[DefUseEdge]:
         """Return all def-use edges for a symbol."""
         from trelix.analysis.defuse import DefUseEdge
         rows = self._conn.execute(
@@ -1467,12 +1471,13 @@ class Database:
     # Taint flows (v2.2 semgrep integration)
     # ------------------------------------------------------------------
 
-    def insert_taint_flows(self, flows: list["TaintFlow"]) -> None:
+    def insert_taint_flows(self, flows: list[TaintFlow]) -> None:
         """Bulk-insert taint flows from a semgrep scan."""
         if not flows:
             return
         self._conn.executemany(
-            "INSERT INTO taint_flows (source_file, source_line, sink_file, sink_line, rule_id, severity) "
+            "INSERT INTO taint_flows "
+            "(source_file, source_line, sink_file, sink_line, rule_id, severity) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             [
                 (f.source_file, f.source_line, f.sink_file, f.sink_line, f.rule_id, f.severity)
@@ -1485,7 +1490,7 @@ class Database:
         self,
         severity: str | None = None,
         limit: int = 50,
-    ) -> list["TaintFlow"]:
+    ) -> list[TaintFlow]:
         """Return taint flows, optionally filtered by severity."""
         from trelix.analysis.taint import TaintFlow
         if severity:

@@ -12,10 +12,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from trelix.core.models import Symbol
+from trelix.core.models import Symbol
 
 logger = logging.getLogger("trelix.analysis.defuse")
 
@@ -61,7 +59,7 @@ class DataFlowExtractor:
     all language-specific assignment forms. Returns [] on any failure.
     """
 
-    def extract(self, symbol: "Symbol") -> list[DefUseEdge]:
+    def extract(self, symbol: Symbol) -> list[DefUseEdge]:
         """Extract def-use edges from a symbol body. Never raises."""
         if not symbol.body or not symbol.id:
             return []
@@ -71,7 +69,7 @@ class DataFlowExtractor:
             logger.debug("DataFlowExtractor fallback for %s: %s", symbol.qualified_name, exc)
             return self._extract_regex_fallback(symbol)
 
-    def _extract_tree_sitter(self, symbol: "Symbol") -> list[DefUseEdge]:
+    def _extract_tree_sitter(self, symbol: Symbol) -> list[DefUseEdge]:
         """Walk tree-sitter AST to find assignment and identifier nodes."""
         try:
             from tree_sitter_languages import get_parser as get_ts_parser
@@ -128,7 +126,7 @@ class DataFlowExtractor:
         walk(tree.root_node)
         return edges
 
-    def _extract_regex_fallback(self, symbol: "Symbol") -> list[DefUseEdge]:
+    def _extract_regex_fallback(self, symbol: Symbol) -> list[DefUseEdge]:
         """Simple regex fallback when tree-sitter fails."""
         import re
         if not symbol.body or not symbol.id:
