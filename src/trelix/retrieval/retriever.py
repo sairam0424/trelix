@@ -250,6 +250,9 @@ class Retriever:
         vector_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["vector"]]
         bm25_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["bm25"]]
         grep_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["grep"]]
+        sparse_results: list[SearchResult] = [
+            r for lr in leg_results_list for r in lr.get("sparse", [])
+        ]
 
         # 5th leg: file-summary search (RAPTOR-style, off by default)
         summary_results: list[SearchResult] = []
@@ -274,12 +277,13 @@ class Retriever:
             sub_chunk_results = self._sub_chunk_search(sc_query_embedding, k=cfg.top_k_sub_chunk)
 
         logger.info(
-            "Pre-fusion leg sizes: vector=%d bm25=%d grep=%d summary=%d sub_chunk=%d",
+"Pre-fusion leg sizes: vector=%d bm25=%d grep=%d summary=%d sub_chunk=%d sparse=%d",
             len(vector_results),
             len(bm25_results),
             len(grep_results),
             len(summary_results),
-            len(sub_chunk_results),
+len(sub_chunk_results),
+            len(sparse_results),
         )
 
         # -- Trace: per-leg results --
@@ -291,7 +295,8 @@ class Retriever:
                 "bm25_count": len(bm25_results),
                 "grep_count": len(grep_results),
                 "summary_count": len(summary_results),
-                "sub_chunk_count": len(sub_chunk_results),
+"sub_chunk_count": len(sub_chunk_results),
+                "sparse_count": len(sparse_results),
                 "top_vector": [
                     {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
                     for r in vector_results[:5]
@@ -308,12 +313,16 @@ class Retriever:
                     {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
                     for r in summary_results[:5]
                 ],
+                "top_sparse": [
+                    {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
+                    for r in sparse_results[:5]
+                ],
             },
         )
 
         _weights = cfg.file_type_weights if cfg.file_type_weighting_enabled else None
         fused = reciprocal_rank_fusion(
-            [vector_results, bm25_results, grep_results, summary_results, sub_chunk_results],
+[vector_results, bm25_results, grep_results, summary_results, sub_chunk_results, sparse_results],
             k=cfg.rrf_k,
             weights=_weights,
         )
@@ -610,6 +619,27 @@ class Retriever:
             hints = sq.grep_hints if sq.grep_hints else [sq.semantic_query]
             for hint in hints:
                 out["grep"].extend(grep_search(self.db, hint, k=cfg.top_k_grep))
+
+        # Sparse leg (SPLADE-Code, 6th leg — off by default)
+        out["sparse"] = []
+        if cfg.sparse_enabled:
+            try:
+                from trelix.embedder.sparse import SparseEmbedder
+                from trelix.retrieval.sparse_search import sparse_search
+                from trelix.store.sparse_store import SparseStore
+
+                sparse_emb = SparseEmbedder(
+                    model_name=self.config.sparse.model,
+                    top_k=self.config.sparse.top_k_tokens,
+                )
+                query_sparse = sparse_emb.embed_query(sq.semantic_query)
+                if query_sparse:
+                    sparse_store = SparseStore(self.config.db_path_absolute)
+                    out["sparse"] = sparse_search(
+                        sparse_store, self.db, query_sparse, k=cfg.top_k_sparse
+                    )
+            except Exception as exc:
+                logger.warning("Sparse search leg failed (non-fatal): %s", exc)
 
         return out
 
