@@ -69,3 +69,23 @@ The `output` query parameter on `GET /graph/visualize` is validated server-side:
 - **Transient generation**: HyDE generates synthetic code snippets via LLM calls; these snippets are never persisted to disk
 - **LLM exposure**: Only the normal LLM provider data-transmission path applies (i.e., no additional sensitive data is sent beyond what standard similarity search already sends to your LLM provider)
 - **No local storage**: Synthetic snippets are embedded transiently in memory for ranking; they are discarded after the search completes
+
+## v2.2.0 Security Notes
+
+### Agentic Loop Security
+- AgentLoop executes `retrieve`, `grep`, and `get_symbol` actions only — no code execution, no shell commands
+- All actions read from the indexed SQLite DB; no external network calls during agent turns
+- `max_results` on grep is capped at 50 (enforced in loop.py._do_grep)
+- Disable: `TRELIX_RETRIEVAL_AGENTIC=false` (default)
+
+### Taint Analysis Security
+- TaintAnalyzer runs the Semgrep CLI via subprocess with a 120-second timeout
+- Semgrep operates on local files only; no data leaves the machine
+- Rule files: use `--rules <path>` to restrict to known-good rules; default uses Semgrep registry (requires internet)
+- Results stored in `taint_flows` SQLite table (local, not transmitted)
+- Disable: `TRELIX_PARSER_TAINT=false` (default)
+
+### Sparse Embeddings
+- SPLADE-Code model weights loaded from HuggingFace at first use (internet required once, cached locally)
+- Sparse vectors stored in `sparse_embeddings` SQLite table (local only)
+- No query data sent externally when using local inference

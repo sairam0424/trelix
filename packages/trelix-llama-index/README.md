@@ -71,18 +71,16 @@ retriever = TrelixIndexRetriever(
 nodes = retriever.retrieve("how does the payment processing work?")
 ```
 
-Enable beast-mode via environment:
+## v2.2.0 — What's New
 
-```bash
-# HyDE fallback: generate synthetic query augmentation if real embeddings underperform
-TRELIX_RETRIEVAL_HYDE_FALLBACK=true trelix index /path/to/repo
+trelix v2.2.0 adds four intelligence upgrades. The TrelixIndexRetriever interface is unchanged — activate features via env vars.
 
-# PageRank boost: weight results by architectural centrality
-TRELIX_RETRIEVAL_PAGERANK_BOOST=true trelix index /path/to/repo
-
-# Both enabled (recommended for complex monorepos)
-TRELIX_RETRIEVAL_HYDE_FALLBACK=true TRELIX_RETRIEVAL_PAGERANK_BOOST=true trelix index /path/to/repo
-```
+| Feature | Env var | Benefit for LlamaIndex users |
+|---------|---------|------------------------------|
+| Agentic loop | `TRELIX_RETRIEVAL_AGENTIC=true` | Multi-hop retrieval for complex queries |
+| SPLADE-Code | `TRELIX_RETRIEVAL_SPARSE=true` | Better recall on identifier-heavy queries |
+| Block indexing | `TRELIX_CHUNKER_MULTI_GRANULARITY=true` | Precise sub-function retrieval |
+| Taint analysis | `trelix taint (CLI)` | Security flow detection in indexed repos |
 
 ## Configuration
 
