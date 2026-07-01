@@ -342,6 +342,19 @@ class Indexer:
             self._report_progress(3, "Embedding chunks…", 0.0, stats)
             asyncio.run(self._batch_embed_and_store_async(pending, stats))
 
+        # Record dimension after successful embedding phase
+        if pending:
+            try:
+                from trelix.store.dimension_guard import DimensionGuard
+
+                DimensionGuard.record(
+                    self.db,
+                    dimension=self.embedder.dimension,
+                    provider=self.config.embedder.provider,
+                )
+            except Exception as exc:
+                logger.debug("DimensionGuard.record failed (non-fatal): %s", exc)
+
         # ── Sparse embedding phase (SPLADE-Code) — runs when sparse_enabled=True ──
         if self.config.retrieval.sparse_enabled and pending:
             try:
