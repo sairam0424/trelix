@@ -4,8 +4,9 @@ Research basis: 108-agent deep research, 730 tool uses, adversarial verification
 Target audience: AI agent developers + IDE users + DevOps/CI engineers (all three simultaneously).
 
 **Latest updates:**
-- ✅ **v2.1.0 (June 2026)** — Beast-mode retrieval: HyDE query expansion, FLARE re-retrieval, file-summary 5th leg, PageRank symbol boost, incremental graph updater, query telemetry, CoIR eval harness. All opt-in via env flags. Zero regression.
-- ✅ **v2.0.0 (June 2026)** — LanceDB backend, PLAID reranker, REST API, streaming synthesis, BGE-Code-v1 embedder, Nomic CodeRankEmbed, knowledge graph (CodeGraph, Louvain communities, Pyvis viz, 4th retrieval leg, MCP tools)
+- ✅ **v2.2.0 (July 2026)** — Agentic ReAct loop, DataFlowExtractor + TaintAnalyzer, SPLADE-Code 6th RRF leg, MGS3 multi-granularity 7th RRF leg. All opt-in via env flags.
+- ✅ **v2.1.0 (June 2026)** — HyDE, FLARE, file-summary 5th leg, PageRank boost, telemetry, CoIR eval harness. Knowledge Graph + Community Detection.
+- ✅ **v2.0.0 (June 2026)** — LanceDB, PLAID reranker, REST API, streaming synthesis, BGE-Code-v1, Nomic CodeRankEmbed.
 
 ---
 
@@ -545,6 +546,21 @@ Week 4:  Knowledge graph blog post + Pyvis demo page (Knowledge Graph Ecosystem 
 | BGE double-prefix investigation | 📋 Backlog | Evaluate BGE double-prefix strategy for improved code semantics retrieval |
 | Knowledge graph — LLM-powered concept labeling per community | 📋 Backlog | Use ConceptExtractor to auto-label Louvain clusters for richer onboarding output |
 | Multi-language semantic matching | 📋 Backlog | Extend query expansion to polyglot repos (e.g., TypeScript + Python calls) |
+
+---
+
+## v2.3.0 Backlog
+
+**Planned features & improvements:**
+
+| Item | Status | Priority | Notes |
+|---|---|---|---|
+| Wire multi_query_enabled into retriever | 📋 Backlog | P1 | Expose `multi_query_enabled` config flag to retriever for multi-query expansion routing |
+| flare_max_iterations → flare_max_retries rename | 📋 Backlog | P2 | Semantic rename for consistency with agentic ReAct retry semantics |
+| MCP resources exposure | 📋 Backlog | P1 | Expose symbol metadata as MCP resources (not just tools) for richer Cursor/Claude Code context |
+| Dimension guard for embedding provider switches | 📋 Backlog | P2 | Runtime validation to prevent mismatched embedding dimensions when switching providers mid-lifecycle |
+| PR/diff semantic review | 📋 Backlog | P1 | Semantic diff embeddings for LLM-aware code review suggestions in GitHub integration |
+| Multi-repo federated search | 📋 Backlog | P2 | Search across multiple indexed repositories with rank fusion and repo-scoped filtering |
 
 ---
 
