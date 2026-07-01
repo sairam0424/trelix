@@ -39,6 +39,8 @@ cp .env.example .env
 
 ```bash
 make test           # full suite with coverage (1325 unit + 16 integration tests)
+
+make test           # full suite with coverage (1370+ unit + 16 integration tests)
 make test-fast      # unit tests only (no API calls, fast)
 make lint           # ruff check + ruff format (auto-formats before diff-check, cross-platform safe)
 make format         # ruff format
@@ -158,6 +160,46 @@ trelix eval --golden .trelix/golden.jsonl
 2. Wire it into `EvalHarness.run()` in `src/trelix/eval/harness.py`
 3. Write tests in `tests/unit/test_eval_<name>.py` — no LLM calls required for metric functions
 
+### trelix/agent/ — ReAct Agentic Loop
+
+The agent module lives at `src/trelix/agent/` and implements a ReAct (Reason + Act) loop over the trelix retrieval stack:
+
+| File | Responsibility |
+|------|----------------|
+| `actions.py` | ActionType enum, AgentAction, Observation, Turn dataclasses |
+| `history.py` | TurnHistory, HistoryCompressor (token-budget context trimming) |
+| `tools.py` | OpenAI function-calling tool schemas for 4 actions |
+| `loop.py` | AgentLoop orchestrator — ReAct Thought→Action→Observation cycle |
+
+All agent tests live in `tests/unit/test_agent_*.py`. No LLM calls are needed — `TrelixChatClient` is mocked throughout the test suite.
+
+### trelix/analysis/ — Program Analysis
+
+The analysis module lives at `src/trelix/analysis/` and provides static program analysis on top of the indexed codebase:
+
+| File | Responsibility |
+|------|----------------|
+| `defuse.py` | DataFlowExtractor — tree-sitter def-use chain extraction (crash-safe) |
+| `taint.py` | TaintAnalyzer — Semgrep CLI wrapper (requires `trelix[taint]`) |
+
+To use taint analysis, install the optional extra:
+
+```bash
+pip install -e ".[taint]"
+```
+
+Tests that exercise `TaintAnalyzer` mock the subprocess call, so the full test suite runs without Semgrep installed.
+
+### trelix/embedder/sparse.py and trelix/store/sparse_store.py — Sparse Embeddings
+
+`SparseEmbedder` produces `{token_id: weight}` SPLADE-Code vectors and requires the optional extra:
+
+```bash
+pip install -e ".[sparse]"
+```
+
+`SparseStore` is a SQLite inverted index — no external service or vector database is needed. Tests run without torch: `SparseEmbedder` returns `{}` automatically when `_TORCH_AVAILABLE=False`, so the sparse test suite passes in any environment.
+
 ### Adding a New Language Parser
 
 1. Create `src/trelix/indexing/parser/extractors/<language>.py`
@@ -220,6 +262,8 @@ Open a [GitHub Discussion](https://github.com/sairam0424/trelix/discussions) for
 ## Versioning & Stability Policy
 
 trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.1.0**.
+
+trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.2.0**.
 
 ### Stable public API (guaranteed not to change without a major version bump)
 
