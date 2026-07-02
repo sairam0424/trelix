@@ -606,6 +606,16 @@ def migrate_vectors(
     url: str = typer.Option("http://localhost:6333", help="Qdrant URL"),
     collection: str = typer.Option("trelix", help="Qdrant collection name"),
     api_key: str = typer.Option("", help="Qdrant API key (optional)"),
+    reset: Annotated[
+        bool,
+        typer.Option(
+            "--reset",
+            help=(
+                "Clear all stored embeddings and dimension metadata so trelix index starts fresh. "
+                "Use after switching embedding providers."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Migrate embeddings from SQLite to Qdrant (or another backend)."""
     _setup_logging(False)
@@ -617,6 +627,21 @@ def migrate_vectors(
 
     from trelix.core.config import IndexConfig, StoreConfig
     from trelix.store.vector_qdrant import QdrantVectorStore
+
+    if reset:
+        from trelix.core.config import IndexConfig as _IndexConfig
+        from trelix.store.db import Database as _Database
+        from trelix.store.dimension_guard import DimensionGuard as _DimensionGuard
+
+        cfg = _IndexConfig(repo_path=str(Path(repo).resolve()))
+        db = _Database(cfg.db_path_absolute)
+        _DimensionGuard.reset(db)
+        db.clear_all_embeddings()
+        console.print(
+            "[green]Embeddings and dimension metadata cleared.[/green]\n"
+            "Run [bold]trelix index .[/bold] to re-embed with the new provider."
+        )
+        return
 
     if to != "qdrant":
         err_console.print(
@@ -1046,6 +1071,214 @@ def taint(
             f"{f.source_file}:{f.source_line}",
             f"{f.sink_file}:{f.sink_line}",
         )
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# review
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def review(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")] = ".",
+    diff: Annotated[
+        str | None,
+        typer.Option("--diff", "-d", help="Path to .diff file. If omitted, runs git diff."),
+    ] = None,
+    base: Annotated[str, typer.Option("--base", help="Base git ref for diff.")] = "HEAD~1",
+    head: Annotated[str, typer.Option("--head", help="Head git ref for diff.")] = "HEAD",
+    json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON.")] = False,
+    max_files: Annotated[int, typer.Option("--max-files", help="Max files to review.")] = 10,
+) -> None:
+    """Review a git diff using trelix retrieval-augmented analysis."""
+    import json as _json
+
+    from trelix.core.config import IndexConfig
+    from trelix.review.diff_parser import DiffParser
+    from trelix.review.reviewer import DiffReviewer
+
+    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    parser = DiffParser()
+
+    with console.status("Parsing diff..."):
+        if diff:
+            diff_text = Path(diff).read_text()
+            hunks = parser.parse(diff_text)
+        else:
+            hunks = parser.from_git(str(Path(repo).resolve()), base=base, head=head)
+
+    if not hunks:
+        console.print("[yellow]No changes found in diff.[/yellow]")
+        return
+
+    # Limit to max_files unique files
+    seen_files: set[str] = set()
+    filtered = []
+    for h in hunks:
+        if h.file_path not in seen_files:
+            seen_files.add(h.file_path)
+        if len(seen_files) <= max_files:
+            filtered.append(h)
+
+    console.print(f"Reviewing {len(filtered)} hunks across {len(seen_files)} files...")
+
+    reviewer = DiffReviewer(config)
+    with console.status("Retrieving context and generating review..."):
+        comments = reviewer.review(filtered)
+
+    if not comments:
+        console.print("[green]No issues found.[/green]")
+        return
+
+    if json_output:
+        import json as _json
+
+        console.print(
+            _json.dumps(
+                [
+                    {
+                        "file": c.file_path,
+                        "lines": f"{c.line_start}-{c.line_end}",
+                        "severity": c.severity,
+                        "comment": c.comment,
+                    }
+                    for c in comments
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"Review Results ({len(comments)} comments)")
+    table.add_column("File", style="dim")
+    table.add_column("Lines")
+    table.add_column("Severity", style="bold")
+    table.add_column("Comment", max_width=80)
+    for c in comments:
+        color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
+        table.add_row(
+            c.file_path,
+            f"{c.line_start}-{c.line_end}",
+            f"[{color}]{c.severity}[/{color}]",
+            c.comment,
+        )
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# search-all (federated search)
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="search-all")
+def search_all(
+    query: Annotated[str, typer.Argument(help="Search query.")],
+    config_file: Annotated[
+        str | None, typer.Option("--config", help="Path to federation.json")
+    ] = None,
+    k: Annotated[int, typer.Option("--k", help="Results per repo.")] = 10,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Search across all registered repos (federated search)."""
+    import json as _json
+
+    from trelix.federation.registry import RepoRegistry
+    from trelix.federation.retriever import FederatedRetriever
+
+    registry = RepoRegistry.load(config_file)
+    if not registry.list():
+        console.print(
+            "[yellow]No repos registered. Use: trelix federation add <alias> <path>[/yellow]"
+        )
+        return
+
+    fed = FederatedRetriever(registry)
+    with console.status(f"Searching {len(registry.list())} repos..."):
+        results = fed.retrieve(query, k=k)
+
+    if not results:
+        console.print("[yellow]No results found.[/yellow]")
+        return
+
+    if json_output:
+        console.print(
+            _json.dumps(
+                [
+                    {
+                        "file": r.file.rel_path,
+                        "symbol": r.symbol.qualified_name,
+                        "score": round(r.score, 4),
+                        "source": r.source,
+                    }
+                    for r in results
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"Federated Search: '{query}' ({len(results)} results)")
+    table.add_column("Repo", style="dim")
+    table.add_column("File")
+    table.add_column("Symbol")
+    table.add_column("Score", justify="right")
+    for r in results[:20]:
+        repo_tag = r.source.split(":")[0] if ":" in r.source else ""
+        table.add_row(repo_tag, r.file.rel_path, r.symbol.qualified_name, f"{r.score:.4f}")
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# federation sub-app
+# ---------------------------------------------------------------------------
+
+federation_app = typer.Typer(help="Manage federated repo registry.")
+app.add_typer(federation_app, name="federation")
+
+
+@federation_app.command("add")
+def federation_add(
+    alias: Annotated[str, typer.Argument(help="Short alias for the repo.")],
+    path: Annotated[str, typer.Argument(help="Absolute path to the repo root.")],
+    weight: Annotated[float, typer.Option("--weight", help="RRF weight (default 1.0).")] = 1.0,
+    config_file: Annotated[str | None, typer.Option("--config")] = None,
+) -> None:
+    """Register a repo for federated search."""
+    from trelix.federation.registry import RepoRegistry
+
+    registry = RepoRegistry.load(config_file)
+    try:
+        registry.add(alias, path, weight)
+        registry.save()
+        console.print(f"[green]Registered '{alias}' -> {path}[/green]")
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+
+@federation_app.command("list")
+def federation_list(
+    config_file: Annotated[str | None, typer.Option("--config")] = None,
+) -> None:
+    """List all registered repos."""
+    from trelix.federation.registry import RepoRegistry
+
+    registry = RepoRegistry.load(config_file)
+    entries = registry.list()
+    if not entries:
+        console.print("[yellow]No repos registered.[/yellow]")
+        return
+    table = Table(title="Registered Repos")
+    table.add_column("Alias")
+    table.add_column("Path")
+    table.add_column("Weight", justify="right")
+    for e in entries:
+        table.add_row(e.alias, e.path, str(e.weight))
     console.print(table)
 
 

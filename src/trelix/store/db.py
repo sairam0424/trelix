@@ -282,6 +282,12 @@ class Database:
         )
         self._conn.commit()
 
+        # v2.3 Plan E migration: index_metadata table for embedding dimension guard
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        self._conn.commit()
+
         # v2.2 migration: def-use chains (data-flow analysis)
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS def_use_edges ("
@@ -1539,6 +1545,47 @@ class Database:
 
     def __exit__(self, *args: object) -> None:
         self.close()
+
+    # ------------------------------------------------------------------
+    # index_metadata helpers (v2.3 Plan E: embedding dimension guard)
+    # ------------------------------------------------------------------
+
+    def get_embedding_dimension(self) -> int | None:
+        """Return stored embedding dimension, or None if not yet recorded."""
+        row = self._conn.execute(
+            "SELECT value FROM index_metadata WHERE key = 'embedding_dimension'"
+        ).fetchone()
+        if row is None:
+            return None
+        return int(row[0])
+
+    def set_embedding_dimension(self, dimension: int) -> None:
+        """Store the embedding dimension used for this index."""
+        self._conn.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('embedding_dimension', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(dimension),),
+        )
+        self._conn.commit()
+
+    def delete_embedding_dimension_key(self) -> None:
+        """Delete the stored embedding_dimension key from index_metadata."""
+        self._conn.execute("DELETE FROM index_metadata WHERE key = 'embedding_dimension'")
+        self._conn.commit()
+
+    def clear_all_embeddings(self) -> None:
+        """
+        Delete all rows from chunk_embeddings (sqlite-vec virtual table).
+
+        Best-effort: the table may not exist yet on a fresh install.
+        Any error is silently swallowed so callers don't need to guard
+        against a missing virtual table.
+        """
+        try:
+            self._conn.execute("DELETE FROM chunk_embeddings")
+            self._conn.commit()
+        except Exception:
+            pass  # chunk_embeddings is a sqlite-vec virtual table; may not exist yet
 
     # ------------------------------------------------------------------
     # Hydration queries  (chunk_id / symbol_id → full objects)

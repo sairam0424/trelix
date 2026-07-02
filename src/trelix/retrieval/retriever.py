@@ -104,6 +104,20 @@ class Retriever:
                 self._planner, max_size=config.retrieval.plan_cache_size
             )
 
+        # Dimension guard: detect provider switch mismatches at startup
+        try:
+            from trelix.store.dimension_guard import DimensionGuard, DimensionMismatchError
+
+            DimensionGuard.check(
+                self.db,
+                current_dimension=self.embedder.dimension,
+                provider=config.embedder.provider,
+            )
+        except DimensionMismatchError:
+            raise  # Re-raise with the clear user-facing message
+        except Exception as exc:
+            logger.debug("DimensionGuard.check failed (non-fatal): %s", exc)
+
         # Debug output dir: <repo_root>/.trelix/debug/
         self._debug_dir = Path(config.repo_path) / ".trelix" / "debug"
 
@@ -252,6 +266,55 @@ class Retriever:
                 leg_results_list = [f.result() for f in futures]
         else:
             leg_results_list = [self._run_subquery_legs(sq, strategy) for sq in plan.sub_queries]
+
+        # --- Multi-query expansion (optional 8th leg boost) ---
+        # When enabled, the primary sub-query is expanded into N variants via LLM,
+        # each variant runs through all retrieval legs in parallel, and results are
+        # merged into the existing leg buckets before RRF fusion.
+        # Deduplication by symbol_id happens later in _dedup().
+        if cfg.multi_query_enabled and plan.sub_queries:
+            try:
+                from trelix.retrieval.query_expansion import MultiQueryExpander
+
+                primary_query = plan.sub_queries[0].semantic_query
+                expander = MultiQueryExpander(
+                    llm_config=self.config.llm,
+                    n=cfg.multi_query_count,
+                )
+                variants = expander.expand(primary_query)
+                # variants[0] is always the original — skip it (already run above)
+                extra_variants = variants[1:]
+
+                if extra_variants:
+                    from concurrent.futures import ThreadPoolExecutor as _MQExecutor
+
+                    # Build minimal SubQuery objects for each variant
+                    # (no grep hints — pure semantic with simple token split for BM25)
+                    variant_sqs = [
+                        SubQuery(
+                            semantic_query=v,
+                            bm25_tokens=v.split()[:5],
+                            grep_hints=[],
+                            file_hints=[],
+                            hyde_snippet="",
+                            depends_on=[],
+                        )
+                        for v in extra_variants
+                    ]
+
+                    # Run variant legs in parallel using existing ThreadPoolExecutor
+                    with _MQExecutor() as pool:
+                        variant_futures = [
+                            pool.submit(self._run_subquery_legs, vsq, plan.strategy)
+                            for vsq in variant_sqs
+                        ]
+                        variant_leg_results = [f.result() for f in variant_futures]
+
+                    # Merge variant results into the main leg buckets
+                    leg_results_list = [*leg_results_list, *variant_leg_results]
+
+            except Exception as exc:
+                logger.warning("Multi-query expansion failed (non-fatal): %s", exc)
 
         # Merge per-leg results across all sub-queries for RRF
         vector_results: list[SearchResult] = [r for lr in leg_results_list for r in lr["vector"]]
