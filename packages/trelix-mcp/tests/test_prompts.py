@@ -4,8 +4,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
 
@@ -23,7 +21,8 @@ class TestPromptsRegistered:
         from trelix_mcp.server import mcp
 
         prompts = await mcp.list_prompts()
-        assert len(prompts) == 3, f"Expected 3 prompts, got {len(prompts)}: {[p.name for p in prompts]}"
+        names = [p.name for p in prompts]
+        assert len(prompts) == 3, f"Expected 3 prompts, got {len(prompts)}: {names}"
 
 
 class TestSearchPrompt:
