@@ -297,8 +297,7 @@ class Retriever:
                         variant_leg_results = [f.result() for f in variant_futures]
 
                     # Merge variant results into the main leg buckets
-                    for vlr in variant_leg_results:
-                        leg_results_list.append(vlr)
+                    leg_results_list = [*leg_results_list, *variant_leg_results]
 
             except Exception as exc:
                 logger.warning("Multi-query expansion failed (non-fatal): %s", exc)
