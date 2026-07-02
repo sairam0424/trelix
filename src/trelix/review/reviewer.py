@@ -9,6 +9,7 @@ For each changed hunk:
 
 Crash-safe: any failure returns [] and logs a warning.
 """
+
 from __future__ import annotations
 
 import json
