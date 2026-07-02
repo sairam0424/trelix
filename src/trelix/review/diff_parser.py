@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger("trelix.review.diff_parser")
 
 _FILE_RE = re.compile(r"^\+\+\+ b/(.+)$")
-_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 @dataclass
@@ -72,9 +72,9 @@ class DiffParser:
                 current_hunk = DiffHunk(
                     file_path=current_file,
                     old_start=int(m.group(1)),
-                    new_start=int(m.group(2)),
-                    old_lines=int(m.group(1)) if m.group(1) else 0,
-                    new_lines=int(m.group(3)) if m.group(3) else 1,
+                    new_start=int(m.group(3)),
+                    old_lines=int(m.group(2)) if m.group(2) else 1,
+                    new_lines=int(m.group(4)) if m.group(4) else 1,
                 )
                 continue
 
