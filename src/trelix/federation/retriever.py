@@ -7,6 +7,7 @@ lists -> RRF merge with per-repo weight -> deduplicate by (file_path, symbol_id)
 This is embedding-level federation only — no cross-repo call graph linking.
 Results from different repos are identified by (file_path, repo_path) pairs.
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,9 +58,7 @@ class FederatedRetriever:
             return ctx.results[:k]
 
         with ThreadPoolExecutor(max_workers=min(self._max_workers, len(entries))) as pool:
-            future_to_entry = {
-                pool.submit(_query_one, entry.path): entry for entry in entries
-            }
+            future_to_entry = {pool.submit(_query_one, entry.path): entry for entry in entries}
             for future in as_completed(future_to_entry):
                 entry = future_to_entry[future]
                 try:

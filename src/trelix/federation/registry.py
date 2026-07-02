@@ -12,6 +12,7 @@ Config file format (JSON):
 Default config path: ~/.config/trelix/repos.json
 Can be overridden by .trelix/federation.json in any repo.
 """
+
 from __future__ import annotations
 
 import json
@@ -79,9 +80,6 @@ class RepoRegistry:
         """Persist registry to JSON file."""
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "repos": [
-                {"alias": e.alias, "path": e.path, "weight": e.weight}
-                for e in self._entries
-            ]
+            "repos": [{"alias": e.alias, "path": e.path, "weight": e.weight} for e in self._entries]
         }
         self._config_path.write_text(json.dumps(data, indent=2))
