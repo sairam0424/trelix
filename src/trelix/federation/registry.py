@@ -65,7 +65,7 @@ class RepoRegistry:
         """Add a repo. Raises ValueError if alias already registered."""
         if any(e.alias == alias for e in self._entries):
             raise ValueError(f"Alias '{alias}' already registered")
-        self._entries.append(RepoEntry(alias=alias, path=path, weight=weight))
+        self._entries = [*self._entries, RepoEntry(alias=alias, path=path, weight=weight)]
 
     def remove(self, alias: str) -> None:
         """Remove a repo by alias. No-op if not found."""
