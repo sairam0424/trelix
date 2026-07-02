@@ -4,6 +4,7 @@ Unified diff parser for PR/diff review.
 Parses `git diff` output (unified diff format) into structured DiffHunk objects.
 Each hunk captures the file path, line numbers, added/removed lines, and context.
 """
+
 from __future__ import annotations
 
 import logging

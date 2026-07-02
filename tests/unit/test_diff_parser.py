@@ -1,4 +1,5 @@
 """Tests for DiffParser — unified diff parsing."""
+
 from __future__ import annotations
 
 import textwrap
