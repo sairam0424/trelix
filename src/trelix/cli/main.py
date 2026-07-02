@@ -1129,6 +1129,44 @@ def review(
 
     if not comments:
         console.print("[green]No issues found.[/green]")
+        return
+
+    if json_output:
+        import json as _json
+
+        console.print(
+            _json.dumps(
+                [
+                    {
+                        "file": c.file_path,
+                        "lines": f"{c.line_start}-{c.line_end}",
+                        "severity": c.severity,
+                        "comment": c.comment,
+                    }
+                    for c in comments
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"Review Results ({len(comments)} comments)")
+    table.add_column("File", style="dim")
+    table.add_column("Lines")
+    table.add_column("Severity", style="bold")
+    table.add_column("Comment", max_width=80)
+    for c in comments:
+        color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
+        table.add_row(
+            c.file_path,
+            f"{c.line_start}-{c.line_end}",
+            f"[{color}]{c.severity}[/{color}]",
+            c.comment,
+        )
+    console.print(table)
+
 
 # ---------------------------------------------------------------------------
 # search-all (federated search)
@@ -1170,31 +1208,20 @@ def search_all(
             _json.dumps(
                 [
                     {
-                        "file": c.file_path,
-                        "lines": f"{c.line_start}-{c.line_end}",
-                        "severity": c.severity,
-                        "comment": c.comment,
+                        "file": r.file.rel_path,
+                        "symbol": r.symbol.qualified_name,
+                        "score": round(r.score, 4),
+                        "source": r.source,
                     }
-                    for c in comments
+                    for r in results
                 ],
                 indent=2,
             )
         )
         return
 
-    table = Table(title=f"Review Results ({len(comments)} comments)")
-    table.add_column("File", style="dim")
-    table.add_column("Lines")
-    table.add_column("Severity", style="bold")
-    table.add_column("Comment", max_width=80)
-    for c in comments:
-        color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
-        table.add_row(
-            c.file_path,
-            f"{c.line_start}-{c.line_end}",
-            f"[{color}]{c.severity}[/{color}]",
-            c.comment,
-        )
+    from rich.table import Table
+
     table = Table(title=f"Federated Search: '{query}' ({len(results)} results)")
     table.add_column("Repo", style="dim")
     table.add_column("File")
