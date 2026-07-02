@@ -1218,9 +1218,7 @@ app.add_typer(federation_app, name="federation")
 def federation_add(
     alias: Annotated[str, typer.Argument(help="Short alias for the repo.")],
     path: Annotated[str, typer.Argument(help="Absolute path to the repo root.")],
-    weight: Annotated[
-        float, typer.Option("--weight", help="RRF weight (default 1.0).")
-    ] = 1.0,
+    weight: Annotated[float, typer.Option("--weight", help="RRF weight (default 1.0).")] = 1.0,
     config_file: Annotated[str | None, typer.Option("--config")] = None,
 ) -> None:
     """Register a repo for federated search."""
