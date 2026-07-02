@@ -15,6 +15,7 @@ Migration workflow:
     trelix migrate-vectors --reset   # clear old embeddings
     trelix index ./my-repo           # re-index with new provider
 """
+
 from __future__ import annotations
 
 import logging

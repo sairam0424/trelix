@@ -1,4 +1,5 @@
 """Tests for embedding dimension mismatch guard."""
+
 from __future__ import annotations
 
 from pathlib import Path

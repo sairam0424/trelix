@@ -284,10 +284,7 @@ class Database:
 
         # v2.3 Plan E migration: index_metadata table for embedding dimension guard
         self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS index_metadata ("
-            "key TEXT PRIMARY KEY, "
-            "value TEXT NOT NULL"
-            ")"
+            "CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
         self._conn.commit()
 
@@ -1573,9 +1570,7 @@ class Database:
 
     def delete_embedding_dimension_key(self) -> None:
         """Delete the stored embedding_dimension key from index_metadata."""
-        self._conn.execute(
-            "DELETE FROM index_metadata WHERE key = 'embedding_dimension'"
-        )
+        self._conn.execute("DELETE FROM index_metadata WHERE key = 'embedding_dimension'")
         self._conn.commit()
 
     def clear_all_embeddings(self) -> None:
