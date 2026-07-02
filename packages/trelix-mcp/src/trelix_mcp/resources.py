@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from trelix.core.config import IndexConfig
 from trelix.store.db import Database
@@ -35,6 +36,8 @@ def get_index_stats(repo_path: str) -> str:
         JSON string with keys ``symbol_count``, ``file_count``, ``chunk_count``,
         ``repo_path``, or ``{"error": "..."}`` on any failure.
     """
+    if not Path(repo_path).is_dir():
+        return json.dumps({"error": f"repo_path is not a directory: {repo_path}"})
     try:
         config = IndexConfig(repo_path=repo_path)
         db = Database(config.db_path_absolute)
@@ -71,6 +74,8 @@ def get_repo_manifest(repo_path: str) -> str:
         JSON string with keys ``repo_path``, ``file_count``, ``files`` (list of
         ``{path, language, symbol_count}`` dicts), or ``{"error": "..."}`` on failure.
     """
+    if not Path(repo_path).is_dir():
+        return json.dumps({"error": f"repo_path is not a directory: {repo_path}"})
     try:
         config = IndexConfig(repo_path=repo_path)
         db = Database(config.db_path_absolute)
@@ -114,6 +119,8 @@ def get_symbol_source(repo_path: str, qualified_name: str) -> str:
         JSON string with keys ``qualified_name``, ``kind``, ``signature``, ``body``,
         or ``{"error": "..."}`` if the symbol is not found or any failure occurs.
     """
+    if not Path(repo_path).is_dir():
+        return json.dumps({"error": f"repo_path is not a directory: {repo_path}"})
     try:
         config = IndexConfig(repo_path=repo_path)
         db = Database(config.db_path_absolute)

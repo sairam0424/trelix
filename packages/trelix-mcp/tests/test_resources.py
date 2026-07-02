@@ -6,8 +6,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 # Ensure trelix core is on path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
@@ -67,13 +65,13 @@ class TestIndexStatsResource:
             assert data["file_count"] == 500
             assert data["chunk_count"] == 1200
 
-    def test_index_stats_returns_error_on_missing_index(self, tmp_path: Path) -> None:
+    def test_index_stats_returns_error_on_missing_index(self) -> None:
         from trelix_mcp.resources import get_index_stats
 
-        result = get_index_stats(repo_path=str(tmp_path))
-        # Must return JSON even on error (never raise)
+        # Use a path that cannot have a trelix index (non-directory)
+        result = get_index_stats(repo_path="/nonexistent/path/that/cannot/exist")
         data = json.loads(result)
-        assert isinstance(data, dict)
+        assert "error" in data
 
     def test_index_stats_never_raises(self, tmp_path: Path) -> None:
         from trelix_mcp.resources import get_index_stats
