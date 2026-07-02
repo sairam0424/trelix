@@ -39,11 +39,11 @@ def _make_config(tmp_path: Path, multi_query_enabled: bool = True) -> MagicMock:
 
 class TestMultiQueryConfig:
     def test_multi_query_enabled_default_false(self, tmp_path: Path) -> None:
-        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)  # type: ignore[call-arg]
         assert cfg.retrieval.multi_query_enabled is False
 
     def test_multi_query_count_default_two(self, tmp_path: Path) -> None:
-        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)  # type: ignore[call-arg]
         assert cfg.retrieval.multi_query_count == 2
 
 
