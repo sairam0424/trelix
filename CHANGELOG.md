@@ -4,57 +4,60 @@ All notable changes to trelix are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic Versioning](https://semver.org/).
 
-## [2.2.0] — 2026-07-01
+## [2.3.0] — 2026-07-02
 
 ### Overview
-Four research-grounded intelligence upgrades across three phases. All gated by config flags
-defaulting to `False` — zero regression when disabled. 33 new files, 45 new tests.
+Five research-grounded intelligence and infrastructure upgrades. All features default **OFF** — zero regression when disabled. 42/42 e2e checks pass, 1458 unit tests, zero blockers.
 
-### Added — Agentic ReAct Loop (PR #31)
-- **`trelix/agent/` package** — `AgentAction`, `ActionType`, `Observation`, `Turn` dataclasses
-- **`TurnHistory` + `HistoryCompressor`** — multi-turn context management with token-budget trimming
-- **Agent tool schemas** — 4 tools in OpenAI function-calling format: `retrieve`, `grep`, `get_symbol`, `done`
-- **`AgentLoop(config).run(query) -> str`** — ReAct orchestrator: Thought → Action → Observation → repeat until `done` or `agent_max_turns`
-- **CLI**: `trelix ask --agentic` flag OR `TRELIX_RETRIEVAL_AGENTIC=true` activates multi-turn loop
-- Config: `agentic_enabled=False` (TRELIX_RETRIEVAL_AGENTIC), `agent_max_turns=8`, `agent_token_budget=6000`
-- Research basis: CodeAct (arXiv:2402.01030, 3-0 adversarial vote), OpenHands (arXiv:2407.16741, 3-0 vote)
+### Added — Embedding Dimension Guard (Plan E)
+- **`DimensionGuard`** — detects provider/dimension mismatch at `Retriever.__init__` startup; raises `DimensionMismatchError` with exact `trelix migrate-vectors --reset` recovery instruction
+- **`index_metadata` SQLite table** — records embedding dimension after each successful index run
+- **`trelix migrate-vectors --reset`** — clears `chunk_embeddings` + dimension metadata for fresh re-index after provider switch
+- Prevents silent wrong-results bug when switching e.g. Azure (3072-dim) → local (384-dim)
 
-### Added — Inter-procedural Data-Flow & Taint Analysis (PR #29)
-- **`trelix/analysis/defuse.py`** — `DataFlowExtractor` extracts def-use chains per function via tree-sitter AST walk; crash-safe, returns `[]` on any failure
-- **`trelix/analysis/taint.py`** — `TaintAnalyzer(repo_path, tier).run()` wraps Semgrep CLI; 3 tiers: default (intraprocedural), intrafile, interfile; returns `[]` when semgrep absent
-- **DB tables**: `def_use_edges` (variable definition/use pairs), `taint_flows` (source→sink paths)
-- **CLI**: `trelix taint <repo> [--tier intrafile] [--severity ERROR]` shows taint flows in Rich table
-- **`[taint]` extra**: `pip install trelix[taint]` adds `semgrep>=1.60.0`
-- Config: `dataflow_enabled=False` (TRELIX_PARSER_DATAFLOW), `taint_enabled=False` (TRELIX_PARSER_TAINT)
-- Research basis: CodeQL inter-procedural data-flow (3-0 vote), Semgrep taint tiers (2-1 vote)
+### Added — Multi-Query Retrieval Wiring (Plan A)
+- **`MultiQueryExpander` wired** into `_retrieve_standard` — the class already existed; this commit connects it to the live retrieval pipeline
+- When `TRELIX_RETRIEVAL_MULTI_QUERY=true`, primary query expands to N variants, each runs all retrieval legs in parallel via `ThreadPoolExecutor`, results merge into `leg_results_list` before RRF fusion
+- `variants[1:]` used (not `variants[:]`) — original query never runs twice
+- Falls back gracefully (non-fatal `logger.warning`) when LLM unavailable
 
-### Added — SPLADE-Code Sparse+Dense Hybrid Retrieval (PR #30)
-- **`trelix/embedder/sparse.py`** — `SparseEmbedder(model, top_k=128)` produces `{token_id: weight}` sparse vectors via `naver-splab/splade-code-distil`; graceful degradation when torch absent
-- **`trelix/store/sparse_store.py`** — `SparseStore` SQLite inverted index; dot-product similarity search; thread-safe; clean overwrite on upsert
-- **`trelix/retrieval/sparse_search.py`** — 6th RRF retrieval leg with `source="sparse"`
-- **`SparseConfig`**: `model`, `top_k_tokens=128`, `batch_size=16`
-- **`[sparse]` extra**: `pip install trelix[sparse]` adds `transformers>=4.40`, `torch>=2.2`
-- Config: `sparse_enabled=False` (TRELIX_RETRIEVAL_SPARSE), `top_k_sparse=20`
-- Research basis: SPLADE-Code (arXiv:2603.22008, 3-0 vote) — fixes BM25's identifier subword-fragmentation failures
+### Added — MCP Resources + Prompts (Plan B)
+- **MCP Resources** (application-controlled URI-addressable data):
+  - `trelix://index/stats` — aggregate index statistics
+  - `trelix://repo/{repo_path}/manifest` — indexed file list
+  - `trelix://repo/{repo_path}/symbols/{qualified_name}` — symbol source code
+- **MCP Prompts** (reusable LLM interaction templates):
+  - `trelix-search` — structured code search prompt
+  - `trelix-explain` — symbol explanation prompt
+  - `trelix-blast-radius` — impact analysis prompt
+- All resource handlers return JSON even on error; stdout stays clean for MCP stdio protocol
+- Research basis: MCP spec (5× 3-0 adversarial votes on Resources/Templates/Prompts primitives)
 
-### Added — MGS3-Style Multi-Granularity Sub-Symbol Indexing (PR #32)
-- **`trelix/indexing/multi_granularity.py`** — `Granularity` enum (FUNCTION/BLOCK/STATEMENT), `SubSymbolChunk` dataclass, `MultiGranularityChunker.extract_sub_chunks()` via tree-sitter; crash-safe
-- **`sub_chunks` DB table** — parent_symbol_id, granularity, chunk_text, line range
-- **Vector store** — `upsert_sub_chunk_embedding` / `search_sub_chunks` (10M offset sentinel); stubs on LanceDB + Qdrant backends
-- **7th RRF retrieval leg** — `source="sub_chunk"`
-- Config: `multi_granularity_enabled=False` (TRELIX_CHUNKER_MULTI_GRANULARITY), `multi_granularity_levels=["block","statement"]`, `sub_chunk_search_enabled=False` (TRELIX_RETRIEVAL_SUB_CHUNK), `top_k_sub_chunk=10`
-- Research basis: MGS3 (arXiv:2505.24274, KDD 2025, 2-1 vote) — block-level queries fail function-level retrieval
+### Added — Semantic PR/Diff Review (Plan C)
+- **`DiffParser`** — parses unified git diff into `DiffHunk` objects; `from_git(repo, base, head)` uses `subprocess.run` with `shell=False` (no injection risk); `to_search_query()` extracts identifiers for hybrid retrieval
+- **`DiffReviewer(config).review(hunks)`** — retrieval-augmented review: each hunk → search query → retrieve context → LLM generates `ReviewComment` objects; crash-safe, never raises
+- **`trelix review <repo> [--diff <file>] [--base] [--head] [--json]`** CLI command with Rich table output
+
+### Added — Multi-Repo Federated Search (Plan D)
+- **`RepoRegistry`** — load/save/manage `~/.config/trelix/repos.json`; `add(alias, path, weight)`, `remove`, `list`; raises `ValueError` on duplicate alias
+- **`FederatedRetriever(registry, max_workers=4).retrieve(query, k)`** — parallel fan-out across registered repos via `ThreadPoolExecutor`; RRF merge; deduplicates by `(file_path, symbol_id)`; crash-safe (returns `[]` when all repos fail)
+- **`trelix search-all <query>`** — federated search CLI
+- **`trelix federation add/list`** — registry management CLI
+- Config: `federation_enabled=False` (`TRELIX_FEDERATION_ENABLED`), `federation_max_workers=4`
 
 ### Breaking Changes
 None — all new features are opt-in via config flags.
 
-### v2.3.0 Backlog
-- Wire `multi_query_enabled` into `_run_subquery_legs`
-- `flare_max_iterations` rename → `flare_max_retries` for clearer semantics
-- MCP resources exposure (currently tools-only)
-- Dimension guard for embedding provider switches
+### v2.4.0 Backlog
+- Multi-query expansion observability (log which mode: LLM-assisted vs fallback)
+- MCP subscription/streaming (server-push on index changes)
+- FederatedRetriever caching layer for repeated queries
+- `trelix review` integration with GitHub PR API
+- Real-time multi-repo watch (`trelix watch-all`)
 
 ---
+
+## [2.2.0] — 2026-07-01
 
 ## [2.1.0] — 2026-06-30
 
@@ -393,6 +396,9 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 
 [2.2.0]: https://github.com/sairam0424/trelix/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/sairam0424/trelix/compare/v2.0.0...v2.1.0
+
+[2.3.0]: https://github.com/sairam0424/trelix/compare/v2.2.0...v2.3.0
+[2.2.0]: https://github.com/sairam0424/trelix/releases/tag/v2.2.0
 [2.0.0]: https://github.com/sairam0424/trelix/releases/tag/v2.0.0
 [1.1.0]: https://github.com/sairam0424/trelix/releases/tag/v1.1.0
 [1.0.0]: https://github.com/sairam0424/trelix/releases/tag/v1.0.0
