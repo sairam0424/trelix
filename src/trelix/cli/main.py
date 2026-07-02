@@ -636,11 +636,7 @@ def migrate_vectors(
         cfg = _IndexConfig(repo_path=str(Path(repo).resolve()))
         db = _Database(cfg.db_path_absolute)
         _DimensionGuard.reset(db)
-        try:
-            db._conn.execute("DELETE FROM chunk_embeddings")
-            db._conn.commit()
-        except Exception:
-            pass  # chunk_embeddings is a sqlite-vec virtual table; may not exist yet
+        db.clear_all_embeddings()
         console.print(
             "[green]Embeddings and dimension metadata cleared.[/green]\n"
             "Run [bold]trelix index .[/bold] to re-embed with the new provider."

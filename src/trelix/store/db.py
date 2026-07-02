@@ -1571,6 +1571,27 @@ class Database:
         )
         self._conn.commit()
 
+    def delete_embedding_dimension_key(self) -> None:
+        """Delete the stored embedding_dimension key from index_metadata."""
+        self._conn.execute(
+            "DELETE FROM index_metadata WHERE key = 'embedding_dimension'"
+        )
+        self._conn.commit()
+
+    def clear_all_embeddings(self) -> None:
+        """
+        Delete all rows from chunk_embeddings (sqlite-vec virtual table).
+
+        Best-effort: the table may not exist yet on a fresh install.
+        Any error is silently swallowed so callers don't need to guard
+        against a missing virtual table.
+        """
+        try:
+            self._conn.execute("DELETE FROM chunk_embeddings")
+            self._conn.commit()
+        except Exception:
+            pass  # chunk_embeddings is a sqlite-vec virtual table; may not exist yet
+
     # ------------------------------------------------------------------
     # Hydration queries  (chunk_id / symbol_id → full objects)
     # Used by Retriever, BM25, graph expansion to build SearchResult objects
