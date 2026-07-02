@@ -1,4 +1,5 @@
 """Tests for multi-query expansion wired into _retrieve_standard."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -115,13 +116,27 @@ class TestMultiQueryExpansionInRetrieval:
         def _make_result(symbol_id: int, score: float) -> SearchResult:
             chunk = Chunk(id=symbol_id, symbol_id=symbol_id, chunk_text="x", token_count=1)
             sym = Symbol(
-                id=symbol_id, file_id=1, name="fn", qualified_name="fn",
-                kind=SymbolKind.FUNCTION, line_start=1, line_end=5, signature="", body=""
+                id=symbol_id,
+                file_id=1,
+                name="fn",
+                qualified_name="fn",
+                kind=SymbolKind.FUNCTION,
+                line_start=1,
+                line_end=5,
+                signature="",
+                body="",
             )
-            file = IndexedFile(id=1, path="/r/a.py", rel_path="a.py",
-                               language=Language.PYTHON, hash="h", size_bytes=10)
-            return SearchResult(chunk=chunk, symbol=sym, file=file,
-                                score=score, rank=1, source="vector")
+            file = IndexedFile(
+                id=1,
+                path="/r/a.py",
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="h",
+                size_bytes=10,
+            )
+            return SearchResult(
+                chunk=chunk, symbol=sym, file=file, score=score, rank=1, source="vector"
+            )
 
         # Two results with same symbol_id from different query variants
         r1 = _make_result(42, 0.9)
