@@ -52,8 +52,16 @@ class DimensionGuard:
 
         Raises DimensionMismatchError if there is a mismatch.
         No-op when no dimension is stored yet (first index run).
+        No-op on unexpected errors (e.g. corrupted index_metadata or closed connection).
         """
-        stored = db.get_embedding_dimension()
+        try:
+            stored = db.get_embedding_dimension()
+        except Exception:
+            logger.warning(
+                "DimensionGuard.check(): could not read stored dimension — skipping check",
+                exc_info=True,
+            )
+            return
         if not isinstance(stored, int):
             return  # First run or unexpected return type — no check needed
         if stored != current_dimension:
@@ -71,7 +79,6 @@ class DimensionGuard:
 
     @staticmethod
     def reset(db: Database) -> None:
-        """Clear the stored dimension and all chunk embeddings for re-indexing."""
-        db._conn.execute("DELETE FROM index_metadata WHERE key = 'embedding_dimension'")
-        db._conn.commit()
+        """Clear the stored dimension record for re-indexing."""
+        db.delete_embedding_dimension_key()
         logger.info("DimensionGuard: dimension record cleared — ready for fresh index")
