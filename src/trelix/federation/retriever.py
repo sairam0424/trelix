@@ -64,10 +64,21 @@ class FederatedRetriever:
                 entry = future_to_entry[future]
                 try:
                     results = future.result(timeout=30)
-                    # Tag each result with the repo alias for provenance
-                    for r in results:
-                        r.source = f"{entry.alias}:{r.source}"
-                    per_repo_results.append(results)
+                    # Tag each result with the repo alias for provenance.
+                    # Create new SearchResult objects instead of mutating the
+                    # originals (immutability rule: never mutate existing objects).
+                    tagged = [
+                        SearchResult(
+                            chunk=r.chunk,
+                            symbol=r.symbol,
+                            file=r.file,
+                            score=r.score,
+                            rank=r.rank,
+                            source=f"{entry.alias}:{r.source}",
+                        )
+                        for r in results
+                    ]
+                    per_repo_results.append(tagged)
                 except Exception as exc:
                     logger.warning(
                         "FederatedRetriever: repo '%s' failed (non-fatal): %s",
