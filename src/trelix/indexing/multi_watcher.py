@@ -42,7 +42,7 @@ try:
     from watchfiles import Change as Change
     from watchfiles import awatch as awatch
 except ImportError:
-    awatch = None  # type: ignore[assignment]
+    awatch = None  # type: ignore[assignment,misc]
     Change = None  # type: ignore[assignment,misc]
 
 
