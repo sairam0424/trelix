@@ -51,19 +51,20 @@ class TestMultiQueryConfig:
 class TestMultiQueryExpansionInRetrieval:
     def test_multi_query_expander_called_when_enabled(self, tmp_path: Path) -> None:
         """When multi_query_enabled=True, MultiQueryExpander.expand() is called."""
-        from trelix.retrieval.query_expansion import MultiQueryExpander
+        from trelix.retrieval.query_expansion import ExpandResult, MultiQueryExpander
 
         expander = MultiQueryExpander(llm_config=None, n=2)
-        variants = expander.expand("how does authentication work")
-        # Without LLM, returns [original] — wiring test uses mocked LLM
-        assert isinstance(variants, list)
-        assert len(variants) >= 1
-        assert variants[0] == "how does authentication work"
+        result = expander.expand("how does authentication work")
+        # Without LLM, returns ExpandResult with original — wiring test uses mocked LLM
+        assert isinstance(result, ExpandResult)
+        assert isinstance(result.queries, list)
+        assert len(result.queries) >= 1
+        assert result.queries[0] == "how does authentication work"
 
     def test_expander_with_mock_llm_returns_variants(self, tmp_path: Path) -> None:
         """MultiQueryExpander with mocked LLM returns original + variants."""
         from trelix.core.config import LLMConfig
-        from trelix.retrieval.query_expansion import MultiQueryExpander
+        from trelix.retrieval.query_expansion import ExpandResult, MultiQueryExpander
 
         mock_client = MagicMock()
         mock_client.complete.return_value = MagicMock(
@@ -72,21 +73,25 @@ class TestMultiQueryExpansionInRetrieval:
 
         with patch("trelix.retrieval.query_expansion.build_chat_client", return_value=mock_client):
             expander = MultiQueryExpander(llm_config=LLMConfig(), n=2)
-            variants = expander.expand("how does authentication work")
+            result = expander.expand("how does authentication work")
 
-        assert "how does authentication work" in variants
-        assert len(variants) >= 2
+        assert isinstance(result, ExpandResult)
+        assert "how does authentication work" in result.queries
+        assert len(result.queries) >= 2
         # All variants are unique
-        assert len(variants) == len(set(variants))
+        assert len(result.queries) == len(set(result.queries))
+        assert result.llm_used is True
 
     def test_multi_query_disabled_does_not_expand(self, tmp_path: Path) -> None:
         """When multi_query_enabled=False, retrieval runs single query (no expansion)."""
-        from trelix.retrieval.query_expansion import MultiQueryExpander
+        from trelix.retrieval.query_expansion import ExpandResult, MultiQueryExpander
 
         expander = MultiQueryExpander(llm_config=None, n=2)
-        variants = expander.expand("test query")
-        # No LLM → always returns [original]
-        assert variants == ["test query"]
+        result = expander.expand("test query")
+        # No LLM → always returns ExpandResult with [original]
+        assert isinstance(result, ExpandResult)
+        assert result.queries == ["test query"]
+        assert result.llm_used is False
 
     def test_subquery_from_variant_has_correct_semantic_query(self, tmp_path: Path) -> None:
         """SubQuery built from a variant preserves the variant text as semantic_query."""

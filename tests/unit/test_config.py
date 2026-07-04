@@ -361,3 +361,54 @@ class TestRetrievalConfigPlanCache:
 
         with pytest.raises(ValidationError):
             RetrievalConfig(plan_cache_size=-1)
+
+
+# ---------------------------------------------------------------------------
+# RetrievalConfig — flare_max_retries rename (v2.4.0)
+# ---------------------------------------------------------------------------
+
+
+class TestRetrievalConfigFlareMaxRetries:
+    def test_flare_max_retries_new_name(self) -> None:
+        """New field name is accessible as flare_max_retries."""
+        cfg = RetrievalConfig(flare_max_retries=2)
+        assert cfg.flare_max_retries == 2
+
+    def test_flare_max_retries_new_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TRELIX_RETRIEVAL_FLARE_MAX_RETRIES env var is accepted."""
+        monkeypatch.setenv("TRELIX_RETRIEVAL_FLARE_MAX_RETRIES", "3")
+        cfg = RetrievalConfig()
+        assert cfg.flare_max_retries == 3
+
+    def test_flare_max_iterations_old_env_var_still_works(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Old TRELIX_RETRIEVAL_FLARE_MAX_ITER env var still works (backward compat)."""
+        monkeypatch.setenv("TRELIX_RETRIEVAL_FLARE_MAX_ITER", "2")
+        cfg = RetrievalConfig()
+        assert cfg.flare_max_retries == 2
+
+    def test_flare_max_iterations_old_env_var_emits_deprecation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Old TRELIX_RETRIEVAL_FLARE_MAX_ITER emits DeprecationWarning."""
+        import warnings
+
+        monkeypatch.setenv("TRELIX_RETRIEVAL_FLARE_MAX_ITER", "2")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            RetrievalConfig()
+        assert any(
+            issubclass(warning.category, DeprecationWarning)
+            and "TRELIX_RETRIEVAL_FLARE_MAX_ITER" in str(warning.message)
+            for warning in w
+        ), "Expected DeprecationWarning mentioning old env var name"
+
+    def test_flare_max_retries_default(self) -> None:
+        """Default value is still 1."""
+        cfg = RetrievalConfig()
+        # Make sure old attribute name does NOT exist
+        assert not hasattr(cfg, "flare_max_iterations"), (
+            "Old field name 'flare_max_iterations' must be removed"
+        )
+        assert cfg.flare_max_retries == 1

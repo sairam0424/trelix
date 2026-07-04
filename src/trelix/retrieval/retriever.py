@@ -152,6 +152,8 @@ class Retriever:
             "ts": datetime.datetime.now().isoformat(timespec="seconds"),
             "plan_source": plan_source,
         }
+        # Reset expansion result for this query (set later by _retrieve_standard if used)
+        _trace_local.expand_result = None
 
         if plan is None:
             plan = self._planner.plan(query)
@@ -216,12 +218,15 @@ class Retriever:
             context.elapsed_seconds,
         )
 
-        # Telemetry — record timing and result count (no-op when disabled)
+        # Telemetry — record timing, result count, and expansion metadata (no-op when disabled)
         if self.config.telemetry_enabled:
             from trelix.retrieval.telemetry import TelemetryWriter
 
             elapsed_ms = (time.perf_counter() - t_start) * 1000
-            TelemetryWriter(self.db, enabled=True).record(context, elapsed_ms=elapsed_ms)
+            expand_result = getattr(_trace_local, "expand_result", None)
+            TelemetryWriter(self.db, enabled=True).record(
+                context, elapsed_ms=elapsed_ms, expansion_result=expand_result
+            )
 
         return context
 
@@ -272,6 +277,8 @@ class Retriever:
         # each variant runs through all retrieval legs in parallel, and results are
         # merged into the existing leg buckets before RRF fusion.
         # Deduplication by symbol_id happens later in _dedup().
+        # expand_result is stored in thread-local so retrieve() can pass it to telemetry.
+        expand_result = None
         if cfg.multi_query_enabled and plan.sub_queries:
             try:
                 from trelix.retrieval.query_expansion import MultiQueryExpander
@@ -281,7 +288,13 @@ class Retriever:
                     llm_config=self.config.llm,
                     n=cfg.multi_query_count,
                 )
-                variants = expander.expand(primary_query)
+                expand_result = expander.expand(primary_query)
+                # Store in thread-local so retrieve() can forward it to telemetry
+                try:
+                    _trace_local.expand_result = expand_result
+                except Exception:
+                    pass
+                variants = expand_result.queries
                 # variants[0] is always the original — skip it (already run above)
                 extra_variants = variants[1:]
 

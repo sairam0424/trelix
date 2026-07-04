@@ -81,16 +81,29 @@ class DiffReviewer:
                 return None
         return self._llm_client
 
-    def review(self, hunks: list[DiffHunk]) -> list[ReviewComment]:
+    def review(
+        self,
+        hunks: list[DiffHunk] | None = None,
+        diff_text: str | None = None,
+    ) -> list[ReviewComment]:
         """
-        Review a list of diff hunks. Returns [] on any failure.
+        Review a list of diff hunks (or a raw diff string). Returns [] on any failure.
 
         Args:
-            hunks: DiffHunk objects from DiffParser
+            hunks:     DiffHunk objects from DiffParser. If omitted, diff_text is parsed.
+            diff_text: Raw unified diff string. Parsed into hunks when hunks is None/empty.
 
         Returns:
             list[ReviewComment] — empty list if no issues or any error
         """
+        if hunks is None:
+            hunks = []
+
+        if not hunks and diff_text:
+            from trelix.review.diff_parser import DiffParser
+
+            hunks = DiffParser().parse(diff_text)
+
         if not hunks:
             return []
 

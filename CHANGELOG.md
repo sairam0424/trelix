@@ -4,7 +4,65 @@ All notable changes to trelix are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic Versioning](https://semver.org/).
 
-## [2.1.0] — 2026-06-30
+## [2.4.0] — 2026-07-04
+
+### Overview
+Six backlog items shipped across Plans A–F. 1,467 unit tests passing, all features default-ON or backward-compatible.
+
+### ⚠️ BREAKING CHANGE — `search_code` MCP tool response envelope
+
+**Before (v2.3.0):** `search_code` returned `list[dict]` directly.
+
+**After (v2.4.0):** `search_code` returns a pagination envelope:
+```json
+{"results": [...], "next_cursor": 10, "total_available": 25}
+```
+
+**Migration:** Update any MCP client code that iterates `search_code(...)` directly:
+```python
+# Before
+for result in search_code(query="auth", repo_path="/repo"):
+    ...
+
+# After
+response = search_code(query="auth", repo_path="/repo")
+for result in response["results"]:
+    ...
+# Paginate: pass response["next_cursor"] as cursor= for the next page
+```
+
+### Added — Config field rename: `flare_max_retries` (Plan A)
+- **`flare_max_retries`** replaces `flare_max_iterations` in `RetrievalConfig`
+- Both `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` (new) and `TRELIX_RETRIEVAL_FLARE_MAX_ITER` (old) accepted via `AliasChoices`
+- Using the old env var emits `DeprecationWarning`; old name removed in v3.0.0
+
+### Added — Multi-Query Expansion Observability (Plan B)
+- **`ExpandResult`** dataclass — `(queries, llm_used, elapsed_ms)` returned by `MultiQueryExpander.expand()`
+- Three new nullable columns in `query_telemetry`: `expansion_used`, `expansion_variants`, `expansion_elapsed_ms`
+- `TelemetryWriter.record()` accepts optional `expansion_result=` to persist expansion metadata
+- Migration: idempotent `ALTER TABLE ADD COLUMN` — existing DBs upgraded automatically
+
+### Added — FederatedRetriever TTL Cache (Plan C)
+- **`FederatedRetriever(registry, cache_ttl=120.0)`** — SHA-256-keyed in-memory cache, thread-safe via `threading.Lock`
+- `cache_ttl=0` disables caching; `cache_stats()` returns hit/miss/size; `clear_cache()` for forced eviction
+- Expected ~90% hit rate for typical debugging-session query patterns
+
+### Added — GitHub PR API integration (Plan D)
+- **`GitHubPRClient`** — fetch PR file diffs and post review comments via GitHub REST API
+- **`trelix review --pr owner/repo#N`** — fetches PR diff from GitHub and runs `DiffReviewer`
+- **`trelix review --pr owner/repo#N --post-comments`** — posts findings back as a single batched GitHub review
+- Token from `GITHUB_TOKEN` env var only; handles all 7 file status values; 3,000-file truncation warning
+
+### Added — Multi-repo file watching (Plan E)
+- **`MultiRepoWatcher`** — single `watchfiles.awatch(*all_paths)` call watching all registered repos simultaneously
+- Hash guard prevents re-index cascade loops; deleted files are removed from the SQLite index + vector store
+- **`trelix watch-all`** — new CLI command; shows per-repo stats on exit; graceful Ctrl+C shutdown
+
+### Added — MCP pagination + progress notifications (Plan F)
+- **`search_code` pagination** — `cursor=` (offset) + `next_cursor` in response; MCP-spec-approved pattern for large payloads
+- **`index_codebase` progress** — `ctx.report_progress()` sends `notifications/progress` during indexing stages (best-effort)
+
+## [2.3.0] — 2026-07-02
 
 ### Overview
 Beast-mode upgrade: seven research-grounded features added across three phases. All gated

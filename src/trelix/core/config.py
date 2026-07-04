@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Language
@@ -426,12 +426,30 @@ class RetrievalConfig(BaseSettings):
         default=False,
         alias="TRELIX_RETRIEVAL_FLARE",
     )
-    flare_max_iterations: int = Field(
+    flare_max_retries: int = Field(
         default=1,
         ge=1,
         le=3,
-        alias="TRELIX_RETRIEVAL_FLARE_MAX_ITER",
+        validation_alias=AliasChoices(
+            "TRELIX_RETRIEVAL_FLARE_MAX_RETRIES",
+            "TRELIX_RETRIEVAL_FLARE_MAX_ITER",  # legacy — deprecated in v2.4
+        ),
     )
+
+    @model_validator(mode="after")
+    def _warn_deprecated_flare_iter_env(self) -> RetrievalConfig:
+        import os
+        import warnings
+
+        if "TRELIX_RETRIEVAL_FLARE_MAX_ITER" in os.environ:
+            warnings.warn(
+                "TRELIX_RETRIEVAL_FLARE_MAX_ITER is deprecated as of trelix v2.4.0. "
+                "Use TRELIX_RETRIEVAL_FLARE_MAX_RETRIES instead. "
+                "The old name will be removed in v3.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return self
 
     # PageRank-based symbol importance boost
     pagerank_boost_enabled: bool = Field(

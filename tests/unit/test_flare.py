@@ -39,7 +39,7 @@ class TestFLARELoop:
 
         mock_config = MagicMock()
         mock_config.retrieval.flare_enabled = True
-        mock_config.retrieval.flare_max_iterations = 1
+        mock_config.retrieval.flare_max_retries = 1
 
         loop = FLARELoop(mock_retriever, mock_synthesizer, mock_config)
         return loop, mock_retriever, mock_synthesizer
@@ -70,7 +70,7 @@ class TestFLARELoop:
         mock_synthesizer.synthesize.return_value = "I don't know."
         mock_config = MagicMock()
         mock_config.retrieval.flare_enabled = True
-        mock_config.retrieval.flare_max_iterations = 2
+        mock_config.retrieval.flare_max_retries = 2
         loop = FLARELoop(mock_retriever, mock_synthesizer, mock_config)
         loop.run("how does auth work")
         # max_iterations=2 means at most 2 synthesis calls (1 initial + 1 retry)
@@ -81,4 +81,4 @@ class TestFLARELoop:
 
         cfg = IndexConfig(repo_path=str(tmp_path))
         assert cfg.retrieval.flare_enabled is False
-        assert cfg.retrieval.flare_max_iterations == 1
+        assert cfg.retrieval.flare_max_retries == 1
