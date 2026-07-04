@@ -1,4 +1,4 @@
-"""Tests for query telemetry recording."""
+"""Tests for query telemetry recording and expansion observability (v2.4)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,87 @@ import pytest
 
 from trelix.retrieval.telemetry import TelemetryWriter
 from trelix.store.db import Database
+
+
+# ---------------------------------------------------------------------------
+# v2.4 expansion observability tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def db(tmp_path):
+    db_path = tmp_path / "test.db"
+    return Database(db_path)
+
+
+def test_query_telemetry_expansion_columns_exist(db: Database) -> None:
+    """query_telemetry table has all 3 expansion columns after init."""
+    cols = {
+        row[1]
+        for row in db._conn.execute("PRAGMA table_info(query_telemetry)").fetchall()
+    }
+    assert "expansion_used" in cols
+    assert "expansion_variants" in cols
+    assert "expansion_elapsed_ms" in cols
+
+
+def test_insert_query_telemetry_with_expansion(db: Database) -> None:
+    """insert_query_telemetry stores expansion info when provided."""
+    row_id = db.insert_query_telemetry(
+        query="how does auth work",
+        intent="function_lookup",
+        elapsed_ms=42.5,
+        result_count=10,
+        leg_sizes={"vector": 10, "bm25": 8},
+        expansion_used=True,
+        expansion_variants=3,
+        expansion_elapsed_ms=120.0,
+    )
+    assert row_id > 0
+    row = db._conn.execute(
+        "SELECT expansion_used, expansion_variants, expansion_elapsed_ms "
+        "FROM query_telemetry WHERE id=?",
+        (row_id,),
+    ).fetchone()
+    assert row[0] == 1        # expansion_used = True stored as 1
+    assert row[1] == 3        # expansion_variants
+    assert row[2] == pytest.approx(120.0)
+
+
+def test_insert_query_telemetry_without_expansion(db: Database) -> None:
+    """insert_query_telemetry stores NULL when expansion not provided."""
+    row_id = db.insert_query_telemetry(
+        query="find login function",
+        intent="",
+        elapsed_ms=10.0,
+        result_count=5,
+    )
+    row = db._conn.execute(
+        "SELECT expansion_used, expansion_variants, expansion_elapsed_ms "
+        "FROM query_telemetry WHERE id=?",
+        (row_id,),
+    ).fetchone()
+    assert row[0] is None
+    assert row[1] is None
+    assert row[2] is None
+
+
+def test_insert_query_telemetry_expansion_used_false(db: Database) -> None:
+    """expansion_used=False (LLM unavailable) is stored as 0, not NULL."""
+    row_id = db.insert_query_telemetry(
+        query="parse config",
+        intent="",
+        elapsed_ms=5.0,
+        result_count=3,
+        expansion_used=False,
+        expansion_variants=1,  # only original query used
+        expansion_elapsed_ms=0.0,
+    )
+    row = db._conn.execute(
+        "SELECT expansion_used FROM query_telemetry WHERE id=?",
+        (row_id,),
+    ).fetchone()
+    assert row[0] == 0   # False stored as 0
 
 
 class TestTelemetryWriter:

@@ -282,6 +282,25 @@ class Database:
         )
         self._conn.commit()
 
+        # v2.4 migration: add expansion observability columns (idempotent)
+        for col_def in [
+            "expansion_used INTEGER DEFAULT NULL",
+            "expansion_variants INTEGER DEFAULT NULL",
+            "expansion_elapsed_ms REAL DEFAULT NULL",
+        ]:
+            col_name = col_def.split()[0]
+            existing = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(query_telemetry)"
+                ).fetchall()
+            }
+            if col_name not in existing:
+                self._conn.execute(
+                    f"ALTER TABLE query_telemetry ADD COLUMN {col_def}"
+                )
+        self._conn.commit()
+
         # v2.3 Plan E migration: index_metadata table for embedding dimension guard
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -1416,14 +1435,29 @@ class Database:
         elapsed_ms: float,
         result_count: int,
         leg_sizes: dict[str, int] | None = None,
+        *,
+        expansion_used: bool | None = None,
+        expansion_variants: int | None = None,
+        expansion_elapsed_ms: float | None = None,
     ) -> int:
         """Insert one telemetry row. Returns row id."""
         import json
 
         cur = self._conn.execute(
-            "INSERT INTO query_telemetry (query, intent, elapsed_ms, result_count, leg_sizes) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (query, intent, elapsed_ms, result_count, json.dumps(leg_sizes or {})),
+            "INSERT INTO query_telemetry "
+            "(query, intent, elapsed_ms, result_count, leg_sizes, "
+            " expansion_used, expansion_variants, expansion_elapsed_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                query,
+                intent,
+                elapsed_ms,
+                result_count,
+                json.dumps(leg_sizes or {}),
+                int(expansion_used) if expansion_used is not None else None,
+                expansion_variants,
+                expansion_elapsed_ms,
+            ),
         )
         self._conn.commit()
         return int(cur.lastrowid or 0)
