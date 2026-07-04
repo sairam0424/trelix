@@ -2,12 +2,36 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from trelix.federation.registry import RepoEntry, RepoRegistry
+from trelix.federation.retriever import FederatedRetriever
+
+
+# ---------------------------------------------------------------------------
+# Helpers for cache tests
+# ---------------------------------------------------------------------------
+
+
+def _registry_with_paths(*paths: str) -> RepoRegistry:
+    """Build a RepoRegistry with given paths without touching disk."""
+    reg = RepoRegistry.__new__(RepoRegistry)
+    reg._config_path = "/tmp/fake-registry.json"
+    reg._entries = [RepoEntry(alias=f"r{i}", path=p, weight=1.0) for i, p in enumerate(paths)]
+    return reg
+
+
+def _mock_retriever_results(n: int = 3):
+    results = []
+    for i in range(n):
+        r = MagicMock()
+        r.symbol_id = f"sym_{i}"
+        results.append(r)
+    return results
 
 
 class TestRepoEntry:
@@ -116,3 +140,125 @@ class TestFederatedRetriever:
         fed = FederatedRetriever(registry)
         results = fed.retrieve("test", k=5)
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# TTL cache tests
+# ---------------------------------------------------------------------------
+
+
+def test_federated_cache_hit_on_second_call() -> None:
+    """Second identical query returns cached results without calling _query_repos."""
+    reg = _registry_with_paths("/fake/repo1")
+    fed = FederatedRetriever(reg, cache_ttl=60.0)
+
+    mock_results = _mock_retriever_results(3)
+
+    call_count = 0
+
+    def fake_retrieve(query: str, k: int = 10):
+        nonlocal call_count
+        call_count += 1
+        return mock_results
+
+    with patch.object(fed, "_query_repos", side_effect=fake_retrieve):
+        r1 = fed.retrieve("how does auth work", k=5)
+        r2 = fed.retrieve("how does auth work", k=5)
+
+    assert r1 == r2
+    assert call_count == 1, "Second call should hit cache, not re-execute"
+
+
+def test_federated_cache_miss_on_different_query() -> None:
+    """Different query strings produce separate cache entries."""
+    reg = _registry_with_paths("/fake/repo1")
+    fed = FederatedRetriever(reg, cache_ttl=60.0)
+    call_count = 0
+
+    def fake_retrieve(query: str, k: int = 10):
+        nonlocal call_count
+        call_count += 1
+        return _mock_retriever_results(2)
+
+    with patch.object(fed, "_query_repos", side_effect=fake_retrieve):
+        fed.retrieve("auth flow", k=5)
+        fed.retrieve("login function", k=5)
+
+    assert call_count == 2
+
+
+def test_federated_cache_disabled_when_ttl_zero() -> None:
+    """cache_ttl=0 disables caching — every call executes."""
+    reg = _registry_with_paths("/fake/repo1")
+    fed = FederatedRetriever(reg, cache_ttl=0)
+    call_count = 0
+
+    def fake_retrieve(query: str, k: int = 10):
+        nonlocal call_count
+        call_count += 1
+        return _mock_retriever_results(2)
+
+    with patch.object(fed, "_query_repos", side_effect=fake_retrieve):
+        fed.retrieve("auth", k=5)
+        fed.retrieve("auth", k=5)
+
+    assert call_count == 2
+
+
+def test_federated_cache_expires_after_ttl(monkeypatch) -> None:
+    """Cached entry expires after TTL seconds."""
+    reg = _registry_with_paths("/fake/repo1")
+    fed = FederatedRetriever(reg, cache_ttl=1.0)
+    call_count = 0
+
+    def fake_retrieve(query: str, k: int = 10):
+        nonlocal call_count
+        call_count += 1
+        return _mock_retriever_results(2)
+
+    with patch.object(fed, "_query_repos", side_effect=fake_retrieve):
+        fed.retrieve("auth", k=5)
+        # Simulate TTL expiry by advancing internal clock
+        with patch("trelix.federation.retriever.time") as mock_time:
+            mock_time.monotonic.return_value = time.monotonic() + 120.0
+            fed.retrieve("auth", k=5)
+
+    assert call_count == 2
+
+
+def test_federated_cache_stats() -> None:
+    """cache_stats() returns hits/misses/size correctly."""
+    reg = _registry_with_paths("/fake/repo1")
+    fed = FederatedRetriever(reg, cache_ttl=60.0)
+
+    def fake_retrieve(query: str, k: int = 10):
+        return _mock_retriever_results(2)
+
+    with patch.object(fed, "_query_repos", side_effect=fake_retrieve):
+        fed.retrieve("q1", k=5)  # miss
+        fed.retrieve("q1", k=5)  # hit
+        fed.retrieve("q2", k=5)  # miss
+
+    stats = fed.cache_stats()
+    assert stats["hits"] == 1
+    assert stats["misses"] == 2
+    assert stats["size"] == 2
+
+
+def test_federated_clear_cache() -> None:
+    """clear_cache() forces next call to re-execute."""
+    reg = _registry_with_paths("/fake/repo1")
+    fed = FederatedRetriever(reg, cache_ttl=60.0)
+    call_count = 0
+
+    def fake_retrieve(query: str, k: int = 10):
+        nonlocal call_count
+        call_count += 1
+        return _mock_retriever_results(2)
+
+    with patch.object(fed, "_query_repos", side_effect=fake_retrieve):
+        fed.retrieve("q1", k=5)
+        fed.clear_cache()
+        fed.retrieve("q1", k=5)
+
+    assert call_count == 2
