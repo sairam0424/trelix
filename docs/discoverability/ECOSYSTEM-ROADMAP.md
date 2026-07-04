@@ -583,6 +583,17 @@ Week 4:  Knowledge graph blog post + Pyvis demo page (Knowledge Graph Ecosystem 
 | Multi-query expansion observability | ✅ v2.4.0 | ExpandResult dataclass + 3 new telemetry columns |
 | flare_max_retries rename | ✅ v2.4.0 | Old env var deprecated until v3.0.0 with DeprecationWarning |
 
+**Shipped in v2.4.0 (removed from backlog):**
+
+| Item | Shipped | Notes |
+|---|---|---|
+| FederatedRetriever TTL cache | ✅ v2.4.0 | SHA-256 keyed, thread-safe, ~90% hit rate for debugging sessions |
+| Multi-repo file watching | ✅ v2.4.0 | MultiRepoWatcher + `trelix watch-all` CLI |
+| GitHub PR API integration | ✅ v2.4.0 | `trelix review --pr owner/repo#N`, optional --post-comments |
+| MCP search_code pagination | ✅ v2.4.0 | BREAKING: envelope return type; cursor= param |
+| Multi-query expansion observability | ✅ v2.4.0 | ExpandResult dataclass + 3 new telemetry columns |
+| flare_max_retries rename | ✅ v2.4.0 | Old env var deprecated until v3.0.0 with DeprecationWarning |
+
 ---
 
 ## Expected Discovery Surface After Full Rollout
