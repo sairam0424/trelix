@@ -1,9 +1,17 @@
 # trelix — Ecosystem Discoverability Roadmap
 
-Research basis: 108-agent deep research, 730 tool uses, adversarial verification (June 2026).  
+Research basis: 108-agent deep research, 730 tool uses, adversarial verification (v2.4.0 — July 2026).  
 Target audience: AI agent developers + IDE users + DevOps/CI engineers (all three simultaneously).
 
-**Latest updates (v2.0.0 — June 2026):**
+**Latest updates (v2.4.0 — July 2026):**
+- ✅ FederatedRetriever TTL cache shipped (v2.4.0) — SHA-256 keyed, thread-safe, cache_ttl=0 to disable, cache_stats()
+- ✅ Multi-repo file watching (watch-all) shipped (v2.4.0) — MultiRepoWatcher, single awatch() over all repos, hash guard, `trelix watch-all`
+- ✅ GitHub PR API integration shipped (v2.4.0) — `trelix review --pr owner/repo#N`, GitHubPRClient, --post-comments, GITHUB_TOKEN
+- ✅ MCP search_code pagination shipped (v2.4.0) — **BREAKING**: returns `{results, next_cursor, total_available}` envelope; cursor= param added
+- ✅ Multi-query expansion observability shipped (v2.4.0) — ExpandResult dataclass, 3 new query_telemetry columns, expansion_result= kwarg
+- ✅ flare_max_retries backward-compat rename shipped (v2.4.0) — TRELIX_RETRIEVAL_FLARE_MAX_RETRIES (new) + TRELIX_RETRIEVAL_FLARE_MAX_ITER (deprecated until v3.0.0)
+
+**Previous updates (v2.0.0 — June 2026):**
 - ✅ LanceDB backend shipped
 - ✅ PLAID reranker shipped
 - ✅ REST API shipped
@@ -69,14 +77,24 @@ from trelix.retrieval.retriever import Retriever
 mcp = FastMCP("trelix", stateless_http=True, json_response=True)
 
 @mcp.tool()
-def search_code(query: str, repo_path: str, k: int = 10) -> list[dict]:
-    """Search code in an indexed repository using hybrid semantic + keyword search."""
+def search_code(query: str, repo_path: str, k: int = 10, cursor: int = 0) -> dict:
+    """Search code in an indexed repository using hybrid semantic + keyword search.
+    
+    Returns {results: list, next_cursor: int|null, total_available: int}.
+    Use cursor= for pagination. Migrate: response["results"] instead of iterating response directly.
+    """
     config = IndexConfig(repo_path=repo_path)
     ctx = Retriever(config).retrieve(query)
-    return [{"file": r.file.rel_path, "symbol": r.symbol.qualified_name,
-             "lines": f"{r.symbol.line_start}-{r.symbol.line_end}",
-             "score": round(r.score, 4), "body": r.symbol.body[:500]} 
-            for r in ctx.results[:k]]
+    page = ctx.results[cursor:cursor + k]
+    next_cursor = cursor + k if cursor + k < len(ctx.results) else None
+    return {
+        "results": [{"file": r.file.rel_path, "symbol": r.symbol.qualified_name,
+                     "lines": f"{r.symbol.line_start}-{r.symbol.line_end}",
+                     "score": round(r.score, 4), "body": r.symbol.body[:500]}
+                    for r in page],
+        "next_cursor": next_cursor,
+        "total_available": len(ctx.results),
+    }
 
 @mcp.tool()
 def index_repo(repo_path: str, provider: str = "local") -> dict:
@@ -526,7 +544,7 @@ Week 4:  Knowledge graph blog post + Pyvis demo page (Knowledge Graph Ecosystem 
 
 ---
 
-## v2.1.0 Backlog
+## v2.x Backlog (post-v2.4.0)
 
 **Planned research & integration work:**
 
@@ -536,6 +554,17 @@ Week 4:  Knowledge graph blog post + Pyvis demo page (Knowledge Graph Ecosystem 
 | LanceDB + Qdrant file summary retrieval leg integration | 📋 Backlog | Integrate file-level summaries with hybrid LanceDB/Qdrant retrieval pipeline |
 | Knowledge graph — LLM-powered concept labeling per community | 📋 Backlog | Use ConceptExtractor to auto-label Louvain clusters for richer onboarding output |
 | Knowledge graph — incremental re-index on file change | 📋 Backlog | Only rebuild affected subgraph nodes instead of full rebuild |
+
+**Shipped in v2.4.0 (removed from backlog):**
+
+| Item | Shipped | Notes |
+|---|---|---|
+| FederatedRetriever TTL cache | ✅ v2.4.0 | SHA-256 keyed, thread-safe, ~90% hit rate for debugging sessions |
+| Multi-repo file watching | ✅ v2.4.0 | MultiRepoWatcher + `trelix watch-all` CLI |
+| GitHub PR API integration | ✅ v2.4.0 | `trelix review --pr owner/repo#N`, optional --post-comments |
+| MCP search_code pagination | ✅ v2.4.0 | BREAKING: envelope return type; cursor= param |
+| Multi-query expansion observability | ✅ v2.4.0 | ExpandResult dataclass + 3 new telemetry columns |
+| flare_max_retries rename | ✅ v2.4.0 | Old env var deprecated until v3.0.0 with DeprecationWarning |
 
 ---
 

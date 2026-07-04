@@ -2,27 +2,44 @@
 
 <!-- mcp-name: io.github.sairam0424/trelix -->
 
-MCP server for [trelix](https://github.com/sairam0424/trelix) v2.0.0 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+MCP server for [trelix](https://github.com/sairam0424/trelix) v2.4.0 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+
+## ⚠️ Breaking Change in v2.4.0
+
+`search_code` now returns a **pagination envelope** instead of a bare list:
+
+```python
+# v2.3.x (old)
+results = search_code(query="auth", repo_path="/repo")
+for r in results:  # results was list[dict]
+    print(r["symbol"])
+
+# v2.4.0 (new)
+response = search_code(query="auth", repo_path="/repo")
+for r in response["results"]:  # now dict with pagination
+    print(r["symbol"])
+# Paginate: pass response["next_cursor"] as cursor= for next page
+```
 
 ## Install
 
 ```bash
-pip install trelix-mcp==2.0.0
+pip install trelix-mcp==2.4.0
 ```
 
 To use Bedrock embeddings or synthesis (no extra API key beyond AWS credentials):
 
 ```bash
-pip install "trelix-mcp==2.0.0" "trelix[bedrock]"
+pip install "trelix-mcp==2.4.0" "trelix[bedrock]"
 ```
 
 Other optional LLM provider extras:
 
 ```bash
-pip install "trelix-mcp==2.0.0" "trelix[anthropic]"   # Anthropic Claude direct
-pip install "trelix-mcp==2.0.0" "trelix[vertex]"       # Google Vertex AI / Gemini
-pip install "trelix-mcp==2.0.0" "trelix[litellm]"      # 100+ providers via LiteLLM
-pip install "trelix-mcp==2.0.0" "trelix[llm-all]"      # all LLM providers
+pip install "trelix-mcp==2.4.0" "trelix[anthropic]"   # Anthropic Claude direct
+pip install "trelix-mcp==2.4.0" "trelix[vertex]"       # Google Vertex AI / Gemini
+pip install "trelix-mcp==2.4.0" "trelix[litellm]"      # 100+ providers via LiteLLM
+pip install "trelix-mcp==2.4.0" "trelix[llm-all]"      # all LLM providers
 ```
 
 ## Usage
@@ -137,17 +154,32 @@ TRELIX_LLM_MODEL=bedrock/claude-3-5-sonnet
 
 | Tool | Description |
 |------|-------------|
-| `search_code` | Semantic hybrid search over an indexed codebase |
-| `index_codebase` | Index a repository so it can be searched |
-| `get_symbol` | Look up a symbol by qualified name |
-| `blast_radius` | Find all files that depend on a symbol |
+| `search_code(query, repo_path, k=10, cursor=0)` | Hybrid semantic+BM25 search with cursor pagination |
+| `index_codebase(repo_path, provider="local")` | Index a repo (run once); emits progress notifications |
+| `get_symbol(qualified_name, repo_path)` | Get full source of a symbol by qualified name |
+| `blast_radius(symbol_name, repo_path)` | Find what depends on a symbol |
 | `ask` | Streaming chat endpoint for conversational code exploration (v2.0.0+) |
-| `build_knowledge_graph(repo_path, extract_concepts=False)` | Build Code Property Graph, detect communities, return stats + community summary |
-| `graph_search_mcp(query, repo_path, k=10)` | Vector-seeded graph BFS — finds structurally related code by following call/import/type edges |
+| `build_knowledge_graph(repo_path)` | Build code property graph |
+| `graph_search_mcp(query, repo_path)` | Search via knowledge graph |
+
+## Pagination
+
+`search_code` supports cursor-based pagination for large codebases:
+
+```python
+# Fetch page 1
+page1 = search_code(query="authentication", repo_path="/repo", k=10)
+print(page1["total_available"])  # total results
+print(page1["results"])          # this page's results
+
+# Fetch page 2 if more results exist
+if page1["next_cursor"] is not None:
+    page2 = search_code(query="authentication", repo_path="/repo", k=10, cursor=page1["next_cursor"])
+```
 
 ## Knowledge Graph Tools
 
-Two new tools in v2.0.0 expose the knowledge graph layer to AI agents:
+Two tools expose the knowledge graph layer to AI agents:
 
 ### build_knowledge_graph
 
@@ -178,5 +210,5 @@ graph_search_mcp(query="how does auth relate to the user model?", repo_path="/pa
 Install the knowledge graph extra for full functionality:
 
 ```bash
-pip install 'trelix-mcp' 'trelix[knowledge-graph]'
+pip install 'trelix-mcp==2.4.0' 'trelix[knowledge-graph]'
 ```
