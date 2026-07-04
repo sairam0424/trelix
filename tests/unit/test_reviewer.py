@@ -44,7 +44,7 @@ class TestDiffReviewer:
     def test_review_returns_list(self, tmp_path: Path) -> None:
         from trelix.core.config import IndexConfig
 
-        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        cfg = IndexConfig(repo_path=str(tmp_path))
         reviewer = DiffReviewer(cfg)
         hunks = [_make_hunk()]
         # No indexed repo — reviewer should return [] gracefully, not raise
@@ -54,7 +54,7 @@ class TestDiffReviewer:
     def test_review_never_raises(self, tmp_path: Path) -> None:
         from trelix.core.config import IndexConfig
 
-        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        cfg = IndexConfig(repo_path=str(tmp_path))
         reviewer = DiffReviewer(cfg)
         # Even with malformed hunks, never raises
         bad_hunk = DiffHunk("bad.py", 0, 0, 0, 0)
@@ -65,7 +65,7 @@ class TestDiffReviewer:
 
         from trelix.core.config import IndexConfig
 
-        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        cfg = IndexConfig(repo_path=str(tmp_path))
         reviewer = DiffReviewer(cfg)
 
         mock_ctx = MagicMock()
@@ -95,7 +95,7 @@ class TestDiffReviewer:
         """review(diff_text='') returns [] without raising."""
         from trelix.core.config import IndexConfig
 
-        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        cfg = IndexConfig(repo_path=str(tmp_path))
         reviewer = DiffReviewer(cfg)
         result = reviewer.review(diff_text="")
         assert result == []
@@ -104,7 +104,7 @@ class TestDiffReviewer:
         """review() with no args returns []."""
         from trelix.core.config import IndexConfig
 
-        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        cfg = IndexConfig(repo_path=str(tmp_path))
         reviewer = DiffReviewer(cfg)
         result = reviewer.review()
         assert result == []
@@ -113,7 +113,7 @@ class TestDiffReviewer:
         """review(diff_text=...) parses text into hunks and forwards to LLM pipeline."""
         from trelix.core.config import IndexConfig
 
-        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        cfg = IndexConfig(repo_path=str(tmp_path))
         reviewer = DiffReviewer(cfg)
 
         # Minimal but valid unified diff
@@ -150,7 +150,7 @@ class TestDiffReviewer:
         """When hunks=None and diff_text is provided, diff_text is parsed."""
         from trelix.core.config import IndexConfig
 
-        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        cfg = IndexConfig(repo_path=str(tmp_path))
         reviewer = DiffReviewer(cfg)
 
         diff_text = (

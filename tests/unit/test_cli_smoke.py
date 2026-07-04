@@ -127,7 +127,8 @@ def test_watch_all_no_repos_exits_gracefully() -> None:
 
     runner = CliRunner()
     empty_reg = RepoRegistry.__new__(RepoRegistry)
-    empty_reg._config_path = "/tmp/fake.json"
+    from pathlib import Path
+    empty_reg._config_path = Path("/tmp/fake.json")
     empty_reg._entries = []
 
     with patch("trelix.cli.main.RepoRegistry.load", return_value=empty_reg):

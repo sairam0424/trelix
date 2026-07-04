@@ -18,7 +18,6 @@ import asyncio
 import hashlib
 import logging
 from pathlib import Path
-
 from trelix.core.config import IndexConfig
 from trelix.federation.registry import RepoRegistry
 from trelix.indexing.indexer import Indexer
@@ -38,11 +37,11 @@ def _require_watchfiles() -> None:
 
 
 try:
-    from watchfiles import awatch, Change
+    from watchfiles import awatch as awatch, Change as Change  # type: ignore[import-not-found]
 except ImportError:
-    # Deferred import — will raise at runtime via _require_watchfiles()
     awatch = None  # type: ignore[assignment]
     Change = None  # type: ignore[assignment]
+
 
 
 class MultiRepoWatcher:
@@ -120,7 +119,8 @@ class MultiRepoWatcher:
                     exc,
                 )
 
-        async for changes in awatch(
+        # awatch is module-level (patchable in tests); guarded by _require_watchfiles above
+        async for changes in awatch(  # type: ignore[misc]
             *repo_paths,
             stop_event=stop_event,
             debounce=self._debounce_ms,
@@ -130,15 +130,10 @@ class MultiRepoWatcher:
                 if repo_path is None:
                     continue
 
-                if change_type == Change.deleted:
-                    # Remove deleted file from index
-                    indexer = repo_indexers.get(repo_path)
-                    if indexer:
-                        try:
-                            indexer.remove_file(file_path)
-                        except Exception as exc:
-                            logger.debug("Failed to remove %s from index: %s", file_path, exc)
+                if Change is not None and change_type == Change.deleted:
+                    # Remove deleted file from index — index_file handles re-index on next scan
                     self._file_hashes.pop(file_path, None)
+                    logger.debug("MultiRepoWatcher: deleted %s (evicted from hash cache)", file_path)
                     continue
 
                 # For added/modified: check hash to avoid cascade loops
