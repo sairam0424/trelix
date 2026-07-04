@@ -1,9 +1,10 @@
 """Tests for MultiRepoWatcher (v2.4 watch-all)."""
+
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,6 +21,7 @@ def _registry(*paths: str) -> RepoRegistry:
 class TestMultiRepoWatcherInit:
     def test_importable(self) -> None:
         from trelix.indexing.multi_watcher import MultiRepoWatcher
+
         assert MultiRepoWatcher is not None
 
     def test_stats_initial(self, tmp_path: Path) -> None:
@@ -38,6 +40,9 @@ class TestMultiRepoWatcherInit:
         reg = _registry()  # no repos
         watcher = MultiRepoWatcher(reg)
         assert watcher.stats()["repos_watched"] == 0
+
+
+watchfiles = pytest.importorskip("watchfiles", reason="watchfiles optional dep not installed")
 
 
 class TestMultiRepoWatcherRun:
@@ -65,7 +70,8 @@ class TestMultiRepoWatcherRun:
     async def test_run_skips_unchanged_files(self, tmp_path: Path) -> None:
         """Files with same hash are skipped (no re-index)."""
         from trelix.indexing.multi_watcher import MultiRepoWatcher
-        from watchfiles import Change
+
+        Change = watchfiles.Change
 
         test_file = tmp_path / "auth.py"
         test_file.write_text("def login(): pass")
@@ -75,6 +81,7 @@ class TestMultiRepoWatcherRun:
 
         # Pre-populate hash cache to simulate "already indexed"
         import hashlib
+
         content = test_file.read_bytes()
         watcher._file_hashes[str(test_file)] = hashlib.md5(content).hexdigest()
 
@@ -98,7 +105,8 @@ class TestMultiRepoWatcherRun:
     async def test_run_reindexes_changed_files(self, tmp_path: Path) -> None:
         """Files with new content trigger re-index."""
         from trelix.indexing.multi_watcher import MultiRepoWatcher
-        from watchfiles import Change
+
+        Change = watchfiles.Change
 
         test_file = tmp_path / "auth.py"
         test_file.write_text("def login(): return True")  # NEW content
@@ -143,9 +151,12 @@ class TestRequireWatchfiles:
 
         with patch.dict(sys.modules, {"watchfiles": None}):
             with pytest.raises(ImportError, match="trelix\\[watch\\]|watchfiles"):
-                from trelix.indexing import multi_watcher
                 import importlib
+
+                from trelix.indexing import multi_watcher
+
                 importlib.reload(multi_watcher)
                 from trelix.indexing.multi_watcher import MultiRepoWatcher
+
                 reg = _registry("/fake")
                 MultiRepoWatcher(reg)._require_watchfiles()

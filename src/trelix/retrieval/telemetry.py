@@ -31,7 +31,7 @@ class TelemetryWriter:
         self,
         context: RetrievedContext,
         elapsed_ms: float,
-        expansion_result: "ExpandResult | None" = None,
+        expansion_result: ExpandResult | None = None,
     ) -> None:
         """Record a single retrieve() call. No-op when disabled. Never raises."""
         if not self._enabled:

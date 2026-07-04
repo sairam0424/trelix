@@ -11,7 +11,6 @@ from trelix.retrieval.query_expansion import ExpandResult, MultiQueryExpander
 from trelix.retrieval.telemetry import TelemetryWriter
 from trelix.store.db import Database
 
-
 # ---------------------------------------------------------------------------
 # ExpandResult / MultiQueryExpander tests (Task 2)
 # ---------------------------------------------------------------------------
@@ -59,10 +58,7 @@ def db(tmp_path):
 
 def test_query_telemetry_expansion_columns_exist(db: Database) -> None:
     """query_telemetry table has all 3 expansion columns after init."""
-    cols = {
-        row[1]
-        for row in db._conn.execute("PRAGMA table_info(query_telemetry)").fetchall()
-    }
+    cols = {row[1] for row in db._conn.execute("PRAGMA table_info(query_telemetry)").fetchall()}
     assert "expansion_used" in cols
     assert "expansion_variants" in cols
     assert "expansion_elapsed_ms" in cols
@@ -86,8 +82,8 @@ def test_insert_query_telemetry_with_expansion(db: Database) -> None:
         "FROM query_telemetry WHERE id=?",
         (row_id,),
     ).fetchone()
-    assert row[0] == 1        # expansion_used = True stored as 1
-    assert row[1] == 3        # expansion_variants
+    assert row[0] == 1  # expansion_used = True stored as 1
+    assert row[1] == 3  # expansion_variants
     assert row[2] == pytest.approx(120.0)
 
 
@@ -124,7 +120,7 @@ def test_insert_query_telemetry_expansion_used_false(db: Database) -> None:
         "SELECT expansion_used FROM query_telemetry WHERE id=?",
         (row_id,),
     ).fetchone()
-    assert row[0] == 0   # False stored as 0
+    assert row[0] == 0  # False stored as 0
 
 
 class TestTelemetryWriter:
@@ -167,8 +163,9 @@ class TestTelemetryWriter:
 
 def test_telemetry_writer_records_expansion(tmp_path) -> None:
     """TelemetryWriter.record() persists expansion metadata when provided."""
-    from trelix.store.db import Database
     from unittest.mock import MagicMock
+
+    from trelix.store.db import Database
 
     db = Database(tmp_path / "test.db")
     writer = TelemetryWriter(db, enabled=True)
@@ -178,22 +175,27 @@ def test_telemetry_writer_records_expansion(tmp_path) -> None:
     context.intent = "function_lookup"
     context.results = [MagicMock() for _ in range(5)]
 
-    expand_result = ExpandResult(queries=["find auth code", "locate login"], llm_used=True, elapsed_ms=88.5)
+    expand_result = ExpandResult(
+        queries=["find auth code", "locate login"],
+        llm_used=True,
+        elapsed_ms=88.5,
+    )
     writer.record(context, elapsed_ms=200.0, expansion_result=expand_result)
 
     row = db._conn.execute(
         "SELECT expansion_used, expansion_variants, expansion_elapsed_ms "
         "FROM query_telemetry ORDER BY id DESC LIMIT 1"
     ).fetchone()
-    assert row[0] == 1           # llm_used=True
-    assert row[1] == 2           # 2 queries in result
+    assert row[0] == 1  # llm_used=True
+    assert row[1] == 2  # 2 queries in result
     assert row[2] == pytest.approx(88.5)
 
 
 def test_telemetry_writer_no_expansion_stores_null(tmp_path) -> None:
     """TelemetryWriter.record() stores NULL when expansion_result=None."""
-    from trelix.store.db import Database
     from unittest.mock import MagicMock
+
+    from trelix.store.db import Database
 
     db = Database(tmp_path / "test.db")
     writer = TelemetryWriter(db, enabled=True)

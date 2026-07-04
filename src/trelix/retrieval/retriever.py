@@ -281,7 +281,7 @@ class Retriever:
         expand_result = None
         if cfg.multi_query_enabled and plan.sub_queries:
             try:
-                from trelix.retrieval.query_expansion import ExpandResult, MultiQueryExpander
+                from trelix.retrieval.query_expansion import MultiQueryExpander
 
                 primary_query = plan.sub_queries[0].semantic_query
                 expander = MultiQueryExpander(

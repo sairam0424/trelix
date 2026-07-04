@@ -11,7 +11,6 @@ import pytest
 from trelix.federation.registry import RepoEntry, RepoRegistry
 from trelix.federation.retriever import FederatedRetriever
 
-
 # ---------------------------------------------------------------------------
 # Helpers for cache tests
 # ---------------------------------------------------------------------------

@@ -110,6 +110,7 @@ def test_stats_requires_path():
 def test_watch_all_help() -> None:
     """trelix watch-all --help exits 0 and shows expected options."""
     from typer.testing import CliRunner
+
     from trelix.cli.main import app
 
     runner = CliRunner()
@@ -120,14 +121,17 @@ def test_watch_all_help() -> None:
 
 def test_watch_all_no_repos_exits_gracefully() -> None:
     """trelix watch-all with empty registry shows helpful message."""
-    from typer.testing import CliRunner
-    from trelix.cli.main import app
     from unittest.mock import patch
+
+    from typer.testing import CliRunner
+
+    from trelix.cli.main import app
     from trelix.federation.registry import RepoRegistry
 
     runner = CliRunner()
     empty_reg = RepoRegistry.__new__(RepoRegistry)
     from pathlib import Path
+
     empty_reg._config_path = Path("/tmp/fake.json")
     empty_reg._entries = []
 

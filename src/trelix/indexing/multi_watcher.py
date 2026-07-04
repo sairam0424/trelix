@@ -12,12 +12,14 @@ Usage:
     # In a real program: signal.signal(SIGINT, lambda *a: stop.set())
     await watcher.run(stop)
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import logging
 from pathlib import Path
+
 from trelix.core.config import IndexConfig
 from trelix.federation.registry import RepoRegistry
 from trelix.indexing.indexer import Indexer
@@ -37,11 +39,11 @@ def _require_watchfiles() -> None:
 
 
 try:
-    from watchfiles import awatch as awatch, Change as Change  # type: ignore[import-not-found]
+    from watchfiles import Change as Change
+    from watchfiles import awatch as awatch  # type: ignore[import-not-found]
 except ImportError:
     awatch = None  # type: ignore[assignment]
     Change = None  # type: ignore[assignment]
-
 
 
 class MultiRepoWatcher:
@@ -146,7 +148,9 @@ class MultiRepoWatcher:
                             )
                             logger.info("MultiRepoWatcher: deleted %s from index", rel)
                         except Exception as exc:
-                            logger.debug("MultiRepoWatcher: delete failed for %s: %s", file_path, exc)
+                            logger.debug(
+                                "MultiRepoWatcher: delete failed for %s: %s", file_path, exc
+                            )
                     continue
 
                 # For added/modified: check hash to avoid cascade loops
@@ -168,9 +172,7 @@ class MultiRepoWatcher:
                     self._files_reindexed += 1
                     logger.info("MultiRepoWatcher: re-indexed %s", file_path)
                 except Exception as exc:
-                    logger.warning(
-                        "MultiRepoWatcher: re-index failed for %s: %s", file_path, exc
-                    )
+                    logger.warning("MultiRepoWatcher: re-index failed for %s: %s", file_path, exc)
 
     def stats(self) -> dict[str, int]:
         """Return watching statistics."""

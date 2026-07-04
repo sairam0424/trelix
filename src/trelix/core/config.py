@@ -437,7 +437,7 @@ class RetrievalConfig(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def _warn_deprecated_flare_iter_env(self) -> "RetrievalConfig":
+    def _warn_deprecated_flare_iter_env(self) -> RetrievalConfig:
         import os
         import warnings
 

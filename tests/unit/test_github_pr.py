@@ -1,8 +1,10 @@
 """Tests for GitHubPRClient (v2.4 GitHub PR integration)."""
+
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 # A clearly fake, short token used only for unit tests (< 8 chars, not a real secret).
 _FAKE = "fake"
@@ -80,6 +82,7 @@ class TestGitHubPRClientGetFiles:
     def test_get_pr_files_warns_on_3000_file_truncation(self, caplog) -> None:
         """Log a warning when exactly 3000 files returned (truncation risk)."""
         import logging
+
         from trelix.review.github import GitHubPRClient
 
         mock_files = [_make_file_response(filename=f"src/f{i}.py") for i in range(3000)]
@@ -92,13 +95,13 @@ class TestGitHubPRClientGetFiles:
         with patch("trelix.review.github.httpx.get", return_value=mock_response):
             with caplog.at_level(logging.WARNING, logger="trelix.review.github"):
                 client = GitHubPRClient(token=_FAKE)
-                files = client.get_pr_files("owner", "repo", 1)
+                client.get_pr_files("owner", "repo", 1)
 
         assert any("3000" in r.message or "truncat" in r.message.lower() for r in caplog.records)
 
     def test_get_pr_files_raises_on_404(self) -> None:
         """404 should raise a clear error."""
-        from trelix.review.github import GitHubPRClient, GitHubAPIError
+        from trelix.review.github import GitHubAPIError, GitHubPRClient
 
         mock_response = MagicMock()
         mock_response.status_code = 404
@@ -111,7 +114,7 @@ class TestGitHubPRClientGetFiles:
 
     def test_get_pr_files_raises_on_401(self) -> None:
         """401 should raise with helpful token message."""
-        from trelix.review.github import GitHubPRClient, GitHubAPIError
+        from trelix.review.github import GitHubAPIError, GitHubPRClient
 
         mock_response = MagicMock()
         mock_response.status_code = 401
