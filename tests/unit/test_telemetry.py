@@ -7,8 +7,43 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from trelix.retrieval.query_expansion import ExpandResult, MultiQueryExpander
 from trelix.retrieval.telemetry import TelemetryWriter
 from trelix.store.db import Database
+
+
+# ---------------------------------------------------------------------------
+# ExpandResult / MultiQueryExpander tests (Task 2)
+# ---------------------------------------------------------------------------
+
+
+def test_expand_result_dataclass() -> None:
+    """ExpandResult carries queries, llm_used, and elapsed_ms."""
+    r = ExpandResult(queries=["a", "b"], llm_used=True, elapsed_ms=50.0)
+    assert r.queries == ["a", "b"]
+    assert r.llm_used is True
+    assert r.elapsed_ms == 50.0
+
+
+def test_multi_query_expander_no_llm_returns_expand_result() -> None:
+    """Without LLM config, expand() returns ExpandResult with llm_used=False."""
+    expander = MultiQueryExpander(llm_config=None, n=2)
+    result = expander.expand("authentication flow")
+    assert isinstance(result, ExpandResult)
+    assert result.queries == ["authentication flow"]
+    assert result.llm_used is False
+    assert result.elapsed_ms >= 0.0
+
+
+def test_multi_query_expander_returns_original_on_failure() -> None:
+    """When LLM raises, expand() returns original query with llm_used=False."""
+    from unittest.mock import patch
+
+    expander = MultiQueryExpander(llm_config=MagicMock(), n=2)
+    with patch.object(expander, "_get_client", side_effect=Exception("LLM unavailable")):
+        result = expander.expand("login function")
+    assert result.queries == ["login function"]
+    assert result.llm_used is False
 
 
 # ---------------------------------------------------------------------------

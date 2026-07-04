@@ -281,7 +281,8 @@ class Retriever:
                     llm_config=self.config.llm,
                     n=cfg.multi_query_count,
                 )
-                variants = expander.expand(primary_query)
+                expand_result = expander.expand(primary_query)
+                variants = expand_result.queries
                 # variants[0] is always the original — skip it (already run above)
                 extra_variants = variants[1:]
 

@@ -17,12 +17,23 @@ failure — the pipeline always has a fallback.
 from __future__ import annotations
 
 import logging
+import time
+from dataclasses import dataclass
 
 from trelix.core.config import LLMConfig
 from trelix.llm.client import TrelixChatClient
 from trelix.llm.factory import build_chat_client
 
 logger = logging.getLogger("trelix.retrieval.query_expansion")
+
+
+@dataclass(frozen=True)
+class ExpandResult:
+    """Result of MultiQueryExpander.expand() — includes observability metadata."""
+
+    queries: list[str]
+    llm_used: bool
+    elapsed_ms: float
 
 _HYDE_SYSTEM = (
     "You are a senior software engineer. Given a question about a codebase, "
@@ -94,30 +105,44 @@ class MultiQueryExpander:
                 return None
         return self._client
 
-    def expand(self, query: str) -> list[str]:
-        """Return [original] + up to N variants. Deduplicates. Never raises."""
-        client = self._get_client()
-        if client is None:
-            return [query]
+    def expand(self, query: str) -> ExpandResult:
+        """Return ExpandResult with queries=[original] + up to N variants.
+
+        llm_used=False when LLM unavailable or expansion fails.
+        elapsed_ms is the wall-clock time of the LLM call (0.0 on fallback).
+        Never raises.
+        """
         try:
+            client = self._get_client()
+            if client is None:
+                return ExpandResult(queries=[query], llm_used=False, elapsed_ms=0.0)
             from trelix.llm.client import ChatMessage
 
             system = _MULTI_QUERY_SYSTEM.format(n=self._n)
+            t0 = time.monotonic()
             resp = client.complete(
                 messages=[ChatMessage(role="user", content=query)],
                 max_tokens=200,
                 temperature=0.3,
                 system=system,
             )
-            variants = [line.strip() for line in resp.content.strip().splitlines() if line.strip()]
-            # Deduplicate while preserving order; original always first
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            variants = [
+                line.strip()
+                for line in resp.content.strip().splitlines()
+                if line.strip()
+            ]
             seen: set[str] = {query}
-            result = [query]
+            result_queries = [query]
             for v in variants[: self._n]:
                 if v not in seen:
                     seen.add(v)
-                    result.append(v)
-            return result
+                    result_queries.append(v)
+            return ExpandResult(
+                queries=result_queries,
+                llm_used=True,
+                elapsed_ms=elapsed_ms,
+            )
         except Exception as exc:
             logger.debug("Multi-query expansion failed for %r: %s", query, exc)
-            return [query]
+            return ExpandResult(queries=[query], llm_used=False, elapsed_ms=0.0)
