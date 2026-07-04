@@ -35,6 +35,7 @@ class ExpandResult:
     llm_used: bool
     elapsed_ms: float
 
+
 _HYDE_SYSTEM = (
     "You are a senior software engineer. Given a question about a codebase, "
     "write a SHORT hypothetical code snippet (3-8 lines) that would directly answer it. "
@@ -127,11 +128,7 @@ class MultiQueryExpander:
                 system=system,
             )
             elapsed_ms = (time.monotonic() - t0) * 1000.0
-            variants = [
-                line.strip()
-                for line in resp.content.strip().splitlines()
-                if line.strip()
-            ]
+            variants = [line.strip() for line in resp.content.strip().splitlines() if line.strip()]
             seen: set[str] = {query}
             result_queries = [query]
             for v in variants[: self._n]:
