@@ -110,36 +110,58 @@ def prompt_blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, str]
 
 
 @mcp.tool()
-def search_code(query: str, repo_path: str, k: int = 10) -> list[dict[str, Any]]:
-    """Search a codebase for symbols semantically relevant to *query*.
+def search_code(
+    query: str,
+    repo_path: str,
+    k: int = 10,
+    cursor: int = 0,
+) -> dict:
+    """
+    Search the indexed codebase using natural language queries.
 
-    Args:
-        query: Natural-language or keyword search query.
-        repo_path: Absolute path to the repository root (must already be indexed).
-        k: Maximum number of results to return (default 10).
+    ⚠️ IMPORTANT:
+    - repo_path must be an ABSOLUTE path to an already-indexed repository.
+    - Run index_codebase first if you receive an error about a missing index.
+
+    🎯 When to Use:
+    - Find specific functions, classes, or implementations
+    - Understand architecture before making changes
+    - Locate all callers of a function before refactoring
+    - Find similar patterns to follow when adding code
+
+    📄 Pagination:
+    - Use cursor=0 for first page (default).
+    - If next_cursor is not null, pass it as cursor for the next page.
+    - k controls page size.
 
     Returns:
-        List of result dicts with keys: file, symbol, kind, lines, score, source,
-        body, language.
+        {"results": [...], "next_cursor": int|null, "total_available": int}
     """
-    _log.info("search_code query=%r repo_path=%r k=%d", query, repo_path, k)
+    _log.info("search_code query=%r repo=%s k=%d cursor=%d", query, repo_path, k, cursor)
     config = IndexConfig(repo_path=repo_path)
-    retriever = Retriever(config)
-    context = retriever.retrieve(query)
-    results = context.results[:k]
-    return [
-        {
-            "file": r.file.rel_path,
-            "symbol": r.symbol.qualified_name,
-            "kind": r.symbol.kind,
-            "lines": [r.symbol.line_start, r.symbol.line_end],
-            "score": round(r.score, 4),
-            "source": r.source,
-            "body": r.symbol.body,
-            "language": r.file.language,
-        }
-        for r in results
-    ]
+    ctx = Retriever(config).retrieve(query)
+    all_results = ctx.results
+
+    page = all_results[cursor : cursor + k]
+    next_cursor = cursor + k if cursor + k < len(all_results) else None
+
+    return {
+        "results": [
+            {
+                "file": r.file.rel_path,
+                "symbol": r.symbol.qualified_name,
+                "kind": r.symbol.kind.value,
+                "lines": f"{r.symbol.line_start}-{r.symbol.line_end}",
+                "score": round(r.score, 4),
+                "source": r.source,
+                "body": r.symbol.body[:800],
+                "language": r.file.language.value,
+            }
+            for r in page
+        ],
+        "next_cursor": next_cursor,
+        "total_available": len(all_results),
+    }
 
 
 @mcp.tool()
