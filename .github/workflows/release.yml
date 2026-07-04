@@ -122,12 +122,19 @@ jobs:
           name: trelix-windows-x64
           path: release-assets/windows
 
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: trelix-linux-x64
+          path: release-assets/linux
+
       - name: Create GitHub Release with binaries
         uses: softprops/action-gh-release@v2
         with:
           files: |
             release-assets/macos/trelix
             release-assets/windows/trelix.exe
+            release-assets/linux/trelix
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
