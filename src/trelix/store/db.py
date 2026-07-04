@@ -291,14 +291,10 @@ class Database:
             col_name = col_def.split()[0]
             existing = {
                 row[1]
-                for row in self._conn.execute(
-                    "PRAGMA table_info(query_telemetry)"
-                ).fetchall()
+                for row in self._conn.execute("PRAGMA table_info(query_telemetry)").fetchall()
             }
             if col_name not in existing:
-                self._conn.execute(
-                    f"ALTER TABLE query_telemetry ADD COLUMN {col_def}"
-                )
+                self._conn.execute(f"ALTER TABLE query_telemetry ADD COLUMN {col_def}")
         self._conn.commit()
 
         # v2.3 Plan E migration: index_metadata table for embedding dimension guard

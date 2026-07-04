@@ -99,18 +99,14 @@ class FederatedRetriever:
             return ctx.results[:k]
 
         with ThreadPoolExecutor(max_workers=min(self._max_workers, len(entries))) as pool:
-            future_to_entry = {
-                pool.submit(_query_one, entry.path): entry for entry in entries
-            }
+            future_to_entry = {pool.submit(_query_one, entry.path): entry for entry in entries}
             for future in as_completed(future_to_entry):
                 entry = future_to_entry[future]
                 try:
                     results = future.result(timeout=30)
                     per_repo_results.append(results)
                 except Exception as exc:
-                    logger.warning(
-                        "FederatedRetriever: repo %s failed: %s", entry.alias, exc
-                    )
+                    logger.warning("FederatedRetriever: repo %s failed: %s", entry.alias, exc)
 
         if not per_repo_results:
             return []

@@ -1175,8 +1175,7 @@ def review(
         False,
         "--post-comments",
         help=(
-            "Post review comments back to GitHub PR "
-            "(requires GITHUB_TOKEN + pull_requests:write)."
+            "Post review comments back to GitHub PR (requires GITHUB_TOKEN + pull_requests:write)."
         ),
     ),
 ) -> None:
@@ -1267,9 +1266,7 @@ def review(
             table.add_column("Severity", style="bold")
             table.add_column("Comment", max_width=80)
             for c in comments:
-                color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(
-                    c.severity, "white"
-                )
+                color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
                 table.add_row(
                     c.file_path,
                     f"{c.line_start}-{c.line_end}",

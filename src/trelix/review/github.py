@@ -4,6 +4,7 @@ GitHub PR API client for trelix review --pr integration.
 Fetches PR file diffs and posts review comments back to GitHub.
 Token is read from GITHUB_TOKEN env var — never hardcoded.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,10 +27,10 @@ class PRFile:
     """One changed file in a GitHub PR."""
 
     filename: str
-    status: str          # added|removed|modified|renamed|copied|changed|unchanged
+    status: str  # added|removed|modified|renamed|copied|changed|unchanged
     additions: int
     deletions: int
-    patch: str | None    # None for binary files or very large diffs
+    patch: str | None  # None for binary files or very large diffs
     previous_filename: str | None = None
 
 
@@ -37,8 +38,8 @@ class PRFile:
 class ReviewComment:
     """A single inline review comment to post."""
 
-    path: str           # file path relative to repo root
-    line: int           # 1-indexed line in the NEW file (RIGHT side)
+    path: str  # file path relative to repo root
+    line: int  # 1-indexed line in the NEW file (RIGHT side)
     body: str
     side: str = "RIGHT"  # RIGHT = addition, LEFT = deletion context
 
@@ -73,8 +74,7 @@ class GitHubPRClient:
             )
         if response.status_code == 404:
             raise GitHubAPIError(
-                f"404 Not Found — PR or repo does not exist, or token lacks access. "
-                f"URL: {url}"
+                f"404 Not Found — PR or repo does not exist, or token lacks access. URL: {url}"
             )
         if response.status_code not in (200, 201):
             raise GitHubAPIError(
@@ -83,9 +83,7 @@ class GitHubPRClient:
             )
         return response.json()
 
-    def get_pr_files(
-        self, owner: str, repo: str, pr_number: int
-    ) -> list[PRFile]:
+    def get_pr_files(self, owner: str, repo: str, pr_number: int) -> list[PRFile]:
         """
         Fetch all changed files for a PR, handling pagination.
 
@@ -101,14 +99,16 @@ class GitHubPRClient:
             if not isinstance(data, list) or not data:
                 break
             for item in data:
-                all_files.append(PRFile(
-                    filename=item["filename"],
-                    status=item["status"],
-                    additions=item.get("additions", 0),
-                    deletions=item.get("deletions", 0),
-                    patch=item.get("patch"),  # absent for binary files
-                    previous_filename=item.get("previous_filename"),
-                ))
+                all_files.append(
+                    PRFile(
+                        filename=item["filename"],
+                        status=item["status"],
+                        additions=item.get("additions", 0),
+                        deletions=item.get("deletions", 0),
+                        patch=item.get("patch"),  # absent for binary files
+                        previous_filename=item.get("previous_filename"),
+                    )
+                )
             if len(data) < 100:
                 break
             if len(all_files) >= 3000:
@@ -120,7 +120,9 @@ class GitHubPRClient:
             logger.warning(
                 "PR %s/%s#%d returned 3000 files — GitHub may have truncated the list. "
                 "Large PRs (>3000 files) are silently capped. Review may be incomplete.",
-                owner, repo, pr_number,
+                owner,
+                repo,
+                pr_number,
             )
 
         return all_files
@@ -161,9 +163,7 @@ class GitHubPRClient:
                 for c in comments
             ],
         }
-        response = httpx.post(
-            url, headers=self._headers, json=payload, timeout=30
-        )
+        response = httpx.post(url, headers=self._headers, json=payload, timeout=30)
         if response.status_code not in (200, 201):
             raise GitHubAPIError(
                 f"Failed to post review: {response.status_code} "
@@ -177,8 +177,7 @@ class GitHubPRClient:
         data = self._get(url)
         if not isinstance(data, dict):
             raise GitHubAPIError(
-                f"Expected PR object (dict) from GitHub API, got {type(data).__name__}. "
-                f"URL: {url}"
+                f"Expected PR object (dict) from GitHub API, got {type(data).__name__}. URL: {url}"
             )
         return str(data["head"]["sha"])
 
@@ -196,14 +195,10 @@ def parse_pr_ref(pr_ref: str) -> tuple[str, str, int]:
         )
     repo_part, num_part = pr_ref.rsplit("#", 1)
     if "/" not in repo_part:
-        raise ValueError(
-            f"Invalid PR ref {pr_ref!r}. Expected format: owner/repo#number"
-        )
+        raise ValueError(f"Invalid PR ref {pr_ref!r}. Expected format: owner/repo#number")
     owner, repo = repo_part.split("/", 1)
     try:
         number = int(num_part)
     except ValueError:
-        raise ValueError(
-            f"Invalid PR number {num_part!r} in {pr_ref!r}. Must be an integer."
-        )
+        raise ValueError(f"Invalid PR number {num_part!r} in {pr_ref!r}. Must be an integer.")
     return owner, repo, number
