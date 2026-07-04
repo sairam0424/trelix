@@ -205,7 +205,7 @@ def test_federated_cache_disabled_when_ttl_zero() -> None:
     assert call_count == 2
 
 
-def test_federated_cache_expires_after_ttl(monkeypatch) -> None:
+def test_federated_cache_expires_after_ttl() -> None:
     """Cached entry expires after TTL seconds."""
     reg = _registry_with_paths("/fake/repo1")
     fed = FederatedRetriever(reg, cache_ttl=1.0)

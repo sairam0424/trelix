@@ -60,7 +60,7 @@ class FederatedRetriever:
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def _get_cached(self, key: str) -> list[SearchResult] | None:
-        """Return cached results if still valid, else None."""
+        """Return cached results if still valid and increment hit counter, else None."""
         if self._cache_ttl <= 0:
             return None
         with self._cache_lock:
@@ -71,6 +71,7 @@ class FederatedRetriever:
             if time.monotonic() > expiry:
                 del self._cache[key]
                 return None
+            self._hits += 1
             return results
 
     def _set_cached(self, key: str, results: list[SearchResult]) -> None:
@@ -118,7 +119,7 @@ class FederatedRetriever:
         seen: set[str] = set()
         deduped: list[SearchResult] = []
         for r in merged:
-            dedup_key = f"{getattr(r, 'file_path', '')}:{getattr(r, 'symbol_id', id(r))}"
+            dedup_key = f"{r.file.rel_path}:{r.chunk.symbol_id}"
             if dedup_key not in seen:
                 seen.add(dedup_key)
                 deduped.append(r)
@@ -133,8 +134,6 @@ class FederatedRetriever:
         cache_key = self._make_cache_key(query, k)
         cached = self._get_cached(cache_key)
         if cached is not None:
-            with self._cache_lock:
-                self._hits += 1
             logger.debug("FederatedRetriever: cache HIT for query %r (k=%d)", query, k)
             return cached
 
