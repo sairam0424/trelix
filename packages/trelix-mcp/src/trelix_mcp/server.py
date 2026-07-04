@@ -190,26 +190,23 @@ def index_codebase(
     embedder_config = EmbedderConfig(provider=provider)  # type: ignore[call-arg]
     config = IndexConfig(repo_path=repo_path, embedder=embedder_config)
 
-    # Send progress notifications if client supports it (best-effort, never blocks)
-    if ctx is not None:
+    def _send_progress(current: int, total: int) -> None:
+        """Send MCP progress notification — best-effort, never raises."""
+        if ctx is None:
+            return
         try:
             import asyncio
-            asyncio.get_event_loop().run_until_complete(
-                ctx.report_progress(0, 3)  # stage 0/3: starting
-            )
+            loop = asyncio.get_running_loop()
+            loop.create_task(ctx.report_progress(current, total))
+        except RuntimeError:
+            # No running loop (sync context) — skip progress notification silently
+            pass
         except Exception:
             pass
 
+    _send_progress(0, 3)
     stats = Indexer(config, quiet=True).index()
-
-    if ctx is not None:
-        try:
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(
-                ctx.report_progress(3, 3)  # stage 3/3: done
-            )
-        except Exception:
-            pass
+    _send_progress(3, 3)
 
     return stats
 

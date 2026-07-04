@@ -175,7 +175,12 @@ class GitHubPRClient:
         """Return the HEAD commit SHA of the PR (needed for post_review)."""
         url = f"{self._base_url}/repos/{owner}/{repo}/pulls/{pr_number}"
         data = self._get(url)
-        return str(data["head"]["sha"])  # type: ignore[index]
+        if not isinstance(data, dict):
+            raise GitHubAPIError(
+                f"Expected PR object (dict) from GitHub API, got {type(data).__name__}. "
+                f"URL: {url}"
+            )
+        return str(data["head"]["sha"])
 
 
 def parse_pr_ref(pr_ref: str) -> tuple[str, str, int]:

@@ -84,7 +84,9 @@ class MultiRepoWatcher:
     def _get_repo_for_path(self, file_path: str) -> str | None:
         """Return the repo_path that contains this file_path, or None."""
         for entry in self._registry.list():
-            if file_path.startswith(entry.path):
+            # Ensure exact directory boundary — prevent /repo matching /repo2/file
+            repo_dir = entry.path.rstrip("/") + "/"
+            if file_path.startswith(repo_dir) or file_path == entry.path.rstrip("/"):
                 return entry.path
         return None
 
@@ -131,9 +133,20 @@ class MultiRepoWatcher:
                     continue
 
                 if Change is not None and change_type == Change.deleted:
-                    # Remove deleted file from index — index_file handles re-index on next scan
+                    # Remove deleted file from SQLite index + vectors
                     self._file_hashes.pop(file_path, None)
-                    logger.debug("MultiRepoWatcher: deleted %s (evicted from hash cache)", file_path)
+                    indexer = repo_indexers.get(repo_path)
+                    if indexer is not None:
+                        try:
+                            rel = str(Path(file_path).relative_to(repo_path))
+                            indexer.db.delete_file_by_path(
+                                abs_path=file_path,
+                                rel_path=rel,
+                                vector_store=indexer.vector_store,
+                            )
+                            logger.info("MultiRepoWatcher: deleted %s from index", rel)
+                        except Exception as exc:
+                            logger.debug("MultiRepoWatcher: delete failed for %s: %s", file_path, exc)
                     continue
 
                 # For added/modified: check hash to avoid cascade loops

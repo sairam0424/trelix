@@ -17,7 +17,14 @@ from trelix.core.config import IndexConfig, RetrievalConfig
 def _make_config(tmp: str, cache_size: int = 256) -> IndexConfig:
     return IndexConfig(
         repo_path=tmp,
-        retrieval=RetrievalConfig(query_cache_size=cache_size),
+        retrieval=RetrievalConfig(
+            query_cache_size=cache_size,
+            # Isolate from .env — prevent extra legs from inflating embed_query call counts
+            file_summary_leg_enabled=False,
+            hyde_fallback_enabled=False,
+            flare_enabled=False,
+            multi_query_enabled=False,
+        ),
     )
 
 
