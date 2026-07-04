@@ -11,7 +11,7 @@ logging.basicConfig(
 import signal  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
-from fastmcp import FastMCP  # noqa: E402
+from fastmcp import Context, FastMCP  # noqa: E402
 
 from trelix.core.config import EmbedderConfig, IndexConfig  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
@@ -168,22 +168,49 @@ def search_code(
 def index_codebase(
     repo_path: str,
     provider: Literal["local", "openai", "azure", "voyage", "local-code"] = "local",
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Index a codebase so it can be searched with search_code.
-
-    Args:
-        repo_path: Absolute path to the repository root.
-        provider: Embedding provider — "local" requires no API key.
-
-    Returns:
-        Indexing statistics dict with keys: files_found, files_indexed,
-        files_skipped, symbols_extracted, chunks_total, chunks_embedded,
-        errors, elapsed_seconds.
     """
-    _log.info("index_codebase repo_path=%r provider=%r", repo_path, provider)
+    Index a repository for code search. Run once before calling search_code.
+
+    ⚠️ IMPORTANT:
+    - Stores the index in <repo_path>/.trelix/index.db (zero external infra).
+    - Re-run to refresh after large code changes; incremental update is fast.
+
+    ✨ Providers:
+    - local   — no API key, CPU-only, fast for small repos
+    - openai  — requires OPENAI_API_KEY, best quality
+    - azure   — requires AZURE_API_KEY + AZURE_ENDPOINT
+    - voyage  — requires VOYAGE_API_KEY, best code-specific quality
+
+    Progress notifications are sent if the MCP client supports them.
+    """
+    _log.info("index_codebase repo=%s provider=%s", repo_path, provider)
+
     embedder_config = EmbedderConfig(provider=provider)  # type: ignore[call-arg]
     config = IndexConfig(repo_path=repo_path, embedder=embedder_config)
+
+    # Send progress notifications if client supports it (best-effort, never blocks)
+    if ctx is not None:
+        try:
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(
+                ctx.report_progress(0, 3)  # stage 0/3: starting
+            )
+        except Exception:
+            pass
+
     stats = Indexer(config, quiet=True).index()
+
+    if ctx is not None:
+        try:
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(
+                ctx.report_progress(3, 3)  # stage 3/3: done
+            )
+        except Exception:
+            pass
+
     return stats
 
 
