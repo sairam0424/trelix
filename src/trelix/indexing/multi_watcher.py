@@ -40,10 +40,10 @@ def _require_watchfiles() -> None:
 
 try:
     from watchfiles import Change as Change
-    from watchfiles import awatch as awatch  # type: ignore[import-not-found]
+    from watchfiles import awatch as awatch
 except ImportError:
     awatch = None  # type: ignore[assignment]
-    Change = None  # type: ignore[assignment]
+    Change = None  # type: ignore[assignment,misc]
 
 
 class MultiRepoWatcher:
@@ -124,7 +124,7 @@ class MultiRepoWatcher:
                 )
 
         # awatch is module-level (patchable in tests); guarded by _require_watchfiles above
-        async for changes in awatch(  # type: ignore[misc]
+        async for changes in awatch(
             *repo_paths,
             stop_event=stop_event,
             debounce=self._debounce_ms,

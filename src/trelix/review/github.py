@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -63,7 +64,7 @@ class GitHubPRClient:
             "X-GitHub-Api-Version": _GITHUB_API_VERSION,
         }
 
-    def _get(self, url: str, params: dict | None = None) -> list | dict:
+    def _get(self, url: str, params: dict[str, int | str] | None = None) -> Any:
         """GET a URL, handle pagination, raise GitHubAPIError on non-2xx."""
         response = httpx.get(url, headers=self._headers, params=params, timeout=30)
         if response.status_code == 401:
@@ -136,7 +137,7 @@ class GitHubPRClient:
         body: str,
         comments: list[ReviewComment],
         event: str = "COMMENT",
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
         Post a review with optional inline comments in a single API call.
 
@@ -149,7 +150,7 @@ class GitHubPRClient:
         Rate limit: counts as 1 write request regardless of comment count.
         """
         url = f"{self._base_url}/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
-        payload: dict = {
+        payload: dict[str, Any] = {
             "commit_id": commit_sha,
             "body": body,
             "event": event,
@@ -169,7 +170,7 @@ class GitHubPRClient:
                 f"Failed to post review: {response.status_code} "
                 f"{response.json().get('message', response.text[:200])}"
             )
-        return response.json()
+        return response.json()  # type: ignore[no-any-return]
 
     def get_pr_head_sha(self, owner: str, repo: str, pr_number: int) -> str:
         """Return the HEAD commit SHA of the PR (needed for post_review)."""
