@@ -37,7 +37,7 @@ response = query_engine.query("How does the authentication middleware work?")
 print(response)
 ```
 
-## Streaming synthesis (v2.0.0+)
+## Streaming synthesis (v2.0.0+, enhanced v2.4.0)
 
 ```python
 from trelix_llama_index import TrelixIndexRetriever
@@ -160,6 +160,81 @@ trelix graph ./repo --visualize              # open Pyvis HTML in browser
 trelix graph ./repo --concepts               # run LLM concept extraction
 trelix graph ./repo --json                   # emit graph stats as JSON
 ```
+
+## What's new in v2.4.0
+
+### ⚠️ Breaking change — `search_code` MCP tool response envelope
+
+`search_code` now returns a pagination envelope instead of a bare list:
+
+```json
+{"results": [...], "next_cursor": 10, "total_available": 25}
+```
+
+Update any MCP client code that iterates `search_code(...)` directly:
+
+```python
+# Before (v2.3.0)
+for result in search_code(query="auth", repo_path="/repo"):
+    ...
+
+# After (v2.4.0)
+response = search_code(query="auth", repo_path="/repo")
+for result in response["results"]:
+    ...
+# Paginate: pass response["next_cursor"] as cursor= for the next page
+```
+
+### FederatedRetriever TTL cache
+
+```python
+from trelix_llama_index import TrelixIndexRetriever
+
+# cache_ttl=120 (seconds) — SHA-256-keyed, thread-safe
+retriever = TrelixIndexRetriever(repo_path="/path/to/repo", k=10, cache_ttl=120.0)
+
+# Inspect cache stats
+print(retriever.cache_stats())  # {"hits": 3, "misses": 1, "size": 1}
+
+# Force eviction
+retriever.clear_cache()
+```
+
+Set `cache_ttl=0` to disable caching entirely. Expected ~90% hit rate for typical debugging-session query patterns.
+
+### Multi-Query Expansion observability
+
+When `multi_query_enabled=True` (requires `trelix>=2.3.0`), each retrieval now records expansion metadata:
+
+```python
+nodes = retriever.retrieve("how does auth work?")
+# expansion_used, expansion_variants, expansion_elapsed_ms written to query_telemetry table
+```
+
+### GitHub PR review integration
+
+```bash
+# Review a PR diff locally
+trelix review --pr owner/repo#42
+
+# Review and post findings back as a GitHub review comment
+trelix review --pr owner/repo#42 --post-comments
+```
+
+Requires `GITHUB_TOKEN` env var. The `TrelixIndexRetriever` can be used as the retrieval backend inside `DiffReviewer`.
+
+### Multi-repo file watching
+
+```bash
+# Watch all indexed repos simultaneously; updates index on file changes
+trelix watch-all
+```
+
+Deleted files are removed from the SQLite index and vector store automatically.
+
+### Config field rename
+
+`flare_max_retries` replaces `flare_max_iterations` in `RetrievalConfig`. Both the new env var `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` and the old `TRELIX_RETRIEVAL_FLARE_MAX_ITER` are accepted (old name emits `DeprecationWarning` and will be removed in v3.0.0).
 
 ## Links
 

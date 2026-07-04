@@ -12,7 +12,7 @@ cd trelix
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# Install in editable mode with all dev + optional deps (v2.0.0)
+# Install in editable mode with all dev + optional deps (v2.4.0)
 make install-dev
 # equivalent: pip install -e ".[bge-code,plaid,lance,serve,dev]"
 # Optional extras:
@@ -22,6 +22,7 @@ make install-dev
 #   [serve]           — REST API server (FastAPI + Uvicorn)
 #   [knowledge-graph] — Knowledge graph + visualization (pyvis>=0.3.2, networkx>=3.3.0)
 #   [graph-viz]       — Alias for [knowledge-graph]
+#   [watch]           — Multi-repo file watching (watchfiles)
 #   [dev]             — testing, linting, type-checking (always included)
 
 # Standard dev setup (no graph visualization)
@@ -38,14 +39,14 @@ cp .env.example .env
 ## Running Tests
 
 ```bash
-make test           # full suite with coverage (929 unit + 16 integration tests)
+make test           # full suite with coverage (1,467 unit + 41 MCP = 1,508 total tests)
 make test-fast      # unit tests only (no API calls, fast)
 make lint           # ruff check + ruff format (auto-formats before diff-check, cross-platform safe)
 make format         # ruff format
 make typecheck      # mypy
 ```
 
-**Note on CI checks (v2.0.0):** The ruff format step now runs as part of linting — files are auto-formatted before the diff-check, ensuring cross-platform consistency (Windows CRLF vs Unix LF).
+**Note on CI checks (v2.4.0):** The ruff format step now runs as part of linting — files are auto-formatted before the diff-check, ensuring cross-platform consistency (Windows CRLF vs Unix LF).
 
 ### Running specific test subsets
 
@@ -116,7 +117,7 @@ Tests live in `tests/unit/test_graph_*.py`. All graph tests can run without pyvi
 
 ### Embedder Providers
 
-trelix v2.0.0 ships with built-in support for multiple embedding backends:
+trelix v2.4.0 ships with built-in support for multiple embedding backends:
 
 - **Local embeddings** (`local`) — Uses transformers library (default, no API keys needed)
 - **BGE-Code-v1** (`bge-code`) — BAAI General Embedding for code, optimized for semantic code search
@@ -131,7 +132,7 @@ pip install -e ".[bge-code]"
 # Then set TRELIX_EMBEDDER_PROVIDER=bge-code in .env
 ```
 
-### Adding a New LLM Provider (v2.0.0)
+### Adding a New LLM Provider (v2.4.0)
 
 trelix uses a provider-agnostic `TrelixChatClient` ABC (`src/trelix/llm/client.py`). All five built-in backends (`OpenAIBackend`, `AnthropicBackend`, `BedrockBackend`, `VertexBackend`, `LiteLLMBackend`) implement the same three methods: `complete()`, `stream()`, and `tool_call()`. Adding a new provider requires zero changes to business logic (chunker, synthesizer, planner, graph_rag).
 
@@ -144,6 +145,77 @@ trelix uses a provider-agnostic `TrelixChatClient` ABC (`src/trelix/llm/client.p
 7. Write unit tests in `tests/unit/test_llm_<name>_backend.py` — mock the provider SDK, no real API calls
 
 No changes are needed in `chunker.py`, `synthesizer.py`, `planner/agent.py`, or `graph_rag.py`.
+
+### Adding federation cache configuration
+
+`FederatedRetriever` (`src/trelix/federation/retriever.py`) ships with a SHA-256 keyed, thread-safe TTL cache:
+
+```python
+from trelix.federation.retriever import FederatedRetriever
+
+# Default: 120-second TTL
+fed = FederatedRetriever(registry)
+
+# Custom TTL
+fed = FederatedRetriever(registry, cache_ttl=300.0)
+
+# Disable caching entirely
+fed = FederatedRetriever(registry, cache_ttl=0)
+
+# Inspect cache performance
+stats = fed.cache_stats()   # -> {"hits": int, "misses": int, "size": int}
+
+# Invalidate all cached results
+fed.clear_cache()
+```
+
+The cache achieves ~90% hit rate for typical debugging sessions. Set `cache_ttl=0` in tests to avoid stale results across test cases.
+
+### Adding multi-repo watchers
+
+`MultiRepoWatcher` (`src/trelix/indexing/multi_watcher.py`) drives a single `watchfiles.awatch()` call over all repos registered in `RepoRegistry`. A SHA-256 hash guard prevents re-indexing unchanged files; deleted files are removed from both SQLite and the vector store.
+
+```bash
+# Install the watch extra
+pip install -e ".[watch]"
+
+# Watch all registered repos
+trelix watch-all
+```
+
+To integrate programmatically:
+
+```python
+from trelix.indexing.multi_watcher import MultiRepoWatcher
+
+watcher = MultiRepoWatcher(registry=repo_registry, indexer=indexer)
+await watcher.run()   # streams per-repo stats; graceful on KeyboardInterrupt
+```
+
+### GitHub PR review integration
+
+`GitHubPRClient` (`src/trelix/review/github.py`) fetches PR diffs via the GitHub REST API and posts batched review comments back. Requires the `GITHUB_TOKEN` environment variable.
+
+```bash
+# Review a PR diff locally
+trelix review --pr owner/repo#42
+
+# Review and post findings as a GitHub review
+trelix review --pr owner/repo#42 --post-comments
+```
+
+All seven GitHub file status values (`added`, `modified`, `removed`, `renamed`, `copied`, `changed`, `unchanged`) are handled. PRs with more than 3,000 files emit a truncation warning.
+
+To call `DiffReviewer` directly with a raw unified diff string (skipping file I/O):
+
+```python
+from trelix.review.diff import DiffReviewer
+
+reviewer = DiffReviewer(llm_client=client)
+findings = await reviewer.review(diff_text=raw_unified_diff)
+```
+
+`parse_pr_ref("owner/repo#42")` is the canonical helper for parsing `--pr` argument values.
 
 ## Coding Standards
 
@@ -165,13 +237,13 @@ Open a [GitHub Discussion](https://github.com/sairam0424/trelix/discussions) for
 
 ## Versioning & Stability Policy
 
-trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.0.0**.
+trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.4.0**.
 
 ### Stable public API (guaranteed not to change without a major version bump)
 
 - **CLI commands and flags**: `trelix index`, `trelix search`, `trelix ask`, `trelix query`, `trelix stats`, `trelix watch`, `trelix update-index`, `trelix migrate-vectors` and all documented flags
 - **Python API**: `IndexConfig`, `EmbedderConfig`, `LLMConfig`, `Indexer`, `Retriever`, `TrelixChatClient`, `ChatMessage`, `ChatResponse`, `ToolCallResponse`, `build_chat_client`, `BaseEmbedder`, `make_embedder`
-- **Sub-package interfaces**: `TrelixRetriever` (trelix-langchain), `TrelixIndexRetriever` (trelix-llama-index), MCP tool signatures (trelix-mcp)
+- **Sub-package interfaces**: `TrelixRetriever` (trelix-langchain), `TrelixIndexRetriever` (trelix-llama-index), MCP tool signatures (trelix-mcp) — note: `search_code` return type changed to `{results, next_cursor, total_available}` envelope in v2.4.0 (see Breaking Changes in CHANGELOG)
 - **Environment variable names**: all `TRELIX_*` env vars documented in `.env.example`
 
 ### What counts as a breaking change

@@ -179,7 +179,7 @@ You can also set the provider directly on the retriever instance:
 retriever = TrelixRetriever(repo_path="/path/to/repo", provider="openai", k=10)
 ```
 
-## Provider Switching (v2.0.0+)
+## Provider Switching (v2.0.0+, updated v2.4.0)
 
 ```bash
 # Use code-optimized BGE-Code embeddings (best for code semantics)
@@ -202,7 +202,7 @@ The index and the retriever must use the same provider — re-index whenever you
 
 ## Streaming Synthesis (v2.0.0+)
 
-v2.0.0 introduces streaming synthesis support for real-time code context generation:
+Streaming synthesis support for real-time code context generation:
 
 ```python
 from trelix_langchain import TrelixRetriever, StreamingSynthesizer
@@ -218,6 +218,108 @@ synthesizer = StreamingSynthesizer(
 for chunk in synthesizer.synthesize_stream("How does the auth flow work?"):
     print(chunk, end="", flush=True)
 ```
+
+## GitHub PR Review (v2.4.0+)
+
+Fetch a pull request diff from GitHub and run `DiffReviewer` directly through the retriever:
+
+```python
+from trelix_langchain import TrelixRetriever
+
+retriever = TrelixRetriever(repo_path="/path/to/repo", k=8)
+
+# Retrieve context relevant to a PR diff
+# Use the trelix CLI: trelix review --pr owner/repo#42
+# Or post review comments: trelix review --pr owner/repo#42 --post-comments
+# Requires GITHUB_TOKEN env var
+```
+
+Set `GITHUB_TOKEN` in your environment. The integration fetches all changed files in
+the PR, retrieves relevant code context for each diff hunk, and can optionally post
+a single batched review back to GitHub.
+
+## MCP Pagination (v2.4.0+)
+
+The `search_code` MCP tool now returns a pagination envelope instead of a raw list.
+If you call trelix-mcp from LangChain tool wrappers, update your iteration:
+
+```python
+# v2.4.0+ response shape from search_code MCP tool
+response = search_code_tool.run({"query": "auth", "repo_path": "/repo"})
+# response = {"results": [...], "next_cursor": 10, "total_available": 25}
+
+for result in response["results"]:
+    print(result)
+
+# Paginate: pass next_cursor as cursor= in the next call
+```
+
+## Multi-Query Expansion Observability (v2.4.0+)
+
+When `multi_query_enabled=True` in your `IndexConfig`, the retriever now surfaces
+expansion telemetry via the `ExpandResult` dataclass:
+
+```python
+from trelix_langchain import TrelixRetriever
+from trelix.retrieval import MultiQueryExpander
+
+expander = MultiQueryExpander(llm=your_llm)
+expand_result = expander.expand("how does auth work?")
+# expand_result.queries       — list of sub-queries generated
+# expand_result.llm_used      — model name
+# expand_result.elapsed_ms    — wall-clock time for expansion
+```
+
+Expansion metadata (`expansion_used`, `expansion_variants`, `expansion_elapsed_ms`) is
+persisted automatically to the `query_telemetry` table. Existing databases are upgraded
+automatically via an idempotent `ALTER TABLE ADD COLUMN` migration.
+
+## FederatedRetriever Cache (v2.4.0+)
+
+When using `FederatedRetriever` across multiple repos, enable the TTL cache to avoid
+redundant retrievals within a debugging session:
+
+```python
+from trelix.retrieval import FederatedRetriever
+
+retriever = FederatedRetriever(registry=my_registry, cache_ttl=120.0)
+# cache_ttl=0 disables caching
+stats = retriever.cache_stats()   # {"hits": 42, "misses": 5, "size": 18}
+retriever.clear_cache()           # force eviction
+```
+
+The cache is SHA-256-keyed, thread-safe, and scoped to the process lifetime.
+Expected ~90% hit rate for typical debugging-session query patterns.
+
+## Multi-Repo Watching (v2.4.0+)
+
+Watch multiple repos simultaneously and keep their indexes live:
+
+```bash
+# CLI
+trelix watch-all
+
+# Watches all registered repos; shows per-repo stats on exit; Ctrl+C to stop
+```
+
+```python
+from trelix.watchers import MultiRepoWatcher
+
+watcher = MultiRepoWatcher(repo_paths=["/repo/a", "/repo/b"])
+await watcher.watch()  # uses watchfiles under the hood; hash guard prevents cascade re-index
+```
+
+## Configuration (v2.4.0+)
+
+In addition to the env vars above, v2.4.0 adds:
+
+| Env var | Default | Description |
+|---|---|---|
+| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `3` | Max FLARE re-retrieval iterations (replaces `TRELIX_RETRIEVAL_FLARE_MAX_ITER`) |
+| `TRELIX_GRAPH_SEARCH_ENABLED` | `false` | Enable graph BFS retrieval leg |
+| `GITHUB_TOKEN` | — | Required for `trelix review --pr` GitHub integration |
+
+> `TRELIX_RETRIEVAL_FLARE_MAX_ITER` is still accepted but emits a `DeprecationWarning`. It will be removed in v3.0.0.
 
 ## Links
 

@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/trelix)](https://pypi.org/project/trelix/)
 [![Python](https://img.shields.io/pypi/pyversions/trelix)](https://pypi.org/project/trelix/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.4.0-blue)](CHANGELOG.md)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blue)](https://github.com/sairam0424/trelix)
 [![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
@@ -13,6 +13,8 @@
 
 > **v2.0.0 Breaking Change:** The `trelix graph <repo> <symbol>` call-graph display command has been renamed to `trelix call-graph <repo> <symbol>`.
 
+> **v2.4.0 Breaking Change:** The MCP `search_code` tool now returns a pagination envelope `{"results": [...], "next_cursor": int|null, "total_available": int}` instead of a bare list. Update callers to use `response["results"]`.
+
 ```
 trelix index  ./my-repo
 trelix ask    ./my-repo "how does authentication work?"
@@ -20,6 +22,19 @@ trelix search ./my-repo "JWT validation"
 trelix watch  ./my-repo          # real-time incremental indexing
 trelix stats  ./my-repo
 ```
+
+---
+
+## What's New in v2.4.0
+
+| Plan | Feature | Key API |
+|------|---------|---------|
+| **A** | `flare_max_retries` rename (backward-compat) | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` |
+| **B** | Multi-query expansion observability | `ExpandResult`, `query_telemetry` columns |
+| **C** | FederatedRetriever TTL cache | `FederatedRetriever(cache_ttl=120)` |
+| **D** | GitHub PR API integration | `trelix review --pr owner/repo#N` |
+| **E** | Multi-repo file watching | `trelix watch-all` |
+| **F** | MCP cursor pagination + progress | `search_code(cursor=0)` |
 
 ---
 
@@ -110,6 +125,15 @@ trelix graph ./my-repo --visualize
 
 # Enable graph as 4th search leg
 TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "explain the auth architecture"
+
+# Watch all federated repos simultaneously
+trelix watch-all
+
+# Review a GitHub PR diff
+trelix review --pr owner/repo#42
+
+# Post review findings back to GitHub
+trelix review --pr owner/repo#42 --post-comments
 ```
 
 ### GitHub Actions — index in CI
@@ -606,7 +630,7 @@ docs = retriever.invoke("how does authentication work?")
 git clone https://github.com/sairam0424/trelix
 cd trelix
 make install-dev
-make test        # 929 unit + 16 integration tests
+make test        # 1,508 tests (1,467 unit + 41 MCP)
 make lint
 make eval        # recall eval on mini_repo
 make eval-full   # full 50-query MRR/NDCG eval (requires Azure/OpenAI)
