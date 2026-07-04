@@ -163,3 +163,50 @@ class TestTelemetryWriter:
 
         cfg = IndexConfig(repo_path=str(tmp_path))
         assert cfg.telemetry_enabled is False
+
+
+def test_telemetry_writer_records_expansion(tmp_path) -> None:
+    """TelemetryWriter.record() persists expansion metadata when provided."""
+    from trelix.store.db import Database
+    from unittest.mock import MagicMock
+
+    db = Database(tmp_path / "test.db")
+    writer = TelemetryWriter(db, enabled=True)
+
+    context = MagicMock()
+    context.query = "find auth code"
+    context.intent = "function_lookup"
+    context.results = [MagicMock() for _ in range(5)]
+
+    expand_result = ExpandResult(queries=["find auth code", "locate login"], llm_used=True, elapsed_ms=88.5)
+    writer.record(context, elapsed_ms=200.0, expansion_result=expand_result)
+
+    row = db._conn.execute(
+        "SELECT expansion_used, expansion_variants, expansion_elapsed_ms "
+        "FROM query_telemetry ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row[0] == 1           # llm_used=True
+    assert row[1] == 2           # 2 queries in result
+    assert row[2] == pytest.approx(88.5)
+
+
+def test_telemetry_writer_no_expansion_stores_null(tmp_path) -> None:
+    """TelemetryWriter.record() stores NULL when expansion_result=None."""
+    from trelix.store.db import Database
+    from unittest.mock import MagicMock
+
+    db = Database(tmp_path / "test.db")
+    writer = TelemetryWriter(db, enabled=True)
+
+    context = MagicMock()
+    context.query = "hash password"
+    context.intent = ""
+    context.results = []
+
+    writer.record(context, elapsed_ms=15.0)
+
+    row = db._conn.execute(
+        "SELECT expansion_used, expansion_variants FROM query_telemetry ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row[0] is None
+    assert row[1] is None
