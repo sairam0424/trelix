@@ -176,3 +176,29 @@ class GitHubPRClient:
         url = f"{self._base_url}/repos/{owner}/{repo}/pulls/{pr_number}"
         data = self._get(url)
         return str(data["head"]["sha"])  # type: ignore[index]
+
+
+def parse_pr_ref(pr_ref: str) -> tuple[str, str, int]:
+    """
+    Parse 'owner/repo#number' into (owner, repo, number).
+
+    Raises ValueError with usage hint on malformed input.
+    """
+    if "#" not in pr_ref or pr_ref.count("/") < 1:
+        raise ValueError(
+            f"Invalid PR ref {pr_ref!r}. Expected format: owner/repo#number "
+            f"(e.g. 'myorg/myrepo#42')"
+        )
+    repo_part, num_part = pr_ref.rsplit("#", 1)
+    if "/" not in repo_part:
+        raise ValueError(
+            f"Invalid PR ref {pr_ref!r}. Expected format: owner/repo#number"
+        )
+    owner, repo = repo_part.split("/", 1)
+    try:
+        number = int(num_part)
+    except ValueError:
+        raise ValueError(
+            f"Invalid PR number {num_part!r} in {pr_ref!r}. Must be an integer."
+        )
+    return owner, repo, number

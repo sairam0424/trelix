@@ -121,3 +121,44 @@ class TestGitHubPRClientGetFiles:
             client = GitHubPRClient(token=_FAKE)
             with pytest.raises(GitHubAPIError, match="401|token|credential"):
                 client.get_pr_files("owner", "repo", 1)
+
+
+class TestParsePRRef:
+    def test_parse_pr_ref_valid(self) -> None:
+        """_parse_pr_ref parses 'owner/repo#123' correctly."""
+        from trelix.review.github import parse_pr_ref
+
+        owner, repo, number = parse_pr_ref("myorg/myrepo#42")
+        assert owner == "myorg"
+        assert repo == "myrepo"
+        assert number == 42
+
+    def test_parse_pr_ref_invalid_no_hash(self) -> None:
+        """_parse_pr_ref raises ValueError for malformed input without '#'."""
+        from trelix.review.github import parse_pr_ref
+
+        with pytest.raises(ValueError, match="owner/repo#number"):
+            parse_pr_ref("not-a-pr-ref")
+
+    def test_parse_pr_ref_invalid_no_slash_in_repo(self) -> None:
+        """_parse_pr_ref raises ValueError for 'owner/repo' without number."""
+        from trelix.review.github import parse_pr_ref
+
+        with pytest.raises(ValueError, match="owner/repo#number"):
+            parse_pr_ref("owner/repo")
+
+    def test_parse_pr_ref_non_integer_number(self) -> None:
+        """_parse_pr_ref raises ValueError when PR number is not an integer."""
+        from trelix.review.github import parse_pr_ref
+
+        with pytest.raises(ValueError):
+            parse_pr_ref("owner/repo#abc")
+
+    def test_parse_pr_ref_with_nested_path(self) -> None:
+        """_parse_pr_ref handles org/repo-name#number correctly."""
+        from trelix.review.github import parse_pr_ref
+
+        owner, repo, number = parse_pr_ref("my-org/my-repo#999")
+        assert owner == "my-org"
+        assert repo == "my-repo"
+        assert number == 999
