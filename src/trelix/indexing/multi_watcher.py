@@ -19,6 +19,7 @@ import hashlib
 import logging
 from pathlib import Path
 
+from trelix.core.config import IndexConfig
 from trelix.federation.registry import RepoRegistry
 from trelix.indexing.indexer import Indexer
 
@@ -110,7 +111,8 @@ class MultiRepoWatcher:
         repo_indexers: dict[str, Indexer] = {}
         for entry in entries:
             try:
-                repo_indexers[entry.path] = Indexer(entry.path)
+                config = IndexConfig.model_construct(repo_path=entry.path)
+                repo_indexers[entry.path] = Indexer(config)
             except Exception as exc:
                 logger.warning(
                     "MultiRepoWatcher: failed to create indexer for %s: %s",
@@ -128,7 +130,7 @@ class MultiRepoWatcher:
                 if repo_path is None:
                     continue
 
-                if Change is not None and change_type == Change.deleted:
+                if change_type == Change.deleted:
                     # Remove deleted file from index
                     indexer = repo_indexers.get(repo_path)
                     if indexer:
