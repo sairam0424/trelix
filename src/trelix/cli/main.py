@@ -26,6 +26,8 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
+from trelix.federation.registry import RepoRegistry
+
 warnings.filterwarnings("ignore", category=FutureWarning, module="tree_sitter")
 warnings.filterwarnings("ignore", message=".*HF_TOKEN.*")
 warnings.filterwarnings("ignore", message=".*huggingface.*")
@@ -820,6 +822,77 @@ def watch(
     finally:
         watcher.stop()
         console.print("\n[dim]Watch stopped.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# watch-all
+# ---------------------------------------------------------------------------
+
+
+@app.command("watch-all")
+def watch_all(
+    config: str | None = typer.Option(
+        None,
+        "--config",
+        help="Path to federation registry JSON. Defaults to ~/.config/trelix/repos.json",
+    ),
+) -> None:
+    """Watch all federated repos for changes and auto-update their indexes. Ctrl+C to stop."""
+    _setup_logging(False)
+
+    registry = RepoRegistry.load(config_path=config)
+    entries = registry.list()
+
+    if not entries:
+        console.print(
+            "[yellow]No repos registered. Use: trelix federation add <alias> <path>[/yellow]"
+        )
+        raise typer.Exit(0)
+
+    console.print(
+        Panel(
+            f"[bold cyan]watch-all[/bold cyan] — watching {len(entries)} repo(s):\n"
+            + "\n".join(f"  [green]{e.alias}[/green]  {e.path}" for e in entries),
+            expand=False,
+        )
+    )
+
+    try:
+        from trelix.indexing.multi_watcher import MultiRepoWatcher
+    except ImportError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
+
+    watcher = MultiRepoWatcher(registry)
+
+    import asyncio
+    import signal
+
+    stop_event = asyncio.Event()
+
+    def _on_signal(*_: object) -> None:
+        stop_event.set()
+
+    try:
+        asyncio.get_event_loop().add_signal_handler(signal.SIGINT, _on_signal)
+        asyncio.get_event_loop().add_signal_handler(signal.SIGTERM, _on_signal)
+    except (NotImplementedError, RuntimeError):
+        # Windows / no event loop yet — fall through to KeyboardInterrupt
+        pass
+
+    console.print("[green]Watching for changes. Press Ctrl+C to stop.[/green]")
+
+    try:
+        asyncio.run(watcher.run(stop_event))
+    except KeyboardInterrupt:
+        pass
+
+    stats = watcher.stats()
+    console.print(
+        f"\n[dim]Watch stopped. "
+        f"Re-indexed: {stats['files_reindexed']} files | "
+        f"Skipped (unchanged): {stats['files_skipped_unchanged']} files.[/dim]"
+    )
 
 
 # ---------------------------------------------------------------------------
