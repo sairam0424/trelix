@@ -52,6 +52,36 @@ for text_chunk in response:
     print(text_chunk, end="", flush=True)
 ```
 
+## Beast-mode retrieval (v2.1.0+)
+
+v2.1.0 activates enhanced retrieval features via environment variables. Enable HyDE synthetic snippet embedding and PageRank-based symbol boosting for architecturally central symbols:
+
+```python
+from trelix_llama_index import TrelixIndexRetriever
+from llama_index.core.query_engine import RetrieverQueryEngine
+
+# v2.1.0: Beast-mode features active via env vars
+# TRELIX_RETRIEVAL_HYDE_FALLBACK=true — HyDE synthetic snippet embedding
+# TRELIX_RETRIEVAL_PAGERANK_BOOST=true — boost architecturally central symbols
+
+retriever = TrelixIndexRetriever(
+    repo_path="/path/to/repo",
+    k=10,
+)
+nodes = retriever.retrieve("how does the payment processing work?")
+```
+
+## v2.2.0 — What's New
+
+trelix v2.2.0 adds four intelligence upgrades. The TrelixIndexRetriever interface is unchanged — activate features via env vars.
+
+| Feature | Env var | Benefit for LlamaIndex users |
+|---------|---------|------------------------------|
+| Agentic loop | `TRELIX_RETRIEVAL_AGENTIC=true` | Multi-hop retrieval for complex queries |
+| SPLADE-Code | `TRELIX_RETRIEVAL_SPARSE=true` | Better recall on identifier-heavy queries |
+| Block indexing | `TRELIX_CHUNKER_MULTI_GRANULARITY=true` | Precise sub-function retrieval |
+| Taint analysis | `trelix taint (CLI)` | Security flow detection in indexed repos |
+
 ## Configuration
 
 | Env var | Default | Description |
@@ -79,14 +109,15 @@ TRELIX_EMBEDDER_PROVIDER=voyage VOYAGE_API_KEY=pa-... trelix index /path/to/repo
 TRELIX_EMBEDDER_PROVIDER=local trelix index /path/to/repo
 ```
 
-## Graph-Enhanced Retrieval
+## Graph-Enhanced Retrieval (v2.1.0+)
 
-Enable the knowledge graph as a 4th retrieval leg for architecture-aware queries:
+Enable the knowledge graph as a 4th retrieval leg for architecture-aware queries. v2.1.0 integrates beast-mode features for optimal performance:
 
 ```python
 from trelix_llama_index import TrelixIndexRetriever
 
 # With graph-aware BFS (requires trelix[knowledge-graph])
+# v2.1.0: HyDE + PageRank boost activate automatically in this mode
 retriever = TrelixIndexRetriever(
     repo_path="/path/to/repo",
     k=10,

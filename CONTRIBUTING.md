@@ -105,6 +105,100 @@ Tests live in `tests/unit/test_graph_*.py`. All graph tests can run without pyvi
 3. If it requires a new optional dependency, add an extras group to `pyproject.toml` and document it here
 4. Write tests in `tests/unit/test_graph_<name>.py` — mock any LLM calls; do not require pyvis
 
+### trelix/retrieval/ — Query Enhancement Modules
+
+The retrieval enhancement modules live at `src/trelix/retrieval/` and are organized as:
+
+| File | Responsibility |
+|------|----------------|
+| `query_expansion.py` | HyDEExpander (synthetic snippet embedding), MultiQueryExpander (N-variant recall) |
+| `flare.py` | FLARELoop — confidence-gated re-retrieval, _contains_uncertainty phrase check |
+| `telemetry.py` | TelemetryWriter — crash-safe per-query latency/intent recorder |
+
+All three modules are crash-safe (return empty/original on any failure) and gated by config flags.
+
+**Opt-in config keys** (all default to off — zero impact when disabled):
+
+| Key | Default | Env var |
+|-----|---------|---------|
+| `query_expansion_enabled` | `False` | `TRELIX_QUERY_EXPANSION_ENABLED=true` |
+| `flare_enabled` | `False` | `TRELIX_FLARE_ENABLED=true` |
+| `telemetry_enabled` | `False` | `TRELIX_TELEMETRY_ENABLED=true` |
+
+**Adding a new query enhancement:**
+
+1. Add the implementation under `src/trelix/retrieval/`
+2. Ensure any failure path returns the original query or empty results — never raises
+3. Gate the feature with a config flag defaulting to `False`
+4. Write tests in `tests/unit/test_retrieval_<name>.py` — mock any LLM calls
+
+### trelix/eval/ — Evaluation Harness
+
+The evaluation harness lives at `src/trelix/eval/` and is organized as:
+
+| File | Responsibility |
+|------|----------------|
+| `ndcg.py` | Pure-Python ndcg_at_k, recall_at_k, mrr — no pandas dependency |
+| `harness.py` | EvalHarness.run(golden_path) — reads JSONL, retrieves, returns aggregate metrics |
+
+**Usage:**
+
+```bash
+trelix eval --golden .trelix/golden.jsonl
+```
+
+**Golden file format** (one line per query):
+
+```json
+{"query": "how does auth work", "relevant_files": ["src/auth.py"]}
+```
+
+**Adding new metrics:**
+
+1. Add the pure-Python metric function to `src/trelix/eval/ndcg.py`
+2. Wire it into `EvalHarness.run()` in `src/trelix/eval/harness.py`
+3. Write tests in `tests/unit/test_eval_<name>.py` — no LLM calls required for metric functions
+
+### trelix/agent/ — ReAct Agentic Loop
+
+The agent module lives at `src/trelix/agent/` and implements a ReAct (Reason + Act) loop over the trelix retrieval stack:
+
+| File | Responsibility |
+|------|----------------|
+| `actions.py` | ActionType enum, AgentAction, Observation, Turn dataclasses |
+| `history.py` | TurnHistory, HistoryCompressor (token-budget context trimming) |
+| `tools.py` | OpenAI function-calling tool schemas for 4 actions |
+| `loop.py` | AgentLoop orchestrator — ReAct Thought→Action→Observation cycle |
+
+All agent tests live in `tests/unit/test_agent_*.py`. No LLM calls are needed — `TrelixChatClient` is mocked throughout the test suite.
+
+### trelix/analysis/ — Program Analysis
+
+The analysis module lives at `src/trelix/analysis/` and provides static program analysis on top of the indexed codebase:
+
+| File | Responsibility |
+|------|----------------|
+| `defuse.py` | DataFlowExtractor — tree-sitter def-use chain extraction (crash-safe) |
+| `taint.py` | TaintAnalyzer — Semgrep CLI wrapper (requires `trelix[taint]`) |
+
+To use taint analysis, install the optional extra:
+
+```bash
+pip install -e ".[taint]"
+```
+
+Tests that exercise `TaintAnalyzer` mock the subprocess call, so the full test suite runs without Semgrep installed.
+
+### trelix/embedder/sparse.py and trelix/store/sparse_store.py — Sparse Embeddings
+
+`SparseEmbedder` produces `{token_id: weight}` SPLADE-Code vectors and requires the optional extra:
+
+```bash
+pip install -e ".[sparse]"
+```
+
+`SparseStore` is a SQLite inverted index — no external service or vector database is needed. Tests run without torch: `SparseEmbedder` returns `{}` automatically when `_TORCH_AVAILABLE=False`, so the sparse test suite passes in any environment.
+
 ### Adding a New Language Parser
 
 1. Create `src/trelix/indexing/parser/extractors/<language>.py`

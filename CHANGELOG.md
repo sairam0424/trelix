@@ -65,35 +65,124 @@ for result in response["results"]:
 ## [2.3.0] — 2026-07-02
 
 ### Overview
-Beast-mode upgrade: seven research-grounded features added across three phases. All gated
-by `IndexConfig` flags that default to `False` — zero regression when disabled.
+Six backlog items shipped across Plans A–F. 1,467 unit tests passing, all features default-ON or backward-compatible.
 
-### Added
-- **HyDE fallback** (`hyde_fallback_enabled`) — Hypothetical Document Embeddings (arXiv:2212.10496):
-  generates a synthetic answer, embeds it, and re-retrieves on low-confidence queries
-- **Multi-query expansion** (`multi_query_enabled`) — decomposes a query into 3 sub-queries,
-  retrieves independently, then RRF-fuses for broader recall
-- **FLARE re-retrieval loop** (`flare_enabled`) — confidence-gated iterative retrieval
-  (arXiv:2305.06983): re-retrieves when synthesis token probabilities fall below threshold
-- **PageRank symbol boosting** (`pagerank_boost_enabled`) — scores symbols by import-graph
-  centrality (NetworkX `pagerank`); injects a `pagerank_boost` multiplier into RRF fusion
-- **Incremental graph updater** — `GraphUpdater.update_file()` patches call/import edges for
-  a single changed file without full graph rebuild; wired into the file watcher
-- **Query telemetry** (`telemetry_enabled`) — `TelemetryWriter` writes per-query rows
-  (latency ms, intent, result count) to a SQLite `query_telemetry` table; `trelix telemetry`
-  CLI command shows recent queries in a Rich table
-- **CoIR evaluation harness** — `trelix eval` CLI command runs a golden JSONL file through
-  retrieval and reports nDCG@10, Recall@10, MRR (CoIR benchmark format, ACL 2025 arXiv:2407.02883);
-  pure-Python metric functions in `trelix.eval.ndcg` (no pandas dependency)
+### ⚠️ BREAKING CHANGE — `search_code` MCP tool response envelope
+
+**Before (v2.3.0):** `search_code` returned `list[dict]` directly.
+
+**After (v2.4.0):** `search_code` returns a pagination envelope:
+```json
+{"results": [...], "next_cursor": 10, "total_available": 25}
+```
+
+**Migration:** Update any MCP client code that iterates `search_code(...)` directly:
+```python
+# Before
+for result in search_code(query="auth", repo_path="/repo"):
+    ...
+
+# After
+response = search_code(query="auth", repo_path="/repo")
+for result in response["results"]:
+    ...
+# Paginate: pass response["next_cursor"] as cursor= for the next page
+```
+
+### Added — Config field rename: `flare_max_retries` (Plan A)
+- **`flare_max_retries`** replaces `flare_max_iterations` in `RetrievalConfig`
+- Both `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` (new) and `TRELIX_RETRIEVAL_FLARE_MAX_ITER` (old) accepted via `AliasChoices`
+- Using the old env var emits `DeprecationWarning`; old name removed in v3.0.0
+
+### Added — Multi-Query Expansion Observability (Plan B)
+- **`ExpandResult`** dataclass — `(queries, llm_used, elapsed_ms)` returned by `MultiQueryExpander.expand()`
+- Three new nullable columns in `query_telemetry`: `expansion_used`, `expansion_variants`, `expansion_elapsed_ms`
+- `TelemetryWriter.record()` accepts optional `expansion_result=` to persist expansion metadata
+- Migration: idempotent `ALTER TABLE ADD COLUMN` — existing DBs upgraded automatically
+
+### Added — FederatedRetriever TTL Cache (Plan C)
+- **`FederatedRetriever(registry, cache_ttl=120.0)`** — SHA-256-keyed in-memory cache, thread-safe via `threading.Lock`
+- `cache_ttl=0` disables caching; `cache_stats()` returns hit/miss/size; `clear_cache()` for forced eviction
+- Expected ~90% hit rate for typical debugging-session query patterns
+
+### Added — GitHub PR API integration (Plan D)
+- **`GitHubPRClient`** — fetch PR file diffs and post review comments via GitHub REST API
+- **`trelix review --pr owner/repo#N`** — fetches PR diff from GitHub and runs `DiffReviewer`
+- **`trelix review --pr owner/repo#N --post-comments`** — posts findings back as a single batched GitHub review
+- Token from `GITHUB_TOKEN` env var only; handles all 7 file status values; 3,000-file truncation warning
+
+### Added — Multi-repo file watching (Plan E)
+- **`MultiRepoWatcher`** — single `watchfiles.awatch(*all_paths)` call watching all registered repos simultaneously
+- Hash guard prevents re-index cascade loops; deleted files are removed from the SQLite index + vector store
+- **`trelix watch-all`** — new CLI command; shows per-repo stats on exit; graceful Ctrl+C shutdown
+
+### Added — MCP pagination + progress notifications (Plan F)
+- **`search_code` pagination** — `cursor=` (offset) + `next_cursor` in response; MCP-spec-approved pattern for large payloads
+- **`index_codebase` progress** — `ctx.report_progress()` sends `notifications/progress` during indexing stages (best-effort)
+
+## [2.3.0] — 2026-07-02
+
+### Overview
+Five research-grounded intelligence and infrastructure upgrades. All features default **OFF** — zero regression when disabled. 42/42 e2e checks pass, 1458 unit tests, zero blockers.
+
+### Added — Embedding Dimension Guard (Plan E)
+- **`DimensionGuard`** — detects provider/dimension mismatch at `Retriever.__init__` startup; raises `DimensionMismatchError` with exact `trelix migrate-vectors --reset` recovery instruction
+- **`index_metadata` SQLite table** — records embedding dimension after each successful index run
+- **`trelix migrate-vectors --reset`** — clears `chunk_embeddings` + dimension metadata for fresh re-index after provider switch
+- Prevents silent wrong-results bug when switching e.g. Azure (3072-dim) → local (384-dim)
+
+### Added — Multi-Query Retrieval Wiring (Plan A)
+- **`MultiQueryExpander` wired** into `_retrieve_standard` — the class already existed; this commit connects it to the live retrieval pipeline
+- When `TRELIX_RETRIEVAL_MULTI_QUERY=true`, primary query expands to N variants, each runs all retrieval legs in parallel via `ThreadPoolExecutor`, results merge into `leg_results_list` before RRF fusion
+- `variants[1:]` used (not `variants[:]`) — original query never runs twice
+- Falls back gracefully (non-fatal `logger.warning`) when LLM unavailable
+
+### Added — MCP Resources + Prompts (Plan B)
+- **MCP Resources** (application-controlled URI-addressable data):
+  - `trelix://index/stats` — aggregate index statistics
+  - `trelix://repo/{repo_path}/manifest` — indexed file list
+  - `trelix://repo/{repo_path}/symbols/{qualified_name}` — symbol source code
+- **MCP Prompts** (reusable LLM interaction templates):
+  - `trelix-search` — structured code search prompt
+  - `trelix-explain` — symbol explanation prompt
+  - `trelix-blast-radius` — impact analysis prompt
+- All resource handlers return JSON even on error; stdout stays clean for MCP stdio protocol
+- Research basis: MCP spec (5× 3-0 adversarial votes on Resources/Templates/Prompts primitives)
+
+### Added — Semantic PR/Diff Review (Plan C)
+- **`DiffParser`** — parses unified git diff into `DiffHunk` objects; `from_git(repo, base, head)` uses `subprocess.run` with `shell=False` (no injection risk); `to_search_query()` extracts identifiers for hybrid retrieval
+- **`DiffReviewer(config).review(hunks)`** — retrieval-augmented review: each hunk → search query → retrieve context → LLM generates `ReviewComment` objects; crash-safe, never raises
+- **`trelix review <repo> [--diff <file>] [--base] [--head] [--json]`** CLI command with Rich table output
+
+### Added — Multi-Repo Federated Search (Plan D)
+- **`RepoRegistry`** — load/save/manage `~/.config/trelix/repos.json`; `add(alias, path, weight)`, `remove`, `list`; raises `ValueError` on duplicate alias
+- **`FederatedRetriever(registry, max_workers=4).retrieve(query, k)`** — parallel fan-out across registered repos via `ThreadPoolExecutor`; RRF merge; deduplicates by `(file_path, symbol_id)`; crash-safe (returns `[]` when all repos fail)
+- **`trelix search-all <query>`** — federated search CLI
+- **`trelix federation add/list`** — registry management CLI
+- Config: `federation_enabled=False` (`TRELIX_FEDERATION_ENABLED`), `federation_max_workers=4`
 
 ### Breaking Changes
 None — all new features are opt-in via config flags.
 
+### v2.4.0 Backlog
+- Multi-query expansion observability (log which mode: LLM-assisted vs fallback)
+- MCP subscription/streaming (server-push on index changes)
+- FederatedRetriever caching layer for repeated queries
+- `trelix review` integration with GitHub PR API
+- Real-time multi-repo watch (`trelix watch-all`)
+
 ---
 
-## [Unreleased]
+## [2.2.0] — 2026-07-01
 
-### Added
+## [2.1.0] — 2026-06-30
+
+### Overview
+Two major feature sets landing together. Phase A ships the Knowledge Graph layer (v2.0.0 development).
+Phase B is the Beast-Mode Upgrade: seven research-grounded retrieval improvements, all opt-in via
+config flags that default to `False` — zero regression when disabled.
+
+### Added — Knowledge Graph (Phase A)
 - **Knowledge Graph**: new `trelix/graph/` module unifying call/import/type edges into a traversable `CodeGraph` (NetworkX MultiDiGraph)
 - **Community Detection**: Louvain algorithm clusters codebase into architectural modules; `trelix graph ./repo` CLI command shows top communities
 - **Semantic Concepts**: `ConceptExtractor` — LLM-powered extraction of architectural concepts from symbol batches (crash-safe, returns `[]` on any failure)
@@ -102,11 +191,21 @@ None — all new features are opt-in via config flags.
 - **REST API**: `GET /graph`, `GET /graph/communities`, `GET /graph/visualize`, `GET /graph/search` endpoints
 - **MCP Tools**: `build_knowledge_graph` and `graph_search_mcp` tools in `trelix-mcp`
 - **Graph Persistence**: `graph_metadata` SQLite table stores community and degree centrality per symbol
+- **PageRank symbol boosting** (`pagerank_boost_enabled`) — scores symbols by import-graph centrality; boosts high-centrality symbols post-rerank
+- **Incremental graph updater** — `GraphUpdater.update_file()` refreshes community + PageRank for a changed file; wired into `trelix watch`
+
+### Added — Beast-Mode Retrieval (Phase B)
+- **File-summary 5th retrieval leg** (`file_summary_leg_enabled`) — RAPTOR-style file-level embeddings used as a 5th RRF leg (arXiv:2401.18059); requires `TRELIX_FILE_SUMMARIES_ENABLED=true` at index time
+- **HyDE fallback** (`hyde_fallback_enabled`) — Hypothetical Document Embeddings (arXiv:2212.10496): generates a synthetic code snippet, embeds it instead of the raw NL query
+- **Multi-query expansion** (`multi_query_enabled`) — decomposes a query into N variants, retrieves independently, RRF-fuses for broader recall
+- **FLARE re-retrieval loop** (`flare_enabled`) — confidence-gated iterative retrieval (arXiv:2305.06983): re-retrieves when synthesis output contains uncertainty phrases
+- **Query telemetry** (`telemetry_enabled`) — `TelemetryWriter` writes per-query rows (latency, intent, result count) to `query_telemetry` SQLite table; `trelix telemetry` CLI shows recent queries
+- **CoIR evaluation harness** — `trelix eval --golden <file>` reports nDCG@10, Recall@10, MRR (CoIR format, ACL 2025 arXiv:2407.02883); pure-Python `trelix.eval.ndcg` with no pandas dependency
 
 ### Breaking Changes
 - **CLI**: `trelix graph` renamed to `trelix call-graph` (the old call-graph/callers display).
-  The name `trelix graph` now refers to the new knowledge graph build command.
-  Update any scripts using `trelix graph <repo> <symbol>` to use `trelix call-graph <repo> <symbol>`.
+  The name `trelix graph` now refers to the knowledge graph build command.
+  Update any scripts using `trelix graph <repo> <symbol>` to `trelix call-graph <repo> <symbol>`.
 
 ---
 
@@ -411,7 +510,11 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.0.0...HEAD
+[2.2.0]: https://github.com/sairam0424/trelix/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/sairam0424/trelix/compare/v2.0.0...v2.1.0
+
+[2.3.0]: https://github.com/sairam0424/trelix/compare/v2.2.0...v2.3.0
+[2.2.0]: https://github.com/sairam0424/trelix/releases/tag/v2.2.0
 [2.0.0]: https://github.com/sairam0424/trelix/releases/tag/v2.0.0
 [1.1.0]: https://github.com/sairam0424/trelix/releases/tag/v1.1.0
 [1.0.0]: https://github.com/sairam0424/trelix/releases/tag/v1.0.0

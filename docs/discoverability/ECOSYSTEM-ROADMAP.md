@@ -548,12 +548,40 @@ Week 4:  Knowledge graph blog post + Pyvis demo page (Knowledge Graph Ecosystem 
 
 **Planned research & integration work:**
 
-| Item | Status | Notes |
+| Item | Priority | Notes |
 |---|---|---|
+| Wire `multi_query_enabled` into retriever | Medium | Allow callers to toggle HyDE expansion per query instead of global env flag |
+| Rename `flare_max_retries` for clarity | Low | Consider `flare_adaptive_depth` or `flare_loop_threshold` for semantics |
+| LanceDB/Qdrant `search_file_summaries` score normalization | High | Normalize file-summary scores to 0–1 range; fuse with BM25/vector consistently |
 | BGE double-prefix investigation | 📋 Backlog | Evaluate BGE double-prefix strategy for improved code semantics retrieval |
-| LanceDB + Qdrant file summary retrieval leg integration | 📋 Backlog | Integrate file-level summaries with hybrid LanceDB/Qdrant retrieval pipeline |
 | Knowledge graph — LLM-powered concept labeling per community | 📋 Backlog | Use ConceptExtractor to auto-label Louvain clusters for richer onboarding output |
-| Knowledge graph — incremental re-index on file change | 📋 Backlog | Only rebuild affected subgraph nodes instead of full rebuild |
+| Multi-language semantic matching | 📋 Backlog | Extend query expansion to polyglot repos (e.g., TypeScript + Python calls) |
+
+---
+
+## v2.3.0 Backlog
+
+**Planned features & improvements:**
+
+| Item | Status | Priority | Notes |
+|---|---|---|---|
+| Wire multi_query_enabled into retriever | 📋 Backlog | P1 | Expose `multi_query_enabled` config flag to retriever for multi-query expansion routing |
+| flare_max_iterations → flare_max_retries rename | 📋 Backlog | P2 | Semantic rename for consistency with agentic ReAct retry semantics |
+| MCP resources exposure | 📋 Backlog | P1 | Expose symbol metadata as MCP resources (not just tools) for richer Cursor/Claude Code context |
+| Dimension guard for embedding provider switches | 📋 Backlog | P2 | Runtime validation to prevent mismatched embedding dimensions when switching providers mid-lifecycle |
+| PR/diff semantic review | 📋 Backlog | P1 | Semantic diff embeddings for LLM-aware code review suggestions in GitHub integration |
+| Multi-repo federated search | 📋 Backlog | P2 | Search across multiple indexed repositories with rank fusion and repo-scoped filtering |
+
+**Shipped in v2.4.0 (removed from backlog):**
+
+| Item | Shipped | Notes |
+|---|---|---|
+| FederatedRetriever TTL cache | ✅ v2.4.0 | SHA-256 keyed, thread-safe, ~90% hit rate for debugging sessions |
+| Multi-repo file watching | ✅ v2.4.0 | MultiRepoWatcher + `trelix watch-all` CLI |
+| GitHub PR API integration | ✅ v2.4.0 | `trelix review --pr owner/repo#N`, optional --post-comments |
+| MCP search_code pagination | ✅ v2.4.0 | BREAKING: envelope return type; cursor= param |
+| Multi-query expansion observability | ✅ v2.4.0 | ExpandResult dataclass + 3 new telemetry columns |
+| flare_max_retries rename | ✅ v2.4.0 | Old env var deprecated until v3.0.0 with DeprecationWarning |
 
 **Shipped in v2.4.0 (removed from backlog):**
 
