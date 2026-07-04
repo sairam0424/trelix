@@ -1,4 +1,102 @@
-# Trelix Architecture (v2.0.0)
+# Trelix Architecture (v2.4.0)
+
+## v2.4.0 Additions
+
+### FederatedRetriever TTL Cache (Plan C)
+
+```
+FederatedRetriever.retrieve(query, k=10)
+  └─ _make_cache_key(query, sorted_repos, k)  → SHA-256
+       ├─ cache HIT  → return cached list[SearchResult] (avg <1ms)
+       └─ cache MISS → _query_repos() fan-out → TTLCache(120s)
+```
+
+**Constructor:** `FederatedRetriever(registry, cache_ttl=120.0)`
+
+- Thread-safe via `threading.Lock`; safe for concurrent async callers
+- `cache_ttl=0` disables caching entirely (useful for tests / real-time sessions)
+- `cache_stats()` returns `{hits, misses, size}` for observability
+- `clear_cache()` flushes all entries immediately
+- Typical cache hit rate: ~90% for debugging sessions (repeated queries over the same repos)
+
+### Multi-Query Expansion Observability (Plan B)
+
+`MultiQueryExpander.expand()` now returns a frozen `ExpandResult` dataclass:
+
+```python
+@dataclass(frozen=True)
+class ExpandResult:
+    queries: list[str]       # the expanded query variants
+    llm_used: str            # which LLM backend produced the expansion
+    elapsed_ms: float        # wall-clock time for the LLM call
+```
+
+Three new nullable columns in `query_telemetry`:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `expansion_used` | BOOLEAN | Whether multi-query expansion was applied |
+| `expansion_variants` | INTEGER | Number of variant queries generated |
+| `expansion_elapsed_ms` | REAL | LLM call duration for expansion |
+
+`TelemetryWriter.record()` accepts `expansion_result=` kwarg; `NULL` stored when not provided (fully backward-compatible).
+
+### `flare_max_retries` rename (Plan A)
+
+`RetrievalConfig` field renamed for clarity:
+
+| Old field | New field | Status |
+|-----------|-----------|--------|
+| `flare_max_iterations` | `flare_max_retries` | Old env var deprecated until v3.0.0 |
+
+Env var migration:
+
+| Env var | Status |
+|---------|--------|
+| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | **New (canonical)** |
+| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` | Deprecated — still accepted; emits `DeprecationWarning` |
+
+### GitHub PR Review (Plan D)
+
+New module: `src/trelix/review/github.py`
+
+```
+trelix review --pr owner/repo#N
+  └─ GitHubPRClient.get_pr_files()  → list[PRFile] (7 status values)
+       └─ DiffReviewer.review(diff_text=...)
+            └─ [--post-comments] GitHubPRClient.post_review() → single batched API call
+```
+
+**Key details:**
+- `GITHUB_TOKEN` env var only — no OAuth flow
+- All 7 GitHub file status values handled: `added`, `modified`, `removed`, `renamed`, `copied`, `changed`, `unchanged`
+- PRs with >3000 files emit a truncation warning; only the first 3000 files are reviewed
+- `parse_pr_ref("owner/repo#N")` helper for CLI arg parsing
+- `--post-comments` posts findings as a single batched GitHub review (one API call)
+
+### MCP Pagination — BREAKING (Plan F)
+
+`search_code()` return type changed:
+
+**Before (v2.3.x and earlier):**
+```python
+search_code(query, repo_path, k=10) → list[dict]
+```
+
+**After (v2.4.0+):**
+```python
+search_code(query, repo_path, k=10, cursor=0) → {
+    "results": list[dict],
+    "next_cursor": int | None,   # null on last page
+    "total_available": int
+}
+```
+
+**Migration:** replace `for item in response` with `for item in response["results"]`.
+
+`index_codebase()` now emits `ctx.report_progress()` notifications via `asyncio` during indexing (no interface change for callers).
+
+---
 
 ## Indexing Pipeline (offline — `trelix index`)
 
@@ -44,24 +142,28 @@ Research basis: Anthropic contextual retrieval (2024) — 67% retrieval failure 
 
 ```
 User Query
-  └─ AdaptiveRouter
-       ├─ Tier 1: Direct — trivial factual → skip retrieval
-       ├─ Tier 2: Single-step — 8-intent classification → RetrievalStrategy
-       └─ Tier 3: Multi-step — LLM decomposes → 2-3 sub-queries in parallel
-            └─ Per sub-query:
-                 ├─ Vector Search   (HyDE snippet → sqlite-vec HNSW ANN)
-                 ├─ Contextual BM25 (FTS5, includes context_summary)
-                 └─ Grep Search     (exact / regex symbol names)
-                      └─ RRF Fusion (Reciprocal Rank Fusion, k=60)
-                           └─ Graph Expansion
-                                ├─ call_graph (qualified-name + type-hint precision)
-                                ├─ import_graph (forward/reverse, depth 1-2)
-                                └─ type_edges (extends/implements/trait_impl)
-                                     └─ Reranker (Cohere | cross-encoder | PLAID)
-                                          └─ Context Assembler (greedy | breadth_first)
-                                               └─ Synthesis (via TrelixChatClient)
-                                                    ├─ ≤8k tokens: Direct LLM call
-                                                    └─ >8k tokens: GraphRAG map-reduce
+  └─ FederatedRetriever (v2.4.0: TTL cache, SHA-256 key, threading.Lock)
+       ├─ cache HIT  → return cached list[SearchResult] (avg <1ms)
+       └─ cache MISS →
+            └─ AdaptiveRouter
+                 ├─ Tier 1: Direct — trivial factual → skip retrieval
+                 ├─ Tier 2: Single-step — 8-intent classification → RetrievalStrategy
+                 └─ Tier 3: Multi-step — LLM decomposes → 2-3 sub-queries in parallel
+                      └─ Per sub-query:
+                           ├─ Vector Search   (HyDE snippet → sqlite-vec HNSW ANN)
+                           ├─ Contextual BM25 (FTS5, includes context_summary)
+                           └─ Grep Search     (exact / regex symbol names)
+                                └─ RRF Fusion (Reciprocal Rank Fusion, k=60)
+                                     └─ Graph Expansion
+                                          ├─ call_graph (qualified-name + type-hint precision)
+                                          ├─ import_graph (forward/reverse, depth 1-2)
+                                          └─ type_edges (extends/implements/trait_impl)
+                                               └─ Reranker (Cohere | cross-encoder | PLAID)
+                                                    └─ Context Assembler (greedy | breadth_first)
+                                                         └─ Synthesis (via TrelixChatClient)
+                                                              ├─ ≤8k tokens: Direct LLM call
+                                                              └─ >8k tokens: GraphRAG map-reduce
+                                                                   └─ TTLCache(120s) stored
 ```
 
 ### Adaptive Query Router
@@ -358,7 +460,7 @@ TRELIX_FILE_SUMMARIES_ENABLED=true trelix index .
 
 ---
 
-## File Watcher (`trelix watch`)
+## File Watcher (`trelix watch` / `trelix watch-all`)
 
 ```
 trelix watch <repo> [--provider local|openai|azure|voyage|bedrock-titan|bedrock-cohere]
@@ -372,18 +474,41 @@ trelix watch <repo> [--provider local|openai|azure|voyage|bedrock-titan|bedrock-
 
 Requires `pip install trelix[watch]` (watchdog).
 
+### Multi-Repo Watcher (`trelix watch-all`) — v2.4.0
+
+```
+RepoRegistry (registered repos)
+  └─ MultiRepoWatcher
+       └─ watchfiles.awatch(*all_repo_paths, debounce=1600ms)
+            ├─ Change.modified/added → MD5 hash guard → Indexer.index_file()
+            └─ Change.deleted        → db.delete_file_by_path() + vector_store cleanup
+```
+
+**Key behaviours:**
+- Single `watchfiles.awatch()` call monitors all registered repositories simultaneously (vs. one-per-repo watchdog observers)
+- MD5 hash guard prevents re-index cascades on no-op saves
+- Deleted files are removed from both SQLite and the vector store atomically
+- Per-repo stats displayed in the terminal; graceful `Ctrl+C` shutdown
+- Source: `src/trelix/indexing/multi_watcher.py`
+
+```bash
+trelix watch-all   # watches all repos registered in the active RepoRegistry
+```
+
 ---
 
-## Test Coverage (v2.0.0)
+## Test Coverage (v2.4.0)
 
 | Suite | Count | What's covered |
 |-------|-------|---------------|
-| Unit tests (core) | **929** | All modules, all parsers, all providers, LLM factory |
+| Unit tests (core) | **1,467** | All modules, all parsers, all providers, LLM factory, cache, multi-watcher, GitHub PR client, MCP pagination |
 | Integration tests (live) | **16** | Azure + Bedrock chat (complete/stream/tool_call) + Bedrock embeddings; skip gracefully when creds absent |
 | Eval harness | 50 queries | MRR, Recall@1/5/10, NDCG@10 on trelix-self; LLM-as-judge score per result |
-| trelix-mcp tests | **9** | 4 tools, stdout-clean MCP protocol test |
+| trelix-mcp tests | **41** | All tools including paginated search_code envelope, index_codebase progress notifications |
 | trelix-langchain tests | **19** | BaseRetriever, Document structure, metadata keys |
 | trelix-llama-index tests | **10** | BaseRetriever, NodeWithScore structure |
+
+**Total passing: 1,508**
 
 ### LLM-as-Judge Eval (v2.0.0)
 
@@ -464,13 +589,15 @@ pip install trelix[all]              # everything
 
 ```
 trelix-mcp (stdio transport)
-  ├── search_code(query, repo_path, k=10)                                     → list[dict]
-  ├── index_codebase(repo_path, provider)                                      → dict (stats)
+  ├── search_code(query, repo_path, k=10, cursor=0)                           → {results, next_cursor, total_available}  [BREAKING v2.4.0]
+  ├── index_codebase(repo_path, provider)                                      → dict (stats) + progress notifications   [v2.4.0]
   ├── get_symbol(qualified_name, repo_path)                                    → dict | None
   ├── blast_radius(symbol_name, repo_path)                                     → list[dict]
   ├── build_knowledge_graph(repo_path, detect_communities, extract_concepts)   → dict (stats)  [v2.0.0]
   └── graph_search_mcp(query, repo_path, depth, max_results)                  → list[dict]    [v2.0.0]
 ```
+
+**Migration for `search_code` callers:** replace `for item in response` with `for item in response["results"]`. Use `cursor=response["next_cursor"]` to fetch the next page; `next_cursor=null` indicates the last page.
 
 ---
 

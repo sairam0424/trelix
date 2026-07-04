@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from trelix.retrieval.query_expansion import HyDEExpander, MultiQueryExpander
+from trelix.retrieval.query_expansion import ExpandResult, HyDEExpander, MultiQueryExpander
 
 
 class TestHyDEExpander:
@@ -38,7 +38,9 @@ class TestMultiQueryExpander:
     def test_returns_original_when_no_llm(self) -> None:
         expander = MultiQueryExpander(llm_config=None, n=2)
         result = expander.expand("what handles JWT tokens")
-        assert result == ["what handles JWT tokens"]
+        assert isinstance(result, ExpandResult)
+        assert result.queries == ["what handles JWT tokens"]
+        assert result.llm_used is False
 
     def test_returns_n_plus_original_when_llm_available(self) -> None:
         mock_client = MagicMock()
@@ -51,8 +53,10 @@ class TestMultiQueryExpander:
             expander = MultiQueryExpander(llm_config=LLMConfig(), n=2)
             result = expander.expand("what handles JWT tokens")
         # Original always included, plus up to n variants
-        assert "what handles JWT tokens" in result
-        assert len(result) >= 2
+        assert isinstance(result, ExpandResult)
+        assert "what handles JWT tokens" in result.queries
+        assert len(result.queries) >= 2
+        assert result.llm_used is True
 
     def test_deduplicates_variants(self) -> None:
         mock_client = MagicMock()
@@ -65,7 +69,8 @@ class TestMultiQueryExpander:
 
             expander = MultiQueryExpander(llm_config=LLMConfig(), n=2)
             result = expander.expand("what handles JWT tokens")
-        assert len(result) == len(set(result))  # no duplicates
+        assert isinstance(result, ExpandResult)
+        assert len(result.queries) == len(set(result.queries))  # no duplicates
 
     def test_returns_original_on_llm_failure(self) -> None:
         mock_client = MagicMock()
@@ -75,7 +80,9 @@ class TestMultiQueryExpander:
 
             expander = MultiQueryExpander(llm_config=LLMConfig(), n=2)
             result = expander.expand("what handles JWT tokens")
-        assert result == ["what handles JWT tokens"]
+        assert isinstance(result, ExpandResult)
+        assert result.queries == ["what handles JWT tokens"]
+        assert result.llm_used is False
 
     def test_config_flags_default_off(self, tmp_path) -> None:
         from trelix.core.config import IndexConfig
