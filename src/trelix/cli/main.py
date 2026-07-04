@@ -26,6 +26,8 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
+from trelix.federation.registry import RepoRegistry
+
 warnings.filterwarnings("ignore", category=FutureWarning, module="tree_sitter")
 warnings.filterwarnings("ignore", message=".*HF_TOKEN.*")
 warnings.filterwarnings("ignore", message=".*huggingface.*")
@@ -823,6 +825,77 @@ def watch(
 
 
 # ---------------------------------------------------------------------------
+# watch-all
+# ---------------------------------------------------------------------------
+
+
+@app.command("watch-all")
+def watch_all(
+    config: str | None = typer.Option(
+        None,
+        "--config",
+        help="Path to federation registry JSON. Defaults to ~/.config/trelix/repos.json",
+    ),
+) -> None:
+    """Watch all federated repos for changes and auto-update their indexes. Ctrl+C to stop."""
+    _setup_logging(False)
+
+    registry = RepoRegistry.load(config_path=config)
+    entries = registry.list()
+
+    if not entries:
+        console.print(
+            "[yellow]No repos registered. Use: trelix federation add <alias> <path>[/yellow]"
+        )
+        raise typer.Exit(0)
+
+    console.print(
+        Panel(
+            f"[bold cyan]watch-all[/bold cyan] — watching {len(entries)} repo(s):\n"
+            + "\n".join(f"  [green]{e.alias}[/green]  {e.path}" for e in entries),
+            expand=False,
+        )
+    )
+
+    try:
+        from trelix.indexing.multi_watcher import MultiRepoWatcher
+    except ImportError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
+
+    watcher = MultiRepoWatcher(registry)
+
+    import asyncio
+    import signal
+
+    stop_event = asyncio.Event()
+
+    def _on_signal(*_: object) -> None:
+        stop_event.set()
+
+    try:
+        asyncio.get_event_loop().add_signal_handler(signal.SIGINT, _on_signal)
+        asyncio.get_event_loop().add_signal_handler(signal.SIGTERM, _on_signal)
+    except (NotImplementedError, RuntimeError):
+        # Windows / no event loop yet — fall through to KeyboardInterrupt
+        pass
+
+    console.print("[green]Watching for changes. Press Ctrl+C to stop.[/green]")
+
+    try:
+        asyncio.run(watcher.run(stop_event))
+    except KeyboardInterrupt:
+        pass
+
+    stats = watcher.stats()
+    console.print(
+        f"\n[dim]Watch stopped. "
+        f"Re-indexed: {stats['files_reindexed']} files | "
+        f"Skipped (unchanged): {stats['files_skipped_unchanged']} files.[/dim]"
+    )
+
+
+# ---------------------------------------------------------------------------
 # serve
 # ---------------------------------------------------------------------------
 
@@ -1090,6 +1163,21 @@ def review(
     head: Annotated[str, typer.Option("--head", help="Head git ref for diff.")] = "HEAD",
     json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON.")] = False,
     max_files: Annotated[int, typer.Option("--max-files", help="Max files to review.")] = 10,
+    pr: str | None = typer.Option(
+        None,
+        "--pr",
+        help=(
+            "GitHub PR ref (owner/repo#number). Fetches diff from GitHub API. "
+            "Requires GITHUB_TOKEN env var."
+        ),
+    ),
+    post_comments: bool = typer.Option(
+        False,
+        "--post-comments",
+        help=(
+            "Post review comments back to GitHub PR (requires GITHUB_TOKEN + pull_requests:write)."
+        ),
+    ),
 ) -> None:
     """Review a git diff using trelix retrieval-augmented analysis."""
     import json as _json
@@ -1099,6 +1187,127 @@ def review(
     from trelix.review.reviewer import DiffReviewer
 
     config = IndexConfig(repo_path=str(Path(repo).resolve()))
+
+    # ------------------------------------------------------------------
+    # GitHub PR path
+    # ------------------------------------------------------------------
+    if pr is not None:
+        import os
+
+        from trelix.review.github import GitHubPRClient, parse_pr_ref
+
+        token = os.environ.get("GITHUB_TOKEN", "")
+        if not token:
+            err_console.print(
+                "[red]Error:[/red] GITHUB_TOKEN environment variable is required for --pr."
+            )
+            raise typer.Exit(1)
+
+        try:
+            owner, repo_name, pr_number = parse_pr_ref(pr)
+        except ValueError as exc:
+            err_console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1)
+
+        console.print(f"[cyan]Fetching PR diff from GitHub:[/cyan] {pr}")
+        gh_client = GitHubPRClient(token=token)
+
+        try:
+            pr_files = gh_client.get_pr_files(owner, repo_name, pr_number)
+        except Exception as exc:
+            err_console.print(f"[red]GitHub API error:[/red] {exc}")
+            raise typer.Exit(1)
+
+        # Build a unified diff string from PR files
+        diff_lines: list[str] = []
+        for f in pr_files:
+            if f.patch is None:
+                console.print(f"[dim]Skipping binary/oversized file: {f.filename}[/dim]")
+                continue
+            diff_lines.append(f"diff --git a/{f.filename} b/{f.filename}")
+            diff_lines.append(f"--- a/{f.previous_filename or f.filename}")
+            diff_lines.append(f"+++ b/{f.filename}")
+            diff_lines.append(f.patch)
+        pr_diff_str = "\n".join(diff_lines)
+
+        if not pr_diff_str.strip():
+            console.print("[yellow]No textual changes found in PR (all binary files?).[/yellow]")
+            raise typer.Exit(0)
+
+        reviewer = DiffReviewer(config)
+        with console.status("Retrieving context and generating review..."):
+            comments = reviewer.review(diff_text=pr_diff_str)
+
+        if not comments:
+            console.print("[green]No issues found.[/green]")
+            raise typer.Exit(0)
+
+        if json_output:
+            console.print(
+                _json.dumps(
+                    [
+                        {
+                            "file": c.file_path,
+                            "lines": f"{c.line_start}-{c.line_end}",
+                            "severity": c.severity,
+                            "comment": c.comment,
+                        }
+                        for c in comments
+                    ],
+                    indent=2,
+                )
+            )
+        else:
+            from rich.table import Table as _Table
+
+            table = _Table(title=f"Review Results ({len(comments)} comments)")
+            table.add_column("File", style="dim")
+            table.add_column("Lines")
+            table.add_column("Severity", style="bold")
+            table.add_column("Comment", max_width=80)
+            for c in comments:
+                color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
+                table.add_row(
+                    c.file_path,
+                    f"{c.line_start}-{c.line_end}",
+                    f"[{color}]{c.severity}[/{color}]",
+                    c.comment,
+                )
+            console.print(table)
+
+        if post_comments:
+            from trelix.review.github import ReviewComment as _GHReviewComment
+
+            try:
+                head_sha = gh_client.get_pr_head_sha(owner, repo_name, pr_number)
+                inline_comments = [
+                    _GHReviewComment(
+                        path=c.file_path,
+                        line=c.line_start,
+                        body=c.comment,
+                    )
+                    for c in comments
+                    if c.line_start
+                ]
+                gh_client.post_review(
+                    owner=owner,
+                    repo=repo_name,
+                    pr_number=pr_number,
+                    commit_sha=head_sha,
+                    body=f"trelix review: {len(inline_comments)} inline comment(s) found.",
+                    comments=inline_comments,
+                )
+                console.print(
+                    f"[green]Posted review with {len(inline_comments)} inline comments.[/green]"
+                )
+            except Exception as exc:
+                err_console.print(f"[yellow]Warning: failed to post comments: {exc}[/yellow]")
+
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # Local git diff path
+    # ------------------------------------------------------------------
     parser = DiffParser()
 
     with console.status("Parsing diff..."):

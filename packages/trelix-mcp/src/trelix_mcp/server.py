@@ -11,7 +11,7 @@ logging.basicConfig(
 import signal  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
-from fastmcp import FastMCP  # noqa: E402
+from fastmcp import Context, FastMCP  # noqa: E402
 
 from trelix.core.config import EmbedderConfig, IndexConfig  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
@@ -110,58 +110,104 @@ def prompt_blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, str]
 
 
 @mcp.tool()
-def search_code(query: str, repo_path: str, k: int = 10) -> list[dict[str, Any]]:
-    """Search a codebase for symbols semantically relevant to *query*.
+def search_code(
+    query: str,
+    repo_path: str,
+    k: int = 10,
+    cursor: int = 0,
+) -> dict:
+    """
+    Search the indexed codebase using natural language queries.
 
-    Args:
-        query: Natural-language or keyword search query.
-        repo_path: Absolute path to the repository root (must already be indexed).
-        k: Maximum number of results to return (default 10).
+    ⚠️ IMPORTANT:
+    - repo_path must be an ABSOLUTE path to an already-indexed repository.
+    - Run index_codebase first if you receive an error about a missing index.
+
+    🎯 When to Use:
+    - Find specific functions, classes, or implementations
+    - Understand architecture before making changes
+    - Locate all callers of a function before refactoring
+    - Find similar patterns to follow when adding code
+
+    📄 Pagination:
+    - Use cursor=0 for first page (default).
+    - If next_cursor is not null, pass it as cursor for the next page.
+    - k controls page size.
 
     Returns:
-        List of result dicts with keys: file, symbol, kind, lines, score, source,
-        body, language.
+        {"results": [...], "next_cursor": int|null, "total_available": int}
     """
-    _log.info("search_code query=%r repo_path=%r k=%d", query, repo_path, k)
+    _log.info("search_code query=%r repo=%s k=%d cursor=%d", query, repo_path, k, cursor)
     config = IndexConfig(repo_path=repo_path)
-    retriever = Retriever(config)
-    context = retriever.retrieve(query)
-    results = context.results[:k]
-    return [
-        {
-            "file": r.file.rel_path,
-            "symbol": r.symbol.qualified_name,
-            "kind": r.symbol.kind,
-            "lines": [r.symbol.line_start, r.symbol.line_end],
-            "score": round(r.score, 4),
-            "source": r.source,
-            "body": r.symbol.body,
-            "language": r.file.language,
-        }
-        for r in results
-    ]
+    ctx = Retriever(config).retrieve(query)
+    all_results = ctx.results
+
+    page = all_results[cursor : cursor + k]
+    next_cursor = cursor + k if cursor + k < len(all_results) else None
+
+    return {
+        "results": [
+            {
+                "file": r.file.rel_path,
+                "symbol": r.symbol.qualified_name,
+                "kind": r.symbol.kind.value,
+                "lines": f"{r.symbol.line_start}-{r.symbol.line_end}",
+                "score": round(r.score, 4),
+                "source": r.source,
+                "body": r.symbol.body[:800],
+                "language": r.file.language.value,
+            }
+            for r in page
+        ],
+        "next_cursor": next_cursor,
+        "total_available": len(all_results),
+    }
 
 
 @mcp.tool()
 def index_codebase(
     repo_path: str,
     provider: Literal["local", "openai", "azure", "voyage", "local-code"] = "local",
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Index a codebase so it can be searched with search_code.
-
-    Args:
-        repo_path: Absolute path to the repository root.
-        provider: Embedding provider — "local" requires no API key.
-
-    Returns:
-        Indexing statistics dict with keys: files_found, files_indexed,
-        files_skipped, symbols_extracted, chunks_total, chunks_embedded,
-        errors, elapsed_seconds.
     """
-    _log.info("index_codebase repo_path=%r provider=%r", repo_path, provider)
+    Index a repository for code search. Run once before calling search_code.
+
+    ⚠️ IMPORTANT:
+    - Stores the index in <repo_path>/.trelix/index.db (zero external infra).
+    - Re-run to refresh after large code changes; incremental update is fast.
+
+    ✨ Providers:
+    - local   — no API key, CPU-only, fast for small repos
+    - openai  — requires OPENAI_API_KEY, best quality
+    - azure   — requires AZURE_API_KEY + AZURE_ENDPOINT
+    - voyage  — requires VOYAGE_API_KEY, best code-specific quality
+
+    Progress notifications are sent if the MCP client supports them.
+    """
+    _log.info("index_codebase repo=%s provider=%s", repo_path, provider)
+
     embedder_config = EmbedderConfig(provider=provider)  # type: ignore[call-arg]
     config = IndexConfig(repo_path=repo_path, embedder=embedder_config)
+
+    def _send_progress(current: int, total: int) -> None:
+        """Send MCP progress notification — best-effort, never raises."""
+        if ctx is None:
+            return
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            loop.create_task(ctx.report_progress(current, total))
+        except RuntimeError:
+            # No running loop (sync context) — skip progress notification silently
+            pass
+        except Exception:
+            pass
+
+    _send_progress(0, 3)
     stats = Indexer(config, quiet=True).index()
+    _send_progress(3, 3)
+
     return stats
 
 

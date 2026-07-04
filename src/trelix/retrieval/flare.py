@@ -57,7 +57,7 @@ class FLARELoop:
 
     When the initial synthesis contains uncertainty phrases, re-retrieves
     with a more specific query derived from the original + uncertainty context,
-    then re-synthesizes. Runs at most ``flare_max_iterations`` additional
+    then re-synthesizes. Runs at most ``flare_max_retries`` additional
     re-retrieval rounds after the initial synthesis.
     """
 
@@ -84,10 +84,10 @@ class FLARELoop:
         if not cfg.flare_enabled:
             return answer
 
-        # ``flare_max_iterations`` is the total synthesis call budget (initial + retries).
+        # ``flare_max_retries`` is the total synthesis call budget (initial + retries).
         # The minimum budget is 2 (initial + 1 retry) because enabling FLARE with no
         # retry is meaningless. Values 1 and 2 both allow exactly 1 retry; 3 allows 2.
-        max_retries = max(1, cfg.flare_max_iterations - 1)
+        max_retries = max(1, cfg.flare_max_retries - 1)
 
         iteration = 0
         while _contains_uncertainty(answer) and iteration < max_retries:

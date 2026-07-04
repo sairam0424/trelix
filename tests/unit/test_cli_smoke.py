@@ -19,14 +19,14 @@ def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert "trelix" in result.output
-    assert "2.3.0" in result.output
+    assert "2.4.0" in result.output
 
 
 def test_version_short_flag():
     result = runner.invoke(app, ["-V"])
     assert result.exit_code == 0
     assert "trelix" in result.output
-    assert "2.3.0" in result.output
+    assert "2.4.0" in result.output
 
 
 def test_help():
@@ -105,3 +105,37 @@ def test_ask_requires_args():
 def test_stats_requires_path():
     result = runner.invoke(app, ["stats"])
     assert result.exit_code != 0
+
+
+def test_watch_all_help() -> None:
+    """trelix watch-all --help exits 0 and shows expected options."""
+    from typer.testing import CliRunner
+
+    from trelix.cli.main import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["watch-all", "--help"])
+    assert result.exit_code == 0
+    assert "watch-all" in result.output.lower() or "registry" in result.output.lower()
+
+
+def test_watch_all_no_repos_exits_gracefully() -> None:
+    """trelix watch-all with empty registry shows helpful message."""
+    from unittest.mock import patch
+
+    from typer.testing import CliRunner
+
+    from trelix.cli.main import app
+    from trelix.federation.registry import RepoRegistry
+
+    runner = CliRunner()
+    empty_reg = RepoRegistry.__new__(RepoRegistry)
+    from pathlib import Path
+
+    empty_reg._config_path = Path("/tmp/fake.json")
+    empty_reg._entries = []
+
+    with patch("trelix.cli.main.RepoRegistry.load", return_value=empty_reg):
+        result = runner.invoke(app, ["watch-all"])
+    assert result.exit_code == 0
+    assert "no repos" in result.output.lower() or "register" in result.output.lower()
