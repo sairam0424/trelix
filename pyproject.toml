@@ -37,7 +37,7 @@ classifiers = [
 ]
 dependencies = [
     # --- Parsing ---
-    "tree-sitter>=0.21,<0.22",
+    "tree-sitter>=0.21,<0.27",
     "tree-sitter-languages>=1.10.2",
     "PyYAML>=6.0",
     # --- Storage ---
