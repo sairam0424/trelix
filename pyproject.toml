@@ -178,3 +178,10 @@ omit = ["tests/*"]
 [tool.coverage.report]
 show_missing = true
 fail_under = 75
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]

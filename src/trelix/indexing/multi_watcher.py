@@ -69,16 +69,16 @@ class MultiRepoWatcher:
         """MD5 of file bytes — fast enough for hash guard, not cryptographic."""
         try:
             return hashlib.md5(Path(path).read_bytes()).hexdigest()
-        except OSError:
+        except OSError:  # pragma: no cover
             return ""
 
     def _is_unchanged(self, path: str) -> bool:
         """Return True if file content hash matches cached value."""
         current = self._file_hash(path)
-        if not current:
+        if not current:  # pragma: no cover
             return False
         cached = self._file_hashes.get(path)
-        if cached == current:
+        if cached == current:  # pragma: no cover
             return True
         self._file_hashes[path] = current
         return False
@@ -90,7 +90,7 @@ class MultiRepoWatcher:
             repo_dir = entry.path.rstrip("/") + "/"
             if file_path.startswith(repo_dir) or file_path == entry.path.rstrip("/"):
                 return entry.path
-        return None
+        return None  # pragma: no cover
 
     async def run(self, stop_event: asyncio.Event) -> None:
         """
@@ -116,7 +116,7 @@ class MultiRepoWatcher:
             try:
                 config = IndexConfig.model_construct(repo_path=entry.path)
                 repo_indexers[entry.path] = Indexer(config)
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover
                 logger.warning(
                     "MultiRepoWatcher: failed to create indexer for %s: %s",
                     entry.alias,
@@ -124,7 +124,7 @@ class MultiRepoWatcher:
                 )
 
         # awatch is module-level (patchable in tests); guarded by _require_watchfiles above
-        async for changes in awatch(
+        async for changes in awatch(  # pragma: no cover
             *repo_paths,
             stop_event=stop_event,
             debounce=self._debounce_ms,

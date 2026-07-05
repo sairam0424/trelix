@@ -165,3 +165,10 @@ class TestParsePRRef:
         assert owner == "my-org"
         assert repo == "my-repo"
         assert number == 999
+
+    def test_parse_pr_ref_hash_before_slash(self) -> None:
+        """_parse_pr_ref raises ValueError when # appears before any / (e.g. '#b/c')."""
+        from trelix.review.github import parse_pr_ref
+
+        with pytest.raises(ValueError, match="owner/repo#number"):
+            parse_pr_ref("#repo/42")
