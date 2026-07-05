@@ -1,1046 +1,2065 @@
-# Trelix Architecture (v2.4.0)
+# trelix Architecture
 
-## v2.4.0 Additions
+> **Version:** 2.4.0 | **Python:** 3.11+ | **110 source modules, 133 classes**
 
-### FederatedRetriever TTL Cache (Plan C)
+This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
+
+---
+
+## Table of Contents
+
+1. [System Overview](#1-system-overview)
+2. [Core Data Models](#2-core-data-models)
+3. [Configuration System](#3-configuration-system)
+4. [Storage Layer](#4-storage-layer)
+5. [Indexing Pipeline](#5-indexing-pipeline)
+6. [Embedder Layer](#6-embedder-layer)
+7. [Retrieval Pipeline](#7-retrieval-pipeline)
+8. [Query Planner](#8-query-planner)
+9. [Fusion and Ranking](#9-fusion-and-ranking)
+10. [Synthesis and Agent Loop](#10-synthesis-and-agent-loop)
+11. [Graph Layer](#11-graph-layer)
+12. [Analysis Layer](#12-analysis-layer)
+13. [Federation Layer (v2.4.0)](#13-federation-layer-v240)
+14. [Review Layer (v2.4.0)](#14-review-layer-v240)
+15. [MCP Server](#15-mcp-server)
+16. [REST API](#16-rest-api)
+17. [CLI Layer](#17-cli-layer)
+18. [File Watching](#18-file-watching)
+19. [Telemetry and Observability (v2.4.0)](#19-telemetry-and-observability-v240)
+20. [LLM Client Abstraction](#20-llm-client-abstraction)
+21. [Key Design Invariants](#21-key-design-invariants)
+22. [Data Flow Diagrams](#22-data-flow-diagrams)
+23. [Extension Points](#23-extension-points)
+
+---
+
+## 1. System Overview
+
+trelix is a **code intelligence engine** built on two orthogonal pipelines:
+
+### Offline Pipeline (index time)
 
 ```
-FederatedRetriever.retrieve(query, k=10)
-  └─ _make_cache_key(query, sorted_repos, k)  → SHA-256
-       ├─ cache HIT  → return cached list[SearchResult] (avg <1ms)
-       └─ cache MISS → _query_repos() fan-out → TTLCache(120s)
+Repo files
+  └─ FileWalker          (gitignore-aware, SHA-256 incremental hashing)
+       └─ Language Router (20+ languages via per-extractor registry)
+            └─ tree-sitter Parser (extracts Symbol, CallEdge, TypeEdge, ImportEdge)
+                 └─ Chunker (context-headed Chunk per symbol, tiktoken-counted)
+                      └─ Embedder (dense vectors; optionally sparse SPLADE)
+                           └─ SQLite Store (symbols + FTS5 BM25 + sqlite-vec HNSW)
+                                └─ Cross-file Resolution Pass
+                                     └─ DimensionGuard (dimension mismatch detection)
 ```
 
-**Constructor:** `FederatedRetriever(registry, cache_ttl=120.0)`
+### Online Pipeline (query time)
 
-- Thread-safe via `threading.Lock`; safe for concurrent async callers
-- `cache_ttl=0` disables caching entirely (useful for tests / real-time sessions)
-- `cache_stats()` returns `{hits, misses, size}` for observability
-- `clear_cache()` flushes all entries immediately
-- Typical cache hit rate: ~90% for debugging sessions (repeated queries over the same repos)
+```
+User Query
+  └─ AdaptiveRouter        (Tier 1/2/3 detection — direct/single-step/multi-step)
+       └─ QueryPlanner     (LLM intent classification → RetrievalStrategy)
+            └─ 7 Retrieval Legs (parallel: vector, BM25, grep, sparse, file-summary, sub-chunk, graph BFS)
+                 └─ RRF Fusion  (k=60, per-language weight multipliers)
+                      └─ Graph Expansion (call-graph, import-graph, type-edges)
+                           └─ Reranker (cross-encoder / Cohere / PLAID ColBERT)
+                                └─ PageRank Boost (optional, top-200 central symbols)
+                                     └─ ContextAssembler (greedy token budget)
+                                          └─ Synthesizer / AgentLoop
+                                               └─ RetrievedContext / LLM answer
+```
 
-### Multi-Query Expansion Observability (Plan B)
+### Architecture Principles
 
-`MultiQueryExpander.expand()` now returns a frozen `ExpandResult` dataclass:
+| Principle | Implementation |
+|-----------|---------------|
+| **Zero-infra default** | All state in `.trelix/index.db` (SQLite + sqlite-vec). No external services required. |
+| **Graceful degradation** | Every optional feature (sparse, graph, FLARE, PLAID, taint) catches all exceptions and continues. |
+| **Provider agnosticism** | `BaseEmbedder` and `TrelixChatClient` ABCs abstract all providers behind identical interfaces. |
+| **Incremental correctness** | SHA-256 file hashes skip unchanged files. `DimensionGuard` prevents silent embedding mismatches. |
+| **Data-driven behavior** | `INTENT_STRATEGIES` dict drives all retrieval behavior — no intent-switching logic in `Retriever`. |
+| **No mutation** | All dataclasses are created fresh (not mutated) when scores or ranks change in the pipeline. |
+| **Lazy imports** | FastAPI, torch, boto3, semgrep imported inside functions only — core install stays minimal. |
+
+---
+
+## 2. Core Data Models
+
+**Module:** `src/trelix/core/models.py`
+
+All models are Python dataclasses. They are the single source of truth that flows from walker → parser → chunker → store → retrieval → synthesis.
+
+### Enumerations
+
+```python
+class SymbolKind(StrEnum):
+    FUNCTION = "function"
+    METHOD = "method"
+    CLASS = "class"
+    INTERFACE = "interface"
+    STRUCT = "struct"
+    ENUM = "enum"
+    CONSTANT = "constant"
+    VARIABLE = "variable"
+    MODULE = "module"        # file-level module symbol
+    SECTION = "section"      # markdown heading
+    UNKNOWN = "unknown"
+
+class Language(StrEnum):
+    PYTHON | JAVASCRIPT | TYPESCRIPT | TSX | GO | RUST | JAVA
+    CPP | C | CSHARP | RAZOR | CSHTML | CSPROJ | KOTLIN | RUBY
+    MARKDOWN | JSON | YAML | TOML | HTML | CSS | UNKNOWN  # 21 total
+```
+
+### Data Classes (pipeline order)
+
+**`IndexedFile`** — output of `FileWalker`
+```python
+@dataclass
+class IndexedFile:
+    path: str            # absolute path
+    rel_path: str        # stable key for incremental hashing, used as dedup key
+    language: Language
+    hash: str            # SHA-256 of file content
+    size_bytes: int
+    id: int | None = None          # populated after DB upsert
+    indexed_at: datetime | None = None
+```
+
+**`Symbol`** — output of tree-sitter extractors
+```python
+@dataclass
+class Symbol:
+    file_id: int
+    name: str                    # bare identifier (e.g. "login")
+    qualified_name: str          # dot-separated (e.g. "AuthService.login")
+    kind: SymbolKind
+    line_start: int              # 1-indexed, inclusive
+    line_end: int
+    signature: str               # e.g. "def login(self, user: str) -> bool"
+    body: str                    # verbatim source text of the symbol
+    docstring: str | None
+    decorators: list[str]
+    is_public: bool
+    parent_id: int | None        # links methods to enclosing class symbol
+    id: int | None = None
+    context_summary: str | None = None  # LLM-generated (contextual chunking only)
+```
+
+**`CallEdge`** — directed call graph edge
+```python
+@dataclass
+class CallEdge:
+    caller_id: int
+    callee_name: str
+    line: int
+    callee_id: int | None = None      # resolved in 2nd pass (None = external/stdlib)
+    callee_type_hint: str | None = None  # e.g. "UserService" for typed method calls
+                                          # used in 4-priority cascade resolution
+```
+
+Design note on `callee_type_hint`: when the parser sees `user_service.login()` where `user_service: UserService` is the declared type, it stores `"UserService"` in `callee_type_hint`. During cross-file resolution, this narrows the match to symbols with `qualified_name LIKE "UserService.%"`, dramatically reducing false-positive edges.
+
+**`TypeEdge`** — type hierarchy
+```python
+@dataclass
+class TypeEdge:
+    from_symbol_id: int
+    to_type_name: str
+    edge_kind: str    # "extends" | "implements" | "trait_impl" | "embedded"
+    to_symbol_id: int | None = None  # resolved post-store
+```
+
+**`ImportEdge`** — file-level import
+```python
+@dataclass
+class ImportEdge:
+    file_id: int
+    imported_from: str      # module path
+    imported_names: list[str]  # ["*"] for wildcard
+    imported_file_id: int | None = None  # resolved post-store
+```
+
+**`Chunk`** — the unit that gets embedded and indexed for BM25
+```python
+@dataclass
+class Chunk:
+    symbol_id: int
+    chunk_text: str     # context header + symbol body (NOT just raw code)
+    token_count: int    # tiktoken cl100k_base, pre-computed at index time
+    embedding: list[float] | None = None
+    id: int | None = None
+```
+
+The context header prepended to every `chunk_text` (example):
+```
+# File: src/auth/service.py | Language: python
+# Imports: from .models import User, Session; from .crypto import hash_password
+# Class: AuthService
+def login(self, username: str, password: str) -> Session | None:
+    ...
+```
+
+This header lets the embedding model understand where the symbol lives in the codebase without seeing the whole file.
+
+**`SearchResult`** — output of each retrieval leg, preserved through fusion
+```python
+@dataclass
+class SearchResult:
+    chunk: Chunk
+    symbol: Symbol
+    file: IndexedFile
+    score: float    # raw cosine/BM25/RRF score
+    rank: int       # 1-indexed position
+    source: str     # "vector" | "bm25" | "grep" | "graph_expansion" |
+                    # "file_summary" | "sub_chunk" | "sparse" | "file_direct" |
+                    # "graph_callers" | "graph_callees" | "graph_importers"
+```
+
+**`RetrievedContext`** — final payload passed to LLM
+```python
+@dataclass
+class RetrievedContext:
+    query: str
+    results: list[SearchResult]
+    context_text: str            # assembled, token-budgeted text for LLM
+    total_tokens: int            # how much of the 12k budget was used
+    retrieval_sources: dict[str, int]  # {"vector": 8, "bm25": 4, ...}
+    elapsed_seconds: float
+    intent: str                  # from planner (drives per-intent synthesis prompts)
+```
+
+---
+
+## 3. Configuration System
+
+**Module:** `src/trelix/core/config.py`
+
+All configuration classes inherit `pydantic_settings.BaseSettings`. Environment variables are loaded from `.env` file in the repo root, then from shell environment (shell wins). The root object `IndexConfig` is the single configuration instance passed through the entire pipeline.
+
+### Configuration Hierarchy
+
+```
+IndexConfig
+├── WalkerConfig         TRELIX_WALKER_*
+├── ParserConfig         TRELIX_PARSER_*
+├── ChunkerConfig        TRELIX_CHUNKER_*
+├── SparseConfig         TRELIX_SPARSE_*
+├── EmbedderConfig       TRELIX_EMBEDDER_*
+├── StoreConfig          TRELIX_STORE_*
+├── RetrievalConfig      TRELIX_RETRIEVAL_*
+└── LLMConfig            TRELIX_LLM_*
+```
+
+### `WalkerConfig`
+
+```python
+class WalkerConfig(BaseSettings):
+    languages: list[str] = [all 20 languages]     # which to index
+    max_file_size_bytes: int = 500_000
+    respect_gitignore: bool = True
+    extra_ignore_dirs: list[str]  # node_modules, __pycache__, .venv, dist, .trelix, etc.
+    extra_ignore_filenames: list[str]  # package-lock.json, yarn.lock, angular.json, etc.
+    extra_ignore_extensions: list[str]  # .pyc, .min.js, .lock, .dll, etc.
+```
+
+Design note: `.trelix` is in `extra_ignore_dirs` — the walker never indexes the index itself. This prevents recursive indexing when `trelix index .` is run from inside an already-indexed repo.
+
+### `ParserConfig`
+
+```python
+class ParserConfig(BaseSettings):
+    extract_calls: bool = True
+    extract_imports: bool = True
+    max_symbol_lines: int = 500        # symbols longer than this are truncated
+    dataflow_enabled: bool = False     # TRELIX_PARSER_DATAFLOW — def-use extraction
+    taint_enabled: bool = False        # TRELIX_PARSER_TAINT — requires trelix[taint]
+```
+
+### `ChunkerConfig`
+
+```python
+class ChunkerConfig(BaseSettings):
+    max_tokens_per_chunk: int = 512         # tiktoken cl100k_base
+    include_imports_in_header: bool = True
+    max_imports_in_header: int = 8
+    include_parent_signature: bool = True   # method gets enclosing class in header
+    contextual: bool = False                # LLM context summaries (TRELIX_CHUNKER_CONTEXTUAL)
+    contextual_model: str = "gpt-4o-mini"
+    contextual_max_tokens: int = 100
+    multi_granularity_enabled: bool = False # TRELIX_CHUNKER_MULTI_GRANULARITY (MGS3)
+    multi_granularity_levels: list[str] = ["block", "statement"]
+```
+
+### `EmbedderConfig`
+
+```python
+class EmbedderConfig(BaseSettings):
+    provider: Literal["local","openai","azure","voyage","local-code",
+                      "bedrock-titan","bedrock-cohere","bge-code","nomic-code"] = "local"
+    batch_size: int = 64
+    embed_max_tokens_per_batch: int = 100_000
+    tpm_limit: int = 0  # 0 = unlimited
+```
+
+Provider dimensions (used by `DimensionGuard`):
+
+| Provider | Model | Dimensions |
+|----------|-------|-----------|
+| local | all-MiniLM-L6-v2 | 384 |
+| openai | text-embedding-3-large | 3072 |
+| azure | text-embedding-3-large | 3072 |
+| voyage | voyage-code-3 | 1024 (Matryoshka: 256/512/1024/2048) |
+| local-code | SFR-Embedding-Code-2B_R | 4096 |
+| bge-code | BAAI/bge-code-v1 | 768 |
+| nomic-code | nomic-ai/CodeRankEmbed | 768 |
+| bedrock-titan | amazon.titan-embed-text-v2:0 | 1024 (configurable: 256/512/1024) |
+| bedrock-cohere | cohere.embed-english-v3 | 1024 |
+
+### `RetrievalConfig` (complete)
+
+```python
+class RetrievalConfig(BaseSettings):
+    # Retrieval leg sizes
+    top_k_vector: int = 20
+    top_k_bm25: int = 20
+    top_k_grep: int = 10
+    rrf_k: int = 60              # Cormack 2009 RRF constant
+
+    # Reranking
+    rerank: bool = True
+    rerank_provider: str = "cohere"   # "cohere" | "cross_encoder" | "plaid"
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    rerank_top_n: int = 15            # candidates sent to reranker
+    cohere_rerank_model: str = "Cohere-rerank-v4.0-pro"
+    plaid_model: str = "colbert-ir/colbertv2.0"
+
+    # Assembly
+    context_token_budget: int = 12_000
+    synthesis_max_tokens: int = 12_000
+
+    # Graph expansion
+    graph_expansion_depth: int = 1       # call-graph hops
+    graph_expansion_max_symbols: int = 10
+
+    # Feature flags (all False unless noted)
+    graph_search_enabled: bool = False
+    file_summary_leg_enabled: bool = False
+    sparse_enabled: bool = False
+    hyde_fallback_enabled: bool = False
+    multi_query_enabled: bool = False
+    multi_query_count: int = 2           # range: 1–4
+    flare_enabled: bool = False
+    flare_max_retries: int = 1           # ge=1, le=3 — v2.4.0 rename
+    pagerank_boost_enabled: bool = False
+    pagerank_boost_factor: float = 1.3   # 1.0–3.0
+    agentic_enabled: bool = False        # ReAct AgentLoop
+    agent_max_turns: int = 8             # 1–20
+    agent_token_budget: int = 6_000      # history compression budget
+    graph_rag_enabled: bool = True       # ON by default
+    graph_rag_threshold_tokens: int = 8_000   # trigger threshold
+    sub_chunk_search_enabled: bool = False
+    federation_enabled: bool = False
+    federation_max_workers: int = 4      # 1–16
+    telemetry_enabled: bool = False      # v2.4.0
+
+    # LRU caches
+    query_cache_size: int = 256   # embed_query() results
+    plan_cache_size: int = 128    # QueryPlanner.plan() results
+
+    # File-type RRF weights
+    file_type_weighting_enabled: bool = True
+    # Defaults: source code=1.0, HTML/CSS=0.4, JSON/YAML/TOML=0.5, Markdown=0.3, Unknown=0.8
+    # Override per-language: TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_PYTHON=1.2
+```
+
+### `IndexConfig` (root)
+
+```python
+class IndexConfig(BaseSettings):
+    repo_path: str             # required; resolved to absolute path and validated
+    incremental: bool = True
+    parse_workers: int = 4
+    file_summaries_enabled: bool = False  # TRELIX_FILE_SUMMARIES_ENABLED
+    telemetry_enabled: bool = False       # TRELIX_TELEMETRY_ENABLED
+
+    # Sub-configs (auto-populated from env/file)
+    walker: WalkerConfig = ...
+    parser: ParserConfig = ...
+    chunker: ChunkerConfig = ...
+    embedder: EmbedderConfig = ...
+    store: StoreConfig = ...
+    retrieval: RetrievalConfig = ...
+    llm: LLMConfig = ...
+    sparse: SparseConfig = ...
+
+    @property
+    def db_path_absolute(self) -> Path:
+        # Resolves .trelix/index.db relative to repo_path
+        # Auto-creates parent dirs
+        # Writes .trelix/.gitignore = "*" to prevent accidental index commits
+```
+
+---
+
+## 4. Storage Layer
+
+**Module:** `src/trelix/store/db.py`
+
+### SQLite Schema
+
+Pragmas applied at every connection: `WAL`, `foreign_keys = ON`, `synchronous = NORMAL`, `busy_timeout = 5000`, `temp_store = MEMORY`.
+
+```sql
+-- Core tables (always present)
+files (id PK, path UNIQUE, rel_path, language, hash, size_bytes, indexed_at)
+
+symbols (id PK, file_id FK→files CASCADE,
+         name, qualified_name, kind, line_start, line_end,
+         signature, docstring, context_summary,
+         decorators TEXT,  -- JSON array
+         is_public BOOL, parent_id FK→symbols SET_NULL, body)
+
+calls (id PK, caller_id FK→symbols CASCADE,
+       callee_name, callee_id FK→symbols SET_NULL,
+       line, callee_type_hint TEXT)
+
+imports (id PK, file_id FK→files CASCADE,
+         imported_from, imported_names JSON,
+         imported_file_id FK→files)  -- nullable, resolved post-store
+
+chunks (id PK, symbol_id FK→symbols CASCADE,
+        chunk_text, token_count)
+
+type_edges (id PK, from_symbol_id FK→symbols CASCADE,
+            to_type_name, edge_kind, to_symbol_id FK→symbols SET_NULL)
+
+-- FTS5 virtual table (BM25 index)
+symbols_fts (name, qualified_name, docstring, body, context_summary)
+  CONTENT='symbols' CONTENT_ROWID='id' TOKENIZE='porter ascii'
+  -- Maintained by 3 triggers: AFTER INSERT/DELETE/UPDATE on symbols
+
+-- Extension tables (all added via idempotent migrations)
+sub_chunks (id PK, parent_symbol_id FK→symbols CASCADE,
+            granularity CHECK('function','block','statement'),
+            chunk_text, line_start, line_end, token_count)
+
+file_summaries (id PK, file_id UNIQUE FK→files CASCADE,
+                summary, chunk_id FK→chunks SET_NULL, created_at)
+
+index_metadata (key PK, value TEXT)   -- dimension guard storage
+
+query_telemetry (id PK, ts, query, intent, elapsed_ms, result_count,
+                 leg_sizes JSON, thumbs_up,
+                 -- v2.4.0 expansion observability:
+                 expansion_used INT, expansion_variants INT, expansion_elapsed_ms REAL)
+
+def_use_edges (id PK, symbol_id, var_name, def_line, use_line,
+               edge_type CHECK('def','use'))
+
+taint_flows (id PK, source_file, source_line, sink_file, sink_line,
+             rule_id, severity)
+
+sparse_embeddings (chunk_id PK, token_id PK, weight REAL)  -- SPLADE inverted index
+```
+
+### Indexes
+
+```sql
+idx_symbols_file_id, idx_symbols_name, idx_symbols_kind
+idx_calls_caller, idx_calls_callee
+idx_chunks_symbol_id
+idx_sub_chunks_symbol
+idx_file_summaries_file_id
+idx_type_edges_from, idx_type_edges_to
+idx_def_use_symbol, idx_taint_severity, idx_sparse_token
+```
+
+### Migration Pattern
+
+`_apply_migrations()` runs in `Database.__init__` every time. Each migration:
+- Uses `PRAGMA table_info()` to detect missing columns
+- Uses `CREATE TABLE IF NOT EXISTS` for new tables
+- Is fully idempotent — safe to run on any DB version
+
+**Migration history** (embedded in code, applied automatically):
+1. `imported_file_id` on imports table (initial)
+2. `decorators`, `is_public`, `context_summary` on symbols
+3. `callee_type_hint` on calls (type-hint-guided resolution)
+4. `file_summaries` table
+5. `sub_chunks` table (MGS3)
+6. `query_telemetry` table (v2.3 observability)
+7. `expansion_used`, `expansion_variants`, `expansion_elapsed_ms` on `query_telemetry` (v2.4.0)
+8. `index_metadata` table (v2.3 DimensionGuard)
+9. `def_use_edges`, `taint_flows`, `sparse_embeddings` (v2.2)
+
+### Key `Database` Methods
+
+```python
+class Database:
+    def __init__(self, db_path: Path) -> None
+    
+    # File management
+    def upsert_file(file: IndexedFile) -> int          # INSERT … ON CONFLICT RETURNING id
+    def get_file_hash(rel_path: str) -> str | None     # incremental hash check
+    def delete_file_symbols(file_id: int) -> None      # clean before re-index
+    def delete_file_by_path(abs_path, rel_path, vector_store) -> bool  # full delete
+
+    # Symbol operations
+    def insert_symbol(symbol: Symbol) -> int           # JSON-encodes decorators
+    def get_symbol_by_name(name: str) -> list[Symbol]  # all symbols matching bare name
+    def get_symbols_for_file(file_id: int) -> list[Symbol]
+    def get_chunk_with_context(chunk_id: int) -> tuple[Chunk, Symbol, IndexedFile] | None
+    def get_symbol_with_file(symbol_id: int) -> tuple[Symbol, IndexedFile] | None
+
+    # BM25 search (FTS5)
+    def bm25_search(query: str, limit: int) -> list[tuple[int, float]]
+    # Returns (symbol_id, rank) — lower rank = more relevant (FTS5 returns negative)
+    # score = 1.0 / (1.0 + abs(bm25_rank)) for pipeline compatibility
+
+    # Graph queries
+    def get_callers(symbol_id: int) -> list[int]       # 1-hop incoming call edges
+    def get_callees(symbol_id: int) -> list[int]       # 1-hop resolved outgoing
+    def get_imports_for_file(file_id: int) -> list[ImportEdge]
+    def get_file_imports_resolved(file_id: int) -> list[int]  # imported file_ids
+
+    # Cross-file resolution passes (called after all files indexed)
+    def resolve_cross_file_calls() -> int      # 4-priority cascade
+    def resolve_import_file_ids() -> int       # language-aware path normalization
+    def resolve_cross_file_type_edges() -> int # class/interface name matching
+    def resolve_angular_selectors() -> int     # Angular component selector edges
+
+    # Telemetry (v2.4.0)
+    def insert_query_telemetry(query, intent, elapsed_ms, result_count,
+                                leg_sizes=None, *, expansion_used=None,
+                                expansion_variants=None, expansion_elapsed_ms=None) -> int
+    def get_recent_telemetry(limit: int) -> list[dict]
+
+    # Dimension guard
+    def get_embedding_dimension() -> int | None
+    def set_embedding_dimension(dim: int) -> None
+```
+
+### Call Resolution: 4-Priority Cascade
+
+The `resolve_cross_file_calls()` method resolves `callee_id` using this priority order:
+
+1. **Exact qualified_name match** — most precise; e.g. `"UserService.login"` → unique DB match
+2. **Type-hint + name match** — when `callee_type_hint = "UserService"`, look for symbols with `qualified_name LIKE "UserService.%"` AND `name = callee_name`
+3. **Unique name match** — if only one symbol in the DB has `name = callee_name`
+4. **Leave NULL** — ambiguous call; no wrong edge is better than a false-positive edge
+
+This cascade prioritizes precision over recall — correct graph traversal is more valuable than a complete graph with incorrect edges.
+
+### Vector Store Backends
+
+**Module:** `src/trelix/store/vector.py`, `vector_qdrant.py`, `vector_lance.py`
+
+```python
+class BaseVectorStore(ABC):
+    @abstractmethod
+    def upsert_batch(self, chunk_ids, embeddings, symbol_ids, file_ids) -> None
+    @abstractmethod
+    def search(self, query_embedding, k) -> list[tuple[int, float]]
+    @abstractmethod
+    def delete_batch(self, chunk_ids) -> None
+    @abstractmethod
+    def count(self) -> int
+    def upsert_file_summary_embedding(self, file_id, embedding) -> None
+    def search_file_summaries(self, query_embedding, k) -> list[tuple[int, float]]
+    def upsert_sub_chunk_embedding(self, sub_chunk_id, embedding) -> None
+    def search_sub_chunks(self, query_embedding, k) -> list[tuple[int, float]]
+```
+
+**`SQLiteVecStore`** (default):
+- `vec0` virtual table with optional HNSW index (`TRELIX_STORE_HNSW=true`, default)
+- HNSW params: M=16, ef_construction=200, ef_search=50
+- Separate virtual tables for file summaries and sub-chunks
+- Fallback: flat scan when sqlite-vec < 0.1.6 (no HNSW support)
+
+**`QdrantVectorStore`**: cloud-ready, TRELIX_STORE_BACKEND=qdrant, supports named collections, IVF+HNSW, metadata filtering.
+
+**`LanceVectorStore`**: LanceDB, ARM-native HNSW, 3–5× faster insert at 100k+ chunks, memory-mapped storage, Apache Arrow format.
+
+### `DimensionGuard`
+
+**Module:** `src/trelix/store/dimension_guard.py`
+
+```python
+class DimensionMismatchError(Exception):
+    def __init__(self, stored: int, current: int, provider: str)
+    # Message includes: stored dim, current dim, exact migration command
+
+class DimensionGuard:
+    @staticmethod
+    def check(db, current_dimension, provider) -> None
+    # Raises DimensionMismatchError if stored != current
+    # No-op if: no dimension stored yet (first index run), or any DB error
+
+    @staticmethod
+    def record(db, dimension) -> None
+    # Called after successful embed phase; stores in index_metadata
+
+    @staticmethod
+    def reset(db) -> None
+    # Clears stored dimension; called by trelix migrate-vectors --reset
+```
+
+Called in both `Indexer.__init__` and `Retriever.__init__` — catches provider switches before they produce silent wrong-results.
+
+---
+
+## 5. Indexing Pipeline
+
+**Module:** `src/trelix/indexing/indexer.py`
+
+### `Indexer` Construction
+
+```python
+class Indexer:
+    def __init__(self, config: IndexConfig, quiet: bool = False,
+                 progress_callback: Callable | None = None) -> None
+```
+
+- Creates `Database`, `BaseEmbedder`, `BaseVectorStore`
+- Runs `DimensionGuard.check()` — raises `DimensionMismatchError` if provider changed
+- Builds `Chunker` or `ContextualChunker` (lazy LLM client, falls back to plain `Chunker` on API failure)
+- Builds optional `FileSummarizer` (only when `file_summaries_enabled=True`)
+
+Phase weight constants used for progress reporting:
+- Discovery: 0–5%, Parse: 5–30%, Insert/Chunk: 30–50%, Embed: 50–95%, Resolve: 95–100%
+
+`_FULL_RESOLVE_THRESHOLD = 5` — skip expensive `O(N)` cross-file resolve passes for small batches (e.g. single-file watch events).
+
+### `index() → dict[str, Any]`
+
+Returns stats: `files_found`, `files_indexed`, `files_skipped`, `symbols_extracted`, `chunks_total`, `chunks_embedded`, `errors`, `elapsed_seconds`.
+
+**Phase 0 — Discovery:**
+```python
+files: list[IndexedFile] = FileWalker(config.walker).walk(repo_path)
+```
+`FileWalker` respects `.gitignore` via `pathspec`, applies walker config filters.
+
+**Incremental filter:**
+```python
+to_index = [f for f in files if db.get_file_hash(f.rel_path) != f.hash]
+```
+Files with unchanged SHA-256 are skipped entirely — zero embedding cost.
+
+**Phase 1 — Parallel Parse:**
+```python
+with ThreadPoolExecutor(max_workers=config.parse_workers) as pool:
+    parsed_files = list(pool.map(_parse_one, to_index))
+```
+`_parse_one(file)` does: `get_parser(language)` → `Path.read_text()` → `parser.parse(source, file_id=0)`. Placeholder `file_id=0` is used because the real DB id is not yet known. No DB access in Phase 1 — pure CPU (tree-sitter + file I/O, GIL-releasing).
+
+**Phase 2 — Sequential DB Write + Chunk:**
+
+Per file (`_insert_one(parsed_file, stats)`):
+1. `db.upsert_file()` → real `file_id`, replaces all placeholder `file_id=0` references
+2. Stale vector cleanup: `vector_store.delete_batch(old_chunk_ids)` + `db.delete_file_symbols(file_id)`
+3. Insert symbols — **parent_id remapping**: `local_index → real_db_id` via `local_to_db: dict` (methods reference their class by local index before insertion)
+4. `db.transaction()` context wraps the entire symbol batch insert
+5. `_store_call_edges()` and `_store_type_edges()` (best-effort intra-file resolution)
+6. Optional `DataFlowExtractor` (def-use chains, off by default)
+7. `chunker.build_chunks(symbols, imports, file_rel_path, language, parent_symbols)`
+8. Persist `context_summary` to DB if `ContextualChunker` generated it
+
+Optional Phase 2.5 (`file_summaries_enabled`):
+- `FileSummarizer.summarize(file)` → `db.upsert_file_summary()` + `vector_store.upsert_file_summary_embedding()`
+
+Optional Phase 2.6 (MGS3, `multi_granularity_enabled`):
+- `MultiGranularityChunker.extract_sub_chunks(symbols)` → `db.insert_sub_chunks()` → embed immediately
+
+Returns `list[_PendingChunk]` — chunk IDs known, embeddings missing.
+
+**Phase 3 — Async Concurrent Batch Embed:**
+```python
+asyncio.run(_batch_embed_and_store_async(pending_chunks, stats))
+```
+- `_make_token_batches()`: greedy grouping by `token_count ≤ embed_max_tokens_per_batch`. Single oversized chunk gets its own batch.
+- `asyncio.Semaphore(4)`: max 4 concurrent `embedder.embed_async()` calls
+- `asyncio.gather()` fans out all batches
+- `vector_store.upsert_batch()` is synchronous → `loop.run_in_executor(ThreadPoolExecutor(2))` to avoid blocking event loop
+- `_AsyncTpmRateLimiter`: asyncio-native token-per-minute rate limiter; `asyncio.Lock` prevents races in the limit check
+- `DimensionGuard.record()` called after successful embed phase
+
+Optional sparse step (SPLADE): `SparseEmbedder.embed(texts)` → `SparseStore.upsert_batch()`
+
+**Phase 4 — Cross-File Resolution:**
+```python
+db.resolve_cross_file_calls()     # 4-priority cascade (see §4)
+db.resolve_import_file_ids()      # language-aware path normalization
+db.resolve_cross_file_type_edges()
+db.resolve_angular_selectors()    # Angular template → component edges
+```
+
+Skipped when `files_in_batch < _FULL_RESOLVE_THRESHOLD (5)`.
+
+### `index_file(file_path, files_in_batch=1)` — Hot Path
+
+Used by file watcher for single-file incremental updates.
+- Hash check → skip if unchanged
+- `_parse_one()` + `_insert_one()` + `_batch_embed_and_store()` (sync variant, not async)
+- Skips Phase 4 when `files_in_batch < 5` (default watch event = 1 file)
+- Returns `{"status": "ok", "symbols_updated": N, "chunks_updated": N, "ms": N}`
+
+### Language Parser Registry
+
+**Module:** `src/trelix/indexing/parser/registry.py`
+
+```python
+_PARSER_REGISTRY: dict[Language, type[BaseParser]] = {
+    Language.PYTHON: PythonParser,
+    Language.JAVASCRIPT: JavaScriptParser,
+    Language.TYPESCRIPT: TypeScriptParser,
+    Language.TSX: TypeScriptParser,   # TSX uses TS parser
+    Language.GO: GoParser,
+    Language.RUST: RustParser,
+    Language.JAVA: JavaParser,
+    Language.CPP: CppParser,
+    Language.C: CParser,
+    Language.CSHARP: CSharpParser,
+    Language.RAZOR: RazorParser,
+    Language.CSHTML: CshtmlParser,    # inherits RazorParser
+    Language.CSPROJ: CsprojParser,
+    Language.KOTLIN: KotlinParser,
+    Language.RUBY: RubyParser,
+    Language.MARKDOWN: MarkdownParser,
+    Language.JSON: JsonParser,
+    Language.YAML: YamlParser,
+    Language.TOML: TomlParser,
+    Language.HTML: HtmlParser,
+    Language.CSS: CssParser,
+}
+```
+
+Each parser inherits `BaseParser(ABC)` and implements:
+```python
+def parse(self, source: str, file_id: int) -> ParseResult
+# Returns: ParseResult(symbols, call_edges, type_edges, import_edges)
+```
+
+Parsers use tree-sitter WASM bindings via the `tree-sitter` Python package. They walk the CST emitting `Symbol`, `CallEdge`, `TypeEdge`, `ImportEdge` objects without regex or line-based heuristics.
+
+### Chunker
+
+**Module:** `src/trelix/indexing/chunker.py`
+
+```python
+class Chunker:
+    def build_chunks(self, symbols, imports, file_rel_path,
+                     language, parent_symbols) -> list[Chunk]
+    # One Chunk per Symbol (whole-symbol chunking)
+    # Context header prepended: file path, language, up to 8 imports, parent class
+    # Body truncated at max_tokens_per_chunk (512 by default)
+
+class ContextualChunker(Chunker):
+    # Extends: calls LLM for 2-3 sentence context summary per symbol
+    # Summary prepended to chunk_text, stored in symbols.context_summary
+    # Falls back to base Chunker on any LLM failure (per-symbol, not all-or-nothing)
+```
+
+### Multi-Granularity Sub-Chunk Indexing (MGS3)
+
+**Module:** `src/trelix/indexing/multi_granularity.py`
+
+Enables block-level and statement-level indexing in addition to symbol-level.
+
+```python
+class Granularity(StrEnum):
+    FUNCTION = "function"
+    BLOCK = "block"
+    STATEMENT = "statement"
+
+@dataclass
+class SubSymbolChunk:
+    parent_symbol_id: int
+    granularity: Granularity
+    chunk_text: str
+    line_start: int
+    line_end: int
+    token_count: int
+
+class MultiGranularityChunker:
+    def extract_sub_chunks(self, symbols: list[Symbol]) -> list[SubSymbolChunk]
+    # Uses tree-sitter to extract code blocks and individual statements
+    # Stored in sub_chunks table, embedded into a separate vector namespace
+```
+
+When `sub_chunk_search_enabled=True`, the retriever queries the sub-chunk vector namespace in addition to the symbol-level namespace, providing finer-grained results for long function bodies.
+
+---
+
+## 6. Embedder Layer
+
+**Module:** `src/trelix/embedder/base.py`, `bge_code.py`, `nomic_code.py`, `sparse.py`
+
+### `BaseEmbedder` (ABC)
+
+```python
+class BaseEmbedder(ABC):
+    @abstractmethod
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
+    
+    @abstractmethod
+    def embed_query(self, text: str) -> list[float]: ...
+    
+    async def embed_async(self, texts: list[str]) -> list[list[float]]:
+        # Default: runs self.embed in thread executor (sync → async bridge)
+        # Concrete classes override with true async (OpenAI, Azure)
+    
+    @property
+    @abstractmethod
+    def dimension(self) -> int: ...
+```
+
+Module-level shared executor: `_SYNC_EXECUTOR = ThreadPoolExecutor(max_workers=4)` — used by all sync embedders needing async bridging.
+
+### Concrete Embedders
+
+**`OpenAIEmbedder`** / **`AzureOpenAIEmbedder`**
+- True async via `AsyncOpenAI` / `AsyncAzureOpenAI` clients (lazy-created)
+- Batch splits by `batch_size` (default 64)
+- Dimension from config (default 3072)
+
+**`LocalEmbedder`** (sentence-transformers)
+- `SentenceTransformer(config.local_model).encode(texts, batch_size, convert_to_numpy=True)`
+- Async via executor (CPU-bound, GIL-releasing for numpy)
+- First run downloads ~80MB model to `~/.cache/`
+
+**`VoyageEmbedder`**
+- Asymmetric: documents → `input_type="document"`, queries → `input_type="query"`
+- Batch limit: 128 per API call (`_BATCH_LIMIT = 128`)
+- Matryoshka support via `voyage_output_dimensions`
+
+**`BedrockTitanEmbedder`**
+- `_BATCH_SIZE = 1` — Titan API accepts one text per invoke
+- Async: `asyncio.gather` over parallel executor calls (not sequential)
+- `_decode_credential(value)` — transparent base64 decode for secrets passed base64-encoded
+
+**`BedrockCohereEmbedder`**
+- Batch limit 96; pre-truncates at 2048 chars to avoid Bedrock `ValidationException`
+- `_BATCH_LIMIT = 96`, `_MAX_CHARS = 2048`
+
+**`BGECodeEmbedder`** — BAAI/bge-code-v1 (768 dims, CoIR SOTA 2025)
+
+**`NomicCodeEmbedder`** — nomic-ai/CodeRankEmbed (768 dims)
+
+**`LocalCodeEmbedder`** — Salesforce/SFR-Embedding-Code-2B_R (4096 dims, ~8GB RAM)
+
+### `CachingEmbedder`
+
+**Module:** `src/trelix/embedder/cache.py`
+
+```python
+class CachingEmbedder(BaseEmbedder):
+    def __init__(self, embedder: BaseEmbedder, max_size: int = 256)
+    # LRU cache over embed_query() only (not embed())
+    # Cache key: str(text) — no normalization (query is always a string)
+    # embed() bypass: batch indexing should never use cached results
+```
+
+Wrapped around the underlying embedder in `Retriever.__init__` when `query_cache_size > 0`.
+
+### `SparseEmbedder` (SPLADE)
+
+**Module:** `src/trelix/embedder/sparse.py`
+
+```python
+class SparseEmbedder:
+    def __init__(self, model_name="naver-splab/splade-code-distil",
+                 top_k=128, batch_size=16)
+    def embed(self, texts: list[str]) -> list[dict[int, float]]
+    def embed_query(self, text: str) -> dict[int, float]
+    # Returns sparse dict: {token_id: weight}
+    # SPLADE aggregation: log(1 + ReLU(logits)).max(dim=1)
+    # Keeps only top_k highest-weight tokens
+```
+
+`_TORCH_AVAILABLE` module flag — returns empty `[{}]` gracefully when torch/transformers absent.
+
+Research basis: SPLADE-Code (naver-splab) — learned sparse retrieval via transformer vocabulary space, trained specifically on code data.
+
+---
+
+## 7. Retrieval Pipeline
+
+**Module:** `src/trelix/retrieval/retriever.py`
+
+### `Retriever` Construction
+
+```python
+class Retriever:
+    def __init__(self, config: IndexConfig) -> None:
+        db = Database(config.db_path_absolute)
+        embedder = CachingEmbedder(make_embedder(config.embedder), query_cache_size)
+        vector_store = make_vector_store(config, embedder.dimension)
+        _planner = CachingPlanner(QueryPlanner(config.embedder), plan_cache_size)
+        DimensionGuard.check(db, embedder.dimension, config.embedder.provider)
+        _debug_dir = <repo>/.trelix/debug/    # per-query JSON traces
+        _sparse_embedder = None               # memoized slot (SPLADE model load ~seconds)
+```
+
+### `retrieve(query, plan=None) → RetrievedContext`
+
+Full pipeline (11 stages):
+
+```
+1.  Timer start
+2.  QueryPlanner.plan(query) → QueryPlan  [or use provided plan]
+3.  Intent routing (_execute_plan)
+4.  Sub-query parallel execution [ThreadPoolExecutor when execution_mode="parallel"]
+5.  Optional multi-query expansion [MultiQueryExpander, N LLM variants, parallel]
+6.  Per-leg aggregation [vector, bm25, grep, sparse across all sub-queries]
+7.  Optional file-summary leg [5th leg, negative-ID Chunk sentinels]
+8.  Optional sub-chunk leg [6th leg, MGS3]
+9.  RRF fusion [reciprocal_rank_fusion, k=60, file-type weights]
+10. Graph expansion [call-graph + import-graph + type-edges on top fused results]
+11. Optional CodeGraph BFS [4th leg when graph_search_enabled]
+12. Dedup [by chunk.symbol_id, keep highest score]
+13. Rerank [cross-encoder/Cohere/PLAID, controlled by strategy.skip_reranker]
+14. Optional PageRank boost [×1.3 for top-200 central symbols, re-sort]
+15. ContextAssembler [greedy token packing within 12k budget]
+16. Timer stop, telemetry write, debug trace flush
+```
+
+### Intent Routing
+
+```
+RoutingTier.TIER_1_DIRECT   → _retrieve_project_overview (skip all legs)
+IntentType.FILE_OVERVIEW    → _retrieve_file_overview
+IntentType.PROJECT_OVERVIEW → _retrieve_project_overview
+IntentType.CONFIG_LOOKUP    → _retrieve_config
+All others                  → _retrieve_standard (full 11-stage pipeline)
+```
+
+### `_run_subquery_legs(sq, strategy)`
+
+```python
+# Vector leg
+embed_text = sq.hyde_snippet or sq.semantic_query
+if hyde_fallback_enabled and not sq.hyde_snippet:
+    embed_text = HyDEExpander(llm).expand(sq.semantic_query)  # LLM call
+embedding = embedder.embed_query(embed_text)
+out["vector"] = vector_store.search(embedding, top_k_vector)
+
+# BM25 leg
+bm25_query = " ".join(sq.bm25_tokens) or sq.semantic_query
+out["bm25"] = db.bm25_search(bm25_query, top_k_bm25)
+
+# Grep leg
+hints = sq.grep_hints or [sq.semantic_query]
+out["grep"] = [grep_search(db, hint, top_k_grep) for hint in hints]
+
+# Sparse leg (memoized SPLADE)
+if sparse_enabled:
+    query_sparse = self._get_sparse_embedder().embed_query(sq.semantic_query)
+    out["sparse"] = sparse_search(sparse_store, db, query_sparse, k=top_k_sparse)
+```
+
+### BLAST_RADIUS Special Handling
+
+```python
+# Seed from import path patterns (@alias/... patterns in grep_hints)
+if strategy.import_direction == "reverse":
+    seed_from_import_paths(db, patterns=sq.grep_hints, max_extra=...)
+# Then: expand_with_imports(db, top, direction="reverse")
+# reverse = find files that IMPORT the target (dependents)
+# assembly_mode = "breadth_first" = 1-2 symbols from many files (blast radius spread)
+```
+
+### Direct-Path Retrieval Methods
+
+```python
+def _retrieve_file_overview(plan) -> RetrievedContext:
+    # db.find_file_by_path_fragment(hint) → db.get_all_symbols_for_file()
+    # Structural order (by line number), score = 1.0 - rank × 0.001
+    # Skips reranker; falls back to _retrieve_standard if no file match
+
+def _retrieve_project_overview(plan) -> RetrievedContext:
+    # db.get_module_and_readme_symbols(limit=40)
+    # Priority: README → markdown → manifests → module-level symbols
+    # db.get_top_level_directories() for monorepo heuristic
+
+def _retrieve_config(plan) -> RetrievedContext:
+    # File-direct for hints matching config extensions
+    # Falls back to _retrieve_standard
+```
+
+### Public Graph Query API
+
+```python
+def get_callers(symbol_name: str) -> list[SearchResult]
+# Matches all symbols by name, union of db.get_callers(sym.id)
+# Deduped by symbol_id, sorted by file + line_start
+
+def get_callees(symbol_name: str) -> list[SearchResult]
+# Symmetric
+
+def get_importers(module_path: str) -> list[SearchResult]
+# Suffix-match on files.rel_path; returns first symbol per importing file
+```
+
+### Debug Tracing
+
+Every `retrieve()` call writes:
+```
+<repo>/.trelix/debug/<ISO-timestamp>_<query-slug>.json
+```
+
+Sections: `planner` (intent, routing tier, sub-queries), `retrieval_legs` (per-leg counts and top results), `post_fusion` (RRF scores), `expansion` (graph expansion results), `post_rerank` (final scores), `assembly` (token budget usage).
+
+Thread-local storage (`_trace_local = threading.local()`) ensures parallel eval workers never cross-contaminate traces.
+
+---
+
+## 8. Query Planner
+
+**Modules:** `src/trelix/retrieval/planner/models.py`, `planner/agent.py`
+
+### `RoutingTier`
+
+```python
+class RoutingTier(int, Enum):
+    TIER_1_DIRECT = 1   # trivial factual: "what is X?", "list all Y"
+    TIER_2_SINGLE = 2   # default: ~90% of queries
+    TIER_3_MULTI = 3    # complex: "from X to Y", "walk me through", len>80 with 2+ "and"
+```
+
+### `IntentType` and `INTENT_STRATEGIES`
+
+The complete `INTENT_STRATEGIES` dict (single source of truth):
+
+| Intent | Legs | expand_depth | import_depth | import_direction | import_max_extra | rerank_top_n | assembly_mode |
+|--------|------|:---:|:---:|:---:|:---:|:---:|:---:|
+| SYMBOL_LOOKUP | grep+bm25+vector | 1 | 1 | both | 3 | 20 | greedy |
+| FILE_OVERVIEW | file_direct | 0 | 0 | both | 0 | 20 | greedy |
+| FEATURE_FLOW | vector+bm25 | 2 | 2 | both | 15 | 30 | greedy |
+| PROJECT_OVERVIEW | file_direct | 0 | 0 | both | 0 | 20 | greedy |
+| COMPARISON | vector+bm25+grep | 1 | 1 | both | 8 | 35 | greedy |
+| CONFIG_LOOKUP | file_direct+grep | 0 | 0 | both | 0 | 20 | greedy |
+| DEPENDENCY_MAP | vector+bm25 | 1 | 2 | forward | 20 | 30 | breadth_first |
+| BLAST_RADIUS | grep+vector+bm25 | 0 | 1 | reverse | 30 | 40 | breadth_first |
+
+Design note: SYMBOL_LOOKUP leads with `grep` (exact match), not vector. BLAST_RADIUS leads with `grep` (exact symbol name) then uses `reverse` import walk + `breadth_first` assembly to surface 1-2 symbols from many affected files (blast radius spread).
+
+### `SubQuery`
+
+```python
+@dataclass
+class SubQuery:
+    semantic_query: str     # rephrased as technical description (NOT a question)
+    hyde_snippet: str       # hypothetical code snippet for vector embedding
+    bm25_tokens: list[str]  # clean keywords, no stop words
+    grep_hints: list[str]   # exact symbol names, filename fragments
+    file_hints: list[str]   # filename fragments to bias retrieval
+    depends_on: list[int]   # 0-based indices of prerequisite sub-queries
+```
+
+### `AdaptiveRouter`
+
+```python
+class AdaptiveRouter:
+    def route(self, query: str, project_context: str = "") -> QueryPlan
+    # Never raises: all exceptions → default_plan()
+    
+    # Tier 1 patterns (regex): "what is X?", "list all Y", "define Z"
+    # Tier 3 phrases: "from X to Y", "end-to-end", "step by step",
+    #                 "walk me through", "full flow"
+    # Tier 3 also: len(query) > 80 AND count(" and ") >= 2
+    # Tier 2: everything else
+    
+    def _tier1_plan(self, query) -> QueryPlan
+    # PROJECT_OVERVIEW, routing_tier=TIER_1_DIRECT
+    # Retriever skips all legs — directly calls _retrieve_project_overview
+    
+    def _multi_step_plan(self, query, context) -> QueryPlan
+    # LLM decomposes into 2-3 sub-questions
+    # Each sub-question → SubQuery; FEATURE_FLOW intent; execution_mode="parallel"
+    # Falls back to single-step on any parse error; clamps to 2-3 sub-questions
+```
+
+### `QueryPlanner`
+
+```python
+class QueryPlanner:
+    def __init__(self, config: EmbedderConfig) -> None
+    # Builds TrelixChatClient; _client=None means no LLM available → use default_plan()
+    
+    def plan(self, query: str, project_context: str = "") -> QueryPlan
+    # Delegates to AdaptiveRouter.route()
+    
+    def _plan_direct(self, query, context) -> QueryPlan
+    # LLM tool call with PLANNER_TOOL_SCHEMA (forces structured output)
+    # model: gpt-4o-mini (OpenAI) or gpt-4o (Azure)
+    # Falls back to default_plan() on any exception
+    
+    def default_plan(query) -> QueryPlan
+    # FEATURE_FLOW intent, execution_mode="parallel", raw query as semantic_query
+    # Used when: no API key, LLM call fails, or empty query
+```
+
+### `CachingPlanner`
+
+**Module:** `src/trelix/retrieval/plan_cache.py`
+
+```python
+class CachingPlanner:
+    def __init__(self, planner: QueryPlanner, max_size: int = 128)
+    def plan(self, query: str, project_context: str = "") -> QueryPlan
+    # LRU cache keyed by (query, project_context)
+    # Avoids repeated gpt-4o-mini calls for the same query in eval loops
+```
+
+---
+
+## 9. Fusion and Ranking
+
+### Reciprocal Rank Fusion
+
+**Module:** `src/trelix/retrieval/fusion.py`
+
+```python
+def reciprocal_rank_fusion(
+    ranked_lists: list[list[SearchResult]],
+    k: int = 60,
+    weights: dict[str, float] | None = None,
+) -> list[SearchResult]
+```
+
+**Algorithm** (Cormack et al. 2009):
+```python
+rrf_score[chunk_id] += 1.0 / (k + rank)  # for each (list, rank) pair
+```
+
+**Key design decisions:**
+- Dedup key: `result.chunk.symbol_id` (not `chunk.id`) — symbol-level dedup even when different legs produce different chunk IDs for the same symbol
+- `best_result` keeps first-seen result: `source` reflects which leg first found the symbol. RRF scores are NOT comparable to raw cosine/BM25 scores, so first-seen source is correct.
+- File-type weighting: post-RRF multiplicative step on `rrf_score` — missing weights fall back to 1.0
+- Accepts empty lists safely (no-op)
+- Production call in `_retrieve_standard` passes up to 6 lists: vector, bm25, grep, summary, sub_chunk, sparse
+
+**File-type weights** (applied post-RRF):
+```
+source code (Python, Go, Rust, etc.) = 1.0
+HTML, CSS                            = 0.4
+JSON, YAML, TOML                     = 0.5
+Markdown                             = 0.3
+Unknown                              = 0.8
+```
+
+### Graph Expansion
+
+**Module:** `src/trelix/retrieval/graph.py`
+
+```python
+def expand_with_call_graph(db, results, depth=1, max_extra=10) -> list[SearchResult]
+# Follows CALLS edges in both directions (callers + callees) for top fused symbols
+# depth=1: 1 hop, depth=2: 2 hops (expensive — avoid for TIER_2_SINGLE)
+
+def expand_with_imports(db, results, max_extra=8, depth=1, direction="both") -> list[SearchResult]
+# direction="both"   → callers of and imports by the symbol
+# direction="forward" → files this symbol imports (dependency analysis)
+# direction="reverse" → files that import this symbol (blast radius / dependents)
+
+def expand_with_type_edges(db, results, max_extra=15) -> list[SearchResult]
+# Follows EXTENDS/IMPLEMENTS/TRAIT_IMPL edges
+# Fixed max_extra=15 (type hierarchies tend to be shallow)
+
+def seed_from_import_paths(db, patterns, max_extra) -> list[SearchResult]
+# BLAST_RADIUS specific: @-prefixed grep_hints are treated as import path patterns
+# Used to surface files importing via barrel exports / path aliases
+```
+
+### Rerankers
+
+**Module:** `src/trelix/retrieval/reranker.py`, `reranker_plaid.py`
+
+```python
+def rerank(query, candidates, config, top_n) -> list[SearchResult]
+# Routes to:
+# - CrossEncoderReranker when rerank_provider="cross_encoder" (sentence-transformers)
+# - CohereReranker when rerank_provider="cohere" (requires COHERE_API_KEY)
+# - PlaidReranker when rerank_provider="plaid" (requires trelix[plaid])
+
+class PlaidReranker:
+    # RAGatouille ColBERT late-interaction reranker
+    # 7–45× faster than exact ColBERT with equivalent quality
+    # Lazy-loads colbert-ir/colbertv2.0 on first call
+```
+
+### `ContextAssembler`
+
+**Module:** `src/trelix/retrieval/assembler.py`
+
+```python
+class ContextAssembler:
+    def __init__(self, token_budget: int = 12_000) -> None
+    def assemble(self, query, results, intent, assembly_mode) -> RetrievedContext
+```
+
+**Greedy mode** (default): packs results in score order until token budget exhausted. `chunk.token_count` (pre-computed) for fast budget accounting.
+
+**Breadth-first mode** (BLAST_RADIUS, DEPENDENCY_MAP): round-robin across files — 1-2 symbols per file so many files are represented rather than many symbols from one file.
+
+---
+
+## 10. Synthesis and Agent Loop
+
+### Synthesizer
+
+**Module:** `src/trelix/retrieval/synthesizer.py`
+
+```python
+class Synthesizer:
+    def synthesize(self, ctx: RetrievedContext, config: EmbedderConfig) -> str
+    def stream(self, ctx: RetrievedContext, config: RetrievalConfig) -> Iterator[str]
+    # stream() yields tokens for SSE in the REST API
+```
+
+When `graph_rag_enabled=True` and `ctx.total_tokens > graph_rag_threshold_tokens` (8000):
+```
+GraphRAGSynthesizer.synthesize(ctx)
+  ├─ Map phase: LLM summarizes each result chunk individually
+  └─ Reduce phase: LLM synthesizes all summaries into final answer
+```
+
+GraphRAG prevents exceeding the LLM context window on large codebases.
+
+### FLARE Loop
+
+**Module:** `src/trelix/retrieval/flare.py`
+
+```python
+class FLARELoop:
+    def __init__(self, retriever, synthesizer, config: IndexConfig) -> None
+    def run(self, query: str) -> str
+```
+
+```
+1. ctx = retriever.retrieve(query)
+2. answer = synthesizer.synthesize(ctx)
+3. if not flare_enabled: return answer
+4. Repeat up to flare_max_retries - 1 additional times:
+   a. if not _contains_uncertainty(answer): return answer
+   b. Enrich query with uncertainty context
+   c. ctx = retriever.retrieve(enriched_query)
+   d. answer = synthesizer.synthesize(ctx)
+5. return answer
+```
+
+`_contains_uncertainty()`: regex over phrases like "I don't know", "not sure", "could not find", "unable to determine".
+
+`flare_max_retries` semantics: total budget including initial synthesis (not just retries). `flare_max_retries=1` means 0 extra iterations (initial only). `ge=1, le=3`.
+
+### Agent Loop
+
+**Module:** `src/trelix/agent/loop.py`
+
+```python
+class AgentLoop:
+    def run(self, query: str) -> str  # never raises
+```
+
+ReAct (Reason+Act) multi-turn orchestrator with three available actions:
+
+| ActionType | Tool | Arguments | Returns |
+|---|---|---|---|
+| RETRIEVE | retrieve | `{"query": str}` | Top 8 results, body[:300] each |
+| GREP | grep | `{"pattern": str, "max_results": 10}` | file:line — name list |
+| GET_SYMBOL | get_symbol | `{"qualified_name": str}` | Full body in code fence |
+| DONE | done | `{"answer": str}` | Final answer |
+
+System prompt mandate: "Never call done until you've done at least one retrieval."
+
+**`TurnHistory` + `HistoryCompressor`:**
+```python
+class TurnHistory:
+    def add(self, turn: Turn) -> None
+    def get_messages(self) -> list[dict]  # role/content LLM message format
+    
+class HistoryCompressor:
+    def __init__(self, token_budget: int = 6_000)
+    def compress(self, history: TurnHistory) -> list[dict]
+    # Keeps last N turns within token budget; LLM-summarizes older turns
+```
+
+`_fallback_answer()`: returns first 3 successful observation contents when max_turns reached.
+
+---
+
+## 11. Graph Layer
+
+### `CodeGraph`
+
+**Module:** `src/trelix/graph/code_graph.py`
+
+```python
+class CodeGraph:
+    def __init__(self, db: Database) -> None  # builds immediately
+    @property def nx(self) -> nx.MultiDiGraph
+    @property def node_count(self) -> int
+    @property def edge_count(self) -> int
+    def neighbors(self, symbol_id) -> list[int]        # callers + callees, deduped
+    def shortest_path(self, src, dst) -> list[int] | None  # undirected for traversal
+    def subgraph(self, symbol_ids) -> nx.MultiDiGraph
+    def get_node_attrs(self, symbol_id) -> dict[str, Any]
+```
+
+**Construction sequence:**
+1. Nodes: all symbols from `db.iter_all_symbols_with_files()` — attrs: type, name, qualified_name, kind, file, language, community=None
+2. CALLS edges: resolved call edges only (callee_id is not None)
+3. IMPORTS edges: file nodes added on-demand if not already symbol nodes
+4. TYPE edges: EXTENDS, IMPLEMENTS, TRAIT_IMPL, EMBEDDED, ANGULAR_SELECTOR
+
+**Design:** `MultiDiGraph` supports multiple parallel edges between the same node pair (e.g. a class both implements and extends from the same base) and directed edges preserve call/import directionality.
+
+### Community Detection
+
+**Module:** `src/trelix/graph/community.py`
+
+```python
+def detect_communities(cg: CodeGraph, algorithm: str = "louvain") -> dict[int, int]
+def compute_pagerank(cg: CodeGraph, alpha: float = 0.85) -> dict[int, float]
+def get_community_summary(cg: CodeGraph) -> list[dict[str, Any]]
+```
+
+Algorithms:
+- **louvain** (default): `nx.community.louvain_communities(G_connected, seed=42)`, O(n log n), deterministic via seed
+- **girvan_newman**: betweenness-based, O(n³), max 3 iterations, for small graphs
+- **label_prop**: very fast, approximate, for >10k nodes
+
+PageRank: `nx.pagerank(g, alpha=0.85, max_iter=100)`. Retries with `max_iter=500, tol=1e-4` on convergence failure. Normalized to [0,1].
+
+### `GraphBuilder`
+
+**Module:** `src/trelix/graph/builder.py`
+
+```python
+@dataclass
+class GraphBuildResult:
+    code_graph: CodeGraph
+    community_count: int
+    node_count: int
+    edge_count: int
+    concept_count: int
+    elapsed_seconds: float
+    community_summary: list[dict[str, Any]]
+
+class GraphBuilder:
+    def build(self, extract_concepts: bool = False) -> GraphBuildResult
+```
+
+Build pipeline: CodeGraph → detect_communities → assign_communities → save_metadata → compute_pagerank → optional ConceptExtractor.
+
+### `GraphUpdater`
+
+**Module:** `src/trelix/graph/updater.py`
+
+```python
+class GraphUpdater:
+    def update_file(self, rel_path: str) -> None
+```
+
+Called by `FileWatcher` after a file is re-indexed. Full graph rebuild (not incremental). Rationale: simpler than partial updates and avoids stale-edge bugs when call targets change. Target rebuild time: ~50ms for typical repos over SQLite reads.
+
+### Semantic Concept Extraction
+
+**Module:** `src/trelix/graph/concepts.py`
+
+```python
+@dataclass
+class SemanticConcept:
+    symbol_id: int
+    concept: str       # LLM-extracted architectural concept label
+    confidence: float
+    
+class ConceptExtractor:
+    def extract(self, symbols: list[Symbol], limit: int = 200) -> list[SemanticConcept]
+    # Batches symbols in groups of 20; LLM call per batch
+    # Extracts high-level concepts: "Authentication", "Database connection pooling", etc.
+```
+
+---
+
+## 12. Analysis Layer
+
+### `DataFlowExtractor`
+
+**Module:** `src/trelix/analysis/defuse.py`
+
+Intra-procedural def-use chains extracted via tree-sitter AST walk.
+
+```python
+@dataclass
+class DefUseEdge:
+    symbol_id: int
+    var_name: str
+    def_line: int
+    use_line: int
+    edge_type: str  # "def" | "use"
+
+class DataFlowExtractor:
+    def extract(self, symbol: Symbol) -> list[DefUseEdge]  # never raises
+```
+
+Assignment nodes: `"assignment"`, `"augmented_assignment"`, `"named_expression"` (walrus :=), `"for_statement"`, `"with_statement"`, `"import_statement"`, `"import_from_statement"`, `"parameters"`.
+
+Fallback to regex when tree-sitter unavailable: `r"\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*="` (excludes def/class/return/import keywords).
+
+### `TaintAnalyzer`
+
+**Module:** `src/trelix/analysis/taint.py`
+
+```python
+@dataclass
+class TaintFlow:
+    source_file: str
+    source_line: int
+    sink_file: str
+    sink_line: int
+    rule_id: str
+    severity: str  # "ERROR" | "WARNING" | "INFO"
+
+class TaintAnalyzer:
+    def __init__(self, repo_path: str, tier: str = "default")
+    def run(self, rules_path: str | None = None) -> list[TaintFlow]  # [] on failure
+```
+
+Tiers:
+- `"default"` — intra-procedural, fast
+- `"intrafile"` — `--pro-intrafile`, cross-function within file
+- `"interfile"` — `--pro --interfile`, full inter-procedural
+
+CLI: `semgrep --json --no-rewrite-rule-ids [flags] --config <rules> <repo>`. Timeout: 120s. Returns `[]` when semgrep absent.
+
+---
+
+## 13. Federation Layer (v2.4.0)
+
+### `RepoRegistry`
+
+**Module:** `src/trelix/federation/registry.py`
+
+```python
+@dataclass
+class RepoEntry:
+    alias: str
+    path: str
+    weight: float = 1.0   # RRF score multiplier
+
+class RepoRegistry:
+    @classmethod
+    def load(cls, config_path: str | None = None) -> RepoRegistry
+    # Default: ~/.config/trelix/repos.json
+    # Returns empty registry (not error) if file missing/invalid
+    
+    def add(self, alias, path, weight=1.0) -> None  # ValueError on duplicate alias
+    def remove(self, alias) -> None                  # no-op if not found
+    def list(self) -> list[RepoEntry]
+    def save(self) -> None                           # writes JSON
+```
+
+### `FederatedRetriever`
+
+**Module:** `src/trelix/federation/retriever.py`
+
+```python
+class FederatedRetriever:
+    def __init__(self, registry: RepoRegistry,
+                 max_workers: int = 4,
+                 cache_ttl: float = 120.0) -> None
+    
+    def retrieve(self, query: str, k: int = 10) -> list[SearchResult]
+    def _query_repos(self, query, k) -> list[SearchResult]  # fan-out, no cache
+    def _make_cache_key(self, query, k) -> str              # SHA-256
+    def _get_cached(self, key) -> list[SearchResult] | None
+    def _set_cached(self, key, results) -> None
+    def cache_stats(self) -> dict[str, int]   # {hits, misses, size}
+    def clear_cache(self) -> None
+```
+
+**`_query_repos()` parallel fan-out:**
+```python
+with ThreadPoolExecutor(max_workers=min(max_workers, len(entries))) as pool:
+    futures = {pool.submit(_query_one, entry.path): entry for entry in entries}
+    for future in as_completed(futures):
+        results = future.result(timeout=30)
+        per_repo_results.append(results)
+```
+
+**Merging:** `reciprocal_rank_fusion(per_repo_results)` → dedup by `f"{r.file.rel_path}:{r.chunk.symbol_id}"`.
+
+**TTL Cache (v2.4.0):**
+- Cache key: `SHA-256(f"{query}|{sorted_repo_paths}|{k}")`
+- Thread-safe: `threading.Lock` guards `_cache`, `_hits`, `_misses`
+- TTL check: `time.monotonic() > expiry` (not wall clock — monotonic avoids daylight saving jumps)
+- `cache_ttl=0` disables entirely (no cache dict population)
+- Expected hit rate: ~90% for typical debugging-session query patterns (repeated same-question queries)
+
+---
+
+## 14. Review Layer (v2.4.0)
+
+### `DiffParser`
+
+**Module:** `src/trelix/review/diff_parser.py`
+
+```python
+@dataclass
+class DiffHunk:
+    file_path: str
+    old_start: int; new_start: int      # from @@ header, 1-indexed
+    old_lines: int; new_lines: int
+    added: list[str]                     # lines starting with +
+    removed: list[str]                   # lines starting with -
+    context: list[str]                   # unchanged surrounding lines
+    
+    def to_search_query(self) -> str     # extracts identifiers for retrieval
+    
+class DiffParser:
+    def parse(self, diff_text: str) -> list[DiffHunk]     # instance method
+    def from_git(self, repo_path, base="HEAD~1", head="HEAD") -> list[DiffHunk]
+    # Runs: git diff --unified=3; returns [] on any failure
+```
+
+### `DiffReviewer`
+
+**Module:** `src/trelix/review/reviewer.py`
+
+```python
+class ReviewComment:
+    file_path: str; line_start: int; line_end: int
+    severity: str   # "ERROR" | "WARN" | "INFO"
+    comment: str
+
+class DiffReviewer:
+    def __init__(self, config: IndexConfig) -> None
+    def review(self, hunks: list[DiffHunk] | None = None,
+               diff_text: str | None = None) -> list[ReviewComment]
+    # Returns [] on any failure (never raises)
+    # When diff_text provided: DiffParser().parse(diff_text) → hunks
+    # Per-hunk: retrieve(hunk.to_search_query()) → LLM generate ReviewComment[]
+```
+
+### GitHub PR Integration
+
+**Module:** `src/trelix/review/github.py`
+
+```python
+class GitHubAPIError(Exception): ...
+
+@dataclass(frozen=True)
+class PRFile:
+    filename: str
+    status: str    # all 7 GitHub statuses: added/removed/modified/renamed/copied/changed/unchanged
+    additions: int; deletions: int
+    patch: str | None   # None for binary files and oversized diffs
+    previous_filename: str | None  # for renamed/copied files
+
+@dataclass
+class ReviewComment:
+    path: str; line: int; body: str
+    side: str = "RIGHT"  # RIGHT=addition, LEFT=deletion context
+
+class GitHubPRClient:
+    def __init__(self, token: str, base_url: str = "https://api.github.com") -> None
+    
+    def get_pr_files(self, owner, repo, pr_number) -> list[PRFile]
+    # Paginates: GET /repos/{owner}/{repo}/pulls/{number}/files, 100/page
+    # Warns when >=3000 files (GitHub silent truncation)
+    
+    def post_review(self, owner, repo, pr_number, commit_sha, body,
+                    comments, event="COMMENT") -> dict
+    # Single batched API call (80 write requests/min rate limit safe)
+    # POST /repos/{owner}/{repo}/pulls/{number}/reviews
+    
+    def get_pr_head_sha(self, owner, repo, pr_number) -> str
+    # Guards: isinstance(data, dict) → GitHubAPIError if list returned
+
+def parse_pr_ref(pr_ref: str) -> tuple[str, str, int]
+# Parses "owner/repo#number" → (owner, repo, number)
+# ValueError with usage hint on malformed input
+```
+
+---
+
+## 15. MCP Server
+
+**Package:** `packages/trelix-mcp/src/trelix_mcp/server.py`
+
+Transport: `stdio` (subprocess model — IDE spawns `trelix-mcp` as child process).
+
+**Critical:** All logging directed to `stderr`. `stdout` is the exclusive MCP JSON protocol pipe.
+
+```python
+logging.basicConfig(stream=sys.stderr)  # FIRST LINE — before any imports
+mcp = FastMCP("trelix")
+```
+
+### Resources (application-controlled, URI-addressable)
+
+| URI | Handler | Returns |
+|-----|---------|---------|
+| `trelix://index/stats` | `resource_index_stats` | JSON usage hint |
+| `trelix://repo/{repo_path}/manifest` | `resource_repo_manifest` | `{file_count, files[]}` |
+| `trelix://repo/{repo_path}/symbols/{qualified_name}` | `resource_symbol_source` | `{qualified_name, kind, signature, body}` |
+
+### Prompts (user-controlled LLM templates)
+
+| Name | Parameters | Purpose |
+|------|-----------|---------|
+| `trelix-search` | query, repo_path | Semantic search prompt |
+| `trelix-explain` | qualified_name, repo_path | Symbol explanation |
+| `trelix-blast-radius` | symbol_name, repo_path | Impact analysis before refactoring |
+
+### Tools (callable by MCP clients)
+
+```python
+def search_code(query: str, repo_path: str, k: int = 10, cursor: int = 0) -> dict:
+    # v2.4.0: returns pagination envelope
+    # {"results": [...], "next_cursor": int|null, "total_available": int}
+    # cursor=0 default preserves backward compatibility
+
+def index_codebase(repo_path: str, provider: str = "local",
+                   ctx: Context | None = None) -> dict:
+    # Emits ctx.report_progress(current, total) via asyncio.get_running_loop().create_task()
+    # Best-effort: silently skips when no running event loop
+
+def get_symbol(qualified_name: str, repo_path: str) -> dict | None:
+    # Exact qualified_name match; fallback to bare name if not found
+
+def blast_radius(symbol_name: str, repo_path: str) -> list[dict]:
+    # Query: f"blast radius dependencies of {symbol_name}"
+    # Deduplicates by file.rel_path
+
+def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dict:
+    # Full GraphBuilder.build() pipeline
+
+def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict]:
+    # Two-phase: standard retrieval (top-5 seed) + CodeGraph BFS depth=2
+```
+
+---
+
+## 16. REST API
+
+**Module:** `src/trelix/api/app.py`
+
+```python
+def create_app() -> FastAPI:
+    app = FastAPI(title="trelix API", version=__version__)
+    # Routes registered here
+    return app
+```
+
+Design note: `IndexConfig` and `Retriever` imported at module scope (not inside `create_app()`) specifically to enable `patch("trelix.api.app.Retriever")` in tests before the app is created.
+
+### Routes
+
+| Method | Path | Returns | Notes |
+|--------|------|---------|-------|
+| GET | `/health` | `{status, version}` | |
+| GET | `/search` | `list[result_dict]` | query, repo, k=10 |
+| GET | `/ask` | `StreamingResponse` | SSE token stream |
+| POST | `/index` | `index_stats_dict` | body: `{repo_path}` |
+| GET | `/stats` | `{files, symbols, chunks}` | repo param |
+| GET | `/graph` | `GraphBuildResult` | repo param |
+| GET | `/graph/communities` | community_summary | repo param |
+| GET | `/graph/visualize` | `{path, node_count}` | Pyvis HTML output |
+| GET | `/graph/search` | `list[result_dict]` | repo, symbol_id, depth=2 |
+
+**`/ask` SSE generator:**
+```python
+# Yields: "data: {token}\n\n"
+# Terminates: "data: [DONE]\n\n"
+# Error: "data: [ERROR: {exc}]\n\n"
+```
+
+**Security guards:**
+- `/graph/visualize`: output path must start with `<repo_root>/.trelix/` — directory traversal protection
+- `/graph/search`: depth clamped to `max(1, min(depth, 10))`
+
+---
+
+## 17. CLI Layer
+
+**Module:** `src/trelix/cli/main.py`
+
+Single entry point: `trelix = "trelix.cli.main:app"` (Typer application).
+
+### Command Summary
+
+| Command | Key flags | Description |
+|---------|-----------|-------------|
+| `index <repo>` | --provider, --workers, --json | Build search index |
+| `search <repo> <query>` | --k, --json, --provider | Hybrid search |
+| `ask <repo> <question>` | --provider, --agentic, --json | LLM synthesis |
+| `query <repo> <question>` | --k, --json | Search without LLM |
+| `call-graph <repo> <symbol>` | --depth, --json | Call/import graph |
+| `stats <repo>` | --json | Index statistics |
+| `update-index <repo> <file>` | | Re-index single file |
+| `migrate-vectors <repo>` | --reset, --to | Vector migration |
+| `watch <repo>` | --provider | Single-repo watch |
+| `watch-all` | --config | All federated repos (v2.4.0) |
+| `serve <repo>` | --port, --host | REST API server |
+| `graph <repo>` | --concepts, --export-html | Build knowledge graph |
+| `telemetry <repo>` | --limit, --json | Query telemetry |
+| `eval <repo>` | --golden, --k | nDCG@10/Recall/MRR |
+| `taint <repo>` | --json | Semgrep taint analysis |
+| `review <repo>` | --diff, --base, --head, --json, --pr, --post-comments | Diff review (v2.4.0) |
+| `search-all <query>` | --k, --json, --config | Federated search |
+| `federation add` | alias, path, --weight | Register repo |
+| `federation list` | --config | List registered repos |
+
+---
+
+## 18. File Watching
+
+### `FileWatcher` (single repo)
+
+**Module:** `src/trelix/indexing/watcher.py`
+
+Uses `watchdog` library (synchronous, per-path event emitter threads).
+
+```python
+class FileWatcher:
+    def __init__(self, indexer: Indexer, walker: FileWalker,
+                 debounce_ms: int = 500) -> None
+    def start(self) -> None
+    def stop(self) -> None
+```
+
+**Debounce:** rapid edits to the same file collapse into a single re-index (default 500ms window). Each file has its own debounce timer; saving mid-edit doesn't trigger partial re-index.
+
+**Event handling:**
+- `on_modified` / `on_created` → `indexer.index_file(path)` after debounce
+- `on_deleted` → `db.delete_file_by_path(abs_path, rel_path, vector_store)`
+- Directory events: ignored
+- Unknown event type: ignored
+
+Requires `pip install trelix[watch]` (`watchdog>=4.0.0`).
+
+### `MultiRepoWatcher` (v2.4.0, all federated repos)
+
+**Module:** `src/trelix/indexing/multi_watcher.py`
+
+Uses `watchfiles` library (Rust-based, async, single call over all paths).
+
+```python
+class MultiRepoWatcher:
+    def __init__(self, registry: RepoRegistry, debounce_ms: int = 1600) -> None
+    async def run(self, stop_event: asyncio.Event) -> None  # blocks until set
+    def stats(self) -> dict[str, int]   # {repos_watched, files_reindexed, files_skipped_unchanged}
+    def _get_repo_for_path(self, file_path: str) -> str | None
+    def _is_unchanged(self, path: str) -> bool   # MD5 hash guard
+```
+
+**Single call:** `watchfiles.awatch(*all_repo_paths, stop_event=stop_event, debounce=1600)` — watchfiles' Rust layer handles debounce for all repos simultaneously.
+
+**Hash guard:** MD5 of file bytes cached in `_file_hashes`. If content unchanged, skip re-index (prevents cascade loops when indexer writes `.trelix/` files inside watched tree).
+
+**Deletion handling:**
+- `Change.deleted` → `db.delete_file_by_path(abs_path, rel_path, vector_store)` — removes from SQLite and vector store
+- Evicts path from `_file_hashes`
+
+**Path boundary guard:** uses trailing `/` check to prevent `/myrepo` matching `/myrepo2/file.py`:
+```python
+repo_dir = entry.path.rstrip("/") + "/"
+if file_path.startswith(repo_dir) or file_path == entry.path.rstrip("/"): ...
+```
+
+Requires `pip install trelix[watch]` (`watchfiles>=0.21`).
+
+---
+
+## 19. Telemetry and Observability (v2.4.0)
+
+### `TelemetryWriter`
+
+**Module:** `src/trelix/retrieval/telemetry.py`
+
+```python
+class TelemetryWriter:
+    def __init__(self, db: Database, enabled: bool = True) -> None
+    def record(self, context: RetrievedContext, elapsed_ms: float,
+               expansion_result: "ExpandResult | None" = None) -> None
+    # No-op when enabled=False
+    # Never raises — all exceptions caught and logged as debug
+```
+
+Written to `query_telemetry` table: `query`, `intent`, `elapsed_ms`, `result_count`, `leg_sizes` (JSON), `thumbs_up`.
+
+**v2.4.0 expansion columns** (nullable, stored as SQL NULL when expansion not used):
+- `expansion_used: bool` — True when LLM expansion ran
+- `expansion_variants: int` — number of query variants generated (including original)
+- `expansion_elapsed_ms: float` — LLM call latency
+
+### `ExpandResult` (v2.4.0)
+
+**Module:** `src/trelix/retrieval/query_expansion.py`
 
 ```python
 @dataclass(frozen=True)
 class ExpandResult:
-    queries: list[str]       # the expanded query variants
-    llm_used: str            # which LLM backend produced the expansion
-    elapsed_ms: float        # wall-clock time for the LLM call
+    queries: list[str]     # [original] + up to N variants
+    llm_used: bool         # False when LLM unavailable or expansion failed
+    elapsed_ms: float      # LLM call latency (0.0 on fallback)
 ```
 
-Three new nullable columns in `query_telemetry`:
+Replaces bare `list[str]` return type of `MultiQueryExpander.expand()`. Immutable (frozen=True) — cannot be mutated after creation.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `expansion_used` | BOOLEAN | Whether multi-query expansion was applied |
-| `expansion_variants` | INTEGER | Number of variant queries generated |
-| `expansion_elapsed_ms` | REAL | LLM call duration for expansion |
+### `MultiQueryExpander`
 
-`TelemetryWriter.record()` accepts `expansion_result=` kwarg; `NULL` stored when not provided (fully backward-compatible).
-
-### `flare_max_retries` rename (Plan A)
-
-`RetrievalConfig` field renamed for clarity:
-
-| Old field | New field | Status |
-|-----------|-----------|--------|
-| `flare_max_iterations` | `flare_max_retries` | Old env var deprecated until v3.0.0 |
-
-Env var migration:
-
-| Env var | Status |
-|---------|--------|
-| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | **New (canonical)** |
-| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` | Deprecated — still accepted; emits `DeprecationWarning` |
-
-### GitHub PR Review (Plan D)
-
-New module: `src/trelix/review/github.py`
-
-```
-trelix review --pr owner/repo#N
-  └─ GitHubPRClient.get_pr_files()  → list[PRFile] (7 status values)
-       └─ DiffReviewer.review(diff_text=...)
-            └─ [--post-comments] GitHubPRClient.post_review() → single batched API call
-```
-
-**Key details:**
-- `GITHUB_TOKEN` env var only — no OAuth flow
-- All 7 GitHub file status values handled: `added`, `modified`, `removed`, `renamed`, `copied`, `changed`, `unchanged`
-- PRs with >3000 files emit a truncation warning; only the first 3000 files are reviewed
-- `parse_pr_ref("owner/repo#N")` helper for CLI arg parsing
-- `--post-comments` posts findings as a single batched GitHub review (one API call)
-
-### MCP Pagination — BREAKING (Plan F)
-
-`search_code()` return type changed:
-
-**Before (v2.3.x and earlier):**
 ```python
-search_code(query, repo_path, k=10) → list[dict]
+class MultiQueryExpander:
+    def __init__(self, llm_config: LLMConfig | None, n: int = 2) -> None
+    def expand(self, query: str) -> ExpandResult
+    # Returns ExpandResult(queries=[original], llm_used=False, elapsed_ms=0.0) on failure
+    # Never raises
 ```
 
-**After (v2.4.0+):**
+### `HyDEExpander`
+
 ```python
-search_code(query, repo_path, k=10, cursor=0) → {
-    "results": list[dict],
-    "next_cursor": int | None,   # null on last page
-    "total_available": int
-}
+class HyDEExpander:
+    def expand(self, query: str) -> str
+    # Returns synthetic code snippet, or "" on failure
+    # Used as vector query instead of NL query
+    # Research: Gao et al. 2022, arXiv:2212.10496
 ```
-
-**Migration:** replace `for item in response` with `for item in response["results"]`.
-
-`index_codebase()` now emits `ctx.report_progress()` notifications via `asyncio` during indexing (no interface change for callers).
 
 ---
 
-## Indexing Pipeline (offline — `trelix index`)
+## 20. LLM Client Abstraction
 
-```
-Repository
-  └─ FileWalker           (.gitignore-aware, SHA-256 change detection)
-       └─ Tree-sitter Parser  (20 languages → symbols + call/import/type edges)
-            ├─ ContextualChunker  (LLM context summary + breadcrumb header)
-            │    └─ Embedder  (voyage | local-code | azure | openai | local |
-            │    │             bedrock-titan | bedrock-cohere | bge-code | nomic-code)
-            │         └─ sqlite-vec HNSW  (O(log n) ANN — or Qdrant / LanceDB for >500k)
-            └─ SQLite DB   (files, symbols, call_graph, imports, FTS5 BM25)
-```
-
-### Four phases
-
-| Phase | What | Parallelism |
-|-------|------|-------------|
-| 1 — Parse | Tree-sitter AST traversal per file | ThreadPoolExecutor (parse_workers=4) |
-| 2 — Write | Symbol + chunk insertion, parent_id remapping | Sequential (DB consistency) |
-| 3 — Embed | Token-aware batch embedding (4 concurrent async API calls) | `asyncio.gather` + `Semaphore(4)` |
-| 4 — Resolve | Cross-file call edges (qualified-name priority), imports, type edges | Sequential |
-
-### Contextual Chunking (v0.4.0)
-
-When `TRELIX_CHUNKER_CONTEXTUAL=true`, each symbol gets an LLM-generated 2-3 sentence summary prepended to its chunk text before embedding and BM25 indexing. The summary is stored in `symbols.context_summary` and indexed in `symbols_fts`.
-
-```
-Symbol body
-  → LLM call (gpt-4o-mini): "Describe what this code does in 2-3 sentences"
-  → context_summary: "This function validates a username/password pair..."
-  → chunk_text: "{context_summary}\n\n# File: ...\n{symbol_body}"
-  → embedded + stored in FTS5
-```
-
-Research basis: Anthropic contextual retrieval (2024) — 67% retrieval failure reduction.
-
-`ContextualChunker` accepts `TrelixChatClient` (v0.7.0) or a raw OpenAI client (backward compat).
-
----
-
-## Retrieval Pipeline (per query — `trelix search` / `trelix ask`)
-
-```
-User Query
-  └─ FederatedRetriever (v2.4.0: TTL cache, SHA-256 key, threading.Lock)
-       ├─ cache HIT  → return cached list[SearchResult] (avg <1ms)
-       └─ cache MISS →
-            └─ AdaptiveRouter
-                 ├─ Tier 1: Direct — trivial factual → skip retrieval
-                 ├─ Tier 2: Single-step — 8-intent classification → RetrievalStrategy
-                 └─ Tier 3: Multi-step — LLM decomposes → 2-3 sub-queries in parallel
-                      └─ Per sub-query:
-                           ├─ Vector Search   (HyDE snippet → sqlite-vec HNSW ANN)
-                           ├─ Contextual BM25 (FTS5, includes context_summary)
-                           └─ Grep Search     (exact / regex symbol names)
-                                └─ RRF Fusion (Reciprocal Rank Fusion, k=60)
-                                     └─ Graph Expansion
-                                          ├─ call_graph (qualified-name + type-hint precision)
-                                          ├─ import_graph (forward/reverse, depth 1-2)
-                                          └─ type_edges (extends/implements/trait_impl)
-                                               └─ Reranker (Cohere | cross-encoder | PLAID)
-                                                    └─ Context Assembler (greedy | breadth_first)
-                                                         └─ Synthesis (via TrelixChatClient)
-                                                              ├─ ≤8k tokens: Direct LLM call
-                                                              └─ >8k tokens: GraphRAG map-reduce
-                                                                   └─ TTLCache(120s) stored
-```
-
-### Adaptive Query Router
-
-| Tier | Detection | Behavior |
-|------|-----------|---------|
-| 1 — Direct | Regex: `what is X`, `define X`, `list all` | Skip retrieval entirely; LLM answers directly |
-| 2 — Single-step | Default | 8-intent classification → pre-baked RetrievalStrategy |
-| 3 — Multi-step | Long queries with `walk me through`, `end-to-end`, `step by step` | LLM decomposes into 2-3 focused sub-queries; each retrieved independently; merged before rerank |
-
-### 8 intent types (Tier 2)
-
-| Intent | Legs | Graph | Rerank top-n | Assembly |
-|--------|------|-------|--------------|----------|
-| `symbol_lookup` | grep + BM25 + vector | call (depth 1) | 20 | greedy |
-| `file_overview` | file-direct | none | — | greedy |
-| `feature_flow` | vector + BM25 | call+import (depth 2) | 30 | greedy |
-| `project_overview` | file-direct | none | — | greedy |
-| `comparison` | all 3 | call+import (depth 1) | 35 | greedy |
-| `config_lookup` | file-direct + grep | none | — | greedy |
-| `dependency_map` | vector + BM25 | import forward (depth 2) | 30 | breadth_first |
-| `blast_radius` | grep + vector + BM25 | import reverse (depth 1) | 40 | breadth_first |
-
-### GraphRAG Synthesis
-
-Activated when `len(results) > 20` OR `total_tokens > 8000`:
-
-```
-results (N > 20)
-  MAP:    split into groups of ~10 results (~3k tokens each)
-          → LLM answers each group: "Partially answer: {query}\n{group_context}"
-  REDUCE: merge partial answers
-          → LLM synthesizes final: "Synthesize these partial answers: {partial_answers}"
-```
-
-### Streaming Synthesis
-
-`Synthesizer.stream(query, context)` returns an `Iterator[str]` — each yielded token
-is flushed immediately to the caller. Used by the `/ask` SSE endpoint and the
-`trelix ask --stream` CLI flag. GraphRAG map-reduce switches to non-streaming for
-the MAP phase (parallel LLM calls) and streams only the final REDUCE step.
-
----
-
-## LLM Client Factory (v0.7.0)
-
-All chat/synthesis LLM call sites use a provider-agnostic `TrelixChatClient` ABC.
-No business logic file imports a provider SDK directly.
-
-```
-LLMConfig  ──▶  build_chat_client()  ──▶  TrelixChatClient (ABC)
-                                              ├── OpenAIBackend    (OpenAI / Azure)
-                                              ├── AnthropicBackend (Claude direct)
-                                              ├── BedrockBackend   (AWS Bedrock Converse)
-                                              ├── VertexBackend    (Google Vertex AI)
-                                              └── LiteLLMBackend   (100+ providers)
-```
-
-**Provider selection:** `TRELIX_LLM_PROVIDER` env var (default: `openai`).
-
-### TrelixChatClient interface
+**Module:** `src/trelix/llm/client.py`, `llm/providers/`
 
 ```python
+@dataclass
+class ChatMessage:
+    role: str   # "system" | "user" | "assistant"
+    content: str
+
+@dataclass
+class ChatResponse:
+    content: str
+    input_tokens: int
+    output_tokens: int
+    model: str
+
 class TrelixChatClient(ABC):
-    def complete(messages: list[ChatMessage], **kwargs) -> ChatResponse
-    def stream(messages: list[ChatMessage], **kwargs) -> Iterator[str]
-    def tool_call(messages: list[ChatMessage], tools: list[dict], **kwargs) -> ToolCallResponse
+    @abstractmethod
+    def complete(self, messages, max_tokens, temperature, system) -> ChatResponse: ...
+    def tool_call(self, messages, tools, force_tool, max_tokens) -> ToolCallResponse: ...
+    def stream(self, messages, max_tokens, temperature, system) -> Iterator[str]: ...
 ```
 
-### Backend details
+Concrete backends:
+- `OpenAIBackend` — `openai.OpenAI`, sync + streaming
+- `AnthropicBackend` — `anthropic.Anthropic`, with prompt caching support
+- `BedrockBackend` — boto3 `invoke_model` / `invoke_model_with_response_stream`; primary → fallback chain on `ValidationException`
+- `VertexBackend` — `google.generativeai`
+- `LiteLLMBackend` — 100+ providers via single interface
 
-| Backend | Provider | Key behaviours | Install |
-|---------|----------|---------------|---------|
-| `OpenAIBackend` | OpenAI + Azure | Auto-detects `max_completion_tokens` vs `max_tokens` by model family (gpt-4o → `max_completion_tokens`; gpt-4/gpt-3.5 → `max_tokens`) | base package |
-| `AnthropicBackend` | Anthropic Claude | `max_tokens=`, `system=` separate param, `input_schema` tool format, `end_turn` → `stop` normalization | `trelix[anthropic]` |
-| `BedrockBackend` | AWS Bedrock Converse | `inferenceConfig.maxTokens` (nested camelCase), `system=[{"text":...}]` top-level, content always list-of-dicts, `{"auto":{}}` tool choice. Base64-encoded credentials decoded transparently. Bare model IDs rejected — uses `us.*` inference profile IDs. | `trelix[bedrock]` |
-| `VertexBackend` | Google Vertex AI / Gemini | `max_output_tokens` in `GenerateContentConfig`, `system_instruction=` param | `trelix[vertex]` |
-| `LiteLLMBackend` | 100+ providers | `drop_params=True` suppresses UnsupportedParamsError. Model strings: `"bedrock/claude-3-5-sonnet"`, `"gemini/gemini-2.0-flash"` | `trelix[litellm]` |
-
-### Bedrock model selection
-
-Primary model: `us.anthropic.claude-sonnet-4-6` (override: `TRELIX_LLM_BEDROCK_PRIMARY_MODEL`)
-
-Automatic fallback to `us.anthropic.claude-haiku-4-5-20251001-v1:0` on `ValidationException`
-(override: `TRELIX_LLM_BEDROCK_FALLBACK_MODEL`). Fallback is transparent — no caller change needed.
-
-### LLM call sites (all migrated in v0.7.0, extended in v2.0.0)
-
-All call sites use `TrelixChatClient` via `build_chat_client()`:
-
-1. `ContextualChunker` — per-symbol context summary generation
-2. `Indexer` — coordinating chunker during indexing
-3. `Synthesizer` — final answer synthesis
-4. `QueryPlanner` / `AdaptiveAgent` — query decomposition and intent classification
-5. `GraphRAGSynthesizer` — map-reduce partial answer generation
-
-### LLM config env vars (v0.7.0)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TRELIX_LLM_PROVIDER` | `openai` | `openai` \| `azure` \| `anthropic` \| `bedrock` \| `vertex` \| `litellm` |
-| `TRELIX_LLM_MODEL` | `gpt-4o` | Model override for the selected provider |
-| `TRELIX_LLM_BEDROCK_PRIMARY_MODEL` | `us.anthropic.claude-sonnet-4-6` | Bedrock primary model |
-| `TRELIX_LLM_BEDROCK_FALLBACK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock auto-fallback model |
-| `ANTHROPIC_API_KEY` | — | Anthropic direct API key |
-| `GOOGLE_CLOUD_PROJECT` | — | Google Cloud project for Vertex AI |
-| `GOOGLE_API_KEY` | — | Google AI Studio key (alternative to service account) |
-| `AWS_ACCESS_KEY_ID` | — | AWS credentials for Bedrock |
-| `AWS_SECRET_ACCESS_KEY` | — | AWS credentials for Bedrock |
-| `AWS_REGION` | `us-east-1` | AWS region for Bedrock |
+Factory: `build_chat_client(config: LLMConfig) -> TrelixChatClient`
 
 ---
 
-## Store
+## 21. Key Design Invariants
 
-### SQLite (default, zero-infra)
+These invariants must not be violated without understanding the downstream effects:
 
-Single file (`.trelix/index.db`) with WAL mode + FTS5 + sqlite-vec HNSW.
+1. **Zero-mutation immutability** — `SearchResult` and all pipeline dataclasses are re-created (not mutated) when scores/ranks change. This prevents subtle bugs in parallel evaluation pipelines.
 
-| Table | Columns | Purpose |
-|-------|---------|---------|
-| `files` | id, path, rel_path, language, hash, size_bytes | File tracking; SHA-256 for incremental |
-| `symbols` | id, file_id, name, qualified_name, kind, line_start, line_end, signature, body, docstring, **context_summary**, decorators, is_public, parent_id | All code symbols |
-| `calls` | id, caller_id, callee_name, callee_id, line, **callee_type_hint** | Call graph edges with precision |
-| `imports` | id, file_id, imported_from, imported_names, imported_file_id | Import edges |
-| `type_edges` | id, from_symbol_id, to_type_name, edge_kind, to_symbol_id | Inheritance / trait / embed |
-| `chunks` | id, symbol_id, chunk_text, token_count | Embeddable text units |
-| `file_summaries` | id, file_id, summary, created_at | LLM-generated 2–4 sentence file descriptions (RAPTOR) |
-| `symbols_fts` | FTS5 virtual table over name, qualified_name, docstring, body, **context_summary** | BM25 keyword search |
-| `vec_chunks` | sqlite-vec HNSW virtual table | ANN vector search |
-| `graph_metadata` | symbol_id INTEGER PRIMARY KEY, community INTEGER, centrality REAL, node_type TEXT | Knowledge-graph community assignments and degree centrality (v2.0.0) |
-| `graph_concepts` | name TEXT, category TEXT, importance REAL, source_symbol_ids TEXT | LLM-extracted architectural concepts (v2.0.0, optional) |
+2. **SHA-256 for incremental indexing, MD5 for watch guard** — SHA-256 (`IndexedFile.hash`) drives skip-unchanged-files in batch indexing. MD5 (`MultiRepoWatcher._is_unchanged`) drives the watch-event hash guard — MD5 is faster and correctness matters less (false positive = extra re-index, not data loss).
 
-### Qdrant (optional — for >500k chunks)
+3. **`DimensionGuard` at both index AND query time** — catching provider switches at Indexer startup prevents corrupted index. Catching at Retriever startup prevents silent wrong-results on existing corrupt index.
 
-Drop-in `QdrantVectorStore` via `BaseVectorStore` ABC. Set `TRELIX_STORE_BACKEND=qdrant`.
+4. **FTS5 triggers maintain BM25 sync** — `AFTER INSERT`, `AFTER DELETE`, `AFTER UPDATE` triggers on `symbols` table keep `symbols_fts` in sync. Never directly `INSERT` into `symbols_fts` — it will desync.
 
-Collection config: HNSW m=16, ef_construct=200, filterable by file_id.
+5. **`callee_id=None` is correct for external calls** — unresolved calls to stdlib/external libraries intentionally have `callee_id=None`. Wrong edge is worse than missing edge. The 4-priority cascade resolves internal calls; external remains NULL.
 
-Migration: `trelix migrate-vectors --to qdrant --url http://localhost:6333`
+6. **Debug traces are thread-local** — `_trace_local = threading.local()` ensures parallel eval workers (e.g. batch retrieval benchmarks) never cross-contaminate JSON traces.
 
-### LanceDB (optional — embedded columnar store)
+7. **No intent-switch logic in `Retriever`** — all behavior is data-driven through `RetrievalStrategy`. `INTENT_STRATEGIES` is the single source of truth. Adding new intent = one dict entry only.
 
-Drop-in `LanceDBVectorStore` via `BaseVectorStore` ABC. Set `TRELIX_STORE_BACKEND=lancedb`.
+8. **`graph_rag_enabled=True` is the only feature flag on by default** — all other optional features (FLARE, HyDE, multi-query, sparse, graph search, file summaries, MGS3, agentic) default to False.
 
-LanceDB stores all chunk vectors in a Lance columnar format under `.trelix/lancedb/`.
-File-level summary vectors use a **sentinel chunk_id** of `-(file_id)` — a negative file
-ID that cannot collide with any real chunk row — so summary entries and code-chunk entries
-share the same table without a separate column.
+9. **MCP server `stdout` is exclusive to JSON protocol** — `logging.basicConfig(stream=sys.stderr)` is the first line of `server.py`, before any imports. Any `print()` to stdout breaks the MCP pipe silently.
 
-```python
-# sentinel convention
-SENTINEL_CHUNK_ID = -(file_id)   # e.g. file_id=42 → chunk_id=-42
-```
+10. **`FederatedRetriever` uses monotonic time for TTL** — `time.monotonic()` not `time.time()` — avoids cache expiry bugs during daylight saving transitions.
 
-Install: `pip install trelix[lancedb]`  
-Migration: `trelix migrate-vectors --to lancedb --path .trelix/lancedb`
+11. **`trelix migrate-vectors --reset` must be followed by `trelix index`** — `--reset` deletes all stored embeddings but does NOT re-create them. The DimensionGuard record is also cleared. Running queries against an empty vector store returns zero results.
+
+12. **`GraphUpdater` always does full rebuild** — never partial. Rationale: avoids stale-edge bugs when call targets change across files. A partial update would need to know which other symbols reference the changed one — exactly the problem the graph is solving.
 
 ---
 
-## Embedding Providers
+## 22. Data Flow Diagrams
 
-| Provider | Model | Dim | CoIR Score | Install |
-|----------|-------|-----|-----------|---------|
-| `local` | all-MiniLM-L6-v2 | 384 | baseline | `trelix[local]` |
-| `local-code` | SFR-Embedding-Code-2B_R | 4096 | **67.41** | `trelix[local-code]` |
-| `openai` | text-embedding-3-large | 3072 | ~45 | base package |
-| `azure` | text-embedding-3-large | 3072 | ~45 | base package |
-| `voyage` | voyage-code-3 | 1024 | **56.26** | `trelix[voyage]` |
-| `bedrock-titan` | amazon.titan-embed-text-v2:0 | 256/512/1024 | — | `trelix[bedrock]` |
-| `bedrock-cohere` | cohere.embed-english-v3 | 1024 | — | `trelix[bedrock]` |
-| `bge-code` | BGE-Code-v1 | 1536 | **63.10** | `trelix[bge-code]` |
-| `nomic-code` | nomic-embed-code (CodeRankEmbed) | 768 | **58.40** | `trelix[nomic-code]` |
+### Full Indexing Pipeline
 
-CoIR (Code Information Retrieval) benchmark — ACL 2025. Higher is better.
+```
+repo/
+├── src/auth.py
+├── src/models.py
+└── tests/test_auth.py
 
-### BGE-Code-v1 (v2.0.0)
+     FileWalker (gitignore + extension filter + size limit)
+          │
+          ▼
+     [IndexedFile...] ──── SHA-256 hash check ────► SKIP (unchanged)
+          │                                          │
+          │ (changed or new)                         ▼
+          ▼                                       [continue]
+     Phase 1: ThreadPoolExecutor (parse_workers=4)
+          │
+          ├── PythonParser (tree-sitter) ──► ParseResult(symbols, calls, types, imports)
+          ├── TypeScriptParser
+          └── ...
+          
+     Phase 2: Sequential DB write (main thread)
+          │
+          ├── db.upsert_file() ─────────────► files table
+          ├── db.insert_symbol() ──────────► symbols table + FTS5 trigger
+          ├── db.transaction() ────────────► commit batch
+          ├── _store_call_edges() ─────────► calls table
+          ├── _store_type_edges() ─────────► type_edges table
+          ├── chunker.build_chunks() ──────► [Chunk(symbol_id, chunk_text, token_count)]
+          └── [Optional] FileSummarizer ──► file_summaries table + summary embedding
 
-**BGECodeEmbedder** (`bge-code`): FlagEmbedding-based code embedder producing 1536-dim vectors.
-Instruction-tuned for code retrieval — prepend `"Represent this code for retrieval: "` at
-query time (handled internally). Lazy-loaded on first call.
+     Phase 3: asyncio.gather (embed + store, Semaphore(4))
+          │
+          ├── embedder.embed_async(batch) ─► [embedding vectors]
+          └── vector_store.upsert_batch() ─► sqlite-vec HNSW (or Qdrant/LanceDB)
+          │
+          └── [Optional] SparseEmbedder ──► sparse_embeddings table
 
-```bash
-pip install trelix[bge-code]   # installs FlagEmbedding + torch
+     Phase 4: Cross-file resolution
+          │
+          ├── resolve_cross_file_calls() ──► callee_id filled in calls table
+          ├── resolve_import_file_ids() ───► imported_file_id in imports table
+          ├── resolve_cross_file_type_edges()
+          └── resolve_angular_selectors()
+
+     DimensionGuard.record(db, dimension) ─► index_metadata table
 ```
 
-### Nomic CodeRankEmbed (v2.0.0)
+### Full Retrieval Pipeline
 
-**NomicCodeEmbedder** (`nomic-code`): sentence-transformers wrapper around
-`nomic-ai/nomic-embed-code` (CodeRankEmbed). 768-dim, ~137M params, Apache 2.0 license.
-Asymmetric: query prefix `"search_query: "` / document prefix `"search_document: "` applied
-automatically. Runs fully offline — no API key required.
-
-```bash
-pip install trelix[nomic-code]   # installs sentence-transformers + torch
+```
+User: "how does the authentication middleware work?"
+          │
+          ▼
+     AdaptiveRouter.route()
+          │ TIER_2_SINGLE (default — 90% of queries)
+          ▼
+     QueryPlanner._plan_direct() ──── LLM (gpt-4o-mini) ───► QueryPlan
+          │                                                    intent: FEATURE_FLOW
+          │                                                    legs: vector+bm25
+          │                                                    expand_depth: 2
+          │                                                    import_depth: 2
+          ▼
+     _retrieve_standard(plan)
+          │
+          ├── Sub-query leg execution (parallel)
+          │    ├── VECTOR: embed_query("auth middleware how") → HNSW → [SearchResult×20]
+          │    ├── BM25:   FTS5("authentication middleware") → [SearchResult×20]
+          │    └── GREP:   grep("authenticate") → [SearchResult×10]
+          │
+          ├── [Optional] Multi-query expansion
+          │    ├── LLM variant 1: "JWT validation middleware chain"
+          │    ├── LLM variant 2: "request auth filter pipeline"
+          │    └── Each variant runs all 3 legs in parallel
+          │
+          ├── RRF fusion (k=60, file-type weights)
+          │    └── Merged, deduped by symbol_id → [SearchResult×40]
+          │
+          ├── Graph expansion (on top 10 fused)
+          │    ├── expand_with_call_graph(depth=2)
+          │    ├── expand_with_imports(depth=2, direction="both")
+          │    └── expand_with_type_edges(max_extra=15)
+          │
+          ├── [Optional] Reranker (cross-encoder / Cohere / PLAID)
+          │    └── → top 15 reranked
+          │
+          ├── [Optional] PageRank boost
+          │    └── × 1.3 for top-200 central symbols
+          │
+          └── ContextAssembler (greedy, 12k tokens)
+               └── RetrievedContext
+                    └── Synthesizer → streamed answer
 ```
 
-### Bedrock embedders (v0.7.0)
+### Multi-Repo Federation (v2.4.0)
 
-**BedrockTitanEmbedder** (`bedrock-titan`): configurable dimensions (256/512/1024) via
-`TRELIX_EMBEDDER_BEDROCK_TITAN_DIMENSIONS`. Default 1024 matches Voyage quality; 256 cuts
-storage 4x for large repos. `normalize=True` by default.
-
-**BedrockCohereEmbedder** (`bedrock-cohere`): asymmetric doc/query retrieval — uses
-`search_document` input_type at index time and `search_query` at query time for maximum
-retrieval precision.
-
-Both reuse `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` from `.env` —
-no extra credentials beyond what `BedrockBackend` already requires.
-
----
-
-## Reranking
-
-### Cohere / cross-encoder (existing)
-
-`CohereReranker` and `CrossEncoderReranker` are the default reranking backends,
-selected via `TRELIX_RERANKER` env var (`cohere` | `cross-encoder`).
-
-### PLAID Reranker (v2.0.0)
-
-**PlaidReranker** uses [RAGatouille](https://github.com/bclavie/RAGatouille) to run a
-ColBERT late-interaction reranker (PLAID index engine) locally.
-
-Key behaviours:
-- **Lazy model loading**: the ColBERT model is loaded on the first `rerank()` call, not at
-  import time — cold start is ~2s on first use, instant thereafter.
-- **Graceful fallback**: if `ragatouille` is not installed or model loading fails, the
-  reranker falls back to score-passthrough (results returned in their original order) and
-  logs a warning rather than raising.
-- **from_pretrained() API**: model is loaded via
-  `RAGPretrainedModel.from_pretrained("colbert-ir/colbertv2.0")` (override:
-  `TRELIX_RERANKER_PLAID_MODEL`).
-
-```bash
-pip install trelix[plaid]   # installs ragatouille + faiss-cpu
 ```
-
-```python
-# env var selection
-TRELIX_RERANKER=plaid
-TRELIX_RERANKER_PLAID_MODEL=colbert-ir/colbertv2.0   # optional override
+trelix search-all "how does caching work"
+          │
+          ▼
+     FederatedRetriever.retrieve(query, k=10)
+          │
+          ├── Cache check [SHA-256(query + sorted_paths + k)] ─► HIT: return cached
+          │                                                        │
+          │ MISS                                                   │
+          ▼                                                       ▼
+     _query_repos() [ThreadPoolExecutor, max_workers=4]
+          │
+          ├── Retriever(IndexConfig(repo_path="/myapp")).retrieve(query)
+          ├── Retriever(IndexConfig(repo_path="/infra")).retrieve(query)
+          └── Retriever(IndexConfig(repo_path="/shared")).retrieve(query)
+          │
+          ▼
+     reciprocal_rank_fusion([results_a, results_b, results_c])
+          │
+          ▼
+     dedup by (file.rel_path, chunk.symbol_id)
+          │
+          ▼
+     Cache set (TTL=120s) + return list[SearchResult]
 ```
 
 ---
 
-## Call Graph Precision
+## 23. Extension Points
 
-Callee resolution uses 3-priority matching:
+### Adding a New Language Parser
 
-```
-1. Exact qualified_name match     → callee_id set (highest confidence)
-2. name + callee_type_hint match  → callee_id set (receiver annotation extracted at parse time)
-3. name match, unique             → callee_id set (existing behavior)
-4. name match, ambiguous          → callee_id = NULL (better than wrong)
-```
+1. Create `src/trelix/indexing/parser/extractors/<language>.py`
+2. Inherit `BaseParser(ABC)` and implement `parse(source, file_id) → ParseResult`
+3. Add entry to `Language` enum in `core/models.py`
+4. Register in `_PARSER_REGISTRY` in `parser/registry.py`
+5. Add to default `WalkerConfig.languages` list
 
-`callee_type_hint` is extracted from receiver type annotations at parse time:
-- Python: `user_service: UserService` → calls to `user_service.login()` get `callee_type_hint="UserService"`
-- TypeScript: `const auth: AuthService` → `auth.verify()` gets `callee_type_hint="AuthService"`
+### Adding a New Embedding Provider
 
-Expected impact: ~40% reduction in false-positive cross-file call edges.
+1. Implement `BaseEmbedder` ABC in `embedder/base.py` or a new module
+2. Add to `provider` Literal in `EmbedderConfig`
+3. Add case to `make_embedder()` factory in `embedder/base.py`
+4. Add dimension constant to `EmbedderConfig.effective_dimension` property
 
----
+### Adding a New LLM Backend
 
-## File-Level Summaries — RAPTOR (v2.0.0)
+1. Implement `TrelixChatClient` ABC in `llm/providers/<name>_backend.py`
+2. Add to `provider` Literal in `LLMConfig`
+3. Add case to `build_chat_client()` factory in `llm/factory.py`
 
-`FileSummarizer` generates a concise 2–4 sentence LLM description of each file during
-indexing, inspired by the RAPTOR hierarchical retrieval approach (abstractive summarisation
-at multiple granularities).
+### Adding a New Retrieval Intent
 
-### Storage
+1. Add value to `IntentType(StrEnum)`
+2. Add entry to `INTENT_STRATEGIES` dict in `retrieval/planner/models.py`
+3. Add training example to the LLM planner prompt in `planner/agent.py`
 
-- **DB table**: `file_summaries` (columns: `id`, `file_id`, `summary`, `created_at`)
-- **Vector index**: each summary is embedded and stored alongside chunk vectors.  
-  In the LanceDB backend the sentinel `chunk_id = -(file_id)` is used so no separate
-  table or column is needed. In the SQLite backend a dedicated `vec_file_summaries`
-  virtual table is used.
+That's it — no changes to `Retriever` needed.
 
-### Retrieval integration
+### Adding a New Vector Backend
 
-File-summary vectors participate in the `file_overview` and `project_overview` retrieval
-strategies — they are retrieved first, then individual chunk results are merged in.
-
-### Feature flag
-
-Gated by `TRELIX_FILE_SUMMARIES_ENABLED` (default: `false`). Set to `true` to enable
-during indexing. Re-indexing is required when the flag is first enabled on an existing
-index.
-
-```bash
-TRELIX_FILE_SUMMARIES_ENABLED=true trelix index .
-```
+1. Implement `BaseVectorStore` ABC in `store/vector_<name>.py`
+2. Add case to `make_vector_store()` factory in `store/vector.py`
+3. Add to `StoreConfig.backend` Literal
 
 ---
 
-## File Watcher (`trelix watch` / `trelix watch-all`)
-
-```
-trelix watch <repo> [--provider local|openai|azure|voyage|bedrock-titan|bedrock-cohere]
-  → full index on startup
-  → watchdog Observer monitors all files
-  → on_modified/on_created: debounce 500ms → indexer.index_file(path)
-  → on_deleted: remove file + symbols + chunks + vectors from DB
-  → respects .gitignore (reuses FileWalker.should_ignore())
-  → Ctrl+C to stop
-```
-
-Requires `pip install trelix[watch]` (watchdog).
-
-### Multi-Repo Watcher (`trelix watch-all`) — v2.4.0
-
-```
-RepoRegistry (registered repos)
-  └─ MultiRepoWatcher
-       └─ watchfiles.awatch(*all_repo_paths, debounce=1600ms)
-            ├─ Change.modified/added → MD5 hash guard → Indexer.index_file()
-            └─ Change.deleted        → db.delete_file_by_path() + vector_store cleanup
-```
-
-**Key behaviours:**
-- Single `watchfiles.awatch()` call monitors all registered repositories simultaneously (vs. one-per-repo watchdog observers)
-- MD5 hash guard prevents re-index cascades on no-op saves
-- Deleted files are removed from both SQLite and the vector store atomically
-- Per-repo stats displayed in the terminal; graceful `Ctrl+C` shutdown
-- Source: `src/trelix/indexing/multi_watcher.py`
-
-```bash
-trelix watch-all   # watches all repos registered in the active RepoRegistry
-```
-
----
-
-## Test Coverage (v2.4.0)
-
-| Suite | Count | What's covered |
-|-------|-------|---------------|
-| Unit tests (core) | **1,467** | All modules, all parsers, all providers, LLM factory, cache, multi-watcher, GitHub PR client, MCP pagination |
-| Integration tests (live) | **16** | Azure + Bedrock chat (complete/stream/tool_call) + Bedrock embeddings; skip gracefully when creds absent |
-| Eval harness | 50 queries | MRR, Recall@1/5/10, NDCG@10 on trelix-self; LLM-as-judge score per result |
-| trelix-mcp tests | **41** | All tools including paginated search_code envelope, index_codebase progress notifications |
-| trelix-langchain tests | **19** | BaseRetriever, Document structure, metadata keys |
-| trelix-llama-index tests | **10** | BaseRetriever, NodeWithScore structure |
-
-**Total passing: 1,508**
-
-### LLM-as-Judge Eval (v2.0.0)
-
-`LLMJudge` in `tests/eval/llm_judge.py` scores each retrieval result on a 0–1 relevance
-scale using a secondary LLM call (default: `gpt-4o-mini`). Scores are integrated into
-the eval harness pipeline:
-
-- `EvalResult.judge_score` — per-query float (0.0–1.0)
-- `EvalReport.mean_judge_score` — aggregate mean across all 50 eval queries
-
-`LLMJudge` is optional — the eval harness runs without it if `TRELIX_EVAL_LLM_JUDGE=false`
-(default: `false`). When enabled, it adds ~$0.02 per full eval run at gpt-4o-mini pricing.
-
-Python 3.11 and 3.12 supported.
-
----
-
-## REST API (v2.0.0)
-
-`trelix.api.app.create_app()` returns a FastAPI application that exposes the full
-retrieval + indexing surface over HTTP. Start it with:
-
-```bash
-pip install trelix[api]   # installs fastapi + uvicorn + sse-starlette
-uvicorn trelix.api.app:app --host 0.0.0.0 --port 8080
-```
-
-### Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/search` | Keyword + vector hybrid search; body: `{query, repo_path, k}` |
-| `POST` | `/ask` | SSE streaming answer; body: `{query, repo_path}`; response: `text/event-stream` |
-| `POST` | `/index` | Trigger (re-)indexing of a repo; body: `{repo_path, provider}` |
-| `GET`  | `/health` | Liveness check; returns `{"status": "ok"}` |
-| `GET`  | `/stats` | Index statistics (file count, symbol count, chunk count, last_indexed) |
-
-The `/ask` endpoint uses `Synthesizer.stream()` internally — each SSE `data:` event is a
-single yielded token, terminated by a `data: [DONE]` sentinel.
-
----
-
-## Ecosystem Packages (v2.0.0)
-
-| Package | PyPI | Purpose |
-|---------|------|---------|
-| `trelix` | [pypi.org/project/trelix](https://pypi.org/project/trelix/) | Core library + CLI |
-| `trelix-mcp` | [pypi.org/project/trelix-mcp](https://pypi.org/project/trelix-mcp/) | MCP server — Claude Code, Cursor, Windsurf |
-| `trelix-langchain` | [pypi.org/project/trelix-langchain](https://pypi.org/project/trelix-langchain/) | LangChain `BaseRetriever` |
-| `trelix-llama-index` | [pypi.org/project/trelix-llama-index](https://pypi.org/project/trelix-llama-index/) | LlamaIndex `BaseRetriever` |
-
-### Install options
-
-```bash
-pip install trelix               # OpenAI + Azure (default)
-pip install trelix[anthropic]    # + Anthropic direct
-pip install trelix[bedrock]      # + AWS Bedrock (chat + both Bedrock embedders)
-pip install trelix[vertex]       # + Google Vertex AI
-pip install trelix[litellm]      # + LiteLLM (100+ providers)
-pip install trelix[llm-all]      # all LLM providers
-pip install trelix[local]        # + local sentence-transformers (no API key)
-pip install trelix[local-code]   # + SFR-Embedding-Code-2B_R (no API key, ~8GB RAM)
-pip install trelix[bge-code]     # + BGE-Code-v1 embedder (FlagEmbedding, no API key)
-pip install trelix[nomic-code]   # + Nomic CodeRankEmbed embedder (no API key)
-pip install trelix[voyage]       # + Voyage AI code embeddings
-pip install trelix[rerank]       # + Cohere reranker
-pip install trelix[plaid]        # + PLAID/ColBERT reranker (RAGatouille)
-pip install trelix[qdrant]       # + Qdrant vector backend
-pip install trelix[lancedb]      # + LanceDB columnar vector backend
-pip install trelix[api]          # + FastAPI REST server (uvicorn + sse-starlette)
-pip install trelix[watch]        # + file watcher (watchdog)
-pip install trelix[knowledge-graph]  # + knowledge graph (pyvis, networkx)
-pip install trelix[graph-viz]        # alias for trelix[knowledge-graph]
-pip install trelix[all]              # everything
-```
-
-### MCP Server Tools
-
-```
-trelix-mcp (stdio transport)
-  ├── search_code(query, repo_path, k=10, cursor=0)                           → {results, next_cursor, total_available}  [BREAKING v2.4.0]
-  ├── index_codebase(repo_path, provider)                                      → dict (stats) + progress notifications   [v2.4.0]
-  ├── get_symbol(qualified_name, repo_path)                                    → dict | None
-  ├── blast_radius(symbol_name, repo_path)                                     → list[dict]
-  ├── build_knowledge_graph(repo_path, detect_communities, extract_concepts)   → dict (stats)  [v2.0.0]
-  └── graph_search_mcp(query, repo_path, depth, max_results)                  → list[dict]    [v2.0.0]
-```
-
-**Migration for `search_code` callers:** replace `for item in response` with `for item in response["results"]`. Use `cursor=response["next_cursor"]` to fetch the next page; `next_cursor=null` indicates the last page.
-
----
-
-## Knowledge Graph Layer
-
-Added in **v2.0.0**. A new `trelix/graph/` module wraps the existing SQLite edge tables
-into a unified Code Property Graph backed by NetworkX, with community detection, LLM
-concept extraction, graph-aware BFS retrieval, and an interactive Pyvis visualizer.
-
-**Breaking change**: the old `trelix graph <repo> <symbol>` call-graph display command is
-renamed to `trelix call-graph <repo> <symbol>`. The `trelix graph` subcommand now builds
-and queries the full knowledge graph.
-
-### Graph Structure — CodeGraph (`trelix/graph/code_graph.py`)
-
-`CodeGraph` holds a `networkx.MultiDiGraph`. Every symbol (function, class, method) and
-file in the index is a node; every static relationship is a typed directed edge.
-
-**Node attributes**
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `name` | str | Simple symbol or file name |
-| `qualified_name` | str | Fully-qualified identifier |
-| `kind` | str | `function` \| `class` \| `method` \| `file` \| … |
-| `file` | str | Source file path |
-| `language` | str | Language detected by Tree-sitter |
-| `community` | int | Community ID set after detection (default -1) |
-
-**Edge types**
-
-| Label | Source table | Direction |
-|-------|-------------|-----------|
-| `CALLS` | `calls` | caller → callee |
-| `IMPORTS` | `imports` | file → imported\_file |
-| `EXTENDS` | `type_edges` (extends) | child → parent |
-| `IMPLEMENTS` | `type_edges` (implements) | implementor → interface |
-| `TRAIT_IMPL` | `type_edges` (trait\_impl) | struct → trait |
-| `EMBEDDED` | `type_edges` (embedded) | struct → embedded |
-
-**Live stats on the trelix codebase (dry run)**
-
-| Metric | Value |
-|--------|-------|
-| Nodes | 4,599 |
-| Edges | 4,945 |
-| Communities (Louvain) | 2,409 |
-| Build time | 0.34 s |
-| Top node degree | 438 (`parse`) |
-
-### Community Detection (`trelix/graph/community.py`)
-
-Three algorithms selectable at runtime:
-
-| Algorithm | Complexity | Best for |
-|-----------|-----------|---------|
-| `louvain` (default) | O(n log n) | General use; fast on large graphs |
-| `girvan_newman` | O(n³) | Quality-oriented; small/medium graphs |
-| `label_prop` | O(n) | Very large graphs (>100k nodes) |
-
-Output: a `{symbol_id: community_id}` mapping. After detection, each node's `community`
-attribute is set in-memory and written to the `graph_metadata` SQLite table.
-
-Communities represent logical module groupings (auth layer, data layer, API layer) inferred
-purely from structural connectivity — no human labeling required.
-
-### Graph Persistence (`trelix/graph/persistence.py`)
-
-**Table: `graph_metadata`**
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `symbol_id` | INTEGER PRIMARY KEY | Foreign key to `symbols.id` |
-| `community` | INTEGER | Community assignment from detection |
-| `centrality` | REAL | Degree centrality computed at save time |
-| `node_type` | TEXT | Node kind (mirrors `symbols.kind`) |
-
-`GraphPersistence.save()` upserts all rows in a single transaction. Degree centrality is
-pre-computed so graph-adjacent queries do not require loading the full graph.
-
-### Semantic Concepts — optional (`trelix/graph/concepts.py`)
-
-`ConceptExtractor` sends batches of symbol names and signatures to the configured LLM and
-extracts architectural concepts (e.g. "JWT authentication", "event sourcing", "CQRS").
-
-**Table: `graph_concepts`**
-
-| Column | Type |
-|--------|------|
-| `name` | TEXT |
-| `category` | TEXT |
-| `importance` | REAL |
-| `source_symbol_ids` | TEXT (JSON array) |
-
-Enabled via `--concepts` flag on `trelix graph` or `ConceptExtractorConfig.enabled=True`.
-**Crash-safe**: any LLM failure returns `[]` without aborting the graph build.
-
-### Graph-Aware Search — 4th retrieval leg (`trelix/graph/search.py`)
-
-BFS from the top results of the existing RRF fusion step, traversing the `CodeGraph` to
-surface structurally adjacent symbols that plain vector/BM25/grep search misses.
-
-**Score decay**: `score = 0.5^hop` — nodes one hop away score 0.5, two hops 0.25, etc.
-
-**Config** (`RetrievalConfig`)
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `graph_search_enabled` | `False` | Opt-in flag — zero impact when off |
-| `graph_search_depth` | `2` | BFS depth from seed nodes |
-| `graph_search_max_results` | `15` | Cap on graph-sourced results |
-
-**Env var**: `TRELIX_GRAPH_SEARCH_ENABLED=true`
-
-**Live retrieval mix** with `graph_search_enabled=True`: 30 results total
-(5 graph, 19 vector, 4 BM25, 2 graph\_expansion).
-
-When disabled, the retrieval pipeline is identical to v1.x — no performance regression.
-
-### Visualization (`trelix/graph/visualizer.py`)
-
-`GraphVisualizer.export_html()` writes a Pyvis interactive HTML file to
-`<repo>/.trelix/graph.html`.
-
-**Visual encoding**
-
-| Attribute | Encoding |
-|-----------|---------|
-| Node color | Community % 10 → 10-color pastel palette |
-| Node size | Proportional to degree (more connections = larger) |
-| `CALLS` edges | Blue |
-| `IMPORTS` edges | Purple |
-| `EXTENDS` edges | Green |
-| `IMPLEMENTS` edges | Teal |
-| Physics layout | ForceAtlas2 |
-
-**Security**: the output path is constrained to `<repo>/.trelix/` — path traversal
-attempts (e.g. `../../etc/passwd`) are rejected with HTTP 400.
-
-### REST Endpoints (added in v2.0.0)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/graph` | Return graph stats (node count, edge count, top-degree nodes) |
-| `GET` | `/graph/communities` | Community listing with member counts |
-| `GET` | `/graph/visualize` | Stream the Pyvis HTML file |
-| `GET` | `/graph/search` | BFS graph search; params: `query`, `repo_path`, `depth` |
-
-### MCP Tools (added in v2.0.0)
-
-```
-trelix-mcp (stdio transport)
-  ├── build_knowledge_graph(repo_path, detect_communities, extract_concepts)  → dict (stats)
-  └── graph_search_mcp(query, repo_path, depth, max_results)                  → list[dict]
-```
-
-### CLI
-
-```bash
-# Build graph (+ optional community detection and concept extraction)
-trelix graph ./repo
-trelix graph ./repo --visualize          # also write Pyvis HTML
-trelix graph ./repo --concepts           # also run LLM concept extraction
-trelix graph ./repo --json               # machine-readable stats to stdout
-
-# Old call-graph display (RENAMED — breaking change)
-trelix call-graph ./repo MyClass.method
-```
-
-### Install
-
-```bash
-pip install 'trelix[knowledge-graph]'   # pyvis>=0.3.2, networkx>=3.3.0
-pip install 'trelix[graph-viz]'         # alias for the same extras
-```
-
----
-
-### Integration Surface
-
-```
-Claude Code / Cursor / Windsurf / Continue.dev
-  └── pip install trelix-mcp
-      └── claude mcp add trelix -- trelix-mcp
-
-LangChain RAG pipeline
-  └── pip install trelix-langchain
-      └── TrelixRetriever(repo_path=".").invoke(query)
-
-LlamaIndex RAG pipeline
-  └── pip install trelix-llama-index
-      └── TrelixIndexRetriever(repo_path=".").retrieve(QueryBundle(query))
-
-GitHub Actions CI
-  └── uses: sairam0424/trelix-index-action@v1
-
-Homebrew (macOS)
-  └── brew tap sairam0424/trelix && brew install trelix
-```
-
----
-
-## v2.1.0 Beast-Mode Retrieval Pipeline
-
-v2.1.0 upgrades the retrieval core from a 3-leg to a **5-leg parallel architecture** with
-a query enhancement pre-pass, post-rerank signal boosting, and a full observability layer.
-
-### 5-Leg Retrieval Architecture
-
-All five legs run in parallel for every query. Results from all legs are fused via
-Reciprocal Rank Fusion (RRF, k=60), then passed through graph expansion before reranking.
-
-```
-User Query
-  └─ Query Enhancement Layer  (HyDE + multi-query)
-       └─ 5-Leg Parallel Retrieval
-            ├─ Leg 1: Vector    (HNSW, sqlite-vec) — ANN over chunk embeddings
-            ├─ Leg 2: BM25      (FTS5) — keyword frequency over symbols_fts
-            ├─ Leg 3: Grep      (exact / regex) — literal symbol name match
-            ├─ Leg 4: CodeGraph BFS  (graph_search_enabled) — structural neighbours
-            └─ Leg 5: File-Summary   (file_summary_leg_enabled) — RAPTOR-style
-                 └─ RRF Fusion  (all 5 legs, k=60)
-                      └─ Graph Expansion  (call / import / type edges)
-                           └─ Reranker  (Cohere | cross-encoder | PLAID)
-                                └─ Post-Rerank Enhancement
-                                     ├─ PageRank Boost  (centrality × 1.3)
-                                     └─ FLARE Loop      (uncertainty → re-retrieve)
-```
-
-#### Leg 1 — Vector (HNSW, sqlite-vec)
-
-ANN search over `vec_chunks` using the configured embedding provider. When HyDE is enabled,
-the query is replaced by a synthetic code snippet before embedding (see Query Enhancement
-Layer below). This is the primary semantic leg.
-
-#### Leg 2 — BM25 (FTS5)
-
-Keyword frequency search over the `symbols_fts` virtual table, which indexes `name`,
-`qualified_name`, `docstring`, `body`, and `context_summary`. Complements the vector leg
-for identifier-exact queries where semantic similarity underperforms.
-
-#### Leg 3 — Grep (exact / regex)
-
-Direct SQL `LIKE` or regex match on `symbols.name` and `symbols.qualified_name`. Zero
-latency, no embedding required. Highest precision for `symbol_lookup` intent.
-
-#### Leg 4 — CodeGraph BFS (`graph_search_enabled`)
-
-BFS traversal of the in-memory `CodeGraph` from the top-N seeds produced by the first
-three legs. Score decay `0.5^hop` as in v2.0.0. Surfaces callee/caller/import neighbours
-invisible to embedding or keyword search. Controlled by `graph_search_enabled` flag.
-
-#### Leg 5 — File-Summary (`file_summary_leg_enabled`)
-
-RAPTOR-style retrieval over `file_summaries` vectors. At query time, the query is embedded
-and matched against per-file summary vectors stored in `vec_file_summaries` (SQLite backend)
-or via the sentinel `chunk_id = -(file_id)` convention (LanceDB backend). Returns whole-file
-context candidates that are merged into the RRF fusion step alongside chunk-level results.
-Gated by `file_summary_leg_enabled`; requires `TRELIX_FILE_SUMMARIES_ENABLED=true` at index
-time to populate the underlying `file_summaries` table.
-
----
-
-### Query Enhancement Layer
-
-Applied **before** retrieval. Both techniques are opt-in and compose independently.
-
-#### HyDE (Hypothetical Document Embeddings)
-
-When `hyde_fallback_enabled=True`, the raw user query is sent to the configured LLM with
-the prompt: `"Write a short Python/TypeScript code snippet that would answer: {query}"`.
-The synthetic snippet is embedded and used as the vector query instead of the raw query
-string. This bridges the query–document vocabulary gap for code retrieval.
-
-```
-User query (natural language)
-  → LLM: "Write a code snippet that answers: {query}"
-  → Synthetic code snippet
-  → Embed snippet → ANN search (Leg 1)
-```
-
-HyDE adds one LLM call per query. On cache hit (same query hash), the synthetic snippet is
-reused without an extra LLM call. Falls back to raw query embedding on any LLM error.
-
-#### Multi-Query
-
-When `multi_query_enabled=True`, the query planner generates N variant phrasings of the
-original query (default N=3) via an LLM call. Each variant is retrieved independently
-across all enabled legs. The N result sets are merged with a final RRF pass before reranking.
-
-```
-User query
-  → LLM: generate N=3 variant queries
-  → Retrieve each variant independently (all 5 legs each)
-  → RRF merge of N result sets
-  → Single ranked list → Reranker
-```
-
-Multi-query is most effective for ambiguous natural-language queries where a single phrasing
-misses the optimal lexical or semantic match.
-
----
-
-### Post-Rerank Enhancement
-
-Applied **after** the reranker returns its final scored list.
-
-#### PageRank Boost
-
-Symbols with high degree centrality (stored in `graph_metadata.centrality`) receive a score
-multiplier of **1.3**. Centrality is pre-computed at graph-build time (`trelix graph`) and
-read at query time with a single indexed lookup — no graph traversal at query time.
-
-Rationale: highly-connected symbols (e.g. a core `parse` function called by 438 other
-symbols) are disproportionately important to understanding the codebase and deserve higher
-ranking even when their textual similarity to the query is moderate.
-
-Controlled by `pagerank_boost_enabled`. No effect when centrality data is absent
-(graph not yet built or `graph_search_enabled=False`).
-
-#### FLARE Loop (Forward-Looking Active Retrieval)
-
-When `flare_enabled=True`, the synthesizer monitors token-level generation uncertainty.
-If the LLM emits a low-confidence span (probability below `TRELIX_FLARE_THRESHOLD`,
-default 0.3), synthesis is paused and a targeted re-retrieval is triggered using the
-uncertain span as a new query. The supplemental results are injected into the context
-window before generation resumes.
-
-```
-Synthesis in progress
-  → LLM token probability < FLARE_THRESHOLD?
-       YES → extract uncertain span
-             → re-retrieve (all enabled legs)
-             → inject new results into context
-             → resume synthesis
-       NO  → continue normally
-```
-
-FLARE is best suited for long `feature_flow` and `blast_radius` queries where the
-synthesizer must reason across many files. It adds variable latency (0–2 extra LLM calls
-per query) and is disabled by default.
-
----
-
-### Observability
-
-#### Query Telemetry
-
-Every call to `retrieve()` writes one row to the `query_telemetry` table in `.trelix/index.db`.
-
-**Table: `query_telemetry`**
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | INTEGER PRIMARY KEY | Auto-increment |
-| `query` | TEXT | Raw user query string |
-| `query_hash` | TEXT | SHA-256 of query (cache key) |
-| `legs_used` | TEXT | JSON array of leg names that returned results |
-| `rrf_score_p50` | REAL | Median RRF score across fused results |
-| `reranker_top1_score` | REAL | Top-1 reranker score |
-| `pagerank_boost_applied` | INTEGER | 1 if boost was applied, 0 otherwise |
-| `flare_iterations` | INTEGER | Number of FLARE re-retrieval loops executed |
-| `latency_ms` | REAL | Wall-clock retrieval latency in milliseconds |
-| `result_count` | INTEGER | Number of results returned to the caller |
-| `created_at` | TEXT | ISO-8601 timestamp (UTC) |
-
-Telemetry is gated by `telemetry_enabled` (`TRELIX_TELEMETRY_ENABLED`, default `false`).
-When disabled, the table is not created and no rows are written — zero overhead.
-
-#### Eval Harness (`trelix eval`)
-
-```bash
-trelix eval --golden tests/eval/golden.jsonl --report eval-report.json
-```
-
-Runs the full 5-leg retrieval pipeline against a golden query set and reports:
-
-| Metric | Description |
-|--------|-------------|
-| `nDCG@10` | Normalised Discounted Cumulative Gain at rank 10 |
-| `Recall@10` | Fraction of relevant symbols appearing in top-10 results |
-| `MRR` | Mean Reciprocal Rank of the first relevant result |
-
-The golden file format is one JSON object per line:
-`{"query": "...", "relevant_qualified_names": ["mod.func", ...]}`.
-
-The eval harness respects all `RetrievalConfig` flags — run it with different flag
-combinations to measure the incremental impact of each beast-mode leg.
-
----
-
-### v2.1.0 Config Flags
-
-All flags live in `RetrievalConfig` and are readable from environment variables.
-
-| Flag | Env var | Default | Description |
-|------|---------|---------|-------------|
-| `file_summary_leg_enabled` | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable Leg 5 (RAPTOR file-summary retrieval) |
-| `hyde_fallback_enabled` | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Replace query with LLM-generated code snippet before embedding |
-| `flare_enabled` | `TRELIX_RETRIEVAL_FLARE` | `false` | Uncertainty-triggered re-retrieval during synthesis |
-| `pagerank_boost_enabled` | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Multiply centrality-high symbol scores by 1.3 |
-| `telemetry_enabled` | `TRELIX_TELEMETRY_ENABLED` | `false` | Write per-query telemetry rows to `query_telemetry` |
-
-All five flags are independent and compose freely. The safe upgrade path is to enable them
-one at a time and validate with `trelix eval --golden` before enabling the next.
-
-## v2.2.0 Architecture Additions
-
-### 7-Leg Retrieval Pipeline (v2.2.0)
-
-The pipeline now supports up to 7 independent RRF legs:
-
-| Leg | Source tag | Enable flag | Description |
-|-----|-----------|-------------|-------------|
-| 1 | `vector` | always on | HNSW ANN via sqlite-vec |
-| 2 | `bm25` | always on | FTS5 keyword search |
-| 3 | `grep` | always on | Exact/regex match |
-| 4 | `file_summary` | TRELIX_RETRIEVAL_FILE_SUMMARY_LEG | RAPTOR file-level summaries |
-| 5 | `graph_search` | TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED | CodeGraph BFS expansion |
-| 6 | `sparse` | TRELIX_RETRIEVAL_SPARSE | SPLADE-Code learned sparse |
-| 7 | `sub_chunk` | TRELIX_RETRIEVAL_SUB_CHUNK | Block/statement granularity |
-
-All legs are fused via RRF → graph expansion → PageRank boost → reranker.
-
-### Agentic ReAct Loop
-
-Wraps the Retriever+Synthesizer in a multi-turn loop:
-- Thought: LLM reasons about what to look up next
-- Action: one of retrieve/grep/get_symbol/done (OpenAI tool_call format)
-- Observation: action result injected back as context
-- Loop until 'done' action or agent_max_turns reached
-- TurnHistory compressed via HistoryCompressor to stay within agent_token_budget
-
-### Data-Flow Analysis Layer
-
-Two-tier program analysis on top of the AST:
-- Tier 1 (def-use): DataFlowExtractor — tree-sitter walk, intra-procedural, zero new deps
-- Tier 2 (taint): TaintAnalyzer — Semgrep CLI wrapper, inter-procedural, requires trelix[taint]
-- Results stored in def_use_edges + taint_flows SQLite tables
-
-### Sparse Embedding Store
-
-SparseStore: SQLite inverted index (chunk_id, token_id, weight).
-Search via dot-product SQL aggregation: SUM(doc_weight × query_weight) per chunk.
-SPLADE-Code model produces {token_id: weight} at index time.
-Handles BM25's identifier subword-fragmentation failure mode.
+*trelix v2.4.0 — last updated 2026-07-05*
