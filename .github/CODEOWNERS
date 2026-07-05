@@ -1,0 +1,23 @@
+# trelix CODEOWNERS
+# Each line is a file pattern followed by one or more owners.
+# Order matters — the last matching pattern takes precedence.
+
+# Default owner for everything
+* @sairam0424
+
+# Core retrieval and indexing
+src/trelix/retrieval/ @sairam0424
+src/trelix/indexing/ @sairam0424
+
+# Storage layer
+src/trelix/store/ @sairam0424
+
+# Integrations
+packages/ @sairam0424
+
+# CI/CD workflows
+.github/workflows/ @sairam0424
+
+# Documentation
+docs/ @sairam0424
+*.md @sairam0424

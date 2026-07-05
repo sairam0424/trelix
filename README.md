@@ -8,6 +8,12 @@
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blue)](https://github.com/sairam0424/trelix)
 [![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sairam0424/trelix/badge)](https://scorecard.dev/viewer/?uri=github.com/sairam0424/trelix)
+
+<!-- mcp-name: trelix -->
 
 **Fast, reliable code indexing and retrieval.** Given a user query and a repository, trelix finds the most relevant code — using a 3-tier adaptive query planner, contextual hybrid search (semantic + keyword + grep), call-graph expansion, reranking, and LLM synthesis.
 

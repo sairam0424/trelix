@@ -1,0 +1,46 @@
+{
+  "name": "trelix Development",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11-bullseye",
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "postCreateCommand": "pip install -e '.[local,dev]' && pre-commit install",
+  "postStartCommand": "git config --global --add safe.directory /workspaces/trelix",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.mypy-type-checker",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml",
+        "redhat.vscode-yaml",
+        "github.copilot"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "editor.formatOnSave": true,
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff",
+          "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+          }
+        },
+        "editor.rulers": [100],
+        "files.insertFinalNewline": true,
+        "files.trimTrailingWhitespace": true
+      }
+    }
+  },
+  "forwardPorts": [8765],
+  "portsAttributes": {
+    "8765": {
+      "label": "trelix REST API",
+      "onAutoForward": "notify"
+    }
+  },
+  "remoteEnv": {
+    "TRELIX_EMBEDDER_PROVIDER": "local"
+  }
+}

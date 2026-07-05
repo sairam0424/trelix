@@ -1,0 +1,97 @@
+---
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out this form as completely as possible.
+  - type: input
+    id: version
+    attributes:
+      label: trelix Version
+      description: Run `trelix --version`
+      placeholder: "2.4.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: python-version
+    attributes:
+      label: Python Version
+      options:
+        - "3.11"
+        - "3.12"
+        - "3.13+"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (x64)
+        - Windows (x64)
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Embedding Provider
+      options:
+        - local (sentence-transformers)
+        - openai
+        - azure
+        - voyage
+        - bge-code
+        - nomic-code
+        - other
+    validations:
+      required: false
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear description of what went wrong
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal commands to reproduce the issue
+      placeholder: |
+        trelix index ./my-repo --provider local
+        trelix search ./my-repo "authentication"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: Include the full error message and stack trace
+    validations:
+      required: true
+  - type: textarea
+    id: index-stats
+    attributes:
+      label: Index Stats (if relevant)
+      description: Run `trelix stats ./your-repo` and paste the output
+      render: text
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate
+          required: true
+        - label: I am using trelix v2.4.0 or later
+          required: false
