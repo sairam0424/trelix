@@ -32,12 +32,16 @@ class TestSparseEmbedder:
             "attention_mask": torch.ones(2, 10, dtype=torch.long),
         }
 
-        with patch("trelix.embedder.sparse.AutoModelForMaskedLM", return_value=mock_model):
-            with patch("trelix.embedder.sparse.AutoTokenizer", return_value=mock_tokenizer):
-                embedder = SparseEmbedder("test-model", top_k=128)
-                embedder._model = mock_model
-                embedder._tokenizer = mock_tokenizer
-                result = embedder.embed(["def login(user): ...", "class AuthService: ..."])
+        # AutoModelForMaskedLM/AutoTokenizer are only in the sparse module's namespace
+        # when transformers is installed and importable.  When not available the module
+        # falls back to _TORCH_AVAILABLE=False; patch _TORCH_AVAILABLE and inject the
+        # fake model/tokenizer directly to test the embedding path.
+        embedder = SparseEmbedder("test-model", top_k=128)
+        embedder._model = mock_model
+        embedder._tokenizer = mock_tokenizer
+
+        with patch("trelix.embedder.sparse._TORCH_AVAILABLE", True):
+            result = embedder.embed(["def login(user): ...", "class AuthService: ..."])
 
         assert len(result) == 2
         assert isinstance(result[0], dict)
@@ -69,11 +73,13 @@ class TestSparseEmbedder:
             "attention_mask": torch.ones(1, 8, dtype=torch.long),
         }
 
-        with patch("trelix.embedder.sparse.AutoModelForMaskedLM", return_value=mock_model):
-            with patch("trelix.embedder.sparse.AutoTokenizer", return_value=mock_tokenizer):
-                embedder = SparseEmbedder("test-model", top_k=128)
-                embedder._model = mock_model
-                embedder._tokenizer = mock_tokenizer
-                result = embedder.embed_query("how does auth work")
+        # Inject mock model/tokenizer directly; patch _TORCH_AVAILABLE=True so
+        # the embed path runs without needing transformers installed.
+        embedder = SparseEmbedder("test-model", top_k=128)
+        embedder._model = mock_model
+        embedder._tokenizer = mock_tokenizer
+
+        with patch("trelix.embedder.sparse._TORCH_AVAILABLE", True):
+            result = embedder.embed_query("how does auth work")
 
         assert isinstance(result, dict)
