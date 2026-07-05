@@ -21,6 +21,32 @@ from trelix.store.db import Database  # noqa: E402
 mcp = FastMCP("trelix")
 _log = logging.getLogger("trelix_mcp")
 
+# ---------------------------------------------------------------------------
+# MCP spec 2024-11-05 §Resources — declare resources.subscribe=True so that
+# MCP clients (Claude Code, Cursor, VS Code Copilot) know they may send
+# resources/subscribe requests.  FastMCP's low-level SDK hardcodes
+# subscribe=False when it builds ServerCapabilities, so we patch the
+# get_capabilities method on the server instance after construction.
+# subscribe and listChanged are independent optional fields; we only
+# opt-in to subscribe here — listChanged is handled separately by FastMCP's
+# notification_options.
+# ---------------------------------------------------------------------------
+
+_orig_get_capabilities = mcp._mcp_server.get_capabilities
+
+
+def _get_capabilities_with_subscribe(notification_options, experimental_capabilities):
+    """Wrap get_capabilities to advertise resources.subscribe=True."""
+    caps = _orig_get_capabilities(notification_options, experimental_capabilities)
+    if caps.resources is not None:
+        caps = caps.model_copy(
+            update={"resources": caps.resources.model_copy(update={"subscribe": True})}
+        )
+    return caps
+
+
+mcp._mcp_server.get_capabilities = _get_capabilities_with_subscribe  # type: ignore[method-assign]
+
 
 # ---------------------------------------------------------------------------
 # MCP Resources (application-controlled URI-addressable data)
