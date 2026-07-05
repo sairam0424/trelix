@@ -131,25 +131,25 @@ jobs:
 
     steps:
       - name: Download trelix distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: trelix-dist
           path: dist/
 
       - name: Download trelix-mcp distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: trelix-mcp-dist
           path: packages/trelix-mcp/dist/
 
       - name: Download trelix-langchain distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: trelix-langchain-dist
           path: packages/trelix-langchain/dist/
 
       - name: Download trelix-llama-index distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: trelix-llama-index-dist
           path: packages/trelix-llama-index/dist/
@@ -182,19 +182,19 @@ jobs:
           attestations: true
 
       - name: Download macOS binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: trelix-macos-arm64
           path: release-assets/macos
 
       - name: Download Windows binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: trelix-windows-x64
           path: release-assets/windows
 
       - name: Download Linux binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: trelix-linux-x64
           path: release-assets/linux
