@@ -30,6 +30,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from trelix.store.dimension_guard import DimensionGuard
+
 if TYPE_CHECKING:
     from trelix.indexing.indexer import Indexer
     from trelix.indexing.walker import FileWalker
@@ -80,6 +82,19 @@ class FileWatcher:
         # preventing a cancelled-but-already-running callback from double-firing.
         self._generations: dict[str, int] = {}
         self._lock = threading.Lock()
+
+        # Dimension guard: fail fast if the embedding provider has changed since
+        # the last index run.  Re-embedding changed files with the wrong dimension
+        # would silently corrupt the index.  Hard-fail here rather than letting
+        # the watcher start and corrupt on first file-change.
+        db = getattr(indexer, "_db", None)
+        embedder = getattr(indexer, "_embedder", None)
+        if db is not None and embedder is not None:
+            DimensionGuard.check(
+                db,
+                current_dimension=embedder.dimension,
+                provider=getattr(indexer.config.embedder, "provider", "unknown"),
+            )
 
     # ------------------------------------------------------------------
     # Public lifecycle API
