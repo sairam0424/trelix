@@ -2,35 +2,117 @@
 
 [![CI](https://github.com/sairam0424/trelix/actions/workflows/ci.yml/badge.svg)](https://github.com/sairam0424/trelix/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/trelix)](https://pypi.org/project/trelix/)
-[![Python](https://img.shields.io/pypi/pyversions/trelix)](https://pypi.org/project/trelix/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.4.0-blue)](CHANGELOG.md)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blue)](https://github.com/sairam0424/trelix)
 [![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
-[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sairam0424/trelix/badge)](https://scorecard.dev/viewer/?uri=github.com/sairam0424/trelix)
 
 <!-- mcp-name: trelix -->
 
-**Fast, reliable code indexing and retrieval.** Given a user query and a repository, trelix finds the most relevant code — using a 3-tier adaptive query planner, contextual hybrid search (semantic + keyword + grep), call-graph expansion, reranking, and LLM synthesis.
+**Code intelligence for your entire codebase — search, ask, review, and watch, locally with zero infra.**
 
-> **v2.0.0 Breaking Change:** The `trelix graph <repo> <symbol>` call-graph display command has been renamed to `trelix call-graph <repo> <symbol>`.
+trelix indexes any repository with Tree-sitter, embeds every symbol, and answers natural-language questions using hybrid BM25 + vector + call-graph search. Works offline with no API key. Integrates with Claude Code, Cursor, LangChain, and LlamaIndex in one command.
 
-> **v2.4.0 Breaking Change:** The MCP `search_code` tool now returns a pagination envelope `{"results": [...], "next_cursor": int|null, "total_available": int}` instead of a bare list. Update callers to use `response["results"]`.
+---
 
+## Install
+
+```bash
+pip install "trelix[local]"        # offline — no API key needed
 ```
-trelix index     ./my-repo
-trelix ask       ./my-repo "how does authentication work?"
-trelix search    ./my-repo "JWT validation"
-trelix watch     ./my-repo          # real-time incremental indexing + graph updater
-trelix stats     ./my-repo
-trelix telemetry ./my-repo          # query performance telemetry
-trelix eval      ./my-repo --golden queries.jsonl   # CoIR eval harness
-trelix call-graph ./my-repo <symbol>
+
+```bash
+pip install trelix                 # + OpenAI planner & synthesis
+export OPENAI_API_KEY=sk-...
 ```
+
+---
+
+## Use in Claude Code / Cursor / Windsurf (MCP)
+
+```bash
+pip install trelix-mcp
+claude mcp add trelix -- trelix-mcp   # Claude Code
+```
+
+**Cursor** — add to `~/.cursor/mcp.json`:
+```json
+{
+  "mcpServers": {
+    "trelix": { "command": "trelix-mcp", "args": [] }
+  }
+}
+```
+
+**Continue.dev** — add to `~/.continue/config.json`:
+```json
+{ "mcpServers": [{ "name": "trelix", "command": "trelix-mcp" }] }
+```
+
+Then in Claude Code / Cursor ask: *"index my repo at /path/to/repo, then find how authentication works"*
+
+---
+
+## Use in Python (LangChain / LlamaIndex)
+
+```bash
+pip install trelix-langchain          # LangChain
+pip install trelix-llama-index        # LlamaIndex
+```
+
+```python
+# LangChain
+from trelix_langchain import TrelixRetriever
+retriever = TrelixRetriever(repo_path="/path/to/repo")
+docs = retriever.invoke("how does authentication work?")
+
+# LlamaIndex
+from trelix_llama_index import TrelixIndexRetriever
+retriever = TrelixIndexRetriever(repo_path="/path/to/repo")
+nodes = retriever.retrieve("how does authentication work?")
+```
+
+---
+
+## 30-Second Quickstart (CLI)
+
+```bash
+pip install "trelix[local]"
+
+# 1. Index your repo (one-time, ~30s for a medium repo)
+trelix index ./my-repo
+
+# 2. Search for code
+trelix search ./my-repo "JWT validation"
+
+# 3. Ask a question (no API key needed for search)
+trelix query ./my-repo "how does the authentication middleware work?"
+
+# 4. Ask with LLM synthesis (needs OPENAI_API_KEY or AZURE_API_KEY)
+trelix ask ./my-repo "explain the request lifecycle end-to-end"
+
+# 5. Watch for changes (auto-reindex on save)
+trelix watch ./my-repo
+```
+
+---
+
+## What trelix does
+
+| Need | Command |
+|------|---------|
+| Find where a function is defined | `trelix search ./repo "login function"` |
+| Understand a feature before editing | `trelix ask ./repo "how does auth work?"` |
+| Review a GitHub PR | `trelix review --pr owner/repo#42` |
+| Watch all repos simultaneously | `trelix watch-all` |
+| Search across multiple repos | `trelix federation add myapp ./myapp` → `trelix search-all "query"` |
+| Index stats | `trelix stats ./repo` |
+| Call graph for a symbol | `trelix call-graph ./repo AuthService.login` |
+| Build a knowledge graph | `trelix graph ./repo` |
+
+**Every query is answered offline by default** — no data leaves your machine. Enable LLM synthesis for natural-language answers.
 
 ---
 
