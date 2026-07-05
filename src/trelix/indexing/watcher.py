@@ -87,8 +87,8 @@ class FileWatcher:
         # the last index run.  Re-embedding changed files with the wrong dimension
         # would silently corrupt the index.  Hard-fail here rather than letting
         # the watcher start and corrupt on first file-change.
-        db = getattr(indexer, "_db", None)
-        embedder = getattr(indexer, "_embedder", None)
+        db = getattr(indexer, "db", None)
+        embedder = getattr(indexer, "embedder", None)
         if db is not None and embedder is not None:
             DimensionGuard.check(
                 db,

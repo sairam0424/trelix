@@ -17,9 +17,15 @@ from trelix.core.config import EmbedderConfig, IndexConfig  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
 from trelix.retrieval.retriever import Retriever  # noqa: E402
 from trelix.store.db import Database  # noqa: E402
+from trelix_mcp.subscriptions import SubscriptionRegistry  # noqa: E402
 
 mcp = FastMCP("trelix")
 _log = logging.getLogger("trelix_mcp")
+
+# Global subscription registry — tracks which MCP clients are watching which
+# trelix:// resource URIs.  notify_file_changed() fires notifications to all
+# active subscribers when trelix watch detects a file change.
+_subscription_registry = SubscriptionRegistry()
 
 # ---------------------------------------------------------------------------
 # MCP spec 2024-11-05 §Resources — declare resources.subscribe=True so that
@@ -46,6 +52,45 @@ def _get_capabilities_with_subscribe(notification_options, experimental_capabili
 
 
 mcp._mcp_server.get_capabilities = _get_capabilities_with_subscribe  # type: ignore[method-assign]
+
+
+# ---------------------------------------------------------------------------
+# MCP Resource Subscription handlers (MCP spec 2024-11-05 §Resources)
+# Wire protocol: resources/subscribe → notifications/resources/updated → resources/read
+# The subscribe/unsubscribe tools register/deregister URIs in _subscription_registry.
+# Callers (trelix watch) call notify_file_changed() to fire the push notifications.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def subscribe_resource(uri: str, subscription_id: str) -> dict:
+    """Register a subscription for a trelix:// resource URI.
+
+    MCP clients call this after receiving resources.subscribe=True in capabilities.
+    When the resource changes (e.g. trelix watch detects a file edit), the server
+    pushes notifications/resources/updated carrying only the URI — no content.
+    The client then calls resources/read to fetch the updated content.
+
+    Args:
+        uri: The trelix:// resource URI to watch (e.g. trelix://repo//path/manifest).
+        subscription_id: Client-chosen correlation ID included in _meta of notifications.
+    """
+    _subscription_registry.subscribe(uri, subscription_id)
+    _log.info("Subscribed: uri=%s subscription_id=%s", uri, subscription_id)
+    return {"subscribed": True, "uri": uri, "subscription_id": subscription_id}
+
+
+@mcp.tool()
+def unsubscribe_resource(subscription_id: str) -> dict:
+    """Deregister a resource subscription by its subscription ID.
+
+    Args:
+        subscription_id: The ID returned when subscribe_resource was called.
+    """
+    uri = _subscription_registry.get_uri(subscription_id)
+    _subscription_registry.unsubscribe(subscription_id)
+    _log.info("Unsubscribed: subscription_id=%s uri=%s", subscription_id, uri)
+    return {"unsubscribed": True, "subscription_id": subscription_id}
 
 
 # ---------------------------------------------------------------------------

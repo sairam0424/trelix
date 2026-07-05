@@ -479,9 +479,10 @@ class TestFileWatcherDimensionGuard:
         indexer = MagicMock()
         indexer.config.repo_path = "/tmp/repo"
         indexer.config.embedder.provider = provider
-        indexer._embedder = MagicMock()
-        indexer._embedder.dimension = dimension
-        indexer._db = MagicMock()
+        # Indexer exposes .db and .embedder (no underscore prefix)
+        indexer.embedder = MagicMock()
+        indexer.embedder.dimension = dimension
+        indexer.db = MagicMock()
         return indexer
 
     def test_raises_dimension_mismatch_on_init(self, tmp_path):
@@ -514,17 +515,20 @@ class TestFileWatcherDimensionGuard:
         mock_check.assert_called_once()
 
     def test_dimension_guard_not_called_when_no_db(self, tmp_path):
-        """Gracefully skips guard when indexer has no _db attribute."""
+        """Gracefully skips guard when indexer.db is None (fresh indexer before first index run)."""
         from unittest.mock import MagicMock, patch
 
-        indexer = self._make_mock_indexer()
-        del indexer._db  # simulate no db — MagicMock auto-recreates but returns non-int from get_embedding_dimension
+        # Simulate an indexer where db is explicitly None (before first index run)
+        indexer = MagicMock()
+        indexer.config.repo_path = "/tmp/repo"
+        indexer.db = None  # no database yet
+        indexer.embedder = MagicMock()
+        indexer.embedder.dimension = 384
         walker = MagicMock()
 
-        # Should NOT raise — guard returns early when get_embedding_dimension() returns non-int
         with patch("trelix.indexing.watcher.DimensionGuard.check") as mock_check:
             fw = FileWatcher(indexer, walker)
 
-        # When _db is a MagicMock (auto-recreated), check IS called but doesn't raise
-        # This just verifies no exception propagates
+        # Guard must NOT be called when db is None
+        mock_check.assert_not_called()
         assert fw is not None
