@@ -46,7 +46,7 @@ jobs:
         run: dist/trelix.exe --help
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.binary-path }}

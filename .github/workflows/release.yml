@@ -47,7 +47,7 @@ jobs:
         run: dist/trelix.exe --help
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.binary-path }}
@@ -75,7 +75,7 @@ jobs:
         run: twine check dist/*
 
       - name: Upload trelix distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trelix-dist
           path: dist/
@@ -88,7 +88,7 @@ jobs:
         run: twine check packages/trelix-mcp/dist/*
 
       - name: Upload trelix-mcp distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trelix-mcp-dist
           path: packages/trelix-mcp/dist/
@@ -101,7 +101,7 @@ jobs:
         run: twine check packages/trelix-langchain/dist/*
 
       - name: Upload trelix-langchain distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trelix-langchain-dist
           path: packages/trelix-langchain/dist/
@@ -114,7 +114,7 @@ jobs:
         run: twine check packages/trelix-llama-index/dist/*
 
       - name: Upload trelix-llama-index distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trelix-llama-index-dist
           path: packages/trelix-llama-index/dist/
