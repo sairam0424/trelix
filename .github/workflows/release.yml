@@ -200,7 +200,7 @@ jobs:
           path: release-assets/linux
 
       - name: Create GitHub Release with binaries
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             release-assets/macos/trelix
