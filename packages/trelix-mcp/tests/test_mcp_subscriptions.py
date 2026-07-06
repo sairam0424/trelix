@@ -140,3 +140,100 @@ class TestMCPSubscriptionCapability:
         assert caps.resources.subscribe is True, (
             "subscribe capability must be True regardless of listChanged setting"
         )
+
+
+class TestSendResourceNotificationWireFormat:
+    """Verify the exact JSON-RPC wire format written to stdout by send_resource_notification.
+
+    MCP spec 2024-11-05 §Resources — notifications/resources/updated MUST carry:
+      - jsonrpc = "2.0"
+      - method  = "notifications/resources/updated"
+      - params.uri            (the resource URI — only field in params)
+      - params._meta.subscriptionId  (client correlation ID)
+    No content payload — the client calls resources/read on demand.
+    """
+
+    def test_jsonrpc_version_is_2_0(self, capsys):
+        from trelix_mcp.subscriptions import send_resource_notification
+        import json
+
+        send_resource_notification(
+            uri="trelix://repo//my/repo/manifest",
+            subscription_id="sub-abc",
+        )
+        captured = capsys.readouterr()
+        msg = json.loads(captured.out.strip())
+        assert msg["jsonrpc"] == "2.0", f"Expected jsonrpc=2.0, got {msg.get('jsonrpc')!r}"
+
+    def test_method_is_notifications_resources_updated(self, capsys):
+        from trelix_mcp.subscriptions import send_resource_notification
+        import json
+
+        send_resource_notification(
+            uri="trelix://repo//my/repo/manifest",
+            subscription_id="sub-abc",
+        )
+        captured = capsys.readouterr()
+        msg = json.loads(captured.out.strip())
+        assert msg["method"] == "notifications/resources/updated", (
+            f"Expected method=notifications/resources/updated, got {msg.get('method')!r}"
+        )
+
+    def test_params_uri_matches_input(self, capsys):
+        from trelix_mcp.subscriptions import send_resource_notification
+        import json
+
+        uri = "trelix://repo//Users/sai/myrepo/manifest"
+        send_resource_notification(uri=uri, subscription_id="sub-xyz")
+        captured = capsys.readouterr()
+        msg = json.loads(captured.out.strip())
+        assert msg["params"]["uri"] == uri, (
+            f"params.uri mismatch: expected {uri!r}, got {msg['params'].get('uri')!r}"
+        )
+
+    def test_params_meta_contains_subscription_id(self, capsys):
+        from trelix_mcp.subscriptions import send_resource_notification
+        import json
+
+        send_resource_notification(
+            uri="trelix://repo//my/repo/manifest",
+            subscription_id="my-sub-id-123",
+        )
+        captured = capsys.readouterr()
+        msg = json.loads(captured.out.strip())
+        assert "_meta" in msg["params"], "params._meta missing from notification"
+        assert msg["params"]["_meta"]["subscriptionId"] == "my-sub-id-123", (
+            f"subscriptionId mismatch: {msg['params']['_meta'].get('subscriptionId')!r}"
+        )
+
+    def test_params_contains_no_content_payload(self, capsys):
+        """Notifications must carry URI only — no content, text, or blob fields."""
+        from trelix_mcp.subscriptions import send_resource_notification
+        import json
+
+        send_resource_notification(
+            uri="trelix://repo//my/repo/manifest",
+            subscription_id="sub-abc",
+        )
+        captured = capsys.readouterr()
+        msg = json.loads(captured.out.strip())
+        params_keys = set(msg["params"].keys())
+        forbidden = params_keys - {"uri", "_meta"}
+        assert not forbidden, (
+            f"params must contain only uri and _meta; unexpected keys: {forbidden}"
+        )
+
+    def test_output_is_valid_json_line(self, capsys):
+        """Each notification must be a single valid JSON line terminated by newline."""
+        from trelix_mcp.subscriptions import send_resource_notification
+        import json
+
+        send_resource_notification(
+            uri="trelix://repo//my/repo/manifest",
+            subscription_id="sub-abc",
+        )
+        captured = capsys.readouterr()
+        lines = [ln for ln in captured.out.split("\n") if ln.strip()]
+        assert len(lines) == 1, f"Expected exactly 1 JSON line, got {len(lines)}"
+        # Must parse without error
+        json.loads(lines[0])
