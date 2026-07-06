@@ -1709,7 +1709,6 @@ class TestRetrieverMultiQueryWired:
 
     def _make_retriever_with_multi_query(self, tmp_path: Path, count: int = 2) -> object:
         """Build a Retriever with multi_query_enabled=True and all deps mocked."""
-        from trelix.core.config import RetrievalConfig
 
         retriever = _build_retriever(str(tmp_path))
         retriever.config.retrieval.multi_query_enabled = True

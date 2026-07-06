@@ -97,7 +97,7 @@ class _FakeParser(BaseParser):
         )
 
 
-def _fake_get_parser(language: Any) -> "_FakeParser":  # noqa: ANN401
+def _fake_get_parser(language: Any) -> _FakeParser:  # noqa: ANN401
     """Drop-in replacement for get_parser that always returns _FakeParser."""
     return _FakeParser()
 
@@ -128,7 +128,7 @@ def _patch_rich_progress(*, fake_parser: bool = False):
             yield mock_progress
 
 
-def _make_indexer(tmp_dir: str) -> "Indexer":  # noqa: F821
+def _make_indexer(tmp_dir: str) -> Indexer:  # noqa: F821
     """
     Build an Indexer with fake embedder + vector store so no ML models are
     loaded.  Uses a real SQLite Database so stat counters are exercised.

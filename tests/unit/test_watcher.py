@@ -510,7 +510,7 @@ class TestFileWatcherDimensionGuard:
         walker = MagicMock()
 
         with patch("trelix.indexing.watcher.DimensionGuard.check") as mock_check:
-            fw = FileWatcher(indexer, walker)
+            FileWatcher(indexer, walker)
 
         mock_check.assert_called_once()
 
