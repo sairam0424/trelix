@@ -1679,3 +1679,223 @@ class TestRetrieverCacheWiring:
             )
             retriever = Retriever(config)
             assert not isinstance(retriever._planner, CachingPlanner)
+
+
+# ---------------------------------------------------------------------------
+# TestRetrieverMultiQueryWired — multi-query expansion wiring in _retrieve_standard
+# ---------------------------------------------------------------------------
+
+
+class TestRetrieverMultiQueryWired:
+    """Verify multi-query expansion is actually wired into _retrieve_standard."""
+
+    def _make_plan(self) -> QueryPlan:
+        return QueryPlan(
+            raw_query="auth flow",
+            intent=IntentType.FEATURE_FLOW,
+            strategy=INTENT_STRATEGIES[IntentType.FEATURE_FLOW],
+            sub_queries=[
+                SubQuery(
+                    semantic_query="auth flow",
+                    bm25_tokens=["auth", "flow"],
+                    grep_hints=[],
+                    file_hints=[],
+                    hyde_snippet="",
+                    depends_on=[],
+                )
+            ],
+            execution_mode="sequential",
+        )
+
+    def _make_retriever_with_multi_query(self, tmp_path: Path, count: int = 2) -> object:
+        """Build a Retriever with multi_query_enabled=True and all deps mocked."""
+
+        retriever = _build_retriever(str(tmp_path))
+        retriever.config.retrieval.multi_query_enabled = True
+        retriever.config.retrieval.multi_query_count = count
+        return retriever
+
+    def test_expansion_variants_run_when_enabled(self, tmp_path: Path) -> None:
+        """When multi_query_enabled=True and LLM returns 2 variants, _run_subquery_legs
+        is called 1 (original) + 2 (variants) = 3 times total."""
+        from trelix.retrieval.query_expansion import ExpandResult
+
+        retriever = self._make_retriever_with_multi_query(tmp_path, count=2)
+        plan = self._make_plan()
+
+        expand_result = ExpandResult(
+            queries=["auth flow", "how auth works", "login mechanism"],
+            llm_used=True,
+            elapsed_ms=120.0,
+        )
+
+        with (
+            patch("trelix.retrieval.retriever.bm25_search", return_value=[]),
+            patch("trelix.retrieval.retriever.grep_search", return_value=[]),
+            patch("trelix.retrieval.retriever.reciprocal_rank_fusion", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
+            patch(
+                "trelix.retrieval.query_expansion.MultiQueryExpander.expand",
+                return_value=expand_result,
+            ),
+            patch.object(
+                retriever,
+                "_run_subquery_legs",
+                return_value={"vector": [], "bm25": [], "grep": [], "sparse": []},
+            ) as mock_legs,
+            patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
+        ):
+            retriever._retrieve_standard(plan)
+
+        # original sub-query (1) + 2 variant sub-queries = 3 total calls
+        assert mock_legs.call_count == 3, (
+            f"Expected _run_subquery_legs to be called 3 times (1 original + 2 variants), "
+            f"got {mock_legs.call_count}"
+        )
+
+    def test_expansion_fallback_when_llm_unavailable(self, tmp_path: Path) -> None:
+        """When LLM is unavailable, expander returns only the original query
+        (queries=[original_only]), so no extra variants run — _run_subquery_legs
+        is called exactly once."""
+        from trelix.retrieval.query_expansion import ExpandResult
+
+        retriever = self._make_retriever_with_multi_query(tmp_path, count=2)
+        plan = self._make_plan()
+
+        # LLM unavailable — only the original query is returned
+        fallback_result = ExpandResult(
+            queries=["auth flow"],
+            llm_used=False,
+            elapsed_ms=0.0,
+        )
+
+        with (
+            patch("trelix.retrieval.retriever.bm25_search", return_value=[]),
+            patch("trelix.retrieval.retriever.grep_search", return_value=[]),
+            patch("trelix.retrieval.retriever.reciprocal_rank_fusion", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
+            patch(
+                "trelix.retrieval.query_expansion.MultiQueryExpander.expand",
+                return_value=fallback_result,
+            ),
+            patch.object(
+                retriever,
+                "_run_subquery_legs",
+                return_value={"vector": [], "bm25": [], "grep": [], "sparse": []},
+            ) as mock_legs,
+            patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
+        ):
+            retriever._retrieve_standard(plan)
+
+        # Only original sub-query ran — no variants because queries[1:] is empty
+        assert mock_legs.call_count == 1, (
+            f"Expected _run_subquery_legs called once (no LLM variants), got {mock_legs.call_count}"
+        )
+
+    def test_expansion_disabled_when_flag_off(self, tmp_path: Path) -> None:
+        """When multi_query_enabled=False, MultiQueryExpander.expand is never called."""
+        retriever = _build_retriever(str(tmp_path))
+        # Explicitly disabled (default is False, but be explicit)
+        retriever.config.retrieval.multi_query_enabled = False
+        plan = self._make_plan()
+
+        with (
+            patch("trelix.retrieval.retriever.bm25_search", return_value=[]),
+            patch("trelix.retrieval.retriever.grep_search", return_value=[]),
+            patch("trelix.retrieval.retriever.reciprocal_rank_fusion", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
+            patch.object(
+                retriever,
+                "_run_subquery_legs",
+                return_value={"vector": [], "bm25": [], "grep": [], "sparse": []},
+            ) as mock_legs,
+            patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
+            patch("trelix.retrieval.query_expansion.MultiQueryExpander.expand") as mock_expand,
+        ):
+            retriever._retrieve_standard(plan)
+
+        # expander should never be called when disabled
+        mock_expand.assert_not_called()
+        # Only the original sub-query ran
+        assert mock_legs.call_count == 1
+
+    def test_expansion_exception_is_non_fatal(self, tmp_path: Path) -> None:
+        """If MultiQueryExpander.expand raises, _retrieve_standard still returns a result."""
+        retriever = self._make_retriever_with_multi_query(tmp_path, count=2)
+        plan = self._make_plan()
+
+        with (
+            patch("trelix.retrieval.retriever.bm25_search", return_value=[]),
+            patch("trelix.retrieval.retriever.grep_search", return_value=[]),
+            patch("trelix.retrieval.retriever.reciprocal_rank_fusion", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
+            # Simulate the expander itself raising (not just returning fallback)
+            patch(
+                "trelix.retrieval.query_expansion.MultiQueryExpander.expand",
+                side_effect=RuntimeError("LLM timeout"),
+            ),
+            patch.object(
+                retriever,
+                "_run_subquery_legs",
+                return_value={"vector": [], "bm25": [], "grep": [], "sparse": []},
+            ) as mock_legs,
+            patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
+        ):
+            # Must not raise
+            result = retriever._retrieve_standard(plan)
+
+        from trelix.core.models import RetrievedContext
+
+        assert isinstance(result, RetrievedContext)
+        # Only the original sub-query ran (exception swallowed, no variants)
+        assert mock_legs.call_count == 1
+
+    def test_expansion_variant_queries_have_correct_content(self, tmp_path: Path) -> None:
+        """The SubQuery objects created for variants carry the correct semantic_query."""
+        from trelix.retrieval.query_expansion import ExpandResult
+
+        retriever = self._make_retriever_with_multi_query(tmp_path, count=2)
+        plan = self._make_plan()
+
+        expand_result = ExpandResult(
+            queries=["auth flow", "how auth works", "login mechanism"],
+            llm_used=True,
+            elapsed_ms=50.0,
+        )
+
+        captured_calls: list[SubQuery] = []
+
+        def capture_sq(sq, strategy):
+            captured_calls.append(sq)
+            return {"vector": [], "bm25": [], "grep": [], "sparse": []}
+
+        with (
+            patch("trelix.retrieval.retriever.bm25_search", return_value=[]),
+            patch("trelix.retrieval.retriever.grep_search", return_value=[]),
+            patch("trelix.retrieval.retriever.reciprocal_rank_fusion", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
+            patch(
+                "trelix.retrieval.query_expansion.MultiQueryExpander.expand",
+                return_value=expand_result,
+            ),
+            patch.object(retriever, "_run_subquery_legs", side_effect=capture_sq),
+            patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
+        ):
+            retriever._retrieve_standard(plan)
+
+        assert len(captured_calls) == 3
+        # First call = original sub-query
+        assert captured_calls[0].semantic_query == "auth flow"
+        # Second + third = variant sub-queries built from expansion result
+        assert captured_calls[1].semantic_query == "how auth works"
+        assert captured_calls[2].semantic_query == "login mechanism"

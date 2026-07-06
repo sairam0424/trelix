@@ -180,6 +180,41 @@ class TestRetrievalConfig:
         assert cfg.context_token_budget == 12_000
         assert cfg.rerank is True
 
+    def test_flare_max_iter_env_emits_deprecation_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression test: TRELIX_RETRIEVAL_FLARE_MAX_ITER emits DeprecationWarning.
+
+        This test ensures that the old environment variable name triggers
+        a deprecation warning mentioning v3.0.0 removal. The old name should
+        still work (backward compat via AliasChoices) but warn at runtime.
+        """
+        import warnings
+
+        monkeypatch.setenv("TRELIX_RETRIEVAL_FLARE_MAX_ITER", "1")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            cfg = RetrievalConfig()
+
+        # Verify:
+        # 1. A DeprecationWarning was emitted
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) >= 1, (
+            f"Expected at least 1 DeprecationWarning, got {len(deprecation_warnings)}"
+        )
+
+        # 2. Warning message mentions the old env var name
+        warning_msg = str(deprecation_warnings[0].message)
+        assert "TRELIX_RETRIEVAL_FLARE_MAX_ITER" in warning_msg, (
+            f"Expected old env var name in warning: {warning_msg}"
+        )
+
+        # 3. Warning message mentions v3.0.0 removal target
+        assert "v3.0.0" in warning_msg, f"Expected 'v3.0.0' in warning message: {warning_msg}"
+
+        # 4. Backward compat worked: the value was parsed correctly
+        assert cfg.flare_max_retries == 1
+
 
 class TestSparseConfig:
     def test_sparse_defaults(self, tmp_path: Path) -> None:
