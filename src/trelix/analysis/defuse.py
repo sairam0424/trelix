@@ -76,8 +76,8 @@ class DataFlowExtractor:
         """Walk tree-sitter AST to find assignment and identifier nodes."""
         try:
             from tree_sitter_languages import get_parser as get_ts_parser
-        except ImportError:
-            return []
+        except ImportError as exc:
+            raise ImportError("tree_sitter_languages not installed") from exc
 
         # Detect language from first token heuristic
         lang_name = "python"  # default; extendable

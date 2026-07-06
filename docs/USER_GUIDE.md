@@ -1,4 +1,4 @@
-# trelix User Guide — v2.4.0
+# trelix User Guide — v2.5.0
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -225,6 +225,8 @@ User Query
     v
 [LLM Synthesis] ← only for `trelix ask`
 ```
+
+> **v2.5.0 — Multi-query expansion is now wired and active.** Previously built but disconnected, `MultiQueryExpander` is now integrated into the standard retrieval path. Enable it with `TRELIX_RETRIEVAL_MULTI_QUERY=true` (default: `false`). Tune the number of generated variants with `TRELIX_RETRIEVAL_MULTI_QUERY_COUNT=3` (default: `2`, range: `1–4`). When enabled, the primary query is rephrased into N variants by the LLM; each variant runs all retrieval legs in parallel via `ThreadPoolExecutor`, and all results are RRF-merged (`k=60`) before synthesis. Falls back silently to the original query when no LLM is available. HyDE and multi-query can be enabled simultaneously.
 
 ### Leg 1 — Vector (always active)
 
@@ -894,6 +896,8 @@ Ctrl+C to stop
 trelix watch ./my-repo
 ```
 
+> **v2.5.0 — DimensionGuard at startup.** `trelix watch` now checks for embedding dimension mismatches before starting the observer. If the embedding provider was changed since the last `trelix index` run, watch fails immediately with a `DimensionMismatchError` rather than silently re-embedding changed files with wrong dimensions and corrupting the index. The error message includes an exact migration hint: `trelix migrate-vectors --reset`. This is a safe no-op when the index has never been built.
+
 On startup, trelix runs a full index. Then it starts a watchdog observer that monitors every file in the repo.
 
 ```
@@ -1052,6 +1056,13 @@ Returns stats: `{node_count, edge_count, community_count, build_time_ms}`.
 graph_search_mcp(query="auth middleware", repo_path="./my-repo", depth=2, max_results=15)
 ```
 Returns structurally adjacent symbols to the query's top results, traversed via the Code Property Graph.
+
+> **v2.5.0 — MCP resource subscriptions.** trelix-mcp now advertises `resources.subscribe=True` in server capabilities and exposes two new tools:
+>
+> - **`subscribe_resource(uri, subscription_id)`** — Subscribe to a `trelix://` resource URI. When the underlying file changes and the index is updated, the server fires a `notifications/resources/updated` notification (URI + `subscriptionId` in `_meta`).
+> - **`unsubscribe_resource(subscription_id)`** — Cancel an active subscription by ID.
+>
+> URI scheme: `trelix://repo/{repo_path}/manifest`. The wire protocol is: `resources/subscribe` → `notifications/resources/updated` → `resources/read`. This is the standard MCP subscription flow and allows assistants to react to live code changes without polling.
 
 ### Example Claude Code session
 
@@ -1866,4 +1877,4 @@ The action handles Python setup, caches the index keyed to the commit SHA (so un
 
 ---
 
-*trelix v2.4.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v2.5.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

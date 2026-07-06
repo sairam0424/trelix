@@ -1,7 +1,7 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 2.4.0 (current) | **Next:** 2.5.0
+> **Version:** 2.5.0 (current) | **Next:** 2.6.0
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
@@ -16,18 +16,16 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.2.0 | Agentic ReAct loop, data-flow analysis, SPLADE sparse retrieval, multi-granularity indexing |
 | v2.3.0 | DimensionGuard, MultiQueryExpander wiring, MCP Resources + Prompts, DiffReviewer, FederatedRetriever |
 | v2.4.0 | flare_max_retries rename, expansion observability, federation cache, GitHub PR review, watch-all, MCP pagination |
+| v2.5.0 | Multi-query expansion wiring (TRELIX_RETRIEVAL_MULTI_QUERY), DimensionGuard at watch startup, MCP resource subscriptions, v3.0.0 deprecation audit |
 
 ---
 
-## 🔬 v2.5.0 — Retrieval Quality (Q3 2026)
+## 🐛 v2.5.1 — Backlog (bugs / hardening from v2.5.0)
 
-**Goal:** Measurably better search results on real codebases.
-
-- [ ] **Cross-encoder reranker improvements** — fine-tuned model specifically for code retrieval (research: CoIR benchmark SOTA)
-- [ ] **Symbol-level PageRank** — use commit frequency + test coverage as centrality signals (beyond import graph)
-- [ ] **Multi-language call graph** — resolve cross-language calls (Python → TypeScript via REST/gRPC boundaries)
-- [ ] **FLARE with uncertainty estimation** — replace heuristic phrase matching with model-calibrated confidence
-- [ ] **Eval harness improvements** — golden set generation from GitHub starred repos + nDCG@10 public leaderboard
+- [ ] **SparseEmbedder TOCTOU under parallel multi-query** — add `threading.Lock` around lazy-init path hit by `ThreadPoolExecutor` workers
+- [ ] **`send_resource_notification` stdout isolation** — fix asyncio transport conflict when FastMCP writes notifications to stdout concurrently
+- [ ] **`SubscriptionRegistry` max-subscriber cap / TTL eviction** — unbounded subscription growth; add configurable cap and TTL-based cleanup
+- [ ] **Watch bridge: wire `notify_file_changed` into `FileWatcher._do_reindex` callback** — MCP subscribers not notified after file-change re-index completes
 
 ---
 
@@ -35,6 +33,8 @@ This roadmap describes planned features, research directions, and long-term visi
 
 **Goal:** Handle 1M+ symbol codebases without degradation.
 
+- [ ] **Cross-repo symbol resolution** — Sourcegraph-style SCIP symbol IDs for cross-repository lookup
+- [ ] **Semantic diff embeddings** — CCRep-style before/after body pair embeddings for diff-aware retrieval
 - [ ] **Streaming indexing** — yield symbols as parsed (no in-memory buffer for large repos)
 - [ ] **Qdrant Cloud integration** — first-class remote vector store with auto-migration
 - [ ] **Incremental embedding** — only re-embed changed symbols on partial re-index

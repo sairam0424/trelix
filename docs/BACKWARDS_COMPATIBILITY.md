@@ -53,6 +53,20 @@ Before a MAJOR release:
 - A migration guide doc is created at `docs/migration/v{N}-to-v{N+1}.md`
 - A minimum 3-month deprecation period for any removed feature
 
+### v3.0.0 Breaking Changes (planned)
+
+The following deprecated items will be removed in v3.0.0. All have `DeprecationWarning` or `AliasChoices` backward-compat shims active since the version listed.
+
+| Item | Deprecated in | Old name | New name | File:line |
+|------|--------------|----------|----------|-----------|
+| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | `TRELIX_RETRIEVAL_FLARE_MAX_ITER` | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `src/trelix/core/config.py:434` |
+
+**Migration**: Set `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` instead of `TRELIX_RETRIEVAL_FLARE_MAX_ITER` in your environment or config files. The old name emits `DeprecationWarning` at `RetrievalConfig()` instantiation and will be removed in v3.0.0.
+
+See [v3-0-0-breaking-changes.md](docs/superpowers/plans/v3-0-0-breaking-changes.md) for the complete v3.0.0 deprecation audit and removal schedule.
+
+---
+
 ### v2.4.0 Breaking Changes
 - **`search_code` MCP tool** — return type changed from `list[dict]` → `{results, next_cursor, total_available}`. See CHANGELOG for migration.
 
