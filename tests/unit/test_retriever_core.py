@@ -1740,9 +1740,11 @@ class TestRetrieverMultiQueryWired:
                 "trelix.retrieval.query_expansion.MultiQueryExpander.expand",
                 return_value=expand_result,
             ),
-            patch.object(retriever, "_run_subquery_legs", return_value={
-                "vector": [], "bm25": [], "grep": [], "sparse": []
-            }) as mock_legs,
+            patch.object(
+                retriever,
+                "_run_subquery_legs",
+                return_value={"vector": [], "bm25": [], "grep": [], "sparse": []},
+            ) as mock_legs,
             patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
         ):
             retriever._retrieve_standard(plan)
@@ -1780,17 +1782,18 @@ class TestRetrieverMultiQueryWired:
                 "trelix.retrieval.query_expansion.MultiQueryExpander.expand",
                 return_value=fallback_result,
             ),
-            patch.object(retriever, "_run_subquery_legs", return_value={
-                "vector": [], "bm25": [], "grep": [], "sparse": []
-            }) as mock_legs,
+            patch.object(
+                retriever,
+                "_run_subquery_legs",
+                return_value={"vector": [], "bm25": [], "grep": [], "sparse": []},
+            ) as mock_legs,
             patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
         ):
             retriever._retrieve_standard(plan)
 
         # Only original sub-query ran — no variants because queries[1:] is empty
         assert mock_legs.call_count == 1, (
-            f"Expected _run_subquery_legs called once (no LLM variants), "
-            f"got {mock_legs.call_count}"
+            f"Expected _run_subquery_legs called once (no LLM variants), got {mock_legs.call_count}"
         )
 
     def test_expansion_disabled_when_flag_off(self, tmp_path: Path) -> None:
@@ -1807,9 +1810,11 @@ class TestRetrieverMultiQueryWired:
             patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
             patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
             patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
-            patch.object(retriever, "_run_subquery_legs", return_value={
-                "vector": [], "bm25": [], "grep": [], "sparse": []
-            }) as mock_legs,
+            patch.object(
+                retriever,
+                "_run_subquery_legs",
+                return_value={"vector": [], "bm25": [], "grep": [], "sparse": []},
+            ) as mock_legs,
             patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
             patch("trelix.retrieval.query_expansion.MultiQueryExpander.expand") as mock_expand,
         ):
@@ -1837,9 +1842,11 @@ class TestRetrieverMultiQueryWired:
                 "trelix.retrieval.query_expansion.MultiQueryExpander.expand",
                 side_effect=RuntimeError("LLM timeout"),
             ),
-            patch.object(retriever, "_run_subquery_legs", return_value={
-                "vector": [], "bm25": [], "grep": [], "sparse": []
-            }) as mock_legs,
+            patch.object(
+                retriever,
+                "_run_subquery_legs",
+                return_value={"vector": [], "bm25": [], "grep": [], "sparse": []},
+            ) as mock_legs,
             patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
         ):
             # Must not raise

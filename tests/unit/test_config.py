@@ -210,9 +210,7 @@ class TestRetrievalConfig:
         )
 
         # 3. Warning message mentions v3.0.0 removal target
-        assert "v3.0.0" in warning_msg, (
-            f"Expected 'v3.0.0' in warning message: {warning_msg}"
-        )
+        assert "v3.0.0" in warning_msg, f"Expected 'v3.0.0' in warning message: {warning_msg}"
 
         # 4. Backward compat worked: the value was parsed correctly
         assert cfg.flare_max_retries == 1
