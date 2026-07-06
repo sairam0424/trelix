@@ -4,6 +4,40 @@ All notable changes to trelix are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] — 2026-07-06
+
+### Overview
+Phase A–C of the v2.5.0 backlog. Three independent subsystems shipped:
+multi-query expansion wired into `_retrieve_standard`, DimensionGuard at
+`FileWatcher.__init__`, and MCP resource subscriptions (capability declaration
++ subscription registry + file-change notification bridge). v3.0.0 deprecation
+schedule documented and regression-tested.
+
+### Added — Multi-Query Expansion Wiring (Phase A)
+- `MultiQueryExpander` is now wired into `_retrieve_standard` via `ThreadPoolExecutor`
+- Enable with `TRELIX_RETRIEVAL_MULTI_QUERY=true`, tune with `TRELIX_RETRIEVAL_MULTI_QUERY_COUNT=3`
+- Variant queries run in parallel; results RRF-merged with k=60 before dedup
+- `ExpandResult.llm_used` indicates whether LLM expansion ran or fell back to original
+
+### Added — DimensionGuard at Watch Startup (Phase A)
+- `FileWatcher.__init__` now calls `DimensionGuard.check()` at startup
+- Raises `DimensionMismatchError` immediately if provider was changed since last index run
+- Prevents silent embedding corruption from mismatched providers during watch
+
+### Added — MCP Resource Subscriptions (Phase B)
+- `trelix-mcp` now advertises `resources.subscribe=True` in server capabilities
+- `SubscriptionRegistry` tracks subscription IDs per resource URI (thread-safe)
+- `notify_file_changed()` fires `notifications/resources/updated` (URI-only, per MCP spec)
+  over stdio for all active subscribers when watchfiles detects a change
+- Wire protocol: `resources/subscribe` -> `notifications/resources/updated` -> `resources/read`
+
+### Documentation
+- `docs/BACKWARDS_COMPATIBILITY.md` — v3.0.0 breaking changes table with file:line refs
+- Deprecation warning for `TRELIX_RETRIEVAL_FLARE_MAX_ITER` regression-tested
+
+### Breaking Changes
+None — all changes are additive or fail-fast safety improvements.
+
 ## [2.4.0] — 2026-07-04
 
 ### Overview

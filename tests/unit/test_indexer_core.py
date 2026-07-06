@@ -24,6 +24,8 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from trelix.core.config import EmbedderConfig, IndexConfig, StoreConfig
+from trelix.core.models import Symbol, SymbolKind
+from trelix.indexing.parser.base import BaseParser, ParseResult
 from trelix.store.db import Database
 
 # ---------------------------------------------------------------------------
@@ -63,22 +65,76 @@ class _FakeVectorStore:
         return []
 
 
+class _FakeParser(BaseParser):
+    """
+    Minimal parser stub that returns one Symbol for any source file.
+
+    Used when tree_sitter_languages is not installed so the real Python
+    parser cannot be instantiated.  Lets TestIndexSingleFile exercise the
+    files_indexed counter without any native grammar wheels.
+    """
+
+    @property
+    def language_name(self) -> str:
+        return "python"
+
+    def parse(self, source: str, file_id: int) -> ParseResult:
+        sym = Symbol(
+            file_id=file_id,
+            name="__stub__",
+            qualified_name="__stub__",
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=max(1, len(source.splitlines())),
+            signature="def __stub__()",
+            body=source,
+        )
+        return ParseResult(
+            symbols=[sym],
+            call_edges=[],
+            import_edges=[],
+            parse_errors=0,
+        )
+
+
+def _fake_get_parser(language: Any) -> _FakeParser:  # noqa: ANN401
+    """Drop-in replacement for get_parser that always returns _FakeParser."""
+    return _FakeParser()
+
+
 @contextmanager
-def _patch_rich_progress():
-    """Suppress rich terminal output during tests."""
+def _patch_rich_progress(*, fake_parser: bool = False):
+    """
+    Suppress rich terminal output during tests.
+
+    When ``fake_parser=True`` also patches ``get_parser`` so that Python
+    files are processed by ``_FakeParser`` rather than the real tree-sitter
+    extractor.  Use this for tests that need *files_indexed >= 1* but run in
+    environments where ``tree_sitter_languages`` is not installed.
+    """
     mock_progress = MagicMock()
     mock_progress.__enter__ = MagicMock(return_value=mock_progress)
     mock_progress.__exit__ = MagicMock(return_value=False)
     mock_progress.add_task = MagicMock(return_value=0)
     mock_progress.advance = MagicMock()
-    with patch("trelix.indexing.indexer.Progress", return_value=mock_progress):
-        yield mock_progress
+    if fake_parser:
+        with (
+            patch("trelix.indexing.indexer.Progress", return_value=mock_progress),
+            patch("trelix.indexing.indexer.get_parser", side_effect=_fake_get_parser),
+        ):
+            yield mock_progress
+    else:
+        with patch("trelix.indexing.indexer.Progress", return_value=mock_progress):
+            yield mock_progress
 
 
 def _make_indexer(tmp_dir: str) -> Indexer:  # noqa: F821
     """
     Build an Indexer with fake embedder + vector store so no ML models are
     loaded.  Uses a real SQLite Database so stat counters are exercised.
+
+    Also patches get_parser so the indexer can process Python files even when
+    tree_sitter_languages (the native grammar wheels) is not installed.
     """
     from trelix.indexing.indexer import Indexer
 
@@ -92,6 +148,7 @@ def _make_indexer(tmp_dir: str) -> Indexer:  # noqa: F821
     with (
         patch("trelix.indexing.indexer.make_embedder", return_value=_FakeEmbedder()),
         patch("trelix.indexing.indexer.make_vector_store", return_value=_FakeVectorStore()),
+        patch("trelix.indexing.indexer.get_parser", side_effect=_fake_get_parser),
     ):
         indexer = Indexer(cfg, quiet=True)
 
@@ -221,14 +278,14 @@ class TestIndexSingleFile:
         """A directory with one Python file should index at least 1 file."""
         self._write_py(tmp_path)
         indexer = _make_indexer(str(tmp_path))
-        with _patch_rich_progress():
+        with _patch_rich_progress(fake_parser=True):
             stats = indexer.index()
         assert stats["files_indexed"] >= 1
 
     def test_files_found_at_least_one(self, tmp_path: pathlib.Path) -> None:
         self._write_py(tmp_path)
         indexer = _make_indexer(str(tmp_path))
-        with _patch_rich_progress():
+        with _patch_rich_progress(fake_parser=True):
             stats = indexer.index()
         assert stats["files_found"] >= 1
 
@@ -236,14 +293,14 @@ class TestIndexSingleFile:
         """The two functions/method in the sample file should yield at least one symbol."""
         self._write_py(tmp_path)
         indexer = _make_indexer(str(tmp_path))
-        with _patch_rich_progress():
+        with _patch_rich_progress(fake_parser=True):
             stats = indexer.index()
         assert stats["symbols_extracted"] >= 1
 
     def test_no_errors(self, tmp_path: pathlib.Path) -> None:
         self._write_py(tmp_path)
         indexer = _make_indexer(str(tmp_path))
-        with _patch_rich_progress():
+        with _patch_rich_progress(fake_parser=True):
             stats = indexer.index()
         assert stats["errors"] == 0
 
@@ -251,7 +308,7 @@ class TestIndexSingleFile:
         """A lone .txt file should produce files_indexed=0 (no supported parser)."""
         (tmp_path / "notes.txt").write_text("just notes\n", encoding="utf-8")
         indexer = _make_indexer(str(tmp_path))
-        with _patch_rich_progress():
+        with _patch_rich_progress(fake_parser=True):
             stats = indexer.index()
         # .txt has no parser -> skipped; files_indexed should stay 0
         assert stats["files_indexed"] == 0
@@ -317,7 +374,7 @@ class TestIndexFileIncremental:
         )
         indexer = _make_indexer(str(tmp_path))
 
-        with _patch_rich_progress():
+        with _patch_rich_progress(fake_parser=True):
             indexer.index_file(str(py_file))
 
         # Verify via the DB directly

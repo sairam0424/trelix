@@ -460,3 +460,75 @@ class TestDeleteFileByPath(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Test: DimensionGuard called at FileWatcher.__init__ time
+# ---------------------------------------------------------------------------
+
+
+import pytest  # noqa: E402
+
+
+class TestFileWatcherDimensionGuard:
+    """FileWatcher must call DimensionGuard at __init__ time."""
+
+    def _make_mock_indexer(self, dimension: int = 384, provider: str = "local"):
+        from unittest.mock import MagicMock
+
+        indexer = MagicMock()
+        indexer.config.repo_path = "/tmp/repo"
+        indexer.config.embedder.provider = provider
+        # Indexer exposes .db and .embedder (no underscore prefix)
+        indexer.embedder = MagicMock()
+        indexer.embedder.dimension = dimension
+        indexer.db = MagicMock()
+        return indexer
+
+    def test_raises_dimension_mismatch_on_init(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from trelix.store.dimension_guard import DimensionMismatchError
+
+        indexer = self._make_mock_indexer(dimension=384, provider="local")
+        walker = MagicMock()
+
+        with patch(
+            "trelix.indexing.watcher.DimensionGuard.check",
+            side_effect=DimensionMismatchError(stored=3072, current=384, provider="local"),
+        ):
+            with pytest.raises(DimensionMismatchError) as exc_info:
+                FileWatcher(indexer, walker)
+
+        assert "3072" in str(exc_info.value)
+        assert "384" in str(exc_info.value)
+
+    def test_starts_normally_when_dimensions_match(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        indexer = self._make_mock_indexer(dimension=384, provider="local")
+        walker = MagicMock()
+
+        with patch("trelix.indexing.watcher.DimensionGuard.check") as mock_check:
+            FileWatcher(indexer, walker)
+
+        mock_check.assert_called_once()
+
+    def test_dimension_guard_not_called_when_no_db(self, tmp_path):
+        """Gracefully skips guard when indexer.db is None (fresh indexer before first index run)."""
+        from unittest.mock import MagicMock, patch
+
+        # Simulate an indexer where db is explicitly None (before first index run)
+        indexer = MagicMock()
+        indexer.config.repo_path = "/tmp/repo"
+        indexer.db = None  # no database yet
+        indexer.embedder = MagicMock()
+        indexer.embedder.dimension = 384
+        walker = MagicMock()
+
+        with patch("trelix.indexing.watcher.DimensionGuard.check") as mock_check:
+            fw = FileWatcher(indexer, walker)
+
+        # Guard must NOT be called when db is None
+        mock_check.assert_not_called()
+        assert fw is not None
