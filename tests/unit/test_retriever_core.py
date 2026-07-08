@@ -1899,3 +1899,106 @@ class TestRetrieverMultiQueryWired:
         # Second + third = variant sub-queries built from expansion result
         assert captured_calls[1].semantic_query == "how auth works"
         assert captured_calls[2].semantic_query == "login mechanism"
+
+
+# ---------------------------------------------------------------------------
+# TestShortQueryLexicalLeg — lexical_only flag skips vector ANN
+# ---------------------------------------------------------------------------
+
+
+class TestShortQueryLexicalLeg:
+    """_run_subquery_legs skips vector ANN when SubQuery.lexical_only is True."""
+
+    def test_lexical_only_subquery_skips_vector_search(self, tmp_path: Path) -> None:
+        """When lexical_only=True, embed_query must never be called."""
+        from trelix.retrieval.planner.models import RetrievalStrategy
+
+        retriever = _build_retriever(str(tmp_path))
+
+        strategy = RetrievalStrategy(
+            expand_depth=0,
+            legs=["vector", "bm25"],
+            skip_reranker=False,
+            import_depth=0,
+            import_max_extra=0,
+            import_direction="both",
+            assembly_mode="greedy",
+            rerank_top_n=10,
+        )
+        sq = SubQuery(
+            semantic_query="login",
+            hyde_snippet="",
+            bm25_tokens=["login"],
+            grep_hints=[],
+            file_hints=[],
+            lexical_only=True,
+        )
+
+        with patch("trelix.retrieval.retriever.bm25_search", return_value=[]):
+            retriever._run_subquery_legs(sq, strategy)
+
+        retriever.embedder.embed_query.assert_not_called()
+
+    def test_non_lexical_only_subquery_calls_vector_search(self, tmp_path: Path) -> None:
+        """When lexical_only=False (default), embed_query IS called for the vector leg."""
+        from trelix.retrieval.planner.models import RetrievalStrategy
+
+        retriever = _build_retriever(str(tmp_path))
+        retriever.embedder.embed_query.return_value = [0.0] * 1536
+        retriever.vector_store.search.return_value = []
+
+        strategy = RetrievalStrategy(
+            expand_depth=0,
+            legs=["vector"],
+            skip_reranker=False,
+            import_depth=0,
+            import_max_extra=0,
+            import_direction="both",
+            assembly_mode="greedy",
+            rerank_top_n=10,
+        )
+        sq = SubQuery(
+            semantic_query="auth handler",
+            hyde_snippet="",
+            bm25_tokens=["auth"],
+            grep_hints=[],
+            file_hints=[],
+            lexical_only=False,
+        )
+
+        retriever._run_subquery_legs(sq, strategy)
+
+        retriever.embedder.embed_query.assert_called_once()
+
+    def test_lexical_only_bm25_leg_still_runs(self, tmp_path: Path) -> None:
+        """When lexical_only=True, BM25 leg executes normally."""
+        from trelix.retrieval.planner.models import RetrievalStrategy
+
+        retriever = _build_retriever(str(tmp_path))
+        sr = _make_search_result(idx=1, score=0.8, source="bm25")
+
+        strategy = RetrievalStrategy(
+            expand_depth=0,
+            legs=["vector", "bm25"],
+            skip_reranker=False,
+            import_depth=0,
+            import_max_extra=0,
+            import_direction="both",
+            assembly_mode="greedy",
+            rerank_top_n=10,
+        )
+        sq = SubQuery(
+            semantic_query="jwt",
+            hyde_snippet="",
+            bm25_tokens=["jwt"],
+            grep_hints=[],
+            file_hints=[],
+            lexical_only=True,
+        )
+
+        with patch("trelix.retrieval.retriever.bm25_search", return_value=[sr]) as mock_bm25:
+            out = retriever._run_subquery_legs(sq, strategy)
+
+        mock_bm25.assert_called_once()
+        assert len(out["bm25"]) == 1
+        retriever.embedder.embed_query.assert_not_called()

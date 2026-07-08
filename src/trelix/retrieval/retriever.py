@@ -686,7 +686,14 @@ class Retriever:
         cfg = self.config.retrieval
         out: dict[str, list[SearchResult]] = {"vector": [], "bm25": [], "grep": []}
 
-        if "vector" in strategy.legs:
+        # Skip vector ANN for short keyword queries marked lexical_only=True.
+        # Research: CoREB (arXiv:2605.04615) shows all embedding models score
+        # near-zero nDCG@10 on short keyword queries. BM25+grep wins at this
+        # query length. Activated by AdaptiveRouter when
+        # TRELIX_RETRIEVAL_SHORT_QUERY_LEXICAL=true.
+        skip_vector = getattr(sq, "lexical_only", False)
+
+        if "vector" in strategy.legs and not skip_vector:
             # HyDE: embed the hypothetical code snippet if the planner provided one.
             embed_text = sq.hyde_snippet if sq.hyde_snippet.strip() else sq.semantic_query
             # HyDE fallback: if planner left hyde_snippet empty and fallback is enabled,
