@@ -348,3 +348,167 @@ class TestCohereReranker:
             out = rerank("q", results, self._cohere_cfg(), top_n=3)
 
         assert [r.rank for r in out] == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# XTR late-interaction scoring (pure-Python, experimental)
+# ---------------------------------------------------------------------------
+
+
+class TestXTRScoring:
+    def test_doc_with_all_query_tokens_scores_higher(self):
+        from trelix.retrieval.reranker_xtr import xtr_score_documents
+
+        # query has 2 tokens
+        # doc 1 matches both tokens well
+        # doc 2 matches only one token
+        query_token_scores = {
+            0: [(1, 0.9), (2, 0.3)],  # token 0: doc1=0.9, doc2=0.3
+            1: [(1, 0.8), (2, 0.0)],  # token 1: doc1=0.8, doc2=not retrieved
+        }
+        results = xtr_score_documents(
+            query_token_scores=query_token_scores,
+            candidate_doc_ids=[1, 2],
+            k_impute=0.0,
+        )
+        scores = {doc_id: score for doc_id, score in results}
+        assert scores[1] > scores[2]
+
+    def test_imputation_applied_for_unmatched_tokens(self):
+        from trelix.retrieval.reranker_xtr import xtr_score_documents
+
+        # query token 0 retrieved doc 1 with score 0.5
+        # query token 1 retrieved nothing for doc 1
+        # With k_impute=0.2, doc 1 score = (0.5 + 0.2) / 2 = 0.35
+        query_token_scores = {
+            0: [(1, 0.5)],
+            1: [],  # nothing retrieved for token 1
+        }
+        results = xtr_score_documents(
+            query_token_scores=query_token_scores,
+            candidate_doc_ids=[1],
+            k_impute=0.2,
+        )
+        assert len(results) == 1
+        doc_id, score = results[0]
+        assert doc_id == 1
+        # score = (max of token 0 for doc 1) + (k_impute for token 1), averaged
+        assert abs(score - (0.5 + 0.2) / 2) < 0.001
+
+    def test_results_sorted_descending(self):
+        from trelix.retrieval.reranker_xtr import xtr_score_documents
+
+        query_token_scores = {
+            0: [(1, 0.1), (2, 0.9), (3, 0.5)],
+        }
+        results = xtr_score_documents(
+            query_token_scores=query_token_scores,
+            candidate_doc_ids=[1, 2, 3],
+            k_impute=0.0,
+        )
+        scores = [s for _, s in results]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_empty_query_tokens_returns_zero_scores(self):
+        from trelix.retrieval.reranker_xtr import xtr_score_documents
+
+        results = xtr_score_documents(
+            query_token_scores={},
+            candidate_doc_ids=[1, 2],
+            k_impute=0.0,
+        )
+        for _, score in results:
+            assert score == 0.0
+
+    def test_doc_not_in_any_retrieval_gets_imputation_score(self):
+        from trelix.retrieval.reranker_xtr import xtr_score_documents
+
+        # doc 99 never appears in any token retrieval
+        query_token_scores = {0: [(1, 0.8)], 1: [(1, 0.7)]}
+        results = xtr_score_documents(
+            query_token_scores=query_token_scores,
+            candidate_doc_ids=[99],
+            k_impute=0.1,
+        )
+        _, score = results[0]
+        # all tokens imputed: (0.1 + 0.1) / 2 = 0.1
+        assert abs(score - 0.1) < 0.001
+
+
+# ---------------------------------------------------------------------------
+# XTR provider wired into rerank() dispatch (Task C-2)
+# ---------------------------------------------------------------------------
+
+
+class TestXTRRerankerProvider:
+    def test_xtr_provider_emits_experimental_warning(self) -> None:
+        """rerank() with provider='xtr' must call warn_experimental() exactly once."""
+        from unittest.mock import patch
+
+        from trelix.retrieval.reranker import rerank
+
+        results = [_make_result(f"doc {i}", score=float(i) * 0.1 + 0.1) for i in range(3)]
+        cfg = _cfg(rerank_provider="xtr")
+
+        with (
+            patch("trelix.retrieval.reranker_xtr.warn_experimental") as mock_warn,
+            patch(
+                "trelix.retrieval.reranker.xtr_score_documents",
+                return_value=[(0, 0.9), (1, 0.7), (2, 0.5)],
+            ),
+        ):
+            rerank("login", results, cfg, top_n=3)
+            mock_warn.assert_called_once()
+
+    def test_xtr_provider_returns_reranked_results(self) -> None:
+        """rerank() with provider='xtr' reorders results according to xtr_score_documents."""
+        from unittest.mock import patch
+
+        from trelix.retrieval.reranker import rerank
+
+        results = [
+            _make_result("doc 0", score=0.3, rank=1),
+            _make_result("doc 1", score=0.9, rank=2),
+            _make_result("doc 2", score=0.5, rank=3),
+        ]
+        cfg = _cfg(rerank_provider="xtr")
+
+        # xtr scores: result at index 1 (rank=2) wins
+        # The XTR provider iterates results and uses chunk_id-based lookup.
+        # We bypass xtr_score_documents and return a mapping keyed by index
+        # (which is used as doc_id in the single-vector approximation).
+        with (
+            patch("trelix.retrieval.reranker_xtr.warn_experimental"),
+            patch(
+                "trelix.retrieval.reranker.xtr_score_documents",
+                side_effect=lambda query_token_scores, candidate_doc_ids, k_impute: sorted(
+                    [(cid, {0: 0.4, 1: 0.95, 2: 0.7}.get(cid, 0.0)) for cid in candidate_doc_ids],
+                    key=lambda x: x[1],
+                    reverse=True,
+                ),
+            ),
+        ):
+            reranked = rerank("login", results, cfg, top_n=3)
+
+        # result at index 1 (chunk_text="doc 1") should be first after XTR reranking (score 0.95)
+        assert reranked[0].chunk.chunk_text == "doc 1"
+
+    def test_xtr_provider_fallback_on_exception(self) -> None:
+        """If xtr_score_documents raises, the provider logs a warning and returns unranked top_n."""
+        from unittest.mock import patch
+
+        from trelix.retrieval.reranker import rerank
+
+        results = [_make_result(f"doc {i}", score=0.5) for i in range(4)]
+        cfg = _cfg(rerank_provider="xtr")
+
+        with (
+            patch("trelix.retrieval.reranker_xtr.warn_experimental"),
+            patch(
+                "trelix.retrieval.reranker.xtr_score_documents",
+                side_effect=RuntimeError("simulated xtr failure"),
+            ),
+        ):
+            out = rerank("login", results, cfg, top_n=3)
+
+        assert len(out) == 3

@@ -53,3 +53,88 @@ class TestGraphUpdater:
             "SELECT symbol_id FROM graph_metadata WHERE symbol_id = ?", (sid,)
         ).fetchone()
         assert row is not None
+
+
+class TestGraphUpdaterIncremental:
+    def _make_updater(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from trelix.graph.updater import GraphUpdater
+
+        db = MagicMock()
+        updater = GraphUpdater(db)
+        return updater
+
+    def test_updater_initializes_empty_prev_partition(self, tmp_path):
+        updater = self._make_updater(tmp_path)
+        assert updater._prev_partition == {}
+
+    def test_prev_partition_updated_after_update_file(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from trelix.graph.updater import GraphUpdater
+
+        db = MagicMock()
+        updater = GraphUpdater(db)
+
+        fake_partition = {1: 0, 2: 0, 3: 1}
+        fake_cg = MagicMock()
+        fake_cg.node_count = 3
+
+        with (
+            patch("trelix.graph.updater.CodeGraph", return_value=fake_cg),
+            patch(
+                "trelix.graph.updater.detect_communities_incremental", return_value=fake_partition
+            ),
+            patch("trelix.graph.updater.assign_communities"),
+            patch("trelix.graph.updater.compute_pagerank", return_value={}),
+            patch("trelix.graph.updater.save_graph_metadata"),
+        ):
+            updater.update_file("src/auth.py")
+
+        assert updater._prev_partition == fake_partition
+
+    def test_incremental_called_with_prev_partition_on_second_update(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from trelix.graph.updater import GraphUpdater
+
+        db = MagicMock()
+        updater = GraphUpdater(db)
+        updater._prev_partition = {1: 0, 2: 1}  # simulate prior state
+
+        fake_cg = MagicMock()
+        fake_cg.node_count = 2
+
+        with (
+            patch("trelix.graph.updater.CodeGraph", return_value=fake_cg),
+            patch(
+                "trelix.graph.updater.detect_communities_incremental", return_value={1: 0, 2: 1}
+            ) as mock_inc,
+            patch("trelix.graph.updater.assign_communities"),
+            patch("trelix.graph.updater.compute_pagerank", return_value={}),
+            patch("trelix.graph.updater.save_graph_metadata"),
+        ):
+            updater.update_file("src/auth.py")
+
+        # prev_partition must be passed to incremental detection
+        call_kwargs = mock_inc.call_args
+        assert call_kwargs is not None
+        _, kwargs = call_kwargs
+        passed_prev = kwargs.get("prev_partition") or call_kwargs[0][2]
+        assert passed_prev == {1: 0, 2: 1}
+
+    def test_update_file_non_fatal_on_failure(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from trelix.graph.updater import GraphUpdater
+
+        db = MagicMock()
+        updater = GraphUpdater(db)
+
+        with patch("trelix.graph.updater.CodeGraph", side_effect=RuntimeError("db gone")):
+            # Must not raise — non-fatal
+            updater.update_file("src/auth.py")
+
+        # prev_partition unchanged on failure
+        assert updater._prev_partition == {}

@@ -447,3 +447,23 @@ class TestRetrievalConfigFlareMaxRetries:
             "Old field name 'flare_max_iterations' must be removed"
         )
         assert cfg.flare_max_retries == 1
+
+
+class TestShortQueryConfig:
+    def test_short_query_disabled_by_default(self) -> None:
+        cfg = RetrievalConfig()
+        assert cfg.short_query_lexical_enabled is False
+
+    def test_short_query_token_threshold_default_is_5(self) -> None:
+        cfg = RetrievalConfig()
+        assert cfg.short_query_token_threshold == 5
+
+    def test_short_query_env_var_enables_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_SHORT_QUERY_LEXICAL", "true")
+        cfg = RetrievalConfig()
+        assert cfg.short_query_lexical_enabled is True
+
+    def test_short_query_threshold_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_SHORT_QUERY_TOKENS", "3")
+        cfg = RetrievalConfig()
+        assert cfg.short_query_token_threshold == 3

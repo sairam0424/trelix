@@ -163,6 +163,37 @@ _STOP_WORDS = frozenset(
 )
 
 
+def count_meaningful_tokens(query: str) -> int:
+    """
+    Count non-stop-word tokens of length ≥ 3 in `query`.
+
+    Uses the same tokenization as `_preprocess_query` — splits on
+    word-character boundaries, drops stop words, drops tokens < 3 chars.
+    This is the signal for short-query detection.
+    """
+    import re
+
+    raw_tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", query)
+    return sum(1 for t in raw_tokens if t.lower() not in _STOP_WORDS and len(t) >= 3)
+
+
+def is_short_query(query: str, threshold: int = 5) -> bool:
+    """
+    Return True when `query` contains ≤ threshold meaningful tokens.
+
+    Short queries (≤5 meaningful tokens after stop-word removal) perform
+    near-zero with embedding models across all code retrieval benchmarks
+    (CoREB arXiv:2605.04615). Routing them to BM25+grep lexical search
+    significantly improves recall for developer keyword-style queries.
+
+    Args:
+        query:     Raw user query string
+        threshold: Maximum meaningful-token count to classify as "short"
+                   (default 5, configurable via TRELIX_RETRIEVAL_SHORT_QUERY_TOKENS)
+    """
+    return count_meaningful_tokens(query) <= threshold
+
+
 def _escape_fts5(query: str) -> str:
     """
     Build an FTS5 MATCH expression from a natural-language or identifier query.

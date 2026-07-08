@@ -19,14 +19,14 @@ def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert "trelix" in result.output
-    assert "2.5.0" in result.output
+    assert "2.6.0" in result.output
 
 
 def test_version_short_flag():
     result = runner.invoke(app, ["-V"])
     assert result.exit_code == 0
     assert "trelix" in result.output
-    assert "2.5.0" in result.output
+    assert "2.6.0" in result.output
 
 
 def test_help():
@@ -117,6 +117,17 @@ def test_watch_all_help() -> None:
     result = runner.invoke(app, ["watch-all", "--help"])
     assert result.exit_code == 0
     assert "watch-all" in result.output.lower() or "registry" in result.output.lower()
+
+
+def test_eval_help():
+    result = runner.invoke(app, ["eval", "--help"])
+    assert result.exit_code == 0
+
+
+def test_eval_synthesis_help():
+    result = runner.invoke(app, ["eval-synthesis", "--help"])
+    assert result.exit_code == 0
+    assert "--golden" in result.output or "golden" in result.output.lower()
 
 
 def test_watch_all_no_repos_exits_gracefully() -> None:

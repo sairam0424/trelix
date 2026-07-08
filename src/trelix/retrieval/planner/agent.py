@@ -22,6 +22,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from trelix.retrieval.bm25 import is_short_query
 from trelix.retrieval.planner.models import (
     INTENT_STRATEGIES,
     IntentType,
@@ -90,6 +91,13 @@ class AdaptiveRouter:
         self._config = config
         # Lazy — only built when an LLM call is actually needed.
         self._planner: QueryPlanner | None = None
+        # Access retrieval config for the short-query lexical gate (v2.6.0, Plan B).
+        try:
+            from trelix.core.config import RetrievalConfig
+
+            self._retrieval_config: RetrievalConfig | None = RetrievalConfig()
+        except Exception:
+            self._retrieval_config = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -104,14 +112,36 @@ class AdaptiveRouter:
         try:
             if self._is_tier1(query):
                 logger.debug("AdaptiveRouter: Tier 1 (direct) for query=%r", query)
-                return self._tier1_plan(query)
-
-            if self._is_tier3(query):
+                plan = self._tier1_plan(query)
+            elif self._is_tier3(query):
                 logger.debug("AdaptiveRouter: Tier 3 (multi-step) for query=%r", query)
-                return self._multi_step_plan(query, project_context)
+                plan = self._multi_step_plan(query, project_context)
+            else:
+                logger.debug("AdaptiveRouter: Tier 2 (single-step) for query=%r", query)
+                plan = self._single_step_plan(query, project_context)
 
-            logger.debug("AdaptiveRouter: Tier 2 (single-step) for query=%r", query)
-            return self._single_step_plan(query, project_context)
+            # Short-query lexical fallback (v2.6.0, Plan B)
+            # When enabled and query has <= threshold meaningful tokens, mark all
+            # sub-queries as lexical_only so _run_subquery_legs skips vector ANN.
+            # Research: CoREB (arXiv:2605.04615) — all embedding models score 0.000–0.015
+            # nDCG@10 on short keyword queries; BM25+grep wins at this query length.
+            try:
+                rc = self._retrieval_config
+                if (
+                    rc is not None
+                    and rc.short_query_lexical_enabled
+                    and is_short_query(query, threshold=rc.short_query_token_threshold)
+                ):
+                    from dataclasses import replace as _dc_replace
+
+                    plan.sub_queries = [
+                        _dc_replace(sq, lexical_only=True) for sq in plan.sub_queries
+                    ]
+            except Exception as gate_exc:  # noqa: BLE001
+                # Short-query gate is never fatal — log and proceed with original plan
+                logger.warning("AdaptiveRouter: short-query gate failed (%s), ignored.", gate_exc)
+
+            return plan
 
         except Exception as exc:  # noqa: BLE001
             logger.warning(

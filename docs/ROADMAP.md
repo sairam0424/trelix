@@ -7,7 +7,7 @@ This roadmap describes planned features, research directions, and long-term visi
 
 ---
 
-## ✅ Shipped (v2.0 – v2.4)
+## ✅ Shipped (v2.0 – v2.5)
 
 | Version | Feature |
 |---------|---------|
@@ -33,6 +33,13 @@ This roadmap describes planned features, research directions, and long-term visi
 
 **Goal:** Handle 1M+ symbol codebases without degradation.
 
+### Plan A: Incremental Louvain Community Detection — ✅ Shipped (v2.6.0)
+- [x] **DF Louvain frontier heuristic** — Maintains prior partition, reprocesses only affected-vertex frontier
+- [x] `compute_affected_frontier(G, seed_nodes, partition)` — Computes affected nodes
+- [x] `detect_communities_incremental()` — Incremental Louvain with >50% frontier fallback
+- [x] **GraphUpdater** — Stores `_prev_partition`, uses incremental detection on file changes
+
+### Remaining backlog
 - [ ] **Cross-repo symbol resolution** — Sourcegraph-style SCIP symbol IDs for cross-repository lookup
 - [ ] **Semantic diff embeddings** — CCRep-style before/after body pair embeddings for diff-aware retrieval
 - [ ] **Streaming indexing** — yield symbols as parsed (no in-memory buffer for large repos)

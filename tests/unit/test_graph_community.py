@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import networkx as nx
+
 from trelix.core.models import CallEdge, IndexedFile, Language, Symbol, SymbolKind
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import assign_communities, detect_communities, get_community_summary
@@ -117,3 +119,122 @@ class TestCommunityDetection:
                 f"Expected auth cluster (community {auth_community}) != "
                 f"db cluster (community {db_community})"
             )
+
+
+class TestAffectedFrontier:
+    def _make_graph(self):
+        """Triangle A-B-C, separate node D."""
+        G = nx.Graph()
+        G.add_edges_from([(1, 2), (2, 3), (1, 3)])
+        G.add_node(4)
+        return G
+
+    def test_seed_nodes_always_in_frontier(self):
+        from trelix.graph.community import compute_affected_frontier
+
+        G = self._make_graph()
+        partition = {1: 0, 2: 0, 3: 0, 4: 1}
+        frontier = compute_affected_frontier(G, seed_nodes={2}, partition=partition)
+        assert 2 in frontier
+
+    def test_neighbors_of_seed_in_frontier(self):
+        from trelix.graph.community import compute_affected_frontier
+
+        G = self._make_graph()
+        partition = {1: 0, 2: 0, 3: 0, 4: 1}
+        frontier = compute_affected_frontier(G, seed_nodes={2}, partition=partition)
+        # node 2 neighbors are 1 and 3
+        assert 1 in frontier
+        assert 3 in frontier
+
+    def test_same_community_nodes_in_frontier(self):
+        from trelix.graph.community import compute_affected_frontier
+
+        G = self._make_graph()
+        # nodes 1,2,3 all in community 0; node 4 in community 1
+        partition = {1: 0, 2: 0, 3: 0, 4: 1}
+        frontier = compute_affected_frontier(G, seed_nodes={1}, partition=partition)
+        # all of community 0 should be included
+        assert {1, 2, 3}.issubset(frontier)
+
+    def test_unrelated_node_not_in_frontier(self):
+        from trelix.graph.community import compute_affected_frontier
+
+        G = self._make_graph()
+        partition = {1: 0, 2: 0, 3: 0, 4: 1}
+        frontier = compute_affected_frontier(G, seed_nodes={1}, partition=partition)
+        # node 4 is isolated, different community — should NOT be in frontier
+        assert 4 not in frontier
+
+    def test_empty_seed_returns_empty(self):
+        from trelix.graph.community import compute_affected_frontier
+
+        G = self._make_graph()
+        partition = {1: 0, 2: 0, 3: 0, 4: 1}
+        frontier = compute_affected_frontier(G, seed_nodes=set(), partition=partition)
+        assert frontier == set()
+
+    def test_empty_partition_returns_seed_plus_neighbors(self):
+        from trelix.graph.community import compute_affected_frontier
+
+        G = self._make_graph()
+        partition = {}
+        frontier = compute_affected_frontier(G, seed_nodes={2}, partition=partition)
+        assert 2 in frontier
+        assert 1 in frontier
+        assert 3 in frontier
+
+
+class TestIncrementalLouvain:
+    def _make_cg_with_partition(self, tmp_path):
+        """Build a CodeGraph with 6 nodes in 2 communities."""
+        from trelix.graph.code_graph import CodeGraph
+
+        cg = CodeGraph.__new__(CodeGraph)
+        import networkx as nx
+
+        cg._g = nx.MultiDiGraph()
+        # Community 0: nodes 1,2,3 (triangle)
+        cg._g.add_nodes_from([1, 2, 3, 4, 5, 6])
+        cg._g.add_edges_from([(1, 2), (2, 3), (1, 3), (4, 5), (5, 6), (4, 6)])
+        return cg
+
+    def test_returns_complete_partition(self, tmp_path):
+        from trelix.graph.community import detect_communities_incremental
+
+        cg = self._make_cg_with_partition(tmp_path)
+        prev = {1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 1}
+        result = detect_communities_incremental(cg, seed_nodes={2}, prev_partition=prev)
+        # All 6 nodes must appear in result
+        assert set(result.keys()) == {1, 2, 3, 4, 5, 6}
+
+    def test_non_frontier_nodes_keep_prev_community(self, tmp_path):
+        from trelix.graph.community import detect_communities_incremental
+
+        cg = self._make_cg_with_partition(tmp_path)
+        prev = {1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 1}
+        result = detect_communities_incremental(cg, seed_nodes={2}, prev_partition=prev)
+        # nodes 4,5,6 are not in frontier (different community, not neighbors of 2)
+        # they should keep community 1 from prev_partition
+        assert result[4] == 1
+        assert result[5] == 1
+        assert result[6] == 1
+
+    def test_empty_prev_falls_back_to_full(self, tmp_path):
+        from trelix.graph.community import detect_communities_incremental
+
+        cg = self._make_cg_with_partition(tmp_path)
+        # empty prev_partition → full Louvain
+        result = detect_communities_incremental(cg, seed_nodes={1}, prev_partition={})
+        assert len(result) == 6
+
+    def test_large_frontier_falls_back_to_full(self, tmp_path):
+        from trelix.graph.community import detect_communities_incremental
+
+        cg = self._make_cg_with_partition(tmp_path)
+        prev = {1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 1}
+        # seed all nodes → frontier = 100% → full Louvain fallback
+        result = detect_communities_incremental(
+            cg, seed_nodes={1, 2, 3, 4, 5, 6}, prev_partition=prev
+        )
+        assert len(result) == 6

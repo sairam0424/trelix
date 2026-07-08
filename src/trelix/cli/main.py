@@ -1071,6 +1071,42 @@ def eval(
     console.print(table)
 
 
+@app.command("eval-synthesis")
+def eval_synthesis(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")] = ".",
+    golden: Annotated[
+        str, typer.Option("--golden", "-g", help="Path to golden JSONL file.")
+    ] = ".trelix/golden_synthesis.jsonl",
+) -> None:
+    """Evaluate synthesis quality against a golden QA file (GroUSE-style)."""
+    from trelix.core.config import IndexConfig
+    from trelix.eval.synthesis import SynthesisEvalHarness
+
+    config = IndexConfig(repo_path=repo)
+    harness = SynthesisEvalHarness(config)
+    try:
+        metrics = harness.run(golden)
+    except FileNotFoundError:
+        console.print(f"[red]Golden file not found: {golden}[/red]")
+        console.print("Create a golden_synthesis.jsonl with lines like:")
+        console.print(
+            '  {"query": "how does auth work", "relevant_files": ["src/auth.py"],'
+            ' "expected_answer_fragments": ["jwt"], "expected_symbols": ["AuthMiddleware.verify"]}'
+        )
+        raise typer.Exit(1)
+
+    table = Table(title="Synthesis Quality Results (GroUSE-style)")
+    table.add_column("Metric", style="bold")
+    table.add_column("Score", justify="right")
+    table.add_column("Direction", style="dim")
+    table.add_row("Hallucination rate", f"{metrics['hallucination_rate']:.4f}", "lower = better")
+    table.add_row("Completeness", f"{metrics['completeness']:.4f}", "higher = better")
+    table.add_row("Faithfulness", f"{metrics['faithfulness']:.4f}", "higher = better")
+    table.add_row("Overall", f"{metrics['overall']:.4f}", "higher = better")
+    table.add_row("Queries evaluated", str(int(metrics["n_queries"])), "")
+    console.print(table)
+
+
 # ---------------------------------------------------------------------------
 # taint
 # ---------------------------------------------------------------------------

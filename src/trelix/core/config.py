@@ -356,7 +356,7 @@ class RetrievalConfig(BaseSettings):
     rrf_k: int = 60
 
     rerank: bool = True
-    rerank_provider: Literal["cohere", "cross_encoder", "plaid"] = "cohere"
+    rerank_provider: Literal["cohere", "cross_encoder", "plaid", "xtr"] = "cohere"
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     rerank_top_n: int = 15
 
@@ -421,6 +421,22 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_MULTI_QUERY_COUNT",
     )
 
+    # Short-query lexical fallback (Plan B, v2.6.0)
+    # Queries with <= short_query_token_threshold meaningful tokens (after stop-word
+    # removal) are routed to BM25+grep only, skipping vector ANN embedding.
+    # Research: CoREB (arXiv:2605.04615) shows all embedding models score near-zero
+    # nDCG@10 on short keyword queries — lexical search wins at this query length.
+    short_query_lexical_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_SHORT_QUERY_LEXICAL",
+    )
+    short_query_token_threshold: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        alias="TRELIX_RETRIEVAL_SHORT_QUERY_TOKENS",
+    )
+
     # FLARE-style confidence-gated re-retrieval
     flare_enabled: bool = Field(
         default=False,
@@ -461,6 +477,14 @@ class RetrievalConfig(BaseSettings):
         ge=1.0,
         le=3.0,
         alias="TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR",
+    )
+
+    # XTR late-interaction reranker — candidate token count (experimental, v2.6.0)
+    xtr_candidate_tokens: int = Field(
+        default=100,
+        ge=10,
+        le=1000,
+        alias="TRELIX_RETRIEVAL_XTR_TOKENS",
     )
 
     # Agentic ReAct loop — multi-turn retrieve+observe+synthesize
