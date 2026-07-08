@@ -348,3 +348,88 @@ class TestCohereReranker:
             out = rerank("q", results, self._cohere_cfg(), top_n=3)
 
         assert [r.rank for r in out] == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# XTR late-interaction scoring (pure-Python, experimental)
+# ---------------------------------------------------------------------------
+
+
+class TestXTRScoring:
+    def test_doc_with_all_query_tokens_scores_higher(self):
+        from trelix.retrieval.reranker_xtr import xtr_score_documents
+
+        # query has 2 tokens
+        # doc 1 matches both tokens well
+        # doc 2 matches only one token
+        query_token_scores = {
+            0: [(1, 0.9), (2, 0.3)],   # token 0: doc1=0.9, doc2=0.3
+            1: [(1, 0.8), (2, 0.0)],   # token 1: doc1=0.8, doc2=not retrieved
+        }
+        results = xtr_score_documents(
+            query_token_scores=query_token_scores,
+            candidate_doc_ids=[1, 2],
+            k_impute=0.0,
+        )
+        scores = {doc_id: score for doc_id, score in results}
+        assert scores[1] > scores[2]
+
+    def test_imputation_applied_for_unmatched_tokens(self):
+        from trelix.retrieval.reranker_xtr import xtr_score_documents
+
+        # query token 0 retrieved doc 1 with score 0.5
+        # query token 1 retrieved nothing for doc 1
+        # With k_impute=0.2, doc 1 score = (0.5 + 0.2) / 2 = 0.35
+        query_token_scores = {
+            0: [(1, 0.5)],
+            1: [],  # nothing retrieved for token 1
+        }
+        results = xtr_score_documents(
+            query_token_scores=query_token_scores,
+            candidate_doc_ids=[1],
+            k_impute=0.2,
+        )
+        assert len(results) == 1
+        doc_id, score = results[0]
+        assert doc_id == 1
+        # score = (max of token 0 for doc 1) + (k_impute for token 1), averaged
+        assert abs(score - (0.5 + 0.2) / 2) < 0.001
+
+    def test_results_sorted_descending(self):
+        from trelix.retrieval.reranker_xtr import xtr_score_documents
+
+        query_token_scores = {
+            0: [(1, 0.1), (2, 0.9), (3, 0.5)],
+        }
+        results = xtr_score_documents(
+            query_token_scores=query_token_scores,
+            candidate_doc_ids=[1, 2, 3],
+            k_impute=0.0,
+        )
+        scores = [s for _, s in results]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_empty_query_tokens_returns_zero_scores(self):
+        from trelix.retrieval.reranker_xtr import xtr_score_documents
+
+        results = xtr_score_documents(
+            query_token_scores={},
+            candidate_doc_ids=[1, 2],
+            k_impute=0.0,
+        )
+        for _, score in results:
+            assert score == 0.0
+
+    def test_doc_not_in_any_retrieval_gets_imputation_score(self):
+        from trelix.retrieval.reranker_xtr import xtr_score_documents
+
+        # doc 99 never appears in any token retrieval
+        query_token_scores = {0: [(1, 0.8)], 1: [(1, 0.7)]}
+        results = xtr_score_documents(
+            query_token_scores=query_token_scores,
+            candidate_doc_ids=[99],
+            k_impute=0.1,
+        )
+        _, score = results[0]
+        # all tokens imputed: (0.1 + 0.1) / 2 = 0.1
+        assert abs(score - 0.1) < 0.001
