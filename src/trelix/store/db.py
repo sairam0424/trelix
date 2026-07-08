@@ -217,9 +217,7 @@ class Database:
     def _apply_migrations(self) -> None:
         """Incremental schema migrations — safe to run on existing DBs."""
         # Task 2 migration: add idx_files_rel_path for watch performance (Phase 1)
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_files_rel_path ON files(rel_path)"
-        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_files_rel_path ON files(rel_path)")
         self._conn.commit()
 
         import_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(imports)").fetchall()}
