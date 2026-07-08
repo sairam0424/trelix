@@ -6,12 +6,18 @@ lists -> RRF merge with per-repo weight -> deduplicate by (file_path, symbol_id)
 
 Cache: TTL-based in-memory cache keyed by SHA-256(query+sorted_repo_paths+k).
 cache_ttl=0 disables caching. Thread-safe via threading.Lock.
+
+Cross-repo symbol resolution (Plan A):
+  make_scip_symbol_id() produces stable 16-char IDs per (package, version, symbol).
+  FederatedRetriever maintains an in-memory SQLite `federation_symbols` table that
+  can be queried via resolve_symbol() to find which repos define a given symbol.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,6 +28,21 @@ from trelix.retrieval.fusion import reciprocal_rank_fusion
 from trelix.retrieval.retriever import Retriever
 
 logger = logging.getLogger("trelix.federation.retriever")
+
+
+def make_scip_symbol_id(package: str, version: str, qualified_name: str) -> str:
+    """
+    Create a stable cross-repo symbol ID using SCIP-style concatenation.
+
+    Format: sha256('{package}@{version}:{qualified_name}')[:16]
+    Globally unique per (package, version, symbol) tuple.
+    Same symbol in different packages -> different ID (version-aware routing).
+
+    Reference: Sourcegraph SCIP cross-repo navigation
+    (github.com/sourcegraph/scip-clang/blob/main/docs/CrossRepo.md)
+    """
+    raw = f"{package}@{version}:{qualified_name}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 class FederatedRetriever:
@@ -51,6 +72,34 @@ class FederatedRetriever:
         self._cache_lock = threading.Lock()
         self._hits = 0
         self._misses = 0
+        # Cross-repo symbol index (in-memory SQLite, rebuilt on record_exports call)
+        self._fed_conn = sqlite3.connect(":memory:")
+        self._fed_conn.execute(
+            """CREATE TABLE IF NOT EXISTS federation_symbols (
+                symbol_id      TEXT PRIMARY KEY,
+                package        TEXT NOT NULL,
+                version        TEXT NOT NULL DEFAULT '',
+                qualified_name TEXT NOT NULL,
+                repo_alias     TEXT NOT NULL,
+                file_path      TEXT NOT NULL
+            )"""
+        )
+        self._fed_conn.commit()
+
+    def resolve_symbol(self, qualified_name: str) -> list[dict]:
+        """
+        Find all repos that define a symbol with the given qualified name.
+
+        Returns list of {alias, file_path} dicts sorted by alias.
+        Uses exact match OR suffix match so 'verify' matches 'AuthService.verify'.
+        """
+        rows = self._fed_conn.execute(
+            """SELECT repo_alias, file_path FROM federation_symbols
+               WHERE qualified_name = ? OR qualified_name LIKE ?
+               ORDER BY repo_alias""",
+            (qualified_name, f"%.{qualified_name}"),
+        ).fetchall()
+        return [{"alias": r[0], "file_path": r[1]} for r in rows]
 
     def _make_cache_key(self, query: str, k: int) -> str:
         """SHA-256 key over (query, sorted repo paths, k)."""

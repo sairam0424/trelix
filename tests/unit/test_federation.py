@@ -261,3 +261,65 @@ def test_federated_clear_cache() -> None:
         fed.retrieve("q1", k=5)
 
     assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo symbol resolution (Plan A — Task A-1)
+# ---------------------------------------------------------------------------
+
+
+class TestCrossRepoSymbolResolution:
+    def test_make_scip_symbol_id_is_deterministic(self):
+        from trelix.federation.retriever import make_scip_symbol_id
+
+        id1 = make_scip_symbol_id("myapp", "1.0.0", "AuthService.verify")
+        id2 = make_scip_symbol_id("myapp", "1.0.0", "AuthService.verify")
+        assert id1 == id2
+
+    def test_make_scip_symbol_id_different_packages_differ(self):
+        from trelix.federation.retriever import make_scip_symbol_id
+
+        id1 = make_scip_symbol_id("app-a", "1.0.0", "login")
+        id2 = make_scip_symbol_id("app-b", "1.0.0", "login")
+        assert id1 != id2
+
+    def test_resolve_symbol_returns_repo_that_defines_it(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from trelix.federation.retriever import FederatedRetriever, make_scip_symbol_id
+
+        registry = MagicMock()
+        registry.list.return_value = [
+            MagicMock(alias="auth-service", path=str(tmp_path / "auth"))
+        ]
+        fed = FederatedRetriever(registry)
+
+        # Insert a symbol directly via the in-memory connection
+        fed._fed_conn.execute(
+            "INSERT INTO federation_symbols VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                make_scip_symbol_id("auth-service", "", "AuthService.verify"),
+                "auth-service",
+                "",
+                "AuthService.verify",
+                "auth-service",
+                "src/auth.py",
+            ),
+        )
+        fed._fed_conn.commit()
+
+        results = fed.resolve_symbol("AuthService.verify")
+        assert len(results) == 1
+        assert results[0]["alias"] == "auth-service"
+        assert results[0]["file_path"] == "src/auth.py"
+
+    def test_resolve_symbol_empty_when_not_found(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from trelix.federation.retriever import FederatedRetriever
+
+        registry = MagicMock()
+        registry.list.return_value = []
+        fed = FederatedRetriever(registry)
+        results = fed.resolve_symbol("NonExistentClass.method")
+        assert results == []
