@@ -61,6 +61,7 @@ class SubQuery:
     depends_on: list[int] = field(
         default_factory=list
     )  # 0-based indices of required prior sub-queries
+    lexical_only: bool = False  # v2.6.0: True for short keyword queries — skips vector ANN
 
 
 @dataclass
