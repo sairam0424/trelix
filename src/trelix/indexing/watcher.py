@@ -199,10 +199,10 @@ class FileWatcher:
             if not result.get("skipped", False):
                 try:
                     from trelix_mcp.server import (
-                        _subscription_registry,  # type: ignore[import-untyped]
+                        _subscription_registry,
                     )
                     from trelix_mcp.subscriptions import (
-                        notify_file_changed,  # type: ignore[import-untyped]
+                        notify_file_changed,
                     )
 
                     notify_file_changed(
