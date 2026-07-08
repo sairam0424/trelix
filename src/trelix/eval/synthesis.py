@@ -264,7 +264,7 @@ class SynthesisEvalHarness:
 
                 try:
                     synthesizer = Synthesizer(self._config)
-                    answer = synthesizer.synthesize(query, context)
+                    answer = synthesizer.synthesize(context)
                 except Exception:
                     answer = ""
 
