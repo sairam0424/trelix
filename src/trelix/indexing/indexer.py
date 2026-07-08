@@ -353,7 +353,7 @@ class Indexer:
         }
         t_start = time.perf_counter()
 
-        file_queue: queue.Queue[object] = queue.Queue(maxsize=QUEUE_SIZE)
+        file_queue: queue.Queue[IndexedFile | object] = queue.Queue(maxsize=QUEUE_SIZE)
         sentinel = object()
 
         def producer() -> None:
@@ -374,6 +374,8 @@ class Indexer:
             item = file_queue.get()
             if item is sentinel:
                 break
+
+            assert isinstance(item, IndexedFile)  # sentinel excluded above
 
             results["files_found"] += 1
 
