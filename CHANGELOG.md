@@ -4,6 +4,32 @@ All notable changes to trelix are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added — Short-Query Lexical Fallback (Plan B)
+- `TRELIX_RETRIEVAL_SHORT_QUERY_LEXICAL=true` — enables BM25+grep-only routing
+  for queries with ≤ threshold meaningful tokens (default off).
+- `TRELIX_RETRIEVAL_SHORT_QUERY_TOKENS` — sets the meaningful-token threshold
+  (default 5, range 1–10).
+- `is_short_query(query, threshold)` and `count_meaningful_tokens(query)` helpers
+  in `trelix.retrieval.bm25`.
+- `SubQuery.lexical_only: bool` — new field; when True, `_run_subquery_legs` skips
+  vector ANN embedding entirely.
+- Research basis: CoREB benchmark (arXiv:2605.04615) confirms all embedding models
+  score 0.000–0.015 nDCG@10 on short keyword queries vs 0.45–0.58 on long queries.
+
+### Added — Incremental Louvain Community Detection (Plan A)
+- `detect_communities_incremental(cg, seed_nodes, prev_partition)` — DF Louvain
+  frontier heuristic (arXiv:2404.19634). Reprocesses only the affected-vertex
+  frontier instead of the full graph on file-change events.
+- `compute_affected_frontier(G, seed_nodes, partition)` — computes the DF Louvain
+  frontier: seed nodes + their neighbors + their community members.
+- `GraphUpdater` now maintains `_prev_partition` across calls and uses incremental
+  detection for subsequent updates. First run and large-frontier (>50% of nodes)
+  fall back to full Louvain.
+- `Database.get_symbol_ids_for_file(rel_path)` — returns symbol IDs for a file
+  (used to seed the incremental frontier from a file-change event).
+
 ## [2.5.0] — 2026-07-06
 
 ### Overview
