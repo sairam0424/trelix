@@ -454,3 +454,66 @@ class TestQueryPlannerDelegatesRouter:
         planner = QueryPlanner(self._make_local_config())
         plan = planner.plan("")
         assert isinstance(plan, QueryPlan)
+
+
+# ---------------------------------------------------------------------------
+# Short-query lexical routing (v2.6.0 Plan B)
+# ---------------------------------------------------------------------------
+
+
+class TestShortQueryRouting:
+    """
+    AdaptiveRouter must mark all sub_queries as lexical_only=True when:
+      - short_query_lexical_enabled is True in RetrievalConfig
+      - is_short_query() returns True for the given query
+
+    When the feature is disabled (default) or query is long,
+    lexical_only must remain False.
+    """
+
+    def test_short_query_sets_lexical_only_on_subqueries(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from trelix.core.config import EmbedderConfig
+        from trelix.retrieval.planner.agent import AdaptiveRouter
+
+        router = AdaptiveRouter(EmbedderConfig(provider="local"))
+
+        mock_cfg = MagicMock()
+        mock_cfg.short_query_lexical_enabled = True
+        mock_cfg.short_query_token_threshold = 5
+
+        with patch.object(router, "_retrieval_config", mock_cfg):
+            with patch("trelix.retrieval.planner.agent.is_short_query", return_value=True):
+                plan = router.route("login")
+
+        for sq in plan.sub_queries:
+            assert sq.lexical_only is True, f"SubQuery not lexical_only: {sq}"
+
+    def test_long_query_does_not_set_lexical_only(self) -> None:
+        from unittest.mock import patch
+
+        from trelix.core.config import EmbedderConfig
+        from trelix.retrieval.planner.agent import AdaptiveRouter
+
+        router = AdaptiveRouter(EmbedderConfig(provider="local"))
+
+        with patch("trelix.retrieval.planner.agent.is_short_query", return_value=False):
+            plan = router.route(
+                "how does the authentication middleware validate JWT tokens end to end"
+            )
+
+        for sq in plan.sub_queries:
+            assert sq.lexical_only is False
+
+    def test_short_query_routing_disabled_by_default(self) -> None:
+        from trelix.core.config import EmbedderConfig
+        from trelix.retrieval.planner.agent import AdaptiveRouter
+
+        router = AdaptiveRouter(EmbedderConfig(provider="local"))
+        # Uses real RetrievalConfig with short_query_lexical_enabled=False (default)
+        plan = router.route("login")
+
+        # When disabled, lexical_only must be False regardless of query length
+        for sq in plan.sub_queries:
+            assert sq.lexical_only is False

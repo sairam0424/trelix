@@ -368,6 +368,18 @@ class Database:
         ).fetchone()
         return row["hash"] if row else None
 
+    def get_symbol_ids_for_file(self, rel_path: str) -> list[int]:
+        """Return all symbol IDs belonging to the given file path."""
+        rows = self._conn.execute(
+            """
+            SELECT s.id FROM symbols s
+            JOIN files f ON s.file_id = f.id
+            WHERE f.rel_path = ?
+            """,
+            (rel_path,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def upsert_file(self, file: IndexedFile) -> int:
         """Insert or update file record. Returns file id."""
         cursor = self._conn.execute(

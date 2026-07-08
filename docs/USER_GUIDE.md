@@ -1866,4 +1866,89 @@ The action handles Python setup, caches the index keyed to the commit SHA (so un
 
 ---
 
-*trelix v2.4.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+## 15. Synthesis Quality Evaluation (GroUSE Harness)
+
+trelix ships a GroUSE-inspired synthesis quality harness that measures how well the full retrieve+synthesize pipeline answers questions. Use it to catch generator failure modes that nDCG and MRR miss.
+
+### Why a separate synthesis harness?
+
+The existing `trelix eval` command measures *retrieval* quality (nDCG@10, Recall@10, MRR). Retrieval quality tells you whether the right files were retrieved, but not whether the LLM synthesized a correct, faithful, complete answer from those files.
+
+GroUSE (arXiv:2409.06595, COLING 2025) identifies 7 generator failure modes that GPT-4 judges systematically miss and standard NL benchmarks do not cover. This harness adds code-specific extensions for symbol hallucination and stale line references.
+
+### Metrics
+
+| Metric | What it measures | Direction |
+|--------|-----------------|-----------|
+| `hallucination_rate` | Fraction of expected symbols mentioned without retrieval support | Lower is better |
+| `completeness` | Fraction of expected text fragments present in the answer | Higher is better |
+| `faithfulness` | Fraction of answer tokens that appear in retrieved context (lexical heuristic) | Higher is better |
+| `overall` | Weighted composite: `(1-hallucination)*0.4 + completeness*0.4 + faithfulness*0.2` | Higher is better |
+
+### Golden file format
+
+Create a `golden_synthesis.jsonl` file with one JSON object per line:
+
+```json
+{"query": "how does JWT authentication work", "relevant_files": ["src/auth/middleware.py"], "expected_answer_fragments": ["jwt", "decode", "bearer"], "expected_symbols": ["AuthMiddleware.verify"]}
+{"query": "what does the database connection pool do", "relevant_files": ["src/db/pool.py"], "expected_answer_fragments": ["pool", "connection", "max"], "expected_symbols": []}
+{"query": "explain the retry logic", "relevant_files": ["src/utils/retry.py"], "expected_answer_fragments": ["retry", "backoff", "attempt"], "expected_symbols": ["retry_with_backoff"]}
+```
+
+A sample file is provided at `eval/golden_synthesis_sample.jsonl`. Copy and adapt it for your codebase.
+
+**Fields:**
+- `query` (required) — the question to ask
+- `relevant_files` (optional) — files that should be retrieved (not currently used by the harness scorer, but useful for documentation)
+- `expected_answer_fragments` (optional) — strings that MUST appear in a correct answer (case-insensitive)
+- `expected_symbols` (optional) — qualified names that should appear WITHOUT being hallucinated
+
+### Running the evaluation
+
+```bash
+# Run synthesis eval against a golden file
+trelix eval-synthesis ./my-repo --golden ./eval/golden_synthesis.jsonl
+```
+
+Output:
+```
+                     Synthesis Quality Results (GroUSE-style)
+┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┓
+┃ Metric              ┃  Score ┃ Direction         ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━┩
+│ Hallucination rate  │ 0.0000 │ lower = better    │
+│ Completeness        │ 0.8333 │ higher = better   │
+│ Faithfulness        │ 0.7250 │ higher = better   │
+│ Overall             │ 0.8783 │ higher = better   │
+│ Queries evaluated   │      3 │                   │
+└─────────────────────┴────────┴───────────────────┘
+```
+
+### Python API
+
+```python
+from trelix.eval.synthesis import evaluate_synthesis, SynthesisEvalHarness
+from trelix.core.config import IndexConfig
+
+# Score a single answer
+result = evaluate_synthesis(
+    query="how does JWT authentication work",
+    answer="The AuthMiddleware.verify method decodes the jwt bearer token...",
+    retrieved_context="def verify(token): return jwt.decode(token, SECRET)",
+    retrieved_symbols=["AuthMiddleware.verify"],
+    expected_symbols=["AuthMiddleware.verify"],
+    expected_fragments=["jwt", "decode", "bearer"],
+)
+print(result.scores)
+# {'hallucination': 0.0, 'completeness': 1.0, 'faithfulness': 0.87, 'overall': 0.97}
+
+# Run full harness
+config = IndexConfig(repo_path="./my-repo")
+harness = SynthesisEvalHarness(config)
+metrics = harness.run("./eval/golden_synthesis.jsonl")
+print(f"Overall: {metrics['overall']:.3f}")
+```
+
+---
+
+*trelix v2.6.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

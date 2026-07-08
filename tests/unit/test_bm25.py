@@ -232,3 +232,49 @@ class TestEscapeFts5:
         # OR multi-word branch returns '""'. Either is acceptable as long as it
         # produces no real FTS5 matches.
         assert result in ('""', '""*')
+
+
+# ---------------------------------------------------------------------------
+# is_short_query unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsShortQuery:
+    def test_single_word_is_short(self) -> None:
+        from trelix.retrieval.bm25 import is_short_query
+
+        assert is_short_query("login") is True
+
+    def test_five_meaningful_words_at_threshold(self) -> None:
+        from trelix.retrieval.bm25 import is_short_query
+
+        # exactly 5 meaningful tokens → short at default threshold=5
+        assert is_short_query("JWT token validation auth middleware") is True
+
+    def test_six_meaningful_words_not_short(self) -> None:
+        from trelix.retrieval.bm25 import is_short_query
+
+        assert is_short_query("JWT token validation auth middleware handler") is False
+
+    def test_stop_words_not_counted(self) -> None:
+        from trelix.retrieval.bm25 import is_short_query
+
+        # "how does the auth work" — only "auth" and "work" are meaningful (len>2, not stop)
+        assert is_short_query("how does the auth work") is True
+
+    def test_custom_threshold(self) -> None:
+        from trelix.retrieval.bm25 import is_short_query
+
+        assert is_short_query("auth token user session", threshold=3) is False
+        assert is_short_query("auth token", threshold=3) is True
+
+    def test_count_meaningful_tokens(self) -> None:
+        from trelix.retrieval.bm25 import count_meaningful_tokens
+
+        assert count_meaningful_tokens("JWT auth middleware") == 3
+        assert count_meaningful_tokens("how does it work") == 1  # only "work" passes
+
+    def test_empty_query_is_short(self) -> None:
+        from trelix.retrieval.bm25 import is_short_query
+
+        assert is_short_query("") is True

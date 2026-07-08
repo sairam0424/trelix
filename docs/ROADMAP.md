@@ -1,13 +1,13 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 2.4.0 (current) | **Next:** 2.5.0
+> **Version:** 2.5.0 (current) | **Next:** 2.6.0
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
 ---
 
-## ✅ Shipped (v2.0 – v2.4)
+## ✅ Shipped (v2.0 – v2.5)
 
 | Version | Feature |
 |---------|---------|
@@ -35,6 +35,13 @@ This roadmap describes planned features, research directions, and long-term visi
 
 **Goal:** Handle 1M+ symbol codebases without degradation.
 
+### Plan A: Incremental Louvain Community Detection — ✅ In Progress
+- [x] **DF Louvain frontier heuristic** — Maintains prior partition, reprocesses only affected-vertex frontier
+- [x] `compute_affected_frontier(G, seed_nodes, partition)` — Computes affected nodes
+- [x] `detect_communities_incremental()` — Incremental Louvain with >50% frontier fallback
+- [x] **GraphUpdater** — Stores `_prev_partition`, uses incremental detection on file changes
+
+### Remaining backlog
 - [ ] **Streaming indexing** — yield symbols as parsed (no in-memory buffer for large repos)
 - [ ] **Qdrant Cloud integration** — first-class remote vector store with auto-migration
 - [ ] **Incremental embedding** — only re-embed changed symbols on partial re-index
