@@ -517,3 +517,57 @@ class TestShortQueryRouting:
         # When disabled, lexical_only must be False regardless of query length
         for sq in plan.sub_queries:
             assert sq.lexical_only is False
+
+
+# ---------------------------------------------------------------------------
+# AdaptiveRouter config passthrough (Task 3 — Phase 1)
+# ---------------------------------------------------------------------------
+
+
+class TestAdaptiveRouterConfigPassthrough:
+    def test_router_uses_provided_retrieval_config(self):
+        """When retrieval_config is passed, router uses it instead of building from env."""
+        from trelix.core.config import EmbedderConfig, RetrievalConfig
+        from trelix.retrieval.planner.agent import AdaptiveRouter
+
+        cfg = RetrievalConfig()
+        cfg.short_query_lexical_enabled = True
+        cfg.short_query_token_threshold = 2  # very short threshold
+
+        router = AdaptiveRouter(EmbedderConfig(), retrieval_config=cfg)
+
+        # The router should use our cfg, not build a new one from env
+        assert router._retrieval_config is cfg
+
+    def test_router_without_retrieval_config_falls_back_to_env(self):
+        """When retrieval_config=None, router builds from env (existing behavior)."""
+        from trelix.core.config import EmbedderConfig
+        from trelix.retrieval.planner.agent import AdaptiveRouter
+
+        router = AdaptiveRouter(EmbedderConfig())
+        # _retrieval_config may be None (if env build fails) or a RetrievalConfig
+        # Either is acceptable — the key is no TypeError
+        assert router._retrieval_config is None or hasattr(
+            router._retrieval_config, "short_query_lexical_enabled"
+        )
+
+    def test_router_programmatic_config_not_ignored(self):
+        """Programmatic short_query config is honored when passed via retrieval_config."""
+        from unittest.mock import patch
+
+        from trelix.core.config import EmbedderConfig, RetrievalConfig
+        from trelix.retrieval.planner.agent import AdaptiveRouter
+
+        cfg = RetrievalConfig()
+        cfg.short_query_lexical_enabled = True
+        cfg.short_query_token_threshold = 5
+
+        router = AdaptiveRouter(EmbedderConfig(), retrieval_config=cfg)
+
+        with patch("trelix.retrieval.planner.agent.is_short_query", return_value=True):
+            plan = router.route("login")
+
+        for sq in plan.sub_queries:
+            assert sq.lexical_only is True, (
+                "lexical_only not set — router ignored the provided retrieval_config"
+            )

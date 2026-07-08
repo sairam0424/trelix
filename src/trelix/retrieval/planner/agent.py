@@ -38,7 +38,7 @@ from trelix.retrieval.planner.prompts import (
 )
 
 if TYPE_CHECKING:
-    from trelix.core.config import EmbedderConfig
+    from trelix.core.config import EmbedderConfig, RetrievalConfig
 
 logger = logging.getLogger(__name__)
 
@@ -87,17 +87,26 @@ class AdaptiveRouter:
         "full flow",
     )
 
-    def __init__(self, config: EmbedderConfig) -> None:
+    def __init__(
+        self,
+        config: "EmbedderConfig",
+        retrieval_config: "RetrievalConfig | None" = None,
+    ) -> None:
         self._config = config
         # Lazy — only built when an LLM call is actually needed.
         self._planner: QueryPlanner | None = None
-        # Access retrieval config for the short-query lexical gate (v2.6.0, Plan B).
-        try:
-            from trelix.core.config import RetrievalConfig
+        # Use provided retrieval config, or fall back to building from env vars.
+        # Accepting it as a parameter fixes the silent-ignore bug where programmatic
+        # config overrides were lost because each AdaptiveRouter built its own instance.
+        if retrieval_config is not None:
+            self._retrieval_config: RetrievalConfig | None = retrieval_config
+        else:
+            try:
+                from trelix.core.config import RetrievalConfig as _RetrievalConfig
 
-            self._retrieval_config: RetrievalConfig | None = RetrievalConfig()
-        except Exception:
-            self._retrieval_config = None
+                self._retrieval_config = _RetrievalConfig()
+            except Exception:
+                self._retrieval_config = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -347,8 +356,13 @@ class QueryPlanner:
     a valid QueryPlan.
     """
 
-    def __init__(self, config: EmbedderConfig) -> None:
+    def __init__(
+        self,
+        config: "EmbedderConfig",
+        retrieval_config: "RetrievalConfig | None" = None,
+    ) -> None:
         self._config = config
+        self._retrieval_config = retrieval_config
         # Build LLM client via factory
         from trelix.core.config import LLMConfig
         from trelix.llm.client import ChatMessage as _ChatMessage  # noqa: F401
@@ -386,7 +400,7 @@ class QueryPlanner:
             Never raises — falls back to default_plan() on any error.
         """
         if self._router is None:
-            self._router = AdaptiveRouter(self._config)
+            self._router = AdaptiveRouter(self._config, retrieval_config=self._retrieval_config)
         return self._router.route(query, project_context)
 
     # ------------------------------------------------------------------
