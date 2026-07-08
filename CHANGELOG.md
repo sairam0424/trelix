@@ -6,6 +6,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Added — XTR Late-Interaction Reranker (Plan C, EXPERIMENTAL)
+- `TRELIX_RETRIEVAL_RERANK_PROVIDER=xtr` — XTR reranker (NeurIPS 2023,
+  arXiv:2304.01982). Scoring stage is 100–1000x cheaper than ColBERT/PLAID
+  by reusing already-retrieved tokens instead of loading all document tokens.
+- `TRELIX_RETRIEVAL_XTR_TOKENS=100` — candidate token count for XTR retrieval
+  (range 10–1000).
+- `trelix.retrieval.reranker_xtr` — pure-Python XTR scoring module
+  (`xtr_score_documents`, `warn_experimental`).
+- **EXPERIMENTAL:** XTR has not been benchmarked on code-specific retrieval
+  (CoIR/CoREB evaluation pending). Emits `UserWarning` on first use. PLAID
+  remains the production-validated late-interaction option.
+
 ### Added — GroUSE-Style Synthesis Quality Harness (Plan D)
 - `trelix.eval.synthesis` — `SynthesisEvalHarness`, `evaluate_synthesis`,
   `score_hallucination`, `score_completeness`, `score_faithfulness`, `SynthesisResult`.
