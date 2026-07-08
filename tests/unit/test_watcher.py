@@ -463,6 +463,89 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
+# Test: MCP notification bridge (notify_file_changed wired into _do_reindex)
+# ---------------------------------------------------------------------------
+
+
+class TestWatchBridgeMCPNotification:
+    """notify_file_changed must be called after a successful re-index."""
+
+    def _make_watcher(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+        from trelix.indexing.watcher import FileWatcher
+
+        indexer = MagicMock()
+        indexer.config.repo_path = str(tmp_path)
+        indexer.db = MagicMock()
+        indexer.embedder = MagicMock()
+        indexer.embedder.dimension = 384
+        walker = MagicMock()
+
+        with patch("trelix.indexing.watcher.DimensionGuard.check"):
+            return FileWatcher(indexer, walker)
+
+    def test_notify_called_after_successful_reindex(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        watcher = self._make_watcher(tmp_path)
+        watcher._indexer.index_file.return_value = {
+            "status": "ok", "symbols_updated": 2, "chunks_updated": 5, "skipped": False
+        }
+
+        mock_notify = MagicMock()
+        mock_registry = MagicMock()
+
+        with patch.dict("sys.modules", {
+            "trelix_mcp": MagicMock(),
+            "trelix_mcp.server": MagicMock(_subscription_registry=mock_registry),
+            "trelix_mcp.subscriptions": MagicMock(notify_file_changed=mock_notify),
+        }), patch("trelix.graph.updater.GraphUpdater"), \
+             patch.object(watcher, "_should_index", return_value=True):
+            watcher._do_reindex(str(tmp_path / "src" / "auth.py"))
+
+        mock_notify.assert_called_once()
+        call_kwargs = mock_notify.call_args
+        assert call_kwargs is not None
+
+    def test_notify_not_called_when_file_skipped(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        watcher = self._make_watcher(tmp_path)
+        watcher._indexer.index_file.return_value = {
+            "status": "ok", "symbols_updated": 0, "chunks_updated": 0, "skipped": True
+        }
+
+        mock_notify = MagicMock()
+
+        with patch.dict("sys.modules", {
+            "trelix_mcp": MagicMock(),
+            "trelix_mcp.server": MagicMock(_subscription_registry=MagicMock()),
+            "trelix_mcp.subscriptions": MagicMock(notify_file_changed=mock_notify),
+        }), patch("trelix.graph.updater.GraphUpdater"), \
+             patch.object(watcher, "_should_index", return_value=True):
+            watcher._do_reindex(str(tmp_path / "src" / "auth.py"))
+
+        mock_notify.assert_not_called()
+
+    def test_notify_non_fatal_when_trelix_mcp_not_installed(self, tmp_path):
+        """trelix watch must work even without trelix-mcp installed."""
+        from unittest.mock import MagicMock, patch
+        import sys
+
+        watcher = self._make_watcher(tmp_path)
+        watcher._indexer.index_file.return_value = {
+            "status": "ok", "symbols_updated": 1, "chunks_updated": 2, "skipped": False
+        }
+
+        # Simulate trelix_mcp not installed
+        with patch.dict("sys.modules", {"trelix_mcp": None}), \
+             patch("trelix.graph.updater.GraphUpdater"), \
+             patch.object(watcher, "_should_index", return_value=True):
+            # Must not raise — trelix watch works without MCP
+            watcher._do_reindex(str(tmp_path / "src" / "auth.py"))
+
+
+# ---------------------------------------------------------------------------
 # Test: DimensionGuard called at FileWatcher.__init__ time
 # ---------------------------------------------------------------------------
 
