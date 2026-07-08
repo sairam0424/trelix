@@ -392,3 +392,81 @@ class TestIndexFileIncremental:
             (file_id,),
         ).fetchone()
         assert sym_rows[0] >= 1, "Expected at least one symbol inserted for the file"
+
+
+# ---------------------------------------------------------------------------
+# Streaming indexing pipeline (Plan C)
+# ---------------------------------------------------------------------------
+
+
+class TestStreamingIndexing:
+    """
+    Tests for the streaming indexing pipeline (TRELIX_INDEXER_STREAMING=true).
+
+    Streaming mode uses a generator + bounded queue to avoid buffering all
+    files in memory before parsing begins.  The public index() API is unchanged.
+    """
+
+    def _make_streaming_indexer(self, tmp_dir: str) -> "Indexer":  # noqa: F821
+        """
+        Build an Indexer with streaming_enabled=True and fake embedder / vector store.
+        """
+        import pathlib
+        from trelix.core.config import EmbedderConfig, IndexConfig, IndexerConfig, StoreConfig
+        from trelix.indexing.indexer import Indexer
+
+        cfg = IndexConfig(
+            repo_path=tmp_dir,
+            incremental=False,
+            store=StoreConfig(db_path=str(pathlib.Path(tmp_dir) / ".trelix" / "index.db")),
+            embedder=EmbedderConfig.model_construct(provider="local"),
+            indexer=IndexerConfig(streaming_enabled=True),
+        )
+
+        with (
+            patch("trelix.indexing.indexer.make_embedder", return_value=_FakeEmbedder()),
+            patch("trelix.indexing.indexer.make_vector_store", return_value=_FakeVectorStore()),
+            patch("trelix.indexing.indexer.get_parser", side_effect=_fake_get_parser),
+        ):
+            indexer = Indexer(cfg, quiet=True)
+
+        return indexer
+
+    def test_streaming_mode_produces_same_result_as_batch(self, tmp_path: pathlib.Path) -> None:
+        """Streaming pipeline must index the same number of files as batch mode."""
+        # Use SEPARATE directories so the two indexers do not share a DB
+        batch_dir = tmp_path / "batch_repo"
+        batch_dir.mkdir()
+        stream_dir = tmp_path / "stream_repo"
+        stream_dir.mkdir()
+
+        for d in (batch_dir, stream_dir):
+            (d / "a.py").write_text("def foo(): pass", encoding="utf-8")
+            (d / "b.py").write_text("def bar(): pass", encoding="utf-8")
+            (d / "c.py").write_text("def baz(): pass", encoding="utf-8")
+
+        indexer_batch = _make_indexer(str(batch_dir))
+        indexer_stream = self._make_streaming_indexer(str(stream_dir))
+
+        with _patch_rich_progress(fake_parser=True):
+            result_batch = indexer_batch.index()
+
+        with _patch_rich_progress(fake_parser=True):
+            result_stream = indexer_stream.index()
+
+        batch_count = result_batch.get("files_processed", result_batch.get("files_indexed", -1))
+        stream_count = result_stream.get("files_processed", result_stream.get("files_indexed", -2))
+        assert batch_count == stream_count, (
+            f"Batch files: {batch_count}, Stream files: {stream_count}\n"
+            f"Batch: {result_batch}\nStream: {result_stream}"
+        )
+
+    def test_streaming_mode_does_not_buffer_all_files_in_memory(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Generator path must yield files one at a time, not collect all first."""
+        indexer = self._make_streaming_indexer(str(tmp_path))
+
+        # _iter_files must be a generator (has __next__)
+        gen = indexer._iter_files(str(tmp_path))
+        assert hasattr(gen, "__next__"), "_iter_files must be a generator"

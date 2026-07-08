@@ -302,7 +302,115 @@ class Indexer:
             }
         )
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Streaming indexing pipeline (Plan C — TRELIX_INDEXER_STREAMING=true)
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _iter_files(self, repo_path: str):
+        """
+        Generator yielding IndexedFile objects for the given repo path.
+
+        Used by the streaming indexing pipeline to avoid buffering all files
+        in memory before parsing begins.  Yields files as they are discovered
+        by the walker, allowing the parse/embed pipeline to start immediately.
+
+        Memory cost: O(1) — one file object in memory at a time vs O(n) for
+        the existing list(walker.walk()) pattern.
+        """
+        yield from self.walker.walk()
+
+    def _index_streaming(self, repo_path: str) -> dict[str, Any]:
+        """
+        Streaming indexing pipeline — generator-based, bounded memory.
+
+        Files are yielded one at a time from _iter_files() via a producer
+        thread and consumed by the main thread through a bounded Queue(64).
+        Memory usage is O(queue_size) rather than O(repo_size).
+
+        Processes each file via index_file() which handles parse, insert,
+        chunk, and embed in a single call (same code path as watch-mode).
+        Skips the full-repo cross-file resolution pass used by batch index()
+        and instead runs a single resolve pass at the end.
+        """
+        import queue
+        import threading
+
+        QUEUE_SIZE = 64
+        results: dict[str, Any] = {
+            "files_found": 0,
+            "files_indexed": 0,
+            "files_skipped": 0,
+            "symbols_extracted": 0,
+            "chunks_total": 0,
+            "chunks_embedded": 0,
+            "errors": 0,
+            "elapsed_seconds": 0.0,
+        }
+        t_start = time.perf_counter()
+
+        file_queue: queue.Queue = queue.Queue(maxsize=QUEUE_SIZE)
+        sentinel = object()
+
+        def producer() -> None:
+            """Walk the repo and put each IndexedFile onto the queue."""
+            for indexed_file in self._iter_files(repo_path):
+                file_queue.put(indexed_file)
+            file_queue.put(sentinel)
+
+        producer_thread = threading.Thread(target=producer, daemon=True)
+        producer_thread.start()
+
+        while True:
+            item = file_queue.get()
+            if item is sentinel:
+                break
+
+            results["files_found"] += 1
+
+            # Skip unchanged files when incremental mode is enabled
+            if self.config.incremental and self.db.get_file_hash(item.rel_path) == item.hash:
+                results["files_skipped"] += 1
+                continue
+
+            try:
+                call_result = self.index_file(str(item.path))
+                if call_result.get("status") == "ok":
+                    if not call_result.get("skipped"):
+                        results["files_indexed"] += 1
+                        results["symbols_extracted"] += call_result.get("symbols_updated", 0)
+                        results["chunks_embedded"] += call_result.get("chunks_updated", 0)
+                    else:
+                        results["files_skipped"] += 1
+                else:
+                    results["errors"] += 1
+                    logger.debug(
+                        "Streaming index: error for %s: %s",
+                        item.path,
+                        call_result.get("error"),
+                    )
+            except Exception as exc:
+                logger.debug("Streaming index: unhandled error for %s: %s", item.path, exc)
+                results["errors"] += 1
+
+        producer_thread.join()
+
+        # Cross-file resolution — single pass after all files are processed
+        try:
+            self.db.resolve_cross_file_calls()
+            self.db.resolve_import_file_ids()
+            self.db.resolve_cross_file_type_edges()
+            self.db.resolve_angular_selectors()
+        except Exception as exc:
+            logger.debug("Streaming index: resolution pass failed (non-fatal): %s", exc)
+
+        results["elapsed_seconds"] = round(time.perf_counter() - t_start, 2)
+        return results
+
     def index(self) -> dict[str, Any]:
+        # Route to streaming pipeline when enabled
+        if getattr(self.config, "indexer", None) and self.config.indexer.streaming_enabled:
+            return self._index_streaming(self.config.repo_path)
+
         t_start = time.perf_counter()
         stats: dict[str, Any] = {
             "files_found": 0,

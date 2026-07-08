@@ -730,6 +730,32 @@ class LLMConfig(BaseSettings):
 
 
 # ---------------------------------------------------------------------------
+# Indexer pipeline config
+# ---------------------------------------------------------------------------
+
+
+class IndexerConfig(BaseSettings):
+    """Controls low-level pipeline behaviour inside Indexer."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_INDEXER_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    # Streaming pipeline: yield files one at a time through a bounded queue
+    # instead of collecting all files in memory before parsing begins.
+    # Reduces peak memory from O(repo_size) to O(queue_size=64).
+    # Default off — opt-in via TRELIX_INDEXER_STREAMING=true.
+    streaming_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_INDEXER_STREAMING",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------
 
@@ -761,6 +787,7 @@ class IndexConfig(BaseSettings):
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     sparse: SparseConfig = Field(default_factory=SparseConfig)
+    indexer: IndexerConfig = Field(default_factory=IndexerConfig)
 
     # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
     # Requires LLM API access. Off by default — zero cost when disabled.
