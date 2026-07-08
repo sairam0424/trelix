@@ -25,6 +25,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from trelix.retrieval.synthesizer import Synthesizer
+
 
 @dataclass
 class SynthesisResult:
@@ -261,7 +263,6 @@ class SynthesisEvalHarness:
                 ]
 
                 try:
-                    from trelix.retrieval.synthesizer import Synthesizer
                     synthesizer = Synthesizer(self._config)
                     answer = synthesizer.synthesize(query, context)
                 except Exception:

@@ -107,3 +107,64 @@ class TestSynthesisResult:
         assert "overall" in result.scores
         assert result.scores["hallucination"] == 0.0
         assert result.scores["completeness"] == 1.0
+
+
+class TestSynthesisEvalHarness:
+    def _make_golden(self, tmp_path, entries):
+        import json
+        from pathlib import Path
+        golden = tmp_path / "golden_synthesis.jsonl"
+        with open(golden, "w") as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + "\n")
+        return str(golden)
+
+    def test_harness_returns_required_keys(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+        from trelix.eval.synthesis import SynthesisEvalHarness
+        from trelix.core.config import IndexConfig
+
+        golden = self._make_golden(tmp_path, [
+            {
+                "query": "how does auth work",
+                "relevant_files": ["src/auth.py"],
+                "expected_answer_fragments": ["jwt"],
+                "expected_symbols": ["AuthMiddleware.verify"],
+            }
+        ])
+
+        config = IndexConfig(repo_path=str(tmp_path))
+        harness = SynthesisEvalHarness.__new__(SynthesisEvalHarness)
+        harness._config = config
+
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.return_value = MagicMock(
+            context_text="def verify(token): return jwt.decode(token)",
+            results=[MagicMock(symbol=MagicMock(qualified_name="AuthMiddleware.verify"))],
+        )
+        harness._retriever = mock_retriever
+
+        with patch("trelix.eval.synthesis.Synthesizer") as MockSynth:
+            MockSynth.return_value.synthesize.return_value = "The AuthMiddleware.verify decodes jwt tokens."
+            metrics = harness.run(golden)
+
+        assert "hallucination_rate" in metrics
+        assert "completeness" in metrics
+        assert "faithfulness" in metrics
+        assert "overall" in metrics
+        assert "n_queries" in metrics
+        assert metrics["n_queries"] == 1.0
+
+    def test_empty_golden_returns_zeros(self, tmp_path):
+        from trelix.eval.synthesis import SynthesisEvalHarness
+        from trelix.core.config import IndexConfig
+
+        golden = self._make_golden(tmp_path, [])
+        config = IndexConfig(repo_path=str(tmp_path))
+        harness = SynthesisEvalHarness.__new__(SynthesisEvalHarness)
+        harness._config = config
+        harness._retriever = None
+
+        metrics = harness.run(golden)
+        assert metrics["n_queries"] == 0.0
+        assert metrics["overall"] == 0.0
