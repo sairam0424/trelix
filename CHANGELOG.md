@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Added — GroUSE-Style Synthesis Quality Harness (Plan D)
+- `trelix.eval.synthesis` — `SynthesisEvalHarness`, `evaluate_synthesis`,
+  `score_hallucination`, `score_completeness`, `score_faithfulness`, `SynthesisResult`.
+- `trelix eval-synthesis --golden <path>` — CLI command for synthesis quality evaluation.
+- `eval/golden_synthesis_sample.jsonl` — sample golden file for getting started.
+- Golden file format extends the existing eval harness with optional
+  `expected_answer_fragments` and `expected_symbols` fields.
+- Research basis: GroUSE (arXiv:2409.06595, COLING 2025) — 7 failure modes,
+  144 unit tests. GPT-4 correlation is insufficient as a quality proxy.
+
 ### Added — Short-Query Lexical Fallback (Plan B)
 - `TRELIX_RETRIEVAL_SHORT_QUERY_LEXICAL=true` — enables BM25+grep-only routing
   for queries with ≤ threshold meaningful tokens (default off).

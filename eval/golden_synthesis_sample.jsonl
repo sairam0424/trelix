@@ -1,0 +1,3 @@
+{"query": "how does JWT authentication work", "relevant_files": ["src/auth/middleware.py"], "expected_answer_fragments": ["jwt", "decode", "bearer"], "expected_symbols": ["AuthMiddleware.verify"]}
+{"query": "what does the database connection pool do", "relevant_files": ["src/db/pool.py"], "expected_answer_fragments": ["pool", "connection", "max"], "expected_symbols": []}
+{"query": "explain the retry logic", "relevant_files": ["src/utils/retry.py"], "expected_answer_fragments": ["retry", "backoff", "attempt"], "expected_symbols": ["retry_with_backoff"]}
