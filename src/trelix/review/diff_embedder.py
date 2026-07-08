@@ -126,7 +126,9 @@ class DiffEmbedder:
         ).fetchall()
 
         results = []
-        q_norm = math.sqrt(sum(v * v for v in query_emb)) or 1.0
+        q_norm = math.sqrt(sum(v * v for v in query_emb))
+        if not q_norm or math.isnan(q_norm):
+            return []
 
         for pr_ref, header, before, after, packed in rows:
             if not packed:
@@ -134,8 +136,14 @@ class DiffEmbedder:
             try:
                 n = len(packed) // 4
                 stored_emb = list(struct.unpack(f"{n}f", packed))
+                # Skip stored embeddings with different dimensions
+                if len(stored_emb) != len(query_emb):
+                    continue
                 dot = sum(a * b for a, b in zip(query_emb, stored_emb))
-                s_norm = math.sqrt(sum(v * v for v in stored_emb)) or 1.0
+                s_norm = math.sqrt(sum(v * v for v in stored_emb))
+                # Guard against zero or NaN norms
+                if not s_norm or math.isnan(s_norm) or math.isnan(q_norm):
+                    continue
                 score = dot / (q_norm * s_norm)
                 results.append(
                     {

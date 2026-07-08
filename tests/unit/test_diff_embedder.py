@@ -49,9 +49,14 @@ class TestDiffEmbedder:
         long_code = "x = 1\n" * 500
         result = de.embed_hunk(before_code=long_code, after_code="y = 2")
         assert result is not None
-        # Verify embed_query was called with something shorter than raw concat
+        # Verify embed_query was called with truncated content
         call_arg = mock_embedder.embed_query.call_args[0][0]
-        assert len(call_arg) <= DiffEmbedder.MAX_EMBED_CHARS + 10  # small buffer
+        # Upper bound: must not exceed MAX_EMBED_CHARS
+        assert len(call_arg) <= DiffEmbedder.MAX_EMBED_CHARS + 10
+        # Lower bound: must not be empty or trivially short (proves truncation not erasure)
+        assert len(call_arg) >= 100, (
+            f"Truncation removed too much content: only {len(call_arg)} chars remain"
+        )
 
     def test_search_similar_diffs_returns_sorted_by_score(self, tmp_path):
         from unittest.mock import MagicMock

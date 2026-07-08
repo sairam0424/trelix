@@ -41,7 +41,7 @@ def make_scip_symbol_id(package: str, version: str, qualified_name: str) -> str:
     Reference: Sourcegraph SCIP cross-repo navigation
     (github.com/sourcegraph/scip-clang/blob/main/docs/CrossRepo.md)
     """
-    raw = f"{package}@{version}:{qualified_name}"
+    raw = f"{package}||{version}||{qualified_name}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -73,7 +73,8 @@ class FederatedRetriever:
         self._hits = 0
         self._misses = 0
         # Cross-repo symbol index (in-memory SQLite, rebuilt on record_exports call)
-        self._fed_conn = sqlite3.connect(":memory:")
+        self._fed_conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self._fed_lock = threading.Lock()
         self._fed_conn.execute(
             """CREATE TABLE IF NOT EXISTS federation_symbols (
                 symbol_id      TEXT PRIMARY KEY,
@@ -86,6 +87,51 @@ class FederatedRetriever:
         )
         self._fed_conn.commit()
 
+    def record_exports(self, alias: str, repo_path: str) -> int:
+        """
+        Index all exported symbols from a repo into the federation_symbols table.
+
+        Reads the repo's trelix index and inserts one row per symbol so that
+        resolve_symbol() can find which repo defines a given qualified name.
+        Returns the number of symbols indexed.
+
+        Call this after indexing a repo to populate the cross-repo resolution table:
+            fed.record_exports(alias="auth-service", repo_path="/path/to/auth")
+        """
+        from trelix.core.config import IndexConfig
+        from trelix.store.db import Database
+
+        try:
+            cfg = IndexConfig(repo_path=repo_path)
+            db = Database(cfg.db_path_absolute)
+            rows = db._conn.execute(
+                "SELECT s.qualified_name, f.rel_path "
+                "FROM symbols s JOIN files f ON s.file_id = f.id"
+            ).fetchall()
+            db._conn.close()
+        except Exception as exc:
+            logger.warning("record_exports(%r): could not read index: %s", alias, exc)
+            return 0
+
+        stored = 0
+        with self._fed_lock:
+            for qualified_name, file_path in rows:
+                symbol_id = make_scip_symbol_id(alias, "", qualified_name)
+                try:
+                    self._fed_conn.execute(
+                        "INSERT OR IGNORE INTO federation_symbols "
+                        "(symbol_id, package, version, qualified_name, repo_alias, file_path) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (symbol_id, alias, "", qualified_name, alias, file_path),
+                    )
+                    stored += 1
+                except Exception:
+                    continue
+            self._fed_conn.commit()
+
+        logger.debug("record_exports(%r): indexed %d symbols", alias, stored)
+        return stored
+
     def resolve_symbol(self, qualified_name: str) -> list[dict]:
         """
         Find all repos that define a symbol with the given qualified name.
@@ -93,12 +139,13 @@ class FederatedRetriever:
         Returns list of {alias, file_path} dicts sorted by alias.
         Uses exact match OR suffix match so 'verify' matches 'AuthService.verify'.
         """
-        rows = self._fed_conn.execute(
-            """SELECT repo_alias, file_path FROM federation_symbols
-               WHERE qualified_name = ? OR qualified_name LIKE ?
-               ORDER BY repo_alias""",
-            (qualified_name, f"%.{qualified_name}"),
-        ).fetchall()
+        with self._fed_lock:
+            rows = self._fed_conn.execute(
+                """SELECT repo_alias, file_path FROM federation_symbols
+                   WHERE qualified_name = ? OR qualified_name LIKE ?
+                   ORDER BY repo_alias""",
+                (qualified_name, f"%.{qualified_name}"),
+            ).fetchall()
         return [{"alias": r[0], "file_path": r[1]} for r in rows]
 
     def _make_cache_key(self, query: str, k: int) -> str:

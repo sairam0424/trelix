@@ -471,3 +471,45 @@ class TestStreamingIndexing:
         # _iter_files must be a generator (has __next__)
         gen = indexer._iter_files(str(tmp_path))
         assert hasattr(gen, "__next__"), "_iter_files must be a generator"
+
+    def test_streaming_iter_files_is_true_generator_not_list_iter(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """_iter_files must be a generator function (GeneratorType), not iter(list(...))."""
+        import types
+
+        indexer = self._make_streaming_indexer(str(tmp_path))
+        gen = indexer._iter_files(str(tmp_path))
+        assert isinstance(gen, types.GeneratorType), (
+            "_iter_files must return a GeneratorType so files are yielded lazily. "
+            f"Got: {type(gen).__name__}"
+        )
+
+    def test_streaming_producer_exception_does_not_hang(self, tmp_path: pathlib.Path) -> None:
+        """If _iter_files raises, _index_streaming must complete — not hang forever."""
+        import threading
+        from unittest.mock import patch
+
+        indexer = self._make_streaming_indexer(str(tmp_path))
+
+        def bad_iter_files(repo_path: str):
+            raise RuntimeError("walker exploded")
+            yield  # make it a generator
+
+        completed = threading.Event()
+        result = {}
+
+        def run():
+            with patch.object(indexer, "_iter_files", bad_iter_files):
+                result["out"] = indexer._index_streaming(str(tmp_path))
+            completed.set()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        # Must complete within 3 seconds — not hang
+        finished = completed.wait(timeout=3.0)
+        assert finished, (
+            "_index_streaming hung after _iter_files raised. "
+            "Producer must use try/finally to guarantee sentinel is enqueued."
+        )
+        assert result["out"]["errors"] >= 0  # completed with some error count

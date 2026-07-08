@@ -321,3 +321,68 @@ class TestCrossRepoSymbolResolution:
         fed = FederatedRetriever(registry)
         results = fed.resolve_symbol("NonExistentClass.method")
         assert results == []
+
+    def test_resolve_symbol_bare_name_no_dot(self, tmp_path):
+        """resolve_symbol must find symbols whose qualified_name has no dot (bare names)."""
+        from unittest.mock import MagicMock
+
+        from trelix.federation.retriever import FederatedRetriever, make_scip_symbol_id
+
+        registry = MagicMock()
+        registry.list.return_value = []
+        fed = FederatedRetriever(registry)
+
+        # Insert bare name (no dot prefix)
+        fed._fed_conn.execute(
+            "INSERT INTO federation_symbols VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                make_scip_symbol_id("myapp", "", "login"),
+                "myapp",
+                "",
+                "login",
+                "myapp",
+                "src/login.py",
+            ),
+        )
+        fed._fed_conn.commit()
+
+        # Exact match must find it
+        results = fed.resolve_symbol("login")
+        assert len(results) == 1
+        assert results[0]["alias"] == "myapp"
+
+    def test_resolve_symbol_like_suffix_branch(self, tmp_path):
+        """resolve_symbol suffix-LIKE must find 'AuthService.verify' when querying 'verify'."""
+        from unittest.mock import MagicMock
+
+        from trelix.federation.retriever import FederatedRetriever, make_scip_symbol_id
+
+        registry = MagicMock()
+        registry.list.return_value = []
+        fed = FederatedRetriever(registry)
+
+        fed._fed_conn.execute(
+            "INSERT INTO federation_symbols VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                make_scip_symbol_id("auth", "", "AuthService.verify"),
+                "auth",
+                "",
+                "AuthService.verify",
+                "auth",
+                "src/auth.py",
+            ),
+        )
+        fed._fed_conn.commit()
+
+        # Suffix-LIKE query
+        results = fed.resolve_symbol("verify")
+        assert len(results) == 1, f"Expected 1 result, got {len(results)}"
+        assert results[0]["alias"] == "auth"
+
+    def test_scip_id_scoped_package_no_collision(self):
+        """@scope/pkg packages must not collide with same-name unscoped packages."""
+        from trelix.federation.retriever import make_scip_symbol_id
+
+        id1 = make_scip_symbol_id("@scope/pkg", "1.0", "login")
+        id2 = make_scip_symbol_id("pkg", "@scope/1.0", "login")
+        assert id1 != id2, "|| separator must prevent scoped-package collisions"

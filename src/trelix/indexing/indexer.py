@@ -353,9 +353,14 @@ class Indexer:
 
         def producer() -> None:
             """Walk the repo and put each IndexedFile onto the queue."""
-            for indexed_file in self._iter_files(repo_path):
-                file_queue.put(indexed_file)
-            file_queue.put(sentinel)
+            try:
+                for indexed_file in self._iter_files(repo_path):
+                    file_queue.put(indexed_file)
+            except Exception as exc:
+                logger.warning("Streaming indexer producer failed: %s", exc)
+            finally:
+                # Always enqueue sentinel so consumer never hangs.
+                file_queue.put(sentinel)
 
         producer_thread = threading.Thread(target=producer, daemon=True)
         producer_thread.start()
@@ -379,6 +384,7 @@ class Indexer:
                         results["files_indexed"] += 1
                         results["symbols_extracted"] += call_result.get("symbols_updated", 0)
                         results["chunks_embedded"] += call_result.get("chunks_updated", 0)
+                        results["chunks_total"] += call_result.get("chunks_updated", 0)
                     else:
                         results["files_skipped"] += 1
                 else:
