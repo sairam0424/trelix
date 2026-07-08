@@ -132,7 +132,7 @@ class FederatedRetriever:
         logger.debug("record_exports(%r): indexed %d symbols", alias, stored)
         return stored
 
-    def resolve_symbol(self, qualified_name: str) -> list[dict]:
+    def resolve_symbol(self, qualified_name: str) -> list[dict[str, str]]:
         """
         Find all repos that define a symbol with the given qualified name.
 

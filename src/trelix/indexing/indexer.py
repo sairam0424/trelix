@@ -30,6 +30,11 @@ parent_id / caller_id convention:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 import asyncio
 import logging
 import time
@@ -306,7 +311,7 @@ class Indexer:
     # Streaming indexing pipeline (Plan C — TRELIX_INDEXER_STREAMING=true)
     # ──────────────────────────────────────────────────────────────────────
 
-    def _iter_files(self, repo_path: str):
+    def _iter_files(self, repo_path: str) -> Iterator[IndexedFile]:
         """
         Generator yielding IndexedFile objects for the given repo path.
 
@@ -348,7 +353,7 @@ class Indexer:
         }
         t_start = time.perf_counter()
 
-        file_queue: queue.Queue = queue.Queue(maxsize=QUEUE_SIZE)
+        file_queue: queue.Queue[object] = queue.Queue(maxsize=QUEUE_SIZE)
         sentinel = object()
 
         def producer() -> None:

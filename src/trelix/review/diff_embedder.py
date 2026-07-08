@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import struct
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from trelix.embedder.base import BaseEmbedder
@@ -63,7 +63,7 @@ class DiffEmbedder:
         self,
         db: Database,
         pr_ref: str,
-        hunks: list[dict],
+        hunks: list[dict[str, Any]],
     ) -> int:
         """
         Embed and store all hunks for a PR reference.
@@ -107,7 +107,7 @@ class DiffEmbedder:
         query_before: str,
         query_after: str,
         k: int = 5,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
         Find historically similar diffs using before+after embedding similarity.
 
