@@ -16,6 +16,7 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.2.0 | Agentic ReAct loop, data-flow analysis, SPLADE sparse retrieval, multi-granularity indexing |
 | v2.3.0 | DimensionGuard, MultiQueryExpander wiring, MCP Resources + Prompts, DiffReviewer, FederatedRetriever |
 | v2.4.0 | flare_max_retries rename, expansion observability, federation cache, GitHub PR review, watch-all, MCP pagination |
+| Phase 1 | Watch bridge wired ✅, idx_files_rel_path index ✅, AdaptiveRouter config passthrough ✅ |
 
 ---
 

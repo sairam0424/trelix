@@ -837,3 +837,39 @@ class TestVectorStoreHNSW:
         results = vs2.search([1.0, 0.0, 0.0, 0.0], k=5)
         assert results[0][0] == 1
         vs2.close()
+
+
+# ---------------------------------------------------------------------------
+# rel_path index for watch performance
+# ---------------------------------------------------------------------------
+
+
+class TestFilesRelPathIndex:
+    def test_files_rel_path_index_exists(self, tmp_path: Path) -> None:
+        """idx_files_rel_path index must exist after init_schema()."""
+        db = Database(tmp_path / "test.db")
+        db.init_schema()
+
+        # Query sqlite_master to confirm the index exists
+        row = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_files_rel_path'"
+        ).fetchone()
+        assert row is not None, (
+            "idx_files_rel_path index not found — "
+            "add 'CREATE INDEX IF NOT EXISTS idx_files_rel_path "
+            "ON files(rel_path)' to init_schema()"
+        )
+
+    def test_files_rel_path_index_covers_rel_path_column(self, tmp_path: Path) -> None:
+        """EXPLAIN QUERY PLAN should show idx_files_rel_path usage for WHERE rel_path = ?"""
+        db = Database(tmp_path / "test.db")
+        db.init_schema()
+
+        # EXPLAIN QUERY PLAN shows index usage for WHERE rel_path = ?
+        plan = db._conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM files WHERE rel_path = ?", ("src/auth.py",)
+        ).fetchall()
+        plan_text = "\n".join(str(dict(row)) for row in plan)
+        assert "idx_files_rel_path" in plan_text, (
+            f"Query plan does not use idx_files_rel_path: {plan_text}"
+        )
