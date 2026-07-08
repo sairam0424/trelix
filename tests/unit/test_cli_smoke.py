@@ -119,6 +119,17 @@ def test_watch_all_help() -> None:
     assert "watch-all" in result.output.lower() or "registry" in result.output.lower()
 
 
+def test_eval_help():
+    result = runner.invoke(app, ["eval", "--help"])
+    assert result.exit_code == 0
+
+
+def test_eval_synthesis_help():
+    result = runner.invoke(app, ["eval-synthesis", "--help"])
+    assert result.exit_code == 0
+    assert "--golden" in result.output or "golden" in result.output.lower()
+
+
 def test_watch_all_no_repos_exits_gracefully() -> None:
     """trelix watch-all with empty registry shows helpful message."""
     from unittest.mock import patch
