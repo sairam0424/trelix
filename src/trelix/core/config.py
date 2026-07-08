@@ -356,7 +356,7 @@ class RetrievalConfig(BaseSettings):
     rrf_k: int = 60
 
     rerank: bool = True
-    rerank_provider: Literal["cohere", "cross_encoder", "plaid"] = "cohere"
+    rerank_provider: Literal["cohere", "cross_encoder", "plaid", "xtr"] = "cohere"
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     rerank_top_n: int = 15
 
