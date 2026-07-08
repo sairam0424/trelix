@@ -21,6 +21,7 @@ import logging
 
 from trelix.core.config import RetrievalConfig
 from trelix.core.models import SearchResult
+from trelix.retrieval.reranker_xtr import xtr_score_documents  # noqa: F401 — imported for mock patching
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,8 @@ def rerank(
                 endpoint=config.cohere_endpoint,
                 model=config.cohere_rerank_model,
             )
+        case "xtr":
+            return _xtr_rerank(query, results, top_n)
         case _:
             return results[:top_n]
 
@@ -220,3 +223,50 @@ def _cohere_rerank(
     for i, r in enumerate(fallback, start=1):
         r.rank = i
     return fallback
+
+
+def _xtr_rerank(
+    query: str,
+    results: list[SearchResult],
+    top_n: int,
+) -> list[SearchResult]:
+    """XTR late-interaction reranking (experimental, arXiv:2304.01982).
+
+    Uses a single-vector approximation: each result is treated as a single
+    retrieved token, keyed by its position index. True token-level XTR requires
+    a ColBERT-style multi-vector token embedder; this approximation reuses the
+    already-retrieved per-result scores.
+
+    Emits a UserWarning on every call (experimental status).
+    Falls back gracefully (warning, no raise) if xtr_score_documents errors.
+    """
+    from trelix.retrieval.reranker_xtr import warn_experimental
+
+    warn_experimental()
+    try:
+        # Build query_token_scores: treat the single query as one token (index 0),
+        # with each result's position as its doc_id and its current score as the
+        # retrieved token score.
+        query_token_scores = {
+            0: [(idx, r.score) for idx, r in enumerate(results)]
+        }
+        candidate_ids = list(range(len(results)))
+        k_impute = min(r.score for r in results) if results else 0.0
+
+        xtr_pairs = xtr_score_documents(
+            query_token_scores=query_token_scores,
+            candidate_doc_ids=candidate_ids,
+            k_impute=k_impute,
+        )
+        idx_to_xtr_score = {idx: score for idx, score in xtr_pairs}
+        reranked = sorted(
+            results,
+            key=lambda r: idx_to_xtr_score.get(results.index(r), 0.0),
+            reverse=True,
+        )
+        for i, r in enumerate(reranked, start=1):
+            r.rank = i
+        return reranked[:top_n]
+    except Exception as exc:
+        log.warning("XTR reranker failed, returning unranked results: %s", exc)
+        return results[:top_n]

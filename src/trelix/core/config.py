@@ -479,6 +479,14 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR",
     )
 
+    # XTR late-interaction reranker — candidate token count (experimental, v2.6.0)
+    xtr_candidate_tokens: int = Field(
+        default=100,
+        ge=10,
+        le=1000,
+        alias="TRELIX_RETRIEVAL_XTR_TOKENS",
+    )
+
     # Agentic ReAct loop — multi-turn retrieve+observe+synthesize
     agentic_enabled: bool = Field(
         default=False,
