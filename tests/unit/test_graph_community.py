@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import networkx as nx
+
 from trelix.core.models import CallEdge, IndexedFile, Language, Symbol, SymbolKind
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import assign_communities, detect_communities, get_community_summary
@@ -117,3 +119,61 @@ class TestCommunityDetection:
                 f"Expected auth cluster (community {auth_community}) != "
                 f"db cluster (community {db_community})"
             )
+
+
+class TestAffectedFrontier:
+    def _make_graph(self):
+        """Triangle A-B-C, separate node D."""
+        G = nx.Graph()
+        G.add_edges_from([(1, 2), (2, 3), (1, 3)])
+        G.add_node(4)
+        return G
+
+    def test_seed_nodes_always_in_frontier(self):
+        from trelix.graph.community import compute_affected_frontier
+        G = self._make_graph()
+        partition = {1: 0, 2: 0, 3: 0, 4: 1}
+        frontier = compute_affected_frontier(G, seed_nodes={2}, partition=partition)
+        assert 2 in frontier
+
+    def test_neighbors_of_seed_in_frontier(self):
+        from trelix.graph.community import compute_affected_frontier
+        G = self._make_graph()
+        partition = {1: 0, 2: 0, 3: 0, 4: 1}
+        frontier = compute_affected_frontier(G, seed_nodes={2}, partition=partition)
+        # node 2 neighbors are 1 and 3
+        assert 1 in frontier
+        assert 3 in frontier
+
+    def test_same_community_nodes_in_frontier(self):
+        from trelix.graph.community import compute_affected_frontier
+        G = self._make_graph()
+        # nodes 1,2,3 all in community 0; node 4 in community 1
+        partition = {1: 0, 2: 0, 3: 0, 4: 1}
+        frontier = compute_affected_frontier(G, seed_nodes={1}, partition=partition)
+        # all of community 0 should be included
+        assert {1, 2, 3}.issubset(frontier)
+
+    def test_unrelated_node_not_in_frontier(self):
+        from trelix.graph.community import compute_affected_frontier
+        G = self._make_graph()
+        partition = {1: 0, 2: 0, 3: 0, 4: 1}
+        frontier = compute_affected_frontier(G, seed_nodes={1}, partition=partition)
+        # node 4 is isolated, different community — should NOT be in frontier
+        assert 4 not in frontier
+
+    def test_empty_seed_returns_empty(self):
+        from trelix.graph.community import compute_affected_frontier
+        G = self._make_graph()
+        partition = {1: 0, 2: 0, 3: 0, 4: 1}
+        frontier = compute_affected_frontier(G, seed_nodes=set(), partition=partition)
+        assert frontier == set()
+
+    def test_empty_partition_returns_seed_plus_neighbors(self):
+        from trelix.graph.community import compute_affected_frontier
+        G = self._make_graph()
+        partition = {}
+        frontier = compute_affected_frontier(G, seed_nodes={2}, partition=partition)
+        assert 2 in frontier
+        assert 1 in frontier
+        assert 3 in frontier

@@ -79,6 +79,54 @@ def assign_communities(cg: CodeGraph, communities: dict[int, int]) -> None:
             cg.nx.nodes[node_id]["community"] = community_id
 
 
+def compute_affected_frontier(
+    G: nx.Graph,
+    seed_nodes: set[int],
+    partition: dict[int, int],
+) -> set[int]:
+    """
+    Compute the DF Louvain approximate affected-vertex frontier.
+
+    Returns the set of nodes that should be re-evaluated in an incremental
+    Louvain pass after a batch of graph changes touching `seed_nodes`.
+
+    Frontier = seed_nodes
+               + all neighbors of seed_nodes (in G)
+               + all nodes sharing a community with any seed_node (from partition)
+
+    This is the DF Louvain heuristic from arXiv:2404.19634 — approximate
+    (may miss some affected vertices) but 179x faster than full re-run.
+    The trade-off is acceptable for trelix's community labels which are
+    search-quality metadata, not security decisions.
+
+    Args:
+        G:          The undirected graph (same G_connected used in detect_communities)
+        seed_nodes: Nodes directly affected by the file change
+        partition:  Previous community assignment {node_id: community_id}
+
+    Returns:
+        set[int] of node IDs to include in the next Louvain pass
+    """
+    if not seed_nodes:
+        return set()
+
+    frontier: set[int] = set(seed_nodes)
+
+    # Add direct neighbors of all seed nodes
+    for node in seed_nodes:
+        if G.has_node(node):
+            frontier.update(G.neighbors(node))
+
+    # Add all nodes in the same community as any seed node
+    if partition:
+        seed_communities = {partition[n] for n in seed_nodes if n in partition}
+        for node_id, community_id in partition.items():
+            if community_id in seed_communities:
+                frontier.add(node_id)
+
+    return frontier
+
+
 def compute_pagerank(cg: CodeGraph, alpha: float = 0.85) -> dict[int, float]:
     """
     Compute PageRank over the code graph. Returns node_id → normalized score.
