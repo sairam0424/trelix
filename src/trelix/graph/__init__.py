@@ -4,8 +4,10 @@ from trelix.graph.builder import GraphBuilder, GraphBuildResult
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import (
     assign_communities,
+    compute_affected_frontier,
     compute_pagerank,
     detect_communities,
+    detect_communities_incremental,
     get_community_summary,
 )
 from trelix.graph.concepts import ConceptExtractor, SemanticConcept, load_concepts, save_concepts
@@ -19,6 +21,8 @@ __all__ = [
     "ConceptExtractor",
     "SemanticConcept",
     "detect_communities",
+    "detect_communities_incremental",
+    "compute_affected_frontier",
     "assign_communities",
     "get_community_summary",
     "compute_pagerank",
