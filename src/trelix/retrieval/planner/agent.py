@@ -89,8 +89,8 @@ class AdaptiveRouter:
 
     def __init__(
         self,
-        config: "EmbedderConfig",
-        retrieval_config: "RetrievalConfig | None" = None,
+        config: EmbedderConfig,
+        retrieval_config: RetrievalConfig | None = None,
     ) -> None:
         self._config = config
         # Lazy — only built when an LLM call is actually needed.
@@ -358,8 +358,8 @@ class QueryPlanner:
 
     def __init__(
         self,
-        config: "EmbedderConfig",
-        retrieval_config: "RetrievalConfig | None" = None,
+        config: EmbedderConfig,
+        retrieval_config: RetrievalConfig | None = None,
     ) -> None:
         self._config = config
         self._retrieval_config = retrieval_config

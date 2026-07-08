@@ -856,7 +856,8 @@ class TestFilesRelPathIndex:
         ).fetchone()
         assert row is not None, (
             "idx_files_rel_path index not found — "
-            "add 'CREATE INDEX IF NOT EXISTS idx_files_rel_path ON files(rel_path)' to init_schema()"
+            "add 'CREATE INDEX IF NOT EXISTS idx_files_rel_path "
+            "ON files(rel_path)' to init_schema()"
         )
 
     def test_files_rel_path_index_covers_rel_path_column(self, tmp_path: Path) -> None:
@@ -866,8 +867,7 @@ class TestFilesRelPathIndex:
 
         # EXPLAIN QUERY PLAN shows index usage for WHERE rel_path = ?
         plan = db._conn.execute(
-            "EXPLAIN QUERY PLAN SELECT id FROM files WHERE rel_path = ?",
-            ("src/auth.py",)
+            "EXPLAIN QUERY PLAN SELECT id FROM files WHERE rel_path = ?", ("src/auth.py",)
         ).fetchall()
         plan_text = "\n".join(str(dict(row)) for row in plan)
         assert "idx_files_rel_path" in plan_text, (
