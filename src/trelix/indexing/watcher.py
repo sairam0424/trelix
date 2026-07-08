@@ -198,8 +198,12 @@ class FileWatcher:
             # Non-fatal: trelix watch works without trelix-mcp installed.
             if not result.get("skipped", False):
                 try:
-                    from trelix_mcp.server import _subscription_registry  # type: ignore[import]
-                    from trelix_mcp.subscriptions import notify_file_changed  # type: ignore[import]
+                    from trelix_mcp.server import (
+                        _subscription_registry,  # type: ignore[import-untyped]
+                    )
+                    from trelix_mcp.subscriptions import (
+                        notify_file_changed,  # type: ignore[import-untyped]
+                    )
 
                     notify_file_changed(
                         registry=_subscription_registry,
