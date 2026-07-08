@@ -21,7 +21,9 @@ import logging
 
 from trelix.core.config import RetrievalConfig
 from trelix.core.models import SearchResult
-from trelix.retrieval.reranker_xtr import xtr_score_documents  # noqa: F401 — imported for mock patching
+from trelix.retrieval.reranker_xtr import (
+    xtr_score_documents,  # noqa: F401 — imported for mock patching
+)
 
 log = logging.getLogger(__name__)
 
@@ -247,9 +249,7 @@ def _xtr_rerank(
         # Build query_token_scores: treat the single query as one token (index 0),
         # with each result's position as its doc_id and its current score as the
         # retrieved token score.
-        query_token_scores = {
-            0: [(idx, r.score) for idx, r in enumerate(results)]
-        }
+        query_token_scores = {0: [(idx, r.score) for idx, r in enumerate(results)]}
         candidate_ids = list(range(len(results)))
         k_impute = min(r.score for r in results) if results else 0.0
 

@@ -174,9 +174,7 @@ def count_meaningful_tokens(query: str) -> int:
     import re
 
     raw_tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", query)
-    return sum(
-        1 for t in raw_tokens if t.lower() not in _STOP_WORDS and len(t) >= 3
-    )
+    return sum(1 for t in raw_tokens if t.lower() not in _STOP_WORDS and len(t) >= 3)
 
 
 def is_short_query(query: str, threshold: int = 5) -> bool:

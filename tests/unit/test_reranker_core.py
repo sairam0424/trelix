@@ -363,8 +363,8 @@ class TestXTRScoring:
         # doc 1 matches both tokens well
         # doc 2 matches only one token
         query_token_scores = {
-            0: [(1, 0.9), (2, 0.3)],   # token 0: doc1=0.9, doc2=0.3
-            1: [(1, 0.8), (2, 0.0)],   # token 1: doc1=0.8, doc2=not retrieved
+            0: [(1, 0.9), (2, 0.3)],  # token 0: doc1=0.9, doc2=0.3
+            1: [(1, 0.8), (2, 0.0)],  # token 1: doc1=0.8, doc2=not retrieved
         }
         results = xtr_score_documents(
             query_token_scores=query_token_scores,
@@ -450,11 +450,13 @@ class TestXTRRerankerProvider:
         results = [_make_result(f"doc {i}", score=float(i) * 0.1 + 0.1) for i in range(3)]
         cfg = _cfg(rerank_provider="xtr")
 
-        with patch("trelix.retrieval.reranker_xtr.warn_experimental") as mock_warn, \
-             patch(
-                 "trelix.retrieval.reranker.xtr_score_documents",
-                 return_value=[(0, 0.9), (1, 0.7), (2, 0.5)],
-             ):
+        with (
+            patch("trelix.retrieval.reranker_xtr.warn_experimental") as mock_warn,
+            patch(
+                "trelix.retrieval.reranker.xtr_score_documents",
+                return_value=[(0, 0.9), (1, 0.7), (2, 0.5)],
+            ),
+        ):
             rerank("login", results, cfg, top_n=3)
             mock_warn.assert_called_once()
 
@@ -475,16 +477,17 @@ class TestXTRRerankerProvider:
         # The XTR provider iterates results and uses chunk_id-based lookup.
         # We bypass xtr_score_documents and return a mapping keyed by index
         # (which is used as doc_id in the single-vector approximation).
-        with patch("trelix.retrieval.reranker_xtr.warn_experimental"), \
-             patch(
-                 "trelix.retrieval.reranker.xtr_score_documents",
-                 side_effect=lambda query_token_scores, candidate_doc_ids, k_impute:
-                     sorted(
-                         [(cid, {0: 0.4, 1: 0.95, 2: 0.7}.get(cid, 0.0)) for cid in candidate_doc_ids],
-                         key=lambda x: x[1],
-                         reverse=True,
-                     ),
-             ):
+        with (
+            patch("trelix.retrieval.reranker_xtr.warn_experimental"),
+            patch(
+                "trelix.retrieval.reranker.xtr_score_documents",
+                side_effect=lambda query_token_scores, candidate_doc_ids, k_impute: sorted(
+                    [(cid, {0: 0.4, 1: 0.95, 2: 0.7}.get(cid, 0.0)) for cid in candidate_doc_ids],
+                    key=lambda x: x[1],
+                    reverse=True,
+                ),
+            ),
+        ):
             reranked = rerank("login", results, cfg, top_n=3)
 
         # result at index 1 (chunk_text="doc 1") should be first after XTR reranking (score 0.95)
@@ -499,11 +502,13 @@ class TestXTRRerankerProvider:
         results = [_make_result(f"doc {i}", score=0.5) for i in range(4)]
         cfg = _cfg(rerank_provider="xtr")
 
-        with patch("trelix.retrieval.reranker_xtr.warn_experimental"), \
-             patch(
-                 "trelix.retrieval.reranker.xtr_score_documents",
-                 side_effect=RuntimeError("simulated xtr failure"),
-             ):
+        with (
+            patch("trelix.retrieval.reranker_xtr.warn_experimental"),
+            patch(
+                "trelix.retrieval.reranker.xtr_score_documents",
+                side_effect=RuntimeError("simulated xtr failure"),
+            ),
+        ):
             out = rerank("login", results, cfg, top_n=3)
 
         assert len(out) == 3

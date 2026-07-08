@@ -131,6 +131,7 @@ class TestAffectedFrontier:
 
     def test_seed_nodes_always_in_frontier(self):
         from trelix.graph.community import compute_affected_frontier
+
         G = self._make_graph()
         partition = {1: 0, 2: 0, 3: 0, 4: 1}
         frontier = compute_affected_frontier(G, seed_nodes={2}, partition=partition)
@@ -138,6 +139,7 @@ class TestAffectedFrontier:
 
     def test_neighbors_of_seed_in_frontier(self):
         from trelix.graph.community import compute_affected_frontier
+
         G = self._make_graph()
         partition = {1: 0, 2: 0, 3: 0, 4: 1}
         frontier = compute_affected_frontier(G, seed_nodes={2}, partition=partition)
@@ -147,6 +149,7 @@ class TestAffectedFrontier:
 
     def test_same_community_nodes_in_frontier(self):
         from trelix.graph.community import compute_affected_frontier
+
         G = self._make_graph()
         # nodes 1,2,3 all in community 0; node 4 in community 1
         partition = {1: 0, 2: 0, 3: 0, 4: 1}
@@ -156,6 +159,7 @@ class TestAffectedFrontier:
 
     def test_unrelated_node_not_in_frontier(self):
         from trelix.graph.community import compute_affected_frontier
+
         G = self._make_graph()
         partition = {1: 0, 2: 0, 3: 0, 4: 1}
         frontier = compute_affected_frontier(G, seed_nodes={1}, partition=partition)
@@ -164,6 +168,7 @@ class TestAffectedFrontier:
 
     def test_empty_seed_returns_empty(self):
         from trelix.graph.community import compute_affected_frontier
+
         G = self._make_graph()
         partition = {1: 0, 2: 0, 3: 0, 4: 1}
         frontier = compute_affected_frontier(G, seed_nodes=set(), partition=partition)
@@ -171,6 +176,7 @@ class TestAffectedFrontier:
 
     def test_empty_partition_returns_seed_plus_neighbors(self):
         from trelix.graph.community import compute_affected_frontier
+
         G = self._make_graph()
         partition = {}
         frontier = compute_affected_frontier(G, seed_nodes={2}, partition=partition)
@@ -182,11 +188,11 @@ class TestAffectedFrontier:
 class TestIncrementalLouvain:
     def _make_cg_with_partition(self, tmp_path):
         """Build a CodeGraph with 6 nodes in 2 communities."""
-        from trelix.store.db import Database
         from trelix.graph.code_graph import CodeGraph
-        db = Database(tmp_path / "test.db")
+
         cg = CodeGraph.__new__(CodeGraph)
         import networkx as nx
+
         cg._g = nx.MultiDiGraph()
         # Community 0: nodes 1,2,3 (triangle)
         cg._g.add_nodes_from([1, 2, 3, 4, 5, 6])
@@ -195,6 +201,7 @@ class TestIncrementalLouvain:
 
     def test_returns_complete_partition(self, tmp_path):
         from trelix.graph.community import detect_communities_incremental
+
         cg = self._make_cg_with_partition(tmp_path)
         prev = {1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 1}
         result = detect_communities_incremental(cg, seed_nodes={2}, prev_partition=prev)
@@ -203,6 +210,7 @@ class TestIncrementalLouvain:
 
     def test_non_frontier_nodes_keep_prev_community(self, tmp_path):
         from trelix.graph.community import detect_communities_incremental
+
         cg = self._make_cg_with_partition(tmp_path)
         prev = {1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 1}
         result = detect_communities_incremental(cg, seed_nodes={2}, prev_partition=prev)
@@ -214,6 +222,7 @@ class TestIncrementalLouvain:
 
     def test_empty_prev_falls_back_to_full(self, tmp_path):
         from trelix.graph.community import detect_communities_incremental
+
         cg = self._make_cg_with_partition(tmp_path)
         # empty prev_partition → full Louvain
         result = detect_communities_incremental(cg, seed_nodes={1}, prev_partition={})
@@ -221,6 +230,7 @@ class TestIncrementalLouvain:
 
     def test_large_frontier_falls_back_to_full(self, tmp_path):
         from trelix.graph.community import detect_communities_incremental
+
         cg = self._make_cg_with_partition(tmp_path)
         prev = {1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 1}
         # seed all nodes → frontier = 100% → full Louvain fallback

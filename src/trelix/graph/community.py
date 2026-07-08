@@ -176,7 +176,9 @@ def detect_communities_incremental(
         logger.debug(
             "Incremental Louvain frontier (%d/%d nodes) exceeds threshold %.0f%% — "
             "falling back to full Louvain",
-            len(frontier), total_nodes, frontier_threshold * 100,
+            len(frontier),
+            total_nodes,
+            frontier_threshold * 100,
         )
         return detect_communities(cg)
 
@@ -195,9 +197,7 @@ def detect_communities_incremental(
                 for node_id in members:
                     new_partition[int(node_id)] = global_id
         except Exception as exc:
-            logger.warning(
-                "Incremental Louvain on frontier failed — falling back to full: %s", exc
-            )
+            logger.warning("Incremental Louvain on frontier failed — falling back to full: %s", exc)
             return detect_communities(cg)
 
     # Ensure all nodes are covered (add any missing nodes from prev_partition)

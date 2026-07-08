@@ -83,7 +83,9 @@ class GraphUpdater:
             logger.debug(
                 "Graph metadata refreshed (incremental) after change to %s "
                 "(frontier from %d seed symbols, total %d nodes)",
-                rel_path, len(seed_symbol_ids), cg.node_count,
+                rel_path,
+                len(seed_symbol_ids),
+                cg.node_count,
             )
         except Exception as exc:
             logger.warning("GraphUpdater.update_file(%r) failed (non-fatal): %s", rel_path, exc)

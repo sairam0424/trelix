@@ -81,12 +81,15 @@ class TestGraphUpdaterIncremental:
         fake_cg = MagicMock()
         fake_cg.node_count = 3
 
-        with patch("trelix.graph.updater.CodeGraph", return_value=fake_cg), \
-             patch("trelix.graph.updater.detect_communities_incremental",
-                   return_value=fake_partition) as mock_inc, \
-             patch("trelix.graph.updater.assign_communities"), \
-             patch("trelix.graph.updater.compute_pagerank", return_value={}), \
-             patch("trelix.graph.updater.save_graph_metadata"):
+        with (
+            patch("trelix.graph.updater.CodeGraph", return_value=fake_cg),
+            patch(
+                "trelix.graph.updater.detect_communities_incremental", return_value=fake_partition
+            ),
+            patch("trelix.graph.updater.assign_communities"),
+            patch("trelix.graph.updater.compute_pagerank", return_value={}),
+            patch("trelix.graph.updater.save_graph_metadata"),
+        ):
             updater.update_file("src/auth.py")
 
         assert updater._prev_partition == fake_partition
@@ -103,12 +106,15 @@ class TestGraphUpdaterIncremental:
         fake_cg = MagicMock()
         fake_cg.node_count = 2
 
-        with patch("trelix.graph.updater.CodeGraph", return_value=fake_cg), \
-             patch("trelix.graph.updater.detect_communities_incremental",
-                   return_value={1: 0, 2: 1}) as mock_inc, \
-             patch("trelix.graph.updater.assign_communities"), \
-             patch("trelix.graph.updater.compute_pagerank", return_value={}), \
-             patch("trelix.graph.updater.save_graph_metadata"):
+        with (
+            patch("trelix.graph.updater.CodeGraph", return_value=fake_cg),
+            patch(
+                "trelix.graph.updater.detect_communities_incremental", return_value={1: 0, 2: 1}
+            ) as mock_inc,
+            patch("trelix.graph.updater.assign_communities"),
+            patch("trelix.graph.updater.compute_pagerank", return_value={}),
+            patch("trelix.graph.updater.save_graph_metadata"),
+        ):
             updater.update_file("src/auth.py")
 
         # prev_partition must be passed to incremental detection

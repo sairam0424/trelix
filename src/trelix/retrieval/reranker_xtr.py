@@ -57,9 +57,7 @@ def xtr_score_documents(
 
     # For each (query_token, doc_id), find the best retrieved score.
     # Structure: best_scores[query_token_idx][doc_id] = max_score
-    best_scores: dict[int, dict[int, float]] = {
-        qt: {} for qt in query_token_scores
-    }
+    best_scores: dict[int, dict[int, float]] = {qt: {} for qt in query_token_scores}
     for qt_idx, retrievals in query_token_scores.items():
         for doc_id, score in retrievals:
             if doc_id in best_scores[qt_idx]:

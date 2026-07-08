@@ -65,7 +65,8 @@ def score_hallucination(
     answer_lower = answer.lower()
 
     hallucinated = [
-        sym for sym in expected_symbols
+        sym
+        for sym in expected_symbols
         if sym.lower() in answer_lower and sym.lower() not in retrieved_lower
     ]
     return len(hallucinated) / len(expected_symbols)
@@ -150,14 +151,12 @@ def evaluate_synthesis(
     faithfulness_score = score_faithfulness(answer, retrieved_context)
 
     hallucinated = [
-        sym for sym in expected_symbols
+        sym
+        for sym in expected_symbols
         if sym.lower() in answer.lower()
         and sym.lower() not in {s.lower() for s in retrieved_symbols}
     ]
-    missing = [
-        frag for frag in expected_fragments
-        if frag.lower() not in answer.lower()
-    ]
+    missing = [frag for frag in expected_fragments if frag.lower() not in answer.lower()]
 
     return SynthesisResult(
         query=query,
@@ -199,6 +198,7 @@ class SynthesisEvalHarness:
     def __init__(self, config: Any) -> None:
         self._config = config
         from trelix.retrieval.retriever import Retriever
+
         self._retriever = Retriever(config)
 
     def run(self, golden_path: str) -> dict[str, float]:
