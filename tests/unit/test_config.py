@@ -458,16 +458,12 @@ class TestShortQueryConfig:
         cfg = RetrievalConfig()
         assert cfg.short_query_token_threshold == 5
 
-    def test_short_query_env_var_enables_it(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_short_query_env_var_enables_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TRELIX_RETRIEVAL_SHORT_QUERY_LEXICAL", "true")
         cfg = RetrievalConfig()
         assert cfg.short_query_lexical_enabled is True
 
-    def test_short_query_threshold_env_var(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_short_query_threshold_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TRELIX_RETRIEVAL_SHORT_QUERY_TOKENS", "3")
         cfg = RetrievalConfig()
         assert cfg.short_query_token_threshold == 3
