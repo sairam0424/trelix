@@ -38,7 +38,7 @@ class DiffEmbedder:
 
     MAX_EMBED_CHARS = MAX_EMBED_CHARS
 
-    def __init__(self, embedder: "BaseEmbedder") -> None:
+    def __init__(self, embedder: BaseEmbedder) -> None:
         self._embedder = embedder
 
     def embed_hunk(self, before_code: str, after_code: str) -> list[float]:
@@ -61,7 +61,7 @@ class DiffEmbedder:
 
     def store_pr_diff(
         self,
-        db: "Database",
+        db: Database,
         pr_ref: str,
         hunks: list[dict],
     ) -> int:
@@ -103,7 +103,7 @@ class DiffEmbedder:
 
     def search_similar_diffs(
         self,
-        db: "Database",
+        db: Database,
         query_before: str,
         query_after: str,
         k: int = 5,
@@ -137,13 +137,15 @@ class DiffEmbedder:
                 dot = sum(a * b for a, b in zip(query_emb, stored_emb))
                 s_norm = math.sqrt(sum(v * v for v in stored_emb)) or 1.0
                 score = dot / (q_norm * s_norm)
-                results.append({
-                    "pr_ref": pr_ref,
-                    "hunk_header": header,
-                    "before_code": before,
-                    "after_code": after,
-                    "score": score,
-                })
+                results.append(
+                    {
+                        "pr_ref": pr_ref,
+                        "hunk_header": header,
+                        "before_code": before,
+                        "after_code": after,
+                        "score": score,
+                    }
+                )
             except Exception:
                 continue
 

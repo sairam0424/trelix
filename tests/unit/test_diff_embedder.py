@@ -1,10 +1,12 @@
 """Tests for semantic diff embeddings (CCRep-style before/after body pairs)."""
+
 from __future__ import annotations
 
 
 class TestDiffEmbedder:
     def test_embed_hunk_concatenates_before_and_after(self):
         from unittest.mock import MagicMock
+
         from trelix.review.diff_embedder import DiffEmbedder
 
         mock_embedder = MagicMock()
@@ -24,6 +26,7 @@ class TestDiffEmbedder:
 
     def test_embed_hunk_handles_empty_before(self):
         from unittest.mock import MagicMock
+
         from trelix.review.diff_embedder import DiffEmbedder
 
         mock_embedder = MagicMock()
@@ -35,6 +38,7 @@ class TestDiffEmbedder:
 
     def test_embed_hunk_truncates_overlong_chunks(self):
         from unittest.mock import MagicMock
+
         from trelix.review.diff_embedder import DiffEmbedder
 
         mock_embedder = MagicMock()
@@ -51,6 +55,7 @@ class TestDiffEmbedder:
 
     def test_search_similar_diffs_returns_sorted_by_score(self, tmp_path):
         from unittest.mock import MagicMock
+
         from trelix.review.diff_embedder import DiffEmbedder
         from trelix.store.db import Database
 
@@ -63,9 +68,9 @@ class TestDiffEmbedder:
 
         de = DiffEmbedder(mock_embedder)
         # Insert two diff chunks manually
+        cols = "(pr_ref, hunk_header, before_code, after_code, chunk_char_count)"
         db._conn.execute(
-            "INSERT INTO diff_chunks (pr_ref, hunk_header, before_code, after_code, chunk_char_count)"
-            " VALUES (?, ?, ?, ?, ?)",
+            f"INSERT INTO diff_chunks {cols} VALUES (?, ?, ?, ?, ?)",
             ("owner/repo#1", "@@ -1,3 +1,3 @@", "old", "new", 6),
         )
         db._conn.commit()

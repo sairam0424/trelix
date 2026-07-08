@@ -289,9 +289,7 @@ class TestCrossRepoSymbolResolution:
         from trelix.federation.retriever import FederatedRetriever, make_scip_symbol_id
 
         registry = MagicMock()
-        registry.list.return_value = [
-            MagicMock(alias="auth-service", path=str(tmp_path / "auth"))
-        ]
+        registry.list.return_value = [MagicMock(alias="auth-service", path=str(tmp_path / "auth"))]
         fed = FederatedRetriever(registry)
 
         # Insert a symbol directly via the in-memory connection

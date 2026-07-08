@@ -407,11 +407,12 @@ class TestStreamingIndexing:
     files in memory before parsing begins.  The public index() API is unchanged.
     """
 
-    def _make_streaming_indexer(self, tmp_dir: str) -> "Indexer":  # noqa: F821
+    def _make_streaming_indexer(self, tmp_dir: str) -> Indexer:  # noqa: F821
         """
         Build an Indexer with streaming_enabled=True and fake embedder / vector store.
         """
         import pathlib
+
         from trelix.core.config import EmbedderConfig, IndexConfig, IndexerConfig, StoreConfig
         from trelix.indexing.indexer import Indexer
 
