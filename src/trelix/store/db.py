@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS files (
     indexed_at  TEXT    DEFAULT (datetime('now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_files_rel_path ON files(rel_path);
+
 CREATE TABLE IF NOT EXISTS symbols (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -198,6 +200,13 @@ class Database:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self.init_schema()
+
+    def init_schema(self) -> None:
+        """Initialize or refresh the database schema and apply all migrations.
+
+        Safe to call multiple times — uses IF NOT EXISTS guards throughout.
+        """
         self._apply_ddl()
         self._apply_migrations()
 
@@ -207,6 +216,12 @@ class Database:
 
     def _apply_migrations(self) -> None:
         """Incremental schema migrations — safe to run on existing DBs."""
+        # Task 2 migration: add idx_files_rel_path for watch performance (Phase 1)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_rel_path ON files(rel_path)"
+        )
+        self._conn.commit()
+
         import_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(imports)").fetchall()}
         if "imported_file_id" not in import_cols:
             self._conn.execute(
