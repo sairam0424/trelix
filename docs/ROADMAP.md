@@ -17,6 +17,8 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.3.0 | DimensionGuard, MultiQueryExpander wiring, MCP Resources + Prompts, DiffReviewer, FederatedRetriever |
 | v2.4.0 | flare_max_retries rename, expansion observability, federation cache, GitHub PR review, watch-all, MCP pagination |
 | v2.5.0 | Multi-query expansion wiring (TRELIX_RETRIEVAL_MULTI_QUERY), DimensionGuard at watch startup, MCP resource subscriptions, v3.0.0 deprecation audit |
+| v2.6.0 | Incremental Louvain, Short-query lexical fallback, XTR reranker (experimental), GroUSE synthesis eval harness |
+| v2.7.0 | Watch bridge wired ✅, DB index ✅, AdaptiveRouter fix ✅, Cross-repo symbols ✅, Diff embeddings ✅, Streaming indexing ✅, VS Code extension ✅, GitHub App PR review ✅ |
 
 ---
 
@@ -40,9 +42,9 @@ This roadmap describes planned features, research directions, and long-term visi
 - [x] **GraphUpdater** — Stores `_prev_partition`, uses incremental detection on file changes
 
 ### Remaining backlog
-- [ ] **Cross-repo symbol resolution** — Sourcegraph-style SCIP symbol IDs for cross-repository lookup
-- [ ] **Semantic diff embeddings** — CCRep-style before/after body pair embeddings for diff-aware retrieval
-- [ ] **Streaming indexing** — yield symbols as parsed (no in-memory buffer for large repos)
+- [x] **Cross-repo symbol resolution** — SCIP-style IDs, FederatedRetriever.resolve_symbol() ✅
+- [x] **Semantic diff embeddings** — CCRep-style before/after body pair embeddings ✅
+- [x] **Streaming indexing** — generator + bounded Queue, try/finally sentinel ✅
 - [ ] **Qdrant Cloud integration** — first-class remote vector store with auto-migration
 - [ ] **Incremental embedding** — only re-embed changed symbols on partial re-index
 - [ ] **Parallel BM25 shard** — FTS5 read-only shards for read-heavy deployments
@@ -63,14 +65,27 @@ This roadmap describes planned features, research directions, and long-term visi
 
 ---
 
+## 🔧 Phase 3 — Developer Tools & Integration (Q3 2026)
+
+**Goal:** native IDE integration + automated PR review.
+
+| Item | Status |
+|------|--------|
+| VS Code extension scaffolded | ✅ Phase 3 Plan A |
+| GitHub App Actions workflow | ✅ Phase 3 Plan B |
+| JetBrains plugin (IntelliJ/PyCharm) | 📋 backlog |
+| Multi-repo workspace support in MCP | 📋 backlog |
+
+---
+
 ## 💡 Research Backlog (no timeline)
 
 Ideas being researched but not yet committed to a release:
 
 - **CodeBERT fine-tuning** — domain-adapted embedding model trained on trelix's own telemetry data
-- **Semantic diff** — diff-aware retrieval (weight recently-changed symbols higher)
-- **IDE plugins** — VS Code extension with inline search, JetBrains plugin
-- **GitHub App** — PR review comments posted automatically via GitHub App auth
+- ~~**Semantic diff** — diff-aware retrieval (weight recently-changed symbols higher)~~ ✅ shipped in Phase 2 Plan B
+- ~~**IDE plugins** — VS Code extension with inline search~~ ✅ shipped in Phase 3 Plan A
+- ~~**GitHub App** — PR review comments posted automatically via GitHub App auth~~ ✅ shipped in Phase 3 Plan B
 - **Multi-modal** — index diagrams, comments referencing architecture docs
 - **Agent memory** — persist AgentLoop history across sessions
 

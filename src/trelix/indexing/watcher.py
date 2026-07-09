@@ -194,6 +194,25 @@ class FileWatcher:
             except Exception as exc:
                 logger.debug("GraphUpdater watcher hook failed (non-fatal): %s", exc)
 
+            # Fire MCP notifications/resources/updated for any subscribed clients.
+            # Non-fatal: trelix watch works without trelix-mcp installed.
+            if not result.get("skipped", False):
+                try:
+                    from trelix_mcp.server import (
+                        _subscription_registry,
+                    )
+                    from trelix_mcp.subscriptions import (
+                        notify_file_changed,
+                    )
+
+                    notify_file_changed(
+                        registry=_subscription_registry,
+                        repo_path=str(Path(self._indexer.config.repo_path).resolve()),
+                        changed_file=rel,
+                    )
+                except Exception:
+                    pass  # trelix-mcp not installed or notification failed — non-fatal
+
         except Exception as exc:
             logger.error("Unexpected error re-indexing %s: %s", abs_path, exc)
             print(f"[trelix] Error indexing {abs_path}: {exc}")

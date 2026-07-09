@@ -1,0 +1,46 @@
+{
+  "name": "trelix-vscode",
+  "displayName": "trelix — Code Intelligence",
+  "description": "Natural language code search and Q&A for your codebase via trelix",
+  "version": "0.1.0",
+  "publisher": "trelix",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["AI", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "trelix.search",
+        "title": "trelix: Search Codebase"
+      },
+      {
+        "command": "trelix.ask",
+        "title": "trelix: Ask about Code"
+      }
+    ],
+    "configuration": {
+      "title": "trelix",
+      "properties": {
+        "trelix.indexPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to trelix-indexed repository (defaults to workspace root)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -watch -p tsconfig.json",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^2.0.0",
+    "typescript": "^5.0.0"
+  }
+}

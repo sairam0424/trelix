@@ -94,7 +94,7 @@ class Retriever:
         )
         # Instantiate the LLM query planner. Falls back gracefully to
         # default_plan() when no API key is set (provider=local).
-        self._planner = QueryPlanner(config.embedder)
+        self._planner = QueryPlanner(config.embedder, retrieval_config=config.retrieval)
         # Wrap with LRU plan cache when enabled (default: 128 entries).
         # plan() hits are returned in <1ms; cold misses delegate to the LLM unchanged.
         if config.retrieval.plan_cache_size > 0:
