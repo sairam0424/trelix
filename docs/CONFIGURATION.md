@@ -37,6 +37,7 @@ Settings are resolved in priority order (highest wins):
 | `TRELIX_RETRIEVAL_MULTI_QUERY_COUNT` | `2` | Number of query variants to generate when multi-query is enabled |
 | `TRELIX_RETRIEVAL_SHORT_QUERY_LEXICAL` | `false` | Route short queries (≤threshold tokens) to BM25+grep only, skipping vector ANN |
 | `TRELIX_RETRIEVAL_SHORT_QUERY_TOKENS` | `5` | Meaningful-token threshold for short-query classification (1–10) |
+| `TRELIX_INDEXER_STREAMING` | `false` | Enable generator-based streaming indexing pipeline (bounded Queue, lazy file iteration). Default off — zero behavior change when unset. |
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | _(none)_ | Reranker to apply after fusion. One of: `cross_encoder`, `cohere`, `plaid`, `xtr` (**experimental**) |
 | `TRELIX_RETRIEVAL_XTR_TOKENS` | `100` | Candidate token count for XTR reranker (10–1000). Only applies when `TRELIX_RETRIEVAL_RERANK_PROVIDER=xtr` |
 | `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE re-retrieval — iteratively retrieves more context when confidence is low |

@@ -30,6 +30,7 @@ jobs:
 
       - name: Index repository
         run: trelix index .
+        continue-on-error: true  # indexing may fail in restricted CI (model downloads, OOM)
 
       - name: Run trelix review
         id: review

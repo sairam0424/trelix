@@ -792,6 +792,7 @@ trelix works across the AI developer ecosystem:
 | **LlamaIndex** | `pip install trelix-llama-index` | `TrelixIndexRetriever(repo_path=".")` |
 | **GitHub Action** | `uses: sairam0424/trelix-index-action@v1` | Auto-index on push |
 | **Homebrew** (macOS) | `brew tap sairam0424/trelix` | `brew install trelix` |
+| **VS Code Extension** | `cd workspace-vscode && npm install && npm run build` | `trelix.search` and `trelix.ask` commands via MCP |
 
 ### MCP Quick Setup
 

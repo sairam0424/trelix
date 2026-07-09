@@ -6,6 +6,50 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Added — Phase 1: Watch Bridge, DB Index, AdaptiveRouter Config Fix
+- `FileWatcher._do_reindex` now fires `notify_file_changed()` after a successful
+  re-index (not on hash-identical skips). MCP subscribers receive live
+  `notifications/resources/updated` pushes when watched files change.
+  Non-fatal when `trelix-mcp` is not installed.
+- `idx_files_rel_path` index added to `files.rel_path` — eliminates full table
+  scan on every `GraphUpdater.update_file()` call (`WHERE rel_path = ?`).
+  `CREATE INDEX IF NOT EXISTS` — safe on existing databases.
+- `AdaptiveRouter.__init__` now accepts `retrieval_config: RetrievalConfig | None = None`.
+  When provided, it is used directly instead of constructing a new instance from env
+  vars — fixes silent-ignore of programmatic config overrides.
+- `Retriever` passes `config.retrieval` through `QueryPlanner → AdaptiveRouter`.
+
+### Added — Phase 2: Cross-Repo Symbol Resolution, Semantic Diff Embeddings, Streaming Indexing
+- `make_scip_symbol_id(package, version, qualified_name)` — stable SCIP-style
+  cross-repo symbol ID using `||`-separated sha256[:16]. Unambiguous for scoped
+  npm packages (`@scope/pkg`).
+- `FederatedRetriever.record_exports(alias, repo_path)` — indexes all symbols from
+  a trelix-indexed repo into an in-memory `federation_symbols` table.
+- `FederatedRetriever.resolve_symbol(qualified_name)` — returns all repos that
+  define a symbol. Supports exact match and suffix-LIKE (`%.verify`). Thread-safe
+  via `threading.Lock` + `check_same_thread=False`.
+- `DiffEmbedder` — CCRep-style before/after body pair embeddings for PR diff hunks
+  (arXiv:2302.03924). `store_pr_diff()` caps at 500 hunks/PR; `search_similar_diffs()`
+  finds historically similar changes by cosine similarity with NaN guard and
+  dimension mismatch protection.
+- `diff_chunks` SQLite table + `idx_diff_chunks_pr_ref` index added to schema.
+- `TRELIX_INDEXER_STREAMING=true` — generator-based file processing pipeline.
+  `_iter_files()` yields files lazily; `_index_streaming()` uses bounded
+  `Queue(maxsize=64)` with `try/finally` producer sentinel guarantee.
+  Default off — zero behavior change on default path.
+
+### Added — Phase 3: VS Code Extension, GitHub App PR Review
+- `workspace-vscode/` — VS Code extension scaffold (`trelix.search` and `trelix.ask`
+  commands) using `TrelixMcpClient` over MCP stdio transport. Piggybacks on existing
+  `trelix-mcp` package — no new Python backend.
+- `.github/workflows/trelix-review.yml` — GitHub Actions workflow that runs
+  `trelix review --pr N --json` on every pull request and posts findings as
+  GitHub Check annotations with file+line references.
+  Permissions: `checks: write`, `pull-requests: write`, `contents: read`.
+  Index step has `continue-on-error: true` for CI environments without local models.
+- `infra/github-app/README.md` — GitHub App integration setup guide.
+
+
 ### Added — XTR Late-Interaction Reranker (Plan C, EXPERIMENTAL)
 - `TRELIX_RETRIEVAL_RERANK_PROVIDER=xtr` — XTR reranker (NeurIPS 2023,
   arXiv:2304.01982). Scoring stage is 100–1000x cheaper than ColBERT/PLAID
