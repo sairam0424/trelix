@@ -2,7 +2,7 @@
 
 <!-- mcp-name: io.github.sairam0424/trelix -->
 
-MCP server for [trelix](https://github.com/sairam0424/trelix) v2.4.0 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+MCP server for [trelix](https://github.com/sairam0424/trelix) v2.5.0 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
 
 ## ⚠️ Breaking Change in v2.4.0
 
@@ -24,22 +24,22 @@ for r in response["results"]:  # now dict with pagination
 ## Install
 
 ```bash
-pip install trelix-mcp==2.4.0
+pip install trelix-mcp==2.5.0
 ```
 
 To use Bedrock embeddings or synthesis (no extra API key beyond AWS credentials):
 
 ```bash
-pip install "trelix-mcp==2.4.0" "trelix[bedrock]"
+pip install "trelix-mcp==2.5.0" "trelix[bedrock]"
 ```
 
 Other optional LLM provider extras:
 
 ```bash
-pip install "trelix-mcp==2.4.0" "trelix[anthropic]"   # Anthropic Claude direct
-pip install "trelix-mcp==2.4.0" "trelix[vertex]"       # Google Vertex AI / Gemini
-pip install "trelix-mcp==2.4.0" "trelix[litellm]"      # 100+ providers via LiteLLM
-pip install "trelix-mcp==2.4.0" "trelix[llm-all]"      # all LLM providers
+pip install "trelix-mcp==2.5.0" "trelix[anthropic]"   # Anthropic Claude direct
+pip install "trelix-mcp==2.5.0" "trelix[vertex]"       # Google Vertex AI / Gemini
+pip install "trelix-mcp==2.5.0" "trelix[litellm]"      # 100+ providers via LiteLLM
+pip install "trelix-mcp==2.5.0" "trelix[llm-all]"      # all LLM providers
 ```
 
 ## Usage
@@ -161,6 +161,27 @@ TRELIX_LLM_MODEL=bedrock/claude-3-5-sonnet
 | `ask` | Streaming chat endpoint for conversational code exploration (v2.0.0+) |
 | `build_knowledge_graph(repo_path)` | Build code property graph |
 | `graph_search_mcp(query, repo_path)` | Search via knowledge graph |
+| `subscribe_resource` | `uri: str, subscription_id: str` | Subscribe to change notifications for a trelix:// resource URI |
+| `unsubscribe_resource` | `subscription_id: str` | Cancel a resource subscription |
+
+## Resource Subscriptions (v2.5.0)
+
+trelix-mcp now supports live index change notifications. When `trelix watch` detects a file change, connected MCP clients receive a `notifications/resources/updated` push — then call `resources/read` to fetch the updated index. Subscribe with the `subscribe_resource` tool.
+
+```python
+# Subscribe to a repo manifest
+subscribe_resource(
+    uri="trelix://repo//path/to/repo/manifest",
+    subscription_id="my-sub-001"
+)
+# → client receives notifications/resources/updated when trelix watch fires
+# → call resources/read on the URI to get the refreshed index
+
+# Cancel the subscription
+unsubscribe_resource(subscription_id="my-sub-001")
+```
+
+The `resources.subscribe` capability is advertised in server capabilities. URIs follow the scheme `trelix://repo/{repo_path}/manifest`. The `notify_file_changed()` hook fires per-URI notifications with the `subscriptionId` in `params._meta`.
 
 ## Pagination
 
@@ -210,5 +231,5 @@ graph_search_mcp(query="how does auth relate to the user model?", repo_path="/pa
 Install the knowledge graph extra for full functionality:
 
 ```bash
-pip install 'trelix-mcp==2.4.0' 'trelix[knowledge-graph]'
+pip install 'trelix-mcp==2.5.0' 'trelix[knowledge-graph]'
 ```

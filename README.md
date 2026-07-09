@@ -116,6 +116,17 @@ trelix watch ./my-repo
 
 ---
 
+## What's New in v2.5.0
+
+| Plan | Feature | Key API |
+|------|---------|---------|
+| **A** | Multi-query expansion wired | `TRELIX_RETRIEVAL_MULTI_QUERY=true` |
+| **B** | DimensionGuard at watch startup | `DimensionMismatchError` on provider mismatch |
+| **C** | MCP resource subscriptions | `subscribe_resource(uri, subscription_id)` |
+| **D** | v3.0.0 deprecation audit | `TRELIX_RETRIEVAL_FLARE_MAX_ITER` removed in v3 |
+
+---
+
 ## What's New in v2.4.0
 
 | Plan | Feature | Key API |

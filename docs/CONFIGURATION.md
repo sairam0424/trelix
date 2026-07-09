@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v2.4.0
+# Trelix Configuration Reference — v2.5.0
 
 Complete reference for all configuration options available in trelix.
 
@@ -83,7 +83,7 @@ Copy this to `<repo-root>/.env` and fill in the values relevant to your setup. L
 
 ```dotenv
 # =============================================================================
-# Trelix v2.4.0 — complete .env example
+# Trelix v2.5.0 — complete .env example
 # Copy to .env and fill in values. Never commit this file.
 # =============================================================================
 
@@ -228,3 +228,27 @@ touch .trelix/config.toml
 ```
 
 Add `.trelix/config.toml` to version control so all contributors share the same project-level defaults. Do **not** put secrets in this file — use environment variables or `.env` (which should be git-ignored) for those.
+
+---
+
+## MCP Server
+
+trelix ships a Model Context Protocol server (`trelix-mcp`) that exposes indexed repositories as MCP resources and tools, allowing MCP-compatible clients (e.g. Claude Desktop) to query trelix directly.
+
+### Resource subscriptions (v2.5.0)
+
+trelix-mcp v2.5.0 advertises `resources.subscribe = true` in its server capabilities and exposes two new tools:
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `subscribe_resource` | `uri`, `subscription_id` | Subscribe to change notifications for a `trelix://` resource URI |
+| `unsubscribe_resource` | `subscription_id` | Cancel an active subscription |
+
+**URI scheme:** `trelix://repo/{repo_path}/manifest`
+
+**Wire protocol:**
+1. Client calls `subscribe_resource(uri, subscription_id)` — the server registers the subscription.
+2. When a watched file changes, trelix-mcp emits a `notifications/resources/updated` notification (URI only, with `subscriptionId` in `params._meta`).
+3. Client calls `resources/read` to fetch the updated content.
+
+Subscriptions are held in-memory (not persisted across server restarts). The subscription registry is thread-safe.
