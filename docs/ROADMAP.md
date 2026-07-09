@@ -17,6 +17,9 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.3.0 | DimensionGuard, MultiQueryExpander wiring, MCP Resources + Prompts, DiffReviewer, FederatedRetriever |
 | v2.4.0 | flare_max_retries rename, expansion observability, federation cache, GitHub PR review, watch-all, MCP pagination |
 | Phase 1 | Watch bridge wired ✅, idx_files_rel_path index ✅, AdaptiveRouter config passthrough ✅ |
+| Phase 2 — Plan A | Cross-repo symbol resolution with SCIP-style IDs ✅ |
+| Phase 2 — Plan B | Semantic diff embeddings with CCRep-style before/after encoding ✅ |
+| Phase 2 — Plan C | Streaming indexing pipeline with generator + bounded queue ✅ |
 
 ---
 
@@ -43,7 +46,7 @@ This roadmap describes planned features, research directions, and long-term visi
 - [x] **GraphUpdater** — Stores `_prev_partition`, uses incremental detection on file changes
 
 ### Remaining backlog
-- [ ] **Streaming indexing** — yield symbols as parsed (no in-memory buffer for large repos)
+- [x] **Streaming indexing** — yield symbols as parsed (no in-memory buffer for large repos) ✅
 - [ ] **Qdrant Cloud integration** — first-class remote vector store with auto-migration
 - [ ] **Incremental embedding** — only re-embed changed symbols on partial re-index
 - [ ] **Parallel BM25 shard** — FTS5 read-only shards for read-heavy deployments
@@ -69,7 +72,7 @@ This roadmap describes planned features, research directions, and long-term visi
 Ideas being researched but not yet committed to a release:
 
 - **CodeBERT fine-tuning** — domain-adapted embedding model trained on trelix's own telemetry data
-- **Semantic diff** — diff-aware retrieval (weight recently-changed symbols higher)
+- ~~**Semantic diff** — diff-aware retrieval (weight recently-changed symbols higher)~~ ✅ shipped in Phase 2 Plan B
 - **IDE plugins** — VS Code extension with inline search, JetBrains plugin
 - **GitHub App** — PR review comments posted automatically via GitHub App auth
 - **Multi-modal** — index diagrams, comments referencing architecture docs

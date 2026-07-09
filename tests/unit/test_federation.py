@@ -261,3 +261,128 @@ def test_federated_clear_cache() -> None:
         fed.retrieve("q1", k=5)
 
     assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo symbol resolution (Plan A — Task A-1)
+# ---------------------------------------------------------------------------
+
+
+class TestCrossRepoSymbolResolution:
+    def test_make_scip_symbol_id_is_deterministic(self):
+        from trelix.federation.retriever import make_scip_symbol_id
+
+        id1 = make_scip_symbol_id("myapp", "1.0.0", "AuthService.verify")
+        id2 = make_scip_symbol_id("myapp", "1.0.0", "AuthService.verify")
+        assert id1 == id2
+
+    def test_make_scip_symbol_id_different_packages_differ(self):
+        from trelix.federation.retriever import make_scip_symbol_id
+
+        id1 = make_scip_symbol_id("app-a", "1.0.0", "login")
+        id2 = make_scip_symbol_id("app-b", "1.0.0", "login")
+        assert id1 != id2
+
+    def test_resolve_symbol_returns_repo_that_defines_it(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from trelix.federation.retriever import FederatedRetriever, make_scip_symbol_id
+
+        registry = MagicMock()
+        registry.list.return_value = [MagicMock(alias="auth-service", path=str(tmp_path / "auth"))]
+        fed = FederatedRetriever(registry)
+
+        # Insert a symbol directly via the in-memory connection
+        fed._fed_conn.execute(
+            "INSERT INTO federation_symbols VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                make_scip_symbol_id("auth-service", "", "AuthService.verify"),
+                "auth-service",
+                "",
+                "AuthService.verify",
+                "auth-service",
+                "src/auth.py",
+            ),
+        )
+        fed._fed_conn.commit()
+
+        results = fed.resolve_symbol("AuthService.verify")
+        assert len(results) == 1
+        assert results[0]["alias"] == "auth-service"
+        assert results[0]["file_path"] == "src/auth.py"
+
+    def test_resolve_symbol_empty_when_not_found(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from trelix.federation.retriever import FederatedRetriever
+
+        registry = MagicMock()
+        registry.list.return_value = []
+        fed = FederatedRetriever(registry)
+        results = fed.resolve_symbol("NonExistentClass.method")
+        assert results == []
+
+    def test_resolve_symbol_bare_name_no_dot(self, tmp_path):
+        """resolve_symbol must find symbols whose qualified_name has no dot (bare names)."""
+        from unittest.mock import MagicMock
+
+        from trelix.federation.retriever import FederatedRetriever, make_scip_symbol_id
+
+        registry = MagicMock()
+        registry.list.return_value = []
+        fed = FederatedRetriever(registry)
+
+        # Insert bare name (no dot prefix)
+        fed._fed_conn.execute(
+            "INSERT INTO federation_symbols VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                make_scip_symbol_id("myapp", "", "login"),
+                "myapp",
+                "",
+                "login",
+                "myapp",
+                "src/login.py",
+            ),
+        )
+        fed._fed_conn.commit()
+
+        # Exact match must find it
+        results = fed.resolve_symbol("login")
+        assert len(results) == 1
+        assert results[0]["alias"] == "myapp"
+
+    def test_resolve_symbol_like_suffix_branch(self, tmp_path):
+        """resolve_symbol suffix-LIKE must find 'AuthService.verify' when querying 'verify'."""
+        from unittest.mock import MagicMock
+
+        from trelix.federation.retriever import FederatedRetriever, make_scip_symbol_id
+
+        registry = MagicMock()
+        registry.list.return_value = []
+        fed = FederatedRetriever(registry)
+
+        fed._fed_conn.execute(
+            "INSERT INTO federation_symbols VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                make_scip_symbol_id("auth", "", "AuthService.verify"),
+                "auth",
+                "",
+                "AuthService.verify",
+                "auth",
+                "src/auth.py",
+            ),
+        )
+        fed._fed_conn.commit()
+
+        # Suffix-LIKE query
+        results = fed.resolve_symbol("verify")
+        assert len(results) == 1, f"Expected 1 result, got {len(results)}"
+        assert results[0]["alias"] == "auth"
+
+    def test_scip_id_scoped_package_no_collision(self):
+        """@scope/pkg packages must not collide with same-name unscoped packages."""
+        from trelix.federation.retriever import make_scip_symbol_id
+
+        id1 = make_scip_symbol_id("@scope/pkg", "1.0", "login")
+        id2 = make_scip_symbol_id("pkg", "@scope/1.0", "login")
+        assert id1 != id2, "|| separator must prevent scoped-package collisions"
