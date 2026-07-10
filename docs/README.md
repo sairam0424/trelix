@@ -12,7 +12,7 @@ Welcome to the trelix documentation hub. This page is a complete index of every 
 | Why trelix? | [WHY_TRELIX.md](WHY_TRELIX.md) |
 | Install options | [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md) |
 | MCP integration | [MCP_GUIDE.md](MCP_GUIDE.md) |
-| Latest release | [v2.4.0-world-release-report.md](v2.4.0-world-release-report.md) |
+| Latest release | [../CHANGELOG.md](../CHANGELOG.md) |
 
 ---
 
@@ -110,7 +110,7 @@ Looking for a specific term?
 | File | Description |
 |------|-------------|
 | [../CHANGELOG.md](../CHANGELOG.md) | Full version history with breaking changes and migration notes |
-| [v2.4.0-world-release-report.md](v2.4.0-world-release-report.md) | v2.4.0 release deep-dive: what shipped, benchmarks, upgrade guide |
+| [v2.4.0-world-release-report.md](v2.4.0-world-release-report.md) | v2.4.0 release readiness audit: what shipped, benchmarks, blockers found before tagging |
 | [superpowers/CHANGELOG.md](superpowers/CHANGELOG.md) | Superpowers module changelog |
 
 ---

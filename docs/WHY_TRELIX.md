@@ -270,7 +270,7 @@ Synthesis in progress
 | **Python library (pip install)** | ✅ | ❌ | ❌ | ❌ | partial | ❌ |
 | **LangChain retriever** | ✅ | ❌ | ❌ | ❌ | partial | ❌ |
 | **LlamaIndex retriever** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **MCP server (6 tools)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **MCP server (8 tools)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **GitHub PR review** | ✅ v2.4.0 | ✅ cloud | partial | ❌ | ❌ | ❌ |
 | **Multi-repo federated search** | ✅ FederatedRetriever | partial | ❌ | ✅ enterprise | ❌ | ❌ |
 | **FLARE re-retrieval** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -374,7 +374,7 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 - **Index layer** — offline, incremental, AST-aware, stores everything in a single SQLite file
 - **Synthesis tool** — `trelix ask` turns retrieved context into a cited answer
 - **RAG component** — drop-in LangChain and LlamaIndex retriever for any pipeline
-- **MCP server** — 6 tools available in Claude Code, Cursor, Windsurf
+- **MCP server** — 8 tools available in Claude Code, Cursor, Windsurf
 - **Library and CLI** — both surfaces first-class, both tested
 
 ### What Trelix is not
@@ -393,13 +393,15 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 | FederatedRetriever with TTL cache (~90% hit rate) | Advanced taint analysis (Semgrep integration GA) |
 | 20-language Tree-sitter AST parsing | Hosted cloud index option |
 | 6 LLM backends + LiteLLM 100+ providers | |
-| MCP server (6 tools, stdio transport) | |
+| MCP server (8 tools, stdio transport) | |
 | GitHub PR review + batch comment posting | |
 | VS Code extension (`trelix.search` / `trelix.ask` via MCP) | |
 | Cross-repo symbol resolution (SCIP-style IDs) | |
-| Multi-repo watching (watchfiles.awatch) | Sub-chunk statement-level search GA |
-| Knowledge graph (Louvain, Pyvis, BFS leg) | LLM-as-judge eval integration |
+| Multi-repo watching (watchfiles.awatch) | |
+| Knowledge graph (Louvain, Pyvis, BFS leg) | |
 | FLARE confidence-gated re-retrieval | |
+| Multi-granularity / sub-chunk statement-level search | |
+| GroUSE-style LLM-as-judge synthesis eval harness | |
 | DimensionGuard provider-switch protection | |
 | CoIR eval harness (MRR, Recall, NDCG) | |
 | LangChain + LlamaIndex retrievers | |

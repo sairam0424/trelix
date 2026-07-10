@@ -21,6 +21,9 @@ jobs:
           - os: windows-latest
             artifact-name: trelix-windows-x64
             binary-path: dist/trelix.exe
+          - os: ubuntu-latest
+            artifact-name: trelix-linux-x64
+            binary-path: dist/trelix
 
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +47,12 @@ jobs:
       - name: Verify binary (Windows)
         if: runner.os == 'Windows'
         run: dist/trelix.exe --help
+
+      - name: Verify binary (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          file dist/trelix
+          ./dist/trelix --help
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -71,7 +71,7 @@ TRELIX_STORE_BACKEND=qdrant trelix index ./my-repo  # Qdrant (set QDRANT_URL too
 
 ### Does trelix work on Windows, macOS, and Linux?
 
-Yes. trelix is a Python package and runs on any OS that supports Python 3.11+. Standalone binaries are provided for **macOS ARM64** and **Windows x64** on the GitHub Release page. A Linux x64 binary is not yet in the release matrix (as of v2.7.0); Linux users install via `pip install trelix`.
+Yes. trelix is a Python package and runs on any OS that supports Python 3.11+. Standalone binaries are provided for **macOS ARM64**, **Windows x64**, and **Linux x64** on the GitHub Release page. `pip install trelix` also works on all three.
 
 macOS users can also install via Homebrew:
 ```bash
