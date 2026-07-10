@@ -6,6 +6,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-07-09
+
 ### Added — Phase 1: Watch Bridge, DB Index, AdaptiveRouter Config Fix
 - `FileWatcher._do_reindex` now fires `notify_file_changed()` after a successful
   re-index (not on hash-identical skips). MCP subscribers receive live
@@ -49,6 +51,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Index step has `continue-on-error: true` for CI environments without local models.
 - `infra/github-app/README.md` — GitHub App integration setup guide.
 
+## [2.6.0] — 2026-07-08
 
 ### Added — XTR Late-Interaction Reranker (Plan C, EXPERIMENTAL)
 - `TRELIX_RETRIEVAL_RERANK_PROVIDER=xtr` — XTR reranker (NeurIPS 2023,
@@ -579,6 +582,10 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
+[2.7.0]: https://github.com/sairam0424/trelix/compare/v2.6.0...v2.7.0
+[2.6.0]: https://github.com/sairam0424/trelix/compare/v2.5.0...v2.6.0
+[2.5.0]: https://github.com/sairam0424/trelix/compare/v2.4.0...v2.5.0
+[2.4.0]: https://github.com/sairam0424/trelix/compare/v2.3.0...v2.4.0
 [2.2.0]: https://github.com/sairam0424/trelix/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/sairam0424/trelix/compare/v2.0.0...v2.1.0
 

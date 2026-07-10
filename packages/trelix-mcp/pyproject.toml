@@ -21,7 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["trelix>=0.4.0", "mcp>=1.0.0", "fastmcp>=2.0.0"]
+dependencies = ["trelix>=2.7.0", "mcp>=1.0.0", "fastmcp>=2.0.0"]
 
 [project.scripts]
 trelix-mcp = "trelix_mcp.server:main"

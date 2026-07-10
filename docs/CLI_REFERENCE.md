@@ -51,7 +51,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 2.4.0
+trelix --version        # trelix 2.7.0
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -1089,4 +1089,4 @@ trelix federation list --config .trelix/federation.json
 
 ---
 
-*End of CLI Reference — trelix v2.4.0*
+*End of CLI Reference — trelix v2.7.0*

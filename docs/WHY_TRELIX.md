@@ -385,16 +385,18 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 - A code review platform with UI (GitHub PR review is CLI-based and MCP-based, not a hosted product)
 - A real-time streaming completions service (retrieval happens at query time, not keystroke time)
 
-### Current version scope (v2.4.0)
+### Current version scope (v2.7.0)
 
-| In v2.4.0 | Planned (v3.0+) |
+| In v2.7.0 | Planned (v3.0+) |
 |-----------|-----------------|
 | 7-leg hybrid retrieval pipeline | Streaming retrieval with incremental result delivery |
-| FederatedRetriever with TTL cache (~90% hit rate) | Native IDE plugin (VS Code extension) |
-| 20-language Tree-sitter AST parsing | Cross-repo symbol resolution |
-| 6 LLM backends + LiteLLM 100+ providers | Advanced taint analysis (Semgrep integration GA) |
-| MCP server (6 tools, stdio transport) | Hosted cloud index option |
-| GitHub PR review + batch comment posting | Multi-granularity indexing GA |
+| FederatedRetriever with TTL cache (~90% hit rate) | Advanced taint analysis (Semgrep integration GA) |
+| 20-language Tree-sitter AST parsing | Hosted cloud index option |
+| 6 LLM backends + LiteLLM 100+ providers | |
+| MCP server (6 tools, stdio transport) | |
+| GitHub PR review + batch comment posting | |
+| VS Code extension (`trelix.search` / `trelix.ask` via MCP) | |
+| Cross-repo symbol resolution (SCIP-style IDs) | |
 | Multi-repo watching (watchfiles.awatch) | Sub-chunk statement-level search GA |
 | Knowledge graph (Louvain, Pyvis, BFS leg) | LLM-as-judge eval integration |
 | FLARE confidence-gated re-retrieval | |

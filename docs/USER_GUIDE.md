@@ -186,7 +186,7 @@ The practical meaning: a result that appears at rank 3 in the vector leg AND ran
 
 ## 4. The Retrieval Pipeline — All 7 Legs
 
-trelix v2.4.0 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
+trelix v2.7.0 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
 
 ```
 User Query
@@ -363,7 +363,7 @@ trelix index ./my-repo
 You will see output like this:
 
 ```
-trelix v2.4.0 — indexing ./my-repo
+trelix v2.7.0 — indexing ./my-repo
 ✓ FileWalker: 243 files found (.gitignore applied)
   Phase 1/4 — Parse
     [████████████████████] 243/243 files  3.2s
@@ -1590,7 +1590,7 @@ curl http://localhost:8765/health
 ```
 
 ```json
-{"status": "ok", "version": "2.4.0", "repo": "./my-repo"}
+{"status": "ok", "version": "2.7.0", "repo": "./my-repo"}
 ```
 
 ### Index statistics

@@ -1,6 +1,6 @@
-# trelix v2.4.0 — Frequently Asked Questions
+# trelix v2.7.0 — Frequently Asked Questions
 
-> Last updated: 2026-07-05 — covers trelix 2.4.0, trelix-mcp 2.4.0, trelix-langchain, and trelix-llama-index.
+> Last updated: 2026-07-10 — covers trelix 2.7.0, trelix-mcp 2.7.0, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
 
 ---
 
@@ -471,7 +471,7 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 - Parameterized SQL throughout (no injection risk).
 - MCP pagination following the spec-approved cursor pattern.
 
-Known limitation: `trelix-langchain` and `trelix-llama-index` are currently at v2.0.0 on PyPI due to a release workflow gap. Until they are bumped to v2.4.0, pin `trelix-langchain==2.0.0` and `trelix-llama-index==2.0.0` in your `requirements.txt`.
+`trelix-langchain` and `trelix-llama-index` are on an independent release cadence from core trelix — both are currently at v2.4.0 on PyPI. Pin `trelix-langchain==2.4.0` and `trelix-llama-index==2.4.0` in your `requirements.txt` if you need a specific version.
 
 ---
 
