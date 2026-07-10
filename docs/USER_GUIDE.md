@@ -1,4 +1,4 @@
-# trelix User Guide — v2.4.0
+# trelix User Guide — v2.7.0
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -462,7 +462,7 @@ trelix stats ./my-repo
 trelix stats — ./my-repo
 
   Index:        ./my-repo/.trelix/index.db
-  Version:      2.4.0
+  Version:      2.7.0
   Last indexed: 2026-07-05 10:32:14 UTC
 
   Files:        243
@@ -1949,6 +1949,14 @@ metrics = harness.run("./eval/golden_synthesis.jsonl")
 print(f"Overall: {metrics['overall']:.3f}")
 ```
 
+## Phase 1–3 Features (v2.7.0)
+
+- **Watch bridge MCP notifications** — file-system watcher now emits real-time MCP events when the index is updated, enabling editors and agents to subscribe to live re-indexing signals.
+- **Cross-repo symbol resolution** — symbol lookups can now resolve definitions that live in a sibling or dependency repository; configure via `cross_repo_paths` in `trelix.config.json`.
+- **Streaming indexing** (`TRELIX_INDEXER_STREAMING=1`) — large repositories are indexed incrementally in a streaming pass, reducing peak memory usage and enabling partial results during initial index builds.
+- **VS Code extension** (`workspace-vscode/`) — first-party extension adds inline symbol hover, semantic search palette, and a Trelix side-panel directly inside VS Code.
+- **GitHub App PR review workflow** — install the Trelix GitHub App to get automated code-intelligence comments (symbol impact analysis, cross-repo call-graph diffs) on every pull request.
+
 ---
 
-*trelix v2.6.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v2.7.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
