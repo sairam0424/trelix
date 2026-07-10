@@ -129,7 +129,7 @@ trelix combines three complementary retrieval legs and merges their results with
 Results from all three legs are merged by RRF before optional reranking. The adaptive query router decides which legs to activate based on the classified intent of the query.
 
 Optional additional legs available via feature flags:
-- **4th leg** — Knowledge Graph BFS (`TRELIX_GRAPH_SEARCH_ENABLED=true`)
+- **4th leg** — Knowledge Graph BFS (`TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true`)
 - **5th leg** — File-summary semantic search (`TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true`)
 - **6th leg** — SPLADE-Code sparse vectors (`TRELIX_RETRIEVAL_SPARSE=true`)
 - **7th leg** — Multi-granularity block+statement indexing (`TRELIX_CHUNKER_MULTI_GRANULARITY=true`)

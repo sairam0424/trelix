@@ -103,7 +103,7 @@ The first result is the function definition with its signature and docstring. Th
 You are the new tech lead. You need to present the system architecture to the team. You need to understand how the ten microservices relate to each other, which service owns which data model, and what the request lifecycle looks like for the main user-facing API.
 
 ```bash
-TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "explain the overall architecture: which services exist, what each one does, and how they communicate"
+TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "explain the overall architecture: which services exist, what each one does, and how they communicate"
 ```
 
 With the knowledge graph layer active, trelix builds a Code Property Graph from all call, import, and type edges, runs Louvain community detection to identify architectural modules, and synthesizes a high-level description with specific file references. You have a working architecture narrative in under a minute.
@@ -279,7 +279,7 @@ TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true trelix ask ./my-repo "what does the auth 
 
 **When it leads:** Project overview queries, architecture questions, onboarding questions about what a module does.
 
-### Leg 5 — CodeGraph BFS (opt-in, `TRELIX_GRAPH_SEARCH_ENABLED=true`)
+### Leg 5 — CodeGraph BFS (opt-in, `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true`)
 
 **What it does:** After the first three legs produce seed results, BFS (breadth-first search) traverses the Code Property Graph starting from those seeds. Nodes one hop away get score `0.5`, two hops get `0.25`, etc. This surfaces callers, callees, imported modules, and type ancestors that no text or embedding search would find.
 
@@ -290,7 +290,7 @@ TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true trelix ask ./my-repo "what does the auth 
 ```bash
 pip install trelix[knowledge-graph]
 trelix graph ./my-repo
-TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "how does checkout work?"
+TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "how does checkout work?"
 ```
 
 **When it leads:** Feature flow questions, blast radius queries, any question requiring a chain of related symbols.
@@ -678,7 +678,7 @@ Returns a JSON list of all symbols that directly or indirectly depend on the tar
 
 **Step 4 — Enable graph search for deeper traversal:**
 ```bash
-TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "blast radius of UserRepository.get_by_email — what would need to change?"
+TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "blast radius of UserRepository.get_by_email — what would need to change?"
 ```
 
 With the knowledge graph active, graph BFS from `get_by_email` surfaces callers, their callers, and imported helpers — the full impact surface.
@@ -915,7 +915,7 @@ Watching for changes... (Ctrl+C to stop)
 **Key behaviors:**
 - **Debounce:** 500ms debounce prevents index cascades when your IDE auto-formats a file on save.
 - **Incremental:** Only the changed file is re-processed; the rest of the index is untouched.
-- **Graph sync:** When `TRELIX_GRAPH_SEARCH_ENABLED=true` and the graph has been built, `trelix watch` also patches the Code Property Graph on every file change. You do not need to re-run `trelix graph` manually.
+- **Graph sync:** When `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true` and the graph has been built, `trelix watch` also patches the Code Property Graph on every file change. You do not need to re-run `trelix graph` manually.
 - **Delete handling:** When a file is deleted, trelix removes its symbols, chunks, vectors, and call edges from the index atomically.
 
 **Step 2 — Query while watching:**
@@ -1554,7 +1554,7 @@ trelix telemetry ./repo
 | `TRELIX_STORE_BACKEND` | `sqlite` | Vector store: `sqlite`, `qdrant`, `lance` |
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel parse threads |
 | `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` | `12000` | Max context tokens to LLM |
-| `TRELIX_GRAPH_SEARCH_ENABLED` | `false` | Enable CodeGraph BFS leg |
+| `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` | `false` | Enable CodeGraph BFS leg |
 | `TRELIX_GRAPH_SEARCH_DEPTH` | `2` | BFS depth from seed nodes |
 | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable file-summary retrieval leg |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM summaries at index time |

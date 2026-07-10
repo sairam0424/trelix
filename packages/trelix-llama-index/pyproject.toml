@@ -11,7 +11,7 @@ version = "2.4.0"
 description = "LlamaIndex retriever for trelix code intelligence"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["trelix>=2.4.0", "llama-index-core>=0.10.0"]
+dependencies = ["trelix>=0.4.0", "llama-index-core>=0.10.0"]
 
 [project.urls]
 Homepage = "https://github.com/sairam0424/trelix"

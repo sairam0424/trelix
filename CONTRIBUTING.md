@@ -94,7 +94,7 @@ Tests live in `tests/unit/test_graph_*.py`. All graph tests can run without pyvi
 
 | Key | Default | Env var |
 |-----|---------|---------|
-| `graph_search_enabled` | `False` | `TRELIX_GRAPH_SEARCH_ENABLED=true` |
+| `graph_search_enabled` | `False` | `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true` |
 | `graph_search_depth` | `2` | — |
 | `graph_search_max_results` | `15` | — |
 
