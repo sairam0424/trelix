@@ -1,6 +1,6 @@
-# trelix v2.4.0 — Frequently Asked Questions
+# trelix v2.7.0 — Frequently Asked Questions
 
-> Last updated: 2026-07-05 — covers trelix 2.4.0, trelix-mcp 2.4.0, trelix-langchain, and trelix-llama-index.
+> Last updated: 2026-07-10 — covers trelix 2.7.0, trelix-mcp 2.7.0, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
 
 ---
 
@@ -71,7 +71,7 @@ TRELIX_STORE_BACKEND=qdrant trelix index ./my-repo  # Qdrant (set QDRANT_URL too
 
 ### Does trelix work on Windows, macOS, and Linux?
 
-Yes. trelix is a Python package and runs on any OS that supports Python 3.11+. Standalone binaries are provided for **macOS ARM64** and **Windows x64** on the GitHub Release page. A Linux x64 binary is not yet in the release matrix (v2.4.0); Linux users install via `pip install trelix`.
+Yes. trelix is a Python package and runs on any OS that supports Python 3.11+. Standalone binaries are provided for **macOS ARM64**, **Windows x64**, and **Linux x64** on the GitHub Release page. `pip install trelix` also works on all three.
 
 macOS users can also install via Homebrew:
 ```bash
@@ -129,7 +129,7 @@ trelix combines three complementary retrieval legs and merges their results with
 Results from all three legs are merged by RRF before optional reranking. The adaptive query router decides which legs to activate based on the classified intent of the query.
 
 Optional additional legs available via feature flags:
-- **4th leg** — Knowledge Graph BFS (`TRELIX_GRAPH_SEARCH_ENABLED=true`)
+- **4th leg** — Knowledge Graph BFS (`TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true`)
 - **5th leg** — File-summary semantic search (`TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true`)
 - **6th leg** — SPLADE-Code sparse vectors (`TRELIX_RETRIEVAL_SPARSE=true`)
 - **7th leg** — Multi-granularity block+statement indexing (`TRELIX_CHUNKER_MULTI_GRANULARITY=true`)
@@ -215,16 +215,18 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v2.4.0 exposes exactly **6 tools**:
+trelix-mcp v2.7.0 exposes **8 tools**:
 
 | Tool | Description |
 |------|-------------|
 | `search_code` | Hybrid code search with optional cursor-based pagination (v2.4.0) |
-| `ask_question` | Retrieval-augmented question answering using the configured LLM |
 | `index_codebase` | Index or re-index a repository; sends progress notifications during stages |
-| `get_stats` | Return index statistics for a repository |
+| `get_symbol` | Get full source of a symbol by qualified name |
+| `blast_radius` | Find what depends on a symbol |
 | `build_knowledge_graph` | Build the Code Property Graph for a repo |
 | `graph_search_mcp` | Graph BFS search from a seed symbol |
+| `subscribe_resource` | Subscribe to file change notifications (v2.5.0+) |
+| `unsubscribe_resource` | Unsubscribe from file change notifications (v2.5.0+) |
 
 Plus the following MCP **Resources** (application-controlled, URI-addressable):
 - `trelix://index/stats` — aggregate index statistics
@@ -471,7 +473,7 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 - Parameterized SQL throughout (no injection risk).
 - MCP pagination following the spec-approved cursor pattern.
 
-Known limitation: `trelix-langchain` and `trelix-llama-index` are currently at v2.0.0 on PyPI due to a release workflow gap. Until they are bumped to v2.4.0, pin `trelix-langchain==2.0.0` and `trelix-llama-index==2.0.0` in your `requirements.txt`.
+`trelix-langchain` and `trelix-llama-index` are on an independent release cadence from core trelix — both are currently at v2.4.0 on PyPI. Pin `trelix-langchain==2.4.0` and `trelix-llama-index==2.4.0` in your `requirements.txt` if you need a specific version.
 
 ---
 

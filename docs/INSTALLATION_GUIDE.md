@@ -1,6 +1,6 @@
-# Trelix v2.4.0 — Installation Guide
+# Trelix v2.7.0 — Installation Guide
 
-This guide covers every installation scenario for Trelix v2.4.0, from a quick
+This guide covers every installation scenario for Trelix v2.7.0, from a quick
 one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 ---
@@ -47,7 +47,7 @@ so no API key is required.
 
 ```bash
 pip install "trelix[local]"
-trelix --version   # should print 2.4.0
+trelix --version   # should print 2.7.0
 ```
 
 On first use, Trelix downloads the embedder model (~420 MB) to
@@ -195,13 +195,13 @@ and must be installed independently.
 ## 4. Standalone Binaries (no Python needed)
 
 Pre-compiled single-file binaries are published to the
-[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v2.4.0)
+[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v2.7.0)
 page for each platform. No Python or pip required.
 
 ### macOS ARM64 (Apple Silicon)
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.4.0/trelix-macos-arm64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.7.0/trelix-macos-arm64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -219,7 +219,7 @@ somewhere on your `PATH`, or run it directly:
 ### Linux x64
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.4.0/trelix-linux-x64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.7.0/trelix-linux-x64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -298,7 +298,7 @@ directory you mount.
 ```bash
 docker run --rm \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.4.0 \
+  ghcr.io/sairam0424/trelix:2.7.0 \
   index /repo
 ```
 
@@ -310,7 +310,7 @@ The index is written to `/repo/.trelix/` inside the container (which maps to
 ```bash
 docker run --rm -p 8080:8080 \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.4.0 \
+  ghcr.io/sairam0424/trelix:2.7.0 \
   serve --repo /repo --port 8080
 ```
 
@@ -323,7 +323,7 @@ docker run --rm \
   -e OPENAI_API_KEY="sk-..." \
   -e TRELIX_EMBEDDER=openai \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.4.0 \
+  ghcr.io/sairam0424/trelix:2.7.0 \
   index /repo
 ```
 
@@ -333,7 +333,7 @@ docker run --rm \
 # docker-compose.yml
 services:
   trelix:
-    image: ghcr.io/sairam0424/trelix:2.4.0
+    image: ghcr.io/sairam0424/trelix:2.7.0
     command: serve --repo /repo --port 8080
     ports:
       - "8080:8080"
@@ -356,7 +356,7 @@ Run these commands after any installation method to confirm everything is
 working correctly.
 
 ```bash
-# Print version (must show 2.4.0)
+# Print version (must show 2.7.0)
 trelix --version
 
 # Print usage summary
@@ -376,7 +376,7 @@ Expected output for `trelix stats ./`:
 
 ```
 Trelix Index Stats
-  Version   : 2.4.0
+  Version   : 2.7.0
   Chunks    : <n>
   Embedder  : local (all-MiniLM-L6-v2)
   Backend   : sqlite
@@ -436,7 +436,7 @@ loads it automatically via `python-dotenv`.
 
 ```bash
 pip install --upgrade "trelix[local]"   # or whatever extras you use
-trelix --version   # confirm 2.4.0
+trelix --version   # confirm 2.7.0
 ```
 
 ### Step 2 — Review breaking changes
@@ -467,7 +467,7 @@ Update every call site that unpacks the return value directly as a list.
 #### `flare_max_iterations` renamed to `flare_max_retries`
 
 The environment variable `TRELIX_FLARE_MAX_ITERATIONS` still works but emits a
-`DeprecationWarning`. Migrate to the new name before v2.5.0:
+`DeprecationWarning`. It will be removed in v3.0.0 — migrate to the new name:
 
 ```bash
 # Old (still works in 2.4.0 with a warning)

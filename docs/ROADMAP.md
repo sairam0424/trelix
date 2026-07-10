@@ -1,13 +1,13 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 2.5.0 (current) | **Next:** 2.6.0
+> **Version:** 2.7.0 (current) | **Next:** 3.0.0
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
 ---
 
-## ✅ Shipped (v2.0 – v2.5)
+## ✅ Shipped (v2.0 – v2.7)
 
 | Version | Feature |
 |---------|---------|
@@ -16,22 +16,21 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.2.0 | Agentic ReAct loop, data-flow analysis, SPLADE sparse retrieval, multi-granularity indexing |
 | v2.3.0 | DimensionGuard, MultiQueryExpander wiring, MCP Resources + Prompts, DiffReviewer, FederatedRetriever |
 | v2.4.0 | flare_max_retries rename, expansion observability, federation cache, GitHub PR review, watch-all, MCP pagination |
-| Phase 1 | Watch bridge wired ✅, idx_files_rel_path index ✅, AdaptiveRouter config passthrough ✅ |
-| Phase 2 — Plan A | Cross-repo symbol resolution with SCIP-style IDs ✅ |
-| Phase 2 — Plan B | Semantic diff embeddings with CCRep-style before/after encoding ✅ |
-| Phase 2 — Plan C | Streaming indexing pipeline with generator + bounded queue ✅ |
+| v2.5.0 | Query telemetry, Eval harness, CoIR benchmark integration |
+| v2.6.0 | Incremental Louvain community detection, DF frontier heuristic, GraphUpdater wiring |
+| v2.7.0 | Watch bridge wired, DB index, AdaptiveRouter fix, cross-repo symbols, diff embeddings, streaming indexing, VS Code extension, GitHub App PR review |
 
 ---
 
-## 🔬 v2.5.0 — Retrieval Quality (Q3 2026)
+## 🔬 v2.5.0 — Retrieval Quality (Q3 2026) ✅ Shipped
 
 **Goal:** Measurably better search results on real codebases.
 
-- [ ] **Cross-encoder reranker improvements** — fine-tuned model specifically for code retrieval (research: CoIR benchmark SOTA)
-- [ ] **Symbol-level PageRank** — use commit frequency + test coverage as centrality signals (beyond import graph)
+- [x] **Cross-encoder reranker improvements** — fine-tuned model specifically for code retrieval (research: CoIR benchmark SOTA)
+- [x] **Symbol-level PageRank** — use commit frequency + test coverage as centrality signals (beyond import graph)
 - [ ] **Multi-language call graph** — resolve cross-language calls (Python → TypeScript via REST/gRPC boundaries)
-- [ ] **FLARE with uncertainty estimation** — replace heuristic phrase matching with model-calibrated confidence
-- [ ] **Eval harness improvements** — golden set generation from GitHub starred repos + nDCG@10 public leaderboard
+- [x] **FLARE with uncertainty estimation** — replace heuristic phrase matching with model-calibrated confidence
+- [x] **Eval harness improvements** — golden set generation from GitHub starred repos + nDCG@10 public leaderboard
 
 ---
 
@@ -46,7 +45,9 @@ This roadmap describes planned features, research directions, and long-term visi
 - [x] **GraphUpdater** — Stores `_prev_partition`, uses incremental detection on file changes
 
 ### Remaining backlog
-- [x] **Streaming indexing** — yield symbols as parsed (no in-memory buffer for large repos) ✅
+- [x] **Streaming indexing** — yield symbols as parsed (no in-memory buffer for large repos) ✅ (shipped v2.7.0)
+- [x] **Cross-repo symbol resolution** — SCIP-style IDs ✅ (shipped v2.7.0)
+- [x] **Semantic diff embeddings** — CCRep-style before/after encoding ✅ (shipped v2.7.0)
 - [ ] **Qdrant Cloud integration** — first-class remote vector store with auto-migration
 - [ ] **Incremental embedding** — only re-embed changed symbols on partial re-index
 - [ ] **Parallel BM25 shard** — FTS5 read-only shards for read-heavy deployments
@@ -64,6 +65,8 @@ This roadmap describes planned features, research directions, and long-term visi
 - [ ] **OpenTelemetry integration** — spans for every retrieval leg
 - [ ] **Helm chart** — production Kubernetes deployment for `trelix serve`
 - [ ] **TypeScript SDK** — native SDK matching Python API surface
+- [ ] **VS Code extension improvements** — inline search refinement, snippet preview
+- [ ] **GitHub App GA** — public marketplace listing, production hardening
 
 ---
 

@@ -12,7 +12,7 @@ cd trelix
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# Install in editable mode with all dev + optional deps (v2.4.0)
+# Install in editable mode with all dev + optional deps
 make install-dev
 # equivalent: pip install -e ".[bge-code,plaid,lance,serve,dev]"
 # Optional extras:
@@ -46,7 +46,7 @@ make format         # ruff format
 make typecheck      # mypy
 ```
 
-**Note on CI checks (v2.4.0):** The ruff format step now runs as part of linting — files are auto-formatted before the diff-check, ensuring cross-platform consistency (Windows CRLF vs Unix LF).
+**Note on CI checks:** The ruff format step runs as part of linting — files are auto-formatted before the diff-check, ensuring cross-platform consistency (Windows CRLF vs Unix LF).
 
 ### Running specific test subsets
 
@@ -94,7 +94,7 @@ Tests live in `tests/unit/test_graph_*.py`. All graph tests can run without pyvi
 
 | Key | Default | Env var |
 |-----|---------|---------|
-| `graph_search_enabled` | `False` | `TRELIX_GRAPH_SEARCH_ENABLED=true` |
+| `graph_search_enabled` | `False` | `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true` |
 | `graph_search_depth` | `2` | — |
 | `graph_search_max_results` | `15` | — |
 
@@ -211,7 +211,7 @@ pip install -e ".[sparse]"
 
 ### Embedder Providers
 
-trelix v2.4.0 ships with built-in support for multiple embedding backends:
+trelix ships with built-in support for multiple embedding backends:
 
 - **Local embeddings** (`local`) — Uses transformers library (default, no API keys needed)
 - **BGE-Code-v1** (`bge-code`) — BAAI General Embedding for code, optimized for semantic code search
@@ -226,7 +226,7 @@ pip install -e ".[bge-code]"
 # Then set TRELIX_EMBEDDER_PROVIDER=bge-code in .env
 ```
 
-### Adding a New LLM Provider (v2.4.0)
+### Adding a New LLM Provider
 
 trelix uses a provider-agnostic `TrelixChatClient` ABC (`src/trelix/llm/client.py`). All five built-in backends (`OpenAIBackend`, `AnthropicBackend`, `BedrockBackend`, `VertexBackend`, `LiteLLMBackend`) implement the same three methods: `complete()`, `stream()`, and `tool_call()`. Adding a new provider requires zero changes to business logic (chunker, synthesizer, planner, graph_rag).
 
@@ -331,7 +331,7 @@ Open a [GitHub Discussion](https://github.com/sairam0424/trelix/discussions) for
 
 ## Versioning & Stability Policy
 
-trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.4.0**.
+trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.7.0**.
 
 ### Stable public API (guaranteed not to change without a major version bump)
 

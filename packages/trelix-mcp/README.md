@@ -2,7 +2,7 @@
 
 <!-- mcp-name: io.github.sairam0424/trelix -->
 
-MCP server for [trelix](https://github.com/sairam0424/trelix) v2.4.0 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+MCP server for [trelix](https://github.com/sairam0424/trelix) v2.7.0 — semantic code search with streaming /ask endpoint, watch bridge notifications, and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
 
 ## ⚠️ Breaking Change in v2.4.0
 
@@ -24,22 +24,22 @@ for r in response["results"]:  # now dict with pagination
 ## Install
 
 ```bash
-pip install trelix-mcp==2.4.0
+pip install trelix-mcp==2.7.0
 ```
 
 To use Bedrock embeddings or synthesis (no extra API key beyond AWS credentials):
 
 ```bash
-pip install "trelix-mcp==2.4.0" "trelix[bedrock]"
+pip install "trelix-mcp==2.7.0" "trelix[bedrock]"
 ```
 
 Other optional LLM provider extras:
 
 ```bash
-pip install "trelix-mcp==2.4.0" "trelix[anthropic]"   # Anthropic Claude direct
-pip install "trelix-mcp==2.4.0" "trelix[vertex]"       # Google Vertex AI / Gemini
-pip install "trelix-mcp==2.4.0" "trelix[litellm]"      # 100+ providers via LiteLLM
-pip install "trelix-mcp==2.4.0" "trelix[llm-all]"      # all LLM providers
+pip install "trelix-mcp==2.7.0" "trelix[anthropic]"   # Anthropic Claude direct
+pip install "trelix-mcp==2.7.0" "trelix[vertex]"       # Google Vertex AI / Gemini
+pip install "trelix-mcp==2.7.0" "trelix[litellm]"      # 100+ providers via LiteLLM
+pip install "trelix-mcp==2.7.0" "trelix[llm-all]"      # all LLM providers
 ```
 
 ## Usage
@@ -161,6 +161,8 @@ TRELIX_LLM_MODEL=bedrock/claude-3-5-sonnet
 | `ask` | Streaming chat endpoint for conversational code exploration (v2.0.0+) |
 | `build_knowledge_graph(repo_path)` | Build code property graph |
 | `graph_search_mcp(query, repo_path)` | Search via knowledge graph |
+| `subscribe_resource(patterns)` | Subscribe to file change notifications (v2.7.0+) |
+| `unsubscribe_resource(patterns)` | Unsubscribe from file change notifications (v2.7.0+) |
 
 ## Pagination
 
@@ -210,5 +212,25 @@ graph_search_mcp(query="how does auth relate to the user model?", repo_path="/pa
 Install the knowledge graph extra for full functionality:
 
 ```bash
-pip install 'trelix-mcp==2.4.0' 'trelix[knowledge-graph]'
+pip install 'trelix-mcp==2.7.0' 'trelix[knowledge-graph]'
 ```
+
+## Watch Bridge (v2.7.0)
+
+The `trelix watch` command now fires MCP notifications after every file re-index, allowing real-time codebase awareness across all subscribed clients:
+
+```bash
+# Terminal 1: Start trelix-mcp
+trelix-mcp
+
+# Terminal 2: Enable file watching
+trelix watch /path/to/repo
+```
+
+Clients can subscribe to file changes via `subscribe_resource` with glob patterns:
+
+```
+subscribe_resource(["src/**/*.ts", "tests/**/*.test.ts"])
+```
+
+After each re-index, all clients receive `notifications/resources/updated` containing changed file paths and re-index stats.

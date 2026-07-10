@@ -148,6 +148,19 @@ trelix watch ./my-repo
 
 ## What's New
 
+### v2.7.0 — Agentic Integration & Streaming
+
+| Phase | Feature | Activation | Key API |
+|-------|---------|------------|---------|
+| **Phase 1** | MCP watch bridge | auto (wired into FileWatcher) | `notify_file_changed()` |
+| **Phase 1** | DB index on `files.rel_path` | auto | `idx_files_rel_path` |
+| **Phase 1** | AdaptiveRouter retriever config | auto | `AdaptiveRouter(retriever_config=...)` |
+| **Phase 2** | Cross-repo symbol resolution | `TRELIX_FEDERATION_RESOLUTION=true` | `make_scip_symbol_id()`, `resolve_symbol()` |
+| **Phase 2** | Semantic diff embeddings | `TRELIX_DIFF_EMBEDDINGS=true` | `DiffEmbedder`, `diff_chunks` table |
+| **Phase 2** | Streaming indexing | `TRELIX_INDEXER_STREAMING=true` | `_iter_files()`, bounded Queue |
+| **Phase 3** | VS Code extension | `pip install trelix[vscode]` | `trelix.search`, `trelix.ask` via MCP stdio |
+| **Phase 3** | GitHub App PR review | auto (`.github/workflows/trelix-review.yml`) | Check annotations, auto-comments |
+
 ### v2.2.0 — Intelligence Upgrades
 
 | Feature | Enable | What it does |
