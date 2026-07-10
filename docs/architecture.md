@@ -1,6 +1,6 @@
 # trelix Architecture
 
-> **Version:** 2.7.0 | **Python:** 3.11+ | **110+ source modules**
+> **Version:** 2.7.1 | **Python:** 3.11+ | **110+ source modules**
 
 This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
 
@@ -20,13 +20,13 @@ This document describes the complete architecture of trelix — every layer, eve
 10. [Synthesis and Agent Loop](#10-synthesis-and-agent-loop)
 11. [Graph Layer](#11-graph-layer)
 12. [Analysis Layer](#12-analysis-layer)
-13. [Federation Layer (v2.7.0)](#13-federation-layer-v270)
-14. [Review Layer (v2.7.0)](#14-review-layer-v270)
+13. [Federation Layer (v2.4.0)](#13-federation-layer-v240)
+14. [Review Layer (v2.4.0)](#14-review-layer-v240)
 15. [MCP Server](#15-mcp-server)
 16. [REST API](#16-rest-api)
 17. [CLI Layer](#17-cli-layer)
 18. [File Watching](#18-file-watching)
-19. [Telemetry and Observability (v2.7.0)](#19-telemetry-and-observability-v270)
+19. [Telemetry and Observability (v2.4.0)](#19-telemetry-and-observability-v240)
 20. [LLM Client Abstraction](#20-llm-client-abstraction)
 21. [Key Design Invariants](#21-key-design-invariants)
 22. [Data Flow Diagrams](#22-data-flow-diagrams)
@@ -349,7 +349,7 @@ class RetrievalConfig(BaseSettings):
     multi_query_enabled: bool = False
     multi_query_count: int = 2           # range: 1–4
     flare_enabled: bool = False
-    flare_max_retries: int = 1           # ge=1, le=3 — v2.7.0 rename
+    flare_max_retries: int = 1           # ge=1, le=3 — v2.4.0 rename
     pagerank_boost_enabled: bool = False
     pagerank_boost_factor: float = 1.3   # 1.0–3.0
     agentic_enabled: bool = False        # ReAct AgentLoop
@@ -360,7 +360,7 @@ class RetrievalConfig(BaseSettings):
     sub_chunk_search_enabled: bool = False
     federation_enabled: bool = False
     federation_max_workers: int = 4      # 1–16
-    telemetry_enabled: bool = False      # v2.7.0
+    telemetry_enabled: bool = False      # v2.4.0
 
     # LRU caches
     query_cache_size: int = 256   # embed_query() results
@@ -450,7 +450,7 @@ index_metadata (key PK, value TEXT)   -- dimension guard storage
 
 query_telemetry (id PK, ts, query, intent, elapsed_ms, result_count,
                  leg_sizes JSON, thumbs_up,
-                 -- v2.7.0 expansion observability:
+                 -- v2.4.0 expansion observability:
                  expansion_used INT, expansion_variants INT, expansion_elapsed_ms REAL)
 
 def_use_edges (id PK, symbol_id, var_name, def_line, use_line,
@@ -488,7 +488,7 @@ idx_def_use_symbol, idx_taint_severity, idx_sparse_token
 4. `file_summaries` table
 5. `sub_chunks` table (MGS3)
 6. `query_telemetry` table (v2.3 observability)
-7. `expansion_used`, `expansion_variants`, `expansion_elapsed_ms` on `query_telemetry` (v2.7.0)
+7. `expansion_used`, `expansion_variants`, `expansion_elapsed_ms` on `query_telemetry` (v2.4.0)
 8. `index_metadata` table (v2.3 DimensionGuard)
 9. `def_use_edges`, `taint_flows`, `sparse_embeddings` (v2.2)
 
@@ -528,7 +528,7 @@ class Database:
     def resolve_cross_file_type_edges() -> int # class/interface name matching
     def resolve_angular_selectors() -> int     # Angular component selector edges
 
-    # Telemetry (v2.7.0)
+    # Telemetry (v2.4.0)
     def insert_query_telemetry(query, intent, elapsed_ms, result_count,
                                 leg_sizes=None, *, expansion_used=None,
                                 expansion_variants=None, expansion_elapsed_ms=None) -> int
@@ -1436,7 +1436,7 @@ CLI: `semgrep --json --no-rewrite-rule-ids [flags] --config <rules> <repo>`. Tim
 
 ---
 
-## 13. Federation Layer (v2.7.0)
+## 13. Federation Layer (v2.4.0)
 
 ### `RepoRegistry`
 
@@ -1491,7 +1491,7 @@ with ThreadPoolExecutor(max_workers=min(max_workers, len(entries))) as pool:
 
 **Merging:** `reciprocal_rank_fusion(per_repo_results)` → dedup by `f"{r.file.rel_path}:{r.chunk.symbol_id}"`.
 
-**TTL Cache (v2.7.0):**
+**TTL Cache (v2.4.0):**
 - Cache key: `SHA-256(f"{query}|{sorted_repo_paths}|{k}")`
 - Thread-safe: `threading.Lock` guards `_cache`, `_hits`, `_misses`
 - TTL check: `time.monotonic() > expiry` (not wall clock — monotonic avoids daylight saving jumps)
@@ -1500,7 +1500,7 @@ with ThreadPoolExecutor(max_workers=min(max_workers, len(entries))) as pool:
 
 ---
 
-## 14. Review Layer (v2.7.0)
+## 14. Review Layer (v2.4.0)
 
 ### `DiffParser`
 
@@ -1618,7 +1618,7 @@ mcp = FastMCP("trelix")
 
 ```python
 def search_code(query: str, repo_path: str, k: int = 10, cursor: int = 0) -> dict:
-    # v2.7.0: returns pagination envelope
+    # v2.4.0: returns pagination envelope
     # {"results": [...], "next_cursor": int|null, "total_available": int}
     # cursor=0 default preserves backward compatibility
 
@@ -1702,13 +1702,13 @@ Single entry point: `trelix = "trelix.cli.main:app"` (Typer application).
 | `update-index <repo> <file>` | | Re-index single file |
 | `migrate-vectors <repo>` | --reset, --to | Vector migration |
 | `watch <repo>` | --provider | Single-repo watch |
-| `watch-all` | --config | All federated repos (v2.7.0) |
+| `watch-all` | --config | All federated repos (v2.4.0) |
 | `serve <repo>` | --port, --host | REST API server |
 | `graph <repo>` | --concepts, --export-html | Build knowledge graph |
 | `telemetry <repo>` | --limit, --json | Query telemetry |
 | `eval <repo>` | --golden, --k | nDCG@10/Recall/MRR |
 | `taint <repo>` | --json | Semgrep taint analysis |
-| `review <repo>` | --diff, --base, --head, --json, --pr, --post-comments | Diff review (v2.7.0) |
+| `review <repo>` | --diff, --base, --head, --json, --pr, --post-comments | Diff review (v2.4.0) |
 | `search-all <query>` | --k, --json, --config | Federated search |
 | `federation add` | alias, path, --weight | Register repo |
 | `federation list` | --config | List registered repos |
@@ -1741,7 +1741,7 @@ class FileWatcher:
 
 Requires `pip install trelix[watch]` (`watchdog>=4.0.0`).
 
-### `MultiRepoWatcher` (v2.7.0, all federated repos)
+### `MultiRepoWatcher` (v2.4.0, all federated repos)
 
 **Module:** `src/trelix/indexing/multi_watcher.py`
 
@@ -1774,7 +1774,7 @@ Requires `pip install trelix[watch]` (`watchfiles>=0.21`).
 
 ---
 
-## 19. Telemetry and Observability (v2.7.0)
+## 19. Telemetry and Observability (v2.4.0)
 
 ### `TelemetryWriter`
 
@@ -1791,12 +1791,12 @@ class TelemetryWriter:
 
 Written to `query_telemetry` table: `query`, `intent`, `elapsed_ms`, `result_count`, `leg_sizes` (JSON), `thumbs_up`.
 
-**v2.7.0 expansion columns** (nullable, stored as SQL NULL when expansion not used):
+**v2.4.0 expansion columns** (nullable, stored as SQL NULL when expansion not used):
 - `expansion_used: bool` — True when LLM expansion ran
 - `expansion_variants: int` — number of query variants generated (including original)
 - `expansion_elapsed_ms: float` — LLM call latency
 
-### `ExpandResult` (v2.7.0)
+### `ExpandResult` (v2.4.0)
 
 **Module:** `src/trelix/retrieval/query_expansion.py`
 
@@ -1993,7 +1993,7 @@ User: "how does the authentication middleware work?"
                     └── Synthesizer → streamed answer
 ```
 
-### Multi-Repo Federation (v2.7.0)
+### Multi-Repo Federation (v2.4.0)
 
 ```
 trelix search-all "how does caching work"
@@ -2062,4 +2062,4 @@ That's it — no changes to `Retriever` needed.
 
 ---
 
-*trelix v2.7.0 — last updated 2026-07-10*
+*trelix v2.7.1 — last updated 2026-07-10*

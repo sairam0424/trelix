@@ -331,7 +331,7 @@ Open a [GitHub Discussion](https://github.com/sairam0424/trelix/discussions) for
 
 ## Versioning & Stability Policy
 
-trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.7.0**.
+trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.7.1**.
 
 ### Stable public API (guaranteed not to change without a major version bump)
 

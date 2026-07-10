@@ -1,13 +1,13 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 2.7.0 (current) | **Next:** 3.0.0
+> **Version:** 2.7.1 (current) | **Next:** 3.0.0
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
 ---
 
-## ✅ Shipped (v2.0 – v2.7)
+## ✅ Shipped (v2.0 – v2.7.1)
 
 | Version | Feature |
 |---------|---------|
@@ -19,6 +19,7 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.5.0 | Query telemetry, Eval harness, CoIR benchmark integration |
 | v2.6.0 | Incremental Louvain community detection, DF frontier heuristic, GraphUpdater wiring |
 | v2.7.0 | Watch bridge wired, DB index, AdaptiveRouter fix, cross-repo symbols, diff embeddings, streaming indexing, VS Code extension, GitHub App PR review |
+| v2.7.1 | Release pipeline asset-collision fix, Linux binary in CI, reverted unjustified dependency floors, trelix-mcp tests wired into CI, doc/env-var corrections |
 
 ---
 

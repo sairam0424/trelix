@@ -1,6 +1,6 @@
-# Trelix v2.7.0 — Installation Guide
+# Trelix v2.7.1 — Installation Guide
 
-This guide covers every installation scenario for Trelix v2.7.0, from a quick
+This guide covers every installation scenario for Trelix v2.7.1, from a quick
 one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 ---
@@ -47,7 +47,7 @@ so no API key is required.
 
 ```bash
 pip install "trelix[local]"
-trelix --version   # should print 2.7.0
+trelix --version   # should print 2.7.1
 ```
 
 On first use, Trelix downloads the embedder model (~420 MB) to
@@ -195,13 +195,13 @@ and must be installed independently.
 ## 4. Standalone Binaries (no Python needed)
 
 Pre-compiled single-file binaries are published to the
-[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v2.7.0)
+[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v2.7.1)
 page for each platform. No Python or pip required.
 
 ### macOS ARM64 (Apple Silicon)
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.7.0/trelix-macos-arm64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.7.1/trelix-macos-arm64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -219,7 +219,7 @@ somewhere on your `PATH`, or run it directly:
 ### Linux x64
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.7.0/trelix-linux-x64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.7.1/trelix-linux-x64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -356,7 +356,7 @@ Run these commands after any installation method to confirm everything is
 working correctly.
 
 ```bash
-# Print version (must show 2.7.0)
+# Print version (must show 2.7.1)
 trelix --version
 
 # Print usage summary
@@ -436,7 +436,7 @@ loads it automatically via `python-dotenv`.
 
 ```bash
 pip install --upgrade "trelix[local]"   # or whatever extras you use
-trelix --version   # confirm 2.7.0
+trelix --version   # confirm 2.7.1
 ```
 
 ### Step 2 — Review breaking changes

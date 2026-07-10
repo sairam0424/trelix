@@ -1,4 +1,4 @@
-# trelix v2.7.0 Documentation
+# trelix v2.7.1 Documentation
 
 Welcome to the trelix documentation hub. This page is a complete index of every documentation file in the project.
 
@@ -124,4 +124,4 @@ Looking for a specific term?
 
 ---
 
-*Last updated: 2026-07-10 — trelix v2.7.0*
+*Last updated: 2026-07-10 — trelix v2.7.1*

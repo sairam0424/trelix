@@ -1,6 +1,6 @@
 # trelix CLI Reference
 
-**Version:** 2.7.0  
+**Version:** 2.7.1  
 **Last updated:** 2026-07-10
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
@@ -51,7 +51,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 2.7.0
+trelix --version        # trelix 2.7.1
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -1082,11 +1082,11 @@ trelix federation list --config .trelix/federation.json
 
 #### Notes
 
-- A `federation remove` CLI command does not exist as of v2.7.0. To remove a
+- A `federation remove` CLI command does not exist as of v2.7.1. To remove a
   repo, edit the registry JSON file directly and delete the corresponding
   entry from the `"repos"` array. The default registry path is
   `~/.config/trelix/repos.json`.
 
 ---
 
-*End of CLI Reference — trelix v2.7.0*
+*End of CLI Reference — trelix v2.7.1*
