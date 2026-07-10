@@ -71,7 +71,7 @@ TRELIX_STORE_BACKEND=qdrant trelix index ./my-repo  # Qdrant (set QDRANT_URL too
 
 ### Does trelix work on Windows, macOS, and Linux?
 
-Yes. trelix is a Python package and runs on any OS that supports Python 3.11+. Standalone binaries are provided for **macOS ARM64** and **Windows x64** on the GitHub Release page. A Linux x64 binary is not yet in the release matrix (v2.4.0); Linux users install via `pip install trelix`.
+Yes. trelix is a Python package and runs on any OS that supports Python 3.11+. Standalone binaries are provided for **macOS ARM64** and **Windows x64** on the GitHub Release page. A Linux x64 binary is not yet in the release matrix (as of v2.7.0); Linux users install via `pip install trelix`.
 
 macOS users can also install via Homebrew:
 ```bash
@@ -215,16 +215,18 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v2.4.0 exposes exactly **6 tools**:
+trelix-mcp v2.7.0 exposes **8 tools**:
 
 | Tool | Description |
 |------|-------------|
 | `search_code` | Hybrid code search with optional cursor-based pagination (v2.4.0) |
-| `ask_question` | Retrieval-augmented question answering using the configured LLM |
 | `index_codebase` | Index or re-index a repository; sends progress notifications during stages |
-| `get_stats` | Return index statistics for a repository |
+| `get_symbol` | Get full source of a symbol by qualified name |
+| `blast_radius` | Find what depends on a symbol |
 | `build_knowledge_graph` | Build the Code Property Graph for a repo |
 | `graph_search_mcp` | Graph BFS search from a seed symbol |
+| `subscribe_resource` | Subscribe to file change notifications (v2.5.0+) |
+| `unsubscribe_resource` | Unsubscribe from file change notifications (v2.5.0+) |
 
 Plus the following MCP **Resources** (application-controlled, URI-addressable):
 - `trelix://index/stats` — aggregate index statistics

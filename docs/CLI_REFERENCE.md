@@ -1082,7 +1082,7 @@ trelix federation list --config .trelix/federation.json
 
 #### Notes
 
-- A `federation remove` CLI command does not exist in v2.4.0. To remove a
+- A `federation remove` CLI command does not exist as of v2.7.0. To remove a
   repo, edit the registry JSON file directly and delete the corresponding
   entry from the `"repos"` array. The default registry path is
   `~/.config/trelix/repos.json`.
