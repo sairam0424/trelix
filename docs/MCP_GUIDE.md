@@ -13,14 +13,14 @@ Model Context Protocol (MCP) is an open standard that lets AI assistants connect
 ## 2. Install trelix-mcp
 
 ```bash
-pip install trelix-mcp==2.4.0
+pip install trelix-mcp==2.7.0
 ```
 
 Verify the binary is on your PATH:
 
 ```bash
 trelix-mcp --version
-# trelix-mcp 2.4.0
+# trelix-mcp 2.7.0
 ```
 
 > **Note:** Python 3.10+ is required. Use a virtual environment if you manage multiple projects.
@@ -189,7 +189,7 @@ index_codebase(repo_path, provider="local") → stats dict
   "symbols_extracted": 1847,
   "chunks_stored": 4203,
   "elapsed_seconds": 18.4,
-  "index_version": "2.4.0"
+  "index_version": "2.7.0"
 }
 ```
 
@@ -353,7 +353,7 @@ Returns aggregate statistics for all indexed repositories managed by the running
   "total_files": 654,
   "total_symbols": 3891,
   "total_chunks": 8702,
-  "server_version": "2.4.0"
+  "server_version": "2.7.0"
 }
 ```
 
@@ -409,7 +409,24 @@ Prompts the model to run `blast_radius`, group the results by dependency depth, 
 
 ---
 
-## 10. v2.4.0 Breaking Change — `search_code` Pagination
+## 10. Watch Bridge (v2.7.0)
+
+The `trelix watch` command now fires `notifications/resources/updated` events to all subscribed MCP clients after every file re-index. This enables real-time codebase awareness in Claude Code and other agents without polling.
+
+**How it works:**
+1. Run `trelix watch` in your project directory
+2. trelix-mcp listens for file system changes
+3. After re-indexing completes, MCP clients receive a notification via `notifications/resources/updated`
+4. The client can refresh cached code context or trigger workflows based on changed files
+
+This is useful for:
+- Keeping codebase context fresh during active development
+- Triggering automated analysis pipelines when code changes
+- Multi-agent coordination where file changes need propagation
+
+---
+
+## 11. v2.4.0 Breaking Change — `search_code` Pagination
 
 In v2.3.x and earlier, `search_code` accepted an `offset` integer parameter and returned a flat list:
 
@@ -446,7 +463,7 @@ results = response["results"]
 
 ---
 
-## 11. Pagination Example (Full Paging Loop)
+## 12. Pagination Example (Full Paging Loop)
 
 ```python
 def fetch_all_results(query: str, repo_path: str, page_size: int = 10) -> list:
@@ -479,7 +496,28 @@ def fetch_all_results(query: str, repo_path: str, page_size: int = 10) -> list:
 
 ---
 
-## 12. Example Claude Code Session
+## 13. IDE Integrations
+
+### VS Code Extension
+
+The `workspace-vscode/` extension provides two command shortcuts for rapid trelix access:
+
+- **`trelix.search`** — Search the workspace codebase with trelix hybrid search
+- **`trelix.ask`** — Ask a natural-language question about the code
+
+Install from the `workspace-vscode/` directory:
+
+```bash
+cd workspace-vscode && npm install && code --install-extension .
+```
+
+Then use in the command palette (Cmd+Shift+P):
+- `Trelix: Search` — Opens search input, runs hybrid query
+- `Trelix: Ask` — Opens question input, streams conversational response
+
+---
+
+## 14. Example Claude Code Session
 
 The following shows three realistic prompts you might use once trelix-mcp is registered.
 
@@ -513,7 +551,7 @@ Claude will call `build_knowledge_graph`, then `graph_search_mcp("database ORM q
 
 ---
 
-## 13. Troubleshooting MCP Issues
+## 15. Troubleshooting MCP Issues
 
 ### `trelix-mcp: command not found`
 
