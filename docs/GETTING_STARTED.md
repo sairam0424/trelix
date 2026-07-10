@@ -116,7 +116,7 @@ pip install trelix-mcp
 claude mcp add trelix -- trelix-mcp
 ```
 
-Once registered, Claude can call `trelix_search`, `trelix_ask`, and `trelix_graph` tools directly against your indexed repos. The MCP server supports pagination for large result sets.
+Once registered, Claude can call `trelix_search`, `trelix_ask`, and `trelix_graph` tools directly against your indexed repos. The MCP server supports pagination for large result sets and MCP resource subscriptions.
 
 ---
 

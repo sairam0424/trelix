@@ -107,7 +107,7 @@ Reload Continue.dev (Cmd+Shift+P → **Continue: Reload**). The tools are availa
 
 ---
 
-## 7. The 6 MCP Tools
+## 7. The 8 MCP Tools
 
 ### `search_code`
 
@@ -274,6 +274,62 @@ blast_radius(symbol_name, repo_path) → list of dependent files
 3. Make the change
 4. blast_radius again to confirm scope hasn't grown
 ```
+
+---
+
+### `subscribe_resource`
+
+```
+subscribe_resource(uri, subscription_id) → {status}
+```
+
+**What it does:** Registers a subscription for a `trelix://` resource URI. Once subscribed, the MCP client receives `notifications/resources/updated` whenever trelix detects a file change that affects that resource (e.g. a manifest change after a re-index). Requires the client to support MCP resource subscriptions (`resources.subscribe=True`).
+
+**When to use:** Use in MCP clients (Claude Code, Cursor) that support resource subscriptions when you want the AI to be notified automatically whenever the index changes, without polling.
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `uri` | str | required | The `trelix://` resource URI to subscribe to, e.g. `trelix://repo//path/to/repo/manifest` |
+| `subscription_id` | str | required | A client-chosen identifier used to correlate `notifications/resources/updated` payloads and to cancel the subscription |
+
+**Response shape:**
+```json
+{
+  "status": "subscribed",
+  "uri": "trelix://repo//Users/you/projects/myapp/manifest",
+  "subscription_id": "my-sub-001"
+}
+```
+
+**New in v2.5.0.**
+
+---
+
+### `unsubscribe_resource`
+
+```
+unsubscribe_resource(subscription_id) → {status}
+```
+
+**What it does:** Removes a previously registered resource subscription by its `subscription_id`. No further `notifications/resources/updated` messages will be sent for the associated URI. Safe to call even if the subscription_id is unknown (returns `status: "not_found"` without error).
+
+**When to use:** Call when the client no longer needs live updates for a resource, or when tearing down a session.
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `subscription_id` | str | required | The subscription identifier returned by (or passed to) `subscribe_resource` |
+
+**Response shape:**
+```json
+{
+  "status": "unsubscribed",
+  "subscription_id": "my-sub-001"
+}
+```
+
+**New in v2.5.0.**
 
 ---
 
@@ -551,7 +607,42 @@ Claude will call `build_knowledge_graph`, then `graph_search_mcp("database ORM q
 
 ---
 
-## 15. Troubleshooting MCP Issues
+## 15. Resource Subscriptions (v2.5.0)
+
+trelix-mcp v2.5.0 implements the MCP resource subscription protocol
+([MCP spec §Resources](https://modelcontextprotocol.io/specification/2024-11-05/server/resources)).
+
+### How it works
+
+1. trelix-mcp advertises `resources.subscribe=True` in server capabilities
+2. MCP clients (Claude Code, Cursor) can subscribe to a resource URI
+3. When trelix watch detects a file change, it fires `notifications/resources/updated`
+4. The client then calls `resources/read` to fetch the updated index content
+
+### Subscription tools
+
+**`subscribe_resource(uri, subscription_id)`**
+Register a subscription for a trelix:// resource URI.
+
+```
+uri:             trelix://repo//path/to/repo/manifest
+subscription_id: any string — used to correlate notifications
+```
+
+**`unsubscribe_resource(subscription_id)`**
+Remove a subscription by its ID.
+
+### Wire protocol
+
+```
+Client → Server:  resources/subscribe  { uri }
+Server → Client:  notifications/resources/updated  { uri, _meta: { subscriptionId } }
+Client → Server:  resources/read  { uri }
+```
+
+---
+
+## 16. Troubleshooting MCP Issues
 
 ### `trelix-mcp: command not found`
 
