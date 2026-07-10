@@ -376,7 +376,7 @@ Expected output for `trelix stats ./`:
 
 ```
 Trelix Index Stats
-  Version   : 2.4.0
+  Version   : 2.7.0
   Chunks    : <n>
   Embedder  : local (all-MiniLM-L6-v2)
   Backend   : sqlite
@@ -467,7 +467,7 @@ Update every call site that unpacks the return value directly as a list.
 #### `flare_max_iterations` renamed to `flare_max_retries`
 
 The environment variable `TRELIX_FLARE_MAX_ITERATIONS` still works but emits a
-`DeprecationWarning`. Migrate to the new name before v2.5.0:
+`DeprecationWarning`. It will be removed in v3.0.0 — migrate to the new name:
 
 ```bash
 # Old (still works in 2.4.0 with a warning)
