@@ -298,7 +298,7 @@ directory you mount.
 ```bash
 docker run --rm \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.7.0 \
+  ghcr.io/sairam0424/trelix:2.7.1 \
   index /repo
 ```
 
@@ -310,7 +310,7 @@ The index is written to `/repo/.trelix/` inside the container (which maps to
 ```bash
 docker run --rm -p 8080:8080 \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.7.0 \
+  ghcr.io/sairam0424/trelix:2.7.1 \
   serve --repo /repo --port 8080
 ```
 
@@ -323,7 +323,7 @@ docker run --rm \
   -e OPENAI_API_KEY="sk-..." \
   -e TRELIX_EMBEDDER=openai \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.7.0 \
+  ghcr.io/sairam0424/trelix:2.7.1 \
   index /repo
 ```
 
@@ -333,7 +333,7 @@ docker run --rm \
 # docker-compose.yml
 services:
   trelix:
-    image: ghcr.io/sairam0424/trelix:2.7.0
+    image: ghcr.io/sairam0424/trelix:2.7.1
     command: serve --repo /repo --port 8080
     ports:
       - "8080:8080"
@@ -376,7 +376,7 @@ Expected output for `trelix stats ./`:
 
 ```
 Trelix Index Stats
-  Version   : 2.7.0
+  Version   : 2.7.1
   Chunks    : <n>
   Embedder  : local (all-MiniLM-L6-v2)
   Backend   : sqlite
