@@ -83,3 +83,50 @@ class TestSparseEmbedder:
             result = embedder.embed_query("how does auth work")
 
         assert isinstance(result, dict)
+
+
+class TestSparseEmbedderThreadSafety:
+    def test_load_is_thread_safe_under_concurrent_calls(self):
+        """Multiple threads calling _load() simultaneously must only load the model once."""
+        import threading
+        import time
+        from unittest.mock import MagicMock, patch
+
+        from trelix.embedder.sparse import SparseEmbedder
+
+        embedder = SparseEmbedder(model_name="fake-model")
+        call_count = {"tokenizer": 0, "model": 0}
+
+        def slow_tokenizer_from_pretrained(*args, **kwargs):
+            call_count["tokenizer"] += 1
+            time.sleep(0.05)  # widen the race window
+            return MagicMock()
+
+        def slow_model_from_pretrained(*args, **kwargs):
+            call_count["model"] += 1
+            time.sleep(0.05)
+            mock_model = MagicMock()
+            mock_model.eval = MagicMock()
+            return mock_model
+
+        with (
+            patch("trelix.embedder.sparse._TORCH_AVAILABLE", True),
+            patch(
+                "transformers.AutoTokenizer.from_pretrained",
+                side_effect=slow_tokenizer_from_pretrained,
+            ),
+            patch(
+                "transformers.AutoModelForMaskedLM.from_pretrained",
+                side_effect=slow_model_from_pretrained,
+            ),
+        ):
+            threads = [threading.Thread(target=embedder._load) for _ in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert call_count["tokenizer"] == 1, (
+            f"Expected exactly 1 tokenizer load, got {call_count['tokenizer']}"
+        )
+        assert call_count["model"] == 1, f"Expected exactly 1 model load, got {call_count['model']}"
