@@ -1,4 +1,5 @@
 """Tests for trelix-mcp MCP Resources."""
+
 from __future__ import annotations
 
 import json

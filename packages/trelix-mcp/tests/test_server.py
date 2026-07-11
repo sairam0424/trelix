@@ -89,9 +89,7 @@ async def test_four_tools_registered() -> None:
         "subscribe_resource",
         "unsubscribe_resource",
     }
-    assert expected == names, (
-        f"Expected exactly 8 tools, got: {names}"
-    )
+    assert expected == names, f"Expected exactly 8 tools, got: {names}"
 
 
 # ---------------------------------------------------------------------------
