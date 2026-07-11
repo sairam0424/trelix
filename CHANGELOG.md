@@ -6,6 +6,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [2.7.1] — 2026-07-10
+
+### Fixed
+- **Release pipeline asset collision** — `release.yml` referenced the macOS and Linux
+  PyInstaller binaries by bare basename (both built as `dist/trelix`).
+  `softprops/action-gh-release` uploads by basename, so the two identically-named
+  binaries collided into a single GitHub Release asset. The published v2.7.0 release
+  had only 2 binary assets instead of 3, and it was unknowable whether the surviving
+  `trelix` asset was macOS or Linux. Each binary is now renamed to a unique filename
+  (`trelix-macos-arm64` / `trelix-windows-x64.exe` / `trelix-linux-x64`) before upload.
+- **No Linux binary in PR-time CI** — `build-binaries.yml` only built and verified
+  macOS + Windows even though `release.yml` already builds Linux at tag time. Added
+  the `ubuntu-latest` matrix entry and a Linux verify step.
+- **Unjustified dependency-floor bumps reverted** — `trelix-mcp`, `trelix-langchain`,
+  and `trelix-llama-index` had their `trelix>=X.Y.Z` floors raised to `>=2.7.0`/
+  `>=2.4.0` in v2.7.0 based on an unverified assumption about API usage. Re-checked
+  every import in all three packages — none use any Phase 1–3 v2.7.0 API. Reverted
+  to `trelix>=0.4.0`.
+- **`trelix-mcp` tests never ran in CI** — `ci.yml`'s test job never installed or
+  executed `packages/trelix-mcp/tests/`. This let a real regression sit undetected:
+  `test_four_tools_registered` asserted "exactly 6 tools" when the server has
+  registered 8 since `subscribe_resource`/`unsubscribe_resource` shipped in v2.5.0.
+  Fixed the test's expected set and wired `packages/trelix-mcp/tests/` into `ci.yml`.
+- **Wrong env var name in docs** — `TRELIX_GRAPH_SEARCH_ENABLED` was incorrect in
+  7 places across `docs/FAQ.md`, `docs/USER_GUIDE.md`, `CONTRIBUTING.md`. The real
+  variable is `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` (`graph_search_enabled` has
+  no explicit alias override, so it inherits `RetrievalConfig`'s
+  `env_prefix="TRELIX_RETRIEVAL_"`).
+- **CHANGELOG footer link collision** — `[2.2.0]` was defined twice with conflicting
+  URLs; markdown silently resolves to the last definition, making the first dead.
+  `[2.3.0]`, `[1.1.0]`, `[0.7.1]`, `[0.7.0]`, `[0.6.0]` had no comparison link at all
+  despite existing as dated release headers. Rebuilt the footer from scratch,
+  cross-checked against `git tag -l`.
+
+## [2.7.0] — 2026-07-09
+
 ### Added — Phase 1: Watch Bridge, DB Index, AdaptiveRouter Config Fix
 - `FileWatcher._do_reindex` now fires `notify_file_changed()` after a successful
   re-index (not on hash-identical skips). MCP subscribers receive live
@@ -49,6 +85,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Index step has `continue-on-error: true` for CI environments without local models.
 - `infra/github-app/README.md` — GitHub App integration setup guide.
 
+## [2.6.0] — 2026-07-08
 
 ### Added — XTR Late-Interaction Reranker (Plan C, EXPERIMENTAL)
 - `TRELIX_RETRIEVAL_RERANK_PROVIDER=xtr` — XTR reranker (NeurIPS 2023,
@@ -579,17 +616,24 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.7.1...HEAD
+[2.7.1]: https://github.com/sairam0424/trelix/compare/v2.7.0...v2.7.1
+[2.7.0]: https://github.com/sairam0424/trelix/compare/v2.6.0...v2.7.0
+[2.6.0]: https://github.com/sairam0424/trelix/compare/v2.5.0...v2.6.0
+[2.5.0]: https://github.com/sairam0424/trelix/compare/v2.4.0...v2.5.0
+[2.4.0]: https://github.com/sairam0424/trelix/compare/v2.3.0...v2.4.0
+[2.3.0]: https://github.com/sairam0424/trelix/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/sairam0424/trelix/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/sairam0424/trelix/compare/v2.0.0...v2.1.0
-
-[2.3.0]: https://github.com/sairam0424/trelix/compare/v2.2.0...v2.3.0
-[2.2.0]: https://github.com/sairam0424/trelix/releases/tag/v2.2.0
-[2.0.0]: https://github.com/sairam0424/trelix/releases/tag/v2.0.0
-[1.1.0]: https://github.com/sairam0424/trelix/releases/tag/v1.1.0
-[1.0.0]: https://github.com/sairam0424/trelix/releases/tag/v1.0.0
-[0.5.1]: https://github.com/sairam0424/trelix/releases/tag/v0.5.1
-[0.5.0]: https://github.com/sairam0424/trelix/releases/tag/v0.5.0
-[0.4.0]: https://github.com/sairam0424/trelix/releases/tag/v0.4.0
-[0.3.0]: https://github.com/sairam0424/trelix/releases/tag/v0.3.0
-[0.2.0]: https://github.com/sairam0424/trelix/releases/tag/v0.2.0
+[2.0.0]: https://github.com/sairam0424/trelix/compare/v1.1.0...v2.0.0
+[1.1.0]: https://github.com/sairam0424/trelix/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/sairam0424/trelix/compare/v0.7.1...v1.0.0
+[0.7.1]: https://github.com/sairam0424/trelix/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/sairam0424/trelix/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/sairam0424/trelix/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/sairam0424/trelix/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/sairam0424/trelix/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/sairam0424/trelix/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/sairam0424/trelix/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/sairam0424/trelix/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sairam0424/trelix/releases/tag/v0.1.0

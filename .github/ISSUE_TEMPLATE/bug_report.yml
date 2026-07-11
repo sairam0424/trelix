@@ -12,7 +12,7 @@ body:
     attributes:
       label: trelix Version
       description: Run `trelix --version`
-      placeholder: "2.4.0"
+      placeholder: "2.7.0"
     validations:
       required: true
   - type: dropdown
@@ -93,5 +93,5 @@ body:
       options:
         - label: I searched existing issues and this is not a duplicate
           required: true
-        - label: I am using trelix v2.4.0 or later
+        - label: I am using trelix v2.7.0 or later
           required: false

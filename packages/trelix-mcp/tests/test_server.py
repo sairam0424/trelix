@@ -79,9 +79,18 @@ async def test_four_tools_registered() -> None:
 
     tools = await srv.mcp.list_tools()
     names = {t.name for t in tools}
-    expected = {"search_code", "index_codebase", "get_symbol", "blast_radius", "build_knowledge_graph", "graph_search_mcp"}
+    expected = {
+        "search_code",
+        "index_codebase",
+        "get_symbol",
+        "blast_radius",
+        "build_knowledge_graph",
+        "graph_search_mcp",
+        "subscribe_resource",
+        "unsubscribe_resource",
+    }
     assert expected == names, (
-        f"Expected exactly 6 tools, got: {names}"
+        f"Expected exactly 8 tools, got: {names}"
     )
 
 

@@ -1,4 +1,4 @@
-# trelix User Guide — v2.5.0
+# trelix User Guide — v2.7.1
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -103,7 +103,7 @@ The first result is the function definition with its signature and docstring. Th
 You are the new tech lead. You need to present the system architecture to the team. You need to understand how the ten microservices relate to each other, which service owns which data model, and what the request lifecycle looks like for the main user-facing API.
 
 ```bash
-TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "explain the overall architecture: which services exist, what each one does, and how they communicate"
+TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "explain the overall architecture: which services exist, what each one does, and how they communicate"
 ```
 
 With the knowledge graph layer active, trelix builds a Code Property Graph from all call, import, and type edges, runs Louvain community detection to identify architectural modules, and synthesizes a high-level description with specific file references. You have a working architecture narrative in under a minute.
@@ -186,7 +186,7 @@ The practical meaning: a result that appears at rank 3 in the vector leg AND ran
 
 ## 4. The Retrieval Pipeline — All 7 Legs
 
-trelix v2.4.0 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
+trelix v2.7.1 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
 
 ```
 User Query
@@ -281,7 +281,7 @@ TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true trelix ask ./my-repo "what does the auth 
 
 **When it leads:** Project overview queries, architecture questions, onboarding questions about what a module does.
 
-### Leg 5 — CodeGraph BFS (opt-in, `TRELIX_GRAPH_SEARCH_ENABLED=true`)
+### Leg 5 — CodeGraph BFS (opt-in, `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true`)
 
 **What it does:** After the first three legs produce seed results, BFS (breadth-first search) traverses the Code Property Graph starting from those seeds. Nodes one hop away get score `0.5`, two hops get `0.25`, etc. This surfaces callers, callees, imported modules, and type ancestors that no text or embedding search would find.
 
@@ -292,7 +292,7 @@ TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true trelix ask ./my-repo "what does the auth 
 ```bash
 pip install trelix[knowledge-graph]
 trelix graph ./my-repo
-TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "how does checkout work?"
+TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "how does checkout work?"
 ```
 
 **When it leads:** Feature flow questions, blast radius queries, any question requiring a chain of related symbols.
@@ -365,7 +365,7 @@ trelix index ./my-repo
 You will see output like this:
 
 ```
-trelix v2.4.0 — indexing ./my-repo
+trelix v2.7.1 — indexing ./my-repo
 ✓ FileWalker: 243 files found (.gitignore applied)
   Phase 1/4 — Parse
     [████████████████████] 243/243 files  3.2s
@@ -464,7 +464,7 @@ trelix stats ./my-repo
 trelix stats — ./my-repo
 
   Index:        ./my-repo/.trelix/index.db
-  Version:      2.4.0
+  Version:      2.7.0
   Last indexed: 2026-07-05 10:32:14 UTC
 
   Files:        243
@@ -680,7 +680,7 @@ Returns a JSON list of all symbols that directly or indirectly depend on the tar
 
 **Step 4 — Enable graph search for deeper traversal:**
 ```bash
-TRELIX_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "blast radius of UserRepository.get_by_email — what would need to change?"
+TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "blast radius of UserRepository.get_by_email — what would need to change?"
 ```
 
 With the knowledge graph active, graph BFS from `get_by_email` surfaces callers, their callers, and imported helpers — the full impact surface.
@@ -919,7 +919,7 @@ Watching for changes... (Ctrl+C to stop)
 **Key behaviors:**
 - **Debounce:** 500ms debounce prevents index cascades when your IDE auto-formats a file on save.
 - **Incremental:** Only the changed file is re-processed; the rest of the index is untouched.
-- **Graph sync:** When `TRELIX_GRAPH_SEARCH_ENABLED=true` and the graph has been built, `trelix watch` also patches the Code Property Graph on every file change. You do not need to re-run `trelix graph` manually.
+- **Graph sync:** When `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true` and the graph has been built, `trelix watch` also patches the Code Property Graph on every file change. You do not need to re-run `trelix graph` manually.
 - **Delete handling:** When a file is deleted, trelix removes its symbols, chunks, vectors, and call edges from the index atomically.
 
 **Step 2 — Query while watching:**
@@ -1565,7 +1565,7 @@ trelix telemetry ./repo
 | `TRELIX_STORE_BACKEND` | `sqlite` | Vector store: `sqlite`, `qdrant`, `lance` |
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel parse threads |
 | `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` | `12000` | Max context tokens to LLM |
-| `TRELIX_GRAPH_SEARCH_ENABLED` | `false` | Enable CodeGraph BFS leg |
+| `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` | `false` | Enable CodeGraph BFS leg |
 | `TRELIX_GRAPH_SEARCH_DEPTH` | `2` | BFS depth from seed nodes |
 | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable file-summary retrieval leg |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM summaries at index time |
@@ -1601,7 +1601,7 @@ curl http://localhost:8765/health
 ```
 
 ```json
-{"status": "ok", "version": "2.4.0", "repo": "./my-repo"}
+{"status": "ok", "version": "2.7.1", "repo": "./my-repo"}
 ```
 
 ### Index statistics
@@ -1960,6 +1960,14 @@ metrics = harness.run("./eval/golden_synthesis.jsonl")
 print(f"Overall: {metrics['overall']:.3f}")
 ```
 
+## Phase 1–3 Features (v2.7.0)
+
+- **Watch bridge MCP notifications** — file-system watcher now emits real-time MCP events when the index is updated, enabling editors and agents to subscribe to live re-indexing signals.
+- **Cross-repo symbol resolution** — symbol lookups can now resolve definitions that live in a sibling or dependency repository; configure via `cross_repo_paths` in `trelix.config.json`.
+- **Streaming indexing** (`TRELIX_INDEXER_STREAMING=1`) — large repositories are indexed incrementally in a streaming pass, reducing peak memory usage and enabling partial results during initial index builds.
+- **VS Code extension** (`workspace-vscode/`) — first-party extension adds inline symbol hover, semantic search palette, and a Trelix side-panel directly inside VS Code.
+- **GitHub App PR review workflow** — install the Trelix GitHub App to get automated code-intelligence comments (symbol impact analysis, cross-repo call-graph diffs) on every pull request.
+
 ---
 
-*trelix v2.6.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v2.7.1 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

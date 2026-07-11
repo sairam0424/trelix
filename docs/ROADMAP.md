@@ -1,13 +1,13 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 2.5.0 (current) | **Next:** 2.6.0
+> **Version:** 2.7.1 (current) | **Next:** 3.0.0
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
 ---
 
-## ✅ Shipped (v2.0 – v2.5)
+## ✅ Shipped (v2.0 – v2.7.1)
 
 | Version | Feature |
 |---------|---------|
@@ -19,6 +19,7 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.5.0 | Multi-query expansion wiring (TRELIX_RETRIEVAL_MULTI_QUERY), DimensionGuard at watch startup, MCP resource subscriptions, v3.0.0 deprecation audit |
 | v2.6.0 | Incremental Louvain, Short-query lexical fallback, XTR reranker (experimental), GroUSE synthesis eval harness |
 | v2.7.0 | Watch bridge wired ✅, DB index ✅, AdaptiveRouter fix ✅, Cross-repo symbols ✅, Diff embeddings ✅, Streaming indexing ✅, VS Code extension ✅, GitHub App PR review ✅ |
+| v2.7.1 | Release pipeline asset-collision fix, Linux binary in CI, reverted unjustified dependency floors, trelix-mcp tests wired into CI, doc/env-var corrections |
 
 ---
 
@@ -27,7 +28,7 @@ This roadmap describes planned features, research directions, and long-term visi
 - [ ] **SparseEmbedder TOCTOU under parallel multi-query** — add `threading.Lock` around lazy-init path hit by `ThreadPoolExecutor` workers
 - [ ] **`send_resource_notification` stdout isolation** — fix asyncio transport conflict when FastMCP writes notifications to stdout concurrently
 - [ ] **`SubscriptionRegistry` max-subscriber cap / TTL eviction** — unbounded subscription growth; add configurable cap and TTL-based cleanup
-- [ ] **Watch bridge: wire `notify_file_changed` into `FileWatcher._do_reindex` callback** — MCP subscribers not notified after file-change re-index completes
+- [x] **Watch bridge: wire `notify_file_changed` into `FileWatcher._do_reindex` callback** — MCP subscribers not notified after file-change re-index completes ✅ (shipped v2.7.0)
 
 ---
 
@@ -42,9 +43,9 @@ This roadmap describes planned features, research directions, and long-term visi
 - [x] **GraphUpdater** — Stores `_prev_partition`, uses incremental detection on file changes
 
 ### Remaining backlog
-- [x] **Cross-repo symbol resolution** — SCIP-style IDs, FederatedRetriever.resolve_symbol() ✅
-- [x] **Semantic diff embeddings** — CCRep-style before/after body pair embeddings ✅
-- [x] **Streaming indexing** — generator + bounded Queue, try/finally sentinel ✅
+- [x] **Cross-repo symbol resolution** — SCIP-style IDs, FederatedRetriever.resolve_symbol() ✅ (shipped v2.7.0)
+- [x] **Semantic diff embeddings** — CCRep-style before/after body pair embeddings ✅ (shipped v2.7.0)
+- [x] **Streaming indexing** — generator + bounded Queue, try/finally sentinel ✅ (shipped v2.7.0)
 - [ ] **Qdrant Cloud integration** — first-class remote vector store with auto-migration
 - [ ] **Incremental embedding** — only re-embed changed symbols on partial re-index
 - [ ] **Parallel BM25 shard** — FTS5 read-only shards for read-heavy deployments
@@ -62,6 +63,8 @@ This roadmap describes planned features, research directions, and long-term visi
 - [ ] **OpenTelemetry integration** — spans for every retrieval leg
 - [ ] **Helm chart** — production Kubernetes deployment for `trelix serve`
 - [ ] **TypeScript SDK** — native SDK matching Python API surface
+- [ ] **VS Code extension improvements** — inline search refinement, snippet preview
+- [ ] **GitHub App GA** — public marketplace listing, production hardening
 
 ---
 

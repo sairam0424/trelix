@@ -4,9 +4,9 @@
 
 | Version | Supported |
 |---------|-----------|
-| 2.4.x   | ✅ Active |
-| 2.3.x   | ⚠️ Security fixes only |
-| < 2.3   | ❌ End of life |
+| 2.7.x   | ✅ Active |
+| 2.6.x   | ⚠️ Security fixes only |
+| < 2.6   | ❌ End of life |
 
 ## Reporting a Vulnerability
 
@@ -48,5 +48,5 @@ trelix uses PyPI Trusted Publishing with automatic Sigstore attestations (PEP 74
 Verify a release:
 ```bash
 pip install pypi-attestations
-python -m pypi_attestations verify trelix==2.4.0
+python -m pypi_attestations verify trelix==2.7.0
 ```

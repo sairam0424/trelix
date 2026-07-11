@@ -199,13 +199,22 @@ jobs:
           name: trelix-linux-x64
           path: release-assets/linux
 
+      - name: Rename binaries to unique release asset names
+        # softprops/action-gh-release uploads by basename — macOS's and Linux's
+        # binaries are both called "trelix", so without renaming they collide
+        # into a single asset and one platform's binary silently disappears.
+        run: |
+          mv release-assets/macos/trelix release-assets/macos/trelix-macos-arm64
+          mv release-assets/windows/trelix.exe release-assets/windows/trelix-windows-x64.exe
+          mv release-assets/linux/trelix release-assets/linux/trelix-linux-x64
+
       - name: Create GitHub Release with binaries
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release-assets/macos/trelix
-            release-assets/windows/trelix.exe
-            release-assets/linux/trelix
+            release-assets/macos/trelix-macos-arm64
+            release-assets/windows/trelix-windows-x64.exe
+            release-assets/linux/trelix-linux-x64
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

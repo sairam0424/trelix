@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v2.5.0
+# Trelix Configuration Reference — v2.7.1
 
 Complete reference for all configuration options available in trelix.
 
@@ -83,7 +83,7 @@ Copy this to `<repo-root>/.env` and fill in the values relevant to your setup. L
 
 ```dotenv
 # =============================================================================
-# Trelix v2.5.0 — complete .env example
+# Trelix v2.7.1 — complete .env example
 # Copy to .env and fill in values. Never commit this file.
 # =============================================================================
 
@@ -114,6 +114,9 @@ TRELIX_EMBEDDER_PROVIDER=local
 # Multi-query expansion
 TRELIX_RETRIEVAL_MULTI_QUERY=false
 TRELIX_RETRIEVAL_MULTI_QUERY_COUNT=2
+
+# Streaming indexing
+TRELIX_INDEXER_STREAMING=false
 
 # FLARE iterative re-retrieval (max retries: 1-3)
 TRELIX_RETRIEVAL_FLARE=false
