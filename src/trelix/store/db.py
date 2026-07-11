@@ -19,6 +19,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -217,6 +218,12 @@ class Database:
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._bm25_read_pool: ReadOnlyConnectionPool | None = None
+        # Guards concurrent access to the single shared writer connection
+        # (self._conn) from hydration calls that bm25_search()'s retrieval-layer
+        # wrapper makes after drawing symbol_ids from the (thread-safe) read
+        # pool — sqlite3.Connection is not safe for concurrent statement
+        # execution from multiple threads even with check_same_thread=False.
+        self._conn_lock = threading.Lock()
         self.init_schema()
 
     def enable_bm25_read_pool(self, pool_size: int) -> None:
@@ -1806,37 +1813,45 @@ class Database:
         """
         Load a symbol and its file in one query.
         Used by graph expansion and grep search hydration.
-        """
-        row = self._conn.execute(
-            """
-            SELECT
-                s.id              AS s_id,
-                s.file_id         AS s_file_id,
-                s.name            AS s_name,
-                s.qualified_name  AS s_qualified_name,
-                s.kind            AS s_kind,
-                s.line_start      AS s_line_start,
-                s.line_end        AS s_line_end,
-                s.signature       AS s_signature,
-                s.docstring       AS s_docstring,
-                s.context_summary AS s_context_summary,
-                s.decorators      AS s_decorators,
-                s.is_public       AS s_is_public,
-                s.parent_id       AS s_parent_id,
-                s.body            AS s_body,
 
-                f.id         AS f_id,
-                f.path       AS f_path,
-                f.rel_path   AS f_rel_path,
-                f.language   AS f_language,
-                f.hash       AS f_hash,
-                f.size_bytes AS f_size_bytes
-            FROM symbols s
-            JOIN files f ON s.file_id = f.id
-            WHERE s.id = ?
-            """,
-            (symbol_id,),
-        ).fetchone()
+        Locked: self._conn is a single shared connection with no internal
+        thread-safety for concurrent statement execution. bm25_search()'s
+        retrieval-layer wrapper calls this after drawing symbol_ids from the
+        (thread-safe) read pool, so this method IS reachable concurrently —
+        confirmed by a CI flake (SymbolKind(None)/InterfaceError under
+        concurrent load) before this lock was added.
+        """
+        with self._conn_lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    s.id              AS s_id,
+                    s.file_id         AS s_file_id,
+                    s.name            AS s_name,
+                    s.qualified_name  AS s_qualified_name,
+                    s.kind            AS s_kind,
+                    s.line_start      AS s_line_start,
+                    s.line_end        AS s_line_end,
+                    s.signature       AS s_signature,
+                    s.docstring       AS s_docstring,
+                    s.context_summary AS s_context_summary,
+                    s.decorators      AS s_decorators,
+                    s.is_public       AS s_is_public,
+                    s.parent_id       AS s_parent_id,
+                    s.body            AS s_body,
+
+                    f.id         AS f_id,
+                    f.path       AS f_path,
+                    f.rel_path   AS f_rel_path,
+                    f.language   AS f_language,
+                    f.hash       AS f_hash,
+                    f.size_bytes AS f_size_bytes
+                FROM symbols s
+                JOIN files f ON s.file_id = f.id
+                WHERE s.id = ?
+                """,
+                (symbol_id,),
+            ).fetchone()
 
         if not row:
             return None
@@ -1871,11 +1886,16 @@ class Database:
         """
         Return the first (and usually only) chunk for a symbol.
         Used when we have a symbol_id from BM25/graph and need a Chunk for SearchResult.
+
+        Locked for the same reason as get_symbol_with_file() — reachable
+        concurrently via bm25_search()'s hydration path when the read pool
+        is enabled.
         """
-        row = self._conn.execute(
-            "SELECT * FROM chunks WHERE symbol_id = ? LIMIT 1",
-            (symbol_id,),
-        ).fetchone()
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT * FROM chunks WHERE symbol_id = ? LIMIT 1",
+                (symbol_id,),
+            ).fetchone()
         if not row:
             return None
         return Chunk(
