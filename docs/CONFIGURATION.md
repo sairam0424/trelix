@@ -66,6 +66,8 @@ Settings are resolved in priority order (highest wins):
 | `TRELIX_STORE_BACKEND` | `sqlite-vec` | Vector store backend. One of: `sqlite-vec`, `qdrant`, `lance` |
 | `TRELIX_QDRANT_URL` | _(none)_ | Qdrant server URL (e.g. `http://localhost:6333`) — required when backend is `qdrant` |
 | `TRELIX_QDRANT_API_KEY` | _(none)_ | Qdrant API key — required for authenticated Qdrant Cloud instances |
+| `QDRANT_PREFER_GRPC` | `false` | Use Qdrant's gRPC port (6334) instead of REST (6333) — lower latency, recommended for Qdrant Cloud |
+| `QDRANT_TIMEOUT` | `10.0` | Client request timeout in seconds — raise for Cloud deployments with higher network latency |
 
 ### Federation
 
@@ -166,6 +168,8 @@ TRELIX_STORE_BACKEND=sqlite-vec
 # Qdrant (required when backend=qdrant)
 # TRELIX_QDRANT_URL=http://localhost:6333
 # TRELIX_QDRANT_API_KEY=...
+# QDRANT_PREFER_GRPC=false
+# QDRANT_TIMEOUT=10.0
 
 # ---------------------------------------------------------------------------
 # Federation

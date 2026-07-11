@@ -331,6 +331,8 @@ class StoreConfig(BaseSettings):
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
     qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
     qdrant_collection: str = Field(default="trelix", alias="QDRANT_COLLECTION")
+    qdrant_prefer_grpc: bool = Field(default=False, alias="QDRANT_PREFER_GRPC")
+    qdrant_timeout: float = Field(default=10.0, alias="QDRANT_TIMEOUT")
 
     # ── LanceDB connection ───────────────────────────────────────────────────
     lance_uri: str = Field(default=".trelix/lance", alias="LANCE_URI")

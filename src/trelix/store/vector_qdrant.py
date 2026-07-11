@@ -56,6 +56,8 @@ class QdrantVectorStore(BaseVectorStore):
         self._client = QdrantClient(
             url=config.store.qdrant_url,
             api_key=config.store.qdrant_api_key,
+            prefer_grpc=config.store.qdrant_prefer_grpc,
+            timeout=config.store.qdrant_timeout,
         )
 
         self._ensure_collection(VectorParams, HnswConfigDiff, Distance)

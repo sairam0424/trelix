@@ -70,10 +70,9 @@ def _build_fake_qdrant_module() -> tuple[types.ModuleType, MagicMock]:
     # root package
     fake_pkg = types.ModuleType("qdrant_client")
 
-    def _make_client(*args: Any, **kwargs: Any) -> MagicMock:
-        return mock_client_instance
+    fake_qdrant_client_cls = MagicMock(return_value=mock_client_instance)
 
-    fake_pkg.QdrantClient = _make_client  # type: ignore[attr-defined]
+    fake_pkg.QdrantClient = fake_qdrant_client_cls  # type: ignore[attr-defined]
     fake_pkg.models = fake_models  # type: ignore[attr-defined]
 
     return fake_pkg, mock_client_instance
@@ -294,6 +293,46 @@ class TestMakeVectorStoreFactory:
 # ---------------------------------------------------------------------------
 # Import error when qdrant_client is not installed
 # ---------------------------------------------------------------------------
+
+
+class TestQdrantCloudConnectionOptions:
+    def test_prefer_grpc_and_timeout_passed_to_client(self, tmp_path: Path) -> None:
+        _inject_fake_qdrant()
+        try:
+            from trelix.core.config import EmbedderConfig, IndexConfig
+            from trelix.store.vector_qdrant import QdrantVectorStore
+
+            config = IndexConfig(repo_path=str(tmp_path), embedder=EmbedderConfig())
+            config.store.backend = "qdrant"
+            config.store.qdrant_prefer_grpc = True
+            config.store.qdrant_timeout = 30.0
+
+            fake_module = sys.modules["qdrant_client"]
+            QdrantVectorStore(config, dimension=4)
+
+            call_kwargs = fake_module.QdrantClient.call_args.kwargs
+            assert call_kwargs["prefer_grpc"] is True
+            assert call_kwargs["timeout"] == 30.0
+        finally:
+            _remove_fake_qdrant()
+
+    def test_defaults_preserve_current_behavior(self, tmp_path: Path) -> None:
+        _inject_fake_qdrant()
+        try:
+            from trelix.core.config import EmbedderConfig, IndexConfig
+            from trelix.store.vector_qdrant import QdrantVectorStore
+
+            config = IndexConfig(repo_path=str(tmp_path), embedder=EmbedderConfig())
+            config.store.backend = "qdrant"
+
+            fake_module = sys.modules["qdrant_client"]
+            QdrantVectorStore(config, dimension=4)
+
+            call_kwargs = fake_module.QdrantClient.call_args.kwargs
+            assert call_kwargs["prefer_grpc"] is False
+            assert call_kwargs["timeout"] == 10.0
+        finally:
+            _remove_fake_qdrant()
 
 
 class TestQdrantImportError:
