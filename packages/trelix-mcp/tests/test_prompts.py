@@ -1,4 +1,5 @@
 """Tests for trelix-mcp MCP Prompts."""
+
 from __future__ import annotations
 
 import sys
@@ -63,25 +64,19 @@ class TestExplainPrompt:
     def test_build_explain_prompt_returns_messages(self) -> None:
         from trelix_mcp.prompts import build_explain_prompt
 
-        messages = build_explain_prompt(
-            qualified_name="AuthService.login", repo_path="/my/repo"
-        )
+        messages = build_explain_prompt(qualified_name="AuthService.login", repo_path="/my/repo")
         assert len(messages) >= 1
 
     def test_build_explain_prompt_contains_qualified_name(self) -> None:
         from trelix_mcp.prompts import build_explain_prompt
 
-        messages = build_explain_prompt(
-            qualified_name="AuthService.login", repo_path="/my/repo"
-        )
+        messages = build_explain_prompt(qualified_name="AuthService.login", repo_path="/my/repo")
         assert any("AuthService.login" in m["content"] for m in messages)
 
     def test_build_explain_prompt_contains_repo_path(self) -> None:
         from trelix_mcp.prompts import build_explain_prompt
 
-        messages = build_explain_prompt(
-            qualified_name="AuthService.login", repo_path="/my/repo"
-        )
+        messages = build_explain_prompt(qualified_name="AuthService.login", repo_path="/my/repo")
         assert any("/my/repo" in m["content"] for m in messages)
 
     def test_build_explain_prompt_has_user_role(self) -> None:

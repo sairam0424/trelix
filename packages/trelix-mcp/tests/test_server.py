@@ -89,9 +89,7 @@ async def test_four_tools_registered() -> None:
         "subscribe_resource",
         "unsubscribe_resource",
     }
-    assert expected == names, (
-        f"Expected exactly 8 tools, got: {names}"
-    )
+    assert expected == names, f"Expected exactly 8 tools, got: {names}"
 
 
 # ---------------------------------------------------------------------------
@@ -215,8 +213,9 @@ def test_blast_radius_deduplicates_files() -> None:
 class TestSearchCodePagination:
     def test_search_code_returns_pagination_envelope(self, tmp_path) -> None:
         """search_code returns dict with results + next_cursor + total_available."""
-        from trelix_mcp.server import search_code
         from unittest.mock import MagicMock, patch
+
+        from trelix_mcp.server import search_code
 
         mock_results = []
         for i in range(25):
@@ -253,8 +252,9 @@ class TestSearchCodePagination:
 
     def test_search_code_pagination_second_page(self, tmp_path) -> None:
         """cursor=10 returns items 10-19."""
-        from trelix_mcp.server import search_code
         from unittest.mock import MagicMock, patch
+
+        from trelix_mcp.server import search_code
 
         mock_results = []
         for i in range(25):
@@ -288,8 +288,9 @@ class TestSearchCodePagination:
 
     def test_search_code_last_page_has_null_next_cursor(self, tmp_path) -> None:
         """last page has next_cursor=None."""
-        from trelix_mcp.server import search_code
         from unittest.mock import MagicMock, patch
+
+        from trelix_mcp.server import search_code
 
         mock_results = [MagicMock() for _ in range(5)]
         for i, r in enumerate(mock_results):
@@ -328,20 +329,22 @@ class TestIndexCodebaseProgress:
     def test_index_codebase_accepts_context_param(self) -> None:
         """index_codebase tool signature accepts ctx: Context without error."""
         import inspect
+
         from trelix_mcp.server import index_codebase
 
         sig = inspect.signature(index_codebase)
         # ctx param should exist (FastMCP injects it)
         # We check the wrapped function's parameters
-        params = list(sig.parameters.keys())
+        list(sig.parameters.keys())
         # Either 'ctx' is in params, or the function works without it (backward compat)
         # The key check is that calling it with mock results succeeds
         assert callable(index_codebase)
 
     def test_index_codebase_returns_stats(self, tmp_path) -> None:
         """index_codebase returns stats dict with expected keys."""
+        from unittest.mock import patch
+
         from trelix_mcp.server import index_codebase
-        from unittest.mock import MagicMock, patch
 
         mock_stats = {
             "files_indexed": 15,

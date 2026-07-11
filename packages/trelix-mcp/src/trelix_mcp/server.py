@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sys
 
 logging.basicConfig(
@@ -17,7 +18,7 @@ from trelix.core.config import EmbedderConfig, IndexConfig  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
 from trelix.retrieval.retriever import Retriever  # noqa: E402
 from trelix.store.db import Database  # noqa: E402
-from trelix_mcp.subscriptions import SubscriptionRegistry  # noqa: E402
+from trelix_mcp.subscriptions import SubscriptionLimitExceeded, SubscriptionRegistry  # noqa: E402
 
 mcp = FastMCP("trelix")
 _log = logging.getLogger("trelix_mcp")
@@ -25,7 +26,10 @@ _log = logging.getLogger("trelix_mcp")
 # Global subscription registry — tracks which MCP clients are watching which
 # trelix:// resource URIs.  notify_file_changed() fires notifications to all
 # active subscribers when trelix watch detects a file change.
-_subscription_registry = SubscriptionRegistry()
+_subscription_registry = SubscriptionRegistry(
+    max_subscribers=int(os.environ.get("TRELIX_MCP_MAX_SUBSCRIBERS", "1000")),
+    ttl_seconds=float(os.environ.get("TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS", "3600")),
+)
 
 # ---------------------------------------------------------------------------
 # MCP spec 2024-11-05 §Resources — declare resources.subscribe=True so that
@@ -75,7 +79,20 @@ def subscribe_resource(uri: str, subscription_id: str) -> dict:
         uri: The trelix:// resource URI to watch (e.g. trelix://repo//path/manifest).
         subscription_id: Client-chosen correlation ID included in _meta of notifications.
     """
-    _subscription_registry.subscribe(uri, subscription_id)
+    try:
+        _subscription_registry.subscribe(uri, subscription_id)
+    except SubscriptionLimitExceeded as exc:
+        _log.warning(
+            "Subscription rejected (at capacity): uri=%s subscription_id=%s",
+            uri,
+            subscription_id,
+        )
+        return {
+            "subscribed": False,
+            "uri": uri,
+            "subscription_id": subscription_id,
+            "error": str(exc),
+        }
     _log.info("Subscribed: uri=%s subscription_id=%s", uri, subscription_id)
     return {"subscribed": True, "uri": uri, "subscription_id": subscription_id}
 
@@ -107,9 +124,7 @@ def resource_index_stats() -> str:
     Returns JSON with a usage hint — use the manifest template for repo-specific
     stats since direct resources cannot receive parameters.
     """
-    return json.dumps(
-        {"hint": "Use trelix://repo/{repo_path}/manifest for repo-specific stats"}
-    )
+    return json.dumps({"hint": "Use trelix://repo/{repo_path}/manifest for repo-specific stats"})
 
 
 @mcp.resource("trelix://repo/{repo_path}/manifest")
@@ -267,6 +282,7 @@ def index_codebase(
             return
         try:
             import asyncio
+
             loop = asyncio.get_running_loop()
             loop.create_task(ctx.report_progress(current, total))
         except RuntimeError:

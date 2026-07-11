@@ -14,6 +14,7 @@ All builder functions return a list of message dicts compatible with the MCP
 ``PromptMessage`` schema (``{"role": str, "content": str}``).
 All log output goes to stderr only — no print() calls.
 """
+
 from __future__ import annotations
 
 

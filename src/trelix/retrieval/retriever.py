@@ -127,6 +127,7 @@ class Retriever:
         # from_pretrained) on EVERY sub-query call when sparse_enabled=True.
         # Initialised lazily on first use so the import remains optional.
         self._sparse_embedder: object | None = None
+        self._sparse_embedder_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -681,7 +682,10 @@ class Retriever:
         Returns {"vector": [...], "bm25": [...], "grep": [...]} so callers
         can merge per-leg before RRF fusion.
 
-        Safe to call from a ThreadPoolExecutor — reads only, no writes.
+        Safe to call from a ThreadPoolExecutor. The lazy SparseEmbedder
+        memoization is guarded by self._sparse_embedder_lock (double-checked
+        locking) so concurrent sub-query calls cannot race on first-use
+        construction or the underlying model load.
         """
         cfg = self.config.retrieval
         out: dict[str, list[SearchResult]] = {"vector": [], "bm25": [], "grep": []}
@@ -727,11 +731,18 @@ class Retriever:
 
                 # Reuse the memoized SparseEmbedder so the SPLADE model is only
                 # loaded once per Retriever instance, not once per sub-query call.
+                # Double-checked locking: the outer check avoids lock contention
+                # on the common already-memoized path; the inner re-check (held
+                # under self._sparse_embedder_lock) closes the TOCTOU race where
+                # concurrent ThreadPoolExecutor workers could otherwise both
+                # observe self._sparse_embedder is None and both construct it.
                 if self._sparse_embedder is None:
-                    self._sparse_embedder = SparseEmbedder(
-                        model_name=self.config.sparse.model,
-                        top_k=self.config.sparse.top_k_tokens,
-                    )
+                    with self._sparse_embedder_lock:
+                        if self._sparse_embedder is None:  # re-check inside the lock
+                            self._sparse_embedder = SparseEmbedder(
+                                model_name=self.config.sparse.model,
+                                top_k=self.config.sparse.top_k_tokens,
+                            )
                 sparse_emb: SparseEmbedder = self._sparse_embedder  # type: ignore[assignment]
                 query_sparse = sparse_emb.embed_query(sq.semantic_query)
                 if query_sparse:
