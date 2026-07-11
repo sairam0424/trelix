@@ -24,6 +24,12 @@ jobs:
           - os: ubuntu-latest
             artifact-name: trelix-linux-x64
             binary-path: dist/trelix
+          - os: ubuntu-24.04-arm
+            artifact-name: trelix-linux-arm64
+            binary-path: dist/trelix
+          - os: windows-11-arm
+            artifact-name: trelix-windows-arm64
+            binary-path: dist/trelix.exe
 
     steps:
       - uses: actions/checkout@v4
