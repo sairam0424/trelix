@@ -15,6 +15,7 @@ repos up to millions of lines. (Stolen from ctags-based tools.)
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -72,7 +73,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     decorators      TEXT    NOT NULL DEFAULT '[]',
     is_public       INTEGER NOT NULL DEFAULT 1,
     parent_id       INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
-    body            TEXT    NOT NULL DEFAULT ''
+    body            TEXT    NOT NULL DEFAULT '',
+    content_hash    TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS type_edges (
@@ -252,6 +254,11 @@ class Database:
             self._conn.commit()
         if "context_summary" not in sym_cols:
             self._conn.execute("ALTER TABLE symbols ADD COLUMN context_summary TEXT")
+            self._conn.commit()
+        if "content_hash" not in sym_cols:
+            self._conn.execute(
+                "ALTER TABLE symbols ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
+            )
             self._conn.commit()
 
         # calls.callee_type_hint — added in U9 for qualified-name + type-hint resolution
@@ -447,6 +454,17 @@ class Database:
         self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
         self._conn.commit()
 
+    def get_symbol_hashes_for_file(self, file_id: int) -> dict[str, str]:
+        """Return {qualified_name: content_hash} for every symbol currently
+        stored under file_id. Used to diff newly-parsed symbols against
+        what's already indexed, so unchanged symbols can skip re-embedding.
+        """
+        rows = self._conn.execute(
+            "SELECT qualified_name, content_hash FROM symbols WHERE file_id = ?",
+            (file_id,),
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
     def delete_file_by_path(
         self,
         abs_path: str,
@@ -498,12 +516,14 @@ class Database:
     # ------------------------------------------------------------------
 
     def insert_symbol(self, symbol: Symbol) -> int:
+        content_hash = hashlib.sha256((symbol.signature + symbol.body).encode("utf-8")).hexdigest()
         cursor = self._conn.execute(
             """
             INSERT INTO symbols
               (file_id, name, qualified_name, kind, line_start, line_end,
-               signature, docstring, context_summary, decorators, is_public, parent_id, body)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               signature, docstring, context_summary, decorators, is_public, parent_id, body,
+               content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol.file_id,
@@ -519,6 +539,7 @@ class Database:
                 int(symbol.is_public),
                 symbol.parent_id,
                 symbol.body,
+                content_hash,
             ),
         )
         return cursor.lastrowid  # type: ignore[return-value]
