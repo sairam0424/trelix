@@ -465,6 +465,20 @@ class Database:
         ).fetchall()
         return {row[0]: row[1] for row in rows}
 
+    def delete_symbols_by_qualified_names(self, file_id: int, qualified_names: list[str]) -> None:
+        """Remove only the named symbols (and cascaded data) for a file —
+        a partial version of delete_file_symbols(), used when some symbols
+        in the file are unchanged and must be preserved.
+        """
+        if not qualified_names:
+            return
+        placeholders = ",".join("?" for _ in qualified_names)
+        self._conn.execute(
+            f"DELETE FROM symbols WHERE file_id = ? AND qualified_name IN ({placeholders})",
+            (file_id, *qualified_names),
+        )
+        self._conn.commit()
+
     def delete_file_by_path(
         self,
         abs_path: str,
@@ -793,6 +807,26 @@ class Database:
             WHERE s.file_id = ?
             """,
             (file_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_chunk_ids_for_symbols(self, file_id: int, qualified_names: list[str]) -> list[int]:
+        """Return chunk ids for a subset of a file's symbols (by qualified_name).
+
+        Used by the incremental re-index path to clean up only the chunks
+        belonging to symbols that actually changed, leaving unchanged
+        symbols' chunks/embeddings untouched.
+        """
+        if not qualified_names:
+            return []
+        placeholders = ",".join("?" for _ in qualified_names)
+        rows = self._conn.execute(
+            f"""
+            SELECT c.id FROM chunks c
+            JOIN symbols s ON c.symbol_id = s.id
+            WHERE s.file_id = ? AND s.qualified_name IN ({placeholders})
+            """,
+            (file_id, *qualified_names),
         ).fetchall()
         return [r[0] for r in rows]
 
