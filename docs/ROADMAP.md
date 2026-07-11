@@ -46,10 +46,10 @@ This roadmap describes planned features, research directions, and long-term visi
 - [x] **Cross-repo symbol resolution** — SCIP-style IDs, FederatedRetriever.resolve_symbol() ✅ (shipped v2.7.0)
 - [x] **Semantic diff embeddings** — CCRep-style before/after body pair embeddings ✅ (shipped v2.7.0)
 - [x] **Streaming indexing** — generator + bounded Queue, try/finally sentinel ✅ (shipped v2.7.0)
-- [ ] **Qdrant Cloud integration** — first-class remote vector store with auto-migration
-- [ ] **Incremental embedding** — only re-embed changed symbols on partial re-index
-- [ ] **Parallel BM25 shard** — FTS5 read-only shards for read-heavy deployments
-- [ ] **Binary releases** — single-file executables for Linux ARM64 + Windows ARM64
+- [x] **Qdrant Cloud integration** — first-class remote vector store with auto-migration ✅ (shipped v2.6.x)
+- [x] **Incremental embedding** — only re-embed changed symbols on partial re-index ✅ (shipped v2.6.x)
+- [x] **Parallel BM25 shard** — FTS5 read-only shards for read-heavy deployments ✅ (shipped v2.6.x)
+- [x] **Binary releases** — single-file executables for Linux ARM64 + Windows ARM64 ✅ (shipped v2.6.x)
 
 ---
 
