@@ -237,3 +237,32 @@ class TestSendResourceNotificationWireFormat:
         assert len(lines) == 1, f"Expected exactly 1 JSON line, got {len(lines)}"
         # Must parse without error
         json.loads(lines[0])
+
+
+class TestSendResourceNotificationConcurrency:
+    def test_concurrent_notifications_do_not_interleave(self, capsys):
+        """N threads calling send_resource_notification simultaneously must each
+        produce exactly one intact JSON line — no torn/interleaved output."""
+        import json
+        import threading
+
+        from trelix_mcp.subscriptions import send_resource_notification
+
+        threads = [
+            threading.Thread(
+                target=send_resource_notification,
+                args=(f"trelix://repo/r{i}/manifest", f"sub-{i}"),
+            )
+            for i in range(20)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        captured = capsys.readouterr()
+        lines = [line for line in captured.out.split("\n") if line]
+        assert len(lines) == 20, f"Expected 20 output lines, got {len(lines)}"
+        for line in lines:
+            parsed = json.loads(line)  # must not raise — proves no torn/interleaved JSON
+            assert parsed["method"] == "notifications/resources/updated"

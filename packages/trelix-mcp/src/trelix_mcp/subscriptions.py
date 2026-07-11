@@ -61,6 +61,12 @@ class SubscriptionRegistry:
             return list(self._uri_to_ids.keys())
 
 
+# Serializes writes to stdout so overlapping calls to send_resource_notification
+# (e.g. FileWatcher's threading.Timer callback firing on multiple debounced
+# file changes close together) cannot interleave partial JSON lines.
+_stdout_lock = threading.Lock()
+
+
 def send_resource_notification(uri: str, subscription_id: str) -> None:
     """Write a notifications/resources/updated JSON-RPC message to stdout.
 
@@ -78,9 +84,11 @@ def send_resource_notification(uri: str, subscription_id: str) -> None:
             "_meta": {"subscriptionId": subscription_id},
         },
     }
+    line = json.dumps(notification) + "\n"
     # MCP stdio: each message is a JSON line terminated by \n
-    sys.stdout.write(json.dumps(notification) + "\n")
-    sys.stdout.flush()
+    with _stdout_lock:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def notify_file_changed(
