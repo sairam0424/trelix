@@ -68,6 +68,7 @@ Settings are resolved in priority order (highest wins):
 | `TRELIX_QDRANT_API_KEY` | _(none)_ | Qdrant API key — required for authenticated Qdrant Cloud instances |
 | `QDRANT_PREFER_GRPC` | `false` | Use Qdrant's gRPC port (6334) instead of REST (6333) — lower latency, recommended for Qdrant Cloud |
 | `QDRANT_TIMEOUT` | `10.0` | Client request timeout in seconds — raise for Cloud deployments with higher network latency |
+| `TRELIX_STORE_BM25_READ_POOL_SIZE` | `0` | Number of read-only SQLite connections to pool for parallel `bm25_search()` calls. `0` disables pooling (default — identical to the pre-existing single-connection behavior). When set, `Retriever` automatically calls `Database.enable_bm25_read_pool()` at construction time. |
 
 ### Federation
 
@@ -170,6 +171,9 @@ TRELIX_STORE_BACKEND=sqlite-vec
 # TRELIX_QDRANT_API_KEY=...
 # QDRANT_PREFER_GRPC=false
 # QDRANT_TIMEOUT=10.0
+
+# Parallel read-only BM25 connections (0 = disabled, default)
+# TRELIX_STORE_BM25_READ_POOL_SIZE=4
 
 # ---------------------------------------------------------------------------
 # Federation

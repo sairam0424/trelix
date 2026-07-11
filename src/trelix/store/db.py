@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from trelix.indexing.multi_granularity import SubSymbolChunk
+    from trelix.store.read_pool import ReadOnlyConnectionPool
 
 from trelix.core.models import (
     CallEdge,
@@ -212,9 +213,23 @@ class Database:
 
     def __init__(self, db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._db_path = db_path
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._bm25_read_pool: ReadOnlyConnectionPool | None = None
         self.init_schema()
+
+    def enable_bm25_read_pool(self, pool_size: int) -> None:
+        """Opt-in: open a ReadOnlyConnectionPool for bm25_search() to draw
+        from instead of the single shared writer connection. No-op (and
+        disables an existing pool) if pool_size <= 0.
+        """
+        if pool_size <= 0:
+            self._bm25_read_pool = None
+            return
+        from trelix.store.read_pool import ReadOnlyConnectionPool
+
+        self._bm25_read_pool = ReadOnlyConnectionPool(self._db_path, pool_size=pool_size)
 
     def init_schema(self) -> None:
         """Initialize or refresh the database schema and apply all migrations.
@@ -759,17 +774,23 @@ class Database:
         Full-text search over symbols using SQLite FTS5 BM25.
         Returns list of (symbol_id, rank) sorted by relevance.
         Lower rank = more relevant in SQLite FTS5 (it's negative BM25).
+
+        Draws from the read-only connection pool when enable_bm25_read_pool()
+        has been called with pool_size > 0 — otherwise uses the single
+        shared writer connection exactly as before.
         """
-        rows = self._conn.execute(
-            """
+        sql = """
             SELECT rowid, rank
             FROM symbols_fts
             WHERE symbols_fts MATCH ?
             ORDER BY rank
             LIMIT ?
-            """,
-            (query, limit),
-        ).fetchall()
+            """
+        if self._bm25_read_pool is not None:
+            with self._bm25_read_pool.acquire() as conn:
+                rows = conn.execute(sql, (query, limit)).fetchall()
+        else:
+            rows = self._conn.execute(sql, (query, limit)).fetchall()
         return [(r[0], r[1]) for r in rows]
 
     # ------------------------------------------------------------------
@@ -1677,6 +1698,8 @@ class Database:
         ]
 
     def close(self) -> None:
+        if self._bm25_read_pool is not None:
+            self._bm25_read_pool.close_all()
         self._conn.close()
 
     def __enter__(self) -> Database:

@@ -338,6 +338,12 @@ class StoreConfig(BaseSettings):
     lance_uri: str = Field(default=".trelix/lance", alias="LANCE_URI")
     lance_table: str = Field(default="chunks", alias="LANCE_TABLE")
 
+    # ── Parallel BM25 reads ──────────────────────────────────────────────────
+    # 0 = disabled (default) — bm25_search() uses the single shared writer
+    # connection exactly as before. >0 opts into a pool of that many
+    # read-only connections for parallel FTS5 reads.
+    bm25_read_pool_size: int = Field(default=0, alias="TRELIX_STORE_BM25_READ_POOL_SIZE")
+
 
 class RetrievalConfig(BaseSettings):
     model_config = SettingsConfigDict(

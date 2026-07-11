@@ -278,3 +278,62 @@ class TestIsShortQuery:
         from trelix.retrieval.bm25 import is_short_query
 
         assert is_short_query("") is True
+
+
+class TestBM25ReadPoolOptIn:
+    """Opt-in read-only connection pool for parallel bm25_search() calls
+    (v2.6.x scale backlog, Plan C Task C-1). Default (pool disabled) must
+    be byte-for-byte identical to pre-existing behavior."""
+
+    def test_bm25_search_unaffected_when_pool_not_enabled(self, tmp_path):
+        """Default behavior (no enable_bm25_read_pool call) must produce
+        identical results to before this feature existed."""
+        db = Database(tmp_path / "test.db")
+        file_id = _make_file(db, rel_path="foo.py")
+        _insert_symbol(db, file_id, "authenticate_user", "def authenticate_user(): ...")
+
+        results = bm25_search(db, "authenticate", k=10)
+        assert len(results) == 1
+        assert db._bm25_read_pool is None
+
+    def test_bm25_search_works_identically_with_pool_enabled(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        file_id = _make_file(db, rel_path="foo.py")
+        _insert_symbol(db, file_id, "authenticate_user", "def authenticate_user(): ...")
+        db.enable_bm25_read_pool(pool_size=2)
+
+        results = bm25_search(db, "authenticate", k=10)
+        assert len(results) == 1
+
+        db._bm25_read_pool.close_all()
+
+    def test_concurrent_bm25_search_with_pool_enabled(self, tmp_path):
+        """The whole point of this feature: N threads querying bm25_search
+        concurrently must all succeed without 'database is locked' errors,
+        when the read pool is enabled."""
+        import threading
+
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        file_id = _make_file(db, rel_path="foo.py")
+        for i in range(20):
+            _insert_symbol(db, file_id, f"fn_{i}", f"def fn_{i}(): return {i}")
+        db.enable_bm25_read_pool(pool_size=4)
+
+        errors = []
+
+        def worker():
+            try:
+                bm25_search(db, "fn", k=10)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"concurrent bm25_search under the read pool raised: {errors}"
+        db._bm25_read_pool.close_all()
