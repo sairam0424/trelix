@@ -57,7 +57,7 @@ class QdrantVectorStore(BaseVectorStore):
             url=config.store.qdrant_url,
             api_key=config.store.qdrant_api_key,
             prefer_grpc=config.store.qdrant_prefer_grpc,
-            timeout=config.store.qdrant_timeout,
+            timeout=int(config.store.qdrant_timeout),
         )
 
         self._ensure_collection(VectorParams, HnswConfigDiff, Distance)
@@ -122,12 +122,12 @@ class QdrantVectorStore(BaseVectorStore):
         result; since Qdrant already returns similarity scores in [0, 1],
         results pass through correctly.
         """
-        hits = self._client.search(
+        response = self._client.query_points(
             collection_name=self._collection,
-            query_vector=query,
+            query=query,
             limit=k,
         )
-        return [(int(hit.id), hit.score) for hit in hits]
+        return [(int(hit.id), hit.score) for hit in response.points]
 
     def delete_batch(self, chunk_ids: list[int]) -> None:
         """Delete embeddings for the given chunk_ids. No-op for empty list."""
@@ -140,13 +140,13 @@ class QdrantVectorStore(BaseVectorStore):
 
         self._client.delete(
             collection_name=self._collection,
-            points_selector=PointIdsList(points=chunk_ids),
+            points_selector=PointIdsList(points=list(chunk_ids)),
         )
 
     def count(self) -> int:
         """Return the number of vectors stored in the collection."""
         info = self._client.get_collection(self._collection)
-        return info.vectors_count or 0
+        return info.points_count or 0
 
     def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
         """

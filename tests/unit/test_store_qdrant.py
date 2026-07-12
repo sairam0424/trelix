@@ -31,7 +31,7 @@ def _build_fake_qdrant_module() -> tuple[types.ModuleType, MagicMock]:
     mock_client_instance.get_collections.return_value = MagicMock(collections=[])
     mock_client_instance.create_collection.return_value = None
     mock_client_instance.upsert.return_value = None
-    mock_client_instance.search.return_value = []
+    mock_client_instance.query_points.return_value = MagicMock(points=[])
 
     # PointStruct — store id/vector/payload as plain attributes
     class PointStruct:
@@ -214,7 +214,7 @@ class TestQdrantSearch:
         """search() must return list[tuple[int, float]]."""
         hit1 = MagicMock(id=42, score=0.95)
         hit2 = MagicMock(id=7, score=0.80)
-        self.mock_client.search.return_value = [hit1, hit2]
+        self.mock_client.query_points.return_value = MagicMock(points=[hit1, hit2])
 
         store = self._make_store()
         results = store.search([0.1, 0.2, 0.3, 0.4], k=5)
@@ -222,23 +222,23 @@ class TestQdrantSearch:
         assert results == [(42, 0.95), (7, 0.80)]
 
     def test_search_passes_k_as_limit(self) -> None:
-        """search() must forward k as `limit` to client.search."""
+        """search() must forward k as `limit` to client.query_points."""
         store = self._make_store()
         store.search([0.0, 0.0, 1.0, 0.0], k=17)
 
-        _, kwargs = self.mock_client.search.call_args
+        _, kwargs = self.mock_client.query_points.call_args
         assert kwargs.get("limit") == 17
 
     def test_search_passes_collection_name(self) -> None:
         store = self._make_store(collection="my_collection")
         store.search([0.0, 1.0, 0.0, 0.0], k=5)
 
-        _, kwargs = self.mock_client.search.call_args
+        _, kwargs = self.mock_client.query_points.call_args
         assert kwargs.get("collection_name") == "my_collection"
 
     def test_search_empty_result(self) -> None:
         store = self._make_store()
-        self.mock_client.search.return_value = []
+        self.mock_client.query_points.return_value = MagicMock(points=[])
 
         results = store.search([0.0, 0.0, 0.0, 1.0], k=5)
         assert results == []
