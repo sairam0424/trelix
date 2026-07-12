@@ -225,6 +225,15 @@ chmod +x /usr/local/bin/trelix
 trelix --version
 ```
 
+### Linux ARM64
+
+```bash
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.7.1/trelix-linux-arm64 \
+     -o /usr/local/bin/trelix
+chmod +x /usr/local/bin/trelix
+trelix --version
+```
+
 Binaries are built with PyInstaller and include all Python dependencies. The
 local embedder model is still downloaded to `~/.cache/trelix/` on first use.
 

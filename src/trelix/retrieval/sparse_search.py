@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from trelix.store.db import Database
     from trelix.store.sparse_store import SparseStore
 
-from trelix.core.models import Chunk, SearchResult
+from trelix.core.models import SearchResult
 
 logger = logging.getLogger("trelix.retrieval.sparse_search")
 
@@ -49,19 +49,10 @@ def sparse_search(
     results: list[SearchResult] = []
     for chunk_id, score in pairs:
         try:
-            row = db._conn.execute(
-                "SELECT id, symbol_id, chunk_text, token_count FROM chunks WHERE id = ?",
-                (chunk_id,),
-            ).fetchone()
-            if row is None:
+            chunk = db.get_chunk_by_id(chunk_id)
+            if chunk is None:
                 continue
 
-            chunk = Chunk(
-                id=int(row[0]),
-                symbol_id=int(row[1]),
-                chunk_text=row[2],
-                token_count=int(row[3]),
-            )
             sym_file = db.get_symbol_with_file(chunk.symbol_id)
             if sym_file is None:
                 continue

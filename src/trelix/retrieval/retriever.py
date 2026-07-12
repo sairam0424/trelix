@@ -77,6 +77,8 @@ class Retriever:
     def __init__(self, config: IndexConfig) -> None:
         self.config = config
         self.db = Database(config.db_path_absolute)
+        if config.store.bm25_read_pool_size > 0:
+            self.db.enable_bm25_read_pool(config.store.bm25_read_pool_size)
         raw_embedder: BaseEmbedder = make_embedder(config.embedder)
         # Wrap with LRU query cache when enabled (default: 256 entries).
         # embed_query() hits are returned in <1ms; embed() passthrough unchanged.

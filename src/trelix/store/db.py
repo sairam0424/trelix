@@ -15,9 +15,11 @@ repos up to millions of lines. (Stolen from ctags-based tools.)
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from trelix.indexing.multi_granularity import SubSymbolChunk
+    from trelix.store.read_pool import ReadOnlyConnectionPool
 
 from trelix.core.models import (
     CallEdge,
@@ -72,7 +75,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     decorators      TEXT    NOT NULL DEFAULT '[]',
     is_public       INTEGER NOT NULL DEFAULT 1,
     parent_id       INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
-    body            TEXT    NOT NULL DEFAULT ''
+    body            TEXT    NOT NULL DEFAULT '',
+    content_hash    TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS type_edges (
@@ -210,9 +214,29 @@ class Database:
 
     def __init__(self, db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._db_path = db_path
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._bm25_read_pool: ReadOnlyConnectionPool | None = None
+        # Guards concurrent access to the single shared writer connection
+        # (self._conn) from hydration calls that bm25_search()'s retrieval-layer
+        # wrapper makes after drawing symbol_ids from the (thread-safe) read
+        # pool — sqlite3.Connection is not safe for concurrent statement
+        # execution from multiple threads even with check_same_thread=False.
+        self._conn_lock = threading.Lock()
         self.init_schema()
+
+    def enable_bm25_read_pool(self, pool_size: int) -> None:
+        """Opt-in: open a ReadOnlyConnectionPool for bm25_search() to draw
+        from instead of the single shared writer connection. No-op (and
+        disables an existing pool) if pool_size <= 0.
+        """
+        if pool_size <= 0:
+            self._bm25_read_pool = None
+            return
+        from trelix.store.read_pool import ReadOnlyConnectionPool
+
+        self._bm25_read_pool = ReadOnlyConnectionPool(self._db_path, pool_size=pool_size)
 
     def init_schema(self) -> None:
         """Initialize or refresh the database schema and apply all migrations.
@@ -252,6 +276,11 @@ class Database:
             self._conn.commit()
         if "context_summary" not in sym_cols:
             self._conn.execute("ALTER TABLE symbols ADD COLUMN context_summary TEXT")
+            self._conn.commit()
+        if "content_hash" not in sym_cols:
+            self._conn.execute(
+                "ALTER TABLE symbols ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
+            )
             self._conn.commit()
 
         # calls.callee_type_hint — added in U9 for qualified-name + type-hint resolution
@@ -447,6 +476,114 @@ class Database:
         self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
         self._conn.commit()
 
+    def get_symbol_hashes_for_file(self, file_id: int) -> dict[str, str]:
+        """Return {qualified_name: content_hash} for every symbol currently
+        stored under file_id. Used to diff newly-parsed symbols against
+        what's already indexed, so unchanged symbols can skip re-embedding.
+        """
+        rows = self._conn.execute(
+            "SELECT qualified_name, content_hash FROM symbols WHERE file_id = ?",
+            (file_id,),
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    def delete_symbols_by_qualified_names(self, file_id: int, qualified_names: list[str]) -> None:
+        """Remove only the named symbols (and cascaded data) for a file —
+        a partial version of delete_file_symbols(), used when some symbols
+        in the file are unchanged and must be preserved.
+        """
+        if not qualified_names:
+            return
+        placeholders = ",".join("?" for _ in qualified_names)
+        self._conn.execute(
+            f"DELETE FROM symbols WHERE file_id = ? AND qualified_name IN ({placeholders})",
+            (file_id, *qualified_names),
+        )
+        self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # FK-link repair after a partial (content-hash-diffed) symbol delete
+    # ------------------------------------------------------------------
+    # symbols.parent_id / calls.callee_id / type_edges.to_symbol_id are all
+    # ON DELETE SET NULL — deleting a changed/removed symbol's old row (via
+    # delete_symbols_by_qualified_names above) silently NULLs these on any
+    # OTHER row that referenced it, including unchanged rows the current
+    # pass never re-inserts. The three getters below MUST be called BEFORE
+    # delete_symbols_by_qualified_names() so they see the link before the
+    # cascade erases it; the three repoint_* methods are called afterwards
+    # to re-point the link at the symbol's new id, once known.
+
+    def get_children_with_stale_parent(self, old_parent_ids: list[int]) -> list[tuple[int, int]]:
+        """Return (child_id, old_parent_id) for symbols whose parent_id
+        currently matches one of old_parent_ids."""
+        if not old_parent_ids:
+            return []
+        placeholders = ",".join("?" for _ in old_parent_ids)
+        rows = self._conn.execute(
+            f"SELECT id, parent_id FROM symbols WHERE parent_id IN ({placeholders})",
+            old_parent_ids,
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def repoint_parent_ids(self, child_id_to_new_parent_id: dict[int, int]) -> None:
+        """Re-point parent_id for children whose parent row was deleted and
+        re-inserted with a new id during a partial re-index."""
+        if not child_id_to_new_parent_id:
+            return
+        self._conn.executemany(
+            "UPDATE symbols SET parent_id = ? WHERE id = ?",
+            [(new_id, child_id) for child_id, new_id in child_id_to_new_parent_id.items()],
+        )
+        self._conn.commit()
+
+    def get_calls_referencing_symbols(self, old_callee_ids: list[int]) -> list[tuple[int, int]]:
+        """Return (call_id, old_callee_id) for calls rows whose callee_id
+        currently matches one of old_callee_ids."""
+        if not old_callee_ids:
+            return []
+        placeholders = ",".join("?" for _ in old_callee_ids)
+        rows = self._conn.execute(
+            f"SELECT id, callee_id FROM calls WHERE callee_id IN ({placeholders})",
+            old_callee_ids,
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def repoint_call_callee_ids(self, call_id_to_new_callee_id: dict[int, int]) -> None:
+        """Re-point callee_id for calls whose callee row was deleted and
+        re-inserted with a new id during a partial re-index."""
+        if not call_id_to_new_callee_id:
+            return
+        self._conn.executemany(
+            "UPDATE calls SET callee_id = ? WHERE id = ?",
+            [(new_id, call_id) for call_id, new_id in call_id_to_new_callee_id.items()],
+        )
+        self._conn.commit()
+
+    def get_type_edges_referencing_symbols(
+        self, old_target_ids: list[int]
+    ) -> list[tuple[int, int]]:
+        """Return (edge_id, old_target_id) for type_edges rows whose
+        to_symbol_id currently matches one of old_target_ids."""
+        if not old_target_ids:
+            return []
+        placeholders = ",".join("?" for _ in old_target_ids)
+        rows = self._conn.execute(
+            f"SELECT id, to_symbol_id FROM type_edges WHERE to_symbol_id IN ({placeholders})",
+            old_target_ids,
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def repoint_type_edge_targets(self, edge_id_to_new_target_id: dict[int, int]) -> None:
+        """Re-point to_symbol_id for type edges whose target row was deleted
+        and re-inserted with a new id during a partial re-index."""
+        if not edge_id_to_new_target_id:
+            return
+        self._conn.executemany(
+            "UPDATE type_edges SET to_symbol_id = ? WHERE id = ?",
+            [(new_id, edge_id) for edge_id, new_id in edge_id_to_new_target_id.items()],
+        )
+        self._conn.commit()
+
     def delete_file_by_path(
         self,
         abs_path: str,
@@ -498,12 +635,14 @@ class Database:
     # ------------------------------------------------------------------
 
     def insert_symbol(self, symbol: Symbol) -> int:
+        content_hash = hashlib.sha256((symbol.signature + symbol.body).encode("utf-8")).hexdigest()
         cursor = self._conn.execute(
             """
             INSERT INTO symbols
               (file_id, name, qualified_name, kind, line_start, line_end,
-               signature, docstring, context_summary, decorators, is_public, parent_id, body)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               signature, docstring, context_summary, decorators, is_public, parent_id, body,
+               content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol.file_id,
@@ -519,6 +658,7 @@ class Database:
                 int(symbol.is_public),
                 symbol.parent_id,
                 symbol.body,
+                content_hash,
             ),
         )
         return cursor.lastrowid  # type: ignore[return-value]
@@ -724,17 +864,24 @@ class Database:
         Full-text search over symbols using SQLite FTS5 BM25.
         Returns list of (symbol_id, rank) sorted by relevance.
         Lower rank = more relevant in SQLite FTS5 (it's negative BM25).
+
+        Draws from the read-only connection pool when enable_bm25_read_pool()
+        has been called with pool_size > 0 — otherwise uses the single
+        shared writer connection exactly as before.
         """
-        rows = self._conn.execute(
-            """
+        sql = """
             SELECT rowid, rank
             FROM symbols_fts
             WHERE symbols_fts MATCH ?
             ORDER BY rank
             LIMIT ?
-            """,
-            (query, limit),
-        ).fetchall()
+            """
+        if self._bm25_read_pool is not None:
+            with self._bm25_read_pool.acquire() as conn:
+                rows = conn.execute(sql, (query, limit)).fetchall()
+        else:
+            with self._conn_lock:
+                rows = self._conn.execute(sql, (query, limit)).fetchall()
         return [(r[0], r[1]) for r in rows]
 
     # ------------------------------------------------------------------
@@ -772,6 +919,26 @@ class Database:
             WHERE s.file_id = ?
             """,
             (file_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_chunk_ids_for_symbols(self, file_id: int, qualified_names: list[str]) -> list[int]:
+        """Return chunk ids for a subset of a file's symbols (by qualified_name).
+
+        Used by the incremental re-index path to clean up only the chunks
+        belonging to symbols that actually changed, leaving unchanged
+        symbols' chunks/embeddings untouched.
+        """
+        if not qualified_names:
+            return []
+        placeholders = ",".join("?" for _ in qualified_names)
+        rows = self._conn.execute(
+            f"""
+            SELECT c.id FROM chunks c
+            JOIN symbols s ON c.symbol_id = s.id
+            WHERE s.file_id = ? AND s.qualified_name IN ({placeholders})
+            """,
+            (file_id, *qualified_names),
         ).fetchall()
         return [r[0] for r in rows]
 
@@ -1622,6 +1789,8 @@ class Database:
         ]
 
     def close(self) -> None:
+        if self._bm25_read_pool is not None:
+            self._bm25_read_pool.close_all()
         self._conn.close()
 
     def __enter__(self) -> Database:
@@ -1681,43 +1850,49 @@ class Database:
         Single JOIN query: chunk → symbol → file.
         Returns (Chunk, Symbol, IndexedFile) or None if not found.
         This is the primary hydration path called by Retriever._hydrate_chunk().
+
+        Locked: reachable concurrently from the same sub-query
+        ThreadPoolExecutor as bm25_search()'s hydration calls whenever a
+        strategy's legs include both 'vector' and 'bm25' — same shared
+        self._conn hazard as get_symbol_with_file().
         """
-        row = self._conn.execute(
-            """
-            SELECT
-                c.id         AS c_id,
-                c.symbol_id  AS c_symbol_id,
-                c.chunk_text AS c_chunk_text,
-                c.token_count AS c_token_count,
+        with self._conn_lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    c.id         AS c_id,
+                    c.symbol_id  AS c_symbol_id,
+                    c.chunk_text AS c_chunk_text,
+                    c.token_count AS c_token_count,
 
-                s.id              AS s_id,
-                s.file_id         AS s_file_id,
-                s.name            AS s_name,
-                s.qualified_name  AS s_qualified_name,
-                s.kind            AS s_kind,
-                s.line_start      AS s_line_start,
-                s.line_end        AS s_line_end,
-                s.signature       AS s_signature,
-                s.docstring       AS s_docstring,
-                s.context_summary AS s_context_summary,
-                s.decorators      AS s_decorators,
-                s.is_public       AS s_is_public,
-                s.parent_id       AS s_parent_id,
-                s.body            AS s_body,
+                    s.id              AS s_id,
+                    s.file_id         AS s_file_id,
+                    s.name            AS s_name,
+                    s.qualified_name  AS s_qualified_name,
+                    s.kind            AS s_kind,
+                    s.line_start      AS s_line_start,
+                    s.line_end        AS s_line_end,
+                    s.signature       AS s_signature,
+                    s.docstring       AS s_docstring,
+                    s.context_summary AS s_context_summary,
+                    s.decorators      AS s_decorators,
+                    s.is_public       AS s_is_public,
+                    s.parent_id       AS s_parent_id,
+                    s.body            AS s_body,
 
-                f.id         AS f_id,
-                f.path       AS f_path,
-                f.rel_path   AS f_rel_path,
-                f.language   AS f_language,
-                f.hash       AS f_hash,
-                f.size_bytes AS f_size_bytes
-            FROM chunks c
-            JOIN symbols s ON c.symbol_id = s.id
-            JOIN files   f ON s.file_id   = f.id
-            WHERE c.id = ?
-            """,
-            (chunk_id,),
-        ).fetchone()
+                    f.id         AS f_id,
+                    f.path       AS f_path,
+                    f.rel_path   AS f_rel_path,
+                    f.language   AS f_language,
+                    f.hash       AS f_hash,
+                    f.size_bytes AS f_size_bytes
+                FROM chunks c
+                JOIN symbols s ON c.symbol_id = s.id
+                JOIN files   f ON s.file_id   = f.id
+                WHERE c.id = ?
+                """,
+                (chunk_id,),
+            ).fetchone()
 
         if not row:
             return None
@@ -1728,37 +1903,45 @@ class Database:
         """
         Load a symbol and its file in one query.
         Used by graph expansion and grep search hydration.
-        """
-        row = self._conn.execute(
-            """
-            SELECT
-                s.id              AS s_id,
-                s.file_id         AS s_file_id,
-                s.name            AS s_name,
-                s.qualified_name  AS s_qualified_name,
-                s.kind            AS s_kind,
-                s.line_start      AS s_line_start,
-                s.line_end        AS s_line_end,
-                s.signature       AS s_signature,
-                s.docstring       AS s_docstring,
-                s.context_summary AS s_context_summary,
-                s.decorators      AS s_decorators,
-                s.is_public       AS s_is_public,
-                s.parent_id       AS s_parent_id,
-                s.body            AS s_body,
 
-                f.id         AS f_id,
-                f.path       AS f_path,
-                f.rel_path   AS f_rel_path,
-                f.language   AS f_language,
-                f.hash       AS f_hash,
-                f.size_bytes AS f_size_bytes
-            FROM symbols s
-            JOIN files f ON s.file_id = f.id
-            WHERE s.id = ?
-            """,
-            (symbol_id,),
-        ).fetchone()
+        Locked: self._conn is a single shared connection with no internal
+        thread-safety for concurrent statement execution. bm25_search()'s
+        retrieval-layer wrapper calls this after drawing symbol_ids from the
+        (thread-safe) read pool, so this method IS reachable concurrently —
+        confirmed by a CI flake (SymbolKind(None)/InterfaceError under
+        concurrent load) before this lock was added.
+        """
+        with self._conn_lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    s.id              AS s_id,
+                    s.file_id         AS s_file_id,
+                    s.name            AS s_name,
+                    s.qualified_name  AS s_qualified_name,
+                    s.kind            AS s_kind,
+                    s.line_start      AS s_line_start,
+                    s.line_end        AS s_line_end,
+                    s.signature       AS s_signature,
+                    s.docstring       AS s_docstring,
+                    s.context_summary AS s_context_summary,
+                    s.decorators      AS s_decorators,
+                    s.is_public       AS s_is_public,
+                    s.parent_id       AS s_parent_id,
+                    s.body            AS s_body,
+
+                    f.id         AS f_id,
+                    f.path       AS f_path,
+                    f.rel_path   AS f_rel_path,
+                    f.language   AS f_language,
+                    f.hash       AS f_hash,
+                    f.size_bytes AS f_size_bytes
+                FROM symbols s
+                JOIN files f ON s.file_id = f.id
+                WHERE s.id = ?
+                """,
+                (symbol_id,),
+            ).fetchone()
 
         if not row:
             return None
@@ -1793,11 +1976,16 @@ class Database:
         """
         Return the first (and usually only) chunk for a symbol.
         Used when we have a symbol_id from BM25/graph and need a Chunk for SearchResult.
+
+        Locked for the same reason as get_symbol_with_file() — reachable
+        concurrently via bm25_search()'s hydration path when the read pool
+        is enabled.
         """
-        row = self._conn.execute(
-            "SELECT * FROM chunks WHERE symbol_id = ? LIMIT 1",
-            (symbol_id,),
-        ).fetchone()
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT * FROM chunks WHERE symbol_id = ? LIMIT 1",
+                (symbol_id,),
+            ).fetchone()
         if not row:
             return None
         return Chunk(
@@ -1805,6 +1993,29 @@ class Database:
             symbol_id=row["symbol_id"],
             chunk_text=row["chunk_text"],
             token_count=row["token_count"],
+        )
+
+    def get_chunk_by_id(self, chunk_id: int) -> Chunk | None:
+        """
+        Return a single chunk by id. Used by sparse_search() to hydrate
+        SparseStore hits.
+
+        Locked for the same reason as get_symbol_with_file() — sparse_search
+        runs inside the same sub-query ThreadPoolExecutor as the bm25/grep
+        legs, all sharing this connection.
+        """
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT id, symbol_id, chunk_text, token_count FROM chunks WHERE id = ?",
+                (chunk_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Chunk(
+            id=int(row[0]),
+            symbol_id=int(row[1]),
+            chunk_text=row[2],
+            token_count=int(row[3]),
         )
 
     def _row_to_hydrated(self, row: sqlite3.Row) -> tuple[Chunk, Symbol, IndexedFile]:
