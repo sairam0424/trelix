@@ -689,6 +689,23 @@ class Indexer:
             qn for qn in existing_hashes if qn not in unchanged_qualified_names
         ]
 
+        # symbols.parent_id / calls.callee_id / type_edges.to_symbol_id are
+        # all ON DELETE SET NULL — deleting a changed/removed symbol's old
+        # row below silently NULLs these on any OTHER row that pointed at
+        # it, including unchanged rows this pass never touches. Snapshot
+        # who's pointing at what BEFORE the delete fires, so it can be
+        # re-pointed at the symbol's new row (or correctly left NULL if the
+        # symbol was actually removed, not just changed) once new ids are
+        # known below.
+        old_id_to_qn: dict[int, str] = {
+            existing_ids_by_qn[qn]: qn
+            for qn in qualified_names_to_delete
+            if qn in existing_ids_by_qn
+        }
+        stale_parent_links = self.db.get_children_with_stale_parent(list(old_id_to_qn))
+        stale_callee_links = self.db.get_calls_referencing_symbols(list(old_id_to_qn))
+        stale_type_links = self.db.get_type_edges_referencing_symbols(list(old_id_to_qn))
+
         if qualified_names_to_delete:
             old_chunk_ids = self.db.get_chunk_ids_for_symbols(file_id, qualified_names_to_delete)
             if old_chunk_ids:
@@ -729,6 +746,37 @@ class Indexer:
 
             if parse_result.import_edges:
                 self.db.insert_imports(parse_result.import_edges)
+
+        # Repair FK links captured before the delete above nulled them.
+        # A symbol whose qualified_name is in old_id_to_qn but was
+        # content-changed (not removed) has just been re-inserted with a
+        # new id in changed_or_new_symbols — repoint stale references at
+        # that new id. If the qualified_name has no match there, the
+        # symbol was genuinely removed and the NULL from the cascade is
+        # correct as-is.
+        if old_id_to_qn:
+            new_id_by_qn = {sym.qualified_name: sym.id for sym in changed_or_new_symbols}
+
+            parent_repairs = {
+                child_id: new_id_by_qn[old_id_to_qn[old_parent_id]]
+                for child_id, old_parent_id in stale_parent_links
+                if old_id_to_qn.get(old_parent_id) in new_id_by_qn
+            }
+            self.db.repoint_parent_ids(parent_repairs)
+
+            callee_repairs = {
+                call_id: new_id_by_qn[old_id_to_qn[old_callee_id]]
+                for call_id, old_callee_id in stale_callee_links
+                if old_id_to_qn.get(old_callee_id) in new_id_by_qn
+            }
+            self.db.repoint_call_callee_ids(callee_repairs)
+
+            type_edge_repairs = {
+                edge_id: new_id_by_qn[old_id_to_qn[old_target_id]]
+                for edge_id, old_target_id in stale_type_links
+                if old_id_to_qn.get(old_target_id) in new_id_by_qn
+            }
+            self.db.repoint_type_edge_targets(type_edge_repairs)
 
         # Resolve + store call edges — only for changed/new callers; edges
         # from unchanged callers are already correctly stored from a prior

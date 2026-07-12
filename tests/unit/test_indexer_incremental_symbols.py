@@ -179,3 +179,81 @@ class TestIncrementalSymbolReEmbedding:
         assert first_pass_id == second_pass_id, (
             "unchanged_fn's symbol row must be preserved (same id), not deleted and re-inserted"
         )
+
+    def test_unchanged_child_parent_id_survives_parent_content_change(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """When a class (parent) changes but one of its methods (child) does
+        not, the child's parent_id must be repointed at the parent's new
+        row id — not silently left NULL by the FK cascade that fires when
+        the old parent row is deleted."""
+        repo = tmp_path
+        source_file = repo / "mod.py"
+        source_file.write_text('class Foo:\n    """v1"""\n\n    def bar(self):\n        return 1\n')
+
+        fake_embedder = _FakeEmbedder()
+        indexer = _make_indexer(str(repo), fake_embedder)
+
+        with _patch_rich_progress():
+            indexer.index_file(str(source_file))
+
+        # Change only the class docstring — Foo.bar's body/signature is untouched.
+        source_file.write_text('class Foo:\n    """v2"""\n\n    def bar(self):\n        return 1\n')
+        with _patch_rich_progress():
+            indexer.index_file(str(source_file))
+
+        new_foo_id = indexer.db._conn.execute(
+            "SELECT id FROM symbols WHERE qualified_name = 'Foo'"
+        ).fetchone()[0]
+        bar_parent_id = indexer.db._conn.execute(
+            "SELECT parent_id FROM symbols WHERE qualified_name = 'Foo.bar'"
+        ).fetchone()[0]
+
+        assert bar_parent_id == new_foo_id, (
+            "Foo.bar's parent_id must point at Foo's new row id after Foo's "
+            "content changed — it must not be left NULL by the ON DELETE "
+            "SET NULL cascade that fires when the old Foo row is deleted."
+        )
+
+    def test_unchanged_caller_callee_id_survives_callee_content_change(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """When callee() changes but caller() (which calls it) does not, the
+        pre-existing calls row's callee_id must be repointed at callee()'s
+        new row id — not silently left NULL by the FK cascade that fires
+        when the old callee row is deleted."""
+        repo = tmp_path
+        source_file = repo / "mod.py"
+        source_file.write_text(
+            "def caller():\n    return callee()\n\n\ndef callee():\n    return 1\n"
+        )
+
+        fake_embedder = _FakeEmbedder()
+        indexer = _make_indexer(str(repo), fake_embedder)
+
+        with _patch_rich_progress():
+            indexer.index_file(str(source_file))
+
+        # Change only callee()'s body — caller()'s body/signature is untouched.
+        source_file.write_text(
+            "def caller():\n    return callee()\n\n\ndef callee():\n    return 999\n"
+        )
+        with _patch_rich_progress():
+            indexer.index_file(str(source_file))
+
+        new_callee_id = indexer.db._conn.execute(
+            "SELECT id FROM symbols WHERE qualified_name = 'callee'"
+        ).fetchone()[0]
+        caller_id = indexer.db._conn.execute(
+            "SELECT id FROM symbols WHERE qualified_name = 'caller'"
+        ).fetchone()[0]
+        callee_id_in_calls_row = indexer.db._conn.execute(
+            "SELECT callee_id FROM calls WHERE caller_id = ?", (caller_id,)
+        ).fetchone()[0]
+
+        assert callee_id_in_calls_row == new_callee_id, (
+            "The calls row's callee_id must point at callee()'s new row id "
+            "after callee()'s content changed — it must not be left NULL by "
+            "the ON DELETE SET NULL cascade that fires when the old callee "
+            "row is deleted."
+        )

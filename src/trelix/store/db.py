@@ -501,6 +501,89 @@ class Database:
         )
         self._conn.commit()
 
+    # ------------------------------------------------------------------
+    # FK-link repair after a partial (content-hash-diffed) symbol delete
+    # ------------------------------------------------------------------
+    # symbols.parent_id / calls.callee_id / type_edges.to_symbol_id are all
+    # ON DELETE SET NULL — deleting a changed/removed symbol's old row (via
+    # delete_symbols_by_qualified_names above) silently NULLs these on any
+    # OTHER row that referenced it, including unchanged rows the current
+    # pass never re-inserts. The three getters below MUST be called BEFORE
+    # delete_symbols_by_qualified_names() so they see the link before the
+    # cascade erases it; the three repoint_* methods are called afterwards
+    # to re-point the link at the symbol's new id, once known.
+
+    def get_children_with_stale_parent(self, old_parent_ids: list[int]) -> list[tuple[int, int]]:
+        """Return (child_id, old_parent_id) for symbols whose parent_id
+        currently matches one of old_parent_ids."""
+        if not old_parent_ids:
+            return []
+        placeholders = ",".join("?" for _ in old_parent_ids)
+        rows = self._conn.execute(
+            f"SELECT id, parent_id FROM symbols WHERE parent_id IN ({placeholders})",
+            old_parent_ids,
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def repoint_parent_ids(self, child_id_to_new_parent_id: dict[int, int]) -> None:
+        """Re-point parent_id for children whose parent row was deleted and
+        re-inserted with a new id during a partial re-index."""
+        if not child_id_to_new_parent_id:
+            return
+        self._conn.executemany(
+            "UPDATE symbols SET parent_id = ? WHERE id = ?",
+            [(new_id, child_id) for child_id, new_id in child_id_to_new_parent_id.items()],
+        )
+        self._conn.commit()
+
+    def get_calls_referencing_symbols(self, old_callee_ids: list[int]) -> list[tuple[int, int]]:
+        """Return (call_id, old_callee_id) for calls rows whose callee_id
+        currently matches one of old_callee_ids."""
+        if not old_callee_ids:
+            return []
+        placeholders = ",".join("?" for _ in old_callee_ids)
+        rows = self._conn.execute(
+            f"SELECT id, callee_id FROM calls WHERE callee_id IN ({placeholders})",
+            old_callee_ids,
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def repoint_call_callee_ids(self, call_id_to_new_callee_id: dict[int, int]) -> None:
+        """Re-point callee_id for calls whose callee row was deleted and
+        re-inserted with a new id during a partial re-index."""
+        if not call_id_to_new_callee_id:
+            return
+        self._conn.executemany(
+            "UPDATE calls SET callee_id = ? WHERE id = ?",
+            [(new_id, call_id) for call_id, new_id in call_id_to_new_callee_id.items()],
+        )
+        self._conn.commit()
+
+    def get_type_edges_referencing_symbols(
+        self, old_target_ids: list[int]
+    ) -> list[tuple[int, int]]:
+        """Return (edge_id, old_target_id) for type_edges rows whose
+        to_symbol_id currently matches one of old_target_ids."""
+        if not old_target_ids:
+            return []
+        placeholders = ",".join("?" for _ in old_target_ids)
+        rows = self._conn.execute(
+            f"SELECT id, to_symbol_id FROM type_edges WHERE to_symbol_id IN ({placeholders})",
+            old_target_ids,
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def repoint_type_edge_targets(self, edge_id_to_new_target_id: dict[int, int]) -> None:
+        """Re-point to_symbol_id for type edges whose target row was deleted
+        and re-inserted with a new id during a partial re-index."""
+        if not edge_id_to_new_target_id:
+            return
+        self._conn.executemany(
+            "UPDATE type_edges SET to_symbol_id = ? WHERE id = ?",
+            [(new_id, edge_id) for edge_id, new_id in edge_id_to_new_target_id.items()],
+        )
+        self._conn.commit()
+
     def delete_file_by_path(
         self,
         abs_path: str,
@@ -797,7 +880,8 @@ class Database:
             with self._bm25_read_pool.acquire() as conn:
                 rows = conn.execute(sql, (query, limit)).fetchall()
         else:
-            rows = self._conn.execute(sql, (query, limit)).fetchall()
+            with self._conn_lock:
+                rows = self._conn.execute(sql, (query, limit)).fetchall()
         return [(r[0], r[1]) for r in rows]
 
     # ------------------------------------------------------------------
@@ -1766,43 +1850,49 @@ class Database:
         Single JOIN query: chunk → symbol → file.
         Returns (Chunk, Symbol, IndexedFile) or None if not found.
         This is the primary hydration path called by Retriever._hydrate_chunk().
+
+        Locked: reachable concurrently from the same sub-query
+        ThreadPoolExecutor as bm25_search()'s hydration calls whenever a
+        strategy's legs include both 'vector' and 'bm25' — same shared
+        self._conn hazard as get_symbol_with_file().
         """
-        row = self._conn.execute(
-            """
-            SELECT
-                c.id         AS c_id,
-                c.symbol_id  AS c_symbol_id,
-                c.chunk_text AS c_chunk_text,
-                c.token_count AS c_token_count,
+        with self._conn_lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    c.id         AS c_id,
+                    c.symbol_id  AS c_symbol_id,
+                    c.chunk_text AS c_chunk_text,
+                    c.token_count AS c_token_count,
 
-                s.id              AS s_id,
-                s.file_id         AS s_file_id,
-                s.name            AS s_name,
-                s.qualified_name  AS s_qualified_name,
-                s.kind            AS s_kind,
-                s.line_start      AS s_line_start,
-                s.line_end        AS s_line_end,
-                s.signature       AS s_signature,
-                s.docstring       AS s_docstring,
-                s.context_summary AS s_context_summary,
-                s.decorators      AS s_decorators,
-                s.is_public       AS s_is_public,
-                s.parent_id       AS s_parent_id,
-                s.body            AS s_body,
+                    s.id              AS s_id,
+                    s.file_id         AS s_file_id,
+                    s.name            AS s_name,
+                    s.qualified_name  AS s_qualified_name,
+                    s.kind            AS s_kind,
+                    s.line_start      AS s_line_start,
+                    s.line_end        AS s_line_end,
+                    s.signature       AS s_signature,
+                    s.docstring       AS s_docstring,
+                    s.context_summary AS s_context_summary,
+                    s.decorators      AS s_decorators,
+                    s.is_public       AS s_is_public,
+                    s.parent_id       AS s_parent_id,
+                    s.body            AS s_body,
 
-                f.id         AS f_id,
-                f.path       AS f_path,
-                f.rel_path   AS f_rel_path,
-                f.language   AS f_language,
-                f.hash       AS f_hash,
-                f.size_bytes AS f_size_bytes
-            FROM chunks c
-            JOIN symbols s ON c.symbol_id = s.id
-            JOIN files   f ON s.file_id   = f.id
-            WHERE c.id = ?
-            """,
-            (chunk_id,),
-        ).fetchone()
+                    f.id         AS f_id,
+                    f.path       AS f_path,
+                    f.rel_path   AS f_rel_path,
+                    f.language   AS f_language,
+                    f.hash       AS f_hash,
+                    f.size_bytes AS f_size_bytes
+                FROM chunks c
+                JOIN symbols s ON c.symbol_id = s.id
+                JOIN files   f ON s.file_id   = f.id
+                WHERE c.id = ?
+                """,
+                (chunk_id,),
+            ).fetchone()
 
         if not row:
             return None
@@ -1903,6 +1993,29 @@ class Database:
             symbol_id=row["symbol_id"],
             chunk_text=row["chunk_text"],
             token_count=row["token_count"],
+        )
+
+    def get_chunk_by_id(self, chunk_id: int) -> Chunk | None:
+        """
+        Return a single chunk by id. Used by sparse_search() to hydrate
+        SparseStore hits.
+
+        Locked for the same reason as get_symbol_with_file() — sparse_search
+        runs inside the same sub-query ThreadPoolExecutor as the bm25/grep
+        legs, all sharing this connection.
+        """
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT id, symbol_id, chunk_text, token_count FROM chunks WHERE id = ?",
+                (chunk_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Chunk(
+            id=int(row[0]),
+            symbol_id=int(row[1]),
+            chunk_text=row[2],
+            token_count=int(row[3]),
         )
 
     def _row_to_hydrated(self, row: sqlite3.Row) -> tuple[Chunk, Symbol, IndexedFile]:
