@@ -755,7 +755,9 @@ class Indexer:
         # symbol was genuinely removed and the NULL from the cascade is
         # correct as-is.
         if old_id_to_qn:
-            new_id_by_qn = {sym.qualified_name: sym.id for sym in changed_or_new_symbols}
+            new_id_by_qn: dict[str, int] = {
+                sym.qualified_name: sym.id for sym in changed_or_new_symbols if sym.id is not None
+            }
 
             parent_repairs = {
                 child_id: new_id_by_qn[old_id_to_qn[old_parent_id]]
