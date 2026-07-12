@@ -27,9 +27,9 @@ jobs:
           - os: ubuntu-24.04-arm
             artifact-name: trelix-linux-arm64
             binary-path: dist/trelix
-          - os: windows-11-arm
-            artifact-name: trelix-windows-arm64
-            binary-path: dist/trelix.exe
+          # windows-11-arm intentionally excluded: tree-sitter-languages and
+          # sqlite-vec (unconditional deps) publish no win_arm64 wheel or
+          # sdist, so pip install fails before the build ever runs.
 
     steps:
       - uses: actions/checkout@v4

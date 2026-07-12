@@ -234,15 +234,6 @@ chmod +x /usr/local/bin/trelix
 trelix --version
 ```
 
-### Windows ARM64
-
-Download `trelix-windows-arm64.exe` from the Releases page and place it
-somewhere on your `PATH`, or run it directly:
-
-```powershell
-.\trelix-windows-arm64.exe --version
-```
-
 Binaries are built with PyInstaller and include all Python dependencies. The
 local embedder model is still downloaded to `~/.cache/trelix/` on first use.
 

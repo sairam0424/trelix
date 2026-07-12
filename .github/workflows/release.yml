@@ -25,9 +25,9 @@ jobs:
           - os: ubuntu-24.04-arm
             artifact-name: trelix-linux-arm64
             binary-path: dist/trelix
-          - os: windows-11-arm
-            artifact-name: trelix-windows-arm64
-            binary-path: dist/trelix.exe
+          # windows-11-arm intentionally excluded: tree-sitter-languages and
+          # sqlite-vec (unconditional deps) publish no win_arm64 wheel or
+          # sdist, so pip install fails before the build ever runs.
 
     steps:
       - uses: actions/checkout@v4
@@ -217,12 +217,6 @@ jobs:
           name: trelix-linux-arm64
           path: release-assets/linux-arm64
 
-      - name: Download Windows ARM64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: trelix-windows-arm64
-          path: release-assets/windows-arm64
-
       - name: Rename binaries to unique release asset names
         # softprops/action-gh-release uploads by basename — macOS's and Linux's
         # binaries are both called "trelix", so without renaming they collide
@@ -232,7 +226,6 @@ jobs:
           mv release-assets/windows/trelix.exe release-assets/windows/trelix-windows-x64.exe
           mv release-assets/linux/trelix release-assets/linux/trelix-linux-x64
           mv release-assets/linux-arm64/trelix release-assets/linux-arm64/trelix-linux-arm64
-          mv release-assets/windows-arm64/trelix.exe release-assets/windows-arm64/trelix-windows-arm64.exe
 
       - name: Create GitHub Release with binaries
         uses: softprops/action-gh-release@v2
@@ -242,7 +235,6 @@ jobs:
             release-assets/windows/trelix-windows-x64.exe
             release-assets/linux/trelix-linux-x64
             release-assets/linux-arm64/trelix-linux-arm64
-            release-assets/windows-arm64/trelix-windows-arm64.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

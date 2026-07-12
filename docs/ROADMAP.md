@@ -49,7 +49,7 @@ This roadmap describes planned features, research directions, and long-term visi
 - [x] **Qdrant Cloud integration** — first-class remote vector store with auto-migration ✅ (shipped v2.6.x)
 - [x] **Incremental embedding** — only re-embed changed symbols on partial re-index ✅ (shipped v2.6.x)
 - [x] **Parallel BM25 shard** — FTS5 read-only shards for read-heavy deployments ✅ (shipped v2.6.x)
-- [x] **Binary releases** — single-file executables for Linux ARM64 + Windows ARM64 ✅ (shipped v2.6.x)
+- [x] **Binary releases** — single-file executable for Linux ARM64 ✅ (shipped v2.6.x; Windows ARM64 excluded — tree-sitter-languages/sqlite-vec publish no win_arm64 wheel or sdist)
 
 ---
 
