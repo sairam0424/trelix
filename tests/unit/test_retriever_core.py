@@ -1461,6 +1461,73 @@ class TestRetrieverRunSubqueryLegs:
         retriever.embedder.embed_query.assert_called_once_with("auth function")
 
 
+class TestRetrieverSparseEmbedderThreadSafety:
+    """Concurrent _run_subquery_legs calls must only construct one SparseEmbedder."""
+
+    def test_sparse_embedder_memoized_exactly_once_under_concurrent_subqueries(
+        self, tmp_path: Path
+    ) -> None:
+        import threading
+        import time
+
+        from trelix.retrieval.planner.models import RetrievalStrategy
+
+        retriever = _build_retriever(str(tmp_path))
+        retriever.config.retrieval.sparse_enabled = True
+
+        construct_count = {"n": 0}
+
+        def counting_init(self, *args, **kwargs):
+            construct_count["n"] += 1
+            time.sleep(0.02)  # widen the race window
+            self._model_name = kwargs.get("model_name", "")
+            self._top_k = kwargs.get("top_k", 128)
+            self._model = MagicMock()
+            self._tokenizer = MagicMock()
+            self._lock = threading.Lock()
+
+        # legs=[] so only the sparse leg (gated on cfg.sparse_enabled, not
+        # strategy.legs) runs — vector/bm25/grep stay untouched/unmocked.
+        strategy = RetrievalStrategy(
+            expand_depth=0,
+            legs=[],
+            skip_reranker=True,
+            import_depth=0,
+            import_max_extra=0,
+            import_direction="both",
+            assembly_mode="greedy",
+            rerank_top_n=10,
+        )
+
+        with (
+            patch("trelix.embedder.sparse.SparseEmbedder.__init__", counting_init),
+            patch("trelix.embedder.sparse.SparseEmbedder.embed_query", return_value={}),
+            patch("trelix.retrieval.sparse_search.sparse_search", return_value=[]),
+        ):
+            sub_queries = [
+                SubQuery(
+                    semantic_query=f"query {i}",
+                    hyde_snippet="",
+                    bm25_tokens=[],
+                    grep_hints=[],
+                    file_hints=[],
+                )
+                for i in range(10)
+            ]
+            threads = [
+                threading.Thread(target=retriever._run_subquery_legs, args=(sq, strategy))
+                for sq in sub_queries
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert construct_count["n"] == 1, (
+            f"Expected SparseEmbedder constructed exactly once, got {construct_count['n']}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # TestRetrieverVectorSearch — _vector_search
 # ---------------------------------------------------------------------------
