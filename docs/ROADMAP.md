@@ -1,13 +1,13 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 2.7.1 (current) | **Next:** 3.0.0
+> **Version:** 2.7.2 (current) | **Next:** 3.0.0
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
 ---
 
-## ✅ Shipped (v2.0 – v2.7.1)
+## ✅ Shipped (v2.0 – v2.7.2)
 
 | Version | Feature |
 |---------|---------|
@@ -20,6 +20,7 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.6.0 | Incremental Louvain, Short-query lexical fallback, XTR reranker (experimental), GroUSE synthesis eval harness |
 | v2.7.0 | Watch bridge wired ✅, DB index ✅, AdaptiveRouter fix ✅, Cross-repo symbols ✅, Diff embeddings ✅, Streaming indexing ✅, VS Code extension ✅, GitHub App PR review ✅ |
 | v2.7.1 | Release pipeline asset-collision fix, Linux binary in CI, reverted unjustified dependency floors, trelix-mcp tests wired into CI, doc/env-var corrections |
+| v2.7.2 | Qdrant Cloud gRPC/timeout readiness, incremental per-symbol embedding on partial re-index, opt-in parallel BM25 read pool, Linux ARM64 binary release, SparseEmbedder/MCP-stdout/BM25 concurrency race fixes, FK-repoint on partial re-index, qdrant-client 1.18 migration |
 
 ---
 

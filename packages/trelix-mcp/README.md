@@ -150,6 +150,17 @@ TRELIX_LLM_PROVIDER=litellm
 TRELIX_LLM_MODEL=bedrock/claude-3-5-sonnet
 ```
 
+### Resource subscription limits
+
+```bash
+# Max concurrent resource subscriptions across all clients — caps unbounded
+# growth from a client that subscribes repeatedly without ever unsubscribing
+TRELIX_MCP_MAX_SUBSCRIBERS=1000
+
+# Auto-evict a subscription after this many seconds of inactivity
+TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
+```
+
 ## Tools
 
 | Tool | Description |
@@ -182,6 +193,8 @@ unsubscribe_resource(subscription_id="my-sub-001")
 ```
 
 The `resources.subscribe` capability is advertised in server capabilities. URIs follow the scheme `trelix://repo/{repo_path}/manifest`. The `notify_file_changed()` hook (wired into `FileWatcher._do_reindex` since v2.7.0) fires per-URI notifications with the `subscriptionId` in `params._meta`.
+
+Subscriptions are capped and TTL'd by default — see [Resource subscription limits](#resource-subscription-limits) (`TRELIX_MCP_MAX_SUBSCRIBERS`, default `1000`; `TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS`, default `3600`). Subscriptions older than the TTL are swept on the next registry access. If the registry is at capacity, `subscribe_resource` does not raise — it returns `{"subscribed": false, "uri": ..., "subscription_id": ..., "error": "..."}` so callers can handle rejection gracefully.
 
 ## Pagination
 
