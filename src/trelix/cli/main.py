@@ -619,7 +619,15 @@ def migrate_vectors(
         ),
     ] = False,
 ) -> None:
-    """Migrate embeddings from SQLite to Qdrant (or another backend)."""
+    """Migrate embeddings from SQLite to Qdrant (or another backend).
+
+    Migrates all embeddings stored in the SQLite chunk_embeddings table:
+    primary chunk embeddings, multi-granularity sub-chunk embeddings, and
+    RAPTOR-style file-summary embeddings. All three share the same
+    sqlite-vec vec0 table (distinguished only by an id-sentinel convention —
+    see SQLiteVectorStore), so a single unfiltered read-and-upsert loop
+    already carries every source.
+    """
     _setup_logging(False)
 
     import sqlite3

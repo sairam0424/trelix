@@ -7,7 +7,7 @@ packages = ["src/trelix"]
 
 [project]
 name = "trelix"
-version = "2.7.1"
+version = "2.7.2"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -86,7 +86,7 @@ sparse = [
     "torch>=2.2.0",
 ]
 qdrant = [
-    "qdrant-client>=1.9.0",           # Qdrant HNSW vector backend (optional)
+    "qdrant-client>=1.9.0,<2.0.0",     # Qdrant HNSW vector backend (optional)
 ]
 lance = [
     "lancedb>=0.6.0",                  # LanceDB ARM-native HNSW vector backend (optional)

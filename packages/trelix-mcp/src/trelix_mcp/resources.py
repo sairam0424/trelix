@@ -14,6 +14,7 @@ Resource types implemented:
 All handlers return JSON strings. Never raise — return {"error": "..."} on failure.
 All log output goes to stderr via the module logger only.
 """
+
 from __future__ import annotations
 
 import json

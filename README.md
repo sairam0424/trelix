@@ -159,6 +159,16 @@ trelix watch ./my-repo
 
 ## What's New
 
+### v2.7.2 — Scale & Concurrency Hardening
+
+| Phase | Feature | Activation | Key API |
+|-------|---------|------------|---------|
+| **Store** | Qdrant Cloud readiness — gRPC transport + configurable client timeout | `QDRANT_PREFER_GRPC=true`, `QDRANT_TIMEOUT=30.0` | `QdrantVectorStore(prefer_grpc=..., timeout=...)`, `query_points()` |
+| **Indexing** | Incremental per-symbol embedding — unchanged symbols skip re-embed on partial re-index | auto (content-hash diff, no config needed) | `content_hash` column, `Indexer._insert_one()` |
+| **Retrieval** | Parallel BM25 read pool — dedicated read-only connections for concurrent FTS5 reads | `TRELIX_STORE_BM25_READ_POOL_SIZE=4` (default `0`, opt-in) | `ReadOnlyConnectionPool`, `Database.enable_bm25_read_pool()` |
+| **Distribution** | Linux ARM64 standalone binary | download `trelix-linux-arm64` from GitHub Releases | `make binary` (PyInstaller) |
+| **Reliability** | Concurrency-safety hardening across vector/BM25/grep/sparse retrieval legs | auto (internal, no user action needed) | `Database._conn_lock` |
+
 ### v2.7.0 — Agentic Integration & Streaming
 
 | Phase | Feature | Activation | Key API |

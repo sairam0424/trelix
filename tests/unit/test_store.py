@@ -873,3 +873,76 @@ class TestFilesRelPathIndex:
         assert "idx_files_rel_path" in plan_text, (
             f"Query plan does not use idx_files_rel_path: {plan_text}"
         )
+
+
+# ---------------------------------------------------------------------------
+# content_hash column (v2.6.x Plan B, Task B-1)
+# ---------------------------------------------------------------------------
+
+
+class TestSymbolContentHash:
+    def test_content_hash_column_exists_after_init_schema(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "test.db")
+        db.init_schema()
+        rows = db._conn.execute("PRAGMA table_info(symbols)").fetchall()
+        column_names = [r[1] for r in rows]
+        assert "content_hash" in column_names
+
+    def test_insert_symbol_computes_content_hash(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "test.db")
+        db.init_schema()
+        file_id = db.upsert_file(
+            IndexedFile(
+                path="/repo/foo.py",
+                rel_path="foo.py",
+                language=Language.PYTHON,
+                hash="abc",
+                size_bytes=10,
+            )
+        )
+        symbol = Symbol(
+            file_id=file_id,
+            name="foo",
+            qualified_name="foo",
+            kind=SymbolKind.FUNCTION,
+            line_start=1,
+            line_end=2,
+            signature="def foo():",
+            body="def foo():\n    pass",
+        )
+        symbol_id = db.insert_symbol(symbol)
+        row = db._conn.execute(
+            "SELECT content_hash FROM symbols WHERE id = ?", (symbol_id,)
+        ).fetchone()
+        assert row[0] != "", "content_hash must be populated, not left as the default empty string"
+        assert len(row[0]) == 64, "expected a sha256 hex digest (64 chars)"
+
+    def test_get_symbol_hashes_for_file_returns_qualified_name_to_hash_map(
+        self, tmp_path: Path
+    ) -> None:
+        db = Database(tmp_path / "test.db")
+        db.init_schema()
+        file_id = db.upsert_file(
+            IndexedFile(
+                path="/repo/foo.py",
+                rel_path="foo.py",
+                language=Language.PYTHON,
+                hash="abc",
+                size_bytes=10,
+            )
+        )
+        db.insert_symbol(
+            Symbol(
+                file_id=file_id,
+                name="foo",
+                qualified_name="foo",
+                kind=SymbolKind.FUNCTION,
+                line_start=1,
+                line_end=2,
+                signature="def foo():",
+                body="def foo(): pass",
+            )
+        )
+        hashes = db.get_symbol_hashes_for_file(file_id)
+        assert "foo" in hashes
+        assert len(hashes["foo"]) == 64

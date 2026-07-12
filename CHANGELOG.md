@@ -6,6 +6,79 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [2.7.2] — 2026-07-12
+
+### Added
+- **Qdrant Cloud readiness** — `QdrantVectorStore` now accepts `prefer_grpc` and
+  `timeout` options, wired through `StoreConfig.qdrant_prefer_grpc`
+  (`QDRANT_PREFER_GRPC`, default `false`) and `StoreConfig.qdrant_timeout`
+  (`QDRANT_TIMEOUT`, default `10.0`). Enables gRPC transport (port 6334) and
+  longer request timeouts for Qdrant Cloud's higher network latency.
+- **Incremental per-symbol embedding on partial re-index** — new
+  `symbols.content_hash` column (`sha256(signature + body)`, backfilled via an
+  `ALTER TABLE ... ADD COLUMN` migration guard). `Indexer._insert_one` now diffs
+  each parsed symbol's `(qualified_name, content_hash)` against the stored row;
+  unchanged symbols skip delete/re-chunk/re-embed entirely and keep their
+  existing chunk rows and vectors. Only changed or new symbols flow through the
+  delete → re-insert → chunk → embed path.
+- **Opt-in parallel BM25 read pool** — new `ReadOnlyConnectionPool`
+  (`src/trelix/store/read_pool.py`) opens N read-only SQLite connections
+  (`mode=ro`, `PRAGMA query_only = ON`) for concurrent FTS5 reads.
+  `TRELIX_STORE_BM25_READ_POOL_SIZE` (default `0`, disabled) — when set > 0,
+  `Retriever.__init__` calls `Database.enable_bm25_read_pool()` automatically.
+- **Linux ARM64 binary releases** — `build-binaries.yml` and `release.yml`
+  matrices add `ubuntu-24.04-arm` (artifact `trelix-linux-arm64`);
+  `docs/INSTALLATION_GUIDE.md` gained a "Linux ARM64" install section.
+
+### Fixed
+- **`SparseEmbedder` TOCTOU race** — `_load()` checked `self._model is not None`
+  before acquiring the lock, so two threads could both pass the check and
+  double-load the model concurrently. Fixed with double-checked locking:
+  `self._model is not None` is re-checked again inside `self._lock`.
+- **MCP stdout notification write race** — concurrent `send_resource_notification()`
+  calls from different threads could interleave partial JSON-RPC lines on
+  stdout. Added a module-level `_stdout_lock` guarding the `sys.stdout.write()` +
+  `flush()` pair.
+- **`SubscriptionRegistry` unbounded growth** — subscriptions were never capped
+  or expired, so a misbehaving client could grow the registry indefinitely.
+  Added `max_subscribers` (`TRELIX_MCP_MAX_SUBSCRIBERS`, default `1000`)
+  enforced via a new `SubscriptionLimitExceeded` exception, and `ttl_seconds`
+  (`TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS`, default `3600`) swept by
+  `_evict_expired_locked()` before every registry operation. The
+  `subscribe_resource` tool now catches the limit error and returns a soft
+  `{"subscribed": false, ...}` payload instead of raising.
+- **Silent `parent_id`/`callee_id`/`type_edges` corruption on partial re-index** —
+  `symbols.parent_id`, `calls.callee_id`, and `type_edges.to_symbol_id` are all
+  `ON DELETE SET NULL`, so deleting a changed symbol's old row silently nulled
+  these links on any other row (including unchanged ones) that pointed at it.
+  Added `Database.get_children_with_stale_parent`/`repoint_parent_ids`,
+  `get_calls_referencing_symbols`/`repoint_call_callee_ids`, and
+  `get_type_edges_referencing_symbols`/`repoint_type_edge_targets`; the indexer
+  snapshots stale links before the cascading delete and repoints them to the
+  replacement symbol's new id afterward.
+- **Incomplete BM25 concurrency lock** — `Database._conn`
+  (`check_same_thread=False`) is not safe for concurrent statement execution
+  from multiple threads despite that flag; the grep, sparse, and vector
+  retrieval legs all hydrate through the same shared connection from sibling
+  `ThreadPoolExecutor` threads. Added `self._conn_lock` and applied it to
+  `bm25_search()`'s non-pool fallback, `get_symbol_with_file()`,
+  `get_first_chunk_for_symbol()`, `get_chunk_with_context()`,
+  `grep_search.py`'s `_name_search`/`_body_search`, and a new locked
+  `Database.get_chunk_by_id()` helper for `sparse_search.py`'s raw chunk
+  lookup. Verified via a 60-thread x 10-iteration x 3-leg stress test with
+  zero errors.
+- **`qdrant-client` 1.18 API migration** — `QdrantVectorStore` used the
+  deprecated `search()` method; migrated to `query_points()`. Pinned
+  `qdrant-client>=1.9.0,<2.0.0` in `pyproject.toml` to prevent an unguarded
+  2.x upgrade from breaking the client again.
+
+### Changed
+- **Windows ARM64 binary intentionally not shipped** — `windows-11-arm` was
+  briefly added to both binary-build matrices, then reverted:
+  `tree-sitter-languages` and `sqlite-vec` publish no `win_arm64` wheel or
+  sdist, so `pip install` fails before the build ever runs. Linux ARM64 ships;
+  Windows ARM64 does not.
+
 ## [2.7.1] — 2026-07-10
 
 ### Fixed
@@ -616,7 +689,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.7.1...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.7.2...HEAD
+[2.7.2]: https://github.com/sairam0424/trelix/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/sairam0424/trelix/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/sairam0424/trelix/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/sairam0424/trelix/compare/v2.5.0...v2.6.0

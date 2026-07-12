@@ -68,28 +68,34 @@ def _name_search(
     path_filter: str | None,
     limit: int,
 ) -> list[tuple[int, float]]:
-    """Exact + prefix match on symbol.name — uses DB index."""
-    conn = db._conn
-    if path_filter:
-        rows = conn.execute(
-            """
-            SELECT s.id FROM symbols s
-            JOIN files f ON s.file_id = f.id
-            WHERE (s.name = ? OR s.qualified_name = ? OR s.name LIKE ?)
-              AND f.rel_path LIKE ?
-            LIMIT ?
-            """,
-            (name, name, f"{name}%", f"{path_filter}%", limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT id FROM symbols
-            WHERE name = ? OR qualified_name = ? OR name LIKE ?
-            LIMIT ?
-            """,
-            (name, name, f"{name}%", limit),
-        ).fetchall()
+    """Exact + prefix match on symbol.name — uses DB index.
+
+    Locked: reachable concurrently from the same sub-query ThreadPoolExecutor
+    as bm25_search()'s hydration calls whenever a strategy's legs include
+    both 'grep' and 'bm25' — same shared db._conn hazard as
+    get_symbol_with_file().
+    """
+    with db._conn_lock:
+        if path_filter:
+            rows = db._conn.execute(
+                """
+                SELECT s.id FROM symbols s
+                JOIN files f ON s.file_id = f.id
+                WHERE (s.name = ? OR s.qualified_name = ? OR s.name LIKE ?)
+                  AND f.rel_path LIKE ?
+                LIMIT ?
+                """,
+                (name, name, f"{name}%", f"{path_filter}%", limit),
+            ).fetchall()
+        else:
+            rows = db._conn.execute(
+                """
+                SELECT id FROM symbols
+                WHERE name = ? OR qualified_name = ? OR name LIKE ?
+                LIMIT ?
+                """,
+                (name, name, f"{name}%", limit),
+            ).fetchall()
 
     return [(r[0], 1.0) for r in rows]
 
@@ -107,8 +113,12 @@ def _body_search(
     1. Try FTS5 first: fast index lookup, capped at 500 rows.
     2. If FTS5 returns nothing (e.g. regex/partial token not in index),
        fall back to a LIMIT-2000 scan so memory exposure is bounded.
+
+    Locked: reachable concurrently from the same sub-query ThreadPoolExecutor
+    as bm25_search()'s hydration calls — same shared db._conn hazard as
+    get_symbol_with_file(). Only the two conn.execute() calls are locked;
+    the in-memory match_fn loop below runs outside the critical section.
     """
-    conn = db._conn
     _FTS_LIMIT = 500
     _SCAN_LIMIT = 2000
 
@@ -122,54 +132,55 @@ def _body_search(
     else:
         match_fn = lambda body: pattern in (body or "")  # noqa: E731
 
-    # --- 1. FTS5 path (bounded) ---
-    # FTS5 MATCH uses its own tokenizer so it won't match all regex patterns,
-    # but it's a great pre-filter for plain-text queries.
-    try:
-        if path_filter:
-            rows = conn.execute(
-                """
-                SELECT s.id, s.body FROM symbols s
-                JOIN symbols_fts f ON s.id = f.rowid
-                JOIN files fi ON s.file_id = fi.id
-                WHERE symbols_fts MATCH ?
-                  AND fi.rel_path LIKE ?
-                LIMIT ?
-                """,
-                (pattern, f"{path_filter}%", _FTS_LIMIT),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT s.id, s.body FROM symbols s
-                JOIN symbols_fts f ON s.id = f.rowid
-                WHERE symbols_fts MATCH ?
-                LIMIT ?
-                """,
-                (pattern, _FTS_LIMIT),
-            ).fetchall()
-    except Exception:
-        # FTS5 MATCH will raise if the query string is syntactically invalid
-        # (e.g. bare regex operators). Treat as no FTS5 results.
-        rows = []
+    with db._conn_lock:
+        # --- 1. FTS5 path (bounded) ---
+        # FTS5 MATCH uses its own tokenizer so it won't match all regex
+        # patterns, but it's a great pre-filter for plain-text queries.
+        try:
+            if path_filter:
+                rows = db._conn.execute(
+                    """
+                    SELECT s.id, s.body FROM symbols s
+                    JOIN symbols_fts f ON s.id = f.rowid
+                    JOIN files fi ON s.file_id = fi.id
+                    WHERE symbols_fts MATCH ?
+                      AND fi.rel_path LIKE ?
+                    LIMIT ?
+                    """,
+                    (pattern, f"{path_filter}%", _FTS_LIMIT),
+                ).fetchall()
+            else:
+                rows = db._conn.execute(
+                    """
+                    SELECT s.id, s.body FROM symbols s
+                    JOIN symbols_fts f ON s.id = f.rowid
+                    WHERE symbols_fts MATCH ?
+                    LIMIT ?
+                    """,
+                    (pattern, _FTS_LIMIT),
+                ).fetchall()
+        except Exception:
+            # FTS5 MATCH will raise if the query string is syntactically
+            # invalid (e.g. bare regex operators). Treat as no FTS5 results.
+            rows = []
 
-    # --- 2. Bounded fallback scan if FTS5 found nothing ---
-    if not rows:
-        if path_filter:
-            rows = conn.execute(
-                """
-                SELECT s.id, s.body FROM symbols s
-                JOIN files f ON s.file_id = f.id
-                WHERE f.rel_path LIKE ?
-                LIMIT ?
-                """,
-                (f"{path_filter}%", _SCAN_LIMIT),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, body FROM symbols LIMIT ?",
-                (_SCAN_LIMIT,),
-            ).fetchall()
+        # --- 2. Bounded fallback scan if FTS5 found nothing ---
+        if not rows:
+            if path_filter:
+                rows = db._conn.execute(
+                    """
+                    SELECT s.id, s.body FROM symbols s
+                    JOIN files f ON s.file_id = f.id
+                    WHERE f.rel_path LIKE ?
+                    LIMIT ?
+                    """,
+                    (f"{path_filter}%", _SCAN_LIMIT),
+                ).fetchall()
+            else:
+                rows = db._conn.execute(
+                    "SELECT id, body FROM symbols LIMIT ?",
+                    (_SCAN_LIMIT,),
+                ).fetchall()
 
     matched: list[tuple[int, float]] = []
     for symbol_id, body in rows:

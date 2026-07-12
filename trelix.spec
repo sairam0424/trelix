@@ -4,7 +4,7 @@
 # Build:
 #   pyinstaller trelix.spec --clean --noconfirm
 #
-# Output: dist/trelix  (macOS arm64 / Linux x64 / Windows x64)
+# Output: dist/trelix  (macOS arm64 / Linux x64 / Linux arm64 / Windows x64 / Windows arm64)
 #
 # NOTE: sentence_transformers, torch, scipy, and sklearn are intentionally
 # excluded. The binary ships without the local provider to keep size at

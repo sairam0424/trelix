@@ -1,13 +1,13 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 2.7.1 (current) | **Next:** 3.0.0
+> **Version:** 2.7.2 (current) | **Next:** 3.0.0
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
 ---
 
-## ✅ Shipped (v2.0 – v2.7.1)
+## ✅ Shipped (v2.0 – v2.7.2)
 
 | Version | Feature |
 |---------|---------|
@@ -20,14 +20,15 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.6.0 | Incremental Louvain, Short-query lexical fallback, XTR reranker (experimental), GroUSE synthesis eval harness |
 | v2.7.0 | Watch bridge wired ✅, DB index ✅, AdaptiveRouter fix ✅, Cross-repo symbols ✅, Diff embeddings ✅, Streaming indexing ✅, VS Code extension ✅, GitHub App PR review ✅ |
 | v2.7.1 | Release pipeline asset-collision fix, Linux binary in CI, reverted unjustified dependency floors, trelix-mcp tests wired into CI, doc/env-var corrections |
+| v2.7.2 | Qdrant Cloud gRPC/timeout readiness, incremental per-symbol embedding on partial re-index, opt-in parallel BM25 read pool, Linux ARM64 binary release, SparseEmbedder/MCP-stdout/BM25 concurrency race fixes, FK-repoint on partial re-index, qdrant-client 1.18 migration |
 
 ---
 
 ## 🐛 v2.5.1 — Backlog (bugs / hardening from v2.5.0)
 
-- [ ] **SparseEmbedder TOCTOU under parallel multi-query** — add `threading.Lock` around lazy-init path hit by `ThreadPoolExecutor` workers
-- [ ] **`send_resource_notification` stdout isolation** — fix asyncio transport conflict when FastMCP writes notifications to stdout concurrently
-- [ ] **`SubscriptionRegistry` max-subscriber cap / TTL eviction** — unbounded subscription growth; add configurable cap and TTL-based cleanup
+- [x] **SparseEmbedder TOCTOU under parallel multi-query** — add `threading.Lock` around lazy-init path hit by `ThreadPoolExecutor` workers ✅ (shipped v2.5.1)
+- [x] **`send_resource_notification` stdout isolation** — fix asyncio transport conflict when FastMCP writes notifications to stdout concurrently ✅ (shipped v2.5.1)
+- [x] **`SubscriptionRegistry` max-subscriber cap / TTL eviction** — unbounded subscription growth; add configurable cap and TTL-based cleanup ✅ (shipped v2.5.1)
 - [x] **Watch bridge: wire `notify_file_changed` into `FileWatcher._do_reindex` callback** — MCP subscribers not notified after file-change re-index completes ✅ (shipped v2.7.0)
 
 ---
@@ -46,10 +47,10 @@ This roadmap describes planned features, research directions, and long-term visi
 - [x] **Cross-repo symbol resolution** — SCIP-style IDs, FederatedRetriever.resolve_symbol() ✅ (shipped v2.7.0)
 - [x] **Semantic diff embeddings** — CCRep-style before/after body pair embeddings ✅ (shipped v2.7.0)
 - [x] **Streaming indexing** — generator + bounded Queue, try/finally sentinel ✅ (shipped v2.7.0)
-- [ ] **Qdrant Cloud integration** — first-class remote vector store with auto-migration
-- [ ] **Incremental embedding** — only re-embed changed symbols on partial re-index
-- [ ] **Parallel BM25 shard** — FTS5 read-only shards for read-heavy deployments
-- [ ] **Binary releases** — single-file executables for Linux ARM64 + Windows ARM64
+- [x] **Qdrant Cloud integration** — first-class remote vector store with auto-migration ✅ (shipped v2.6.x)
+- [x] **Incremental embedding** — only re-embed changed symbols on partial re-index ✅ (shipped v2.6.x)
+- [x] **Parallel BM25 shard** — FTS5 read-only shards for read-heavy deployments ✅ (shipped v2.6.x)
+- [x] **Binary releases** — single-file executable for Linux ARM64 ✅ (shipped v2.6.x; Windows ARM64 excluded — tree-sitter-languages/sqlite-vec publish no win_arm64 wheel or sdist)
 
 ---
 

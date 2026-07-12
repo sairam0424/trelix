@@ -64,8 +64,12 @@ Settings are resolved in priority order (highest wins):
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_STORE_BACKEND` | `sqlite-vec` | Vector store backend. One of: `sqlite-vec`, `qdrant`, `lance` |
-| `TRELIX_QDRANT_URL` | _(none)_ | Qdrant server URL (e.g. `http://localhost:6333`) — required when backend is `qdrant` |
-| `TRELIX_QDRANT_API_KEY` | _(none)_ | Qdrant API key — required for authenticated Qdrant Cloud instances |
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL — required when backend is `qdrant` |
+| `QDRANT_API_KEY` | _(none)_ | Qdrant API key — required for authenticated Qdrant Cloud instances |
+| `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
+| `QDRANT_PREFER_GRPC` | `false` | Use Qdrant's gRPC port (6334) instead of REST (6333) — lower latency, recommended for Qdrant Cloud |
+| `QDRANT_TIMEOUT` | `10.0` | Client request timeout in seconds — raise for Cloud deployments with higher network latency |
+| `TRELIX_STORE_BM25_READ_POOL_SIZE` | `0` | Number of read-only SQLite connections to pool for parallel `bm25_search()` calls. `0` disables pooling (default — identical to the pre-existing single-connection behavior). When set, `Retriever` automatically calls `Database.enable_bm25_read_pool()` at construction time. |
 
 ### Federation
 
@@ -74,6 +78,13 @@ Settings are resolved in priority order (highest wins):
 | `TRELIX_FEDERATION_ENABLED` | `false` | Enable federated search across multiple indexed repositories |
 | `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Maximum number of parallel workers when querying federated repos |
 | `TRELIX_FEDERATION_CONFIG` | `~/.config/trelix/repos.json` | Path to the federation registry JSON file |
+
+### MCP Server
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_MCP_MAX_SUBSCRIBERS` | `1000` | Maximum number of concurrent resource subscriptions `trelix-mcp` will accept. Re-subscribing an existing `subscription_id` never counts as growth. Once at capacity, `subscribe_resource` returns a soft error (`{"subscribed": false, ...}`) instead of raising. |
+| `TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS` | `3600` | Time-to-live (seconds) for an inactive resource subscription before it is evicted from the `SubscriptionRegistry`. Expired subscriptions are swept lazily on the next registry access. |
 
 ---
 
@@ -164,8 +175,14 @@ TRELIX_RETRIEVAL_AGENTIC=false
 TRELIX_STORE_BACKEND=sqlite-vec
 
 # Qdrant (required when backend=qdrant)
-# TRELIX_QDRANT_URL=http://localhost:6333
-# TRELIX_QDRANT_API_KEY=...
+# QDRANT_URL=http://localhost:6333
+# QDRANT_API_KEY=...
+# QDRANT_COLLECTION=trelix
+# QDRANT_PREFER_GRPC=false
+# QDRANT_TIMEOUT=10.0
+
+# Parallel read-only BM25 connections (0 = disabled, default)
+# TRELIX_STORE_BM25_READ_POOL_SIZE=4
 
 # ---------------------------------------------------------------------------
 # Federation
@@ -174,6 +191,13 @@ TRELIX_STORE_BACKEND=sqlite-vec
 TRELIX_FEDERATION_ENABLED=false
 TRELIX_FEDERATION_MAX_WORKERS=4
 # TRELIX_FEDERATION_CONFIG=~/.config/trelix/repos.json
+
+# ---------------------------------------------------------------------------
+# MCP Server
+# ---------------------------------------------------------------------------
+
+# TRELIX_MCP_MAX_SUBSCRIBERS=1000
+# TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 ```
 
 ---

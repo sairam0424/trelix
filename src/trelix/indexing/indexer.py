@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 import asyncio
+import hashlib
 import logging
 import time
 from collections.abc import Callable
@@ -48,7 +49,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from trelix.core.config import IndexConfig
-from trelix.core.models import IndexedFile
+from trelix.core.models import IndexedFile, Symbol
 from trelix.embedder.base import BaseEmbedder, make_embedder
 from trelix.indexing.chunker import Chunker, ContextualChunker
 from trelix.indexing.parser.base import ParseResult
@@ -633,6 +634,12 @@ class Indexer:
         """
         Insert file + symbols + chunks for one parsed file.
         Returns _PendingChunk list (chunk_id known, embedding still missing).
+
+        Symbols whose qualified_name + content_hash exactly match what's
+        already stored are left untouched (no delete, no re-insert, no
+        re-embed) — only new/changed symbols flow through the rest of this
+        method's insert + chunk + embed pipeline. Symbols removed from the
+        file since the last index are deleted.
         """
         file = pf.file
         parse_result = pf.parse_result
@@ -643,50 +650,164 @@ class Indexer:
         file.id = file_id
 
         # Fix file_id on all symbols + import edges (was placeholder 0 from parallel parse)
-        for symbol in parse_result.symbols:
+        all_symbols = parse_result.symbols
+        for symbol in all_symbols:
             symbol.file_id = file_id
         for edge in parse_result.import_edges:
             edge.file_id = file_id
 
-        # Clean stale vectors + symbols before re-indexing
-        old_chunk_ids = self.db.get_chunk_ids_for_file(file_id)
-        if old_chunk_ids:
-            self.vector_store.delete_batch(old_chunk_ids)
-        self.db.delete_file_symbols(file_id)
+        # ── Diff newly-parsed symbols against what's already stored ──────
+        # Unchanged symbols (same qualified_name + content hash) skip
+        # delete+re-insert+re-embed entirely — only new/changed symbols are
+        # cleaned up and rebuilt below. Symbols that existed before but are
+        # no longer present in the new parse (removed functions/classes)
+        # are deleted too. `changed_local_indices` holds the LOCAL indices
+        # (0-based, into `all_symbols`) of every symbol that needs
+        # (re)inserting — this local-index space is also what
+        # parent_id / caller_id / from_symbol_id are expressed in during
+        # parsing (see module docstring), so it doubles as the filter for
+        # call_edges / type_edges below.
+        existing_hashes = self.db.get_symbol_hashes_for_file(file_id)
+        existing_ids_by_qn: dict[str, int] = {
+            row[0]: row[1]
+            for row in self.db._conn.execute(
+                "SELECT qualified_name, id FROM symbols WHERE file_id = ?", (file_id,)
+            ).fetchall()
+        }
+        changed_local_indices: set[int] = set()
+        unchanged_qualified_names: set[str] = set()
+        for local_idx, symbol in enumerate(all_symbols):
+            new_hash = hashlib.sha256((symbol.signature + symbol.body).encode("utf-8")).hexdigest()
+            if existing_hashes.get(symbol.qualified_name) == new_hash:
+                unchanged_qualified_names.add(symbol.qualified_name)
+            else:
+                changed_local_indices.add(local_idx)
 
-        if not parse_result.symbols:
+        # Every previously-stored symbol EXCEPT the unchanged ones must be
+        # deleted — this covers both "content changed" and "removed" cases.
+        qualified_names_to_delete = [
+            qn for qn in existing_hashes if qn not in unchanged_qualified_names
+        ]
+
+        # symbols.parent_id / calls.callee_id / type_edges.to_symbol_id are
+        # all ON DELETE SET NULL — deleting a changed/removed symbol's old
+        # row below silently NULLs these on any OTHER row that pointed at
+        # it, including unchanged rows this pass never touches. Snapshot
+        # who's pointing at what BEFORE the delete fires, so it can be
+        # re-pointed at the symbol's new row (or correctly left NULL if the
+        # symbol was actually removed, not just changed) once new ids are
+        # known below.
+        old_id_to_qn: dict[int, str] = {
+            existing_ids_by_qn[qn]: qn
+            for qn in qualified_names_to_delete
+            if qn in existing_ids_by_qn
+        }
+        stale_parent_links = self.db.get_children_with_stale_parent(list(old_id_to_qn))
+        stale_callee_links = self.db.get_calls_referencing_symbols(list(old_id_to_qn))
+        stale_type_links = self.db.get_type_edges_referencing_symbols(list(old_id_to_qn))
+
+        if qualified_names_to_delete:
+            old_chunk_ids = self.db.get_chunk_ids_for_symbols(file_id, qualified_names_to_delete)
+            if old_chunk_ids:
+                self.vector_store.delete_batch(old_chunk_ids)
+            self.db.delete_symbols_by_qualified_names(file_id, qualified_names_to_delete)
+
+        # Import edges are file-scoped (not per-symbol), so they are always
+        # fully replaced on re-index — same as the pre-existing behavior of
+        # delete_file_symbols(), which unconditionally cleared imports.
+        self.db._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
+        self.db._conn.commit()
+
+        if not all_symbols:
             stats["files_indexed"] += 1
             return []
 
-        # ── Insert symbols with parent_id remapping ──────────────────────
+        # ── Insert changed/new symbols with parent_id remapping ──────────
+        # Unchanged symbols are NOT re-inserted — they keep their existing
+        # DB row (and hence chunk_id/embedding) untouched. Their existing
+        # DB id is looked up so parent_id / caller_id / from_symbol_id
+        # references FROM changed symbols TO an unchanged symbol still
+        # resolve correctly.
         local_to_db: dict[int, int] = {}
+        changed_or_new_symbols: list[Symbol] = []
         with self.db.transaction():
-            for local_idx, symbol in enumerate(parse_result.symbols):
+            for local_idx, symbol in enumerate(all_symbols):
+                if local_idx not in changed_local_indices:
+                    existing_id = existing_ids_by_qn[symbol.qualified_name]
+                    symbol.id = existing_id
+                    local_to_db[local_idx] = existing_id
+                    continue
                 if symbol.parent_id is not None:
                     symbol.parent_id = local_to_db.get(symbol.parent_id)
                 db_id = self.db.insert_symbol(symbol)
                 symbol.id = db_id
                 local_to_db[local_idx] = db_id
+                changed_or_new_symbols.append(symbol)
 
             if parse_result.import_edges:
                 self.db.insert_imports(parse_result.import_edges)
 
-        # Resolve + store call edges
-        if parse_result.call_edges:
-            self._store_call_edges(parse_result.call_edges, local_to_db)
+        # Repair FK links captured before the delete above nulled them.
+        # A symbol whose qualified_name is in old_id_to_qn but was
+        # content-changed (not removed) has just been re-inserted with a
+        # new id in changed_or_new_symbols — repoint stale references at
+        # that new id. If the qualified_name has no match there, the
+        # symbol was genuinely removed and the NULL from the cascade is
+        # correct as-is.
+        if old_id_to_qn:
+            new_id_by_qn: dict[str, int] = {
+                sym.qualified_name: sym.id for sym in changed_or_new_symbols if sym.id is not None
+            }
 
-        # Remap + store type edges
+            parent_repairs = {
+                child_id: new_id_by_qn[old_id_to_qn[old_parent_id]]
+                for child_id, old_parent_id in stale_parent_links
+                if old_id_to_qn.get(old_parent_id) in new_id_by_qn
+            }
+            self.db.repoint_parent_ids(parent_repairs)
+
+            callee_repairs = {
+                call_id: new_id_by_qn[old_id_to_qn[old_callee_id]]
+                for call_id, old_callee_id in stale_callee_links
+                if old_id_to_qn.get(old_callee_id) in new_id_by_qn
+            }
+            self.db.repoint_call_callee_ids(callee_repairs)
+
+            type_edge_repairs = {
+                edge_id: new_id_by_qn[old_id_to_qn[old_target_id]]
+                for edge_id, old_target_id in stale_type_links
+                if old_id_to_qn.get(old_target_id) in new_id_by_qn
+            }
+            self.db.repoint_type_edge_targets(type_edge_repairs)
+
+        # Resolve + store call edges — only for changed/new callers; edges
+        # from unchanged callers are already correctly stored from a prior
+        # pass and must not be duplicated.
+        if parse_result.call_edges:
+            new_call_edges = [
+                e for e in parse_result.call_edges if e.caller_id in changed_local_indices
+            ]
+            if new_call_edges:
+                self._store_call_edges(new_call_edges, local_to_db)
+
+        # Remap + store type edges — same changed-only filtering as call edges.
         if parse_result.type_edges:
-            self._store_type_edges(parse_result.type_edges, local_to_db)
+            new_type_edges = [
+                e for e in parse_result.type_edges if e.from_symbol_id in changed_local_indices
+            ]
+            if new_type_edges:
+                self._store_type_edges(new_type_edges, local_to_db)
 
         # ── Data-flow extraction (def-use chains) ─────────────────────
         # Optional, zero cost when disabled. Runs after symbols are committed.
+        # Only for changed/new symbols — unchanged symbols' def_use_edges
+        # from a prior pass remain valid and must not be duplicated.
         if self.config.parser.dataflow_enabled:
             try:
                 from trelix.analysis.defuse import DataFlowExtractor
 
                 extractor = DataFlowExtractor()
-                for sym in parse_result.symbols:
+                for sym in changed_or_new_symbols:
                     if sym.id is not None:
                         edges = extractor.extract(sym)
                         if edges:
@@ -696,11 +817,22 @@ class Indexer:
                     "DataFlowExtractor failed for %s (non-fatal): %s", pf.file.rel_path, exc
                 )
 
+        if not changed_or_new_symbols:
+            # Every symbol in the file was unchanged — nothing new to chunk
+            # or embed, but the file's total symbol count is still reported.
+            stats["files_indexed"] += 1
+            stats["symbols_extracted"] += len(all_symbols)
+            return []
+
         # ── Chunk ────────────────────────────────────────────────────────
+        # Only changed/new symbols get new chunks; unchanged symbols keep
+        # their existing chunk rows untouched. parent_symbols spans ALL
+        # symbols (including unchanged ones) so a changed child's chunk
+        # header can still reference an unchanged parent class.
         imports = self.db.get_imports_for_file(file_id)
-        parent_map = {s.id: s for s in parse_result.symbols if s.id is not None}
+        parent_map = {s.id: s for s in all_symbols if s.id is not None}
         chunks = self.chunker.build_chunks(
-            symbols=parse_result.symbols,
+            symbols=changed_or_new_symbols,
             imports=imports,
             file_rel_path=file.rel_path,
             language=file.language.value,
@@ -708,10 +840,10 @@ class Indexer:
         )
 
         stats["files_indexed"] += 1
-        stats["symbols_extracted"] += len(parse_result.symbols)
+        stats["symbols_extracted"] += len(all_symbols)
 
         # Persist context_summary back to DB if ContextualChunker populated it
-        symbols_with_summary = [s for s in parse_result.symbols if s.context_summary and s.id]
+        symbols_with_summary = [s for s in changed_or_new_symbols if s.context_summary and s.id]
         if symbols_with_summary:
             with self.db.transaction():
                 for sym in symbols_with_summary:
@@ -746,7 +878,7 @@ class Indexer:
             summarizer: FileSummarizer = self._file_summarizer  # type: ignore[assignment]
             summary = summarizer.summarize(
                 rel_path=file.rel_path,
-                symbols=parse_result.symbols,
+                symbols=all_symbols,
                 language=file.language,
             )
             if summary:
@@ -774,7 +906,7 @@ class Indexer:
 
                 mg_chunker = MultiGranularityChunker()
                 levels = [Granularity(lvl) for lvl in self.config.chunker.multi_granularity_levels]
-                for sym in parse_result.symbols:
+                for sym in changed_or_new_symbols:
                     if sym.id is None:
                         continue
                     sub_chunks = mg_chunker.extract_sub_chunks(sym, granularities=levels)
@@ -989,8 +1121,6 @@ class Indexer:
             {"status": "ok", "symbols_updated": N, "chunks_updated": N, "ms": N}
             {"status": "error", "error": "<message>"}
         """
-        import hashlib
-
         from trelix.core.models import Language
         from trelix.indexing.walker import EXTENSION_MAP
 

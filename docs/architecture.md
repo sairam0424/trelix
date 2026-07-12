@@ -417,7 +417,8 @@ symbols (id PK, file_id FK→files CASCADE,
          name, qualified_name, kind, line_start, line_end,
          signature, docstring, context_summary,
          decorators TEXT,  -- JSON array
-         is_public BOOL, parent_id FK→symbols SET_NULL, body)
+         is_public BOOL, parent_id FK→symbols SET_NULL, body,
+         content_hash TEXT NOT NULL DEFAULT '')  -- sha256(signature+body); skips re-embed on partial re-index
 
 calls (id PK, caller_id FK→symbols CASCADE,
        callee_name, callee_id FK→symbols SET_NULL,
@@ -480,6 +481,8 @@ idx_def_use_symbol, idx_taint_severity, idx_sparse_token
 - Uses `PRAGMA table_info()` to detect missing columns
 - Uses `CREATE TABLE IF NOT EXISTS` for new tables
 - Is fully idempotent — safe to run on any DB version
+
+`content_hash` on `symbols` follows this same idempotent `PRAGMA table_info()` detection pattern — `ALTER TABLE symbols ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''` only runs if the column isn't already present.
 
 **Migration history** (embedded in code, applied automatically):
 1. `imported_file_id` on imports table (initial)
@@ -605,6 +608,27 @@ class DimensionGuard:
 ```
 
 Called in both `Indexer.__init__` and `Retriever.__init__` — catches provider switches before they produce silent wrong-results.
+
+### Parallel BM25 reads (opt-in)
+
+**Module:** `src/trelix/store/read_pool.py`
+
+```python
+class ReadOnlyConnectionPool:
+    def __init__(self, db_path: Path, pool_size: int = 4) -> None
+    # Opens `pool_size` separate mode=ro SQLite connections, PRAGMA query_only=ON,
+    # each check_same_thread=False, held in a queue.Queue
+
+    def acquire(self) -> Iterator[sqlite3.Connection]  # @contextmanager, blocks until a conn is free
+    def close_all(self) -> None
+```
+
+Wired via `Database.enable_bm25_read_pool(pool_size)` — no-op if `pool_size <= 0`. `Retriever.__init__` calls it automatically when `config.store.bm25_read_pool_size > 0`.
+
+- **Disabled (default, `bm25_read_pool_size=0`)**: `bm25_search()` uses the single shared writer connection, guarded by `Database._conn_lock`.
+- **Enabled**: `bm25_search()` draws a dedicated read-only connection from the pool instead, allowing true parallel FTS5 reads across the sub-query `ThreadPoolExecutor` legs.
+
+Env var: `TRELIX_STORE_BM25_READ_POOL_SIZE` (default `0`, disabled).
 
 ---
 
