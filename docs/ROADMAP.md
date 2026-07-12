@@ -25,9 +25,9 @@ This roadmap describes planned features, research directions, and long-term visi
 
 ## 🐛 v2.5.1 — Backlog (bugs / hardening from v2.5.0)
 
-- [ ] **SparseEmbedder TOCTOU under parallel multi-query** — add `threading.Lock` around lazy-init path hit by `ThreadPoolExecutor` workers
-- [ ] **`send_resource_notification` stdout isolation** — fix asyncio transport conflict when FastMCP writes notifications to stdout concurrently
-- [ ] **`SubscriptionRegistry` max-subscriber cap / TTL eviction** — unbounded subscription growth; add configurable cap and TTL-based cleanup
+- [x] **SparseEmbedder TOCTOU under parallel multi-query** — add `threading.Lock` around lazy-init path hit by `ThreadPoolExecutor` workers ✅ (shipped v2.5.1)
+- [x] **`send_resource_notification` stdout isolation** — fix asyncio transport conflict when FastMCP writes notifications to stdout concurrently ✅ (shipped v2.5.1)
+- [x] **`SubscriptionRegistry` max-subscriber cap / TTL eviction** — unbounded subscription growth; add configurable cap and TTL-based cleanup ✅ (shipped v2.5.1)
 - [x] **Watch bridge: wire `notify_file_changed` into `FileWatcher._do_reindex` callback** — MCP subscribers not notified after file-change re-index completes ✅ (shipped v2.7.0)
 
 ---

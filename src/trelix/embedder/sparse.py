@@ -15,6 +15,7 @@ Requires: pip install trelix[sparse]  (installs transformers + torch)
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 logger = logging.getLogger("trelix.embedder.sparse")
@@ -52,25 +53,36 @@ class SparseEmbedder:
         self._top_k = top_k
         self._model: Any = None
         self._tokenizer: Any = None
+        self._lock = threading.Lock()
 
     def _load(self) -> bool:
-        """Lazy-load model and tokenizer. Returns True if successful."""
+        """Lazy-load model and tokenizer. Returns True if successful.
+
+        Thread-safe via double-checked locking: the outer check avoids lock
+        contention on the common already-loaded path; the inner re-check
+        (held under self._lock) closes the TOCTOU race where two threads
+        could otherwise both observe self._model is None and both call
+        from_pretrained concurrently.
+        """
         if self._model is not None:
             return True
         if not _TORCH_AVAILABLE:
             logger.debug("SparseEmbedder: torch/transformers not installed")
             return False
-        try:
-            from transformers import AutoModelForMaskedLM, AutoTokenizer
+        with self._lock:
+            if self._model is not None:  # re-check inside the lock
+                return True
+            try:
+                from transformers import AutoModelForMaskedLM, AutoTokenizer
 
-            self._tokenizer = AutoTokenizer.from_pretrained(self._model_name)
-            self._model = AutoModelForMaskedLM.from_pretrained(self._model_name)
-            self._model.eval()
-            logger.info("SparseEmbedder loaded: %s", self._model_name)
-            return True
-        except Exception as exc:
-            logger.warning("SparseEmbedder failed to load %s: %s", self._model_name, exc)
-            return False
+                self._tokenizer = AutoTokenizer.from_pretrained(self._model_name)
+                self._model = AutoModelForMaskedLM.from_pretrained(self._model_name)
+                self._model.eval()
+                logger.info("SparseEmbedder loaded: %s", self._model_name)
+                return True
+            except Exception as exc:
+                logger.warning("SparseEmbedder failed to load %s: %s", self._model_name, exc)
+                return False
 
     def embed(self, texts: list[str]) -> list[dict[int, float]]:
         """
