@@ -140,51 +140,9 @@ trelix watch ./my-repo
 
 ## What's New
 
-### v2.7.2 — Scale & Concurrency Hardening
+**v2.7.2 — Scale & Concurrency Hardening:** Qdrant Cloud readiness (gRPC + configurable timeout), incremental per-symbol embedding on partial re-index, an opt-in parallel BM25 read pool, Linux ARM64 binaries, and 5 concurrency/correctness fixes.
 
-| Phase | Feature | Activation | Key API |
-|-------|---------|------------|---------|
-| **Store** | Qdrant Cloud readiness — gRPC transport + configurable client timeout | `QDRANT_PREFER_GRPC=true`, `QDRANT_TIMEOUT=30.0` | `QdrantVectorStore(prefer_grpc=..., timeout=...)`, `query_points()` |
-| **Indexing** | Incremental per-symbol embedding — unchanged symbols skip re-embed on partial re-index | auto (content-hash diff, no config needed) | `content_hash` column, `Indexer._insert_one()` |
-| **Retrieval** | Parallel BM25 read pool — dedicated read-only connections for concurrent FTS5 reads | `TRELIX_STORE_BM25_READ_POOL_SIZE=4` (default `0`, opt-in) | `ReadOnlyConnectionPool`, `Database.enable_bm25_read_pool()` |
-| **Distribution** | Linux ARM64 standalone binary | download `trelix-linux-arm64` from GitHub Releases | `make binary` (PyInstaller) |
-| **Reliability** | Concurrency-safety hardening across vector/BM25/grep/sparse retrieval legs | auto (internal, no user action needed) | `Database._conn_lock` |
-
-Plus 5 concurrency/correctness fixes (TOCTOU race, MCP stdout race, subscription-registry unbounded growth, FK-cascade corruption on partial re-index, qdrant-client 1.18 migration) — full detail in [CHANGELOG.md](CHANGELOG.md#272--2026-07-12).
-
-### v2.7.0 — Agentic Integration & Streaming
-
-| Phase | Feature | Activation | Key API |
-|-------|---------|------------|---------|
-| **Phase 1** | MCP watch bridge | auto (wired into FileWatcher) | `notify_file_changed()` |
-| **Phase 1** | DB index on `files.rel_path` | auto | `idx_files_rel_path` |
-| **Phase 1** | AdaptiveRouter retriever config | auto | `AdaptiveRouter(retriever_config=...)` |
-| **Phase 2** | Cross-repo symbol resolution | always available | `make_scip_symbol_id()`, `resolve_symbol()` |
-| **Phase 2** | Semantic diff embeddings | library class, not yet CLI-wired | `DiffEmbedder`, `diff_chunks` table |
-| **Phase 2** | Streaming indexing | `TRELIX_INDEXER_STREAMING=true` | `_iter_files()`, bounded Queue |
-| **Phase 3** | VS Code extension | `cd workspace-vscode && npm install && npm run build` | `trelix.search`, `trelix.ask` via MCP stdio |
-| **Phase 3** | GitHub App PR review | auto (`.github/workflows/trelix-review.yml`) | Check annotations, auto-comments |
-
-### v2.2.0 — Intelligence Upgrades
-
-| Feature | Enable | What it does |
-|---------|--------|--------------|
-| Agentic ReAct loop | `TRELIX_RETRIEVAL_AGENTIC=true` | Multi-turn retrieve→observe→re-retrieve with self-correction |
-| Data-flow analysis | `TRELIX_PARSER_DATAFLOW=true` | Def-use chains per function via tree-sitter AST walk |
-| Taint analysis | `pip install trelix[taint]` then `trelix taint .` | Semgrep source→sink flow detection |
-| Sparse+dense hybrid | `TRELIX_RETRIEVAL_SPARSE=true` | SPLADE-Code 6th RRF leg alongside BM25 |
-| Multi-granularity | `TRELIX_CHUNKER_MULTI_GRANULARITY=true` | Block+statement level indexing as 7th RRF leg |
-
-### v2.1.0 — Beast-Mode Retrieval
-
-| Category | Upgrade | Activation |
-|----------|---------|------------|
-| **Retrieval** | File-summary 5th retrieval leg | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true` |
-| **Retrieval** | HyDE query expansion | `TRELIX_RETRIEVAL_HYDE_FALLBACK=true` |
-| **Retrieval** | FLARE confidence-gated re-retrieval | `TRELIX_RETRIEVAL_FLARE=true` |
-| **Retrieval** | PageRank symbol boost | `TRELIX_RETRIEVAL_PAGERANK_BOOST=true` |
-| **Observability** | Query telemetry | `TRELIX_TELEMETRY_ENABLED=true` |
-| **Eval** | CoIR eval harness | `trelix eval --golden <file>` |
+Full version history: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -285,47 +243,7 @@ trelix eval ./my-repo --golden eval/golden.jsonl
 
 ## Troubleshooting
 
-### sqlite-vec not loading (macOS)
-```
-ImportError: sqlite-vec requires SQLite ≥ 3.45 with loadable extensions
-```
-macOS ships with an old SQLite that disables loadable extensions. Fix:
-```bash
-brew install sqlite
-# Then reinstall trelix against the Homebrew SQLite:
-LDFLAGS="-L/opt/homebrew/opt/sqlite/lib" pip install --force-reinstall "trelix[local]"
-```
-
-### Bedrock: ValidationException on inference profile
-```
-ValidationException: Invocation of model ID anthropic.claude-sonnet-4-6 with on-demand throughput isn't supported
-```
-Bedrock requires **inference profile IDs** (us.* prefix), not bare model IDs:
-```bash
-TRELIX_LLM_BEDROCK_PRIMARY_MODEL=us.anthropic.claude-sonnet-4-6
-TRELIX_LLM_BEDROCK_FALLBACK_MODEL=us.anthropic.claude-haiku-4-5-20251001-v1:0
-```
-
-### Bedrock Cohere embeddings: ValidationException on large chunks
-```
-ValidationException: expected maxLength: 2048
-```
-Bedrock's Cohere endpoint rejects texts >2048 characters before truncation occurs. trelix pre-truncates automatically since v0.7.1. If you see this on v0.7.0, upgrade:
-```bash
-pip install --upgrade "trelix[bedrock]"
-```
-
-### tree-sitter FutureWarning spam
-Language deprecation warnings from tree-sitter 0.21.x are not yet suppressed automatically. Suppress them with:
-```bash
-PYTHONWARNINGS=ignore::FutureWarning trelix index .
-```
-
-### HuggingFace token warning on local embedder
-The local embedder uses sentence-transformers which checks for HF_TOKEN. This is harmless — models are cached locally after first download. Suppress with:
-```bash
-HF_HUB_DISABLE_SYMLINKS_WARNING=1 trelix index .
-```
+Common issues: sqlite-vec load failures on macOS, Bedrock `ValidationException`s, tree-sitter warning spam, dependency conflicts. Full guide with a diagnostic checklist: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ---
 
