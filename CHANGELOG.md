@@ -354,6 +354,29 @@ None — all new features are opt-in via config flags.
 
 ## [2.2.0] — 2026-07-01
 
+### Overview
+Intelligence upgrades: an agentic ReAct retrieval loop, static analysis (data-flow
+and taint), and two new hybrid-search legs (sparse SPLADE-Code, multi-granularity
+chunking). All opt-in via config flags that default to `False` — zero regression
+when disabled.
+
+### Added
+- **Agentic ReAct loop** (`agentic_enabled`, `TRELIX_RETRIEVAL_AGENTIC=true`) —
+  multi-turn retrieve → observe → re-retrieve loop with self-correction, replacing
+  the single-shot Retriever → Synthesizer chain when enabled.
+- **Data-flow analysis** (`dataflow_enabled`, `TRELIX_PARSER_DATAFLOW=true`) —
+  per-function def-use chains extracted via a tree-sitter AST walk, stored in the
+  `def_use_edges` table.
+- **Taint analysis** (`taint_enabled`; `pip install trelix[taint]` then
+  `trelix taint .`) — Semgrep-backed source→sink flow detection, findings stored
+  in `taint_flows`.
+- **Multi-granularity indexing** (`multi_granularity_enabled`,
+  `TRELIX_CHUNKER_MULTI_GRANULARITY=true`) — block- and statement-level
+  sub-chunks indexed as a 6th RRF leg alongside symbol-level chunks.
+- **Sparse+dense hybrid retrieval** (`sparse_enabled`, `TRELIX_RETRIEVAL_SPARSE=true`)
+  — SPLADE-Code sparse embeddings as a 7th RRF leg alongside BM25, with a
+  memoized, thread-safe `SparseEmbedder`.
+
 ## [2.1.0] — 2026-06-30
 
 ### Overview
