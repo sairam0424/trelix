@@ -1,6 +1,6 @@
-# Trelix v2.7.1 Troubleshooting Guide
+# Trelix v2.7.2 Troubleshooting Guide
 
-This guide covers every common failure mode for trelix v2.7.1. Each entry follows the pattern: **Symptom → Cause → Fix**.
+This guide covers every common failure mode for trelix v2.7.2. Each entry follows the pattern: **Symptom → Cause → Fix**.
 
 ---
 
@@ -261,6 +261,33 @@ echo $VOYAGE_API_KEY
 
 ---
 
+### Bedrock: ValidationException on Inference Profile
+
+**Symptom:** `ValidationException: Invocation of model ID anthropic.claude-sonnet-4-6 with on-demand throughput isn't supported`.
+
+**Cause:** Bedrock requires **inference profile IDs** (`us.*` prefix), not bare model IDs, for on-demand throughput.
+
+**Fix:**
+```bash
+TRELIX_LLM_BEDROCK_PRIMARY_MODEL=us.anthropic.claude-sonnet-4-6
+TRELIX_LLM_BEDROCK_FALLBACK_MODEL=us.anthropic.claude-haiku-4-5-20251001-v1:0
+```
+
+---
+
+### Bedrock Cohere Embeddings: ValidationException on Large Chunks
+
+**Symptom:** `ValidationException: expected maxLength: 2048`.
+
+**Cause:** Bedrock's Cohere endpoint rejects texts longer than 2048 characters before truncation occurs.
+
+**Fix:** trelix pre-truncates automatically since v0.7.1. If you see this on an older version, upgrade:
+```bash
+pip install --upgrade "trelix[bedrock]"
+```
+
+---
+
 ### Local Provider Is Slow on First Run
 
 **Symptom:** `trelix index --provider local` appears to hang or takes several minutes on the first invocation. CPU usage is high.
@@ -279,6 +306,32 @@ If the download stalls due to network issues:
 # Set a mirror or proxy if needed
 export HF_ENDPOINT="https://hf-mirror.com"
 trelix index --provider local
+```
+
+---
+
+### tree-sitter FutureWarning Spam
+
+**Symptom:** Terminal flooded with messages like `FutureWarning: TreeSitter.Language` during indexing.
+
+**Cause:** Language deprecation warnings from tree-sitter 0.21.x are not yet suppressed automatically.
+
+**Fix:**
+```bash
+PYTHONWARNINGS=ignore::FutureWarning trelix index .
+```
+
+---
+
+### HuggingFace Token Warning on Local Embedder
+
+**Symptom:** A warning about a missing `HF_TOKEN` appears every time the local embedder runs.
+
+**Cause:** The local embedder uses sentence-transformers, which checks for `HF_TOKEN` on every call. This is harmless — models are cached locally after first download and no token is required for public models.
+
+**Fix:**
+```bash
+HF_HUB_DISABLE_SYMLINKS_WARNING=1 trelix index .
 ```
 
 ---
@@ -711,6 +764,21 @@ pip install trelix
 ```
 
 If the conflict persists, use a clean virtual environment (see below).
+
+---
+
+### sqlite-vec Not Loading (macOS)
+
+**Symptom:** `ImportError: sqlite-vec requires SQLite ≥ 3.45 with loadable extensions`.
+
+**Cause:** macOS ships with a system SQLite build that disables loadable extensions. sqlite-vec needs a SQLite build with extension loading enabled.
+
+**Fix:**
+```bash
+brew install sqlite
+# Then reinstall trelix against the Homebrew SQLite:
+LDFLAGS="-L/opt/homebrew/opt/sqlite/lib" pip install --force-reinstall "trelix[local]"
+```
 
 ---
 

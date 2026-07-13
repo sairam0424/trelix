@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [2.7.3] — 2026-07-13
+
+### Changed
+- **README.md end-to-end audit and rewrite** — fixed 15+ factual bugs (wrong
+  env var names, fabricated pip extras, a broken Homebrew tap, a crash-causing
+  `TRELIX_RETRIEVAL_RERANK_PROVIDER` value, wrong REST method/table names),
+  rewrote the "How it works" diagram to show all 7 retrieval legs (was 3) plus
+  the agentic/FLARE alternate synthesis modes, and consolidated duplicated
+  content (3x REST API sections, Installation/Knowledge-Graph/Embedding-Providers
+  duplicating `docs/`) into short pointers. 867 → 634 lines.
+- **"What's New" and "Troubleshooting" moved out of README** — backfilled
+  CHANGELOG.md's empty `[2.2.0]` entry with its 5 features (agentic ReAct loop,
+  data-flow analysis, taint analysis, sparse+dense hybrid, multi-granularity
+  indexing — previously undocumented anywhere else) and added README's 5
+  Troubleshooting entries to `docs/TROUBLESHOOTING.md`'s existing sections,
+  then trimmed both README sections to short pointers.
+
 ## [2.7.2] — 2026-07-12
 
 ### Added
@@ -354,6 +371,29 @@ None — all new features are opt-in via config flags.
 
 ## [2.2.0] — 2026-07-01
 
+### Overview
+Intelligence upgrades: an agentic ReAct retrieval loop, static analysis (data-flow
+and taint), and two new hybrid-search legs (sparse SPLADE-Code, multi-granularity
+chunking). All opt-in via config flags that default to `False` — zero regression
+when disabled.
+
+### Added
+- **Agentic ReAct loop** (`agentic_enabled`, `TRELIX_RETRIEVAL_AGENTIC=true`) —
+  multi-turn retrieve → observe → re-retrieve loop with self-correction, replacing
+  the single-shot Retriever → Synthesizer chain when enabled.
+- **Data-flow analysis** (`dataflow_enabled`, `TRELIX_PARSER_DATAFLOW=true`) —
+  per-function def-use chains extracted via a tree-sitter AST walk, stored in the
+  `def_use_edges` table.
+- **Taint analysis** (`taint_enabled`; `pip install trelix[taint]` then
+  `trelix taint .`) — Semgrep-backed source→sink flow detection, findings stored
+  in `taint_flows`.
+- **Multi-granularity indexing** (`multi_granularity_enabled`,
+  `TRELIX_CHUNKER_MULTI_GRANULARITY=true`) — block- and statement-level
+  sub-chunks indexed as a 6th RRF leg alongside symbol-level chunks.
+- **Sparse+dense hybrid retrieval** (`sparse_enabled`, `TRELIX_RETRIEVAL_SPARSE=true`)
+  — SPLADE-Code sparse embeddings as a 7th RRF leg alongside BM25, with a
+  memoized, thread-safe `SparseEmbedder`.
+
 ## [2.1.0] — 2026-06-30
 
 ### Overview
@@ -689,7 +729,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.7.2...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.7.3...HEAD
+[2.7.3]: https://github.com/sairam0424/trelix/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/sairam0424/trelix/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/sairam0424/trelix/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/sairam0424/trelix/compare/v2.6.0...v2.7.0
