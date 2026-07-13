@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [2.7.3] — 2026-07-13
+
+### Changed
+- **README.md end-to-end audit and rewrite** — fixed 15+ factual bugs (wrong
+  env var names, fabricated pip extras, a broken Homebrew tap, a crash-causing
+  `TRELIX_RETRIEVAL_RERANK_PROVIDER` value, wrong REST method/table names),
+  rewrote the "How it works" diagram to show all 7 retrieval legs (was 3) plus
+  the agentic/FLARE alternate synthesis modes, and consolidated duplicated
+  content (3x REST API sections, Installation/Knowledge-Graph/Embedding-Providers
+  duplicating `docs/`) into short pointers. 867 → 634 lines.
+- **"What's New" and "Troubleshooting" moved out of README** — backfilled
+  CHANGELOG.md's empty `[2.2.0]` entry with its 5 features (agentic ReAct loop,
+  data-flow analysis, taint analysis, sparse+dense hybrid, multi-granularity
+  indexing — previously undocumented anywhere else) and added README's 5
+  Troubleshooting entries to `docs/TROUBLESHOOTING.md`'s existing sections,
+  then trimmed both README sections to short pointers.
+
 ## [2.7.2] — 2026-07-12
 
 ### Added
@@ -712,7 +729,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.7.2...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.7.3...HEAD
+[2.7.3]: https://github.com/sairam0424/trelix/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/sairam0424/trelix/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/sairam0424/trelix/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/sairam0424/trelix/compare/v2.6.0...v2.7.0
