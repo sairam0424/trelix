@@ -1,6 +1,6 @@
-# trelix v2.7.1 — Frequently Asked Questions
+# trelix v2.8.1 — Frequently Asked Questions
 
-> Last updated: 2026-07-10 — covers trelix 2.7.1, trelix-mcp 2.7.1, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
+> Last updated: 2026-07-21 — covers trelix 2.8.1, trelix-mcp 2.8.1, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
 
 ---
 
@@ -215,7 +215,7 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v2.7.1 exposes **8 tools**:
+trelix-mcp v2.8.1 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|
@@ -227,6 +227,13 @@ trelix-mcp v2.7.1 exposes **8 tools**:
 | `graph_search_mcp` | Graph BFS search from a seed symbol |
 | `subscribe_resource` | Subscribe to file change notifications (v2.5.0+) |
 | `unsubscribe_resource` | Unsubscribe from file change notifications (v2.5.0+) |
+| `federation_list_repos` | List all repos registered for federated search (v2.8.0+) |
+| `federation_add_repo` | Register a repo for federated search (v2.8.0+) |
+| `federation_remove_repo` | Unregister a repo by alias (v2.8.0+) |
+| `federation_search_all` | Search across all registered repos with RRF-weighted fusion (v2.8.0+) |
+| `ask_agent` | Multi-turn ReAct Q&A with persistent session memory (v2.8.0+) |
+| `agent_list_sessions` | List recent agent sessions for a repo (v2.8.0+) |
+| `agent_clear_session` | Delete a persisted agent session (v2.8.0+) |
 
 Plus the following MCP **Resources** (application-controlled, URI-addressable):
 - `trelix://index/stats` — aggregate index statistics
@@ -301,6 +308,31 @@ nodes = retriever.retrieve("rate limiting middleware")
 ```
 
 The retriever returns LlamaIndex `NodeWithScore` objects compatible with all LlamaIndex query engines, response synthesizers, and pipelines.
+
+---
+
+### Can I search across multiple repos from an AI assistant, not just the CLI?
+
+Yes. trelix v2.8.0 added four federation MCP tools that expose the `RepoRegistry` and `FederatedRetriever` to any MCP client (Claude Desktop, Cursor, VS Code, JetBrains):
+
+- `federation_list_repos` — list all registered repos
+- `federation_add_repo` — register a repo with an alias and weight
+- `federation_remove_repo` — unregister a repo by alias
+- `federation_search_all` — search across all registered repos with weighted RRF merging
+
+Your AI assistant can call these tools directly — no need to leave the conversation to run CLI commands. Results are annotated with the source repo alias. For full details and parameter reference, see [docs/MCP_GUIDE.md](MCP_GUIDE.md) and [docs/FEDERATION_GUIDE.md](FEDERATION_GUIDE.md).
+
+---
+
+### Does trelix remember previous questions in an agent conversation?
+
+Yes. The agentic loop (activated via `trelix ask --agentic` or the `ask_agent` MCP tool) now persists turn history to the repo's `.trelix/index.db`, keyed by a client-supplied or auto-generated `session_id`.
+
+On the first call to `ask_agent`, trelix generates a new `session_id` and returns it in the response. Pass this `session_id` back on follow-up calls to resume with full prior context — all previous thoughts, actions, and observations are loaded and prepended to the current turn's history.
+
+Sessions auto-evict after `TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS` of inactivity (default 7 days; set to `0` to disable eviction). You can also explicitly clear a session via the `agent_clear_session` MCP tool or the `trelix agent sessions clear` CLI command.
+
+For usage examples and full session lifecycle documentation, see [docs/MCP_GUIDE.md](MCP_GUIDE.md) and [docs/USER_GUIDE.md](USER_GUIDE.md).
 
 ---
 

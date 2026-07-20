@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v2.7.1
+# Trelix Configuration Reference — v2.8.1
 
 Complete reference for all configuration options available in trelix.
 
@@ -59,6 +59,16 @@ Settings are resolved in priority order (highest wins):
 | `ANTHROPIC_API_KEY` | _(none)_ | Anthropic API key — required when `TRELIX_LLM_PROVIDER=anthropic` |
 | `TRELIX_RETRIEVAL_AGENTIC` | `false` | Enable the agentic ReAct loop — the LLM iteratively issues retrieval calls before producing a final answer |
 
+### Agentic ReAct Loop — Persistent Sessions
+
+The agentic loop (`trelix ask --agentic` / `TRELIX_RETRIEVAL_AGENTIC=true`) persists its turn history to `agent_sessions`/`agent_turns` tables in the repo's `.trelix/index.db`, keyed by a client-supplied or auto-generated `session_id`. Resume a session with `trelix ask --session <id>` (implies `--agentic`) or the MCP `ask_agent` tool's `session_id` argument.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_RETRIEVAL_AGENT_MAX_TURNS` | `8` | Maximum ReAct turns per `ask_agent`/`--agentic` call (1–20) |
+| `TRELIX_RETRIEVAL_AGENT_TOKEN_BUDGET` | `6000` | Token budget for `HistoryCompressor` when trimming turn history (minimum 1000) |
+| `TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS` | `604800` (7 days) | Idle time before a persisted agent session is auto-evicted. `0` disables eviction entirely. Use `trelix agent sessions clear <id>` (or the `agent_clear_session` MCP tool) to remove a session explicitly |
+
 ### Storage
 
 | Variable | Default | Description |
@@ -76,8 +86,10 @@ Settings are resolved in priority order (highest wins):
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_FEDERATION_ENABLED` | `false` | Enable federated search across multiple indexed repositories |
-| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Maximum number of parallel workers when querying federated repos |
-| `TRELIX_FEDERATION_CONFIG` | `~/.config/trelix/repos.json` | Path to the federation registry JSON file |
+| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Maximum number of parallel workers when querying federated repos (1–16) |
+| `TRELIX_FEDERATION_MAX_REPOS` | `50` | Maximum number of registered repos actually queried per federated search call (1–500). Registered repos beyond this cap are skipped (reported via `repos_skipped` in the MCP `federation_search_all` response); prevents an unbounded `federation_add_repo` loop from making every subsequent query scale linearly |
+
+There is no environment variable for the federation registry file path. The registry JSON file location defaults to `~/.config/trelix/repos.json` and can be overridden per-call via the `--config` CLI option (`trelix search-all --config`, `trelix federation add/list/remove --config`) or the `config_path` argument on the corresponding MCP tools. For security, MCP callers may only point `config_path` at `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/` — paths outside those roots are rejected.
 
 ### MCP Server
 
@@ -94,7 +106,7 @@ Copy this to `<repo-root>/.env` and fill in the values relevant to your setup. L
 
 ```dotenv
 # =============================================================================
-# Trelix v2.7.1 — complete .env example
+# Trelix v2.8.1 — complete .env example
 # Copy to .env and fill in values. Never commit this file.
 # =============================================================================
 
@@ -167,6 +179,11 @@ TRELIX_LLM_OPENAI_MODEL=gpt-4o-mini
 # Agentic ReAct loop
 TRELIX_RETRIEVAL_AGENTIC=false
 
+# Agentic ReAct loop — persistent session tuning
+# TRELIX_RETRIEVAL_AGENT_MAX_TURNS=8
+# TRELIX_RETRIEVAL_AGENT_TOKEN_BUDGET=6000
+# TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS=604800
+
 # ---------------------------------------------------------------------------
 # Storage
 # ---------------------------------------------------------------------------
@@ -190,7 +207,10 @@ TRELIX_STORE_BACKEND=sqlite-vec
 
 TRELIX_FEDERATION_ENABLED=false
 TRELIX_FEDERATION_MAX_WORKERS=4
-# TRELIX_FEDERATION_CONFIG=~/.config/trelix/repos.json
+# TRELIX_FEDERATION_MAX_REPOS=50
+
+# Federation registry file path has no env var override — use --config (CLI)
+# or config_path (MCP tools) instead. Defaults to ~/.config/trelix/repos.json.
 
 # ---------------------------------------------------------------------------
 # MCP Server

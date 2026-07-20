@@ -270,7 +270,7 @@ Synthesis in progress
 | **Python library (pip install)** | ✅ | ❌ | ❌ | ❌ | partial | ❌ |
 | **LangChain retriever** | ✅ | ❌ | ❌ | ❌ | partial | ❌ |
 | **LlamaIndex retriever** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **MCP server (8 tools)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **MCP server (15 tools)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **GitHub PR review** | ✅ v2.4.0 | ✅ cloud | partial | ❌ | ❌ | ❌ |
 | **Multi-repo federated search** | ✅ FederatedRetriever | partial | ❌ | ✅ enterprise | ❌ | ❌ |
 | **FLARE re-retrieval** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -374,7 +374,7 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 - **Index layer** — offline, incremental, AST-aware, stores everything in a single SQLite file
 - **Synthesis tool** — `trelix ask` turns retrieved context into a cited answer
 - **RAG component** — drop-in LangChain and LlamaIndex retriever for any pipeline
-- **MCP server** — 8 tools available in Claude Code, Cursor, Windsurf
+- **MCP server** — 15 tools available in Claude Code, Cursor, Windsurf
 - **Library and CLI** — both surfaces first-class, both tested
 
 ### What Trelix is not
@@ -385,15 +385,17 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 - A code review platform with UI (GitHub PR review is CLI-based and MCP-based, not a hosted product)
 - A real-time streaming completions service (retrieval happens at query time, not keystroke time)
 
-### Current version scope (v2.7.1)
+### Current version scope (v2.8.1)
 
-| In v2.7.1 | Planned (v3.0+) |
+| In v2.8.1 | Planned (v3.0+) |
 |-----------|-----------------|
 | 7-leg hybrid retrieval pipeline | Streaming retrieval with incremental result delivery |
 | FederatedRetriever with TTL cache (~90% hit rate) | Advanced taint analysis (Semgrep integration GA) |
 | 20-language Tree-sitter AST parsing | Hosted cloud index option |
 | 6 LLM backends + LiteLLM 100+ providers | |
-| MCP server (8 tools, stdio transport) | |
+| MCP server (15 tools, stdio transport) | |
+| Multi-repo MCP federation (4 new tools) | |
+| Persistent agent session memory (3 new tools) | |
 | GitHub PR review + batch comment posting | |
 | VS Code extension (`trelix.search` / `trelix.ask` via MCP) | |
 | Cross-repo symbol resolution (SCIP-style IDs) | |

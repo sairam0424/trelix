@@ -3,7 +3,14 @@
 Research basis: 108-agent deep research, 730 tool uses, adversarial verification (v2.4.0 — July 2026).  
 Target audience: AI agent developers + IDE users + DevOps/CI engineers (all three simultaneously).
 
-**Latest updates (v2.4.0 — July 2026):**
+**Latest updates (v2.8.1 — July 2026):**
+- ✅ Multi-repo federation MCP tools shipped (v2.8.0) — `federation_list_repos`/`federation_add_repo`/`federation_remove_repo`/`federation_search_all` expose the existing `RepoRegistry`/`FederatedRetriever` CLI infra to MCP clients; new `trelix federation remove` CLI command
+- ✅ Persistent agent session memory shipped (v2.8.0) — `AgentLoop.run()` now returns `(answer, session_id)`; turns persisted to new `agent_sessions`/`agent_turns` tables in `.trelix/index.db`; new `ask_agent`, `agent_list_sessions`, `agent_clear_session` MCP tools + `trelix ask --session`, `trelix agent sessions list/show/clear` CLI
+- ✅ MCP federation `config_path` confinement shipped (v2.8.1) — the 4 federation MCP tools now confine `config_path` to `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/` via `Path.is_relative_to()` (not a naive prefix check), closing a path-traversal gap found in the pre-push audit of v2.8.0 (issue #69)
+- ✅ Federation repo-count/fan-out caps shipped (v2.8.1) — `RepoRegistry.add()` gained `max_repos`, `FederatedRetriever` gained a `max_repos` constructor param; MCP's `federation_add_repo` enforces `TRELIX_FEDERATION_MAX_REPOS` (default 50); `federation_search_all` response gained a `repos_skipped` field
+- ✅ `federation_search_all` pagination stability fix shipped (v2.8.1) — replaced the growing `k+cursor` request with a fixed cursor-independent fetch width, so RRF-fused pages no longer shift rank or dedup differently between calls
+
+**Previous updates (v2.4.0 — July 2026):**
 - ✅ FederatedRetriever TTL cache shipped (v2.4.0) — SHA-256 keyed, thread-safe, cache_ttl=0 to disable, cache_stats()
 - ✅ Multi-repo file watching (watch-all) shipped (v2.4.0) — MultiRepoWatcher, single awatch() over all repos, hash guard, `trelix watch-all`
 - ✅ GitHub PR API integration shipped (v2.4.0) — `trelix review --pr owner/repo#N`, GitHubPRClient, --post-comments, GITHUB_TOKEN

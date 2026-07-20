@@ -6,6 +6,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [2.8.1] — 2026-07-20
+
 ### Security
 - **MCP federation `config_path` path confinement** — `federation_list_repos`/
   `federation_add_repo`/`federation_remove_repo`/`federation_search_all`
@@ -811,7 +813,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.8.0...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.8.1...HEAD
+[2.8.1]: https://github.com/sairam0424/trelix/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/sairam0424/trelix/compare/v2.7.3...v2.8.0
 [2.7.3]: https://github.com/sairam0424/trelix/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/sairam0424/trelix/compare/v2.7.1...v2.7.2
