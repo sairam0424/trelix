@@ -6,6 +6,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Security
+- **MCP federation `config_path` path confinement** — `federation_list_repos`/
+  `federation_add_repo`/`federation_remove_repo`/`federation_search_all`
+  previously passed a caller-supplied `config_path` straight into
+  `RepoRegistry.load()`/`.save()` with no validation, letting an MCP client
+  (including a prompt-injected agent) point registry I/O at an arbitrary
+  path. Now confined to `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`
+  via `Path.is_relative_to()` (not a naive string-prefix check, which would
+  incorrectly also match a sibling directory like `~/.config/trelixevil/`).
+  Found in the pre-push audit of v2.8.0 (issue #69).
+
+### Added
+- **Federation repo-count and fan-out caps** — `RepoRegistry.add()` gained an
+  optional `max_repos` parameter (CLI callers remain unbounded by default;
+  MCP's `federation_add_repo` now passes `TRELIX_FEDERATION_MAX_REPOS`,
+  default 50). `FederatedRetriever` gained a `max_repos` constructor param
+  capping how many registered repos are actually queried per call;
+  `federation_search_all`'s response gained a `repos_skipped` field.
+  Prevents a runaway/adversarial `federation_add_repo` loop from making
+  every subsequent search scale linearly with an unbounded repo count.
+
+### Fixed
+- **`federation_search_all` pagination wasn't a stable slice** — previously
+  requested `fed.retrieve(query, k=max(k+cursor, k))`, so the per-repo
+  candidate pool feeding RRF fusion widened as `cursor` grew, meaning page 2
+  could be fused from a differently-shaped pool than page 1 (items could
+  shift rank, get deduped differently, or disappear between pages). Now
+  fetches a fixed, cursor-independent width once and slices pages from the
+  final fused list — mirrors `search_code`'s existing single-fetch-then-slice
+  pattern.
+
+### Changed
+- All 4 federation MCP tools now consistently return an `"error": str|None`
+  key on every response path (previously only present on failure paths for
+  `federation_add_repo`), matching the convention already used by
+  `ask_agent`/`agent_list_sessions`/`agent_clear_session`.
+
 ## [2.8.0] — 2026-07-20
 
 ### Added

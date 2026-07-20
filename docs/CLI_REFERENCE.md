@@ -128,6 +128,7 @@ below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 |----------|---------|-------------|
 | `TRELIX_FEDERATION_ENABLED` | `false` | Enable multi-repo federated retrieval |
 | `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Max parallel workers for federated search (range: 1–16) |
+| `TRELIX_FEDERATION_MAX_REPOS` | `50` | Max repos actually queried per `federation_search_all` MCP call, and max repos `federation_add_repo` will accept (range: 1–500) |
 
 ---
 
