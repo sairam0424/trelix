@@ -62,10 +62,27 @@ class RepoRegistry:
             logger.debug("RepoRegistry.load failed for %s: %s", path, exc)
             return cls(str(path), [])
 
-    def add(self, alias: str, path: str, weight: float = 1.0) -> None:
-        """Add a repo. Raises ValueError if alias already registered."""
+    def add(
+        self,
+        alias: str,
+        path: str,
+        weight: float = 1.0,
+        max_repos: int | None = None,
+    ) -> None:
+        """Add a repo.
+
+        Raises ValueError if alias already registered, or if max_repos is
+        set and the registry is already at that capacity. max_repos=None
+        (the default) is unbounded — existing CLI callers that never pass
+        it keep today's unlimited behavior; MCP callers pass a configured
+        cap to prevent unbounded growth from a scripted/adversarial client.
+        """
         if any(e.alias == alias for e in self._entries):
             raise ValueError(f"Alias '{alias}' already registered")
+        if max_repos is not None and len(self._entries) >= max_repos:
+            raise ValueError(
+                f"Registry is at capacity ({max_repos} repos) — remove a repo before adding another"
+            )
         self._entries = [*self._entries, RepoEntry(alias=alias, path=path, weight=weight)]
 
     def remove(self, alias: str) -> None:
