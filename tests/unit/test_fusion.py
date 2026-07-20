@@ -382,3 +382,52 @@ class TestFileTypeWeighting:
         fused = reciprocal_rank_fusion([[md, py]], k=60, weights={"python": 1.0, "markdown": 0.3})
         for expected_rank, result in enumerate(fused, start=1):
             assert result.rank == expected_rank
+
+
+# ---------------------------------------------------------------------------
+# Per-list weight multiplier (federated search — weight one source list above
+# another, e.g. one repo above another). Orthogonal to the language `weights`.
+# ---------------------------------------------------------------------------
+
+
+class TestListWeights:
+    def test_list_weights_none_is_backward_compatible(self) -> None:
+        """list_weights=None must give bit-for-bit identical scores to omitting it."""
+        list_a = [_make_result(1, 0.9), _make_result(2, 0.8)]
+        list_b = [_make_result(1, 0.7), _make_result(3, 0.6)]
+
+        fused_default = reciprocal_rank_fusion([list_a, list_b])
+        fused_explicit_none = reciprocal_rank_fusion([list_a, list_b], list_weights=None)
+
+        assert len(fused_default) == len(fused_explicit_none)
+        for a, b in zip(fused_default, fused_explicit_none):
+            assert a.chunk.symbol_id == b.chunk.symbol_id
+            assert a.score == b.score
+
+    def test_list_weights_scales_contribution(self) -> None:
+        """
+        Two single-item lists, symbol_id 1 at rank 1 in list_a (weight 1.0),
+        symbol_id 2 at rank 1 in list_b (weight 5.0).
+
+        Without weighting both would tie at 1/61. With list_weights=[1.0, 5.0],
+        symbol 2's contribution is 5x — it must rank first with an exact score.
+        """
+        k = 60
+        list_a = [_make_result(1, 0.9)]
+        list_b = [_make_result(2, 0.9)]
+
+        fused = reciprocal_rank_fusion([list_a, list_b], k=k, list_weights=[1.0, 5.0])
+
+        fused_map = {r.chunk.symbol_id: r.score for r in fused}
+        assert abs(fused_map[1] - (1.0 / (k + 1))) < 1e-12
+        assert abs(fused_map[2] - (5.0 / (k + 1))) < 1e-12
+        assert fused[0].chunk.symbol_id == 2, "Higher-weighted list's result must rank first"
+
+    def test_list_weights_orthogonal_to_language_weights(self) -> None:
+        """Both list_weights and weights can apply simultaneously without conflict."""
+        py = _make_result_lang(symbol_id=1, score=0.9, language=Language.PYTHON)
+        fused = reciprocal_rank_fusion(
+            [[py]], k=60, weights={"python": 2.0}, list_weights=[3.0]
+        )
+        expected = (3.0 / (60 + 1)) * 2.0
+        assert abs(fused[0].score - expected) < 1e-12
