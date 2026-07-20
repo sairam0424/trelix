@@ -7,7 +7,7 @@ packages = ["src/trelix_mcp"]
 
 [project]
 name = "trelix-mcp"
-version = "2.7.2"
+version = "2.8.0"
 description = "MCP server for trelix — semantic code search for Claude Code, Cursor, Windsurf, Continue.dev"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -21,7 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["trelix>=0.4.0", "mcp>=1.0.0", "fastmcp>=2.0.0"]
+dependencies = ["trelix>=2.8.0", "mcp>=1.0.0", "fastmcp>=2.0.0"]
 
 [project.scripts]
 trelix-mcp = "trelix_mcp.server:main"
