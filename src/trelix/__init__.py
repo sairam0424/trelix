@@ -31,7 +31,7 @@ from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, Treli
 from trelix.llm.factory import build_chat_client
 from trelix.retrieval.retriever import Retriever
 
-__version__ = "2.7.3"
+__version__ = "2.8.0"
 
 __all__ = [
     "__version__",

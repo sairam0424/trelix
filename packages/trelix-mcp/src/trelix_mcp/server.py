@@ -14,7 +14,10 @@ from typing import Any, Literal  # noqa: E402
 
 from fastmcp import Context, FastMCP  # noqa: E402
 
+from trelix.agent.loop import AgentLoop  # noqa: E402
 from trelix.core.config import EmbedderConfig, IndexConfig  # noqa: E402
+from trelix.federation.registry import RepoRegistry  # noqa: E402
+from trelix.federation.retriever import FederatedRetriever  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
 from trelix.retrieval.retriever import Retriever  # noqa: E402
 from trelix.store.db import Database  # noqa: E402
@@ -462,6 +465,229 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict]:
         }
         for r in graph_results[:k]
     ]
+
+
+@mcp.tool()
+def federation_list_repos(config_path: str | None = None) -> dict:
+    """List all repos registered for federated (multi-repo) search.
+
+    Args:
+        config_path: Optional path to a custom repos.json. Defaults to
+            ~/.config/trelix/repos.json.
+
+    Returns:
+        {"repos": [{"alias": str, "path": str, "weight": float}, ...], "count": int}
+    """
+    _log.info("federation_list_repos config_path=%r", config_path)
+    registry = RepoRegistry.load(config_path)
+    entries = registry.list()
+    return {
+        "repos": [{"alias": e.alias, "path": e.path, "weight": e.weight} for e in entries],
+        "count": len(entries),
+    }
+
+
+@mcp.tool()
+def federation_add_repo(
+    alias: str,
+    path: str,
+    weight: float = 1.0,
+    config_path: str | None = None,
+) -> dict:
+    """Register a repo for federated search across MCP tool calls.
+
+    ⚠️ IMPORTANT:
+    - path must be an ABSOLUTE path.
+    - Run index_codebase on it separately before federation_search_all can
+      return results from it — registering a repo does not index it.
+
+    Args:
+        alias: Short unique name for the repo (e.g. "auth-service").
+        path: Absolute path to the repo root.
+        weight: RRF weight multiplier (default 1.0; higher = ranked higher
+            in federation_search_all's fused results).
+        config_path: Optional path to a custom repos.json.
+
+    Returns:
+        {"added": bool, "alias": str, "path": str, "error": str|None}
+    """
+    _log.info("federation_add_repo alias=%r path=%r weight=%s", alias, path, weight)
+    registry = RepoRegistry.load(config_path)
+    try:
+        registry.add(alias, path, weight)
+        registry.save()
+        return {"added": True, "alias": alias, "path": path, "error": None}
+    except ValueError as exc:
+        return {"added": False, "alias": alias, "path": path, "error": str(exc)}
+
+
+@mcp.tool()
+def federation_remove_repo(alias: str, config_path: str | None = None) -> dict:
+    """Unregister a repo from federated search by alias.
+
+    Args:
+        alias: The alias to remove. No-op (removed=False) if not registered.
+        config_path: Optional path to a custom repos.json.
+
+    Returns:
+        {"removed": bool, "alias": str}
+    """
+    _log.info("federation_remove_repo alias=%r", alias)
+    registry = RepoRegistry.load(config_path)
+    existed = any(e.alias == alias for e in registry.list())
+    registry.remove(alias)
+    registry.save()
+    return {"removed": existed, "alias": alias}
+
+
+@mcp.tool()
+def federation_search_all(
+    query: str,
+    k: int = 10,
+    cursor: int = 0,
+    config_path: str | None = None,
+) -> dict:
+    """Search across ALL registered repos simultaneously (federated search).
+
+    ⚠️ IMPORTANT:
+    - Requires repos to already be registered via federation_add_repo AND
+      already indexed (run index_codebase on each repo path beforehand).
+    - Results are merged via Reciprocal Rank Fusion weighted by each repo's
+      registered weight, then deduplicated.
+
+    🎯 When to Use:
+    - Cross-service / cross-repo questions ("where is auth handled across
+      our microservices?")
+    - You don't know which of several registered repos contains the answer.
+
+    📄 Pagination: same cursor/k contract as search_code.
+
+    Returns:
+        {"results": [...], "next_cursor": int|None, "total_available": int,
+         "repos_searched": int}
+    """
+    _log.info("federation_search_all query=%r k=%d cursor=%d", query, k, cursor)
+    registry = RepoRegistry.load(config_path)
+    entries = registry.list()
+    if not entries:
+        return {"results": [], "next_cursor": None, "total_available": 0, "repos_searched": 0}
+
+    fed = FederatedRetriever(registry)
+    all_results = fed.retrieve(query, k=max(k + cursor, k))
+
+    page = all_results[cursor : cursor + k]
+    next_cursor = cursor + k if cursor + k < len(all_results) else None
+
+    return {
+        "results": [
+            {
+                "repo": r.source.split(":")[0] if ":" in r.source else "",
+                "file": r.file.rel_path,
+                "symbol": r.symbol.qualified_name,
+                "kind": r.symbol.kind.value,
+                "score": round(r.score, 4),
+                "source": r.source,
+                "body": r.symbol.body[:800],
+                "language": r.file.language.value,
+            }
+            for r in page
+        ],
+        "next_cursor": next_cursor,
+        "total_available": len(all_results),
+        "repos_searched": len(entries),
+    }
+
+
+@mcp.tool()
+def ask_agent(
+    query: str,
+    repo_path: str,
+    session_id: str | None = None,
+) -> dict:
+    """Ask a question using the multi-turn ReAct agentic loop, with persistent memory.
+
+    ⚠️ IMPORTANT:
+    - repo_path must be an ABSOLUTE path to an already-indexed repository.
+    - Session history is scoped to (repo_path, session_id) — a session_id
+      created against one repo is invisible when querying a different repo_path.
+    - Requires LLM configuration (e.g. OPENAI_API_KEY) — this tool always
+      uses the agentic loop, unlike search_code which is retrieval-only.
+
+    🎯 When to Use:
+    - Multi-step questions needing iterative retrieve/grep/get_symbol drilling.
+    - Follow-up questions in the same conversation — pass back the session_id
+      returned from the previous call to preserve context across calls.
+
+    Session lifecycle:
+    - Omit session_id on the first call — a new one is generated and returned.
+    - Pass that session_id on subsequent related calls to resume with full
+      turn history loaded from persistent storage.
+    - Sessions are automatically evicted after
+      TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS of inactivity (default
+      7 days). Use agent_clear_session to delete one explicitly.
+
+    Returns:
+        {"answer": str, "session_id": str, "turn_count": int}
+    """
+    _log.info("ask_agent query=%r repo=%s session_id=%r", query, repo_path, session_id)
+    config = IndexConfig(repo_path=repo_path)
+    config.retrieval.agentic_enabled = True
+    loop = AgentLoop(config)
+    answer, resolved_session_id = loop.run(query, session_id=session_id)
+
+    db = Database(config.db_path_absolute)
+    try:
+        turns = db.get_agent_turns(resolved_session_id)
+    finally:
+        db.close()
+
+    return {"answer": answer, "session_id": resolved_session_id, "turn_count": len(turns)}
+
+
+@mcp.tool()
+def agent_list_sessions(repo_path: str, limit: int = 50) -> dict:
+    """List recent agent sessions for a repo, most recently active first.
+
+    Args:
+        repo_path: Absolute path to the repository root.
+        limit: Max sessions to return (default 50).
+
+    Returns:
+        {"sessions": [{"session_id", "created_at", "last_active_at", "query",
+         "turn_count"}, ...], "count": int}
+    """
+    _log.info("agent_list_sessions repo=%s limit=%d", repo_path, limit)
+    config = IndexConfig(repo_path=repo_path)
+    db = Database(config.db_path_absolute)
+    try:
+        max_age = config.retrieval.agent_session_max_age_seconds
+        if max_age > 0:
+            db.evict_stale_agent_sessions(max_age)
+        sessions = db.list_agent_sessions(limit=limit)
+    finally:
+        db.close()
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+@mcp.tool()
+def agent_clear_session(repo_path: str, session_id: str) -> dict:
+    """Delete a persisted agent session and all its turn history.
+
+    Args:
+        repo_path: Absolute path to the repository root.
+        session_id: The session to delete.
+
+    Returns:
+        {"cleared": bool, "session_id": str}
+    """
+    _log.info("agent_clear_session repo=%s session_id=%r", repo_path, session_id)
+    config = IndexConfig(repo_path=repo_path)
+    db = Database(config.db_path_absolute)
+    try:
+        existed = db.delete_agent_session(session_id)
+    finally:
+        db.close()
+    return {"cleared": existed, "session_id": session_id}
 
 
 def main() -> None:

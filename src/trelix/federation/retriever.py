@@ -185,29 +185,43 @@ class FederatedRetriever:
             return []
 
         per_repo_results: list[list[SearchResult]] = []
+        per_repo_weights: list[float] = []
 
-        def _query_one(repo_path: str) -> list[SearchResult]:
+        def _query_one(repo_path: str, alias: str) -> list[SearchResult]:
             from trelix.core.config import IndexConfig
 
             config = IndexConfig.model_construct(repo_path=repo_path)
             retriever = Retriever(config)
             ctx = retriever.retrieve(query)
-            return ctx.results[:k]
+            return [
+                SearchResult(
+                    chunk=r.chunk,
+                    symbol=r.symbol,
+                    file=r.file,
+                    score=r.score,
+                    rank=r.rank,
+                    source=f"{alias}:{r.source}",
+                )
+                for r in ctx.results[:k]
+            ]
 
         with ThreadPoolExecutor(max_workers=min(self._max_workers, len(entries))) as pool:
-            future_to_entry = {pool.submit(_query_one, entry.path): entry for entry in entries}
+            future_to_entry = {
+                pool.submit(_query_one, entry.path, entry.alias): entry for entry in entries
+            }
             for future in as_completed(future_to_entry):
                 entry = future_to_entry[future]
                 try:
                     results = future.result(timeout=30)
                     per_repo_results.append(results)
+                    per_repo_weights.append(entry.weight)
                 except Exception as exc:
                     logger.warning("FederatedRetriever: repo %s failed: %s", entry.alias, exc)
 
         if not per_repo_results:
             return []
 
-        merged = reciprocal_rank_fusion(per_repo_results)
+        merged = reciprocal_rank_fusion(per_repo_results, list_weights=per_repo_weights)
         seen: set[str] = set()
         deduped: list[SearchResult] = []
         for r in merged:

@@ -215,6 +215,15 @@ class TestRetrievalConfig:
         # 4. Backward compat worked: the value was parsed correctly
         assert cfg.flare_max_retries == 1
 
+    def test_agent_session_max_age_default(self) -> None:
+        cfg = RetrievalConfig()
+        assert cfg.agent_session_max_age_seconds == 604_800.0
+
+    def test_agent_session_max_age_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS", "0")
+        cfg = RetrievalConfig()
+        assert cfg.agent_session_max_age_seconds == 0.0
+
 
 class TestSparseConfig:
     def test_sparse_defaults(self, tmp_path: Path) -> None:

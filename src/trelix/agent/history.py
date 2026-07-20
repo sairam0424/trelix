@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from trelix.agent.actions import Turn
 
@@ -15,6 +16,46 @@ class TurnHistory:
 
     def add(self, turn: Turn) -> None:
         self.turns.append(turn)
+
+    def to_dicts(self) -> list[dict[str, Any]]:
+        """Serialize all turns to plain dicts, for DB persistence.
+
+        Field names match Database.insert_agent_turn()'s parameters so the
+        persistence boundary needs no adapter.
+        """
+        return [
+            {
+                "thought": t.thought,
+                "action_type": t.action.action_type.value,
+                "action_arguments": t.action.arguments,
+                "observation_content": t.observation.content,
+                "observation_source": t.observation.source,
+                "observation_success": t.observation.success,
+            }
+            for t in self.turns
+        ]
+
+    @classmethod
+    def from_dicts(cls, rows: list[dict[str, Any]]) -> TurnHistory:
+        """Reconstruct a TurnHistory from rows shaped like Database.get_agent_turns()."""
+        from trelix.agent.actions import ActionType, AgentAction, Observation, Turn
+
+        turns = [
+            Turn(
+                thought=row["thought"],
+                action=AgentAction(
+                    action_type=ActionType(row["action_type"]),
+                    arguments=row["action_arguments"],
+                ),
+                observation=Observation(
+                    content=row["observation_content"],
+                    source=row["observation_source"],
+                    success=row["observation_success"],
+                ),
+            )
+            for row in rows
+        ]
+        return cls(turns=turns)
 
     def to_text(self) -> str:
         """Format turns as a numbered conversation for the LLM context."""

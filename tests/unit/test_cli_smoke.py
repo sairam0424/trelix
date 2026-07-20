@@ -19,14 +19,14 @@ def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert "trelix" in result.output
-    assert "2.7.3" in result.output
+    assert "2.8.0" in result.output
 
 
 def test_version_short_flag():
     result = runner.invoke(app, ["-V"])
     assert result.exit_code == 0
     assert "trelix" in result.output
-    assert "2.7.3" in result.output
+    assert "2.8.0" in result.output
 
 
 def test_help():
@@ -150,3 +150,51 @@ def test_watch_all_no_repos_exits_gracefully() -> None:
         result = runner.invoke(app, ["watch-all"])
     assert result.exit_code == 0
     assert "no repos" in result.output.lower() or "register" in result.output.lower()
+
+
+def test_federation_remove_help() -> None:
+    result = runner.invoke(app, ["federation", "remove", "--help"])
+    assert result.exit_code == 0
+
+
+def test_federation_remove_missing_alias_exits_gracefully() -> None:
+    """trelix federation remove <alias> with an empty registry is a graceful no-op."""
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from trelix.federation.registry import RepoRegistry
+
+    empty_reg = RepoRegistry.__new__(RepoRegistry)
+    empty_reg._config_path = Path("/tmp/fake.json")
+    empty_reg._entries = []
+
+    with patch("trelix.cli.main.RepoRegistry.load", return_value=empty_reg):
+        result = runner.invoke(app, ["federation", "remove", "nonexistent"])
+    assert result.exit_code == 0
+    assert "No repo registered" in result.output
+
+
+def test_ask_session_flag_help() -> None:
+    result = runner.invoke(app, ["ask", "--help"])
+    assert result.exit_code == 0
+    # Strip ANSI codes before asserting — CliRunner with color enabled wraps
+    # flags in styling spans that split literal substring matches.
+    import re
+
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--session" in plain
+
+
+def test_agent_sessions_list_help() -> None:
+    result = runner.invoke(app, ["agent", "sessions", "list", "--help"])
+    assert result.exit_code == 0
+
+
+def test_agent_sessions_show_help() -> None:
+    result = runner.invoke(app, ["agent", "sessions", "show", "--help"])
+    assert result.exit_code == 0
+
+
+def test_agent_sessions_clear_help() -> None:
+    result = runner.invoke(app, ["agent", "sessions", "clear", "--help"])
+    assert result.exit_code == 0

@@ -36,6 +36,10 @@ on most commands.
    - [search-all](#trelix-search-all)
    - [federation add](#trelix-federation-add)
    - [federation list](#trelix-federation-list)
+   - [federation remove](#trelix-federation-remove)
+   - [agent sessions list](#trelix-agent-sessions-list)
+   - [agent sessions show](#trelix-agent-sessions-show)
+   - [agent sessions clear](#trelix-agent-sessions-clear)
 
 ---
 
@@ -1081,13 +1085,62 @@ trelix federation list --config .trelix/federation.json
 └──────────┴─────────────────┴────────┘
 ```
 
-#### Notes
+---
 
-- A `federation remove` CLI command does not exist as of v2.7.1. To remove a
-  repo, edit the registry JSON file directly and delete the corresponding
-  entry from the `"repos"` array. The default registry path is
-  `~/.config/trelix/repos.json`.
+### `trelix federation remove`
+
+#### Synopsis
+
+```
+trelix federation remove <alias> [--config PATH]
+```
+
+#### Description
+
+Unregisters a repo from the federation registry by alias. No-op (prints a
+message, exits 0) if the alias isn't registered.
+
+#### Examples
+
+```bash
+trelix federation remove backend
+trelix federation remove backend --config .trelix/federation.json
+```
 
 ---
 
-*End of CLI Reference — trelix v2.7.1*
+### `trelix agent sessions list`
+
+#### Synopsis
+
+```
+trelix agent sessions list <repo> [--limit N]
+```
+
+Lists persisted agentic (ReAct) sessions for a repo, most recently active
+first. See [`trelix ask --agentic`](#trelix-ask) for how sessions are created.
+
+### `trelix agent sessions show`
+
+#### Synopsis
+
+```
+trelix agent sessions show <repo> <session_id>
+```
+
+Shows the full turn-by-turn (thought/action/observation) history for a
+persisted session.
+
+### `trelix agent sessions clear`
+
+#### Synopsis
+
+```
+trelix agent sessions clear <repo> <session_id>
+```
+
+Deletes a persisted session and all its turns.
+
+---
+
+*End of CLI Reference — trelix v2.8.0*

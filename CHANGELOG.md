@@ -6,6 +6,51 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [2.8.0] — 2026-07-20
+
+### Added
+- **Multi-repo support in MCP** — 4 new MCP tools (`federation_list_repos`,
+  `federation_add_repo`, `federation_remove_repo`, `federation_search_all`)
+  expose the existing `RepoRegistry`/`FederatedRetriever` CLI infrastructure
+  (`trelix federation add/list`, `trelix search-all`) to MCP clients (Claude
+  Desktop, Cursor, any IDE). Also added the missing `trelix federation remove`
+  CLI command (the registry method existed but had no CLI entry point).
+- **Persistent agent (ReAct loop) memory** — the agentic loop
+  (`trelix ask --agentic`, `TRELIX_RETRIEVAL_AGENTIC=true`) now persists turn
+  history to new `agent_sessions`/`agent_turns` tables in the per-repo
+  `.trelix/index.db`, keyed by a client-supplied or auto-generated UUID4
+  `session_id`. `AgentLoop.run()` now returns `(answer, session_id)` — pass
+  the session_id back on a follow-up call to resume with full prior context.
+  New CLI: `trelix ask --session <id>`, `trelix agent sessions list/show/clear`.
+  New MCP tools: `ask_agent`, `agent_list_sessions`, `agent_clear_session`.
+  Sessions auto-evict after `TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS`
+  of inactivity (default 7 days; `0` disables eviction).
+
+### Fixed
+- **Federated search lost repo provenance** — `FederatedRetriever` used to tag
+  each result's `source` with `"{alias}:{leg}"` so callers could tell which
+  repo a result came from, but this was silently dropped in a prior refactor.
+  `trelix search-all`'s "Repo" column and `--json` output had been blank ever
+  since, with no test catching it. Restored the tagging and added a
+  regression test.
+- **`RepoEntry.weight` was never applied** — settable via
+  `trelix federation add --weight`, stored, and documented, but the fan-out
+  fusion path never forwarded it into RRF, so per-repo weighting silently did
+  nothing. `reciprocal_rank_fusion()` gained a new `list_weights` parameter
+  (orthogonal to the existing per-language `weights` parameter; `None` is
+  backward-compatible) and `FederatedRetriever` now passes each repo's weight
+  through.
+- **`agent_turns.turn_index` could silently collide on session resume** — found
+  in pre-push audit. `AgentLoop.run()` used to compute the resume anchor from
+  `len(prior_rows)` (a row-count snapshot), which drifts from reality after
+  any persistence gap (a dropped turn) or a concurrent resume of the same
+  `session_id`, silently producing duplicate `turn_index` rows with no error.
+  `Database.insert_agent_turn()` now assigns `turn_index` atomically via
+  `MAX(turn_index)+1` under the same lock as the insert, and `agent_turns`
+  gained a `UNIQUE(session_id, turn_index)` index as defense-in-depth — any
+  residual race now raises `IntegrityError` (caught and logged) instead of
+  silently duplicating a row.
+
 ## [2.7.3] — 2026-07-13
 
 ### Changed
@@ -729,7 +774,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.7.3...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.8.0...HEAD
+[2.8.0]: https://github.com/sairam0424/trelix/compare/v2.7.3...v2.8.0
 [2.7.3]: https://github.com/sairam0424/trelix/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/sairam0424/trelix/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/sairam0424/trelix/compare/v2.7.0...v2.7.1

@@ -511,6 +511,11 @@ class RetrievalConfig(BaseSettings):
         ge=1000,
         alias="TRELIX_RETRIEVAL_AGENT_TOKEN_BUDGET",
     )
+    agent_session_max_age_seconds: float = Field(
+        default=604_800.0,  # 7 days. 0 disables eviction entirely.
+        ge=0,
+        alias="TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS",
+    )
 
     # GraphRAG map-reduce synthesis
     graph_rag_enabled: bool = Field(default=True, alias="TRELIX_RETRIEVAL_GRAPH_RAG")

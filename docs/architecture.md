@@ -1283,8 +1283,12 @@ class FLARELoop:
 
 ```python
 class AgentLoop:
-    def run(self, query: str) -> str  # never raises
+    def run(self, query: str, session_id: str | None = None) -> tuple[str, str]  # never raises
 ```
+
+`session_id` (v2.8) makes turn history persistent: omit it for a new session (a
+UUID4 is generated and returned), or pass one back to resume with prior turns
+loaded from `agent_sessions`/`agent_turns` in the repo's `.trelix/index.db`.
 
 ReAct (Reason+Act) multi-turn orchestrator with three available actions:
 
