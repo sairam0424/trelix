@@ -2,13 +2,13 @@
     "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
     "name": "io.github.sairam0424/trelix",
     "title": "trelix",
-    "description": "Semantic code search for AI agents \u2014 hybrid BM25+vector, call-graph, 20+ languages.",
-    "version": "2.7.2",
+    "description": "Semantic code search for AI agents — hybrid BM25+vector, call-graph, 20+ languages.",
+    "version": "2.8.0",
     "packages": [
         {
             "registryType": "pypi",
             "identifier": "trelix-mcp",
-            "version": "2.7.2",
+            "version": "2.8.0",
             "transport": {
                 "type": "stdio",
                 "command": "trelix-mcp",
@@ -20,7 +20,7 @@
     "tools": [
         {
             "name": "search_code",
-            "description": "Search code using natural language \u2014 hybrid semantic + BM25 + call-graph"
+            "description": "Search code using natural language — hybrid semantic + BM25 + call-graph"
         },
         {
             "name": "index_codebase",
@@ -33,6 +33,50 @@
         {
             "name": "blast_radius",
             "description": "Find all files that depend on a symbol"
+        },
+        {
+            "name": "build_knowledge_graph",
+            "description": "Build a knowledge graph (call/import/type edges, community detection) for an indexed codebase"
+        },
+        {
+            "name": "graph_search_mcp",
+            "description": "Graph-traversal search — find structurally related symbols via call/import/type edges"
+        },
+        {
+            "name": "subscribe_resource",
+            "description": "Register a subscription for a trelix:// resource URI"
+        },
+        {
+            "name": "unsubscribe_resource",
+            "description": "Deregister a resource subscription by its subscription ID"
+        },
+        {
+            "name": "federation_list_repos",
+            "description": "List all repos registered for federated (multi-repo) search"
+        },
+        {
+            "name": "federation_add_repo",
+            "description": "Register a repo for federated search across MCP tool calls"
+        },
+        {
+            "name": "federation_remove_repo",
+            "description": "Unregister a repo from federated search by alias"
+        },
+        {
+            "name": "federation_search_all",
+            "description": "Search across all registered repos simultaneously (federated search)"
+        },
+        {
+            "name": "ask_agent",
+            "description": "Ask a question using the multi-turn ReAct agentic loop, with persistent memory"
+        },
+        {
+            "name": "agent_list_sessions",
+            "description": "List recent agent sessions for a repo, most recently active first"
+        },
+        {
+            "name": "agent_clear_session",
+            "description": "Delete a persisted agent session and all its turn history"
         }
     ]
 }

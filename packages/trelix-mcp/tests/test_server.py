@@ -69,7 +69,7 @@ def test_main_callable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4 tools registered
+# 15 tools registered (8 original + 4 federation + 3 agent-session)
 # ---------------------------------------------------------------------------
 
 
@@ -88,8 +88,15 @@ async def test_four_tools_registered() -> None:
         "graph_search_mcp",
         "subscribe_resource",
         "unsubscribe_resource",
+        "federation_list_repos",
+        "federation_add_repo",
+        "federation_remove_repo",
+        "federation_search_all",
+        "ask_agent",
+        "agent_list_sessions",
+        "agent_clear_session",
     }
-    assert expected == names, f"Expected exactly 8 tools, got: {names}"
+    assert expected == names, f"Expected exactly 15 tools, got: {names}"
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +210,229 @@ def test_blast_radius_deduplicates_files() -> None:
     assert len(files) == 2, f"Expected 2 unique files, got {files}"
     assert "src/auth.py" in files
     assert "src/db.py" in files
+
+
+# ---------------------------------------------------------------------------
+# Federation (multi-repo) tools
+# ---------------------------------------------------------------------------
+
+
+def test_federation_list_repos_empty_registry() -> None:
+    import trelix_mcp.server as srv
+
+    empty_reg = MagicMock()
+    empty_reg.list.return_value = []
+
+    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
+        MockRegistry.load.return_value = empty_reg
+        response = srv.federation_list_repos()
+
+    assert response == {"repos": [], "count": 0}
+
+
+def test_federation_list_repos_returns_entries() -> None:
+    import trelix_mcp.server as srv
+
+    entry = MagicMock()
+    entry.alias = "myrepo"
+    entry.path = "/repo"
+    entry.weight = 2.0
+    reg = MagicMock()
+    reg.list.return_value = [entry]
+
+    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
+        MockRegistry.load.return_value = reg
+        response = srv.federation_list_repos()
+
+    assert response == {
+        "repos": [{"alias": "myrepo", "path": "/repo", "weight": 2.0}],
+        "count": 1,
+    }
+
+
+def test_federation_add_repo_success() -> None:
+    import trelix_mcp.server as srv
+
+    reg = MagicMock()
+
+    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
+        MockRegistry.load.return_value = reg
+        response = srv.federation_add_repo(alias="myrepo", path="/repo", weight=1.5)
+
+    reg.add.assert_called_once_with("myrepo", "/repo", 1.5)
+    reg.save.assert_called_once()
+    assert response == {"added": True, "alias": "myrepo", "path": "/repo", "error": None}
+
+
+def test_federation_add_repo_duplicate_alias_returns_error() -> None:
+    import trelix_mcp.server as srv
+
+    reg = MagicMock()
+    reg.add.side_effect = ValueError("alias 'myrepo' already registered")
+
+    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
+        MockRegistry.load.return_value = reg
+        response = srv.federation_add_repo(alias="myrepo", path="/repo")
+
+    assert response["added"] is False
+    assert "already registered" in response["error"]
+    reg.save.assert_not_called()
+
+
+def test_federation_remove_repo_existing() -> None:
+    import trelix_mcp.server as srv
+
+    entry = MagicMock()
+    entry.alias = "myrepo"
+    reg = MagicMock()
+    reg.list.return_value = [entry]
+
+    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
+        MockRegistry.load.return_value = reg
+        response = srv.federation_remove_repo(alias="myrepo")
+
+    reg.remove.assert_called_once_with("myrepo")
+    reg.save.assert_called_once()
+    assert response == {"removed": True, "alias": "myrepo"}
+
+
+def test_federation_remove_repo_missing_is_noop() -> None:
+    import trelix_mcp.server as srv
+
+    reg = MagicMock()
+    reg.list.return_value = []
+
+    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
+        MockRegistry.load.return_value = reg
+        response = srv.federation_remove_repo(alias="nonexistent")
+
+    assert response == {"removed": False, "alias": "nonexistent"}
+
+
+def test_federation_search_all_no_repos_returns_empty() -> None:
+    import trelix_mcp.server as srv
+
+    reg = MagicMock()
+    reg.list.return_value = []
+
+    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
+        MockRegistry.load.return_value = reg
+        response = srv.federation_search_all(query="auth")
+
+    assert response == {
+        "results": [],
+        "next_cursor": None,
+        "total_available": 0,
+        "repos_searched": 0,
+    }
+
+
+def test_federation_search_all_returns_dict_envelope() -> None:
+    import trelix_mcp.server as srv
+
+    entry = MagicMock()
+    entry.alias = "myrepo"
+    reg = MagicMock()
+    reg.list.return_value = [entry]
+
+    result = _make_mock_result(source="myrepo:vector")
+
+    with (
+        patch("trelix_mcp.server.RepoRegistry") as MockRegistry,
+        patch("trelix_mcp.server.FederatedRetriever") as MockFed,
+    ):
+        MockRegistry.load.return_value = reg
+        MockFed.return_value.retrieve.return_value = [result]
+        response = srv.federation_search_all(query="auth", k=10)
+
+    assert response["repos_searched"] == 1
+    assert response["total_available"] == 1
+    assert len(response["results"]) == 1
+    assert response["results"][0]["repo"] == "myrepo"
+    assert response["results"][0]["source"] == "myrepo:vector"
+
+
+# ---------------------------------------------------------------------------
+# Agent-session (persistent ReAct memory) tools
+# ---------------------------------------------------------------------------
+
+
+def test_ask_agent_returns_dict_with_session_id() -> None:
+    import trelix_mcp.server as srv
+
+    mock_loop = MagicMock()
+    mock_loop.run.return_value = ("answer text", "some-uuid")
+    mock_db = MagicMock()
+    mock_db.get_agent_turns.return_value = [{"turn_index": 0}, {"turn_index": 1}]
+
+    with (
+        patch("trelix_mcp.server.IndexConfig"),
+        patch("trelix_mcp.server.AgentLoop", return_value=mock_loop),
+        patch("trelix_mcp.server.Database", return_value=mock_db),
+    ):
+        response = srv.ask_agent(query="how does auth work", repo_path="/fake/repo")
+
+    assert response == {"answer": "answer text", "session_id": "some-uuid", "turn_count": 2}
+
+
+def test_ask_agent_generates_session_id_when_omitted() -> None:
+    import trelix_mcp.server as srv
+
+    mock_loop = MagicMock()
+    mock_loop.run.return_value = ("answer", "freshly-generated-uuid")
+    mock_db = MagicMock()
+    mock_db.get_agent_turns.return_value = []
+
+    with (
+        patch("trelix_mcp.server.IndexConfig"),
+        patch("trelix_mcp.server.AgentLoop", return_value=mock_loop),
+        patch("trelix_mcp.server.Database", return_value=mock_db),
+    ):
+        response = srv.ask_agent(query="q", repo_path="/fake/repo")
+
+    mock_loop.run.assert_called_once_with("q", session_id=None)
+    assert response["session_id"] == "freshly-generated-uuid"
+    assert response["session_id"]
+
+
+def test_agent_list_sessions_returns_dict() -> None:
+    import trelix_mcp.server as srv
+
+    mock_db = MagicMock()
+    mock_db.list_agent_sessions.return_value = [
+        {
+            "session_id": "s1",
+            "created_at": "t1",
+            "last_active_at": "t1",
+            "query": "q1",
+            "turn_count": 2,
+        }
+    ]
+
+    with (
+        patch("trelix_mcp.server.IndexConfig") as MockIndexConfig,
+        patch("trelix_mcp.server.Database", return_value=mock_db),
+    ):
+        MockIndexConfig.return_value.retrieval.agent_session_max_age_seconds = 604_800.0
+        response = srv.agent_list_sessions(repo_path="/fake/repo")
+
+    assert response["count"] == 1
+    assert response["sessions"][0]["session_id"] == "s1"
+
+
+def test_agent_clear_session_returns_dict() -> None:
+    import trelix_mcp.server as srv
+
+    mock_db = MagicMock()
+    mock_db.delete_agent_session.return_value = True
+
+    with (
+        patch("trelix_mcp.server.IndexConfig"),
+        patch("trelix_mcp.server.Database", return_value=mock_db),
+    ):
+        response = srv.agent_clear_session(repo_path="/fake/repo", session_id="s1")
+
+    assert response == {"cleared": True, "session_id": "s1"}
 
 
 # ---------------------------------------------------------------------------

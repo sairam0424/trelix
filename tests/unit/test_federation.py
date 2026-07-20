@@ -140,6 +140,74 @@ class TestFederatedRetriever:
         results = fed.retrieve("test", k=5)
         assert results == []
 
+    def test_results_tagged_with_repo_alias(self, tmp_path: Path) -> None:
+        """Regression test: results must be tagged '{alias}:{leg}' for provenance.
+
+        This tagging existed from federation's original implementation but was
+        silently dropped in a later refactor, breaking `search-all`'s repo
+        column with no test catching it. This test locks the behavior in.
+        """
+        from trelix.federation.retriever import FederatedRetriever
+
+        registry = RepoRegistry.load(str(tmp_path / "repos.json"))
+        registry.add("myrepo", str(tmp_path / "myrepo"))
+
+        mock_result = MagicMock()
+        mock_result.chunk.symbol_id = 1
+        mock_result.score = 0.9
+        mock_result.source = "vector"
+        mock_ctx = MagicMock()
+        mock_ctx.results = [mock_result]
+
+        with patch("trelix.federation.retriever.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            fed = FederatedRetriever(registry, max_workers=1)
+            results = fed.retrieve("how does auth work", k=5)
+
+        assert len(results) == 1
+        assert results[0].source == "myrepo:vector"
+
+    def test_weight_forwarded_to_rrf(self, tmp_path: Path) -> None:
+        """Regression test: RepoEntry.weight must actually influence fused ranking."""
+        from trelix.federation.retriever import FederatedRetriever
+
+        registry = RepoRegistry.load(str(tmp_path / "repos.json"))
+        registry.add("low", str(tmp_path / "low"), weight=1.0)
+        registry.add("high", str(tmp_path / "high"), weight=5.0)
+
+        def _make_ctx(symbol_id: int) -> MagicMock:
+            r = MagicMock()
+            r.chunk.symbol_id = symbol_id
+            r.score = 0.9
+            r.rank = 1
+            r.source = "vector"
+            ctx = MagicMock()
+            ctx.results = [r]
+            return ctx
+
+        # Each repo's retriever returns one distinct result at rank 1.
+        contexts = {"low": _make_ctx(1), "high": _make_ctx(2)}
+
+        # Patch Retriever's constructor to inspect the repo_path baked into the
+        # IndexConfig it receives, and return a mock whose retrieve() yields
+        # that repo's distinct result.
+        def _retriever_side_effect(config):
+            retriever = MagicMock()
+            if str(tmp_path / "high") in str(config.repo_path):
+                retriever.retrieve.return_value = contexts["high"]
+            else:
+                retriever.retrieve.return_value = contexts["low"]
+            return retriever
+
+        with patch("trelix.federation.retriever.Retriever", side_effect=_retriever_side_effect):
+            fed = FederatedRetriever(registry, max_workers=2)
+            results = fed.retrieve("query", k=5)
+
+        assert len(results) == 2
+        # The weight-5.0 repo's result must rank first (higher fused score).
+        assert results[0].chunk.symbol_id == 2
+        assert results[0].source == "high:vector"
+
 
 # ---------------------------------------------------------------------------
 # TTL cache tests

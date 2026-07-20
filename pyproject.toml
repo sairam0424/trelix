@@ -7,7 +7,7 @@ packages = ["src/trelix"]
 
 [project]
 name = "trelix"
-version = "2.7.3"
+version = "2.8.0"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }

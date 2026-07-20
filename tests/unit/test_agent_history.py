@@ -37,6 +37,40 @@ class TestTurnHistory:
         h = TurnHistory()
         assert h.to_text() == ""
 
+    def test_to_dicts_round_trip(self) -> None:
+        h = TurnHistory()
+        h.add(_make_turn(1))
+        h.add(_make_turn(2))
+
+        rows = h.to_dicts()
+
+        assert len(rows) == 2
+        assert rows[0]["thought"] == "Thought 1"
+        assert rows[0]["action_type"] == "retrieve"
+        assert rows[0]["action_arguments"] == {"query": "query 1"}
+        assert rows[0]["observation_source"] == "retrieve"
+        assert rows[0]["observation_success"] is True
+
+    def test_from_dicts_reconstructs_turns(self) -> None:
+        h = TurnHistory()
+        h.add(_make_turn(1))
+        h.add(_make_turn(2))
+        rows = h.to_dicts()
+
+        reconstructed = TurnHistory.from_dicts(rows)
+
+        assert len(reconstructed.turns) == 2
+        assert reconstructed.turns[0].thought == "Thought 1"
+        assert reconstructed.turns[0].action.action_type == ActionType.RETRIEVE
+        assert reconstructed.turns[0].action.arguments == {"query": "query 1"}
+        assert reconstructed.turns[1].observation.success is True
+        # Round-trip: re-serializing must produce the identical rows.
+        assert reconstructed.to_dicts() == rows
+
+    def test_from_dicts_empty_list(self) -> None:
+        h = TurnHistory.from_dicts([])
+        assert h.turns == []
+
 
 class TestHistoryCompressor:
     def test_compress_within_budget_unchanged(self) -> None:

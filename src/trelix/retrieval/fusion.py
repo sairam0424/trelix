@@ -21,6 +21,7 @@ def reciprocal_rank_fusion(
     ranked_lists: list[list[SearchResult]],
     k: int = 60,
     weights: dict[str, float] | None = None,
+    list_weights: list[float] | None = None,
 ) -> list[SearchResult]:
     """
     Fuse multiple ranked result lists using RRF, then optionally apply
@@ -32,6 +33,12 @@ def reciprocal_rank_fusion(
         weights:      optional dict mapping Language enum value (str) to a
                       multiplicative weight applied after RRF accumulation.
                       None or empty dict → no weighting (backward compatible).
+        list_weights: optional per-list multiplier (same length/order as
+                      ranked_lists) applied to each list's RRF rank
+                      contribution before summing — e.g. federated search
+                      weighting one repo's results above another's. Orthogonal
+                      to `weights` (which scales by result language, not by
+                      source list). None → no weighting (backward compatible).
 
     Returns:
         Single merged list sorted by fused (weighted) RRF score, best first.
@@ -41,10 +48,11 @@ def reciprocal_rank_fusion(
     # Keep the best SearchResult object per chunk (highest contributing list)
     best_result: dict[int, SearchResult] = {}
 
-    for ranked_list in ranked_lists:
+    for list_idx, ranked_list in enumerate(ranked_lists):
+        list_weight = list_weights[list_idx] if list_weights else 1.0
         for rank, result in enumerate(ranked_list, start=1):
             chunk_id = result.chunk.symbol_id  # use symbol_id as dedup key
-            rrf_scores[chunk_id] += 1.0 / (k + rank)
+            rrf_scores[chunk_id] += list_weight / (k + rank)
             # Keep first-seen result: source reflects which leg first found it.
             # Do NOT replace based on raw score — scores across legs (cosine vs
             # BM25) are not comparable, so score comparison would always favor

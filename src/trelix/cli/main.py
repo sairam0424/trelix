@@ -260,6 +260,12 @@ def ask(
     agentic: Annotated[
         bool, typer.Option("--agentic", help="Enable multi-turn agentic ReAct loop.")
     ] = False,
+    session: Annotated[
+        str | None,
+        typer.Option(
+            "--session", help="Resume a persisted agent session by ID (implies --agentic)."
+        ),
+    ] = None,
 ) -> None:
     """Ask a question — retrieval + LLM synthesis (requires OPENAI_API_KEY for full synthesis)"""
     _setup_logging(False)
@@ -287,8 +293,8 @@ def ask(
         err_console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    # --agentic flag overrides the config field
-    if agentic:
+    # --agentic flag overrides the config field; --session implies --agentic
+    if session is not None or agentic:
         config.retrieval.agentic_enabled = True
 
     try:
@@ -296,8 +302,9 @@ def ask(
             from trelix.agent import AgentLoop
 
             agent_loop = AgentLoop(config)
-            answer = agent_loop.run(query)
+            answer, resolved_session = agent_loop.run(query, session_id=session)
             console.print(answer)
+            err_console.print(f"[dim]Session: {resolved_session}[/dim]")
             return
 
         retriever = Retriever(config)
@@ -1533,6 +1540,122 @@ def federation_list(
     for e in entries:
         table.add_row(e.alias, e.path, str(e.weight))
     console.print(table)
+
+
+@federation_app.command("remove")
+def federation_remove(
+    alias: Annotated[str, typer.Argument(help="Alias of the repo to remove.")],
+    config_file: Annotated[str | None, typer.Option("--config")] = None,
+) -> None:
+    """Unregister a repo from federated search."""
+    from trelix.federation.registry import RepoRegistry
+
+    registry = RepoRegistry.load(config_file)
+    existed = any(e.alias == alias for e in registry.list())
+    registry.remove(alias)
+    registry.save()
+    if existed:
+        console.print(f"[green]Removed '{alias}'[/green]")
+    else:
+        console.print(f"[yellow]No repo registered with alias '{alias}'[/yellow]")
+
+
+# ---------------------------------------------------------------------------
+# agent sub-app (persisted ReAct session management)
+# ---------------------------------------------------------------------------
+
+agent_app = typer.Typer(help="Manage persisted agentic (ReAct) sessions.")
+app.add_typer(agent_app, name="agent")
+
+sessions_app = typer.Typer(help="List/show/clear persisted agent sessions.")
+agent_app.add_typer(sessions_app, name="sessions")
+
+
+@sessions_app.command("list")
+def agent_sessions_list(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")],
+    limit: Annotated[int, typer.Option("--limit", help="Max sessions to show.")] = 50,
+) -> None:
+    """List persisted agent sessions for a repo, most recently active first."""
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
+
+    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    db = Database(config.db_path_absolute)
+    try:
+        max_age = config.retrieval.agent_session_max_age_seconds
+        if max_age > 0:
+            db.evict_stale_agent_sessions(max_age)
+        sessions = db.list_agent_sessions(limit=limit)
+    finally:
+        db.close()
+
+    if not sessions:
+        console.print("[yellow]No persisted agent sessions.[/yellow]")
+        return
+
+    table = Table(title="Agent Sessions")
+    table.add_column("Session ID")
+    table.add_column("Query")
+    table.add_column("Turns", justify="right")
+    table.add_column("Last Active")
+    for s in sessions:
+        table.add_row(s["session_id"], s["query"][:60], str(s["turn_count"]), s["last_active_at"])
+    console.print(table)
+
+
+@sessions_app.command("show")
+def agent_sessions_show(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")],
+    session_id: Annotated[str, typer.Argument(help="Session ID to show.")],
+) -> None:
+    """Show the full turn-by-turn history for a persisted agent session."""
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
+
+    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    db = Database(config.db_path_absolute)
+    try:
+        turns = db.get_agent_turns(session_id)
+    finally:
+        db.close()
+
+    if not turns:
+        console.print(f"[yellow]No turns found for session '{session_id}'.[/yellow]")
+        return
+
+    for t in turns:
+        console.print(
+            Panel(
+                f"[bold]Thought:[/bold] {t['thought']}\n"
+                f"[bold]Action:[/bold] {t['action_type']} {t['action_arguments']}\n"
+                f"[bold]Observation ({'ok' if t['observation_success'] else 'err'}):[/bold] "
+                f"{t['observation_content'][:500]}",
+                title=f"Turn {t['turn_index'] + 1}",
+            )
+        )
+
+
+@sessions_app.command("clear")
+def agent_sessions_clear(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")],
+    session_id: Annotated[str, typer.Argument(help="Session ID to delete.")],
+) -> None:
+    """Delete a persisted agent session and all its turns."""
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
+
+    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    db = Database(config.db_path_absolute)
+    try:
+        existed = db.delete_agent_session(session_id)
+    finally:
+        db.close()
+
+    if existed:
+        console.print(f"[green]Cleared session '{session_id}'[/green]")
+    else:
+        console.print(f"[yellow]No session found with ID '{session_id}'[/yellow]")
 
 
 # ---------------------------------------------------------------------------
