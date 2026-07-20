@@ -1946,8 +1946,7 @@ class Database:
         Returns the number of sessions deleted.
         """
         cur = self._conn.execute(
-            "DELETE FROM agent_sessions "
-            "WHERE (unixepoch('now') - unixepoch(last_active_at)) > ?",
+            "DELETE FROM agent_sessions WHERE (unixepoch('now') - unixepoch(last_active_at)) > ?",
             (max_age_seconds,),
         )
         self._conn.commit()

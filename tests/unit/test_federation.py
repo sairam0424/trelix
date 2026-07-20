@@ -199,9 +199,7 @@ class TestFederatedRetriever:
                 retriever.retrieve.return_value = contexts["low"]
             return retriever
 
-        with patch(
-            "trelix.federation.retriever.Retriever", side_effect=_retriever_side_effect
-        ):
+        with patch("trelix.federation.retriever.Retriever", side_effect=_retriever_side_effect):
             fed = FederatedRetriever(registry, max_workers=2)
             results = fed.retrieve("query", k=5)
 

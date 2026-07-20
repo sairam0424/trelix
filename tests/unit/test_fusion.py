@@ -426,8 +426,6 @@ class TestListWeights:
     def test_list_weights_orthogonal_to_language_weights(self) -> None:
         """Both list_weights and weights can apply simultaneously without conflict."""
         py = _make_result_lang(symbol_id=1, score=0.9, language=Language.PYTHON)
-        fused = reciprocal_rank_fusion(
-            [[py]], k=60, weights={"python": 2.0}, list_weights=[3.0]
-        )
+        fused = reciprocal_rank_fusion([[py]], k=60, weights={"python": 2.0}, list_weights=[3.0])
         expected = (3.0 / (60 + 1)) * 2.0
         assert abs(fused[0].score - expected) < 1e-12

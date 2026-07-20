@@ -177,7 +177,12 @@ def test_federation_remove_missing_alias_exits_gracefully() -> None:
 def test_ask_session_flag_help() -> None:
     result = runner.invoke(app, ["ask", "--help"])
     assert result.exit_code == 0
-    assert "--session" in result.output
+    # Strip ANSI codes before asserting — CliRunner with color enabled wraps
+    # flags in styling spans that split literal substring matches.
+    import re
+
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--session" in plain
 
 
 def test_agent_sessions_list_help() -> None:
