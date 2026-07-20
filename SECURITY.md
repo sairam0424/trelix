@@ -43,6 +43,24 @@ The `output` query parameter on `GET /graph/visualize` is validated server-side:
 - Paths outside this directory are rejected with HTTP 400
 - This prevents arbitrary file writes to sensitive locations
 
+### MCP federation tools — config_path confinement (v2.8.1+)
+
+The `config_path` parameter accepted by `federation_list_repos`,
+`federation_add_repo`, `federation_remove_repo`, and `federation_search_all`
+is validated server-side:
+- The resolved path must be inside `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`
+- Paths outside these roots are rejected with an `{"error": ...}` response
+  (never raises — matches the "never raise" convention of every other
+  federation tool)
+- Unlike the `/graph/visualize` check above, this uses `Path.is_relative_to()`
+  rather than a string-prefix comparison, which avoids a sibling-directory
+  bypass (e.g. `~/.config/trelixevil/` would incorrectly pass a naive
+  `startswith("~/.config/trelix")` check)
+- Also caps the federation registry at `TRELIX_FEDERATION_MAX_REPOS`
+  (default 50) entries and the number of repos actually queried per
+  `federation_search_all` call, preventing a scripted/adversarial MCP
+  client from growing the registry or fan-out unboundedly
+
 ## Out of Scope
 
 - Vulnerabilities in third-party dependencies (report to upstream)

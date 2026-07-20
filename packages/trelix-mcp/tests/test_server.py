@@ -227,7 +227,8 @@ def test_federation_list_repos_empty_registry() -> None:
         MockRegistry.load.return_value = empty_reg
         response = srv.federation_list_repos()
 
-    assert response == {"repos": [], "count": 0}
+    assert response == {"repos": [], "count": 0, "error": None}
+    MockRegistry.load.assert_called_once_with(None)
 
 
 def test_federation_list_repos_returns_entries() -> None:
@@ -247,7 +248,20 @@ def test_federation_list_repos_returns_entries() -> None:
     assert response == {
         "repos": [{"alias": "myrepo", "path": "/repo", "weight": 2.0}],
         "count": 1,
+        "error": None,
     }
+
+
+def test_federation_list_repos_rejects_unconfined_config_path() -> None:
+    import trelix_mcp.server as srv
+
+    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
+        response = srv.federation_list_repos(config_path="/etc/passwd")
+
+    assert response["repos"] == []
+    assert response["count"] == 0
+    assert response["error"] is not None
+    MockRegistry.load.assert_not_called()
 
 
 def test_federation_add_repo_success() -> None:
@@ -259,7 +273,7 @@ def test_federation_add_repo_success() -> None:
         MockRegistry.load.return_value = reg
         response = srv.federation_add_repo(alias="myrepo", path="/repo", weight=1.5)
 
-    reg.add.assert_called_once_with("myrepo", "/repo", 1.5)
+    reg.add.assert_called_once_with("myrepo", "/repo", 1.5, max_repos=50)
     reg.save.assert_called_once()
     assert response == {"added": True, "alias": "myrepo", "path": "/repo", "error": None}
 
@@ -279,6 +293,19 @@ def test_federation_add_repo_duplicate_alias_returns_error() -> None:
     reg.save.assert_not_called()
 
 
+def test_federation_add_repo_rejects_unconfined_config_path() -> None:
+    import trelix_mcp.server as srv
+
+    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
+        response = srv.federation_add_repo(
+            alias="myrepo", path="/repo", config_path="/etc/passwd"
+        )
+
+    assert response["added"] is False
+    assert response["error"] is not None
+    MockRegistry.load.assert_not_called()
+
+
 def test_federation_remove_repo_existing() -> None:
     import trelix_mcp.server as srv
 
@@ -293,7 +320,7 @@ def test_federation_remove_repo_existing() -> None:
 
     reg.remove.assert_called_once_with("myrepo")
     reg.save.assert_called_once()
-    assert response == {"removed": True, "alias": "myrepo"}
+    assert response == {"removed": True, "alias": "myrepo", "error": None}
 
 
 def test_federation_remove_repo_missing_is_noop() -> None:
@@ -306,7 +333,7 @@ def test_federation_remove_repo_missing_is_noop() -> None:
         MockRegistry.load.return_value = reg
         response = srv.federation_remove_repo(alias="nonexistent")
 
-    assert response == {"removed": False, "alias": "nonexistent"}
+    assert response == {"removed": False, "alias": "nonexistent", "error": None}
 
 
 def test_federation_search_all_no_repos_returns_empty() -> None:
@@ -324,7 +351,20 @@ def test_federation_search_all_no_repos_returns_empty() -> None:
         "next_cursor": None,
         "total_available": 0,
         "repos_searched": 0,
+        "repos_skipped": 0,
+        "error": None,
     }
+
+
+def test_federation_search_all_rejects_unconfined_config_path() -> None:
+    import trelix_mcp.server as srv
+
+    with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
+        response = srv.federation_search_all(query="auth", config_path="/etc/passwd")
+
+    assert response["results"] == []
+    assert response["error"] is not None
+    MockRegistry.load.assert_not_called()
 
 
 def test_federation_search_all_returns_dict_envelope() -> None:
@@ -342,14 +382,66 @@ def test_federation_search_all_returns_dict_envelope() -> None:
         patch("trelix_mcp.server.FederatedRetriever") as MockFed,
     ):
         MockRegistry.load.return_value = reg
+        MockFed.return_value.repos_queried_count.return_value = 1
         MockFed.return_value.retrieve.return_value = [result]
         response = srv.federation_search_all(query="auth", k=10)
 
     assert response["repos_searched"] == 1
+    assert response["repos_skipped"] == 0
     assert response["total_available"] == 1
     assert len(response["results"]) == 1
     assert response["results"][0]["repo"] == "myrepo"
     assert response["results"][0]["source"] == "myrepo:vector"
+    # Fetch width must be the fixed constant, independent of cursor/k —
+    # regression guard for the pagination-stability fix (issue #69 item 3).
+    MockFed.return_value.retrieve.assert_called_once_with(
+        "auth", k=srv._FEDERATION_SEARCH_ALL_FETCH_WIDTH
+    )
+
+
+def test_federation_search_all_fetch_width_independent_of_cursor() -> None:
+    """Same fixed fetch width regardless of cursor — the actual pagination fix."""
+    import trelix_mcp.server as srv
+
+    entry = MagicMock()
+    entry.alias = "myrepo"
+    reg = MagicMock()
+    reg.list.return_value = [entry]
+
+    with (
+        patch("trelix_mcp.server.RepoRegistry") as MockRegistry,
+        patch("trelix_mcp.server.FederatedRetriever") as MockFed,
+    ):
+        MockRegistry.load.return_value = reg
+        MockFed.return_value.repos_queried_count.return_value = 1
+        MockFed.return_value.retrieve.return_value = []
+
+        srv.federation_search_all(query="q", k=10, cursor=0)
+        srv.federation_search_all(query="q", k=10, cursor=90)
+
+    calls = MockFed.return_value.retrieve.call_args_list
+    assert len(calls) == 2
+    assert calls[0] == calls[1] == (("q",), {"k": srv._FEDERATION_SEARCH_ALL_FETCH_WIDTH})
+
+
+def test_federation_search_all_reports_repos_skipped() -> None:
+    import trelix_mcp.server as srv
+
+    entries = [MagicMock(alias=f"repo{i}") for i in range(5)]
+    reg = MagicMock()
+    reg.list.return_value = entries
+
+    with (
+        patch("trelix_mcp.server.RepoRegistry") as MockRegistry,
+        patch("trelix_mcp.server.FederatedRetriever") as MockFed,
+    ):
+        MockRegistry.load.return_value = reg
+        MockFed.return_value.repos_queried_count.return_value = 3
+        MockFed.return_value.retrieve.return_value = []
+        response = srv.federation_search_all(query="q")
+
+    assert response["repos_searched"] == 3
+    assert response["repos_skipped"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +465,12 @@ def test_ask_agent_returns_dict_with_session_id() -> None:
         response = srv.ask_agent(query="how does auth work", repo_path="/fake/repo")
 
     assert response == {"answer": "answer text", "session_id": "some-uuid", "turn_count": 2}
+    # Regression guard: get_agent_turns must be called with the loop-returned
+    # resolved_session_id ("some-uuid"), not the input session_id param
+    # (which was None here) — a mutation swapping these would still produce
+    # turn_count=2 (mock_db.get_agent_turns.return_value is fixed regardless
+    # of argument), so the shape-only assertion above would miss it.
+    mock_db.get_agent_turns.assert_called_once_with("some-uuid")
 
 
 def test_ask_agent_generates_session_id_when_omitted() -> None:
