@@ -544,6 +544,12 @@ class RetrievalConfig(BaseSettings):
         le=16,
         alias="TRELIX_FEDERATION_MAX_WORKERS",
     )
+    federation_max_repos: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+        alias="TRELIX_FEDERATION_MAX_REPOS",
+    )
 
     # ── Query embedding cache ─────────────────────────────────────────────────
     # Caches embed_query() results in-memory (LRU, per-Retriever session).

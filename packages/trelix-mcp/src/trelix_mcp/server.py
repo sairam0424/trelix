@@ -10,12 +10,13 @@ logging.basicConfig(
 )
 
 import signal  # noqa: E402
+from pathlib import Path  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
 from fastmcp import Context, FastMCP  # noqa: E402
 
 from trelix.agent.loop import AgentLoop  # noqa: E402
-from trelix.core.config import EmbedderConfig, IndexConfig  # noqa: E402
+from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig  # noqa: E402
 from trelix.federation.registry import RepoRegistry  # noqa: E402
 from trelix.federation.retriever import FederatedRetriever  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
@@ -467,23 +468,78 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict]:
     ]
 
 
+# Fixed, cursor-independent per-repo fan-out width for federation_search_all.
+# Wide enough to cover any realistic single-page request without letting the
+# per-repo candidate pool (and therefore the RRF fusion input) change shape
+# as `cursor` grows — see federation_search_all's docstring.
+_FEDERATION_SEARCH_ALL_FETCH_WIDTH = 100
+
+
+class ConfigPathNotAllowedError(ValueError):
+    """Raised when a caller-supplied federation config_path resolves outside
+    every allowlisted root."""
+
+
+def _confine_federation_config_path(config_path: str | None) -> str | None:
+    """Resolve and confine a caller-supplied federation config_path.
+
+    Mirrors the path-confinement pattern documented in SECURITY.md for
+    GET /graph/visualize (src/trelix/api/app.py) — canonicalize with
+    Path.resolve(), then require the result live under an allowlisted root.
+    Uses Path.is_relative_to() rather than a naive string startswith() check
+    (startswith("/repo/.trelix") would incorrectly also match a sibling
+    directory named "/repo/.trelixevil").
+
+    Allowlisted roots:
+    - ~/.config/trelix/ (RepoRegistry's default config directory)
+    - <cwd>/.trelix/ (a repo-local override, when the MCP server process is
+      launched from within a repo — these 4 tools have no repo_path param
+      of their own to derive a repo root from, so the process cwd is the
+      closest available analog to "the repo-local .trelix/" the docstring
+      already promises)
+
+    Returns None unchanged (the RepoRegistry default). Raises
+    ConfigPathNotAllowedError if config_path resolves outside both roots.
+    """
+    if config_path is None:
+        return None
+
+    from trelix.federation.registry import _DEFAULT_CONFIG
+
+    resolved = Path(config_path).resolve()
+    allowed_roots = [_DEFAULT_CONFIG.parent, Path.cwd() / ".trelix"]
+    if not any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots):
+        raise ConfigPathNotAllowedError(
+            f"config_path must resolve inside one of {[str(r) for r in allowed_roots]}, "
+            f"got {resolved}"
+        )
+    return str(resolved)
+
+
 @mcp.tool()
 def federation_list_repos(config_path: str | None = None) -> dict:
     """List all repos registered for federated (multi-repo) search.
 
     Args:
-        config_path: Optional path to a custom repos.json. Defaults to
+        config_path: Optional path to a custom repos.json. Must resolve
+            inside ~/.config/trelix/ or <cwd>/.trelix/. Defaults to
             ~/.config/trelix/repos.json.
 
     Returns:
-        {"repos": [{"alias": str, "path": str, "weight": float}, ...], "count": int}
+        {"repos": [{"alias": str, "path": str, "weight": float}, ...],
+         "count": int, "error": str|None}
     """
     _log.info("federation_list_repos config_path=%r", config_path)
-    registry = RepoRegistry.load(config_path)
+    try:
+        confined_path = _confine_federation_config_path(config_path)
+    except ConfigPathNotAllowedError as exc:
+        return {"repos": [], "count": 0, "error": str(exc)}
+    registry = RepoRegistry.load(confined_path)
     entries = registry.list()
     return {
         "repos": [{"alias": e.alias, "path": e.path, "weight": e.weight} for e in entries],
         "count": len(entries),
+        "error": None,
     }
 
 
@@ -500,21 +556,29 @@ def federation_add_repo(
     - path must be an ABSOLUTE path.
     - Run index_codebase on it separately before federation_search_all can
       return results from it — registering a repo does not index it.
+    - The registry is capped at TRELIX_FEDERATION_MAX_REPOS entries
+      (default 50) to prevent unbounded growth from a scripted client.
 
     Args:
         alias: Short unique name for the repo (e.g. "auth-service").
         path: Absolute path to the repo root.
         weight: RRF weight multiplier (default 1.0; higher = ranked higher
             in federation_search_all's fused results).
-        config_path: Optional path to a custom repos.json.
+        config_path: Optional path to a custom repos.json. Must resolve
+            inside ~/.config/trelix/ or <cwd>/.trelix/.
 
     Returns:
         {"added": bool, "alias": str, "path": str, "error": str|None}
     """
     _log.info("federation_add_repo alias=%r path=%r weight=%s", alias, path, weight)
-    registry = RepoRegistry.load(config_path)
     try:
-        registry.add(alias, path, weight)
+        confined_path = _confine_federation_config_path(config_path)
+    except ConfigPathNotAllowedError as exc:
+        return {"added": False, "alias": alias, "path": path, "error": str(exc)}
+    registry = RepoRegistry.load(confined_path)
+    max_repos = RetrievalConfig().federation_max_repos
+    try:
+        registry.add(alias, path, weight, max_repos=max_repos)
         registry.save()
         return {"added": True, "alias": alias, "path": path, "error": None}
     except ValueError as exc:
@@ -527,17 +591,22 @@ def federation_remove_repo(alias: str, config_path: str | None = None) -> dict:
 
     Args:
         alias: The alias to remove. No-op (removed=False) if not registered.
-        config_path: Optional path to a custom repos.json.
+        config_path: Optional path to a custom repos.json. Must resolve
+            inside ~/.config/trelix/ or <cwd>/.trelix/.
 
     Returns:
-        {"removed": bool, "alias": str}
+        {"removed": bool, "alias": str, "error": str|None}
     """
     _log.info("federation_remove_repo alias=%r", alias)
-    registry = RepoRegistry.load(config_path)
+    try:
+        confined_path = _confine_federation_config_path(config_path)
+    except ConfigPathNotAllowedError as exc:
+        return {"removed": False, "alias": alias, "error": str(exc)}
+    registry = RepoRegistry.load(confined_path)
     existed = any(e.alias == alias for e in registry.list())
     registry.remove(alias)
     registry.save()
-    return {"removed": existed, "alias": alias}
+    return {"removed": existed, "alias": alias, "error": None}
 
 
 @mcp.tool()
@@ -554,26 +623,54 @@ def federation_search_all(
       already indexed (run index_codebase on each repo path beforehand).
     - Results are merged via Reciprocal Rank Fusion weighted by each repo's
       registered weight, then deduplicated.
+    - Only the first TRELIX_FEDERATION_MAX_REPOS registered repos (default
+      50) are actually queried; repos_skipped reports how many were
+      omitted.
 
     🎯 When to Use:
     - Cross-service / cross-repo questions ("where is auth handled across
       our microservices?")
     - You don't know which of several registered repos contains the answer.
 
-    📄 Pagination: same cursor/k contract as search_code.
+    📄 Pagination: same cursor/k contract as search_code — pages are sliced
+    from one fixed-width fetch, independent of cursor, so page contents are
+    stable across calls (results don't shift/duplicate/vanish between
+    pages the way a cursor-scaled fetch width would cause).
 
     Returns:
         {"results": [...], "next_cursor": int|None, "total_available": int,
-         "repos_searched": int}
+         "repos_searched": int, "repos_skipped": int, "error": str|None}
     """
     _log.info("federation_search_all query=%r k=%d cursor=%d", query, k, cursor)
-    registry = RepoRegistry.load(config_path)
+    try:
+        confined_path = _confine_federation_config_path(config_path)
+    except ConfigPathNotAllowedError as exc:
+        return {
+            "results": [],
+            "next_cursor": None,
+            "total_available": 0,
+            "repos_searched": 0,
+            "repos_skipped": 0,
+            "error": str(exc),
+        }
+    registry = RepoRegistry.load(confined_path)
     entries = registry.list()
     if not entries:
-        return {"results": [], "next_cursor": None, "total_available": 0, "repos_searched": 0}
+        return {
+            "results": [],
+            "next_cursor": None,
+            "total_available": 0,
+            "repos_searched": 0,
+            "repos_skipped": 0,
+            "error": None,
+        }
 
-    fed = FederatedRetriever(registry)
-    all_results = fed.retrieve(query, k=max(k + cursor, k))
+    max_repos = RetrievalConfig().federation_max_repos
+    fed = FederatedRetriever(registry, max_repos=max_repos)
+    repos_searched = fed.repos_queried_count(len(entries))
+    repos_skipped = len(entries) - repos_searched
+
+    all_results = fed.retrieve(query, k=_FEDERATION_SEARCH_ALL_FETCH_WIDTH)
 
     page = all_results[cursor : cursor + k]
     next_cursor = cursor + k if cursor + k < len(all_results) else None
@@ -594,7 +691,9 @@ def federation_search_all(
         ],
         "next_cursor": next_cursor,
         "total_available": len(all_results),
-        "repos_searched": len(entries),
+        "repos_searched": repos_searched,
+        "repos_skipped": repos_skipped,
+        "error": None,
     }
 
 

@@ -56,6 +56,11 @@ class FederatedRetriever:
 
     Args:
         cache_ttl: Seconds to cache identical query results. 0 disables cache.
+        max_repos: Cap on how many registered repos are actually queried per
+            call (the first N in registry order). None (default) is
+            unbounded. Prevents a runaway/adversarial `federation_add_repo`
+            loop from making every subsequent query scale linearly with an
+            unbounded repo count.
     """
 
     def __init__(
@@ -63,10 +68,12 @@ class FederatedRetriever:
         registry: RepoRegistry,
         max_workers: int = 4,
         cache_ttl: float = 120.0,
+        max_repos: int | None = None,
     ) -> None:
         self._registry = registry
         self._max_workers = max_workers
         self._cache_ttl = cache_ttl
+        self._max_repos = max_repos
         # {cache_key: (results, expiry_monotonic_time)}
         self._cache: dict[str, tuple[list[SearchResult], float]] = {}
         self._cache_lock = threading.Lock()
@@ -179,10 +186,16 @@ class FederatedRetriever:
             self._cache[key] = (results, expiry)
 
     def _query_repos(self, query: str, k: int = 10) -> list[SearchResult]:
-        """Execute fan-out query to all registered repos. No caching."""
+        """Execute fan-out query to all registered repos. No caching.
+
+        Only the first `max_repos` entries (registry order) are actually
+        queried if a cap is configured — see __init__'s max_repos docstring.
+        """
         entries = self._registry.list()
         if not entries:
             return []
+        if self._max_repos is not None:
+            entries = entries[: self._max_repos]
 
         per_repo_results: list[list[SearchResult]] = []
         per_repo_weights: list[float] = []
@@ -254,6 +267,14 @@ class FederatedRetriever:
 
         self._set_cached(cache_key, results)
         return results
+
+    def repos_queried_count(self, total_registered: int) -> int:
+        """Return how many of `total_registered` repos a retrieve() call will
+        actually query, given this instance's max_repos cap (stateless — safe
+        to call from any thread, does not touch the registry or cache)."""
+        if self._max_repos is None:
+            return total_registered
+        return min(total_registered, self._max_repos)
 
     def cache_stats(self) -> dict[str, int]:
         """Return cache hit/miss/size stats for observability."""
