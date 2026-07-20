@@ -94,6 +94,23 @@ class TestRepoRegistry:
         registry = RepoRegistry.load(str(config))
         assert registry.list() == []
 
+    def test_add_raises_when_at_max_repos_capacity(self, tmp_path: Path) -> None:
+        config = tmp_path / "repos.json"
+        registry = RepoRegistry.load(str(config))
+        registry.add("r1", "/r1", max_repos=2)
+        registry.add("r2", "/r2", max_repos=2)
+        with pytest.raises(ValueError, match="capacity"):
+            registry.add("r3", "/r3", max_repos=2)
+        assert len(registry.list()) == 2
+
+    def test_add_max_repos_none_is_unbounded(self, tmp_path: Path) -> None:
+        """Default (no max_repos passed) preserves today's unlimited CLI behavior."""
+        config = tmp_path / "repos.json"
+        registry = RepoRegistry.load(str(config))
+        for i in range(10):
+            registry.add(f"r{i}", f"/r{i}")
+        assert len(registry.list()) == 10
+
 
 class TestFederatedRetriever:
     def test_retrieve_fans_out_to_all_repos(self, tmp_path: Path) -> None:
@@ -139,6 +156,62 @@ class TestFederatedRetriever:
         fed = FederatedRetriever(registry)
         results = fed.retrieve("test", k=5)
         assert results == []
+
+    def test_query_repos_respects_max_repos_cap(self, tmp_path: Path) -> None:
+        """Only the first max_repos entries are actually queried."""
+        from trelix.federation.retriever import FederatedRetriever
+
+        registry = RepoRegistry.load(str(tmp_path / "repos.json"))
+        for i in range(5):
+            registry.add(f"r{i}", str(tmp_path / f"r{i}"))
+
+        mock_result = MagicMock()
+        mock_result.chunk.symbol_id = 1
+        mock_result.score = 0.9
+        mock_result.source = "vector"
+        mock_ctx = MagicMock()
+        mock_ctx.results = [mock_result]
+
+        with patch("trelix.federation.retriever.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            fed = FederatedRetriever(registry, max_workers=2, max_repos=3)
+            fed.retrieve("query", k=5)
+
+        # Only 3 of the 5 registered repos should have been queried.
+        assert MockRetriever.return_value.retrieve.call_count == 3
+
+    def test_max_repos_none_queries_all_repos(self, tmp_path: Path) -> None:
+        """Default (max_repos=None) is unbounded — preserves today's behavior."""
+        from trelix.federation.retriever import FederatedRetriever
+
+        registry = RepoRegistry.load(str(tmp_path / "repos.json"))
+        for i in range(5):
+            registry.add(f"r{i}", str(tmp_path / f"r{i}"))
+
+        mock_result = MagicMock()
+        mock_result.chunk.symbol_id = 1
+        mock_result.score = 0.9
+        mock_result.source = "vector"
+        mock_ctx = MagicMock()
+        mock_ctx.results = [mock_result]
+
+        with patch("trelix.federation.retriever.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            fed = FederatedRetriever(registry, max_workers=5)
+            fed.retrieve("query", k=5)
+
+        assert MockRetriever.return_value.retrieve.call_count == 5
+
+    def test_repos_queried_count(self, tmp_path: Path) -> None:
+        from trelix.federation.retriever import FederatedRetriever
+
+        registry = RepoRegistry.load(str(tmp_path / "repos.json"))
+        fed_capped = FederatedRetriever(registry, max_repos=3)
+        fed_unbounded = FederatedRetriever(registry)
+
+        assert fed_capped.repos_queried_count(10) == 3
+        assert fed_capped.repos_queried_count(2) == 2
+        assert fed_unbounded.repos_queried_count(10) == 10
 
     def test_results_tagged_with_repo_alias(self, tmp_path: Path) -> None:
         """Regression test: results must be tagged '{alias}:{leg}' for provenance.
@@ -207,6 +280,72 @@ class TestFederatedRetriever:
         # The weight-5.0 repo's result must rank first (higher fused score).
         assert results[0].chunk.symbol_id == 2
         assert results[0].source == "high:vector"
+
+    def test_query_repos_pairs_weight_with_correct_repo_deterministically(
+        self, tmp_path: Path
+    ) -> None:
+        """Deterministic regression test for the weight-pairing race.
+
+        test_weight_forwarded_to_rrf above goes through a real
+        ThreadPoolExecutor, so per_repo_results/per_repo_weights are
+        appended in whichever order the two threads happen to complete —
+        nondeterministic. A mutant that mispairs a weight with the wrong
+        result list would only be caught depending on that arbitrary
+        completion order (per the pre-push audit: ~10-40% false-pass rate
+        under mutation testing).
+
+        This test removes the ThreadPoolExecutor from the causal path
+        entirely by patching max_workers=1 (serializes _query_one calls,
+        pinning submission/completion order to registry.list() order) and
+        additionally verifying the exact fused score, not just relative
+        rank — so a weight/list mispairing fails on an exact-value
+        assertion regardless of thread scheduling.
+        """
+        from trelix.federation.retriever import FederatedRetriever
+
+        registry = RepoRegistry.load(str(tmp_path / "repos.json"))
+        registry.add("low", str(tmp_path / "low"), weight=1.0)
+        registry.add("high", str(tmp_path / "high"), weight=5.0)
+
+        def _make_ctx(symbol_id: int) -> MagicMock:
+            r = MagicMock()
+            r.chunk.symbol_id = symbol_id
+            r.score = 0.9
+            r.rank = 1
+            r.source = "vector"
+            ctx = MagicMock()
+            ctx.results = [r]
+            return ctx
+
+        contexts = {"low": _make_ctx(1), "high": _make_ctx(2)}
+
+        def _retriever_side_effect(config):
+            retriever = MagicMock()
+            if str(tmp_path / "high") in str(config.repo_path):
+                retriever.retrieve.return_value = contexts["high"]
+            else:
+                retriever.retrieve.return_value = contexts["low"]
+            return retriever
+
+        with patch("trelix.federation.retriever.Retriever", side_effect=_retriever_side_effect):
+            # max_workers=1 forces sequential submission/completion in
+            # registry.list() order, removing the ThreadPoolExecutor
+            # scheduling race from this test's causal path.
+            fed = FederatedRetriever(registry, max_workers=1)
+            results = fed.retrieve("query", k=5)
+
+        k = 60  # reciprocal_rank_fusion's default constant
+        expected_low_score = 1.0 / (k + 1)  # weight 1.0, rank 1
+        expected_high_score = 5.0 / (k + 1)  # weight 5.0, rank 1
+
+        scores_by_symbol = {r.chunk.symbol_id: r.score for r in results}
+        assert abs(scores_by_symbol[1] - expected_low_score) < 1e-12, (
+            "low-weight repo's fused score must exactly match weight=1.0 applied to its own list"
+        )
+        assert abs(scores_by_symbol[2] - expected_high_score) < 1e-12, (
+            "high-weight repo's fused score must exactly match weight=5.0 applied to its own "
+            "list, not accidentally swapped with the low-weight repo's contribution"
+        )
 
 
 # ---------------------------------------------------------------------------

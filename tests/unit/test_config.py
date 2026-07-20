@@ -180,6 +180,15 @@ class TestRetrievalConfig:
         assert cfg.context_token_budget == 12_000
         assert cfg.rerank is True
 
+    def test_federation_max_repos_default(self) -> None:
+        cfg = RetrievalConfig()
+        assert cfg.federation_max_repos == 50
+
+    def test_federation_max_repos_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_FEDERATION_MAX_REPOS", "10")
+        cfg = RetrievalConfig()
+        assert cfg.federation_max_repos == 10
+
     def test_flare_max_iter_env_emits_deprecation_warning(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
