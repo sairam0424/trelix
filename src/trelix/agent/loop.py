@@ -43,7 +43,9 @@ class AgentLoop:
 
     Usage:
         loop = AgentLoop(config)
-        answer = loop.run("how does the authentication system work?")
+        answer, session_id = loop.run("how does the authentication system work?")
+        # Resume the same session later:
+        answer2, _ = loop.run("what about logout?", session_id=session_id)
     """
 
     def __init__(self, config: IndexConfig) -> None:
@@ -65,15 +67,48 @@ class AgentLoop:
             self._llm_client = build_chat_client(self._config.llm)
         return self._llm_client
 
-    def run(self, query: str) -> str:
+    def run(self, query: str, session_id: str | None = None) -> tuple[str, str]:
         """
-        Execute the ReAct loop for a user query.
+        Execute the ReAct loop for a user query, optionally resuming a
+        persisted session.
 
-        Returns the final answer string. Never raises — falls back to
-        a summary of observations on any failure.
+        Args:
+            query: The question to answer.
+            session_id: If provided, prior turns for this session_id are
+                loaded from the DB and prepended to history before the loop
+                starts, and every new turn is persisted as it happens. If
+                None, a new UUID4 is generated so the caller always gets a
+                session_id back to resume later.
+
+        Returns:
+            (answer, session_id) — session_id is always populated (either
+            the one passed in, or a freshly generated UUID4). Never raises —
+            falls back to a summary of observations on any failure.
         """
+        import uuid
+
+        from trelix.store.db import Database
+
         cfg = self._config.retrieval
-        history = TurnHistory()
+        resolved_session_id = session_id or str(uuid.uuid4())
+
+        prior_rows: list[dict[str, Any]] = []
+        try:
+            db = Database(self._config.db_path_absolute)
+            try:
+                if cfg.agent_session_max_age_seconds > 0:
+                    db.evict_stale_agent_sessions(cfg.agent_session_max_age_seconds)
+                db.upsert_agent_session(resolved_session_id, query)
+                if session_id:
+                    prior_rows = db.get_agent_turns(resolved_session_id)
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning(
+                "AgentLoop: failed to load/init session %r: %s", resolved_session_id, exc
+            )
+
+        history = TurnHistory.from_dicts(prior_rows) if prior_rows else TurnHistory()
         compressor = HistoryCompressor(token_budget=cfg.agent_token_budget)
 
         for turn_n in range(cfg.agent_max_turns):
@@ -84,13 +119,42 @@ class AgentLoop:
                 break
 
             obs = self._execute_action(action)
-            history.add(Turn(thought=thought, action=action, observation=obs))
+            turn = Turn(thought=thought, action=action, observation=obs)
+            history.add(turn)
+            self._persist_turn(resolved_session_id, turn)
 
             if action.action_type == ActionType.DONE:
-                return str(action.arguments.get("answer", ""))
+                return str(action.arguments.get("answer", "")), resolved_session_id
 
         # Max turns reached — synthesize from history
-        return self._fallback_answer(query, history)
+        answer = self._fallback_answer(query, history)
+        return answer, resolved_session_id
+
+    def _persist_turn(self, session_id: str, turn: Turn) -> None:
+        """Best-effort persistence — never lets a DB error break the ReAct loop.
+
+        turn_index is assigned by Database.insert_agent_turn() atomically
+        (MAX(turn_index)+1 under the same lock as the insert), not computed
+        here — see its docstring for why a caller-side snapshot is unsafe.
+        """
+        from trelix.store.db import Database
+
+        try:
+            db = Database(self._config.db_path_absolute)
+            try:
+                db.insert_agent_turn(
+                    session_id=session_id,
+                    thought=turn.thought,
+                    action_type=turn.action.action_type.value,
+                    action_arguments=turn.action.arguments,
+                    observation_content=turn.observation.content,
+                    observation_source=turn.observation.source,
+                    observation_success=turn.observation.success,
+                )
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("AgentLoop: failed to persist turn for session %r: %s", session_id, exc)
 
     def _next_action(
         self, query: str, history: TurnHistory, compressor: HistoryCompressor

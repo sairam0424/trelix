@@ -419,6 +419,40 @@ class Database:
         )
         self._conn.commit()
 
+        # v2.8 migration: agent_sessions + agent_turns for persistent ReAct history
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_sessions ("
+            "id TEXT PRIMARY KEY, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')), "
+            "last_active_at TEXT NOT NULL DEFAULT (datetime('now')), "
+            "query TEXT NOT NULL DEFAULT '', "
+            "turn_count INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_sessions_last_active "
+            "ON agent_sessions(last_active_at)"
+        )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_turns ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE, "
+            "turn_index INTEGER NOT NULL, "
+            "thought TEXT NOT NULL DEFAULT '', "
+            "action_type TEXT NOT NULL, "
+            "action_arguments TEXT NOT NULL DEFAULT '{}', "
+            "observation_content TEXT NOT NULL DEFAULT '', "
+            "observation_source TEXT NOT NULL DEFAULT '', "
+            "observation_success INTEGER NOT NULL DEFAULT 1, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_turns_session "
+            "ON agent_turns(session_id, turn_index)"
+        )
+        self._conn.commit()
+
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Connection, None, None]:
         try:
@@ -1787,6 +1821,137 @@ class Database:
             )
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Agent session persistence (v2.8: persistent ReAct loop memory)
+    # ------------------------------------------------------------------
+
+    def upsert_agent_session(self, session_id: str, query: str) -> None:
+        """Create the session row if absent, else bump last_active_at + query.
+
+        Called once at the start of AgentLoop.run() for a given session_id.
+        """
+        with self._conn_lock:
+            self._conn.execute(
+                "INSERT INTO agent_sessions (id, query) VALUES (?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "last_active_at = datetime('now'), query = excluded.query",
+                (session_id, query),
+            )
+            self._conn.commit()
+
+    def insert_agent_turn(
+        self,
+        session_id: str,
+        thought: str,
+        action_type: str,
+        action_arguments: dict[str, Any],
+        observation_content: str,
+        observation_source: str,
+        observation_success: bool,
+    ) -> int:
+        """Append one turn and bump the session's turn_count. Returns the
+        assigned turn_index.
+
+        turn_index is computed atomically as MAX(turn_index)+1 for this
+        session inside the same locked operation — never derived by the
+        caller from a row-count snapshot taken earlier, since a persistence
+        gap (e.g. a dropped turn) would make that snapshot stale and collide
+        with an existing turn_index. agent_turns has a UNIQUE(session_id,
+        turn_index) index as defense-in-depth: a residual race between two
+        separate Database connections (this lock only guards one connection)
+        raises IntegrityError, which the caller catches and logs, rather than
+        silently persisting a duplicate/colliding row.
+        """
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(turn_index), -1) + 1 FROM agent_turns WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            turn_index = int(row[0])
+            self._conn.execute(
+                "INSERT INTO agent_turns "
+                "(session_id, turn_index, thought, action_type, action_arguments, "
+                " observation_content, observation_source, observation_success) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    turn_index,
+                    thought,
+                    action_type,
+                    json.dumps(action_arguments),
+                    observation_content,
+                    observation_source,
+                    int(observation_success),
+                ),
+            )
+            self._conn.execute(
+                "UPDATE agent_sessions SET turn_count = turn_count + 1, "
+                "last_active_at = datetime('now') WHERE id = ?",
+                (session_id,),
+            )
+            self._conn.commit()
+            return turn_index
+
+    def get_agent_turns(self, session_id: str) -> list[dict[str, Any]]:
+        """Return all turns for a session ordered by turn_index, as plain dicts."""
+        rows = self._conn.execute(
+            "SELECT turn_index, thought, action_type, action_arguments, "
+            "observation_content, observation_source, observation_success "
+            "FROM agent_turns WHERE session_id = ? ORDER BY turn_index",
+            (session_id,),
+        ).fetchall()
+        return [
+            {
+                "turn_index": int(row[0]),
+                "thought": row[1],
+                "action_type": row[2],
+                "action_arguments": json.loads(row[3]),
+                "observation_content": row[4],
+                "observation_source": row[5],
+                "observation_success": bool(row[6]),
+            }
+            for row in rows
+        ]
+
+    def list_agent_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return most-recently-active sessions with metadata, newest first."""
+        rows = self._conn.execute(
+            "SELECT id, created_at, last_active_at, query, turn_count "
+            "FROM agent_sessions ORDER BY last_active_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "session_id": row[0],
+                "created_at": row[1],
+                "last_active_at": row[2],
+                "query": row[3],
+                "turn_count": int(row[4]),
+            }
+            for row in rows
+        ]
+
+    def delete_agent_session(self, session_id: str) -> bool:
+        """Delete a session and its turns (cascade). Returns True if it existed."""
+        cur = self._conn.execute("SELECT 1 FROM agent_sessions WHERE id = ?", (session_id,))
+        existed = cur.fetchone() is not None
+        self._conn.execute("DELETE FROM agent_sessions WHERE id = ?", (session_id,))
+        self._conn.commit()
+        return existed
+
+    def evict_stale_agent_sessions(self, max_age_seconds: float) -> int:
+        """Delete sessions whose last_active_at is older than max_age_seconds.
+
+        Returns the number of sessions deleted.
+        """
+        cur = self._conn.execute(
+            "DELETE FROM agent_sessions "
+            "WHERE (unixepoch('now') - unixepoch(last_active_at)) > ?",
+            (max_age_seconds,),
+        )
+        self._conn.commit()
+        return cur.rowcount
 
     def close(self) -> None:
         if self._bm25_read_pool is not None:
