@@ -1,6 +1,6 @@
-# Trelix v2.7.1 — Installation Guide
+# Trelix v2.8.1 — Installation Guide
 
-This guide covers every installation scenario for Trelix v2.7.1, from a quick
+This guide covers every installation scenario for Trelix v2.8.1, from a quick
 one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 ---
@@ -47,7 +47,7 @@ so no API key is required.
 
 ```bash
 pip install "trelix[local]"
-trelix --version   # should print 2.7.1
+trelix --version   # should print 2.8.1
 ```
 
 On first use, Trelix downloads the embedder model (~420 MB) to
@@ -195,13 +195,13 @@ and must be installed independently.
 ## 4. Standalone Binaries (no Python needed)
 
 Pre-compiled single-file binaries are published to the
-[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v2.7.1)
+[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v2.8.1)
 page for each platform. No Python or pip required.
 
 ### macOS ARM64 (Apple Silicon)
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.7.1/trelix-macos-arm64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.8.1/trelix-macos-arm64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -219,7 +219,7 @@ somewhere on your `PATH`, or run it directly:
 ### Linux x64
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.7.1/trelix-linux-x64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.8.1/trelix-linux-x64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -228,7 +228,7 @@ trelix --version
 ### Linux ARM64
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.7.1/trelix-linux-arm64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.8.1/trelix-linux-arm64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -307,7 +307,7 @@ directory you mount.
 ```bash
 docker run --rm \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.7.1 \
+  ghcr.io/sairam0424/trelix:2.8.1 \
   index /repo
 ```
 
@@ -319,7 +319,7 @@ The index is written to `/repo/.trelix/` inside the container (which maps to
 ```bash
 docker run --rm -p 8080:8080 \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.7.1 \
+  ghcr.io/sairam0424/trelix:2.8.1 \
   serve --repo /repo --port 8080
 ```
 
@@ -332,7 +332,7 @@ docker run --rm \
   -e OPENAI_API_KEY="sk-..." \
   -e TRELIX_EMBEDDER=openai \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.7.1 \
+  ghcr.io/sairam0424/trelix:2.8.1 \
   index /repo
 ```
 
@@ -342,7 +342,7 @@ docker run --rm \
 # docker-compose.yml
 services:
   trelix:
-    image: ghcr.io/sairam0424/trelix:2.7.1
+    image: ghcr.io/sairam0424/trelix:2.8.1
     command: serve --repo /repo --port 8080
     ports:
       - "8080:8080"
@@ -365,7 +365,7 @@ Run these commands after any installation method to confirm everything is
 working correctly.
 
 ```bash
-# Print version (must show 2.7.1)
+# Print version (must show 2.8.1)
 trelix --version
 
 # Print usage summary
@@ -385,7 +385,7 @@ Expected output for `trelix stats ./`:
 
 ```
 Trelix Index Stats
-  Version   : 2.7.1
+  Version   : 2.8.1
   Chunks    : <n>
   Embedder  : local (all-MiniLM-L6-v2)
   Backend   : sqlite
@@ -445,7 +445,7 @@ loads it automatically via `python-dotenv`.
 
 ```bash
 pip install --upgrade "trelix[local]"   # or whatever extras you use
-trelix --version   # confirm 2.7.1
+trelix --version   # confirm 2.8.1
 ```
 
 ### Step 2 — Review breaking changes

@@ -20,7 +20,7 @@ Verify the install:
 
 ```bash
 trelix --version
-# trelix 2.7.1
+# trelix 2.8.1
 ```
 
 ---
@@ -116,7 +116,7 @@ pip install trelix-mcp
 claude mcp add trelix -- trelix-mcp
 ```
 
-Once registered, Claude can call `trelix_search`, `trelix_ask`, and `trelix_graph` tools directly against your indexed repos. The MCP server supports pagination for large result sets and MCP resource subscriptions.
+Once registered, Claude can call `search_code`, `ask_agent`, `build_knowledge_graph`, and other tools directly against your indexed repos. The MCP server supports pagination for large result sets and MCP resource subscriptions.
 
 ---
 
@@ -129,7 +129,8 @@ All trelix capabilities are exposed as CLI subcommands. Here is the full referen
 | `trelix index ./my-repo` | Parse, embed, and write the index to `.trelix/index.db` |
 | `trelix search ./my-repo "query"` | Hybrid semantic + keyword search, returns ranked chunks |
 | `trelix query ./my-repo "question"` | Structured query over the index with no LLM — fast, offline, deterministic |
-| `trelix ask ./my-repo "question"` | Retrieval-augmented answer using an LLM (requires `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or equivalent) |
+| `trelix ask ./my-repo "question"` | Retrieval-augmented answer using an LLM (requires `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or equivalent); `--session <id>` resumes a persisted agentic session (implies `--agentic`) |
+| `trelix agent sessions list/show/clear ./my-repo` | List, inspect, or delete persisted agentic (ReAct) sessions |
 | `trelix stats ./my-repo` | Index statistics: chunk count, file count, language breakdown, embedder, timestamp |
 | `trelix graph ./my-repo` | Print the knowledge graph: symbol dependencies, call chains, import relationships |
 | `trelix telemetry ./my-repo` | Index health: embedding coverage, stale file count, missing symbols |

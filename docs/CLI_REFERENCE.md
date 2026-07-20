@@ -1,7 +1,7 @@
 # trelix CLI Reference
 
-**Version:** 2.7.1  
-**Last updated:** 2026-07-10
+**Version:** 2.8.1  
+**Last updated:** 2026-07-21
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
 capability of the library — indexing, retrieval, analysis, federation, watching
@@ -55,7 +55,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 2.7.1
+trelix --version        # trelix 2.8.1
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -129,6 +129,8 @@ below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 | `TRELIX_FEDERATION_ENABLED` | `false` | Enable multi-repo federated retrieval |
 | `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Max parallel workers for federated search (range: 1–16) |
 | `TRELIX_FEDERATION_MAX_REPOS` | `50` | Max repos actually queried per `federation_search_all` MCP call, and max repos `federation_add_repo` will accept (range: 1–500) |
+
+**MCP security note:** The four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) confine any caller-supplied `config_path` argument to `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`, rejecting paths outside both roots. Prevents prompt-injected or adversarial clients from pointing registry I/O at arbitrary filesystem locations.
 
 ---
 
@@ -1144,4 +1146,4 @@ Deletes a persisted session and all its turns.
 
 ---
 
-*End of CLI Reference — trelix v2.8.0*
+*End of CLI Reference — trelix v2.8.1*

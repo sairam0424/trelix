@@ -67,6 +67,13 @@ See [v3-0-0-breaking-changes.md](docs/superpowers/plans/v3-0-0-breaking-changes.
 
 ---
 
+### v2.8.0 Breaking Changes
+- **`AgentLoop.run()`** — signature changed from `run(query: str) -> str` to `run(query: str, session_id: str | None = None) -> tuple[str, str]`, to support persisted multi-turn agent sessions (`agent_sessions`/`agent_turns` tables). See CHANGELOG for migration.
+
+This was a deliberate exception to the "breaking changes only in MAJOR versions" rule above, made in an otherwise non-breaking minor release. `AgentLoop` is not listed in the stable-API-surface table in the Guarantees section and is not exported from trelix's top-level `__all__` (`src/trelix/__init__.py`), so it was judged not to be a documented-stable public API surface.
+
+---
+
 ### v2.4.0 Breaking Changes
 - **`search_code` MCP tool** — return type changed from `list[dict]` → `{results, next_cursor, total_available}`. See CHANGELOG for migration.
 
