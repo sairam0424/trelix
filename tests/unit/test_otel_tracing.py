@@ -109,7 +109,15 @@ def _test_tracer_provider():
     once per process — a second call to set_tracer_provider() is a silent
     no-op (with a logged warning) — so this installs lazily (only when a test
     in this module actually runs, not merely on collection) and only once.
+
+    Skips (rather than errors) when `opentelemetry-sdk` isn't installed —
+    CI's default `pip install -e ".[local,dev]"` deliberately does NOT include
+    the optional `otel` extra, since otel_enabled=False is the documented,
+    tested-elsewhere default; these "enabled path" tests only run when a
+    developer/CI job explicitly installs `trelix[otel]`.
     """
+    pytest.importorskip("opentelemetry.sdk", reason="requires pip install trelix[otel]")
+
     from opentelemetry import trace
     from opentelemetry.sdk.resources import SERVICE_NAME, Resource
     from opentelemetry.sdk.trace import TracerProvider
@@ -191,6 +199,7 @@ class TestEnabledEmitsSpans:
 
 class TestOtlpExporterWiring:
     def test_no_endpoint_configures_provider_with_no_span_processors(self) -> None:
+        pytest.importorskip("opentelemetry.sdk", reason="requires pip install trelix[otel]")
         from trelix.retrieval.otel_tracing import _build_tracer_provider
 
         provider = _build_tracer_provider("trelix-test", None)
@@ -203,6 +212,10 @@ class TestOtlpExporterWiring:
         """Constructing an OTLPSpanExporter must never raise just because the
         collector endpoint is unreachable — export failures happen later,
         asynchronously, inside BatchSpanProcessor's background thread."""
+        pytest.importorskip(
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+            reason="requires pip install trelix[otel]",
+        )
         from trelix.retrieval.otel_tracing import _build_tracer_provider
 
         provider = _build_tracer_provider("trelix-test", "http://localhost:4318/v1/traces")
