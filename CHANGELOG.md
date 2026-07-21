@@ -6,6 +6,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Added
+- **Typed REST API response models** — every `trelix serve` route now
+  declares a real Pydantic response model (`SearchResponse`,
+  `IndexResponse`, `StatsResponse`, `GraphStatsResponse`,
+  `CommunitySummaryModel`, `GraphVisualizeResponse`,
+  `GraphSearchResultModel`), so the auto-generated OpenAPI schema
+  (`/openapi.json`) carries real per-field types instead of an untyped
+  `object`/`array`. Groundwork for an OpenAPI-codegen'd TypeScript client.
+- **`GET /search` cursor pagination** — gained a `cursor` query param and now
+  returns `{results, next_cursor, total_available}` instead of a bare list,
+  matching the MCP `search_code` tool's existing pagination contract
+  exactly. This is the one deliberate, narrowly-scoped response-shape
+  change in an otherwise additive pass — done now, before a TS SDK locks in
+  against the old bare-list shape.
+
+### Fixed
+- **`docs/INSTALLATION_GUIDE.md`'s `trelix serve`/Docker examples used the
+  wrong port** (8080) and a nonexistent `--repo` flag — `serve`'s actual
+  CLI default is port 8765 with a positional `repo_path` argument. Also
+  removed two fabricated env vars (`TRELIX_SERVE_HOST`, `TRELIX_SERVE_PORT`)
+  that don't exist anywhere in source; there is no env-var override for the
+  serve host/port, only the `--host`/`--port` CLI flags.
+
 ## [2.8.1] — 2026-07-20
 
 ### Security

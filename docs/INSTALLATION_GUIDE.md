@@ -141,10 +141,10 @@ Serve the Trelix index over HTTP for multi-user or CI environments.
 
 ```bash
 pip install "trelix[serve]"
-trelix serve --port 8080 --repo ./
+trelix serve ./ --port 8765
 ```
 
-The OpenAPI spec is available at `http://localhost:8080/docs`.
+The OpenAPI spec is available at `http://localhost:8765/docs`.
 
 ### 3.9 Knowledge graph + visualization
 
@@ -317,13 +317,13 @@ The index is written to `/repo/.trelix/` inside the container (which maps to
 ### Start the REST server
 
 ```bash
-docker run --rm -p 8080:8080 \
+docker run --rm -p 8765:8765 \
   -v "$(pwd):/repo" \
   ghcr.io/sairam0424/trelix:2.8.1 \
-  serve --repo /repo --port 8080
+  serve /repo --host 0.0.0.0 --port 8765
 ```
 
-Then open `http://localhost:8080/docs` for the interactive API reference.
+Then open `http://localhost:8765/docs` for the interactive API reference.
 
 ### Use with OpenAI embeddings
 
@@ -343,9 +343,9 @@ docker run --rm \
 services:
   trelix:
     image: ghcr.io/sairam0424/trelix:2.8.1
-    command: serve --repo /repo --port 8080
+    command: serve /repo --host 0.0.0.0 --port 8765
     ports:
-      - "8080:8080"
+      - "8765:8765"
     volumes:
       - .:/repo
     environment:
@@ -420,8 +420,6 @@ loads it automatically via `python-dotenv`.
 | `TRELIX_RERANK_TOP_K` | `5` | Number of results to return after reranking |
 | `TRELIX_FLARE_MAX_RETRIES` | `3` | Maximum FLARE loop iterations (renamed from `flare_max_iterations` in v2.4.0) |
 | `TRELIX_LOG_LEVEL` | `WARNING` | Log verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `TRELIX_SERVE_HOST` | `0.0.0.0` | Host for the REST API server |
-| `TRELIX_SERVE_PORT` | `8080` | Port for the REST API server |
 | `TRELIX_WATCH_DEBOUNCE_MS` | `500` | Debounce delay (ms) for file-watch re-indexing |
 | `OPENAI_API_KEY` | _(none)_ | OpenAI API key; required when `TRELIX_EMBEDDER=openai` |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model name |
