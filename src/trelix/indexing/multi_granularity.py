@@ -117,7 +117,7 @@ class MultiGranularityChunker:
     ) -> list[SubSymbolChunk]:
         """Walk tree-sitter AST to find blocks and statements."""
         try:
-            from tree_sitter_languages import get_parser as get_ts_parser
+            from trelix.indexing.parser._grammar import make_parser as get_ts_parser
         except ImportError:
             return []
 

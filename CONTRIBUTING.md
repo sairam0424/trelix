@@ -357,7 +357,7 @@ trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version
 
 ### Python version support
 
-- Supported: Python 3.11, 3.12
+- Supported: Python 3.11, 3.12, 3.13
 - Dropped versions are announced one minor release in advance
 
 ---

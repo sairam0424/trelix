@@ -24,7 +24,7 @@ one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 | Requirement | Notes |
 |-------------|-------|
-| **Python 3.11 or 3.12** | Python 3.13 is not yet tested and may have compatibility issues |
+| **Python 3.11, 3.12, or 3.13** | No known upper bound |
 | **pip** or **uv** | pip ships with Python; uv is optional but significantly faster |
 | **~500 MB free disk** | The local embedder model is downloaded on first use and cached in `~/.cache/trelix/` |
 | `OPENAI_API_KEY` | Optional — enables OpenAI embeddings (higher quality, requires internet) |
@@ -396,7 +396,7 @@ If `trelix --version` prints nothing or fails, check that:
 
 1. Your virtual environment is activated (if using one).
 2. The Python executable that installed Trelix is on your `PATH`.
-3. You are using Python 3.11 or 3.12 (`python --version`).
+3. You are using Python 3.11, 3.12, or 3.13 (`python --version`).
 
 ---
 

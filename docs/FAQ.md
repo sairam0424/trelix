@@ -498,7 +498,7 @@ See the detailed answer in [MCP and Integrations](#what-changed-in-search_code-i
 ### Is trelix suitable for production use?
 
 Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
-- 1,508 tests (1,467 unit + 41 MCP) at 100% pass rate on Python 3.11 and 3.12.
+- 1,703 tests (1,621 unit + 82 MCP) at 100% pass rate on Python 3.11, 3.12, and 3.13.
 - `mypy --strict` clean.
 - `ruff` lint and format clean.
 - No hardcoded secrets; all credentials sourced from environment variables.

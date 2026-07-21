@@ -321,7 +321,7 @@ This walkthrough takes you from a fresh install to your first working query agai
 
 ### Prerequisites
 
-- Python 3.11 or 3.12 installed
+- Python 3.11, 3.12, or 3.13 installed
 - A code repository you want to explore (use your own or any public GitHub repo)
 
 ### Step 1 — Install trelix
