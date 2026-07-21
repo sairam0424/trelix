@@ -1,6 +1,6 @@
 # trelix Architecture
 
-> **Version:** 2.7.1 | **Python:** 3.11+ | **110+ source modules**
+> **Version:** 2.8.1 | **Python:** 3.11+ | **110+ source modules**
 
 This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
 
@@ -1290,7 +1290,7 @@ class AgentLoop:
 UUID4 is generated and returned), or pass one back to resume with prior turns
 loaded from `agent_sessions`/`agent_turns` in the repo's `.trelix/index.db`.
 
-ReAct (Reason+Act) multi-turn orchestrator with three available actions:
+ReAct (Reason+Act) multi-turn orchestrator with four available actions:
 
 | ActionType | Tool | Arguments | Returns |
 |---|---|---|---|
@@ -1301,16 +1301,54 @@ ReAct (Reason+Act) multi-turn orchestrator with three available actions:
 
 System prompt mandate: "Never call done until you've done at least one retrieval."
 
+**Session Persistence (v2.8.0):**
+
+When `session_id` is provided (or generated as a UUID4 if omitted), the loop:
+1. Loads prior turns from the `agent_turns` table via `Database.get_agent_turns(session_id)`
+2. Reconstructs the `TurnHistory` object from stored turn records
+3. Persists each new turn to the database as it occurs via `Database.insert_agent_turn()`
+4. Updates the `agent_sessions` table with `last_active_at` and increments `turn_count`
+5. Returns `(answer, session_id)` so the caller can resume in a follow-up request
+
+Sessions are automatically evicted after `TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS` (default 604800 = 7 days) of inactivity when `> 0`. Set to `0` to disable eviction entirely.
+
+**Database Schema:**
+```sql
+agent_sessions (id PK, created_at, last_active_at, query, turn_count)
+agent_turns (id PK AUTOINCREMENT, session_id FK→agent_sessions CASCADE,
+             turn_index, thought, action_type, action_arguments JSON,
+             observation_content, observation_source, observation_success)
+UNIQUE INDEX idx_agent_turns_session ON (session_id, turn_index)
+```
+
+The `turn_index` is assigned atomically by `Database.insert_agent_turn()` as `MAX(turn_index)+1` under lock (v2.8.0 race-condition fix), not computed by the caller. The `UNIQUE(session_id, turn_index)` index serves as defense-in-depth against any residual race.
+
+**CLI Commands:**
+- `trelix ask --session <id>` — resume a session (implies `--agentic`)
+- `trelix agent sessions list` — list recent sessions, most-recently-active first
+- `trelix agent sessions show <id>` — print all turns for a session
+- `trelix agent sessions clear <id>` — delete a session and all its turns
+
+**MCP Tools:**
+- `ask_agent(query, repo_path, session_id=None)` — returns `{"answer": str, "session_id": str, "turn_count": int}`
+- `agent_list_sessions(repo_path, limit=50)` — returns `{"sessions": [...], "count": int}`
+- `agent_clear_session(repo_path, session_id)` — returns `{"cleared": bool, "session_id": str}`
+
 **`TurnHistory` + `HistoryCompressor`:**
 ```python
 class TurnHistory:
     def add(self, turn: Turn) -> None
-    def get_messages(self) -> list[dict]  # role/content LLM message format
+    def to_dicts(self) -> list[dict[str, Any]]  # for DB persistence
+    def from_dicts(cls, rows: list[dict]) -> TurnHistory  # @classmethod, reconstructs from DB
+    def to_text(self) -> str  # Markdown-ish context for LLM
+    def token_count(self) -> int  # word-split heuristic, not tiktoken
     
 class HistoryCompressor:
-    def __init__(self, token_budget: int = 6_000)
-    def compress(self, history: TurnHistory) -> list[dict]
-    # Keeps last N turns within token budget; LLM-summarizes older turns
+    def __init__(self, token_budget: int = 6_000)  # default 6000 from config
+    def compress(self, history: TurnHistory) -> TurnHistory
+    # Trims oldest turns from the front until compressed.token_count() <= budget
+    # Always keeps the most recent turn
+    # Does NOT LLM-summarize — only drops old turns
 ```
 
 `_fallback_answer()`: returns first 3 successful observation contents when max_turns reached.
@@ -1483,7 +1521,12 @@ class RepoRegistry:
     # Default: ~/.config/trelix/repos.json
     # Returns empty registry (not error) if file missing/invalid
     
-    def add(self, alias, path, weight=1.0) -> None  # ValueError on duplicate alias
+    def add(self, alias, path, weight=1.0, max_repos: int | None = None) -> None
+    # ValueError on duplicate alias
+    # ValueError if max_repos is set and registry is at capacity
+    # max_repos=None (default) is unbounded — CLI path
+    # MCP path passes config.retrieval.federation_max_repos (default 50)
+    
     def remove(self, alias) -> None                  # no-op if not found
     def list(self) -> list[RepoEntry]
     def save(self) -> None                           # writes JSON
@@ -1497,10 +1540,17 @@ class RepoRegistry:
 class FederatedRetriever:
     def __init__(self, registry: RepoRegistry,
                  max_workers: int = 4,
-                 cache_ttl: float = 120.0) -> None
+                 cache_ttl: float = 120.0,
+                 max_repos: int | None = None) -> None
+    # max_repos caps how many registered repos are actually queried per call
+    # (the first N in registry order). None (default) is unbounded — CLI path.
+    # MCP path passes config.retrieval.federation_max_repos (default 50).
     
     def retrieve(self, query: str, k: int = 10) -> list[SearchResult]
     def _query_repos(self, query, k) -> list[SearchResult]  # fan-out, no cache
+    def record_exports(self, alias: str, repo_path: str) -> int  # populates federation_symbols table
+    def resolve_symbol(self, qualified_name: str) -> list[dict[str, str]]  # cross-repo symbol lookup
+    def repos_queried_count(self, total_registered: int) -> int  # stateless helper for MCP
     def _make_cache_key(self, query, k) -> str              # SHA-256
     def _get_cached(self, key) -> list[SearchResult] | None
     def _set_cached(self, key, results) -> None
@@ -1510,14 +1560,21 @@ class FederatedRetriever:
 
 **`_query_repos()` parallel fan-out:**
 ```python
+entries = registry.list()
+if self._max_repos is not None:
+    entries = entries[:self._max_repos]  # truncate to first N before fan-out
+
 with ThreadPoolExecutor(max_workers=min(max_workers, len(entries))) as pool:
     futures = {pool.submit(_query_one, entry.path): entry for entry in entries}
     for future in as_completed(futures):
         results = future.result(timeout=30)
         per_repo_results.append(results)
+        # Tag source with repo alias: source = f"{alias}:{r.source}"
 ```
 
-**Merging:** `reciprocal_rank_fusion(per_repo_results)` → dedup by `f"{r.file.rel_path}:{r.chunk.symbol_id}"`.
+**Merging:** `reciprocal_rank_fusion(per_repo_results, list_weights=per_repo_weights)` → dedup by `f"{r.file.rel_path}:{r.chunk.symbol_id}"`.
+
+The `list_weights` parameter (v2.8.0) applies each repo's registered `weight` as a per-list multiplier in RRF fusion, fixing a bug where `RepoEntry.weight` was stored but never used.
 
 **TTL Cache (v2.4.0):**
 - Cache key: `SHA-256(f"{query}|{sorted_repo_paths}|{k}")`
@@ -1525,6 +1582,17 @@ with ThreadPoolExecutor(max_workers=min(max_workers, len(entries))) as pool:
 - TTL check: `time.monotonic() > expiry` (not wall clock — monotonic avoids daylight saving jumps)
 - `cache_ttl=0` disables entirely (no cache dict population)
 - Expected hit rate: ~90% for typical debugging-session query patterns (repeated same-question queries)
+
+**MCP Security: `config_path` Confinement (v2.8.1):**
+
+All four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) accept an optional `config_path` parameter to override the default registry location (`~/.config/trelix/repos.json`). To prevent path-traversal attacks and prompt-injection exploits, v2.8.1 introduced path confinement: the resolved `config_path` must fall within one of two allowed roots:
+
+1. `~/.config/trelix/` (the user's global trelix config directory)
+2. `<mcp-server-cwd>/.trelix/` (the MCP server process's working directory)
+
+The check uses `Path.is_relative_to()` (not a naive string `startswith()`) to avoid sibling-directory bypasses like `~/.config/trelixevil/`. If the path is outside both roots, a `ConfigPathNotAllowedError` (a `ValueError` subclass) is raised, and the MCP tool returns `{"...: False/[]/0, "error": str}` rather than raising. `config_path=None` passes through unchanged (meaning "use the registry's own default").
+
+This confinement is documented in CHANGELOG.md [Unreleased]/[2.8.1] Security section (issue #69).
 
 ---
 
@@ -2090,4 +2158,4 @@ That's it — no changes to `Retriever` needed.
 
 ---
 
-*trelix v2.7.1 — last updated 2026-07-10*
+*trelix v2.8.1 — last updated 2026-07-20*

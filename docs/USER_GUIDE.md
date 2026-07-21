@@ -1,4 +1,4 @@
-# trelix User Guide — v2.7.1
+# trelix User Guide — v2.8.1
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -186,7 +186,7 @@ The practical meaning: a result that appears at rank 3 in the vector leg AND ran
 
 ## 4. The Retrieval Pipeline — All 7 Legs
 
-trelix v2.7.1 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
+trelix v2.8.1 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
 
 ```
 User Query
@@ -365,7 +365,7 @@ trelix index ./my-repo
 You will see output like this:
 
 ```
-trelix v2.7.1 — indexing ./my-repo
+trelix v2.8.1 — indexing ./my-repo
 ✓ FileWalker: 243 files found (.gitignore applied)
   Phase 1/4 — Parse
     [████████████████████] 243/243 files  3.2s
@@ -464,7 +464,7 @@ trelix stats ./my-repo
 trelix stats — ./my-repo
 
   Index:        ./my-repo/.trelix/index.db
-  Version:      2.7.0
+  Version:      2.8.1
   Last indexed: 2026-07-05 10:32:14 UTC
 
   Files:        243
@@ -543,6 +543,29 @@ TRELIX_RETRIEVAL_FLARE=true trelix ask ./my-repo "complex question"  # enable FL
 2. **Reduce:** All partial answers are sent to the LLM together for final synthesis.
 
 This prevents context window truncation on large codebases without sacrificing answer quality.
+
+### Agentic mode with persistent memory
+
+For complex multi-turn questions, trelix can activate an agentic ReAct loop that breaks questions into smaller steps and persists conversation history across sessions:
+
+```bash
+# First question — creates a new session
+trelix ask ./my-repo "how does JWT authentication work?" --agentic
+# Output includes: Session: abc-123-def-456
+
+# Follow-up question in the same session
+trelix ask ./my-repo "what would break if I changed the token expiry?" --session abc-123-def-456
+```
+
+Sessions persist turn history to the repo's `.trelix/index.db` and auto-evict after 7 days of inactivity (configurable via `TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS`). Manage sessions via:
+
+```bash
+trelix agent sessions list ./my-repo           # list recent sessions
+trelix agent sessions show ./my-repo <id>      # view full turn history
+trelix agent sessions clear ./my-repo <id>     # delete a session
+```
+
+Agentic mode is also available via the MCP `ask_agent` tool — see [MCP_GUIDE.md](MCP_GUIDE.md) and [FEDERATION_GUIDE.md](FEDERATION_GUIDE.md).
 
 ### `trelix query` — Structured JSON output
 
@@ -843,6 +866,8 @@ Create a `trelix.registry.json` in your workspace root:
   ]
 }
 ```
+
+Federation is also available via MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) — see [MCP_GUIDE.md](MCP_GUIDE.md) and [FEDERATION_GUIDE.md](FEDERATION_GUIDE.md) for the full interface.
 
 **Step 3 — Query across all repos simultaneously:**
 ```bash
@@ -1601,7 +1626,7 @@ curl http://localhost:8765/health
 ```
 
 ```json
-{"status": "ok", "version": "2.7.1", "repo": "./my-repo"}
+{"status": "ok", "version": "2.8.1", "repo": "./my-repo"}
 ```
 
 ### Index statistics
@@ -1970,4 +1995,4 @@ print(f"Overall: {metrics['overall']:.3f}")
 
 ---
 
-*trelix v2.7.1 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v2.8.1 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

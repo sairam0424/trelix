@@ -2,7 +2,7 @@
 
 <!-- mcp-name: io.github.sairam0424/trelix -->
 
-MCP server for [trelix](https://github.com/sairam0424/trelix) v2.7.1 — semantic code search with streaming /ask endpoint, watch bridge notifications, and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+MCP server for [trelix](https://github.com/sairam0424/trelix) v2.8.1 — semantic code search with streaming /ask endpoint, watch bridge notifications, and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
 
 ## ⚠️ Breaking Change in v2.4.0
 
@@ -24,22 +24,22 @@ for r in response["results"]:  # now dict with pagination
 ## Install
 
 ```bash
-pip install trelix-mcp==2.7.1
+pip install trelix-mcp==2.8.1
 ```
 
 To use Bedrock embeddings or synthesis (no extra API key beyond AWS credentials):
 
 ```bash
-pip install "trelix-mcp==2.7.1" "trelix[bedrock]"
+pip install "trelix-mcp==2.8.1" "trelix[bedrock]"
 ```
 
 Other optional LLM provider extras:
 
 ```bash
-pip install "trelix-mcp==2.7.1" "trelix[anthropic]"   # Anthropic Claude direct
-pip install "trelix-mcp==2.7.1" "trelix[vertex]"       # Google Vertex AI / Gemini
-pip install "trelix-mcp==2.7.1" "trelix[litellm]"      # 100+ providers via LiteLLM
-pip install "trelix-mcp==2.7.1" "trelix[llm-all]"      # all LLM providers
+pip install "trelix-mcp==2.8.1" "trelix[anthropic]"   # Anthropic Claude direct
+pip install "trelix-mcp==2.8.1" "trelix[vertex]"       # Google Vertex AI / Gemini
+pip install "trelix-mcp==2.8.1" "trelix[litellm]"      # 100+ providers via LiteLLM
+pip install "trelix-mcp==2.8.1" "trelix[llm-all]"      # all LLM providers
 ```
 
 ## Usage
@@ -175,6 +175,23 @@ TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 | `subscribe_resource(uri, subscription_id)` | Subscribe to change notifications for a trelix:// resource URI (v2.5.0+) |
 | `unsubscribe_resource(subscription_id)` | Cancel a resource subscription (v2.5.0+) |
 
+### Multi-Repo Federation Tools (v2.8.0)
+
+| Tool | Description |
+|------|-------------|
+| `federation_list_repos(config_path=None)` | List all repos registered for federated search |
+| `federation_add_repo(alias, path, weight=1.0, config_path=None)` | Register a repo for federated search (absolute path required) |
+| `federation_remove_repo(alias, config_path=None)` | Unregister a repo by alias |
+| `federation_search_all(query, k=10, cursor=0, config_path=None)` | Search across all registered repos with RRF-weighted fusion |
+
+### Persistent Agent Session Tools (v2.8.0)
+
+| Tool | Description |
+|------|-------------|
+| `ask_agent(query, repo_path, session_id=None)` | Multi-turn ReAct Q&A with persistent memory (pass session_id to resume) |
+| `agent_list_sessions(repo_path, limit=50)` | List recent agent sessions for a repo |
+| `agent_clear_session(repo_path, session_id)` | Delete a persisted agent session and all its turn history |
+
 ## Resource Subscriptions (v2.5.0)
 
 trelix-mcp supports live index change notifications. When `trelix watch` detects a file change, connected MCP clients receive a `notifications/resources/updated` push — then call `resources/read` to fetch the updated index. Subscribe with the `subscribe_resource` tool.
@@ -244,7 +261,7 @@ graph_search_mcp(query="how does auth relate to the user model?", repo_path="/pa
 Install the knowledge graph extra for full functionality:
 
 ```bash
-pip install 'trelix-mcp==2.7.1' 'trelix[knowledge-graph]'
+pip install 'trelix-mcp==2.8.1' 'trelix[knowledge-graph]'
 ```
 
 ## Watch Bridge (v2.7.0)

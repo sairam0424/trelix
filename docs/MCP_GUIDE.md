@@ -13,14 +13,14 @@ Model Context Protocol (MCP) is an open standard that lets AI assistants connect
 ## 2. Install trelix-mcp
 
 ```bash
-pip install trelix-mcp==2.7.0
+pip install trelix-mcp==2.8.1
 ```
 
 Verify the binary is on your PATH:
 
 ```bash
 trelix-mcp --version
-# trelix-mcp 2.7.0
+# trelix-mcp 2.8.1
 ```
 
 > **Note:** Python 3.10+ is required. Use a virtual environment if you manage multiple projects.
@@ -107,7 +107,17 @@ Reload Continue.dev (Cmd+Shift+P → **Continue: Reload**). The tools are availa
 
 ---
 
-## 7. The 8 MCP Tools
+## 7. The 15 MCP Tools
+
+Trelix-mcp exposes 15 MCP tools organized into four functional groups:
+
+1. **Core search & indexing** (4 tools): `search_code`, `index_codebase`, `get_symbol`, `blast_radius`
+2. **Graph analysis** (2 tools): `build_knowledge_graph`, `graph_search_mcp`
+3. **Resource subscriptions** (2 tools): `subscribe_resource`, `unsubscribe_resource`
+4. **Multi-repo federation** (4 tools): `federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`
+5. **Persistent agent sessions** (3 tools): `ask_agent`, `agent_list_sessions`, `agent_clear_session`
+
+### Core Search & Indexing
 
 ### `search_code`
 
@@ -189,7 +199,7 @@ index_codebase(repo_path, provider="local") → stats dict
   "symbols_extracted": 1847,
   "chunks_stored": 4203,
   "elapsed_seconds": 18.4,
-  "index_version": "2.7.0"
+  "index_version": "2.8.1"
 }
 ```
 
@@ -395,7 +405,322 @@ graph_search_mcp(query, repo_path, k=10) → list of results
 
 ---
 
-## 8. The 3 MCP Resources
+### Multi-Repo Federation
+
+#### `federation_list_repos`
+
+```
+federation_list_repos(config_path=None) → {repos, count, error}
+```
+
+**What it does:** Lists all repos registered for federated (multi-repo) search.
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `config_path` | str\|None | None | Optional path to a custom repos.json. Must resolve inside `~/.config/trelix/` or `<cwd>/.trelix/`. Defaults to `~/.config/trelix/repos.json`. |
+
+**Response shape:**
+```json
+{
+  "repos": [
+    {"alias": "auth-service", "path": "/Users/you/auth", "weight": 1.0},
+    {"alias": "payment-api", "path": "/Users/you/payment", "weight": 0.8}
+  ],
+  "count": 2,
+  "error": null
+}
+```
+
+**New in v2.8.0.**
+
+---
+
+#### `federation_add_repo`
+
+```
+federation_add_repo(alias, path, weight=1.0, config_path=None) → {added, alias, path, error}
+```
+
+**What it does:** Registers a repo for federated search across MCP tool calls.
+
+**Important:**
+- `path` must be an **ABSOLUTE** path
+- Run `index_codebase` on the repo separately — registering does not index
+- The registry is capped at `TRELIX_FEDERATION_MAX_REPOS` entries (default 50) to prevent unbounded growth
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `alias` | str | required | Short unique name for the repo (e.g. "auth-service") |
+| `path` | str | required | Absolute path to the repo root |
+| `weight` | float | 1.0 | RRF weight multiplier — higher values rank this repo's results higher in `federation_search_all` |
+| `config_path` | str\|None | None | Optional path to a custom repos.json |
+
+**Response shape:**
+```json
+{
+  "added": true,
+  "alias": "auth-service",
+  "path": "/Users/you/auth",
+  "error": null
+}
+```
+
+**Workflow pattern:**
+```
+1. federation_add_repo("auth", "/path/to/auth")
+2. index_codebase("/path/to/auth")               ← index it
+3. federation_search_all("JWT validation")       ← now searchable
+```
+
+**New in v2.8.0.**
+
+---
+
+#### `federation_remove_repo`
+
+```
+federation_remove_repo(alias, config_path=None) → {removed, alias, error}
+```
+
+**What it does:** Unregisters a repo from federated search by alias. No-op if the alias is not registered (returns `removed: false`).
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `alias` | str | required | The alias to remove |
+| `config_path` | str\|None | None | Optional path to a custom repos.json |
+
+**Response shape:**
+```json
+{
+  "removed": true,
+  "alias": "auth-service",
+  "error": null
+}
+```
+
+**New in v2.8.0.**
+
+---
+
+#### `federation_search_all`
+
+```
+federation_search_all(query, k=10, cursor=0, config_path=None) → {results, next_cursor, total_available, repos_searched, repos_skipped, error}
+```
+
+**What it does:** Searches across ALL registered repos simultaneously using Reciprocal Rank Fusion to merge results, weighted by each repo's registered `weight`.
+
+**Important:**
+- Requires repos to already be registered via `federation_add_repo` AND already indexed
+- Results are deduplicated by `(file_path, symbol_id)`
+- Only the first `TRELIX_FEDERATION_MAX_REPOS` registered repos (default 50) are actually queried — `repos_skipped` reports the omitted count
+- Pagination uses a stable fixed-width fetch (100 results per repo) sliced by `cursor`/`k`, so page contents don't shift between calls
+
+**When to use:**
+- Cross-service / cross-repo questions ("where is auth handled across our microservices?")
+- You don't know which of several registered repos contains the answer
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | str | required | Natural-language or keyword query |
+| `k` | int | 10 | Number of results per page |
+| `cursor` | int | 0 | Pagination offset |
+| `config_path` | str\|None | None | Optional path to a custom repos.json |
+
+**Response shape:**
+```json
+{
+  "results": [
+    {
+      "repo": "auth-service",
+      "file": "src/jwt/validator.py",
+      "symbol": "JWTValidator.verify",
+      "kind": "method",
+      "score": 0.91,
+      "source": "auth-service:jwt_verification",
+      "body": "def verify(self, token: str) -> Claims:\n    ...",
+      "language": "python"
+    }
+  ],
+  "next_cursor": 10,
+  "total_available": 47,
+  "repos_searched": 2,
+  "repos_skipped": 0,
+  "error": null
+}
+```
+
+**New in v2.8.0.**
+
+---
+
+### Persistent Agent Sessions
+
+#### `ask_agent`
+
+```
+ask_agent(query, repo_path, session_id=None) → {answer, session_id, turn_count}
+```
+
+**What it does:** Asks a question using the multi-turn ReAct agentic loop with persistent memory. The agent can iteratively retrieve, grep, and inspect symbols to answer complex questions.
+
+**Important:**
+- `repo_path` must be an **ABSOLUTE** path to an already-indexed repository
+- Session history is scoped to `(repo_path, session_id)` — a session created against one repo is invisible when querying a different repo
+- Requires LLM configuration (e.g. `OPENAI_API_KEY`) — always uses the agentic loop, unlike `search_code` which is retrieval-only
+
+**When to use:**
+- Multi-step questions needing iterative retrieve/grep/get_symbol drilling
+- Follow-up questions in the same conversation — pass back the `session_id` to preserve context
+
+**Session lifecycle:**
+- Omit `session_id` on the first call — a new UUID4 is generated and returned
+- Pass that `session_id` on subsequent calls to resume with full turn history
+- Sessions auto-evict after `TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS` of inactivity (default 7 days)
+- Use `agent_clear_session` to delete one explicitly
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | str | required | Natural-language question |
+| `repo_path` | str | required | Absolute path to the indexed repository |
+| `session_id` | str\|None | None | Session ID to resume (omit for new session) |
+
+**Response shape:**
+```json
+{
+  "answer": "The JWT validation is handled by the JWTValidator.verify method in src/jwt/validator.py. It checks signature, expiry, and issuer claims.",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "turn_count": 3
+}
+```
+
+**Example conversation:**
+```python
+# First question
+r1 = ask_agent("Where is JWT validation implemented?", "/path/to/repo")
+# r1["session_id"] = "550e8400-..."
+
+# Follow-up in the same session
+r2 = ask_agent(
+    "What are the dependencies of that validator?",
+    "/path/to/repo",
+    session_id=r1["session_id"]
+)
+# Agent remembers the JWT validator from turn 1
+```
+
+**New in v2.8.0.**
+
+---
+
+#### `agent_list_sessions`
+
+```
+agent_list_sessions(repo_path, limit=50) → {sessions, count}
+```
+
+**What it does:** Lists recent agent sessions for a repo, most recently active first. Runs stale-session eviction first if `TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS > 0`.
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `repo_path` | str | required | Absolute path to the repository root |
+| `limit` | int | 50 | Max sessions to return |
+
+**Response shape:**
+```json
+{
+  "sessions": [
+    {
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "created_at": "2026-07-15T10:30:00",
+      "last_active_at": "2026-07-15T10:45:00",
+      "query": "Where is JWT validation implemented?",
+      "turn_count": 3
+    }
+  ],
+  "count": 1
+}
+```
+
+**New in v2.8.0.**
+
+---
+
+#### `agent_clear_session`
+
+```
+agent_clear_session(repo_path, session_id) → {cleared, session_id}
+```
+
+**What it does:** Deletes a persisted agent session and all its turn history (cascade delete).
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `repo_path` | str | required | Absolute path to the repository root |
+| `session_id` | str | required | The session to delete |
+
+**Response shape:**
+```json
+{
+  "cleared": true,
+  "session_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**New in v2.8.0.**
+
+---
+
+## 8. Federation Security & Configuration (v2.8.1)
+
+### Path Confinement for `config_path`
+
+All four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) accept an optional `config_path` parameter to override the default registry location. In v2.8.1, this parameter is **confined** to two allowlisted roots:
+
+1. `~/.config/trelix/` (the default federation config directory)
+2. `<mcp-server-cwd>/.trelix/` (a repo-local override when the MCP server process is launched from within a repo)
+
+Any `config_path` that resolves outside both roots will be rejected with a `ConfigPathNotAllowedError` returned as `{"error": str}` in the tool response. This prevents an MCP client (or a prompt-injected agent) from pointing registry I/O at an arbitrary filesystem path.
+
+**Why this matters:** Before v2.8.1, a caller-supplied `config_path` was passed straight into file I/O operations with no validation. This fix uses `Path.is_relative_to()` (not a naive string prefix check) to ensure the resolved path lives under an allowlisted root.
+
+### Registry Capacity Cap
+
+The federation registry is capped at `TRELIX_FEDERATION_MAX_REPOS` entries (default **50**, configurable via environment variable). When `federation_add_repo` is called and the registry is at capacity, it returns:
+
+```json
+{
+  "added": false,
+  "alias": "...",
+  "path": "...",
+  "error": "Registry is at capacity (50 repos) — remove a repo before adding another"
+}
+```
+
+This prevents a runaway or adversarial `federation_add_repo` loop from making every subsequent `federation_search_all` call scale linearly with an unbounded repo count.
+
+Additionally, `federation_search_all` only actually queries the **first N repos** in registry order (where N = `min(registered_count, TRELIX_FEDERATION_MAX_REPOS)`). The response includes:
+
+- `repos_searched` — how many repos were actually queried
+- `repos_skipped` — how many registered repos were omitted due to the cap
+
+**Environment variable:**
+```bash
+export TRELIX_FEDERATION_MAX_REPOS=100  # raise the cap to 100
+```
+
+**New in v2.8.1.**
+
+---
+
+## 9. The 3 MCP Resources
 
 MCP resources are read-only data endpoints that the AI can fetch without executing a tool. Use them to give the model static context about the indexed codebase.
 
@@ -409,7 +734,7 @@ Returns aggregate statistics for all indexed repositories managed by the running
   "total_files": 654,
   "total_symbols": 3891,
   "total_chunks": 8702,
-  "server_version": "2.7.0"
+  "server_version": "2.8.1"
 }
 ```
 
@@ -441,7 +766,7 @@ trelix://repo//Users/you/projects/myapp/symbols/AuthService.login
 
 ---
 
-## 9. The 3 MCP Prompts
+## 10. The 3 MCP Prompts
 
 MCP prompts are pre-built instruction templates that the client can inject into a conversation. They configure the model to perform a specific trelix-powered workflow.
 
@@ -465,7 +790,7 @@ Prompts the model to run `blast_radius`, group the results by dependency depth, 
 
 ---
 
-## 10. Watch Bridge (v2.7.0)
+## 11. Watch Bridge (v2.7.0)
 
 The `trelix watch` command now fires `notifications/resources/updated` events to all subscribed MCP clients after every file re-index. This enables real-time codebase awareness in Claude Code and other agents without polling.
 
@@ -482,7 +807,7 @@ This is useful for:
 
 ---
 
-## 11. v2.4.0 Breaking Change — `search_code` Pagination
+## 12. v2.4.0 Breaking Change — `search_code` Pagination
 
 In v2.3.x and earlier, `search_code` accepted an `offset` integer parameter and returned a flat list:
 
@@ -519,7 +844,7 @@ results = response["results"]
 
 ---
 
-## 12. Pagination Example (Full Paging Loop)
+## 13. Pagination Example (Full Paging Loop)
 
 ```python
 def fetch_all_results(query: str, repo_path: str, page_size: int = 10) -> list:
@@ -552,7 +877,7 @@ def fetch_all_results(query: str, repo_path: str, page_size: int = 10) -> list:
 
 ---
 
-## 13. IDE Integrations
+## 14. IDE Integrations
 
 ### VS Code Extension
 
@@ -573,7 +898,7 @@ Then use in the command palette (Cmd+Shift+P):
 
 ---
 
-## 14. Example Claude Code Session
+## 15. Example Claude Code Session
 
 The following shows three realistic prompts you might use once trelix-mcp is registered.
 
@@ -607,7 +932,7 @@ Claude will call `build_knowledge_graph`, then `graph_search_mcp("database ORM q
 
 ---
 
-## 15. Resource Subscriptions (v2.5.0)
+## 16. Resource Subscriptions (v2.5.0)
 
 trelix-mcp v2.5.0 implements the MCP resource subscription protocol
 ([MCP spec §Resources](https://modelcontextprotocol.io/specification/2024-11-05/server/resources)).
@@ -642,7 +967,7 @@ Client → Server:  resources/read  { uri }
 
 ---
 
-## 16. Troubleshooting MCP Issues
+## 17. Troubleshooting MCP Issues
 
 ### `trelix-mcp: command not found`
 

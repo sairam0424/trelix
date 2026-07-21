@@ -140,6 +140,8 @@ trelix watch ./my-repo
 
 ## What's New
 
+**v2.8.1 — Multi-Repo Federation & Persistent Agent Memory:** MCP now exposes multi-repo search (`federation_search_all`) and persistent agent sessions (`ask_agent` with session_id resumption). Security hardening for federation config paths. See [CHANGELOG.md](CHANGELOG.md) for full v2.8.0/v2.8.1 details.
+
 **v2.7.2 — Scale & Concurrency Hardening:** Qdrant Cloud readiness (gRPC + configurable timeout), incremental per-symbol embedding on partial re-index, an opt-in parallel BM25 read pool, Linux ARM64 binaries, and 5 concurrency/correctness fixes.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
