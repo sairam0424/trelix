@@ -6,6 +6,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Added
+- **Official Docker image** — a multi-stage `Dockerfile` (root) publishes
+  `ghcr.io/sairam0424/trelix` for `linux/amd64`+`linux/arm64` on every
+  release tag, in two variants sharing one build (`EXTRAS` build arg):
+  `:X.Y.Z` (slim, API-embedder-only — OpenAI/Voyage/Cohere/Azure) and
+  `:X.Y.Z-local` (bundles `sentence-transformers`/`torch` for the
+  local/offline embedder and cross-encoder reranker). Runs as a non-root
+  `trelix` user, `ENTRYPOINT ["trelix"]` with `CMD ["serve", "/repo",
+  "--host", "0.0.0.0", "--port", "8765"]` (overrides the CLI's
+  `127.0.0.1` default, which isn't reachable from outside a container's
+  network namespace), and a `HEALTHCHECK` hitting `/health`. New
+  `docker-compose.yml` at the repo root is a runnable version of
+  `docs/INSTALLATION_GUIDE.md`'s Docker Compose snippet. New
+  `.github/workflows/docker-publish.yml` builds/pushes both variants on
+  `v*` tags; CI gained a `docker-build` job that builds the slim image and
+  runs `--help` against it on every push/PR, mirroring the existing
+  per-OS binary `--help` smoke tests in `release.yml`.
+- New Makefile targets: `docker-build`, `docker-build-local`, `docker-run`.
+
+### Fixed
+- **`docs/INSTALLATION_GUIDE.md`'s Docker Compose/serve examples used the
+  wrong port** (8080) and a nonexistent `serve --repo` flag (`repo_path`
+  is positional) — same class of bug already fixed for the `docker run`
+  examples in PR #77, now fixed here too since this PR touches the same
+  section.
+
 ## [2.8.1] — 2026-07-20
 
 ### Security
