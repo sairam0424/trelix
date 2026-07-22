@@ -317,13 +317,13 @@ The index is written to `/repo/.trelix/` inside the container (which maps to
 ### Start the REST server
 
 ```bash
-docker run --rm -p 8080:8080 \
+docker run --rm -p 8765:8765 \
   -v "$(pwd):/repo" \
   ghcr.io/sairam0424/trelix:2.8.1 \
-  serve --repo /repo --port 8080
+  serve /repo --host 0.0.0.0 --port 8765
 ```
 
-Then open `http://localhost:8080/docs` for the interactive API reference.
+Then open `http://localhost:8765/docs` for the interactive API reference.
 
 ### Use with OpenAI embeddings
 
@@ -338,24 +338,29 @@ docker run --rm \
 
 ### Docker Compose example
 
-```yaml
-# docker-compose.yml
-services:
-  trelix:
-    image: ghcr.io/sairam0424/trelix:2.8.1
-    command: serve --repo /repo --port 8080
-    ports:
-      - "8080:8080"
-    volumes:
-      - .:/repo
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - TRELIX_EMBEDDER=openai
-```
+A ready-to-run `docker-compose.yml` ships at the repo root:
 
 ```bash
-docker compose up
+OPENAI_API_KEY=sk-... docker compose up
 ```
+
+By default it serves the current directory; set `REPO_PATH` to serve a
+different repo:
+
+```bash
+REPO_PATH=/path/to/other/repo OPENAI_API_KEY=sk-... docker compose up
+```
+
+### Image variants
+
+Two tags are published per release:
+
+- `ghcr.io/sairam0424/trelix:X.Y.Z` — slim, API-embedder-only (OpenAI, Voyage,
+  Cohere, Azure). Recommended default.
+- `ghcr.io/sairam0424/trelix:X.Y.Z-local` — bundles `sentence-transformers`
+  and `torch` for the local/offline embedder and cross-encoder reranker.
+  Multi-gigabyte image; only pull this if you need `TRELIX_EMBEDDER=local`
+  inside the container.
 
 ---
 
