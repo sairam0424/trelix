@@ -1,0 +1,130 @@
+# Default values for the trelix chart.
+# See README.md for the repo model this chart assumes (shared multi-repo PVC)
+# and the security posture (no auth on the REST API — ingress disabled by default).
+
+replicaCount: 1
+
+image:
+  # :2.8.1 is the slim, API-embedder-only tag. Use the "-local" suffix
+  # (e.g. 2.8.1-local) for the variant bundling sentence-transformers/torch.
+  repository: ghcr.io/sairam0424/trelix
+  tag: "2.8.1"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# trelix serve's REST API has zero auth middleware. Only enable ingress once
+# you've fronted it with an authenticating proxy (see README.md's Security section).
+service:
+  type: ClusterIP
+  port: 8765
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: trelix.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# One PVC, shared across every repo this server indexes/serves — see README.md.
+# Pass `repo=/data/<name>` (an absolute path inside this volume) on every
+# REST request. Disabling this only makes sense if store.backend is qdrant
+# AND you never intend to call POST /index (no local checkout to read from).
+persistence:
+  enabled: true
+  mountPath: /data
+  size: 10Gi
+  storageClassName: ""
+  accessMode: ReadWriteOnce
+  existingClaim: ""
+
+# fsGroup grants the container's (non-root) process group-write access to the
+# mounted PVC without needing to know its exact UID (the Dockerfile's `trelix`
+# user has no pinned UID — see Dockerfile). Kubernetes adds this GID as a
+# supplemental group and chowns the volume at mount time.
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext: {}
+
+resources: {}
+# Uncomment and tune for production:
+# resources:
+#   requests:
+#     cpu: 500m
+#     memory: 1Gi
+#   limits:
+#     memory: 4Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ---------------------------------------------------------------------------
+# trelix StoreConfig — mirrors src/trelix/core/config.py's StoreConfig fields
+# and env var aliases exactly.
+# ---------------------------------------------------------------------------
+store:
+  backend: sqlite # sqlite | qdrant | lance
+
+  hnsw: true
+  hnswM: 16
+  hnswEfSearch: 50
+  bm25ReadPoolSize: 0
+
+  qdrant:
+    # Qdrant is NOT deployed by this chart — bring your own (Qdrant Cloud or
+    # self-hosted). See README.md's "Qdrant is external" section for why.
+    url: "http://localhost:6333"
+    collection: trelix
+    preferGrpc: false
+    timeout: 10.0
+    # Set one of these for QDRANT_API_KEY. apiKey is a plaintext values.yaml
+    # convenience for local/dev use — prefer existingSecretName in any shared
+    # cluster.
+    apiKey: ""
+    existingSecretName: ""
+    existingSecretKey: "QDRANT_API_KEY"
+
+  lance:
+    uri: ".trelix/lance"
+    table: chunks
+
+# Embedder provider credentials. Same apiKey/existingSecretName pattern as
+# store.qdrant above — set at most one of the two per provider.
+embedder:
+  openai:
+    apiKey: ""
+    existingSecretName: ""
+    existingSecretKey: "OPENAI_API_KEY"
+  voyage:
+    apiKey: ""
+    existingSecretName: ""
+    existingSecretKey: "VOYAGE_API_KEY"
+  cohere:
+    apiKey: ""
+    existingSecretName: ""
+    existingSecretKey: "COHERE_API_KEY"
+
+# Plain (non-secret) extra environment variables, e.g. TRELIX_EMBEDDER=openai.
+extraEnv: []
+# - name: TRELIX_EMBEDDER
+#   value: openai
+
+# Extra env vars sourced from an existing Secret, for credentials this chart
+# doesn't already model above.
+extraSecretEnv: []
+# - name: AZURE_OPENAI_API_KEY
+#   secretName: my-azure-secret
+#   secretKey: api-key
