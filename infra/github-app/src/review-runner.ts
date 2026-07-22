@@ -6,6 +6,12 @@ import { getInstallationToken } from "./auth.js";
 
 const execFileAsync = promisify(execFile);
 
+// A slow/hung `trelix review` (LLM synthesis latency, a huge diff, a stuck
+// index) would otherwise tie up this process indefinitely per webhook
+// delivery — Node kills the child and execFileAsync rejects once this
+// elapses.
+const REVIEW_TIMEOUT_MS = 5 * 60 * 1000;
+
 export interface ReviewRequest {
   owner: string;
   repo: string;
@@ -51,9 +57,17 @@ export function toAnnotations(findings: ReviewFinding[], limit = 50): CheckAnnot
  * status/progress messages go to stderr) — this function reads stdout
  * exclusively and would break against the pre-#83 CLI.
  */
-export async function runReviewCli(request: ReviewRequest, repoPath: string): Promise<ReviewFinding[]> {
+export async function runReviewCli(
+  request: ReviewRequest,
+  repoPath: string,
+  timeoutMs: number = REVIEW_TIMEOUT_MS,
+): Promise<ReviewFinding[]> {
   const prRef = `${request.owner}/${request.repo}#${request.prNumber}`;
-  const { stdout } = await execFileAsync("trelix", ["review", repoPath, "--pr", prRef, "--json"]);
+  const { stdout } = await execFileAsync(
+    "trelix",
+    ["review", repoPath, "--pr", prRef, "--json"],
+    { timeout: timeoutMs },
+  );
   return JSON.parse(stdout) as ReviewFinding[];
 }
 

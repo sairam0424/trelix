@@ -164,4 +164,28 @@ describe("webhook router", () => {
       expect(res.status).toBe(202);
     });
   });
+
+  describe("payload size limit", () => {
+    it(
+      "rejects a body over GitHub's 25MB webhook payload cap with 413",
+      async () => {
+        const runReview = vi.fn<RunReviewFn>();
+        const app = buildApp(runReview);
+        const oversizedPayload = {
+          ...pullRequestPayload("opened"),
+          padding: "x".repeat(26 * 1024 * 1024),
+        };
+
+        const res = await request(app)
+          .post("/webhooks/github")
+          .set("X-GitHub-Event", "pull_request")
+          .set("Content-Type", "application/json")
+          .send(JSON.stringify(oversizedPayload));
+
+        expect(res.status).toBe(413);
+        expect(runReview).not.toHaveBeenCalled();
+      },
+      15_000,
+    );
+  });
 });

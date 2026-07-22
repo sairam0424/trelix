@@ -17,6 +17,14 @@ interface RequestWithRawBody extends Request {
 
 const HANDLED_ACTIONS = new Set(["opened", "synchronize", "reopened"]);
 
+// GitHub caps webhook payloads at 25MB (see docs.github.com/en/webhooks/
+// webhook-events-and-payloads) — matching that cap here rejects an
+// oversized body during parsing rather than buffering an arbitrarily
+// large request into memory. Signature verification happens AFTER body
+// parsing, so this limit is the only defense against a sender who
+// doesn't know the webhook secret sending a deliberately huge payload.
+const MAX_WEBHOOK_PAYLOAD_BYTES = "25mb";
+
 export interface WebhookRouterOptions {
   /** Injectable for tests — defaults to the real runReview (shells out to the trelix CLI). */
   runReview?: (config: AppConfig, request: ReviewRequest) => Promise<ReviewFinding[]>;
@@ -59,6 +67,7 @@ export function createWebhookRouter(config: AppConfig, options: WebhookRouterOpt
 
   router.use(
     express.json({
+      limit: MAX_WEBHOOK_PAYLOAD_BYTES,
       verify: (req: RequestWithRawBody, _res, buf) => {
         req.rawBody = buf.toString("utf8");
       },

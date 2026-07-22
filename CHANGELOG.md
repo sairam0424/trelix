@@ -7,6 +7,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 ## [Unreleased]
 
 ### Security
+- **GitHub App: payload size limit and subprocess timeout** — the webhook
+  route now caps request bodies at 25MB (GitHub's own documented webhook
+  payload cap), rejecting oversized bodies with `413` during parsing
+  rather than buffering an arbitrarily large request into memory; this
+  matters because signature verification happens *after* body parsing, so
+  the size limit is the only defense against a sender who doesn't know
+  the webhook secret sending a deliberately huge payload.
+  `runReviewCli`'s `trelix review` shell-out now passes a 5-minute
+  `timeout`, so a hung/slow review (LLM synthesis latency, a huge diff, a
+  stuck index) no longer ties up the process indefinitely — Node kills
+  the child process (`SIGTERM`) and the call rejects. New tests exercise
+  both with real subprocesses/payloads rather than mocks: a genuinely
+  slow shell shim proves the timeout actually kills the process, and a
+  real 26MB request body proves the size limit actually rejects.
 - **GitHub App: webhook signature verification** — `infra/github-app/src/webhook.ts`
   now verifies `X-Hub-Signature-256` (HMAC-SHA256 over the raw request
   body, keyed by the webhook secret) via `@octokit/webhooks-methods`'s
@@ -21,6 +35,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `runReview` never called; a correctly-signed control case asserts `202`.
 
 ### Added
+- **GitHub App: GA-readiness docs polish** — `infra/github-app/README.md`
+  finalized (production deployment notes: HTTPS requirement, secret-manager
+  guidance, runtime prerequisites) and its status upgraded from
+  "skeleton"/"auth wired" to "installable and hardened" now that items
+  6a-6c are complete. `docs/ROADMAP.md`'s "GitHub App GA" line explicitly
+  states this App is installable and hardened, **not** Marketplace-listed
+  — Marketplace paid-app listing has its own separate business/adoption
+  requirements out of scope for this engineering work.
 - **GitHub App: installation-token minting + Check-annotation posting**
   (`infra/github-app/src/auth.ts`, `src/review-runner.ts`) — completes the
   auth/posting work stubbed in item 6a. `getInstallationToken` uses
