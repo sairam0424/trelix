@@ -1,5 +1,6 @@
+import * as path from "path";
 import * as vscode from "vscode";
-import { TrelixMcpClient } from "./mcp-client";
+import { TrelixMcpClient, SearchResult } from "./mcp-client";
 
 let client: TrelixMcpClient | null = null;
 
@@ -9,6 +10,24 @@ function getRepoPath(): string {
     .get<string>("indexPath");
   if (configured && configured.length > 0) return configured;
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+}
+
+/** Parses the "start-end" line range search_code returns (1-indexed) into a 0-indexed vscode.Range. */
+function parseLineRange(lines: string): vscode.Range | undefined {
+  const match = /^(\d+)-(\d+)$/.exec(lines);
+  if (!match) return undefined;
+  const start = Math.max(0, parseInt(match[1], 10) - 1);
+  const end = Math.max(0, parseInt(match[2], 10) - 1);
+  return new vscode.Range(start, 0, end, 0);
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -23,6 +42,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // Already connected — ignore
     }
     return client;
+  }
+
+  async function openResult(result: SearchResult, repoPath: string): Promise<void> {
+    const absolutePath = vscode.Uri.file(
+      path.isAbsolute(result.file) ? result.file : path.join(repoPath, result.file)
+    );
+    const range = parseLineRange(result.lines);
+    const editor = await vscode.window.showTextDocument(absolutePath, {
+      selection: range,
+    });
+    if (range) {
+      editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+    }
   }
 
   // Command: trelix.search
@@ -40,14 +72,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "trelix: searching…" },
         async () => {
-          const results = await c.search(query, repoPath);
-          if (results.length === 0) {
+          const page = await c.search(query, repoPath);
+          if (page.results.length === 0) {
             vscode.window.showInformationMessage("trelix: no results found.");
             return;
           }
-          const items = results.map((r) => ({
-            label: r.symbolName,
-            description: r.filePath,
+          const items = page.results.map((r) => ({
+            label: r.symbol,
+            description: `${r.file}:${r.lines} (${r.kind})`,
             detail: r.body.slice(0, 120),
             result: r,
           }));
@@ -56,8 +88,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             matchOnDetail: true,
           });
           if (picked) {
-            const uri = vscode.Uri.file(picked.result.filePath);
-            await vscode.window.showTextDocument(uri);
+            await openResult(picked.result, repoPath);
           }
         }
       );
@@ -84,9 +115,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             "trelixAnswer",
             `trelix: ${query.slice(0, 40)}`,
             vscode.ViewColumn.Beside,
-            {}
+            { enableScripts: false, localResourceRoots: [] }
           );
-          panel.webview.html = `<html><body><pre style="font-family:monospace;white-space:pre-wrap">${answer}</pre></body></html>`;
+          const nonce = String(Date.now());
+          panel.webview.html = `<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}';">
+<style nonce="${nonce}">body { font-family: monospace; white-space: pre-wrap; }</style>
+</head>
+<body>${escapeHtml(answer)}</body>
+</html>`;
         }
       );
     })

@@ -6,6 +6,56 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Security
+- **VS Code extension: XSS in the `trelix.ask` Webview** — `panel.webview.html`
+  interpolated the raw, unescaped LLM answer string directly, with the
+  Webview's `options` an empty `{}` (no CSP, no `enableScripts: false`, no
+  `localResourceRoots` restriction at all). A crafted or adversarial answer
+  could execute arbitrary script in the Webview's context. Now HTML-escapes
+  the answer before interpolation and sets `enableScripts: false` plus an
+  explicit `default-src 'none'` CSP meta tag.
+
+### Fixed
+- **VS Code extension: `search_code` results were silently mis-parsed** —
+  `mcp-client.ts`'s `search()` read `symbol_name`/`file_path` off each
+  result, but the real MCP `search_code` tool's response keys are
+  `symbol`/`file` (confirmed against `packages/trelix-mcp/src/trelix_mcp/
+  server.py`) — those two fields were always empty strings, and clicking a
+  search result opened a broken/empty file URI. Also fixed: `next_cursor`/
+  `total_available` were parsed off the response but discarded entirely
+  (`search()` returned only `parsed.results`), and `kind`/`lines`/`source`/
+  `language` were dropped from the parsed shape though the server already
+  returns them. `search()` now returns the full `{results, nextCursor,
+  totalAvailable}` shape with every field; `extension.ts` uses the newly
+  available `lines` field ("start-end", 1-indexed) to jump to and highlight
+  the matched symbol's line range on open, instead of just opening the file
+  with no selection.
+
+### Changed
+- **VS Code extension build/test infrastructure** — added `esbuild`
+  (bundles `dist/extension.js`, `external: ["vscode"]`) instead of plain
+  `tsc` emit, so the packaged `.vsix` no longer risks shipping unbundled
+  `node_modules` (the extension's only runtime dependency,
+  `@modelcontextprotocol/sdk`). `tsc --noEmit` remains a separate
+  `typecheck` script since esbuild doesn't type-check. Added a
+  `.vscodeignore` (previously absent) and a `@vscode/test-electron`+Mocha
+  test harness (`src/test/runTest.ts`, `src/test/suite/`) — new
+  `extension.test.ts` verifies activation and command registration;
+  `mcp-client.test.ts` verifies the `search()`/`ask()` parsing fixes above
+  against a mocked MCP transport. New
+  `.github/workflows/vscode-extension-ci.yml` runs
+  `npm ci && npm run typecheck && npm run build && xvfb-run -a npm test`,
+  gated on `workspace-vscode/**` changes. Version bumped `0.1.0` → `0.2.0`
+  (unchanged since the v2.7.0 scaffold).
+- **`docs/integrations/vscode-plugin.md` full rewrite** — the previous
+  version described a PyInstaller-binary-bundling architecture that was
+  never actually built, and never once mentioned the real MCP-stdio-client
+  architecture the extension actually ships with. Rewritten to describe
+  the real `dist/extension.js` (esbuild bundle) → `trelix-mcp` (stdio
+  child process) → trelix core data flow, the real `search_code` response
+  shape, the security notes above, and the real build/test/package
+  commands.
+
 ### Added
 - **Official Docker image** — a multi-stage `Dockerfile` (root) publishes
   `ghcr.io/sairam0424/trelix` for `linux/amd64`+`linux/arm64` on every
