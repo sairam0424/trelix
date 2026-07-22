@@ -6,6 +6,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Added
+- **VS Code extension: live-narrowing search + snippet preview** —
+  `trelix.search` is now a debounced (250ms) search-as-you-type
+  `QuickPick` instead of a one-shot `showInputBox` → static-list flow.
+  Highlighting a result (arrow keys, not just accepting) shows a real
+  snippet preview via `showTextDocument({preview: true})` against a new
+  virtual-document `TextDocumentContentProvider`
+  (`trelix-preview:` scheme, `src/preview.ts`) — this gets genuine VS Code
+  syntax highlighting for free, since the virtual URI keeps the real
+  file's extension. A `"Load more results…"` pseudo-item appears whenever
+  `search_code`'s `next_cursor` is non-null (using the pagination fields
+  PR #81/item 5a fixed), fetching and appending the next page without
+  losing the current results or query. The debounce/cursor-pagination/
+  stale-response-rejection state machine lives in a new, Extension-Host-
+  independent `SearchController` class (`src/search-controller.ts`) —
+  `search-controller.test.ts` uses an injectable fake-timer harness to
+  simulate rapid keystrokes and prove `search()` fires exactly once per
+  debounce window (not once per keystroke), that a stale in-flight
+  response is discarded once a newer query has superseded it, and that
+  `loadMore()` correctly appends via `next_cursor` and no-ops when there
+  isn't one.
+- **`docs/ROADMAP.md`**: logged the original Phase 3 plan's `@trelix` chat
+  participant + hover providers (never actually delivered — only the 2
+  QuickPick/Webview commands shipped) as an explicit v3.1.0 candidate,
+  rather than silently dropping it again.
+
 ### Security
 - **VS Code extension: XSS in the `trelix.ask` Webview** — `panel.webview.html`
   interpolated the raw, unescaped LLM answer string directly, with the
