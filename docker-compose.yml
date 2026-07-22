@@ -14,4 +14,4 @@ services:
       - "${REPO_PATH:-.}:/repo"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - TRELIX_EMBEDDER=${TRELIX_EMBEDDER:-openai}
+      - TRELIX_EMBEDDER_PROVIDER=${TRELIX_EMBEDDER_PROVIDER:-openai}

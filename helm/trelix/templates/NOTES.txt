@@ -1,0 +1,64 @@
+trelix has been deployed.
+
+{{- if .Values.persistence.enabled }}
+
+⚠️  REPO MODEL — READ THIS FIRST
+--------------------------------
+This one Deployment/PVC pair can serve MANY repos, not just one. trelix
+serve's REST API is stateless per request: every route independently
+re-derives its config from the `repo` query param you pass, so `repo_path`
+in the container's startup command is decorative only.
+
+Index and query repos as SUBDIRECTORIES of the shared PVC, mounted at
+{{ .Values.persistence.mountPath }}:
+
+  1. Get a shell with the PVC mounted (or `kubectl cp` a repo checkout in):
+       kubectl exec -it deploy/{{ include "trelix.fullname" . }} -- sh
+
+  2. Copy or index a repo under {{ .Values.persistence.mountPath }}, e.g.
+     {{ .Values.persistence.mountPath }}/my-project
+
+  3. Every REST call passes that absolute path as `repo`:
+       POST {{ .Values.persistence.mountPath }}/my-project via /index
+       GET  /search?repo={{ .Values.persistence.mountPath }}/my-project&query=...
+
+{{- end }}
+
+⚠️  NO AUTHENTICATION ON THE REST API
+--------------------------------------
+trelix serve has zero auth middleware — every route is open to anyone who
+can reach the Service. This chart defaults `ingress.enabled: false` for
+exactly this reason.
+
+Before setting `ingress.enabled: true`, put an authenticating layer in
+front (an ingress-controller auth annotation, e.g. NGINX
+`nginx.ingress.kubernetes.io/auth-*`, or an OAuth2-proxy sidecar/gateway).
+Without one, a public Ingress exposes:
+  - POST /index    — lets any caller trigger arbitrary-path indexing
+  - GET  /ask      — lets any caller run LLM synthesis at your API-key's cost
+  - GET  /search   — exposes full source/body content of every indexed repo
+
+{{- if eq .Values.store.backend "qdrant" }}
+
+ℹ️  QDRANT BACKEND
+------------------
+store.backend=qdrant is set, but this chart does NOT deploy or manage
+Qdrant — you must point store.qdrant.url at an existing instance (Qdrant
+Cloud or self-hosted). Qdrant's own Helm chart states its "Support ... is
+limited to community support," and self-hosted Qdrant lacks zero-downtime
+upgrades, backup/DR, and shard rebalancing (Cloud/Enterprise-Operator-only
+features). Operating Qdrant's availability and durability is entirely on
+you with this setting.
+{{- end }}
+
+Get the application URL by running:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ (first .paths).path }}
+{{- end }}
+{{- else if eq .Values.service.type "LoadBalancer" }}
+  kubectl get svc -w {{ include "trelix.fullname" . }}
+{{- else }}
+  kubectl port-forward svc/{{ include "trelix.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  then open http://127.0.0.1:{{ .Values.service.port }}/docs
+{{- end }}
