@@ -7,6 +7,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 ## [Unreleased]
 
 ### Added
+- **Helm chart** (`helm/trelix/`) for deploying `trelix serve` to Kubernetes —
+  `Deployment`/`Service`/`PVC`/`Secret`/`Ingress` templates, `values.yaml`
+  covering the full `StoreConfig` surface (`store.backend`: sqlite/qdrant/
+  lance, HNSW tuning, BM25 read-pool size) plus embedder-provider
+  credentials (OpenAI/Voyage/Cohere, either plaintext `apiKey` for dev or
+  `existingSecretName`/`existingSecretKey` for shared clusters). Models
+  `trelix serve`'s actual behavior directly: since `create_app()` takes zero
+  arguments and every route re-derives its config from the request's own
+  `repo` param, one Deployment is already multi-repo-capable — the chart's
+  PVC (mounted at `/data` by default) is a *shared* data directory across
+  every repo you index/serve, documented loudly in `NOTES.txt`/`README.md`
+  since it's non-obvious. `ingress.enabled` defaults to `false`: `trelix
+  serve` has zero auth middleware, so `NOTES.txt` warns explicitly about
+  exposing `/index`/`/ask`/`/search` before enabling a public Ingress.
+  Qdrant is treated strictly as an external, user-managed dependency — this
+  chart only points `QDRANT_URL`/`QDRANT_API_KEY` at one, never deploys or
+  operates Qdrant itself (its own chart states support is
+  community-limited; self-hosted lacks zero-downtime upgrades and
+  backup/DR). New `.github/workflows/helm-lint.yml` runs `helm lint` +
+  `helm template` across all three `store.backend` values plus an
+  ingress-enabled render, on every push/PR touching `helm/**`.
 - **Official Docker image** — a multi-stage `Dockerfile` (root) publishes
   `ghcr.io/sairam0424/trelix` for `linux/amd64`+`linux/arm64` on every
   release tag, in two variants sharing one build (`EXTRAS` build arg):
@@ -26,6 +47,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 - New Makefile targets: `docker-build`, `docker-build-local`, `docker-run`.
 
 ### Fixed
+- **`TRELIX_EMBEDDER` was a silent no-op env var** — `docs/
+  INSTALLATION_GUIDE.md` and `docker-compose.yml` both referenced
+  `TRELIX_EMBEDDER`, but `EmbedderConfig`'s real env var is
+  `TRELIX_EMBEDDER_PROVIDER` (confirmed empirically: setting
+  `TRELIX_EMBEDDER=openai` in a clean environment left `provider` at its
+  default `"local"`). On the slim Docker image this silently falls back to
+  a provider that isn't installed and crashes, rather than erroring at the
+  variable name. Also fixed a `--embedder` CLI flag reference in the same
+  section — the real flag is `--provider`. Found while writing this
+  chart's `values.yaml` example and wanting to confirm the var name against
+  source before using it.
 - **`docs/INSTALLATION_GUIDE.md`'s Docker Compose/serve examples used the
   wrong port** (8080) and a nonexistent `serve --repo` flag (`repo_path`
   is positional) — same class of bug already fixed for the `docker run`

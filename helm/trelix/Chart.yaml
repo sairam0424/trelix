@@ -1,0 +1,16 @@
+apiVersion: v2
+name: trelix
+description: Helm chart for trelix serve — fast, reliable code indexing and retrieval REST API
+type: application
+version: 0.1.0
+appVersion: "2.8.1"
+home: https://github.com/sairam0424/trelix
+sources:
+  - https://github.com/sairam0424/trelix
+maintainers:
+  - name: Trelix Contributors
+keywords:
+  - code-search
+  - code-intelligence
+  - rag
+  - developer-tools
