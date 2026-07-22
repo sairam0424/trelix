@@ -1,6 +1,11 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { TrelixMcpClient, SearchResult } from "./mcp-client";
+import { SnippetPreviewProvider } from "./preview";
+import { SearchController } from "./search-controller";
+
+const SEARCH_DEBOUNCE_MS = 250;
+const PAGE_SIZE = 10;
 
 let client: TrelixMcpClient | null = null;
 
@@ -30,8 +35,34 @@ function escapeHtml(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
+type ResultItem = vscode.QuickPickItem & { itemKind: "result"; result: SearchResult };
+type LoadMoreItem = vscode.QuickPickItem & { itemKind: "loadMore" };
+type SearchQuickPickItem = ResultItem | LoadMoreItem;
+
+function toResultItem(r: SearchResult): ResultItem {
+  return {
+    itemKind: "result",
+    label: r.symbol,
+    description: `${r.file}:${r.lines} (${r.kind})`,
+    detail: r.body.slice(0, 120).replace(/\s+/g, " "),
+    result: r,
+  };
+}
+
+const LOAD_MORE_ITEM: LoadMoreItem = {
+  itemKind: "loadMore",
+  label: "$(ellipsis) Load more results…",
+  alwaysShow: true,
+};
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   client = new TrelixMcpClient();
+
+  const previewProvider = new SnippetPreviewProvider();
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(SnippetPreviewProvider.scheme, previewProvider),
+    previewProvider
+  );
 
   // Connect lazily on first command use
   async function ensureConnected(): Promise<TrelixMcpClient> {
@@ -57,41 +88,72 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   }
 
-  // Command: trelix.search
+  async function previewResult(result: SearchResult): Promise<void> {
+    const uri = previewProvider.uriFor(result);
+    await vscode.window.showTextDocument(uri, {
+      preview: true,
+      preserveFocus: true,
+      viewColumn: vscode.ViewColumn.Beside,
+    });
+  }
+
+  // Command: trelix.search — live-narrowing QuickPick: search-as-you-type
+  // (debounced), snippet preview on highlight, "load more" pagination using
+  // search_code's real cursor/next_cursor fields. The debounce/pagination
+  // state machine lives in SearchController (testable without the Extension
+  // Host); this closure is just vscode.QuickPick wiring on top of it.
   context.subscriptions.push(
     vscode.commands.registerCommand("trelix.search", async () => {
-      const query = await vscode.window.showInputBox({
-        prompt: "Search your codebase with trelix",
-        placeHolder: "e.g. JWT token validation middleware",
-      });
-      if (!query) return;
-
       const c = await ensureConnected();
       const repoPath = getRepoPath();
 
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "trelix: searching…" },
-        async () => {
-          const page = await c.search(query, repoPath);
-          if (page.results.length === 0) {
-            vscode.window.showInformationMessage("trelix: no results found.");
-            return;
-          }
-          const items = page.results.map((r) => ({
-            label: r.symbol,
-            description: `${r.file}:${r.lines} (${r.kind})`,
-            detail: r.body.slice(0, 120),
-            result: r,
-          }));
-          const picked = await vscode.window.showQuickPick(items, {
-            matchOnDescription: true,
-            matchOnDetail: true,
-          });
-          if (picked) {
-            await openResult(picked.result, repoPath);
-          }
+      const qp = vscode.window.createQuickPick<SearchQuickPickItem>();
+      qp.placeholder = "Search your codebase with trelix — e.g. JWT token validation middleware";
+      qp.matchOnDescription = true;
+      qp.matchOnDetail = true;
+
+      const controller = new SearchController({
+        debounceMs: SEARCH_DEBOUNCE_MS,
+        pageSize: PAGE_SIZE,
+        search: (query, k, cursor) => c.search(query, repoPath, k, cursor),
+        onItems: (results, hasMore) => {
+          const items = results.map(toResultItem);
+          qp.items = hasMore ? [...items, LOAD_MORE_ITEM] : items;
+        },
+        onError: (err) => {
+          vscode.window.showErrorMessage(`trelix search failed: ${err instanceof Error ? err.message : String(err)}`);
+        },
+        onBusyChange: (busy) => {
+          qp.busy = busy;
+        },
+      });
+
+      qp.onDidChangeValue((value) => controller.onValueChange(value));
+
+      qp.onDidChangeActive((active) => {
+        const item = active[0];
+        if (item && item.itemKind === "result") {
+          void previewResult(item.result);
         }
-      );
+      });
+
+      qp.onDidAccept(async () => {
+        const picked = qp.selectedItems[0];
+        if (!picked) return;
+        if (picked.itemKind === "loadMore") {
+          await controller.loadMore();
+          return;
+        }
+        qp.hide();
+        await openResult(picked.result, repoPath);
+      });
+
+      qp.onDidHide(() => {
+        controller.dispose();
+        qp.dispose();
+      });
+
+      qp.show();
     })
   );
 
