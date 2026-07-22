@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { Octokit } from "@octokit/rest";
 import { AppConfig } from "./config.js";
 import { getInstallationToken } from "./auth.js";
 
@@ -49,29 +50,66 @@ export function toAnnotations(findings: ReviewFinding[], limit = 50): CheckAnnot
  * findings. Requires PR #83's fix (stdout carries ONLY the JSON array;
  * status/progress messages go to stderr) — this function reads stdout
  * exclusively and would break against the pre-#83 CLI.
- *
- * Posting Check annotations via Octokit (using the installation token from
- * getInstallationToken) is not yet wired — see item 6b, which also adds
- * the auth this depends on.
+ */
+export async function runReviewCli(request: ReviewRequest, repoPath: string): Promise<ReviewFinding[]> {
+  const prRef = `${request.owner}/${request.repo}#${request.prNumber}`;
+  const { stdout } = await execFileAsync("trelix", ["review", repoPath, "--pr", prRef, "--json"]);
+  return JSON.parse(stdout) as ReviewFinding[];
+}
+
+/**
+ * Posts findings as a completed Check run with inline annotations,
+ * mirroring trelix-review.yml's github-script step's github.rest.checks.create
+ * call exactly (same conclusion logic: any 'failure'-level annotation ->
+ * overall 'failure', else 'success').
+ */
+export async function postCheckRun(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  headSha: string,
+  findings: ReviewFinding[],
+): Promise<void> {
+  const annotations = toAnnotations(findings);
+  await octokit.rest.checks.create({
+    owner,
+    repo,
+    name: "trelix Code Review",
+    head_sha: headSha,
+    status: "completed",
+    conclusion: annotations.some((a) => a.annotation_level === "failure") ? "failure" : "success",
+    output: {
+      title: `trelix found ${annotations.length} issue(s)`,
+      summary: `trelix reviewed the PR and found ${annotations.length} issue(s).`,
+      annotations,
+    },
+  });
+}
+
+/**
+ * End-to-end: mint an installation token, run the CLI review, and post
+ * the findings as a Check run. Requires request.installationId (the
+ * webhook payload's `installation.id` — always present for App-installed
+ * webhook deliveries).
  */
 export async function runReview(
   config: AppConfig,
   request: ReviewRequest,
 ): Promise<ReviewFinding[]> {
-  if (request.installationId !== undefined) {
-    // Not yet used to authenticate the review call itself — see item 6b.
-    // Calling it here only so its wiring point is visible in this skeleton.
-    await getInstallationToken(config, request.installationId).catch(() => undefined);
+  if (request.installationId === undefined) {
+    throw new Error("runReview requires an installationId to authenticate the Checks API call");
   }
 
-  const prRef = `${request.owner}/${request.repo}#${request.prNumber}`;
-  const { stdout } = await execFileAsync("trelix", [
-    "review",
-    config.reviewRepoPath,
-    "--pr",
-    prRef,
-    "--json",
-  ]);
+  const token = await getInstallationToken(config, request.installationId);
+  const octokit = new Octokit({ auth: token });
 
-  return JSON.parse(stdout) as ReviewFinding[];
+  const { data: pull } = await octokit.rest.pulls.get({
+    owner: request.owner,
+    repo: request.repo,
+    pull_number: request.prNumber,
+  });
+
+  const findings = await runReviewCli(request, config.reviewRepoPath);
+  await postCheckRun(octokit, request.owner, request.repo, pull.head.sha, findings);
+  return findings;
 }
