@@ -7,6 +7,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 ## [Unreleased]
 
 ### Added
+- **`@trelix/sdk` TypeScript client** (`packages/trelix-typescript`) — a hand-written
+  HTTP client for the `trelix serve` REST API, with types generated from the
+  live OpenAPI schema (`openapi-typescript`) and a thin, hand-glued
+  `TrelixClient` class on top. Covers every route (`health`, `search`
+  with cursor pagination, `index`, `stats`, `graph`, `graph/communities`,
+  `graph/visualize`, `graph/search`) plus a separate `askStream()` async
+  generator for `/ask`'s SSE stream (tokens, `[DONE]`, and a
+  `TrelixAskError`-throwing `[ERROR: ...]` frame).
 - **Typed REST API response models** — every `trelix serve` route now
   declares a real Pydantic response model (`SearchResponse`,
   `IndexResponse`, `StatsResponse`, `GraphStatsResponse`,
