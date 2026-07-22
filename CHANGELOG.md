@@ -7,6 +7,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 ## [Unreleased]
 
 ### Added
+- **GitHub App skeleton** (`infra/github-app/`, `@trelix/github-app`) — the
+  start of a standalone, webhook-driven GitHub App for zero-setup PR
+  review (install the App, no workflow YAML needed in the installing
+  repo), per the explicit architecture decision to build a standalone
+  webhook-to-direct-execution service rather than a thin bridge to the
+  existing Actions workflow. Ships `manifest.yml` (same
+  `pull_requests`/`checks`/`contents` permissions and `pull_request`
+  event the existing `trelix-review.yml` workflow already uses), an
+  Express server with `/health` and `/webhooks/github`, webhook routing
+  for `pull_request` `opened`/`synchronize`/`reopened` (mirroring the
+  existing workflow's trigger), and a review-runner that shells out to
+  `trelix review --pr ... --json` and maps findings to GitHub Check
+  annotations (`toAnnotations` — a TypeScript port of the mapping logic
+  fixed in the `trelix-review.yml` workflow). **Not yet wired for
+  production use**: signature verification, installation-token minting,
+  and Check-annotation posting are explicitly stubbed/unimplemented —
+  land in item 6b. `infra/github-app/README.md` rewritten to cover both
+  integration paths (the existing Actions workflow and this new App) so
+  its previous "no App registration required" framing doesn't read as
+  false now that a real App skeleton exists. New
+  `.github/workflows/github-app-ci.yml` runs
+  `npm ci && npm run typecheck && npm run build && npm test`, gated on
+  `infra/github-app/**`.
+
 - **Official Docker image** — a multi-stage `Dockerfile` (root) publishes
   `ghcr.io/sairam0424/trelix` for `linux/amd64`+`linux/arm64` on every
   release tag, in two variants sharing one build (`EXTRAS` build arg):
