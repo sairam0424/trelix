@@ -6,7 +6,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Security
+- **GitHub App: webhook signature verification** — `infra/github-app/src/webhook.ts`
+  now verifies `X-Hub-Signature-256` (HMAC-SHA256 over the raw request
+  body, keyed by the webhook secret) via `@octokit/webhooks-methods`'s
+  `verify()`, which compares using `crypto.timingSafeEqual` rather than a
+  naive string compare (avoids leaking timing information about how many
+  leading bytes matched). Requests with a missing, wrong-secret, or
+  tampered-after-signing body are rejected with `401` before the route
+  handler — and therefore `runReview`/the trelix CLI shell-out — ever sees
+  the payload. New tests cover both the accept-valid and reject-tampered
+  paths explicitly (the common real bug is only testing the happy path):
+  no-header, wrong-secret, and tampered-body all assert `401` +
+  `runReview` never called; a correctly-signed control case asserts `202`.
+
 ### Added
+- **GitHub App: installation-token minting + Check-annotation posting**
+  (`infra/github-app/src/auth.ts`, `src/review-runner.ts`) — completes the
+  auth/posting work stubbed in item 6a. `getInstallationToken` uses
+  `@octokit/auth-app` (App-ID+private-key JWT signing -> installation-token
+  exchange), with one `AuthInterface` reused per `AppConfig` (a `WeakMap`)
+  so the library's own expiry-aware cache actually has a chance to hit
+  across calls — verified with mocked-transport tests proving a second
+  call for the same config+installation makes zero additional HTTP
+  requests, while distinct installations/configs never share a cached
+  token. `runReview` now mints a token, fetches the PR's head SHA via
+  `octokit.rest.pulls.get`, runs `trelix review --pr ... --json`, and
+  posts a completed Check run with inline annotations via
+  `octokit.rest.checks.create` (same conclusion logic as the existing
+  `trelix-review.yml` workflow: any `failure`-level annotation ->
+  `failure`, else `success`).
 - **GitHub App skeleton** (`infra/github-app/`, `@trelix/github-app`) — the
   start of a standalone, webhook-driven GitHub App for zero-setup PR
   review (install the App, no workflow YAML needed in the installing

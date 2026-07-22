@@ -9,10 +9,10 @@ capability:
 | Setup | Merge one YAML file into the repo | Install the App — no workflow file needed |
 | Trust | Repo's own `GITHUB_TOKEN`, no third party | Grants a third-party App `pull_requests`/`checks`/`contents` access |
 | Where reviews run | The installing repo's own Actions runners | This standalone service |
-| Status | ✅ Shipped | 🚧 Skeleton only (item 6a) — not yet safe for production, see below |
+| Status | ✅ Shipped | 🚧 Core auth/verification wired (item 6b) — GA polish (docs, hardening) pending in item 6c, see below |
 
 Pick the Actions workflow if you'd rather not install a third-party App.
-Pick the App once it's production-ready (6b/6c) for zero-setup
+Pick the App once it's production-ready (6c) for zero-setup
 installability across many repos.
 
 ## Option 1: GitHub Actions workflow (shipped)
@@ -94,20 +94,28 @@ GitHub -- pull_request webhook -->  this service (Express)
                               GitHub Checks API (annotations)
 ```
 
-### Status: skeleton only (item 6a of the v3.0.0 roadmap)
+### Status: auth + signature verification wired (item 6b of the v3.0.0 roadmap)
 
-This item ships the manifest, webhook routing, and review-runner shell-out
-— **not yet wired for production use**:
-
-- ❌ **No signature verification.** `src/webhook.ts` does not verify
-  `X-Hub-Signature-256` against the webhook secret. **Do not expose this
-  service on a public endpoint as-is.**
-- ❌ **No installation-token minting.** `src/auth.ts`'s
-  `getInstallationToken` is stubbed and throws.
-- ❌ **No Check-annotation posting.** `runReview` returns parsed findings;
-  nothing calls `github.rest.checks.create` yet.
-
-All three land in item 6b (GitHub App auth + signature verification).
+- ✅ **Signature verification.** `src/webhook.ts` verifies
+  `X-Hub-Signature-256` (HMAC-SHA256 over the raw request body, keyed by
+  the webhook secret) via `@octokit/webhooks-methods`'s `verify()`, which
+  compares using `crypto.timingSafeEqual` — not a naive string compare.
+  Requests with a missing, wrong-secret, or body-tampered-after-signing
+  signature are rejected with `401` before the route handler ever sees
+  the payload.
+- ✅ **Installation-token minting.** `src/auth.ts`'s `getInstallationToken`
+  uses `@octokit/auth-app` (App-ID + private-key JWT signing ->
+  installation-token exchange), with one `AuthInterface` reused per
+  `AppConfig` so the library's own expiry-aware cache actually has a
+  chance to hit across calls instead of re-minting on every request.
+- ✅ **Check-annotation posting.** `runReview` now mints a token, fetches
+  the PR's head SHA, runs the CLI review, and posts a completed Check run
+  with inline annotations via `octokit.rest.checks.create` —
+  `toAnnotations`'s mapping logic is unchanged from item 6a.
+- 🚧 **Remaining for item 6c**: payload size limits, a subprocess timeout
+  on the `trelix review` shell-out, finalized setup docs, and GA-readiness
+  polish (not "Marketplace-listed" — that requires ≥100 installations,
+  a business/adoption gate outside engineering scope).
 
 ### Files
 
@@ -117,14 +125,15 @@ All three land in item 6b (GitHub App auth + signature verification).
   (`pull_requests: write`, `checks: write`, `contents: read`) and
   subscribes to the `pull_request` event.
 - `src/server.ts` — Express entry point (`/health`, `/webhooks/github`).
-- `src/webhook.ts` — routes `pull_request` `opened`/`synchronize`/
-  `reopened` deliveries (mirrors the Actions workflow's trigger), invokes
-  the review runner.
-- `src/review-runner.ts` — shells out to `trelix review --pr ... --json`
-  and maps findings to GitHub Check annotations (`toAnnotations`, a
-  TypeScript port of the same mapping logic in `trelix-review.yml`'s
-  `github-script` step).
-- `src/auth.ts` — installation-token minting, **stubbed** (item 6b).
+- `src/webhook.ts` — verifies `X-Hub-Signature-256`, then routes
+  `pull_request` `opened`/`synchronize`/`reopened` deliveries (mirrors the
+  Actions workflow's trigger), invokes the review runner.
+- `src/review-runner.ts` — mints an installation token, shells out to
+  `trelix review --pr ... --json`, and posts the findings as a GitHub
+  Check run (`toAnnotations`/`postCheckRun` — a TypeScript port of the
+  same mapping logic in `trelix-review.yml`'s `github-script` step).
+- `src/auth.ts` — installation-token minting via `@octokit/auth-app`, one
+  cached `AuthInterface` per `AppConfig`.
 - `src/config.ts` — reads `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY`/
   `GITHUB_WEBHOOK_SECRET` from env only, per this repo's "never hardcode
   secrets" convention.

@@ -1,4 +1,5 @@
-import { Router, Request, Response } from "express";
+import express, { Router, Request, Response, NextFunction } from "express";
+import { verify } from "@octokit/webhooks-methods";
 import { runReview, ReviewRequest, ReviewFinding } from "./review-runner.js";
 import { AppConfig } from "./config.js";
 
@@ -10,6 +11,10 @@ interface PullRequestWebhookPayload {
   installation?: { id: number };
 }
 
+interface RequestWithRawBody extends Request {
+  rawBody?: string;
+}
+
 const HANDLED_ACTIONS = new Set(["opened", "synchronize", "reopened"]);
 
 export interface WebhookRouterOptions {
@@ -18,19 +23,48 @@ export interface WebhookRouterOptions {
 }
 
 /**
+ * Verifies X-Hub-Signature-256 (HMAC-SHA256 over the raw request body,
+ * keyed by the webhook secret) using @octokit/webhooks-methods' verify(),
+ * which compares via crypto.timingSafeEqual — never a naive string
+ * compare, which would leak timing information about how many leading
+ * bytes matched. Rejects with 401 before the route handler (and thus
+ * runReview) ever sees an unverified payload.
+ */
+function verifySignature(config: AppConfig) {
+  return async (req: RequestWithRawBody, res: Response, next: NextFunction): Promise<void> => {
+    const signature = req.header("X-Hub-Signature-256");
+    if (!signature || !req.rawBody) {
+      res.status(401).json({ error: "missing signature or body" });
+      return;
+    }
+
+    const isValid = await verify(config.webhookSecret, req.rawBody, signature);
+    if (!isValid) {
+      res.status(401).json({ error: "signature verification failed" });
+      return;
+    }
+
+    next();
+  };
+}
+
+/**
  * Routes `pull_request` webhook deliveries, mirroring the existing
  * .github/workflows/trelix-review.yml Actions workflow's trigger
  * (`types: [opened, synchronize, reopened]`).
- *
- * ⚠️ Signature verification (HMAC-SHA256 over the raw body against
- * X-Hub-Signature-256) is NOT implemented yet — see item 6b. This router
- * must not be exposed on a public endpoint until that lands; it is wired
- * here only so 6b has a real request-handling skeleton to add
- * verification to, not a stub function signature.
  */
 export function createWebhookRouter(config: AppConfig, options: WebhookRouterOptions = {}): Router {
   const router = Router();
   const runReviewFn = options.runReview ?? runReview;
+
+  router.use(
+    express.json({
+      verify: (req: RequestWithRawBody, _res, buf) => {
+        req.rawBody = buf.toString("utf8");
+      },
+    }),
+  );
+  router.use(verifySignature(config));
 
   router.post("/", async (req: Request, res: Response) => {
     const event = req.header("X-GitHub-Event");
