@@ -30,7 +30,132 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `.github/workflows/github-app-ci.yml` runs
   `npm ci && npm run typecheck && npm run build && npm test`, gated on
   `infra/github-app/**`.
+- **VS Code extension: live-narrowing search + snippet preview** —
+  `trelix.search` is now a debounced (250ms) search-as-you-type
+  `QuickPick` instead of a one-shot `showInputBox` → static-list flow.
+  Highlighting a result (arrow keys, not just accepting) shows a real
+  snippet preview via `showTextDocument({preview: true})` against a new
+  virtual-document `TextDocumentContentProvider`
+  (`trelix-preview:` scheme, `src/preview.ts`) — this gets genuine VS Code
+  syntax highlighting for free, since the virtual URI keeps the real
+  file's extension. A `"Load more results…"` pseudo-item appears whenever
+  `search_code`'s `next_cursor` is non-null (using the pagination fields
+  PR #81/item 5a fixed), fetching and appending the next page without
+  losing the current results or query. The debounce/cursor-pagination/
+  stale-response-rejection state machine lives in a new, Extension-Host-
+  independent `SearchController` class (`src/search-controller.ts`) —
+  `search-controller.test.ts` uses an injectable fake-timer harness to
+  simulate rapid keystrokes and prove `search()` fires exactly once per
+  debounce window (not once per keystroke), that a stale in-flight
+  response is discarded once a newer query has superseded it, and that
+  `loadMore()` correctly appends via `next_cursor` and no-ops when there
+  isn't one.
+- **`docs/ROADMAP.md`**: logged the original Phase 3 plan's `@trelix` chat
+  participant + hover providers (never actually delivered — only the 2
+  QuickPick/Webview commands shipped) as an explicit v3.1.0 candidate,
+  rather than silently dropping it again.
 
+### Security
+- **VS Code extension: XSS in the `trelix.ask` Webview** — `panel.webview.html`
+  interpolated the raw, unescaped LLM answer string directly, with the
+  Webview's `options` an empty `{}` (no CSP, no `enableScripts: false`, no
+  `localResourceRoots` restriction at all). A crafted or adversarial answer
+  could execute arbitrary script in the Webview's context. Now HTML-escapes
+  the answer before interpolation and sets `enableScripts: false` plus an
+  explicit `default-src 'none'` CSP meta tag.
+
+### Fixed
+- **VS Code extension: `search_code` results were silently mis-parsed** —
+  `mcp-client.ts`'s `search()` read `symbol_name`/`file_path` off each
+  result, but the real MCP `search_code` tool's response keys are
+  `symbol`/`file` (confirmed against `packages/trelix-mcp/src/trelix_mcp/
+  server.py`) — those two fields were always empty strings, and clicking a
+  search result opened a broken/empty file URI. Also fixed: `next_cursor`/
+  `total_available` were parsed off the response but discarded entirely
+  (`search()` returned only `parsed.results`), and `kind`/`lines`/`source`/
+  `language` were dropped from the parsed shape though the server already
+  returns them. `search()` now returns the full `{results, nextCursor,
+  totalAvailable}` shape with every field; `extension.ts` uses the newly
+  available `lines` field ("start-end", 1-indexed) to jump to and highlight
+  the matched symbol's line range on open, instead of just opening the file
+  with no selection.
+- **`trelix review --pr ... --json`'s stdout was never valid JSON** —
+  `console.print(...)` status/progress messages (e.g. "Fetching PR diff
+  from GitHub...") ran unconditionally to stdout even in `--json` mode,
+  and `"No issues found."`/`"No textual changes..."` styled messages ran
+  *instead of* an empty `[]` when there were zero comments. Combined with
+  `.github/workflows/trelix-review.yml`'s `> file 2>&1` redirect, the
+  review-posting Check's `JSON.parse()` has always thrown and been
+  silently swallowed by a `try/catch` — meaning **the "trelix Code
+  Review" Check has never posted a single real annotation** since this
+  workflow shipped. All `--pr --json` status/progress messages now go to
+  `err_console` (stderr); the workflow now redirects only stdout, keeping
+  stderr in a separate log for debugging.
+- **The same workflow's annotation-posting logic never matched trelix's
+  real output shape even when parsing succeeded** — it read
+  `data.findings || data.reviews || []` against `trelix review --json`'s
+  real bare-array output (never matches, so `findings` was always `[]`
+  regardless), and compared `f.severity === 'error'`/`'warning'`
+  (lowercase) against the real values `"ERROR"`/`"WARN"`/`"INFO"`
+  (uppercase — `'WARN' !== 'warning'` either way). Every annotation would
+  have posted as `notice` severity even if the JSON had parsed. Now reads
+  the real `{file, lines, severity, comment}` shape directly and maps
+  `ERROR`→`failure`, `WARN`→`warning`, `INFO`→`notice`.
+- New `tests/unit/test_review_pr_json.py` (4 tests) — regression-tests
+  `--json` stdout purity for the has-comments, zero-comments, and
+  no-textual-changes paths, plus confirms non-`--json` mode still prints
+  status messages to stdout (the fix is `--json`-gated, not a blanket
+  behavior change). Verified these tests actually fail against the
+  pre-fix code (3/4 failed with the exact `JSONDecodeError` this bug
+  produces) before confirming they pass against the fix.
+
+### Changed
+- **VS Code extension build/test infrastructure** — added `esbuild`
+  (bundles `dist/extension.js`, `external: ["vscode"]`) instead of plain
+  `tsc` emit, so the packaged `.vsix` no longer risks shipping unbundled
+  `node_modules` (the extension's only runtime dependency,
+  `@modelcontextprotocol/sdk`). `tsc --noEmit` remains a separate
+  `typecheck` script since esbuild doesn't type-check. Added a
+  `.vscodeignore` (previously absent) and a `@vscode/test-electron`+Mocha
+  test harness (`src/test/runTest.ts`, `src/test/suite/`) — new
+  `extension.test.ts` verifies activation and command registration;
+  `mcp-client.test.ts` verifies the `search()`/`ask()` parsing fixes above
+  against a mocked MCP transport. New
+  `.github/workflows/vscode-extension-ci.yml` runs
+  `npm ci && npm run typecheck && npm run build && xvfb-run -a npm test`,
+  gated on `workspace-vscode/**` changes. Version bumped `0.1.0` → `0.2.0`
+  (unchanged since the v2.7.0 scaffold).
+- **`docs/integrations/vscode-plugin.md` full rewrite** — the previous
+  version described a PyInstaller-binary-bundling architecture that was
+  never actually built, and never once mentioned the real MCP-stdio-client
+  architecture the extension actually ships with. Rewritten to describe
+  the real `dist/extension.js` (esbuild bundle) → `trelix-mcp` (stdio
+  child process) → trelix core data flow, the real `search_code` response
+  shape, the security notes above, and the real build/test/package
+  commands.
+
+### Added
+- **Helm chart** (`helm/trelix/`) for deploying `trelix serve` to Kubernetes —
+  `Deployment`/`Service`/`PVC`/`Secret`/`Ingress` templates, `values.yaml`
+  covering the full `StoreConfig` surface (`store.backend`: sqlite/qdrant/
+  lance, HNSW tuning, BM25 read-pool size) plus embedder-provider
+  credentials (OpenAI/Voyage/Cohere, either plaintext `apiKey` for dev or
+  `existingSecretName`/`existingSecretKey` for shared clusters). Models
+  `trelix serve`'s actual behavior directly: since `create_app()` takes zero
+  arguments and every route re-derives its config from the request's own
+  `repo` param, one Deployment is already multi-repo-capable — the chart's
+  PVC (mounted at `/data` by default) is a *shared* data directory across
+  every repo you index/serve, documented loudly in `NOTES.txt`/`README.md`
+  since it's non-obvious. `ingress.enabled` defaults to `false`: `trelix
+  serve` has zero auth middleware, so `NOTES.txt` warns explicitly about
+  exposing `/index`/`/ask`/`/search` before enabling a public Ingress.
+  Qdrant is treated strictly as an external, user-managed dependency — this
+  chart only points `QDRANT_URL`/`QDRANT_API_KEY` at one, never deploys or
+  operates Qdrant itself (its own chart states support is
+  community-limited; self-hosted lacks zero-downtime upgrades and
+  backup/DR). New `.github/workflows/helm-lint.yml` runs `helm lint` +
+  `helm template` across all three `store.backend` values plus an
+  ingress-enabled render, on every push/PR touching `helm/**`.
 - **Official Docker image** — a multi-stage `Dockerfile` (root) publishes
   `ghcr.io/sairam0424/trelix` for `linux/amd64`+`linux/arm64` on every
   release tag, in two variants sharing one build (`EXTRAS` build arg):
@@ -50,6 +175,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 - New Makefile targets: `docker-build`, `docker-build-local`, `docker-run`.
 
 ### Fixed
+- **`TRELIX_EMBEDDER` was a silent no-op env var** — `docs/
+  INSTALLATION_GUIDE.md` and `docker-compose.yml` both referenced
+  `TRELIX_EMBEDDER`, but `EmbedderConfig`'s real env var is
+  `TRELIX_EMBEDDER_PROVIDER` (confirmed empirically: setting
+  `TRELIX_EMBEDDER=openai` in a clean environment left `provider` at its
+  default `"local"`). On the slim Docker image this silently falls back to
+  a provider that isn't installed and crashes, rather than erroring at the
+  variable name. Also fixed a `--embedder` CLI flag reference in the same
+  section — the real flag is `--provider`. Found while writing this
+  chart's `values.yaml` example and wanting to confirm the var name against
+  source before using it.
 - **`docs/INSTALLATION_GUIDE.md`'s Docker Compose/serve examples used the
   wrong port** (8080) and a nonexistent `serve --repo` flag (`repo_path`
   is positional) — same class of bug already fixed for the `docker run`
