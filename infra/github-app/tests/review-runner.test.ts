@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { toAnnotations, ReviewFinding } from "../src/review-runner.js";
+import { writeFileSync, mkdtempSync, chmodSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { toAnnotations, runReviewCli, ReviewFinding } from "../src/review-runner.js";
 
 describe("toAnnotations", () => {
   it("maps ERROR/WARN/INFO severities to failure/warning/notice", () => {
@@ -53,5 +56,45 @@ describe("toAnnotations", () => {
 
   it("returns an empty list for an empty findings array", () => {
     expect(toAnnotations([])).toEqual([]);
+  });
+});
+
+describe("runReviewCli timeout", () => {
+  let binDir: string;
+  let originalPath: string | undefined;
+
+  beforeEach(() => {
+    binDir = mkdtempSync(join(tmpdir(), "trelix-fake-bin-"));
+    // A real slow "trelix" binary — not a mock of execFile's timeout
+    // mechanism, an actual subprocess that actually sleeps, so this test
+    // exercises the real kill-on-timeout path end to end.
+    const shim = join(binDir, "trelix");
+    writeFileSync(shim, "#!/bin/sh\nsleep 5\necho '[]'\n");
+    chmodSync(shim, 0o755);
+    originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${originalPath}`;
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
+  it("kills a hung `trelix review` subprocess once the timeout elapses", async () => {
+    const request = { owner: "o", repo: "r", prNumber: 1 };
+
+    await expect(runReviewCli(request, ".", 200)).rejects.toMatchObject({
+      killed: true,
+      signal: "SIGTERM",
+    });
+  }, 10_000);
+
+  it("does not time out a fast-returning subprocess", async () => {
+    const shim = join(binDir, "trelix");
+    writeFileSync(shim, "#!/bin/sh\necho '[]'\n");
+    chmodSync(shim, 0o755);
+    const request = { owner: "o", repo: "r", prNumber: 1 };
+
+    await expect(runReviewCli(request, ".", 5000)).resolves.toEqual([]);
   });
 });

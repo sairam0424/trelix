@@ -9,11 +9,10 @@ capability:
 | Setup | Merge one YAML file into the repo | Install the App — no workflow file needed |
 | Trust | Repo's own `GITHUB_TOKEN`, no third party | Grants a third-party App `pull_requests`/`checks`/`contents` access |
 | Where reviews run | The installing repo's own Actions runners | This standalone service |
-| Status | ✅ Shipped | 🚧 Core auth/verification wired (item 6b) — GA polish (docs, hardening) pending in item 6c, see below |
+| Status | ✅ Shipped | ✅ Installable and hardened (see "Status" below) |
 
 Pick the Actions workflow if you'd rather not install a third-party App.
-Pick the App once it's production-ready (6c) for zero-setup
-installability across many repos.
+Pick the App for zero-setup installability across many repos.
 
 ## Option 1: GitHub Actions workflow (shipped)
 
@@ -94,7 +93,7 @@ GitHub -- pull_request webhook -->  this service (Express)
                               GitHub Checks API (annotations)
 ```
 
-### Status: auth + signature verification wired (item 6b of the v3.0.0 roadmap)
+### Status: installable and hardened (v3.0.0 roadmap items 6a–6c)
 
 - ✅ **Signature verification.** `src/webhook.ts` verifies
   `X-Hub-Signature-256` (HMAC-SHA256 over the raw request body, keyed by
@@ -108,14 +107,39 @@ GitHub -- pull_request webhook -->  this service (Express)
   installation-token exchange), with one `AuthInterface` reused per
   `AppConfig` so the library's own expiry-aware cache actually has a
   chance to hit across calls instead of re-minting on every request.
-- ✅ **Check-annotation posting.** `runReview` now mints a token, fetches
-  the PR's head SHA, runs the CLI review, and posts a completed Check run
-  with inline annotations via `octokit.rest.checks.create` —
-  `toAnnotations`'s mapping logic is unchanged from item 6a.
-- 🚧 **Remaining for item 6c**: payload size limits, a subprocess timeout
-  on the `trelix review` shell-out, finalized setup docs, and GA-readiness
-  polish (not "Marketplace-listed" — that requires ≥100 installations,
-  a business/adoption gate outside engineering scope).
+- ✅ **Check-annotation posting.** `runReview` mints a token, fetches the
+  PR's head SHA, runs the CLI review, and posts a completed Check run
+  with inline annotations via `octokit.rest.checks.create`.
+- ✅ **Payload size limit.** The webhook route caps request bodies at 25MB
+  — GitHub's own documented webhook payload cap — rejecting oversized
+  bodies with `413` during parsing rather than buffering an arbitrarily
+  large request into memory. This matters because signature verification
+  happens *after* body parsing, so the size limit is the only defense
+  against a sender who doesn't know the webhook secret sending a
+  deliberately huge payload.
+- ✅ **Subprocess timeout.** `runReviewCli` passes a 5-minute `timeout` to
+  the `trelix review` shell-out; Node kills the child process (`SIGTERM`)
+  and the call rejects if it hangs past that — a slow/stuck review no
+  longer ties up server resources indefinitely.
+- **Not claimed: GitHub Marketplace listing.** This App is installable
+  and hardened, not Marketplace-verified — Marketplace paid-app listing
+  has its own separate business/adoption requirements that are out of
+  scope for this engineering work.
+
+### Production deployment notes
+
+- Run behind HTTPS (a reverse proxy or platform-provided TLS termination)
+  — GitHub's webhook deliveries and the manifest's `hook_attributes.url`
+  require it.
+- `GITHUB_APP_PRIVATE_KEY`/`GITHUB_WEBHOOK_SECRET` must come from your
+  platform's secret manager, never a committed file — `src/config.ts`
+  reads them from env only and throws at startup if either is missing.
+- `trelix` (the CLI) and a Python 3.11+ runtime must be present in the
+  deployment image/environment — `review-runner.ts` shells out to it by
+  name via `PATH`.
+- Logs (`console.error` on review failures) currently go to stdout/stderr
+  only; wire your platform's log aggregation on top rather than expecting
+  structured logging from this service directly.
 
 ### Files
 

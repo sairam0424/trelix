@@ -68,7 +68,12 @@ This roadmap describes planned features, research directions, and long-term visi
 - [ ] **Helm chart** — production Kubernetes deployment for `trelix serve`
 - [ ] **TypeScript SDK** — native SDK matching Python API surface
 - [ ] **VS Code extension improvements** — inline search refinement, snippet preview
-- [ ] **GitHub App GA** — public marketplace listing, production hardening
+- [ ] **GitHub App GA** — installable App with signature verification,
+      installation-token auth, and Check-annotation posting (`infra/github-app/`).
+      Not yet Marketplace-listed — GitHub Marketplace paid-app verification
+      has its own installation/adoption prerequisites, a business gate
+      outside engineering scope. "GA" here means installable and hardened,
+      not marketplace-verified.
 
 ---
 
