@@ -6,6 +6,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+- **`trelix review --pr ... --json`'s stdout was never valid JSON** —
+  `console.print(...)` status/progress messages (e.g. "Fetching PR diff
+  from GitHub...") ran unconditionally to stdout even in `--json` mode,
+  and `"No issues found."`/`"No textual changes..."` styled messages ran
+  *instead of* an empty `[]` when there were zero comments. Combined with
+  `.github/workflows/trelix-review.yml`'s `> file 2>&1` redirect, the
+  review-posting Check's `JSON.parse()` has always thrown and been
+  silently swallowed by a `try/catch` — meaning **the "trelix Code
+  Review" Check has never posted a single real annotation** since this
+  workflow shipped. All `--pr --json` status/progress messages now go to
+  `err_console` (stderr); the workflow now redirects only stdout, keeping
+  stderr in a separate log for debugging.
+- **The same workflow's annotation-posting logic never matched trelix's
+  real output shape even when parsing succeeded** — it read
+  `data.findings || data.reviews || []` against `trelix review --json`'s
+  real bare-array output (never matches, so `findings` was always `[]`
+  regardless), and compared `f.severity === 'error'`/`'warning'`
+  (lowercase) against the real values `"ERROR"`/`"WARN"`/`"INFO"`
+  (uppercase — `'WARN' !== 'warning'` either way). Every annotation would
+  have posted as `notice` severity even if the JSON had parsed. Now reads
+  the real `{file, lines, severity, comment}` shape directly and maps
+  `ERROR`→`failure`, `WARN`→`warning`, `INFO`→`notice`.
+- New `tests/unit/test_review_pr_json.py` (4 tests) — regression-tests
+  `--json` stdout purity for the has-comments, zero-comments, and
+  no-textual-changes paths, plus confirms non-`--json` mode still prints
+  status messages to stdout (the fix is `--json`-gated, not a blanket
+  behavior change). Verified these tests actually fail against the
+  pre-fix code (3/4 failed with the exact `JSONDecodeError` this bug
+  produces) before confirming they pass against the fix.
+
 ### Added
 - **Official Docker image** — a multi-stage `Dockerfile` (root) publishes
   `ghcr.io/sairam0424/trelix` for `linux/amd64`+`linux/arm64` on every
