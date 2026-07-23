@@ -141,10 +141,10 @@ Serve the Trelix index over HTTP for multi-user or CI environments.
 
 ```bash
 pip install "trelix[serve]"
-trelix serve --port 8080 --repo ./
+trelix serve ./ --port 8765
 ```
 
-The OpenAPI spec is available at `http://localhost:8080/docs`.
+The OpenAPI spec is available at `http://localhost:8765/docs`.
 
 ### 3.9 Knowledge graph + visualization
 
@@ -425,8 +425,6 @@ loads it automatically via `python-dotenv`.
 | `TRELIX_RERANK_TOP_K` | `5` | Number of results to return after reranking |
 | `TRELIX_FLARE_MAX_RETRIES` | `3` | Maximum FLARE loop iterations (renamed from `flare_max_iterations` in v2.4.0) |
 | `TRELIX_LOG_LEVEL` | `WARNING` | Log verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `TRELIX_SERVE_HOST` | `0.0.0.0` | Host for the REST API server |
-| `TRELIX_SERVE_PORT` | `8080` | Port for the REST API server |
 | `TRELIX_WATCH_DEBOUNCE_MS` | `500` | Debounce delay (ms) for file-watch re-indexing |
 | `OPENAI_API_KEY` | _(none)_ | OpenAI API key; required when `TRELIX_EMBEDDER_PROVIDER=openai` |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model name |
