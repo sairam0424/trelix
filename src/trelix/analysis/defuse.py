@@ -75,9 +75,9 @@ class DataFlowExtractor:
     def _extract_tree_sitter(self, symbol: Symbol) -> list[DefUseEdge]:
         """Walk tree-sitter AST to find assignment and identifier nodes."""
         try:
-            from tree_sitter_languages import get_parser as get_ts_parser
+            from trelix.indexing.parser._grammar import make_parser as get_ts_parser
         except ImportError as exc:
-            raise ImportError("tree_sitter_languages not installed") from exc
+            raise ImportError("tree_sitter_language_pack not installed") from exc
 
         # Detect language from first token heuristic
         lang_name = "python"  # default; extendable

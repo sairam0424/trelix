@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,6 +41,16 @@ jobs:
         run: pip install -e ".[local,dev]"
       - name: Install trelix-mcp + deps
         run: pip install -e packages/trelix-mcp
+      - name: Locate tree-sitter grammar cache dir
+        id: ts-cache
+        run: echo "dir=$(python -c 'from tree_sitter_language_pack import cache_dir; print(cache_dir())')" >> "$GITHUB_OUTPUT"
+      - name: Cache tree-sitter grammars
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.ts-cache.outputs.dir }}
+          key: tree-sitter-language-pack-${{ hashFiles('pyproject.toml') }}
+      - name: Prefetch tree-sitter grammars
+        run: python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
       - name: Run unit tests
         run: pytest tests/unit/ -v --tb=short
       - name: Run trelix-mcp tests

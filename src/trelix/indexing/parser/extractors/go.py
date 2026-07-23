@@ -326,7 +326,7 @@ class GoParser(BaseParser):
         for child in iface_node.children:
             if method_count >= MAX_INTERFACE_METHODS:
                 break
-            if child.type == "method_spec":
+            if child.type == "method_elem":
                 # Interface method: name is a field_identifier child
                 name_node = self._get_child_by_type(child, "field_identifier")
                 if not name_node:

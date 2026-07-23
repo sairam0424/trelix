@@ -528,7 +528,7 @@ class TypeScriptParser(BaseParser):
                         )
 
         # Extract method_signature and property_signature members
-        body_node = self._get_child_by_type(node, "object_type")
+        body_node = self._get_child_by_type(node, "interface_body")
         if body_node:
             self._extract_interface_members(
                 body_node, src, file_id, symbols, interface_local_idx, name, exported

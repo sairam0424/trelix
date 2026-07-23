@@ -6,6 +6,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Added
+- **Python 3.13 support** — `requires-python` no longer caps at `<3.13`.
+  The only blocker was `tree-sitter-languages` (abandoned upstream, no
+  cp313 wheels); swapped for the actively-maintained, API-compatible
+  `tree-sitter-language-pack` behind the single existing chokepoint,
+  `src/trelix/indexing/parser/_grammar.py`. Bumped `tree-sitter>=0.23`
+  and `pydantic>=2.8.0` (3.13-compatible floors). CI matrix now runs
+  3.11/3.12/3.13.
+
+### Changed
+- **Tree-sitter grammar loading is now network-on-first-use, not bundled.**
+  `tree-sitter-language-pack` fetches each language's compiled grammar
+  over the network on first use and caches it locally (unlike the old
+  `tree_sitter_languages`, which bundled every grammar in its wheel).
+  Call `trelix.indexing.parser._grammar.prefetch_all()` once (e.g. during
+  image build or CI setup) to warm the cache so indexing itself never
+  needs network access — CI does this automatically now.
+
+### Fixed
+- **C# grammar naming**: `csharp.py` was requesting the language as
+  `c_sharp`; the correct name is `csharp`. Silently broken until this
+  release since `tree_sitter_languages` happened to accept both.
+  Regression-tested via the existing `test_parser_csharp.py` suite.
+- **Kotlin extractor rewritten for the new grammar's AST shape** —
+  `class_declaration`/`function_declaration`/etc. no longer expose
+  tree-sitter field names (`child_by_field_name` returned `None`
+  everywhere), silently breaking all Kotlin class/interface/enum/
+  function/property extraction. Rewritten to walk children positionally.
+- **Python docstring/module-constant extraction** — the new grammar
+  drops the `expression_statement` wrapper node entirely; assignments,
+  calls, and bare strings (docstrings) now appear as direct children of
+  their block. Updated `python.py`'s dispatch and `_get_docstring` to
+  match the unwrapped shape.
+- **Go interface methods**: `method_spec` renamed to `method_elem`.
+- **TypeScript interface bodies**: `object_type` (for interface bodies
+  specifically — type-alias object literals are unaffected) renamed to
+  `interface_body`.
+- **C# `using` alias imports**: the RHS type of `using X = Y.Z;` was
+  wrapped in a `name_equals` node with an `alias` field in the old
+  grammar; the new grammar flattens it to plain siblings around `=`.
+  Updated `_extract_using` to take the first named type node after `=`.
+
 ### Security
 - **GitHub App: payload size limit and subprocess timeout** — the webhook
   route now caps request bodies at 25MB (GitHub's own documented webhook
