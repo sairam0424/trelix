@@ -136,17 +136,16 @@ class KotlinParser(BaseParser):
         type_edges: list[TypeEdge],
         parent_class_local_idx: int | None,
     ) -> None:
-        # Name is always a type_identifier child
-        name_node = self._field(node, "name")
+        # class_declaration has no named fields in this grammar — name is the
+        # (first, in the enum-class case) type_identifier child.
+        name_node = self._get_child_by_type(node, "type_identifier")
         if not name_node:
             return
         name = self._txt(name_node, src)
         if not name:
             return
 
-        # Determine symbol kind from the 'kind' field (keyword token: 'interface', 'enum', 'class')
-        kind_node = self._field(node, "kind")
-        kind_text = kind_node.type if kind_node else "class"
+        kind_text = self._class_kind_keyword(node)
 
         if kind_text == "interface":
             sym_kind = SymbolKind.INTERFACE
@@ -187,8 +186,10 @@ class KotlinParser(BaseParser):
         # Type edges from delegation specifiers (: Base(), Interface)
         self._extract_type_edges(node, src, class_local_idx, type_edges)
 
-        # Walk body
-        body_node = self._field(node, "body")
+        # Walk body — either class_body or (for `enum class`) enum_class_body
+        body_node = self._get_child_by_type(node, "class_body") or self._get_child_by_type(
+            node, "enum_class_body"
+        )
         if body_node:
             if body_node.type == "enum_class_body":
                 self._walk_enum_body(
@@ -222,7 +223,7 @@ class KotlinParser(BaseParser):
                     field_count += 1
             elif ntype == "companion_object":
                 # Companion object members are attributed to the parent class
-                comp_body = self._field(child, "body")
+                comp_body = self._get_child_by_type(child, "class_body")
                 if comp_body:
                     self._walk_class_body(
                         comp_body, src, file_id, symbols, raw_calls, type_edges, class_local_idx
@@ -302,7 +303,7 @@ class KotlinParser(BaseParser):
         type_edges: list[TypeEdge],
         parent_class_local_idx: int | None,
     ) -> None:
-        name_node = self._field(node, "name")
+        name_node = self._get_child_by_type(node, "type_identifier")
         if not name_node:
             return
         name = self._txt(name_node, src)
@@ -334,7 +335,7 @@ class KotlinParser(BaseParser):
 
         self._extract_type_edges(node, src, obj_local_idx, type_edges)
 
-        body_node = self._field(node, "body")
+        body_node = self._get_child_by_type(node, "class_body")
         if body_node:
             self._walk_class_body(
                 body_node, src, file_id, symbols, raw_calls, type_edges, obj_local_idx
@@ -353,16 +354,23 @@ class KotlinParser(BaseParser):
         raw_calls: list[tuple[int | None, str, int]],
         parent_class_local_idx: int | None,
     ) -> None:
-        name_node = self._field(node, "name")
+        # function_declaration children (flat, no field names in this grammar):
+        # 'fun' [receiver_type '.'] simple_identifier function_value_parameters
+        # [':' return_type] function_body?
+        name_node = self._get_child_by_type(node, "simple_identifier")
         if not name_node:
             return
         name = self._txt(name_node, src)
         if not name:
             return
 
-        # Extension function receiver: `fun String.upper()` → receiver = user_type before name
-        receiver_node = self._field(node, "receiver")
-        receiver_name = self._extract_type_name(receiver_node, src) if receiver_node else None
+        # Extension function receiver: `fun String.upper()` → receiver_type before name
+        receiver_type_node = self._get_child_by_type(node, "receiver_type")
+        receiver_name = (
+            self._extract_type_name(receiver_type_node.children[0], src)
+            if receiver_type_node and receiver_type_node.children
+            else None
+        )
 
         is_method = parent_class_local_idx is not None
         if is_method:
@@ -397,7 +405,7 @@ class KotlinParser(BaseParser):
         symbols.append(sym)
 
         # Walk function body for call edges
-        body_node = self._field(node, "body")
+        body_node = self._get_child_by_type(node, "function_body")
         if body_node:
             self._walk_body_for_calls(body_node, src, raw_calls, func_local_idx)
 
@@ -413,7 +421,7 @@ class KotlinParser(BaseParser):
         symbols: list[Symbol],
     ) -> None:
         """Top-level property: extract if `const val` or ALL_CAPS name."""
-        var_node = self._field(node, "variable")
+        var_node = self._get_child_by_type(node, "variable_declaration")
         if not var_node:
             return
         name_node = self._get_child_by_type(var_node, "simple_identifier")
@@ -452,7 +460,7 @@ class KotlinParser(BaseParser):
         class_local_idx: int,
     ) -> None:
         """Class-level property: const → CONSTANT, typed field → VARIABLE."""
-        var_node = self._field(node, "variable")
+        var_node = self._get_child_by_type(node, "variable_declaration")
         if not var_node:
             return
         name_node = self._get_child_by_type(var_node, "simple_identifier")
@@ -509,7 +517,7 @@ class KotlinParser(BaseParser):
         file_id: int,
         symbols: list[Symbol],
     ) -> None:
-        name_node = self._field(node, "name")
+        name_node = self._get_child_by_type(node, "type_identifier")
         if not name_node:
             return
         name = self._txt(name_node, src)
@@ -674,30 +682,38 @@ class KotlinParser(BaseParser):
     # Signature builders
     # ------------------------------------------------------------------
 
+    def _class_kind_keyword(self, node: Node) -> str:
+        """Return 'interface' / 'enum' / 'class' for a class_declaration node."""
+        kind_text = "class"
+        for c in node.children:
+            if c.type in ("interface", "enum", "class"):
+                kind_text = c.type
+                if kind_text == "class":
+                    # keep scanning — `enum class Foo` has BOTH 'enum' and
+                    # 'class' tokens; 'enum' must win if present.
+                    continue
+                break
+        return kind_text
+
     def _class_signature(self, node: Node, src: bytes) -> str:
         """Build `[modifiers] kind Name[(params)] [: Supertypes]`."""
-        kind_node = self._field(node, "kind")
-        kind_text = kind_node.type if kind_node else "class"
+        kind_text = self._class_kind_keyword(node)
 
         # Class modifier prefix (data, sealed, abstract, open)
         mod_prefix = self._class_mod_prefix(node, src)
 
-        name_node = self._field(node, "name")
+        name_node = self._get_child_by_type(node, "type_identifier")
         name = self._txt(name_node, src) if name_node else "?"
 
-        # Primary constructor params (condensed)
-        ctor_node = self._field(node, "primary_constructor")
+        # Primary constructor params (condensed) — no separate params-wrapper
+        # node in this grammar; '(' / class_parameter / ')' are flat siblings
+        # of primary_constructor itself, so use its whole text.
+        ctor_node = self._get_child_by_type(node, "primary_constructor")
         ctor_text = ""
         if ctor_node:
-            params_node = (
-                self._field(ctor_node, "parameters")
-                or self._get_child_by_type(ctor_node, "function_value_parameters")
-                or self._get_child_by_type(ctor_node, "class_parameters")
-            )
-            if params_node:
-                ctor_text = self._txt(params_node, src)
-                if len(ctor_text) > 80:
-                    ctor_text = ctor_text[:77] + "..."
+            ctor_text = self._txt(ctor_node, src)
+            if len(ctor_text) > 80:
+                ctor_text = ctor_text[:77] + "..."
 
         # Supertypes
         supers: list[str] = []
@@ -712,12 +728,25 @@ class KotlinParser(BaseParser):
 
     def _func_signature(self, node: Node, src: bytes) -> str:
         """Build `fun [Receiver.]name(params)[: ReturnType]`."""
-        receiver_node = self._field(node, "receiver")
-        name_node = self._field(node, "name")
-        params_node = self._field(node, "parameters")
-        return_node = self._field(node, "return_type")
+        receiver_type_node = self._get_child_by_type(node, "receiver_type")
+        name_node = self._get_child_by_type(node, "simple_identifier")
+        params_node = self._get_child_by_type(node, "function_value_parameters")
+        # Return type is the 'type'-ish node right after the ':' token, if any.
+        return_node: Node | None = None
+        seen_colon = False
+        for c in node.children:
+            if c.type == ":":
+                seen_colon = True
+                continue
+            if seen_colon and c.type != "function_body":
+                return_node = c
+                break
 
-        receiver_text = f"{self._extract_type_name(receiver_node, src)}." if receiver_node else ""
+        receiver_text = (
+            f"{self._extract_type_name(receiver_type_node.children[0], src)}."
+            if receiver_type_node and receiver_type_node.children
+            else ""
+        )
         name = self._txt(name_node, src) if name_node else "?"
         params = self._txt(params_node, src) if params_node else "()"
         if len(params) > 100:

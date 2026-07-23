@@ -746,21 +746,29 @@ pip3.11 install trelix
 
 ---
 
-### tree-sitter-languages Conflict
+### tree-sitter-language-pack Conflict
 
-**Symptom:** Installation fails with a conflict like `ERROR: pip's dependency resolver does not currently take into account all the packages that are installed` involving `tree-sitter-languages`, or import errors like `ImportError: cannot import name 'Language' from 'tree_sitter'`.
+**Symptom:** Installation fails with a conflict like `ERROR: pip's dependency resolver does not currently take into account all the packages that are installed` involving `tree-sitter-language-pack`, or import errors like `ImportError: cannot import name 'Language' from 'tree_sitter'`.
 
-**Cause:** `tree-sitter-languages` has strict version requirements on the `tree-sitter` core package. If another package in your environment pinned a different version, there is a conflict.
+**Cause:** `tree-sitter-language-pack` has a version floor on the `tree-sitter` core package. If another package in your environment pinned an older `tree-sitter`, there is a conflict.
 
 **Fix:**
 ```bash
-# Force reinstall tree-sitter-languages to resolve the conflict
-pip install --force-reinstall tree-sitter-languages
+# Force reinstall tree-sitter-language-pack to resolve the conflict
+pip install --force-reinstall tree-sitter-language-pack
 
 # If that does not work, reinstall both packages cleanly
-pip uninstall -y tree-sitter tree-sitter-languages
-pip install tree-sitter-languages
+pip uninstall -y tree-sitter tree-sitter-language-pack
+pip install tree-sitter-language-pack
 pip install trelix
+```
+
+**Symptom:** Indexing hangs or fails with a network/timeout error on first use of a new language.
+
+**Cause:** `tree-sitter-language-pack` downloads each language's compiled grammar from the network on first use and caches it locally — it does not bundle grammars in its wheel. In an offline/air-gapped environment, prefetch every grammar trelix uses once (while online) so later indexing never needs network access:
+
+```bash
+python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
 ```
 
 If the conflict persists, use a clean virtual environment (see below).

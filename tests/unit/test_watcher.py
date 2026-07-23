@@ -13,6 +13,24 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
+
+def _wait_until(predicate, timeout: float = 2.0, interval: float = 0.01) -> None:
+    """Poll `predicate()` until it's truthy or `timeout` elapses.
+
+    Debounce callbacks fire on a background timer thread, so asserting
+    "the call happened" right after a fixed `time.sleep()` is inherently
+    flaky under CI's slower/throttled schedulers — a 3x margin (0.15s wait
+    for a 50ms debounce) isn't always enough. Polling with a generous
+    timeout is both faster on the happy path and immune to scheduler
+    jitter, at the cost of a real (bounded) wall-clock wait on failure.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(interval)
+
+
 # ---------------------------------------------------------------------------
 # Helpers to build lightweight mock watchdog events
 # ---------------------------------------------------------------------------
@@ -163,8 +181,7 @@ class TestModifiedCreatedEvents(unittest.TestCase):
             event = _make_file_event("modified", "/repo/src/auth.py")
             handler.dispatch(event)
 
-            # Wait for debounce
-            time.sleep(0.15)
+            _wait_until(lambda: watcher._indexer.index_file.called)
 
         watcher._indexer.index_file.assert_called_once_with("/repo/src/auth.py")
 
@@ -177,7 +194,7 @@ class TestModifiedCreatedEvents(unittest.TestCase):
             event = _make_file_event("created", "/repo/src/new_module.py")
             handler.dispatch(event)
 
-            time.sleep(0.15)
+            _wait_until(lambda: watcher._indexer.index_file.called)
 
         watcher._indexer.index_file.assert_called_once_with("/repo/src/new_module.py")
 
@@ -296,8 +313,8 @@ class TestDebouncing(unittest.TestCase):
                 handler.dispatch(event)
                 time.sleep(0.005)  # 5 ms between saves — well within 500 ms window
 
-            # Wait past the debounce window
-            time.sleep(0.8)
+            # Wait for the debounced call to fire past the 500 ms window.
+            _wait_until(lambda: indexer.index_file.called, timeout=3.0)
 
         # Despite 5 events, index_file must be called exactly once
         self.assertEqual(indexer.index_file.call_count, 1)
@@ -316,7 +333,8 @@ class TestDebouncing(unittest.TestCase):
                 handler.dispatch(_make_file_event("modified", "/repo/src/b.py"))
                 time.sleep(0.005)
 
-            time.sleep(0.8)
+            # Wait for both debounced calls to fire past the 500 ms window.
+            _wait_until(lambda: indexer.index_file.call_count >= 2, timeout=3.0)
 
         self.assertEqual(indexer.index_file.call_count, 2)
         calls = {c.args[0] for c in indexer.index_file.call_args_list}
