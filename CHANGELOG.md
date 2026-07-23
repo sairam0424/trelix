@@ -88,6 +88,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   wrapped in a `name_equals` node with an `alias` field in the old
   grammar; the new grammar flattens it to plain siblings around `=`.
   Updated `_extract_using` to take the first named type node after `=`.
+- **`trelix.spec` (PyInstaller build) still imported the retired
+  `tree_sitter_languages` package**, missed by the tree-sitter-language-pack
+  migration since the binary build pipeline runs in its own workflow, not
+  under `pytest`/mypy/ruff. Broke `Build Binaries` on every push to
+  `develop`/`main` with `ModuleNotFoundError: No module named
+  'tree_sitter_languages'`. Dropped the now-nonexistent package's `datas`/
+  `hiddenimports` entries (it ships no bundled grammar data — grammars are
+  fetched into an OS cache dir at runtime) and added `tree_sitter_language_pack`
+  as a hidden import instead. Verified via a local `pyinstaller trelix.spec
+  --clean --noconfirm` build + `dist/trelix --help`.
 
 ### Security
 - **GitHub App: payload size limit and subprocess timeout** — the webhook
