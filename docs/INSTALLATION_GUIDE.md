@@ -81,7 +81,7 @@ pip install trelix
 export OPENAI_API_KEY="sk-..."
 ```
 
-Set `TRELIX_EMBEDDER=openai` (or pass `--embedder openai`) to activate.
+Set `TRELIX_EMBEDDER_PROVIDER=openai` (or pass `--provider openai`) to activate.
 
 ### 3.3 Azure OpenAI embeddings
 
@@ -94,7 +94,7 @@ export AZURE_ENDPOINT="https://<resource>.openai.azure.com/"
 export AZURE_DEPLOYMENT="text-embedding-3-large"   # your deployment name
 ```
 
-Set `TRELIX_EMBEDDER=azure` to activate.
+Set `TRELIX_EMBEDDER_PROVIDER=azure` to activate.
 
 ### 3.4 MCP server (Claude Code / Cursor integration)
 
@@ -330,7 +330,7 @@ Then open `http://localhost:8765/docs` for the interactive API reference.
 ```bash
 docker run --rm \
   -e OPENAI_API_KEY="sk-..." \
-  -e TRELIX_EMBEDDER=openai \
+  -e TRELIX_EMBEDDER_PROVIDER=openai \
   -v "$(pwd):/repo" \
   ghcr.io/sairam0424/trelix:2.8.1 \
   index /repo
@@ -338,24 +338,29 @@ docker run --rm \
 
 ### Docker Compose example
 
-```yaml
-# docker-compose.yml
-services:
-  trelix:
-    image: ghcr.io/sairam0424/trelix:2.8.1
-    command: serve /repo --host 0.0.0.0 --port 8765
-    ports:
-      - "8765:8765"
-    volumes:
-      - .:/repo
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - TRELIX_EMBEDDER=openai
-```
+A ready-to-run `docker-compose.yml` ships at the repo root:
 
 ```bash
-docker compose up
+OPENAI_API_KEY=sk-... docker compose up
 ```
+
+By default it serves the current directory; set `REPO_PATH` to serve a
+different repo:
+
+```bash
+REPO_PATH=/path/to/other/repo OPENAI_API_KEY=sk-... docker compose up
+```
+
+### Image variants
+
+Two tags are published per release:
+
+- `ghcr.io/sairam0424/trelix:X.Y.Z` — slim, API-embedder-only (OpenAI, Voyage,
+  Cohere, Azure). Recommended default.
+- `ghcr.io/sairam0424/trelix:X.Y.Z-local` — bundles `sentence-transformers`
+  and `torch` for the local/offline embedder and cross-encoder reranker.
+  Multi-gigabyte image; only pull this if you need `TRELIX_EMBEDDER_PROVIDER=local`
+  inside the container.
 
 ---
 
@@ -421,13 +426,13 @@ loads it automatically via `python-dotenv`.
 | `TRELIX_FLARE_MAX_RETRIES` | `3` | Maximum FLARE loop iterations (renamed from `flare_max_iterations` in v2.4.0) |
 | `TRELIX_LOG_LEVEL` | `WARNING` | Log verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `TRELIX_WATCH_DEBOUNCE_MS` | `500` | Debounce delay (ms) for file-watch re-indexing |
-| `OPENAI_API_KEY` | _(none)_ | OpenAI API key; required when `TRELIX_EMBEDDER=openai` |
+| `OPENAI_API_KEY` | _(none)_ | OpenAI API key; required when `TRELIX_EMBEDDER_PROVIDER=openai` |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model name |
-| `AZURE_API_KEY` | _(none)_ | Azure OpenAI API key; required when `TRELIX_EMBEDDER=azure` |
+| `AZURE_API_KEY` | _(none)_ | Azure OpenAI API key; required when `TRELIX_EMBEDDER_PROVIDER=azure` |
 | `AZURE_ENDPOINT` | _(none)_ | Azure OpenAI resource endpoint URL |
 | `AZURE_DEPLOYMENT` | _(none)_ | Azure OpenAI embeddings deployment name |
 | `AZURE_API_VERSION` | `2024-02-01` | Azure OpenAI API version |
-| `VOYAGE_API_KEY` | _(none)_ | Voyage AI API key; required when `TRELIX_EMBEDDER=voyage` |
+| `VOYAGE_API_KEY` | _(none)_ | Voyage AI API key; required when `TRELIX_EMBEDDER_PROVIDER=voyage` |
 | `VOYAGE_MODEL` | `voyage-code-2` | Voyage embedding model name |
 | `COHERE_API_KEY` | _(none)_ | Cohere API key; required when `TRELIX_RERANK=true` |
 | `COHERE_RERANK_MODEL` | `rerank-english-v3.0` | Cohere reranking model name |
