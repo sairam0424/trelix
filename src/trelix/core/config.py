@@ -445,6 +445,23 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_SHORT_QUERY_TOKENS",
     )
 
+    # OpenTelemetry tracing — off by default (pip install trelix[otel]).
+    # Emits one span per retrieval leg using the gen_ai.* semantic conventions
+    # (status: Development, not yet Stable — attribute names may still shift
+    # upstream). Zero import/runtime cost when disabled.
+    otel_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_OTEL_ENABLED",
+    )
+    otel_service_name: str = Field(
+        default="trelix",
+        alias="OTEL_SERVICE_NAME",
+    )
+    otel_exporter_endpoint: str | None = Field(
+        default=None,
+        alias="OTEL_EXPORTER_OTLP_ENDPOINT",
+    )
+
     # FLARE-style confidence-gated re-retrieval
     flare_enabled: bool = Field(
         default=False,

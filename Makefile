@@ -15,7 +15,7 @@ install-dev:  ## Install trelix with all dev dependencies
 	pre-commit install
 
 install-all:  ## Install trelix with all optional dependencies
-	pip install -e ".[local,rerank,voyage,watch,serve,knowledge-graph,dev]"
+	pip install -e ".[local,rerank,voyage,watch,serve,knowledge-graph,otel,dev]"
 
 # ---------------------------------------------------------------------------
 # Tests
