@@ -1,0 +1,34 @@
+# GitHub App manifest — register via https://github.com/settings/apps/new
+# (or an organization's equivalent) using GitHub's "manifest flow":
+# POST this as form data to https://github.com/settings/apps/new, or paste
+# it into the manifest-flow UI. See:
+# https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
+#
+# url/hook_attributes.url/redirect_url below are placeholders — replace
+# with your deployed service's real HTTPS origin before registering.
+name: trelix-review
+url: https://trelix.example.com
+description: >-
+  Automatic PR code review as GitHub Check annotations, powered by trelix's
+  retrieval-augmented diff analysis. Zero setup beyond installing the App —
+  no workflow YAML required in the installing repository.
+public: true
+
+hook_attributes:
+  url: https://trelix.example.com/webhooks/github
+  active: true
+
+redirect_url: https://trelix.example.com/setup/callback
+setup_url: https://trelix.example.com/setup
+
+# Same three permissions the existing Actions-workflow-based integration
+# already declares (.github/workflows/trelix-review.yml) — this App is an
+# alternative delivery mechanism for the identical review capability, not
+# a capability expansion.
+default_permissions:
+  pull_requests: write
+  checks: write
+  contents: read
+
+default_events:
+  - pull_request

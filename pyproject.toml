@@ -12,7 +12,7 @@ description = "Fast, reliable code indexing and retrieval — contextual hybrid 
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Trelix Contributors" }]
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11"
 keywords = [
     "code-search", "code-intelligence", "tree-sitter", "semantic-search",
     "hybrid-search", "llm", "rag", "developer-tools", "code-indexing",
@@ -29,6 +29,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -37,8 +38,8 @@ classifiers = [
 ]
 dependencies = [
     # --- Parsing ---
-    "tree-sitter>=0.21,<0.22",
-    "tree-sitter-languages>=1.10.2",
+    "tree-sitter>=0.23",
+    "tree-sitter-language-pack>=1.13.0",
     "PyYAML>=6.0",
     # --- Storage ---
     "sqlite-vec>=0.1.6",
@@ -54,7 +55,7 @@ dependencies = [
     "typer>=0.12.0",
     "rich>=13.7.0",
     # --- Config ---
-    "pydantic>=2.7.0",
+    "pydantic>=2.8.0",
     "pydantic-settings>=2.3.0",
     # --- Secure XML parsing (XXE/billion-laughs protection for .csproj) ---
     "defusedxml>=0.7.1",
@@ -98,6 +99,12 @@ watch = [
 serve = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
+]
+otel = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-util-genai>=1.0b0",  # gen_ai.* retrieval/embedding spans (Development stability)
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",  # only used if OTEL_EXPORTER_OTLP_ENDPOINT is set
 ]
 dev = [
     "pytest>=8.2.0",
@@ -167,9 +174,6 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--tb=short"
 pythonpath = ["src", "."]
-filterwarnings = [
-    "ignore::FutureWarning:tree_sitter",
-]
 
 [tool.coverage.run]
 source = ["src/trelix"]

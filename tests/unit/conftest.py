@@ -19,6 +19,7 @@ _BEAST_MODE_DEFAULTS: dict[str, str] = {
     "TRELIX_RETRIEVAL_FLARE": "false",
     "TRELIX_RETRIEVAL_PAGERANK_BOOST": "false",
     "TRELIX_TELEMETRY_ENABLED": "false",
+    "TRELIX_OTEL_ENABLED": "false",
 }
 
 
