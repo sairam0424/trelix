@@ -68,7 +68,25 @@ This roadmap describes planned features, research directions, and long-term visi
 - [ ] **Helm chart** — production Kubernetes deployment for `trelix serve`
 - [ ] **TypeScript SDK** — native SDK matching Python API surface
 - [ ] **VS Code extension improvements** — inline search refinement, snippet preview
-- [ ] **GitHub App GA** — public marketplace listing, production hardening
+- [ ] **GitHub App GA** — installable App with signature verification,
+      installation-token auth, and Check-annotation posting (`infra/github-app/`).
+      Not yet Marketplace-listed — GitHub Marketplace paid-app verification
+      has its own installation/adoption prerequisites, a business gate
+      outside engineering scope. "GA" here means installable and hardened,
+      not marketplace-verified.
+
+---
+
+## 🔭 v3.1.0 — Candidates (not yet committed)
+
+- [ ] **VS Code chat participant + hover providers** — the original Phase 3 Plan A
+  spec (`docs/superpowers/plans/2026-07-08-phase3-vscode-github-app.md`)
+  described a `@trelix` chat participant and hover providers; neither was
+  actually delivered (only the `trelix.search`/`trelix.ask` QuickPick/Webview
+  commands shipped). Deferred again in the v3.0.0 VS Code extension pass
+  (search refinement + snippet preview) to keep that item bounded — this is
+  a real, once-planned scope cut, not a silently-dropped gap. Revisit as its
+  own PR if/when picked up.
 
 ---
 

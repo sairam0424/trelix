@@ -1,4 +1,4 @@
-.PHONY: help install install-dev install-all test test-fast test-mcp test-cov lint typecheck format check clean build publish docs-serve version eval eval-full binary binary-clean binary-install
+.PHONY: help install install-dev install-all test test-fast test-mcp test-cov lint typecheck format check clean build publish docs-serve version eval eval-full binary binary-clean binary-install docker-build docker-build-local docker-run
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -111,5 +111,18 @@ binary-install:  ## Install binary to /usr/local/bin (macOS only)
 	sudo cp dist/trelix /usr/local/bin/trelix
 	@echo "Installed: /usr/local/bin/trelix"
 	@trelix --version
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+
+docker-build:  ## Build the slim (API-embedder-only) image
+	docker build --build-arg EXTRAS=serve -t trelix:local .
+
+docker-build-local:  ## Build the -local image (bundles sentence-transformers/torch)
+	docker build --build-arg EXTRAS=serve,local -t trelix:local-embedder .
+
+docker-run:  ## Run the slim image against $(REPO_PATH) (default: current directory)
+	docker run --rm -p 8765:8765 -v "$${REPO_PATH:-$$(pwd)}:/repo" trelix:local serve /repo --host 0.0.0.0 --port 8765
 
 .DEFAULT_GOAL := help
