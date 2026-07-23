@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install trelix + dev deps
-        run: pip install -e ".[local,dev]"
+        run: pip install -e ".[local,otel,dev]"
       - name: Install trelix-mcp + deps
         run: pip install -e packages/trelix-mcp
       - name: Locate tree-sitter grammar cache dir

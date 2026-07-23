@@ -100,6 +100,12 @@ serve = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
 ]
+otel = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-util-genai>=1.0b0",  # gen_ai.* retrieval/embedding spans (Development stability)
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",  # only used if OTEL_EXPORTER_OTLP_ENDPOINT is set
+]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",

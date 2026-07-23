@@ -69,6 +69,7 @@ Looking for a specific term?
 | [architecture.md](architecture.md) | Internal architecture: components, data flow, extension points | Contributors, integrators |
 | [CONFIGURATION.md](../CONFIGURATION.md) | Every config key, environment variable, and default value | Operators, power users |
 | [CLI_REFERENCE.md](../CLI_REFERENCE.md) | Full CLI command reference with flags and examples | CLI users |
+| [OBSERVABILITY.md](OBSERVABILITY.md) | OpenTelemetry tracing: what's traced, how to enable, stability caveats | Operators, SRE |
 
 ---
 

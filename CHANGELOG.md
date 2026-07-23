@@ -20,6 +20,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   exactly. This is the one deliberate, narrowly-scoped response-shape
   change in an otherwise additive pass — done now, before a TS SDK locks in
   against the old bare-list shape.
+- **OpenTelemetry tracing for the retrieval pipeline** — opt-in via
+  `pip install trelix[otel]` + `TRELIX_OTEL_ENABLED=true` (off by default,
+  zero import cost and zero behavior change when disabled). Emits one
+  `gen_ai.*`-conventions retrieval span per leg (vector, BM25, grep, sparse,
+  sub-chunk, file-summary) via `opentelemetry-util-genai`'s
+  `TelemetryHandler.retrieval()`, plus `trelix.*`-namespaced pipeline-stage
+  spans (planner, fusion, expansion, rerank, pagerank boost, assembly).
+  Correctly nests leg spans under the query's root span across the
+  `ThreadPoolExecutor` boundary used for parallel sub-query execution (OTel's
+  context is contextvars-based and does not cross thread pools on its own).
+  New optional `OTEL_EXPORTER_OTLP_ENDPOINT` exports to any OTLP collector.
+  See `docs/OBSERVABILITY.md` for the full span reference and a stability
+  caveat (the `gen_ai.*` conventions are officially adopted but still
+  "Development," not yet "Stable," upstream).
 - **Python 3.13 support** — `requires-python` no longer caps at `<3.13`.
   The only blocker was `tree-sitter-languages` (abandoned upstream, no
   cp313 wheels); swapped for the actively-maintained, API-compatible
