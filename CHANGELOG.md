@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [2.9.0] — 2026-07-24
+
+### Overview
+Seven backlog items shipped: TypeScript SDK, typed REST API responses + `/search`
+pagination, OpenTelemetry tracing, Python 3.13 support, Docker/Helm deployment,
+VS Code extension hardening + search refinement, and GitHub App GA hardening.
+1,643 unit tests passing, all features additive/opt-in — no breaking changes
+(the `flare_max_iterations` removal originally slated for v3.0.0 remains
+deliberately deferred; see `docs/ROADMAP.md`).
+
 ### Added
 - **`@trelix/sdk` TypeScript client** (`packages/trelix-typescript`) — a hand-written
   HTTP client for the `trelix serve` REST API, with types generated from the
@@ -1143,7 +1153,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.8.1...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.9.0...HEAD
+[2.9.0]: https://github.com/sairam0424/trelix/compare/v2.8.1...v2.9.0
 [2.8.1]: https://github.com/sairam0424/trelix/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/sairam0424/trelix/compare/v2.7.3...v2.8.0
 [2.7.3]: https://github.com/sairam0424/trelix/compare/v2.7.2...v2.7.3
