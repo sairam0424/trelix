@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+- **`ghcr.io/sairam0424/trelix:X.Y.Z-local` Docker image failed to build/publish** —
+  `Dockerfile`'s `pip install ".[serve,local]"` resolved PyPI's default `torch`
+  wheel, which bundles the full CUDA/NVIDIA runtime (`nvidia-cublas`,
+  `nvidia-cudnn`, `cuda-toolkit`, ...) even though this container never has
+  GPU access. That bloat exhausted the GitHub-hosted runner's disk during the
+  emulated `linux/arm64` build (`OSError: [Errno 28] No space left on device`,
+  surfaced on the v2.9.0 release). Fixed by adding
+  `--extra-index-url https://download.pytorch.org/whl/cpu`, so pip resolves
+  torch's CPU-only wheel (~104MB vs. multi-GB with the CUDA stack) instead —
+  a no-op for the slim (`EXTRAS=serve`) variant, which never installs torch.
+  Also added a `workflow_dispatch` trigger to `docker-publish.yml` to backfill
+  a version whose Docker publish failed without cutting a new release tag.
+
 ## [2.9.0] — 2026-07-24
 
 ### Overview

@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to publish (e.g. 2.9.0) — for backfilling a release whose Docker publish failed without re-tagging"
+        required: true
 
 jobs:
   publish:
@@ -27,9 +32,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract version from tag
+      - name: Extract version
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -48,8 +58,12 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: EXTRAS=${{ matrix.extras }}
           push: true
+          # Only move :latest on a real tag push — a manual workflow_dispatch
+          # backfill (e.g. re-running Docker publish for a release whose
+          # build failed, without cutting a new tag) must never repoint
+          # :latest at an older version than what's already published.
           tags: |
             ghcr.io/sairam0424/trelix:${{ steps.version.outputs.version }}${{ matrix.tag-suffix }}
-            ghcr.io/sairam0424/trelix:latest${{ matrix.tag-suffix }}
+            ${{ github.event_name == 'push' && format('ghcr.io/sairam0424/trelix:latest{0}', matrix.tag-suffix) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
