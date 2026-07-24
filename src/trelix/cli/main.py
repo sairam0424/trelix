@@ -18,7 +18,7 @@ import logging
 import time
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import typer
 from rich.console import Console
@@ -27,6 +27,9 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 from rich.table import Table
 
 from trelix.federation.registry import RepoRegistry
+
+if TYPE_CHECKING:
+    from trelix.core.config import EmbedderConfig
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="tree_sitter")
 warnings.filterwarnings("ignore", message=".*HF_TOKEN.*")
@@ -41,6 +44,22 @@ app = typer.Typer(
 
 console = Console()
 err_console = Console(stderr=True)
+
+
+def _print_error(label: str, detail: object) -> None:
+    """Print a "[red]<label>:[/red] <detail>" error line, safely.
+
+    `detail` is almost always str(exc) — arbitrary text that may contain
+    literal square brackets (e.g. "pip install 'trelix[local]'"). Rich
+    interprets bracketed text as markup, so interpolating it directly into
+    an f-string silently strips/mangles it — the exact bug that made a real
+    "pip install 'trelix[local]'" fix instruction render as the already-run
+    "pip install 'trelix'". escape() neutralizes detail's brackets while
+    leaving the surrounding [red]/[/red] markup intact.
+    """
+    from rich.markup import escape
+
+    err_console.print(f"[red]{label}:[/red] {escape(str(detail))}")
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +104,24 @@ _EmbedderProvider = Literal[
 _PROVIDER_HELP = (
     "Embedding provider: local | openai | azure | voyage"
     " | local-code | bge-code | nomic-code | bedrock-titan | bedrock-cohere"
+    " (default: TRELIX_EMBEDDER_PROVIDER env var, or 'local' if unset)"
 )
+
+
+def _build_embedder_config(provider: str | None) -> EmbedderConfig:
+    """Build an EmbedderConfig, honoring TRELIX_EMBEDDER_PROVIDER when --provider wasn't passed.
+
+    EmbedderConfig is a pydantic-settings model, so an explicit constructor
+    kwarg always wins over the env var — passing provider="local" unconditionally
+    (the old behavior) silently overrode TRELIX_EMBEDDER_PROVIDER on every call,
+    even when the user never touched --provider. Omitting the kwarg entirely
+    when unset lets pydantic-settings fall through to the env var as documented.
+    """
+    from trelix.core.config import EmbedderConfig
+
+    if provider is None:
+        return EmbedderConfig()
+    return EmbedderConfig(provider=cast(_EmbedderProvider, provider))
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +149,7 @@ def _setup_logging(verbose: bool = False) -> None:
 @app.command()
 def index(
     repo: str = typer.Argument(..., help="Path to the repository to index"),
-    provider: str = typer.Option("local", help=_PROVIDER_HELP),
+    provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
 ) -> None:
     """Index a repository — builds the search index at <repo>/.trelix/index.db"""
@@ -121,23 +157,23 @@ def index(
 
     from pydantic import ValidationError as _PydanticValidationError
 
-    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.core.config import IndexConfig
     from trelix.indexing.indexer import Indexer
 
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
+            embedder=_build_embedder_config(provider),
         )
     except _PydanticValidationError as exc:
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
         detail = f"{field}: {msg}" if field else msg
-        err_console.print(f"[red]Configuration error[/red]: {detail}")
+        _print_error("Configuration error", detail)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     console.print(Panel(f"[bold cyan]Indexing[/bold cyan] {repo}", expand=False))
@@ -150,7 +186,7 @@ def index(
         err_console.print("[yellow]Indexing cancelled.[/yellow]")
         raise typer.Exit(1)
     except Exception as exc:
-        err_console.print(f"[red]Indexing failed:[/red] {exc}")
+        _print_error("Indexing failed", exc)
         raise typer.Exit(1) from exc
 
     elapsed = time.perf_counter() - t0
@@ -178,7 +214,7 @@ def index(
 def search(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query: str = typer.Argument(..., help="Natural language query"),
-    provider: str = typer.Option("local", help=_PROVIDER_HELP),
+    provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
     json_output: bool = typer.Option(False, "--json", help="Output raw JSON"),
 ) -> None:
     """Search for code — returns ranked results as a table or JSON"""
@@ -186,13 +222,13 @@ def search(
 
     from pydantic import ValidationError as _PydanticValidationError
 
-    from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
+    from trelix.core.config import IndexConfig, RetrievalConfig
     from trelix.retrieval.retriever import Retriever
 
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
+            embedder=_build_embedder_config(provider),
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
@@ -200,17 +236,17 @@ def search(
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
         detail = f"{field}: {msg}" if field else msg
-        err_console.print(f"[red]Configuration error[/red]: {detail}")
+        _print_error("Configuration error", detail)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     try:
         retriever = Retriever(config)
         context = retriever.retrieve(query)
     except Exception as exc:
-        err_console.print(f"[red]Search failed:[/red] {exc}")
+        _print_error("Search failed", exc)
         raise typer.Exit(1) from exc
 
     if json_output:
@@ -256,7 +292,7 @@ def search(
 def ask(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query: str = typer.Argument(..., help="Question to answer about the codebase"),
-    provider: str = typer.Option("local", help=_PROVIDER_HELP),
+    provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
     agentic: Annotated[
         bool, typer.Option("--agentic", help="Enable multi-turn agentic ReAct loop.")
     ] = False,
@@ -272,14 +308,14 @@ def ask(
 
     from pydantic import ValidationError as _PydanticValidationError
 
-    from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
+    from trelix.core.config import IndexConfig, RetrievalConfig
     from trelix.retrieval.retriever import Retriever
     from trelix.retrieval.synthesizer import Synthesizer
 
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
+            embedder=_build_embedder_config(provider),
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
@@ -287,10 +323,10 @@ def ask(
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
         detail = f"{field}: {msg}" if field else msg
-        err_console.print(f"[red]Configuration error[/red]: {detail}")
+        _print_error("Configuration error", detail)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     # --agentic flag overrides the config field; --session implies --agentic
@@ -309,7 +345,7 @@ def ask(
 
         retriever = Retriever(config)
     except Exception as exc:
-        err_console.print(f"[red]Retrieval failed:[/red] {exc}")
+        _print_error("Retrieval failed", exc)
         raise typer.Exit(1) from exc
 
     try:
@@ -322,8 +358,11 @@ def ask(
             console.print(answer)
         else:
             context = retriever.retrieve(query)
-            # If provider=local (no API key), print the context text directly
-            if provider == "local":
+            # If provider=local (no API key), print the context text directly.
+            # Read the resolved provider off config, not the raw CLI arg — the
+            # effective value may come from TRELIX_EMBEDDER_PROVIDER when
+            # --provider wasn't passed.
+            if config.embedder.provider == "local":
                 console.print(Panel(f"[bold cyan]Context for:[/bold cyan] {query}", expand=False))
                 if context.context_text:
                     console.print(context.context_text)
@@ -334,7 +373,7 @@ def ask(
                 console.print(token, end="", highlight=False)
             console.print()  # final newline
     except Exception as exc:
-        err_console.print(f"[red]Synthesis failed:[/red] {exc}")
+        _print_error("Synthesis failed", exc)
         raise typer.Exit(1) from exc
 
 
@@ -347,20 +386,20 @@ def ask(
 def query(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     query_str: str = typer.Argument(..., metavar="QUERY", help="Natural language query"),
-    provider: str = typer.Option("local", help=_PROVIDER_HELP),
+    provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
 ) -> None:
     """Query a repository — human-readable Rich terminal output (no LLM synthesis)"""
     _setup_logging(False)
 
     from pydantic import ValidationError as _PydanticValidationError
 
-    from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
+    from trelix.core.config import IndexConfig, RetrievalConfig
     from trelix.retrieval.retriever import Retriever
 
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
+            embedder=_build_embedder_config(provider),
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
@@ -368,10 +407,10 @@ def query(
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
         detail = f"{field}: {msg}" if field else msg
-        err_console.print(f"[red]Configuration error[/red]: {detail}")
+        _print_error("Configuration error", detail)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     console.print(Panel(f"[bold cyan]Query:[/bold cyan] {query_str}", expand=False))
@@ -380,7 +419,7 @@ def query(
         retriever = Retriever(config)
         context = retriever.retrieve(query_str)
     except Exception as exc:
-        err_console.print(f"[red]Query failed:[/red] {exc}")
+        _print_error("Query failed", exc)
         raise typer.Exit(1) from exc
 
     console.print(
@@ -417,7 +456,7 @@ def query(
 def call_graph(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     symbol: str = typer.Argument(..., help="Symbol name or module path to inspect"),
-    provider: str = typer.Option("local", help=_PROVIDER_HELP),
+    provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
     direction: str = typer.Option(
         "all",
         "--direction",
@@ -430,14 +469,14 @@ def call_graph(
 
     from pydantic import ValidationError as _PydanticValidationError
 
-    from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig
+    from trelix.core.config import IndexConfig, RetrievalConfig
     from trelix.core.models import SearchResult as _SearchResult
     from trelix.retrieval.retriever import Retriever
 
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
+            embedder=_build_embedder_config(provider),
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
@@ -445,16 +484,16 @@ def call_graph(
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
         detail = f"{field}: {msg}" if field else msg
-        err_console.print(f"[red]Configuration error[/red]: {detail}")
+        _print_error("Configuration error", detail)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     try:
         retriever = Retriever(config)
     except Exception as exc:
-        err_console.print(f"[red]Failed to open index:[/red] {exc}")
+        _print_error("Failed to open index", exc)
         raise typer.Exit(1) from exc
 
     console.print(f"\n[bold] Graph:[/bold] {symbol}\n")
@@ -479,8 +518,10 @@ def call_graph(
 
     valid_directions = {"callers", "callees", "importers", "all"}
     if direction not in valid_directions:
+        from rich.markup import escape
+
         err_console.print(
-            f"[red]Invalid direction[/red] {direction!r}. "
+            f"[red]Invalid direction[/red] {escape(repr(direction))}. "
             f"Choose from: {', '.join(sorted(valid_directions))}"
         )
         raise typer.Exit(1)
@@ -520,16 +561,19 @@ def stats(
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
         detail = f"{field}: {msg}" if field else msg
-        err_console.print(f"[red]Configuration error[/red]: {detail}")
+        _print_error("Configuration error", detail)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     db_path = config.db_path_absolute
     if not db_path.exists():
+        from rich.markup import escape
+
         err_console.print(
-            f"[red]No index found at {db_path}[/red] — run `trelix index {repo}` first."
+            f"[red]No index found at {escape(str(db_path))}[/red] —"
+            f" run `trelix index {repo}` first."
         )
         raise typer.Exit(1)
 
@@ -541,7 +585,7 @@ def stats(
             chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             db_size_bytes = db_path.stat().st_size
     except Exception as exc:
-        err_console.print(f"[red]Failed to read index:[/red] {exc}")
+        _print_error("Failed to read index", exc)
         raise typer.Exit(1) from exc
 
     db_size_kb = db_size_bytes / 1024
@@ -567,37 +611,37 @@ def stats(
 def update_index(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
     file: str = typer.Argument(..., help="File to re-index (absolute or relative to repo)"),
-    provider: str = typer.Option("local", help=_PROVIDER_HELP),
+    provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
 ) -> None:
     """Re-index a single file after editing"""
     _setup_logging(False)
 
     from pydantic import ValidationError as _PydanticValidationError
 
-    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.core.config import IndexConfig
     from trelix.indexing.indexer import Indexer
 
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
+            embedder=_build_embedder_config(provider),
         )
     except _PydanticValidationError as exc:
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
         detail = f"{field}: {msg}" if field else msg
-        err_console.print(f"[red]Configuration error[/red]: {detail}")
+        _print_error("Configuration error", detail)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     try:
         indexer = Indexer(config)
         result = indexer.index_file(file)
     except Exception as exc:
-        err_console.print(f"[red]update-index failed:[/red] {exc}")
+        _print_error("update-index failed", exc)
         raise typer.Exit(1) from exc
 
     print(json.dumps(result))
@@ -661,8 +705,11 @@ def migrate_vectors(
         return
 
     if to != "qdrant":
+        from rich.markup import escape
+
         err_console.print(
-            f"[red]Unsupported target backend:[/red] {to!r}. Only 'qdrant' is supported."
+            f"[red]Unsupported target backend:[/red] {escape(repr(to))}."
+            " Only 'qdrant' is supported."
         )
         raise typer.Exit(1)
 
@@ -674,16 +721,19 @@ def migrate_vectors(
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
         detail = f"{field}: {msg}" if field else msg
-        err_console.print(f"[red]Configuration error[/red]: {detail}")
+        _print_error("Configuration error", detail)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     db_path = config.db_path_absolute
     if not db_path.exists():
+        from rich.markup import escape
+
         err_console.print(
-            f"[red]No index found at {db_path}[/red] — run `trelix index {repo}` first."
+            f"[red]No index found at {escape(str(db_path))}[/red] —"
+            f" run `trelix index {repo}` first."
         )
         raise typer.Exit(1)
 
@@ -696,14 +746,14 @@ def migrate_vectors(
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
     except Exception as exc:
-        err_console.print(f"[red]Failed to load sqlite-vec:[/red] {exc}")
+        _print_error("Failed to load sqlite-vec", exc)
         raise typer.Exit(1) from exc
 
     # Detect embedding dimension from the sqlite-vec virtual table metadata
     try:
         row = conn.execute("SELECT embedding FROM chunk_embeddings LIMIT 1").fetchone()
     except Exception as exc:
-        err_console.print(f"[red]Failed to read chunk_embeddings:[/red] {exc}")
+        _print_error("Failed to read chunk_embeddings", exc)
         raise typer.Exit(1) from exc
 
     if row is None:
@@ -776,37 +826,37 @@ def migrate_vectors(
 @app.command()
 def watch(
     repo: str = typer.Argument(..., help="Path to the repository to watch"),
-    provider: str = typer.Option("local", help=_PROVIDER_HELP),
+    provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
 ) -> None:
     """Watch repo for changes and auto-update index. Ctrl+C to stop."""
     _setup_logging(False)
 
     from pydantic import ValidationError as _PydanticValidationError
 
-    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.core.config import IndexConfig
     from trelix.indexing.indexer import Indexer
     from trelix.indexing.watcher import FileWatcher
 
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
-            embedder=EmbedderConfig(provider=cast(_EmbedderProvider, provider)),
+            embedder=_build_embedder_config(provider),
         )
     except _PydanticValidationError as exc:
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
         field = " -> ".join(str(x) for x in first_err.get("loc", []))
         detail = f"{field}: {msg}" if field else msg
-        err_console.print(f"[red]Configuration error[/red]: {detail}")
+        _print_error("Configuration error", detail)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     try:
         indexer = Indexer(config)
     except Exception as exc:
-        err_console.print(f"[red]Failed to initialize indexer:[/red] {exc}")
+        _print_error("Failed to initialize indexer", exc)
         raise typer.Exit(1) from exc
 
     # Run initial full index so the watcher starts from a known-good state
@@ -814,14 +864,14 @@ def watch(
     try:
         indexer.index()
     except Exception as exc:
-        err_console.print(f"[red]Initial indexing failed:[/red] {exc}")
+        _print_error("Initial indexing failed", exc)
         raise typer.Exit(1) from exc
 
     # Start the file watcher
     try:
         watcher = FileWatcher(indexer, indexer.walker)
     except ImportError as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
     watcher.start()
@@ -875,7 +925,7 @@ def watch_all(
     try:
         from trelix.indexing.multi_watcher import MultiRepoWatcher
     except ImportError as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        _print_error("Error", exc)
         raise typer.Exit(1)
 
     watcher = MultiRepoWatcher(registry)
@@ -1257,7 +1307,7 @@ def review(
         try:
             owner, repo_name, pr_number = parse_pr_ref(pr)
         except ValueError as exc:
-            err_console.print(f"[red]Error:[/red] {exc}")
+            _print_error("Error", exc)
             raise typer.Exit(1)
 
         # In --json mode, stdout must carry ONLY the final JSON array — every
@@ -1272,7 +1322,7 @@ def review(
         try:
             pr_files = gh_client.get_pr_files(owner, repo_name, pr_number)
         except Exception as exc:
-            err_console.print(f"[red]GitHub API error:[/red] {exc}")
+            _print_error("GitHub API error", exc)
             raise typer.Exit(1)
 
         # Build a unified diff string from PR files
@@ -1366,7 +1416,11 @@ def review(
                     f"[green]Posted review with {len(inline_comments)} inline comments.[/green]"
                 )
             except Exception as exc:
-                err_console.print(f"[yellow]Warning: failed to post comments: {exc}[/yellow]")
+                from rich.markup import escape
+
+                err_console.print(
+                    f"[yellow]Warning: failed to post comments: {escape(str(exc))}[/yellow]"
+                )
 
         raise typer.Exit(0)
 

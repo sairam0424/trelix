@@ -257,7 +257,7 @@ def search_code(
 @mcp.tool()
 def index_codebase(
     repo_path: str,
-    provider: Literal["local", "openai", "azure", "voyage", "local-code"] = "local",
+    provider: Literal["local", "openai", "azure", "voyage", "local-code"] | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """
@@ -273,11 +273,16 @@ def index_codebase(
     - azure   — requires AZURE_API_KEY + AZURE_ENDPOINT
     - voyage  — requires VOYAGE_API_KEY, best code-specific quality
 
+    Defaults to TRELIX_EMBEDDER_PROVIDER (or "local" if that's unset too).
+
     Progress notifications are sent if the MCP client supports them.
     """
     _log.info("index_codebase repo=%s provider=%s", repo_path, provider)
 
-    embedder_config = EmbedderConfig(provider=provider)  # type: ignore[call-arg]
+    # Omit the kwarg when unset so pydantic-settings falls through to
+    # TRELIX_EMBEDDER_PROVIDER — passing provider="local" unconditionally
+    # would silently override the env var on every call.
+    embedder_config = EmbedderConfig() if provider is None else EmbedderConfig(provider=provider)  # type: ignore[call-arg]
     config = IndexConfig(repo_path=repo_path, embedder=embedder_config)
 
     def _send_progress(current: int, total: int) -> None:
