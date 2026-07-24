@@ -2,129 +2,109 @@
 
 ## Overview
 
-A VS Code extension can use trelix as a bundled binary to provide code
-intelligence features — indexing, semantic search, BM25 search, and
-call-graph traversal — entirely on the developer's machine.
+The trelix VS Code extension (`workspace-vscode/`, published as `trelix-vscode`)
+is a thin MCP client. It spawns `trelix-mcp` as a child process over stdio and
+calls its tools/prompts directly — there is no bundled binary and no
+PyInstaller step involved. The extension itself ships as one bundled
+`dist/extension.js` (via `esbuild`), but the intelligence layer it talks to is
+the same `trelix-mcp` server used by Claude Desktop/Cursor/any other MCP
+client (see `docs/integrations/mcp.md`).
 
-The binary is compiled as a single self-contained executable via PyInstaller
-and embedded in the extension package. No Python installation is required on
-the user's machine.
+```
+VS Code extension  --stdio JSON-RPC-->  trelix-mcp (child process)  -->  trelix core
+(dist/extension.js)                     (search_code, trelix-search prompt)
+```
 
 ---
 
-## Building the binary
+## Prerequisites
 
-From the trelix repo root:
+`trelix-mcp` must be installed and importable wherever VS Code runs (locally,
+or inside a devcontainer/remote host if you use one):
 
 ```bash
-make binary
+pip install trelix-mcp
+trelix-mcp --help
 ```
 
-This runs `scripts/build-binary.sh`, which:
+The extension spawns it by name (`trelix-mcp`, no args) — it must be on
+`PATH` for whichever Python environment the VS Code process resolves.
 
-1. Creates / activates `.venv` (Python 3.11+).
-2. Installs `trelix[local,dev]` + PyInstaller.
-3. Runs `pyinstaller trelix.spec --clean --noconfirm`.
-4. Smoke-tests the result with `dist/trelix --help`.
-
-**Output:** `dist/trelix` (macOS arm64 / Linux x64) or `dist/trelix.exe`
-(Windows x64 when built on Windows).
+You'll also need a repo already indexed (`trelix index <path>`) before
+`trelix.search`/`trelix.ask` return anything.
 
 ---
 
-## Embedding the binary in an extension
+## Commands
 
-Place the compiled binary in your extension's assets directory, then resolve
-it at runtime based on `process.platform`:
-
-```typescript
-const binName = process.platform === 'win32' ? 'trelix.exe' : 'trelix';
-const binaryPath = path.join(context.extensionPath, 'src', 'assets', 'bin', binName);
-```
-
----
-
-## CLI commands
-
-Two commands cover the full indexing and incremental-update lifecycle:
-
-### Full index
-
-```bash
-trelix index <workspace-path> --provider <local|openai|azure|voyage|local-code|bedrock-titan|bedrock-cohere> -v
-```
-
-### Incremental file update
-
-```bash
-trelix update-index <workspace-path> <changed-file> --provider <provider>
-```
-
----
-
-## Environment variables
-
-### Embedding providers
-
-| Variable | Purpose |
+| Command | What it does |
 |---|---|
-| `TRELIX_EMBEDDER_PROVIDER` | Provider: `local` \| `openai` \| `azure` \| `voyage` \| `local-code` \| `bedrock-titan` \| `bedrock-cohere` |
-| `OPENAI_API_KEY` | API key for the `openai` provider |
-| `AZURE_API_KEY` / `AZURE_ENDPOINT` | Credentials for the `azure` provider |
-| `VOYAGE_API_KEY` | API key for the `voyage` provider |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | AWS credentials for `bedrock-titan` and `bedrock-cohere` providers |
-| `TRELIX_STORE_DB_PATH` | Path where trelix writes the SQLite index |
+| `trelix: Search Codebase` (`trelix.search`) | Prompts for a query, calls the `search_code` MCP tool, shows results in a `QuickPick`. Picking a result opens the file and jumps to (and highlights) the matched symbol's line range. |
+| `trelix: Ask about Code` (`trelix.ask`) | Prompts for a question, calls the `trelix-search` MCP prompt, renders the answer in a read-only Webview panel. |
 
-### LLM / chat providers (v0.7.0)
+## Settings
 
-| Variable | Purpose |
-|---|---|
-| `TRELIX_LLM_PROVIDER` | Chat provider: `openai` \| `azure` \| `anthropic` \| `bedrock` \| `vertex` \| `litellm` (default: `openai`) |
-| `TRELIX_LLM_MODEL` | Model override (e.g. `gpt-4o`, `claude-sonnet-4-6`) |
-| `ANTHROPIC_API_KEY` | API key for the `anthropic` provider |
-| `TRELIX_LLM_BEDROCK_PRIMARY_MODEL` | Bedrock primary model (default: `us.anthropic.claude-sonnet-4-6`) |
-| `TRELIX_LLM_BEDROCK_FALLBACK_MODEL` | Bedrock fallback model (default: `us.anthropic.claude-haiku-4-5-20251001-v1:0`) |
-| `GOOGLE_CLOUD_PROJECT` / `GOOGLE_API_KEY` | Credentials for the `vertex` provider |
-
----
-
-## Database schema
-
-trelix writes a SQLite file (`.trelix/index.db` by default) with this schema:
-
-| Table | Purpose |
-|---|---|
-| `symbols` | AST-extracted symbol records |
-| `symbols_fts` | FTS5 full-text index |
-| `chunks` | Text chunks with embedding vectors |
-| `call_graph` | Caller → callee edges |
-| `imports` | Module import relationships |
-| `type_edges` | Type hierarchy edges |
-| `vec0` | sqlite-vec virtual table for ANN search |
-
----
-
-## Provider mapping
-
-### Embedding providers
-
-| `TRELIX_EMBEDDER_PROVIDER` | Embedding backend | Dims | Notes |
-|---|---|---|---|
-| `local` | sentence-transformers (`all-MiniLM-L6-v2`) | 384 | No network call, no API key required |
-| `openai` | OpenAI Embeddings API (`text-embedding-3-large`) | 3072 | Requires `OPENAI_API_KEY` |
-| `azure` | Azure OpenAI Embeddings | 3072 | Requires `AZURE_API_KEY` + `AZURE_ENDPOINT` |
-| `voyage` | Voyage AI (`voyage-code-3`) | 1024 | Best API-based code model; requires `VOYAGE_API_KEY` |
-| `local-code` | Salesforce `SFR-Embedding-Code-2B_R` | 4096 | No API key; requires ~8 GB RAM/GPU |
-| `bedrock-titan` | AWS Bedrock Titan v2 (`amazon.titan-embed-text-v2:0`) | 256/512/1024 | Requires AWS credentials; `pip install trelix[bedrock]` |
-| `bedrock-cohere` | AWS Bedrock Cohere English v3 (`cohere.embed-english-v3`) | 1024 | Asymmetric doc/query retrieval; requires AWS credentials; `pip install trelix[bedrock]` |
-
-### LLM / chat providers (v0.7.0)
-
-| `TRELIX_LLM_PROVIDER` | Backend | Notes |
+| Setting | Default | Purpose |
 |---|---|---|
-| `openai` | OpenAI API | Default; requires `OPENAI_API_KEY` |
-| `azure` | Azure OpenAI | Requires `AZURE_API_KEY` + `AZURE_ENDPOINT` |
-| `anthropic` | Anthropic Claude direct | Requires `ANTHROPIC_API_KEY`; `pip install trelix[anthropic]` |
-| `bedrock` | AWS Bedrock Converse API | Defaults to `us.anthropic.claude-sonnet-4-6` with auto-fallback to Haiku; requires AWS credentials; `pip install trelix[bedrock]` |
-| `vertex` | Google Vertex AI / Gemini | Requires `GOOGLE_CLOUD_PROJECT` or `GOOGLE_API_KEY`; `pip install trelix[vertex]` |
-| `litellm` | LiteLLM (100+ providers) | Model strings: `bedrock/claude-3-5-sonnet`, `gemini/gemini-2.0-flash`; `pip install trelix[litellm]` |
+| `trelix.indexPath` | `""` (falls back to the first workspace folder) | Absolute path to the trelix-indexed repository to query. |
+
+---
+
+## Data flow — `trelix.search`
+
+`search_code`'s real response envelope (see
+`packages/trelix-mcp/src/trelix_mcp/server.py`) is:
+
+```json
+{
+  "results": [
+    {"file": "...", "symbol": "...", "kind": "...", "lines": "10-25",
+     "score": 0.92, "source": "vector", "body": "...", "language": "python"}
+  ],
+  "next_cursor": 10,
+  "total_available": 42
+}
+```
+
+`src/mcp-client.ts`'s `TrelixMcpClient.search()` parses this exactly (result
+keys are `symbol`/`file`/`kind`/`lines`/`score`/`source`/`body`/`language` —
+there is no `symbol_name`/`file_path`), returning `{results, nextCursor,
+totalAvailable}`. `lines` is a `"start-end"` 1-indexed string; `extension.ts`
+parses it into a 0-indexed `vscode.Range` used both as the `showTextDocument`
+selection and to reveal the range in the editor.
+
+## Security notes
+
+- The Webview created for `trelix.ask`'s answer sets `enableScripts: false`
+  and an explicit CSP (`default-src 'none'`) with the answer text
+  HTML-escaped before interpolation — the LLM-generated answer is untrusted
+  content and is never treated as executable/renderable markup.
+- `search_code` and `trelix-search` run against whatever `repo_path`/index
+  the workspace is configured for — the extension does not sandbox or
+  validate that path beyond what `trelix-mcp` itself enforces server-side.
+
+---
+
+## Building and testing locally
+
+```bash
+cd workspace-vscode
+npm install
+npm run typecheck   # tsc --noEmit
+npm run build        # tsc (emits src/test/**) + esbuild (bundles dist/extension.js)
+npm test             # downloads a VS Code test instance, runs the Mocha suite
+```
+
+`npm run watch` runs esbuild in watch mode for iterating on `src/extension.ts`
+during development (press `F5` in VS Code to launch an Extension Development
+Host against it).
+
+## Packaging
+
+```bash
+npm run package   # vsce package -> trelix-vscode-<version>.vsix
+```
+
+`.vscodeignore` excludes `src/`, `tests/`, and source maps from the packaged
+`.vsix` — only the bundled `dist/extension.js` (plus `package.json`,
+`README.md`, etc.) ships to end users.

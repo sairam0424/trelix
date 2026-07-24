@@ -1,6 +1,6 @@
-# trelix v2.8.1 — Frequently Asked Questions
+# trelix v2.9.0 — Frequently Asked Questions
 
-> Last updated: 2026-07-21 — covers trelix 2.8.1, trelix-mcp 2.8.1, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
+> Last updated: 2026-07-24 — covers trelix 2.9.0, trelix-mcp 2.9.0, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
 
 ---
 
@@ -215,7 +215,7 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v2.8.1 exposes **15 tools**:
+trelix-mcp v2.9.0 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|
@@ -498,7 +498,7 @@ See the detailed answer in [MCP and Integrations](#what-changed-in-search_code-i
 ### Is trelix suitable for production use?
 
 Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
-- 1,508 tests (1,467 unit + 41 MCP) at 100% pass rate on Python 3.11 and 3.12.
+- 1,703 tests (1,621 unit + 82 MCP) at 100% pass rate on Python 3.11, 3.12, and 3.13.
 - `mypy --strict` clean.
 - `ruff` lint and format clean.
 - No hardcoded secrets; all credentials sourced from environment variables.

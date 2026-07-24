@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
+from trelix import __version__
 from trelix.cli.main import app
 
 runner = CliRunner()
@@ -19,14 +20,14 @@ def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert "trelix" in result.output
-    assert "2.8.1" in result.output
+    assert __version__ in result.output
 
 
 def test_version_short_flag():
     result = runner.invoke(app, ["-V"])
     assert result.exit_code == 0
     assert "trelix" in result.output
-    assert "2.8.1" in result.output
+    assert __version__ in result.output
 
 
 def test_help():

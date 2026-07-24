@@ -1260,7 +1260,13 @@ def review(
             err_console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(1)
 
-        console.print(f"[cyan]Fetching PR diff from GitHub:[/cyan] {pr}")
+        # In --json mode, stdout must carry ONLY the final JSON array — every
+        # progress/status message below goes to err_console (stderr) instead,
+        # since callers (e.g. the PR-review CI workflow) redirect stdout to a
+        # file and parse it as JSON.
+        status_console = err_console if json_output else console
+
+        status_console.print(f"[cyan]Fetching PR diff from GitHub:[/cyan] {pr}")
         gh_client = GitHubPRClient(token=token)
 
         try:
@@ -1273,7 +1279,7 @@ def review(
         diff_lines: list[str] = []
         for f in pr_files:
             if f.patch is None:
-                console.print(f"[dim]Skipping binary/oversized file: {f.filename}[/dim]")
+                status_console.print(f"[dim]Skipping binary/oversized file: {f.filename}[/dim]")
                 continue
             diff_lines.append(f"diff --git a/{f.filename} b/{f.filename}")
             diff_lines.append(f"--- a/{f.previous_filename or f.filename}")
@@ -1282,15 +1288,23 @@ def review(
         pr_diff_str = "\n".join(diff_lines)
 
         if not pr_diff_str.strip():
-            console.print("[yellow]No textual changes found in PR (all binary files?).[/yellow]")
+            if json_output:
+                console.print(_json.dumps([]))
+            else:
+                console.print(
+                    "[yellow]No textual changes found in PR (all binary files?).[/yellow]"
+                )
             raise typer.Exit(0)
 
         reviewer = DiffReviewer(config)
-        with console.status("Retrieving context and generating review..."):
+        with status_console.status("Retrieving context and generating review..."):
             comments = reviewer.review(diff_text=pr_diff_str)
 
         if not comments:
-            console.print("[green]No issues found.[/green]")
+            if json_output:
+                console.print(_json.dumps([]))
+            else:
+                console.print("[green]No issues found.[/green]")
             raise typer.Exit(0)
 
         if json_output:

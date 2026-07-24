@@ -1,13 +1,13 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 2.8.1 (current) | **Next:** 3.0.0
+> **Version:** 2.9.0 (current) | **Next:** 3.0.0
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
 ---
 
-## ✅ Shipped (v2.0 – v2.8.1)
+## ✅ Shipped (v2.0 – v2.9.0)
 
 | Version | Feature |
 |---------|---------|
@@ -24,6 +24,7 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.7.3 | README end-to-end audit + rewrite (fixed 15+ factual bugs, redrew the retrieval-pipeline diagram, deduplicated content into `docs/`), backfilled the empty v2.2.0 CHANGELOG entry, migrated Troubleshooting entries into `docs/TROUBLESHOOTING.md` |
 | v2.8.0 | Multi-repo support in MCP (4 new federation tools), persistent agent (ReAct loop) session memory (3 new MCP tools + CLI `agent sessions` sub-app), fixed 2 latent `FederatedRetriever` bugs (lost repo-provenance tagging, unused `RepoEntry.weight`) |
 | v2.8.1 | Pre-push audit hardening follow-up (issue #69): MCP `config_path` path confinement, federation repo-count/fan-out caps (`TRELIX_FEDERATION_MAX_REPOS`), stable `federation_search_all` pagination (fixed fetch width independent of cursor), test-hardening (deterministic weight-pairing test, stronger `ask_agent` assertion) |
+| v2.9.0 | Python 3.13 support (`tree-sitter-language-pack` migration), OpenTelemetry tracing for the retrieval pipeline, typed REST API response models + `/search` cursor pagination, `@trelix/sdk` TypeScript client, official Docker image + Helm chart, VS Code extension hardening (XSS fix, bundler) + live search refinement, GitHub App GA hardening (installation-token auth, webhook signature verification, Check-annotation posting). All additive/opt-in — no breaking changes. |
 
 ---
 
@@ -61,14 +62,35 @@ This roadmap describes planned features, research directions, and long-term visi
 
 **Goal:** Clean API surface + first-class cloud deployment.
 
-- [ ] **Remove deprecated** — `flare_max_iterations` removed (deprecated in v2.4)
+- [ ] **Remove deprecated** — `flare_max_iterations` removed (deprecated in v2.4).
+      The one genuine breaking change reserved for this release — see
+      `docs/superpowers/plans/v3-0-0-breaking-changes.md` for the removal
+      checklist. Everything else originally scoped under v3.0.0 shipped
+      additively in v2.9.0 instead (see the Shipped table above).
+- [ ] **MCP protocol currency** — bump `mcp`/`fastmcp` version floors in
+      `packages/trelix-mcp/pyproject.toml` (currently declared `mcp>=1.0.0`/
+      `fastmcp>=2.0.0`, far behind the installed `1.28.0`/`3.4.2`) and adopt
+      SEP-2322's `InputRequiredResult` pattern for `ask_agent`'s input-wait
+      behavior. Scoped out of v2.9.0 — never started.
 - [ ] **MCP streaming** — true streaming tool responses once MCP spec supports it
-- [ ] **Python 3.13 support** — test matrix expansion
-- [ ] **OpenTelemetry integration** — spans for every retrieval leg
-- [ ] **Helm chart** — production Kubernetes deployment for `trelix serve`
-- [ ] **TypeScript SDK** — native SDK matching Python API surface
-- [ ] **VS Code extension improvements** — inline search refinement, snippet preview
-- [ ] **GitHub App GA** — public marketplace listing, production hardening
+- [ ] **GitHub App Marketplace listing** — the App itself (`infra/github-app/`)
+      is installable and hardened as of v2.9.0 (signature verification,
+      installation-token auth, Check-annotation posting); Marketplace
+      paid-app verification requires ≥100 installations before GitHub will
+      even review it — an adoption/business gate, not engineering scope.
+
+---
+
+## 🔭 v3.1.0 — Candidates (not yet committed)
+
+- [ ] **VS Code chat participant + hover providers** — the original Phase 3 Plan A
+  spec (`docs/superpowers/plans/2026-07-08-phase3-vscode-github-app.md`)
+  described a `@trelix` chat participant and hover providers; neither was
+  actually delivered (only the `trelix.search`/`trelix.ask` QuickPick/Webview
+  commands shipped). Deferred again in the v2.9.0 VS Code extension pass
+  (search refinement + snippet preview) to keep that item bounded — this is
+  a real, once-planned scope cut, not a silently-dropped gap. Revisit as its
+  own PR if/when picked up.
 
 ---
 

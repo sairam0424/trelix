@@ -331,7 +331,7 @@ Open a [GitHub Discussion](https://github.com/sairam0424/trelix/discussions) for
 
 ## Versioning & Stability Policy
 
-trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.8.1**.
+trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.9.0**.
 
 ### Stable public API (guaranteed not to change without a major version bump)
 
@@ -357,7 +357,7 @@ trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version
 
 ### Python version support
 
-- Supported: Python 3.11, 3.12
+- Supported: Python 3.11, 3.12, 3.13
 - Dropped versions are announced one minor release in advance
 
 ---

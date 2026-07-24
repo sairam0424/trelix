@@ -35,7 +35,12 @@ jobs:
       - name: Run trelix review
         id: review
         run: |
-          trelix review --pr "${TRELIX_REPO}#${TRELIX_PR_NUMBER}" --json > /tmp/trelix-review.json 2>&1 || true
+          # Only stdout is redirected — trelix review --json writes status/
+          # progress messages to stderr and ONLY the JSON array to stdout
+          # (see src/trelix/cli/main.py), so merging stderr in here would
+          # corrupt the file again.
+          trelix review --pr "${TRELIX_REPO}#${TRELIX_PR_NUMBER}" --json > /tmp/trelix-review.json 2>/tmp/trelix-review.stderr.log || true
+          cat /tmp/trelix-review.stderr.log
           echo "review_file=/tmp/trelix-review.json" >> "$GITHUB_OUTPUT"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -55,24 +60,29 @@ jobs:
             // PR number comes from env, not directly from context expression in source
             const prNumber = parseInt(process.env.TRELIX_PR_NUMBER, 10);
 
+            // trelix review --json emits a bare array of
+            // {file, lines: "start-end", severity: "ERROR"|"WARN"|"INFO", comment}
+            // — see src/trelix/cli/main.py's review() --pr --json path.
             let findings = [];
             try {
               const raw = fs.readFileSync(reviewFile, 'utf8');
-              const data = JSON.parse(raw);
-              findings = data.findings || data.reviews || [];
+              findings = JSON.parse(raw);
             } catch (e) {
               console.log('No structured review output:', e.message);
             }
 
-            const annotations = findings.slice(0, 50).map(f => ({
-              path: f.file || f.path || 'unknown',
-              start_line: f.line || f.start_line || 1,
-              end_line: f.line || f.end_line || 1,
-              annotation_level: f.severity === 'error' ? 'failure'
-                : f.severity === 'warning' ? 'warning' : 'notice',
-              message: f.message || f.description || String(f),
-              title: 'trelix review',
-            }));
+            const annotations = findings.slice(0, 50).map(f => {
+              const [startLine, endLine] = String(f.lines || '1-1').split('-').map(Number);
+              return {
+                path: f.file || 'unknown',
+                start_line: startLine || 1,
+                end_line: endLine || startLine || 1,
+                annotation_level: f.severity === 'ERROR' ? 'failure'
+                  : f.severity === 'WARN' ? 'warning' : 'notice',
+                message: f.comment || String(f),
+                title: 'trelix review',
+              };
+            });
 
             await github.rest.checks.create({
               owner: context.repo.owner,

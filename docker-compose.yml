@@ -1,0 +1,17 @@
+# Runnable version of the snippet in docs/INSTALLATION_GUIDE.md's Docker section.
+#
+#   docker compose up
+#
+# Serves the repo this file lives in. Set REPO_PATH to point at a different
+# one, e.g. `REPO_PATH=/path/to/other/repo docker compose up`.
+services:
+  trelix:
+    image: ghcr.io/sairam0424/trelix:latest
+    command: ["serve", "/repo", "--host", "0.0.0.0", "--port", "8765"]
+    ports:
+      - "8765:8765"
+    volumes:
+      - "${REPO_PATH:-.}:/repo"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - TRELIX_EMBEDDER_PROVIDER=${TRELIX_EMBEDDER_PROVIDER:-openai}

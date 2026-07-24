@@ -1,0 +1,55 @@
+name: Docker Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    name: Build and push (extras=${{ matrix.extras }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          # Slim: API-embedder-only (OpenAI/Voyage/Cohere/Azure). Small image,
+          # the default recommendation for anyone not running local/offline embeddings.
+          - extras: serve
+            tag-suffix: ""
+          # Bundles sentence-transformers/torch for the local/offline embedder
+          # and cross-encoder reranker — multi-GB, opt-in via the -local tag.
+          - extras: "serve,local"
+            tag-suffix: "-local"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: EXTRAS=${{ matrix.extras }}
+          push: true
+          tags: |
+            ghcr.io/sairam0424/trelix:${{ steps.version.outputs.version }}${{ matrix.tag-suffix }}
+            ghcr.io/sairam0424/trelix:latest${{ matrix.tag-suffix }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

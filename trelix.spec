@@ -14,10 +14,8 @@
 import os
 
 import sqlite_vec
-import tree_sitter_languages
 
 vec_path = os.path.dirname(sqlite_vec.__file__)
-ts_path = os.path.dirname(tree_sitter_languages.__file__)
 
 a = Analysis(
     ['src/trelix/cli/main.py'],
@@ -25,14 +23,13 @@ a = Analysis(
     binaries=[],
     datas=[
         (vec_path, 'sqlite_vec'),
-        (ts_path,  'tree_sitter_languages'),
     ],
     hiddenimports=[
         'sqlite_vec',
         'tiktoken_ext.openai_public',
         'tiktoken_ext',
         'tree_sitter',
-        'tree_sitter_languages',
+        'tree_sitter_language_pack',
         'pydantic',
         'pydantic_settings',
     ],

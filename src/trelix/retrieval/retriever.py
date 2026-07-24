@@ -42,6 +42,7 @@ from .graph import (
     seed_from_import_paths,
 )
 from .grep_search import grep_search
+from .otel_tracing import pipeline_stage_span, retrieval_leg_span, with_current_context
 from .planner.agent import QueryPlanner
 from .planner.models import (
     IntentType,
@@ -158,80 +159,86 @@ class Retriever:
         # Reset expansion result for this query (set later by _retrieve_standard if used)
         _trace_local.expand_result = None
 
-        if plan is None:
-            plan = self._planner.plan(query)
+        cfg = self.config.retrieval
+        with pipeline_stage_span(cfg, "retrieve", {"query_len": len(query)}):
+            if plan is None:
+                with pipeline_stage_span(cfg, "planner"):
+                    plan = self._planner.plan(query)
 
-        # -- Trace: planner decision --
-        self._trace(
-            "planner",
-            {
-                "intent": plan.intent.value,
-                "execution_mode": plan.execution_mode,
-                "sub_queries": [
-                    {
-                        "semantic_query": sq.semantic_query,
-                        "hyde_snippet": sq.hyde_snippet[:120] if sq.hyde_snippet else "",
-                        "bm25_tokens": sq.bm25_tokens,
-                        "grep_hints": sq.grep_hints,
-                        "file_hints": sq.file_hints,
-                        "depends_on": sq.depends_on,
-                    }
-                    for sq in plan.sub_queries
-                ],
-            },
-        )
-
-        context = self._execute_plan(plan)
-        context.elapsed_seconds = round(time.perf_counter() - t_start, 3)
-
-        # -- Trace: final assembly output --
-        self._trace(
-            "assembly",
-            {
-                "intent": plan.intent.value,
-                "results_count": len(context.results),
-                "tokens_used": context.total_tokens,
-                "token_budget": self.config.retrieval.context_token_budget,
-                "budget_pct": round(
-                    context.total_tokens / max(1, self.config.retrieval.context_token_budget) * 100,
-                    1,
-                ),
-                "sources": context.retrieval_sources,
-                "top5_symbols": [
-                    {
-                        "name": r.symbol.name,
-                        "kind": r.symbol.kind,
-                        "file": r.file.rel_path,
-                        "score": round(r.score, 4),
-                    }
-                    for r in context.results[:5]
-                ],
-                "elapsed_s": context.elapsed_seconds,
-            },
-        )
-        self._flush_trace()
-
-        logger.info(
-            "Retrieval complete: intent=%s results=%d tokens=%d (%.0f%%) sources=%s elapsed=%.3fs",
-            plan.intent.value,
-            len(context.results),
-            context.total_tokens,
-            context.total_tokens / max(1, self.config.retrieval.context_token_budget) * 100,
-            context.retrieval_sources,
-            context.elapsed_seconds,
-        )
-
-        # Telemetry — record timing, result count, and expansion metadata (no-op when disabled)
-        if self.config.telemetry_enabled:
-            from trelix.retrieval.telemetry import TelemetryWriter
-
-            elapsed_ms = (time.perf_counter() - t_start) * 1000
-            expand_result = getattr(_trace_local, "expand_result", None)
-            TelemetryWriter(self.db, enabled=True).record(
-                context, elapsed_ms=elapsed_ms, expansion_result=expand_result
+            # -- Trace: planner decision --
+            self._trace(
+                "planner",
+                {
+                    "intent": plan.intent.value,
+                    "execution_mode": plan.execution_mode,
+                    "sub_queries": [
+                        {
+                            "semantic_query": sq.semantic_query,
+                            "hyde_snippet": sq.hyde_snippet[:120] if sq.hyde_snippet else "",
+                            "bm25_tokens": sq.bm25_tokens,
+                            "grep_hints": sq.grep_hints,
+                            "file_hints": sq.file_hints,
+                            "depends_on": sq.depends_on,
+                        }
+                        for sq in plan.sub_queries
+                    ],
+                },
             )
 
-        return context
+            context = self._execute_plan(plan)
+            context.elapsed_seconds = round(time.perf_counter() - t_start, 3)
+
+            # -- Trace: final assembly output --
+            self._trace(
+                "assembly",
+                {
+                    "intent": plan.intent.value,
+                    "results_count": len(context.results),
+                    "tokens_used": context.total_tokens,
+                    "token_budget": self.config.retrieval.context_token_budget,
+                    "budget_pct": round(
+                        context.total_tokens
+                        / max(1, self.config.retrieval.context_token_budget)
+                        * 100,
+                        1,
+                    ),
+                    "sources": context.retrieval_sources,
+                    "top5_symbols": [
+                        {
+                            "name": r.symbol.name,
+                            "kind": r.symbol.kind,
+                            "file": r.file.rel_path,
+                            "score": round(r.score, 4),
+                        }
+                        for r in context.results[:5]
+                    ],
+                    "elapsed_s": context.elapsed_seconds,
+                },
+            )
+            self._flush_trace()
+
+            logger.info(
+                "Retrieval complete: intent=%s results=%d tokens=%d (%.0f%%) "
+                "sources=%s elapsed=%.3fs",
+                plan.intent.value,
+                len(context.results),
+                context.total_tokens,
+                context.total_tokens / max(1, self.config.retrieval.context_token_budget) * 100,
+                context.retrieval_sources,
+                context.elapsed_seconds,
+            )
+
+            # Telemetry — record timing, result count, expansion metadata (no-op when disabled)
+            if self.config.telemetry_enabled:
+                from trelix.retrieval.telemetry import TelemetryWriter
+
+                elapsed_ms = (time.perf_counter() - t_start) * 1000
+                expand_result = getattr(_trace_local, "expand_result", None)
+                TelemetryWriter(self.db, enabled=True).record(
+                    context, elapsed_ms=elapsed_ms, expansion_result=expand_result
+                )
+
+            return context
 
     # ------------------------------------------------------------------
     # Intent router
@@ -267,10 +274,13 @@ class Retriever:
         if plan.execution_mode == "parallel" and len(plan.sub_queries) > 1:
             from concurrent.futures import ThreadPoolExecutor
 
+            # with_current_context: OTel's context is contextvars-based and does
+            # NOT cross a ThreadPoolExecutor boundary on its own — this makes
+            # each worker's leg spans nest under the caller's active span
+            # instead of starting as new, unparented traces.
+            traced_run = with_current_context(self._run_subquery_legs)
             with ThreadPoolExecutor() as pool:
-                futures = [
-                    pool.submit(self._run_subquery_legs, sq, strategy) for sq in plan.sub_queries
-                ]
+                futures = [pool.submit(traced_run, sq, strategy) for sq in plan.sub_queries]
                 leg_results_list = [f.result() for f in futures]
         else:
             leg_results_list = [self._run_subquery_legs(sq, strategy) for sq in plan.sub_queries]
@@ -319,9 +329,10 @@ class Retriever:
                     ]
 
                     # Run variant legs in parallel using existing ThreadPoolExecutor
+                    traced_variant_run = with_current_context(self._run_subquery_legs)
                     with _MQExecutor() as pool:
                         variant_futures = [
-                            pool.submit(self._run_subquery_legs, vsq, plan.strategy)
+                            pool.submit(traced_variant_run, vsq, plan.strategy)
                             for vsq in variant_sqs
                         ]
                         variant_leg_results = [f.result() for f in variant_futures]
@@ -348,8 +359,12 @@ class Retriever:
                 if plan.sub_queries[0].hyde_snippet.strip()
                 else plan.sub_queries[0].semantic_query
             )
-            query_embedding: list[float] = self.embedder.embed_query(embed_text)
-            summary_results = self._summary_search(query_embedding, k=cfg.top_k_file_summary)
+            with retrieval_leg_span(
+                cfg, "file_summary", query_text=embed_text, top_k=cfg.top_k_file_summary
+            ) as span:
+                query_embedding: list[float] = self.embedder.embed_query(embed_text)
+                summary_results = self._summary_search(query_embedding, k=cfg.top_k_file_summary)
+                span.set_result_count(len(summary_results))
 
         # 6th leg: sub-chunk search (MGS3 block/statement granularity, off by default)
         sub_chunk_results: list[SearchResult] = []
@@ -359,8 +374,14 @@ class Retriever:
                 if plan.sub_queries[0].hyde_snippet.strip()
                 else plan.sub_queries[0].semantic_query
             )
-            sc_query_embedding: list[float] = self.embedder.embed_query(sc_embed_text)
-            sub_chunk_results = self._sub_chunk_search(sc_query_embedding, k=cfg.top_k_sub_chunk)
+            with retrieval_leg_span(
+                cfg, "sub_chunk", query_text=sc_embed_text, top_k=cfg.top_k_sub_chunk
+            ) as span:
+                sc_query_embedding: list[float] = self.embedder.embed_query(sc_embed_text)
+                sub_chunk_results = self._sub_chunk_search(
+                    sc_query_embedding, k=cfg.top_k_sub_chunk
+                )
+                span.set_result_count(len(sub_chunk_results))
 
         logger.info(
             "Pre-fusion leg sizes: vector=%d bm25=%d grep=%d summary=%d sub_chunk=%d sparse=%d",
@@ -407,18 +428,19 @@ class Retriever:
         )
 
         _weights = cfg.file_type_weights if cfg.file_type_weighting_enabled else None
-        fused = reciprocal_rank_fusion(
-            [
-                vector_results,
-                bm25_results,
-                grep_results,
-                summary_results,
-                sub_chunk_results,
-                sparse_results,
-            ],
-            k=cfg.rrf_k,
-            weights=_weights,
-        )
+        with pipeline_stage_span(cfg, "fusion", {"rrf_k": cfg.rrf_k}):
+            fused = reciprocal_rank_fusion(
+                [
+                    vector_results,
+                    bm25_results,
+                    grep_results,
+                    summary_results,
+                    sub_chunk_results,
+                    sparse_results,
+                ],
+                k=cfg.rrf_k,
+                weights=_weights,
+            )
 
         # -- Trace: post-fusion ranking --
         self._trace(
@@ -438,117 +460,133 @@ class Retriever:
         )
 
         # Graph expansion — all parameters driven by intent strategy
-        top = fused[: cfg.graph_expansion_max_symbols]
-        call_expanded = expand_with_call_graph(
-            self.db, top, depth=strategy.expand_depth, max_extra=cfg.graph_expansion_max_symbols
-        )
-        import_expanded = expand_with_imports(
-            self.db,
-            top,
-            max_extra=strategy.import_max_extra,
-            depth=strategy.import_depth,
-            direction=strategy.import_direction,
-        )
-        type_expanded = expand_with_type_edges(self.db, top, max_extra=15)
+        with pipeline_stage_span(cfg, "expansion"):
+            top = fused[: cfg.graph_expansion_max_symbols]
+            call_expanded = expand_with_call_graph(
+                self.db,
+                top,
+                depth=strategy.expand_depth,
+                max_extra=cfg.graph_expansion_max_symbols,
+            )
+            import_expanded = expand_with_imports(
+                self.db,
+                top,
+                max_extra=strategy.import_max_extra,
+                depth=strategy.import_depth,
+                direction=strategy.import_direction,
+            )
+            type_expanded = expand_with_type_edges(self.db, top, max_extra=15)
 
-        # For blast_radius: also seed from raw import path strings (@aliases)
-        import_path_seeded: list[SearchResult] = []
-        if plan.intent == IntentType.BLAST_RADIUS:
-            patterns = [h for sq in plan.sub_queries for h in sq.grep_hints if h.startswith("@")]
-            if patterns:
-                import_path_seeded = seed_from_import_paths(
-                    self.db, patterns, max_extra=strategy.import_max_extra
-                )
+            # For blast_radius: also seed from raw import path strings (@aliases)
+            import_path_seeded: list[SearchResult] = []
+            if plan.intent == IntentType.BLAST_RADIUS:
+                patterns = [
+                    h for sq in plan.sub_queries for h in sq.grep_hints if h.startswith("@")
+                ]
+                if patterns:
+                    import_path_seeded = seed_from_import_paths(
+                        self.db, patterns, max_extra=strategy.import_max_extra
+                    )
 
-        # Graph search leg (optional 4th retrieval leg — CodeGraph BFS)
-        graph_search_results: list[SearchResult] = []
-        if cfg.graph_search_enabled:
-            try:
-                from trelix.graph.code_graph import CodeGraph
-                from trelix.graph.search import graph_search
+            # Graph search leg (optional 4th retrieval leg — CodeGraph BFS)
+            graph_search_results: list[SearchResult] = []
+            if cfg.graph_search_enabled:
+                try:
+                    from trelix.graph.code_graph import CodeGraph
+                    from trelix.graph.search import graph_search
 
-                cg = CodeGraph(self.db)
-                seed_ids = [r.chunk.symbol_id for r in fused[:10] if r.chunk.symbol_id]
-                graph_search_results = graph_search(
-                    db=self.db,
-                    cg=cg,
-                    query_symbol_ids=seed_ids,
-                    depth=cfg.graph_search_depth,
-                    max_results=cfg.graph_search_max_results,
-                )
-            except Exception as exc:
-                logger.warning("Graph search leg failed (non-fatal): %s", exc)
+                    cg = CodeGraph(self.db)
+                    seed_ids = [r.chunk.symbol_id for r in fused[:10] if r.chunk.symbol_id]
+                    graph_search_results = graph_search(
+                        db=self.db,
+                        cg=cg,
+                        query_symbol_ids=seed_ids,
+                        depth=cfg.graph_search_depth,
+                        max_results=cfg.graph_search_max_results,
+                    )
+                except Exception as exc:
+                    logger.warning("Graph search leg failed (non-fatal): %s", exc)
 
-        candidates = self._dedup(
-            fused
-            + call_expanded
-            + import_expanded
-            + type_expanded
-            + import_path_seeded
-            + graph_search_results
-        )
-
-        logger.info(
-            "Post-expansion candidates: fused=%d call_exp=%d import_exp=%d "
-            "type_exp=%d path_seed=%d graph_search=%d total=%d",
-            len(fused),
-            len(call_expanded),
-            len(import_expanded),
-            len(type_expanded),
-            len(import_path_seeded),
-            len(graph_search_results),
-            len(candidates),
-        )
-
-        # -- Trace: graph expansion --
-        self._trace(
-            "expansion",
-            {
-                "call_expanded": len(call_expanded),
-                "import_expanded": len(import_expanded),
-                "type_expanded": len(type_expanded),
-                "import_path_seeded": len(import_path_seeded),
-                "total_candidates": len(candidates),
-                "import_strategy": {
-                    "depth": strategy.import_depth,
-                    "max_extra": strategy.import_max_extra,
-                    "direction": strategy.import_direction,
-                },
-                "top_import_files": list({r.file.rel_path for r in import_expanded}),
-                "import_path_seed_files": list({r.file.rel_path for r in import_path_seeded})[:10],
-            },
-        )
-
-        # Rerank — skipped when strategy says exact ordering is already correct.
-        if cfg.rerank and candidates and not strategy.skip_reranker:
-            candidates = rerank(
-                query=plan.raw_query,
-                results=candidates,
-                config=cfg,
-                top_n=strategy.rerank_top_n,
+            candidates = self._dedup(
+                fused
+                + call_expanded
+                + import_expanded
+                + type_expanded
+                + import_path_seeded
+                + graph_search_results
             )
 
-            # -- Trace: post-rerank ordering --
+            logger.info(
+                "Post-expansion candidates: fused=%d call_exp=%d import_exp=%d "
+                "type_exp=%d path_seed=%d graph_search=%d total=%d",
+                len(fused),
+                len(call_expanded),
+                len(import_expanded),
+                len(type_expanded),
+                len(import_path_seeded),
+                len(graph_search_results),
+                len(candidates),
+            )
+
+            # -- Trace: graph expansion --
             self._trace(
-                "post_rerank",
+                "expansion",
                 {
-                    "total": len(candidates),
-                    "top5": [
-                        {"name": r.symbol.name, "file": r.file.rel_path, "score": round(r.score, 4)}
-                        for r in candidates[:5]
+                    "call_expanded": len(call_expanded),
+                    "import_expanded": len(import_expanded),
+                    "type_expanded": len(type_expanded),
+                    "import_path_seeded": len(import_path_seeded),
+                    "total_candidates": len(candidates),
+                    "import_strategy": {
+                        "depth": strategy.import_depth,
+                        "max_extra": strategy.import_max_extra,
+                        "direction": strategy.import_direction,
+                    },
+                    "top_import_files": list({r.file.rel_path for r in import_expanded}),
+                    "import_path_seed_files": list({r.file.rel_path for r in import_path_seeded})[
+                        :10
                     ],
                 },
             )
 
-        # PageRank boost — applied post-rerank, pre-assemble
-        candidates = self._apply_pagerank_boost(candidates)
+        # Rerank — skipped when strategy says exact ordering is already correct.
+        if cfg.rerank and candidates and not strategy.skip_reranker:
+            with pipeline_stage_span(cfg, "rerank", {"top_n": strategy.rerank_top_n}):
+                candidates = rerank(
+                    query=plan.raw_query,
+                    results=candidates,
+                    config=cfg,
+                    top_n=strategy.rerank_top_n,
+                )
 
-        return self._assemble(
-            plan.raw_query,
-            candidates,
-            intent=plan.intent.value,
-            assembly_mode=plan.strategy.assembly_mode,
-        )
+                # -- Trace: post-rerank ordering --
+                self._trace(
+                    "post_rerank",
+                    {
+                        "total": len(candidates),
+                        "top5": [
+                            {
+                                "name": r.symbol.name,
+                                "file": r.file.rel_path,
+                                "score": round(r.score, 4),
+                            }
+                            for r in candidates[:5]
+                        ],
+                    },
+                )
+
+        # PageRank boost — applied post-rerank, pre-assemble (no-op internally
+        # when cfg.pagerank_boost_enabled is False, so always safe to wrap).
+        with pipeline_stage_span(cfg, "pagerank_boost"):
+            candidates = self._apply_pagerank_boost(candidates)
+
+        with pipeline_stage_span(cfg, "assembly", {"candidate_count": len(candidates)}):
+            return self._assemble(
+                plan.raw_query,
+                candidates,
+                intent=plan.intent.value,
+                assembly_mode=plan.strategy.assembly_mode,
+            )
 
     # ------------------------------------------------------------------
     # File overview (file_overview intent)
@@ -711,17 +749,29 @@ class Retriever:
                 snippet = HyDEExpander(self.config.llm).expand(sq.semantic_query)
                 if snippet:
                     embed_text = snippet
-            embedding = self.embedder.embed_query(embed_text)
-            out["vector"] = self._vector_search(embedding, k=cfg.top_k_vector)
+            with retrieval_leg_span(
+                cfg, "vector", query_text=embed_text, top_k=cfg.top_k_vector
+            ) as span:
+                embedding = self.embedder.embed_query(embed_text)
+                out["vector"] = self._vector_search(embedding, k=cfg.top_k_vector)
+                span.set_result_count(len(out["vector"]))
 
         if "bm25" in strategy.legs:
             bm25_query = " ".join(sq.bm25_tokens) if sq.bm25_tokens else sq.semantic_query
-            out["bm25"] = bm25_search(self.db, bm25_query, k=cfg.top_k_bm25)
+            with retrieval_leg_span(
+                cfg, "bm25", query_text=bm25_query, top_k=cfg.top_k_bm25
+            ) as span:
+                out["bm25"] = bm25_search(self.db, bm25_query, k=cfg.top_k_bm25)
+                span.set_result_count(len(out["bm25"]))
 
         if "grep" in strategy.legs:
             hints = sq.grep_hints if sq.grep_hints else [sq.semantic_query]
-            for hint in hints:
-                out["grep"].extend(grep_search(self.db, hint, k=cfg.top_k_grep))
+            with retrieval_leg_span(
+                cfg, "grep", query_text=", ".join(hints), top_k=cfg.top_k_grep
+            ) as span:
+                for hint in hints:
+                    out["grep"].extend(grep_search(self.db, hint, k=cfg.top_k_grep))
+                span.set_result_count(len(out["grep"]))
 
         # Sparse leg (SPLADE-Code, 7th leg — off by default)
         out["sparse"] = []
@@ -748,10 +798,14 @@ class Retriever:
                 sparse_emb: SparseEmbedder = self._sparse_embedder  # type: ignore[assignment]
                 query_sparse = sparse_emb.embed_query(sq.semantic_query)
                 if query_sparse:
-                    sparse_store = SparseStore(self.config.db_path_absolute)
-                    out["sparse"] = sparse_search(
-                        sparse_store, self.db, query_sparse, k=cfg.top_k_sparse
-                    )
+                    with retrieval_leg_span(
+                        cfg, "sparse", query_text=sq.semantic_query, top_k=cfg.top_k_sparse
+                    ) as span:
+                        sparse_store = SparseStore(self.config.db_path_absolute)
+                        out["sparse"] = sparse_search(
+                            sparse_store, self.db, query_sparse, k=cfg.top_k_sparse
+                        )
+                        span.set_result_count(len(out["sparse"]))
             except Exception as exc:
                 logger.warning("Sparse search leg failed (non-fatal): %s", exc)
 

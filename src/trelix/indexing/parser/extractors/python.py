@@ -5,10 +5,11 @@ Design: tree-sitter parses source into an AST; all extraction logic is ours.
 We walk the AST directly (not .scm queries) for full control over parent-child
 linkage and to handle Python's complex syntax (decorators, nested classes, etc.).
 
-NOTE on tree-sitter 0.21: annotated assignments (x: str = "y") are
-expression_statement > assignment WITH a 'type' child — same node type as plain
-assignments, just with an annotation. There is no separate 'annotated_assignment'
-node in this grammar version.
+NOTE: annotated assignments (x: str = "y") are plain `assignment` nodes with
+a 'type' child — same node type as unannotated assignments. There is no
+separate 'annotated_assignment' node in this grammar. There is also no
+`expression_statement` wrapper — statement-position expressions (assignments,
+calls, bare strings/docstrings) appear as direct children of their block.
 
 Extracts:
   - Classes (kind=CLASS)
@@ -236,22 +237,22 @@ class PythonParser(BaseParser):
 
             # ---- Module-level constants: ALL_CAPS and __dunder__ names ----
             # Only at module scope (not inside a function or class).
-            # Note: in tree-sitter 0.21, annotated assignments (BASE_URL: str = "x")
-            # are ALSO expression_statement > assignment nodes — the 'type' child
-            # distinguishes annotated from plain. _handle_module_assignment handles both.
+            # Annotated assignments (BASE_URL: str = "x") are ALSO plain
+            # `assignment` nodes — the 'type' child distinguishes annotated
+            # from plain. _handle_module_assignment handles both.
             elif (
-                ntype == "expression_statement"
+                ntype == "assignment"
                 and parent_class_local_idx is None
                 and current_func_local_idx is None
             ):
                 self._handle_module_assignment(child, src, file_id, symbols)
 
-            # ---- Class-level expression statements: field annotations and constants ----
+            # ---- Class-level assignments: field annotations and constants -----
             # Covers Pydantic fields, dataclass fields, TypedDict fields, typed class vars.
-            # In tree-sitter 0.21, 'provider: str = "x"' is expression_statement > assignment
-            # with a 'type' child — same node type as plain assignments, just with annotation.
+            # 'provider: str = "x"' is a plain `assignment` node with a 'type'
+            # child — same node type as unannotated assignments.
             elif (
-                ntype == "expression_statement"
+                ntype == "assignment"
                 and parent_class_local_idx is not None
                 and current_func_local_idx is None
             ):
@@ -285,8 +286,10 @@ class PythonParser(BaseParser):
                 )
 
             # ---- Recurse into statement / expression wrappers ------------
-            # expression_statement, assignment, augmented_assignment, etc. all
-            # wrap `call` nodes — we must recurse into them to find call sites.
+            # assignment, augmented_assignment, etc. all wrap `call` nodes —
+            # we must recurse into them to find call sites (this only fires
+            # for assignments NOT already handled by the module-/class-level
+            # branches above, e.g. nested inside a function body).
             # Also covers: return foo(), assert foo(), raise Foo(), del foo()
             elif ntype in (
                 "block",
@@ -306,7 +309,6 @@ class PythonParser(BaseParser):
                 "with_clause",
                 "with_item",
                 # expression containers (calls live inside these)
-                "expression_statement",
                 "assignment",
                 "augmented_assignment",
                 "return_statement",
@@ -537,7 +539,7 @@ class PythonParser(BaseParser):
 
     def _handle_module_assignment(
         self,
-        stmt_node: Node,
+        assign_node: Node,
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
@@ -552,10 +554,7 @@ class PythonParser(BaseParser):
           Point = namedtuple(...)   → CLASS
           Config = TypedDict(...)   → CLASS
         """
-        assign_node = self._get_child_by_type(stmt_node, "assignment")
-        if not assign_node:
-            return
-
+        stmt_node = assign_node
         left = assign_node.child_by_field_name("left")
         if not left or left.type != "identifier":
             return  # skip tuple unpacking, subscript assignments, etc.
@@ -668,7 +667,7 @@ class PythonParser(BaseParser):
 
     def _handle_class_expression(
         self,
-        stmt_node: Node,
+        assign_node: Node,
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
@@ -678,9 +677,9 @@ class PythonParser(BaseParser):
         Extract annotated class field declarations as VARIABLE symbols, and
         ALL_CAPS class-level constants as CONSTANT symbols.
 
-        In tree-sitter 0.21, both plain and annotated assignments inside a class
-        body appear as expression_statement > assignment. A 'type' child on the
-        assignment node indicates a type annotation (provider: str = "sqlite").
+        Both plain and annotated assignments inside a class body are plain
+        `assignment` nodes. A 'type' child on the assignment node indicates a
+        type annotation (provider: str = "sqlite").
 
         Handles:
           - Pydantic fields:     provider: Literal["sqlite", "postgres"] = "sqlite"
@@ -690,10 +689,7 @@ class PythonParser(BaseParser):
 
         Skips single-underscore private fields to reduce noise.
         """
-        assign_node = self._get_child_by_type(stmt_node, "assignment")
-        if not assign_node:
-            return
-
+        stmt_node = assign_node
         left = assign_node.child_by_field_name("left")
         if not left or left.type != "identifier":
             return  # skip self.x = ..., tuple targets, subscript assignments
@@ -1007,13 +1003,10 @@ class PythonParser(BaseParser):
     def _get_docstring(self, block_node: Node, src: bytes) -> str | None:
         """Return the docstring of a function/class body block, or None."""
         for child in block_node.children:
-            if child.type == "expression_statement":
-                for sub in child.children:
-                    if sub.type in ("string", "concatenated_string"):
-                        raw = self._txt(sub, src)
-                        return self._clean_docstring(raw)
+            if child.type in ("string", "concatenated_string"):
+                return self._clean_docstring(self._txt(child, src))
             # Docstring must be the FIRST real statement — stop after first
-            if child.type not in ("comment", "\n", "expression_statement"):
+            if child.type not in ("comment", "\n"):
                 break
         return None
 

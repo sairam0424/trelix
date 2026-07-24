@@ -1,0 +1,41 @@
+{
+  "name": "@trelix/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript client for the trelix REST API — hybrid code search, LLM synthesis, indexing, and knowledge-graph queries.",
+  "license": "MIT",
+  "homepage": "https://github.com/sairam0424/trelix",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sairam0424/trelix"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -watch -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "codegen": "node scripts/codegen.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.10"
+  }
+}

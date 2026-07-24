@@ -1,6 +1,6 @@
-# Trelix v2.8.1 — Installation Guide
+# Trelix v2.9.0 — Installation Guide
 
-This guide covers every installation scenario for Trelix v2.8.1, from a quick
+This guide covers every installation scenario for Trelix v2.9.0, from a quick
 one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 ---
@@ -24,7 +24,7 @@ one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 | Requirement | Notes |
 |-------------|-------|
-| **Python 3.11 or 3.12** | Python 3.13 is not yet tested and may have compatibility issues |
+| **Python 3.11, 3.12, or 3.13** | No known upper bound |
 | **pip** or **uv** | pip ships with Python; uv is optional but significantly faster |
 | **~500 MB free disk** | The local embedder model is downloaded on first use and cached in `~/.cache/trelix/` |
 | `OPENAI_API_KEY` | Optional — enables OpenAI embeddings (higher quality, requires internet) |
@@ -47,7 +47,7 @@ so no API key is required.
 
 ```bash
 pip install "trelix[local]"
-trelix --version   # should print 2.8.1
+trelix --version   # should print 2.9.0
 ```
 
 On first use, Trelix downloads the embedder model (~420 MB) to
@@ -81,7 +81,7 @@ pip install trelix
 export OPENAI_API_KEY="sk-..."
 ```
 
-Set `TRELIX_EMBEDDER=openai` (or pass `--embedder openai`) to activate.
+Set `TRELIX_EMBEDDER_PROVIDER=openai` (or pass `--provider openai`) to activate.
 
 ### 3.3 Azure OpenAI embeddings
 
@@ -94,7 +94,7 @@ export AZURE_ENDPOINT="https://<resource>.openai.azure.com/"
 export AZURE_DEPLOYMENT="text-embedding-3-large"   # your deployment name
 ```
 
-Set `TRELIX_EMBEDDER=azure` to activate.
+Set `TRELIX_EMBEDDER_PROVIDER=azure` to activate.
 
 ### 3.4 MCP server (Claude Code / Cursor integration)
 
@@ -141,10 +141,10 @@ Serve the Trelix index over HTTP for multi-user or CI environments.
 
 ```bash
 pip install "trelix[serve]"
-trelix serve --port 8080 --repo ./
+trelix serve ./ --port 8765
 ```
 
-The OpenAPI spec is available at `http://localhost:8080/docs`.
+The OpenAPI spec is available at `http://localhost:8765/docs`.
 
 ### 3.9 Knowledge graph + visualization
 
@@ -195,13 +195,13 @@ and must be installed independently.
 ## 4. Standalone Binaries (no Python needed)
 
 Pre-compiled single-file binaries are published to the
-[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v2.8.1)
+[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v2.9.0)
 page for each platform. No Python or pip required.
 
 ### macOS ARM64 (Apple Silicon)
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.8.1/trelix-macos-arm64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.9.0/trelix-macos-arm64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -219,7 +219,7 @@ somewhere on your `PATH`, or run it directly:
 ### Linux x64
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.8.1/trelix-linux-x64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.9.0/trelix-linux-x64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -228,7 +228,7 @@ trelix --version
 ### Linux ARM64
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.8.1/trelix-linux-arm64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v2.9.0/trelix-linux-arm64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -307,7 +307,7 @@ directory you mount.
 ```bash
 docker run --rm \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.8.1 \
+  ghcr.io/sairam0424/trelix:2.9.0 \
   index /repo
 ```
 
@@ -317,45 +317,50 @@ The index is written to `/repo/.trelix/` inside the container (which maps to
 ### Start the REST server
 
 ```bash
-docker run --rm -p 8080:8080 \
+docker run --rm -p 8765:8765 \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.8.1 \
-  serve --repo /repo --port 8080
+  ghcr.io/sairam0424/trelix:2.9.0 \
+  serve /repo --host 0.0.0.0 --port 8765
 ```
 
-Then open `http://localhost:8080/docs` for the interactive API reference.
+Then open `http://localhost:8765/docs` for the interactive API reference.
 
 ### Use with OpenAI embeddings
 
 ```bash
 docker run --rm \
   -e OPENAI_API_KEY="sk-..." \
-  -e TRELIX_EMBEDDER=openai \
+  -e TRELIX_EMBEDDER_PROVIDER=openai \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.8.1 \
+  ghcr.io/sairam0424/trelix:2.9.0 \
   index /repo
 ```
 
 ### Docker Compose example
 
-```yaml
-# docker-compose.yml
-services:
-  trelix:
-    image: ghcr.io/sairam0424/trelix:2.8.1
-    command: serve --repo /repo --port 8080
-    ports:
-      - "8080:8080"
-    volumes:
-      - .:/repo
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - TRELIX_EMBEDDER=openai
-```
+A ready-to-run `docker-compose.yml` ships at the repo root:
 
 ```bash
-docker compose up
+OPENAI_API_KEY=sk-... docker compose up
 ```
+
+By default it serves the current directory; set `REPO_PATH` to serve a
+different repo:
+
+```bash
+REPO_PATH=/path/to/other/repo OPENAI_API_KEY=sk-... docker compose up
+```
+
+### Image variants
+
+Two tags are published per release:
+
+- `ghcr.io/sairam0424/trelix:X.Y.Z` — slim, API-embedder-only (OpenAI, Voyage,
+  Cohere, Azure). Recommended default.
+- `ghcr.io/sairam0424/trelix:X.Y.Z-local` — bundles `sentence-transformers`
+  and `torch` for the local/offline embedder and cross-encoder reranker.
+  Multi-gigabyte image; only pull this if you need `TRELIX_EMBEDDER_PROVIDER=local`
+  inside the container.
 
 ---
 
@@ -365,7 +370,7 @@ Run these commands after any installation method to confirm everything is
 working correctly.
 
 ```bash
-# Print version (must show 2.8.1)
+# Print version (must show 2.9.0)
 trelix --version
 
 # Print usage summary
@@ -385,7 +390,7 @@ Expected output for `trelix stats ./`:
 
 ```
 Trelix Index Stats
-  Version   : 2.8.1
+  Version   : 2.9.0
   Chunks    : <n>
   Embedder  : local (all-MiniLM-L6-v2)
   Backend   : sqlite
@@ -396,7 +401,7 @@ If `trelix --version` prints nothing or fails, check that:
 
 1. Your virtual environment is activated (if using one).
 2. The Python executable that installed Trelix is on your `PATH`.
-3. You are using Python 3.11 or 3.12 (`python --version`).
+3. You are using Python 3.11, 3.12, or 3.13 (`python --version`).
 
 ---
 
@@ -420,16 +425,14 @@ loads it automatically via `python-dotenv`.
 | `TRELIX_RERANK_TOP_K` | `5` | Number of results to return after reranking |
 | `TRELIX_FLARE_MAX_RETRIES` | `3` | Maximum FLARE loop iterations (renamed from `flare_max_iterations` in v2.4.0) |
 | `TRELIX_LOG_LEVEL` | `WARNING` | Log verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `TRELIX_SERVE_HOST` | `0.0.0.0` | Host for the REST API server |
-| `TRELIX_SERVE_PORT` | `8080` | Port for the REST API server |
 | `TRELIX_WATCH_DEBOUNCE_MS` | `500` | Debounce delay (ms) for file-watch re-indexing |
-| `OPENAI_API_KEY` | _(none)_ | OpenAI API key; required when `TRELIX_EMBEDDER=openai` |
+| `OPENAI_API_KEY` | _(none)_ | OpenAI API key; required when `TRELIX_EMBEDDER_PROVIDER=openai` |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model name |
-| `AZURE_API_KEY` | _(none)_ | Azure OpenAI API key; required when `TRELIX_EMBEDDER=azure` |
+| `AZURE_API_KEY` | _(none)_ | Azure OpenAI API key; required when `TRELIX_EMBEDDER_PROVIDER=azure` |
 | `AZURE_ENDPOINT` | _(none)_ | Azure OpenAI resource endpoint URL |
 | `AZURE_DEPLOYMENT` | _(none)_ | Azure OpenAI embeddings deployment name |
 | `AZURE_API_VERSION` | `2024-02-01` | Azure OpenAI API version |
-| `VOYAGE_API_KEY` | _(none)_ | Voyage AI API key; required when `TRELIX_EMBEDDER=voyage` |
+| `VOYAGE_API_KEY` | _(none)_ | Voyage AI API key; required when `TRELIX_EMBEDDER_PROVIDER=voyage` |
 | `VOYAGE_MODEL` | `voyage-code-2` | Voyage embedding model name |
 | `COHERE_API_KEY` | _(none)_ | Cohere API key; required when `TRELIX_RERANK=true` |
 | `COHERE_RERANK_MODEL` | `rerank-english-v3.0` | Cohere reranking model name |
@@ -445,7 +448,7 @@ loads it automatically via `python-dotenv`.
 
 ```bash
 pip install --upgrade "trelix[local]"   # or whatever extras you use
-trelix --version   # confirm 2.8.1
+trelix --version   # confirm 2.9.0
 ```
 
 ### Step 2 — Review breaking changes

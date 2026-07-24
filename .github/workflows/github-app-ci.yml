@@ -1,0 +1,38 @@
+name: GitHub App CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "infra/github-app/**"
+      - ".github/workflows/github-app-ci.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "infra/github-app/**"
+      - ".github/workflows/github-app-ci.yml"
+
+jobs:
+  test:
+    name: Build + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/github-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test

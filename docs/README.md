@@ -1,4 +1,4 @@
-# trelix v2.8.1 Documentation
+# trelix v2.9.0 Documentation
 
 Welcome to the trelix documentation hub. This page is a complete index of every documentation file in the project.
 
@@ -69,6 +69,7 @@ Looking for a specific term?
 | [architecture.md](architecture.md) | Internal architecture: components, data flow, extension points | Contributors, integrators |
 | [CONFIGURATION.md](../CONFIGURATION.md) | Every config key, environment variable, and default value | Operators, power users |
 | [CLI_REFERENCE.md](../CLI_REFERENCE.md) | Full CLI command reference with flags and examples | CLI users |
+| [OBSERVABILITY.md](OBSERVABILITY.md) | OpenTelemetry tracing: what's traced, how to enable, stability caveats | Operators, SRE |
 
 ---
 
@@ -124,4 +125,4 @@ Looking for a specific term?
 
 ---
 
-*Last updated: 2026-07-20 — trelix v2.8.1*
+*Last updated: 2026-07-24 — trelix v2.9.0*

@@ -1,0 +1,171 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "trelix.fullname" . }}
+  labels:
+    {{- include "trelix.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "trelix.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "trelix.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "trelix.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: trelix
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # /repo is the vestigial CLI positional argument (see README.md —
+          # create_app() never actually reads it; every route re-derives its
+          # own IndexConfig from the request's `repo` query param). Kept
+          # pointed at the shared data dir for a sane startup log line only.
+          args: ["serve", "{{ .Values.persistence.mountPath }}", "--host", "0.0.0.0", "--port", "{{ .Values.service.port }}"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          env:
+            - name: TRELIX_STORE_BACKEND
+              value: {{ .Values.store.backend | quote }}
+            - name: TRELIX_STORE_HNSW
+              value: {{ .Values.store.hnsw | quote }}
+            - name: TRELIX_STORE_HNSW_M
+              value: {{ .Values.store.hnswM | quote }}
+            - name: TRELIX_STORE_HNSW_EF_SEARCH
+              value: {{ .Values.store.hnswEfSearch | quote }}
+            - name: TRELIX_STORE_BM25_READ_POOL_SIZE
+              value: {{ .Values.store.bm25ReadPoolSize | quote }}
+            {{- if eq .Values.store.backend "qdrant" }}
+            - name: QDRANT_URL
+              value: {{ .Values.store.qdrant.url | quote }}
+            - name: QDRANT_COLLECTION
+              value: {{ .Values.store.qdrant.collection | quote }}
+            - name: QDRANT_PREFER_GRPC
+              value: {{ .Values.store.qdrant.preferGrpc | quote }}
+            - name: QDRANT_TIMEOUT
+              value: {{ .Values.store.qdrant.timeout | quote }}
+            {{- if .Values.store.qdrant.existingSecretName }}
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.store.qdrant.existingSecretName }}
+                  key: {{ .Values.store.qdrant.existingSecretKey }}
+            {{- else if .Values.store.qdrant.apiKey }}
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "trelix.fullname" . }}
+                  key: QDRANT_API_KEY
+            {{- end }}
+            {{- end }}
+            {{- if eq .Values.store.backend "lance" }}
+            - name: LANCE_URI
+              value: {{ .Values.store.lance.uri | quote }}
+            - name: LANCE_TABLE
+              value: {{ .Values.store.lance.table | quote }}
+            {{- end }}
+            {{- if .Values.embedder.openai.existingSecretName }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.embedder.openai.existingSecretName }}
+                  key: {{ .Values.embedder.openai.existingSecretKey }}
+            {{- else if .Values.embedder.openai.apiKey }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "trelix.fullname" . }}
+                  key: OPENAI_API_KEY
+            {{- end }}
+            {{- if .Values.embedder.voyage.existingSecretName }}
+            - name: VOYAGE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.embedder.voyage.existingSecretName }}
+                  key: {{ .Values.embedder.voyage.existingSecretKey }}
+            {{- else if .Values.embedder.voyage.apiKey }}
+            - name: VOYAGE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "trelix.fullname" . }}
+                  key: VOYAGE_API_KEY
+            {{- end }}
+            {{- if .Values.embedder.cohere.existingSecretName }}
+            - name: COHERE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.embedder.cohere.existingSecretName }}
+                  key: {{ .Values.embedder.cohere.existingSecretKey }}
+            {{- else if .Values.embedder.cohere.apiKey }}
+            - name: COHERE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "trelix.fullname" . }}
+                  key: COHERE_API_KEY
+            {{- end }}
+            {{- range .Values.extraEnv }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+            {{- range .Values.extraSecretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+          {{- if .Values.persistence.enabled }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "trelix.pvcName" . }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

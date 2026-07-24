@@ -41,8 +41,8 @@ class CSharpParser(BaseParser):
     MAX_INTERFACE_MEMBERS: int = 20
 
     def __init__(self) -> None:
-        self._ts_lang = load_language("c_sharp")
-        self._parser = make_parser("c_sharp")
+        self._ts_lang = load_language("csharp")
+        self._parser = make_parser("csharp")
 
     @property
     def language_name(self) -> str:
@@ -938,12 +938,18 @@ class CSharpParser(BaseParser):
         # Three forms:
         #  using System;                      → qualified_name / identifier
         #  using static System.Math;          → qualified_name / identifier
-        #  using MyAlias = System.Text;       → name_equals child + qualified_name sibling
-        has_alias = any(c.type == "name_equals" for c in node.children)
+        #  using MyAlias = System.Text;       → alias identifier, '=', RHS qualified_name
+        has_alias = any(c.type == "=" for c in node.children)
         if has_alias:
-            # Skip the name_equals node; the RHS qualified_name is a sibling
+            # Alias name and RHS are flat siblings around '=' — take the RHS
+            # (the first named qualified_name/identifier AFTER the '=' token).
+            seen_equals = False
             for child in node.children:
-                if child.type in ("qualified_name", "identifier") and child.is_named:
+                if child.type == "=":
+                    seen_equals = True
+                    continue
+                is_rhs_type = child.type in ("qualified_name", "identifier") and child.is_named
+                if seen_equals and is_rhs_type:
                     return ImportEdge(
                         file_id=file_id,
                         imported_from=self._txt(child, src),
