@@ -21,7 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
 
-RUN pip install --no-cache-dir --prefix=/install ".[${EXTRAS}]"
+# --extra-index-url pulls torch's CPU-only wheels first (this image never
+# has GPU access) — the default PyPI torch wheel drags in the full CUDA/
+# NVIDIA runtime (nvidia-cublas, nvidia-cudnn, cuda-toolkit, ...), which
+# blew past hosted-runner disk space during the linux/arm64 (-local variant)
+# release build. Harmless no-op for the slim (EXTRAS=serve) build, which
+# never installs torch at all.
+RUN pip install --no-cache-dir --prefix=/install \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        ".[${EXTRAS}]"
 
 FROM python:3.11-slim AS runtime
 
