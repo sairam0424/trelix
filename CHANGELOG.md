@@ -62,8 +62,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `astral-sh/setup-uv` instead (a `python-build-standalone` interpreter,
   confirmed to support `enable_load_extension`); Windows/Linux are
   unaffected and unchanged. All three platforms' binary-verify steps now
-  also run a real `index` + `search --json` smoke test (previously only
-  `--help`), so a regression like this fails CI immediately instead of
+  also run a real `index --provider openai` smoke test (with a bogus API
+  key — the bundled binary excludes `sentence-transformers`/`torch`, so
+  `--provider local` can never work there; `SQLiteVectorStore`'s
+  `sqlite-vec` load happens before the network call, so this still
+  exercises the regression without needing real network egress) and
+  asserts the crash string is absent plus `trelix stats` shows real
+  progress, so a regression like this fails CI immediately instead of
   shipping silently.
 
 ## [2.9.0] — 2026-07-24
