@@ -72,6 +72,14 @@ jobs:
         if: runner.os != 'macOS'
         run: pyinstaller trelix.spec --clean --noconfirm
 
+      # The binary excludes sentence-transformers/torch (trelix.spec) to stay
+      # small, so --provider local can never work here — real local
+      # embedding is verified separately (pytest, `pip install trelix[local]`).
+      # --provider openai with a bogus key still reaches SQLiteVectorStore's
+      # sqlite-vec load *before* the network call, so it still catches a
+      # sqlite3 enable_load_extension regression; asserting on the literal
+      # crash string (not exit code) keeps this smoke test working even
+      # when the runner has no outbound network access to OpenAI.
       - name: Verify binary (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -80,8 +88,9 @@ jobs:
           ./dist/trelix --version
           mkdir -p /tmp/trelix-smoke/repo
           printf 'def add(a, b):\n    """Add two numbers."""\n    return a + b\n' > /tmp/trelix-smoke/repo/util.py
-          ./dist/trelix index /tmp/trelix-smoke/repo
-          ./dist/trelix search /tmp/trelix-smoke/repo "add two numbers" --json | grep -q '"symbol": "add"'
+          OPENAI_API_KEY=sk-fake-key-for-ci-smoke-test ./dist/trelix index /tmp/trelix-smoke/repo --provider openai 2>&1 | tee /tmp/trelix-smoke.log
+          grep -q "enable_load_extension" /tmp/trelix-smoke.log && { echo "sqlite3 enable_load_extension regression detected"; exit 1; } || true
+          ./dist/trelix stats /tmp/trelix-smoke/repo | grep -q "Symbols"
 
       - name: Verify binary (Windows)
         if: runner.os == 'Windows'
@@ -91,8 +100,9 @@ jobs:
           dist/trelix.exe --version
           mkdir -p /tmp/trelix-smoke/repo
           printf 'def add(a, b):\n    """Add two numbers."""\n    return a + b\n' > /tmp/trelix-smoke/repo/util.py
-          dist/trelix.exe index /tmp/trelix-smoke/repo
-          dist/trelix.exe search /tmp/trelix-smoke/repo "add two numbers" --json | grep -q '"symbol": "add"'
+          OPENAI_API_KEY=sk-fake-key-for-ci-smoke-test dist/trelix.exe index /tmp/trelix-smoke/repo --provider openai 2>&1 | tee /tmp/trelix-smoke.log
+          grep -q "enable_load_extension" /tmp/trelix-smoke.log && { echo "sqlite3 enable_load_extension regression detected"; exit 1; } || true
+          dist/trelix.exe stats /tmp/trelix-smoke/repo | grep -q "Symbols"
 
       - name: Verify binary (Linux)
         if: runner.os == 'Linux'
@@ -102,8 +112,9 @@ jobs:
           ./dist/trelix --version
           mkdir -p /tmp/trelix-smoke/repo
           printf 'def add(a, b):\n    """Add two numbers."""\n    return a + b\n' > /tmp/trelix-smoke/repo/util.py
-          ./dist/trelix index /tmp/trelix-smoke/repo
-          ./dist/trelix search /tmp/trelix-smoke/repo "add two numbers" --json | grep -q '"symbol": "add"'
+          OPENAI_API_KEY=sk-fake-key-for-ci-smoke-test ./dist/trelix index /tmp/trelix-smoke/repo --provider openai 2>&1 | tee /tmp/trelix-smoke.log
+          grep -q "enable_load_extension" /tmp/trelix-smoke.log && { echo "sqlite3 enable_load_extension regression detected"; exit 1; } || true
+          ./dist/trelix stats /tmp/trelix-smoke/repo | grep -q "Symbols"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
