@@ -11,9 +11,52 @@ from __future__ import annotations
 from typer.testing import CliRunner
 
 from trelix import __version__
-from trelix.cli.main import app
+from trelix.cli.main import _build_embedder_config, _print_error, app
 
 runner = CliRunner()
+
+
+def test_print_error_preserves_literal_brackets(capsys):
+    """Regression test: exception text with brackets must render intact.
+
+    Rich interprets bracketed substrings as markup tags, so an exception
+    like ImportError("... pip install 'trelix[local]'") rendered via
+    f"[red]...{exc}[/red]" silently stripped the literal "[local]" —
+    telling the user to run the exact broken command they'd already run.
+    _print_error must escape() the dynamic text so it survives verbatim.
+    """
+    exc = ImportError("Install it with: pip install 'trelix[local]'")
+    _print_error("Indexing failed", exc)
+    captured = capsys.readouterr()
+    assert "trelix[local]" in captured.err
+
+
+def test_build_embedder_config_honors_env_var_when_no_flag(monkeypatch):
+    """Regression test: --provider must default to None, not "local".
+
+    EmbedderConfig is a pydantic-settings model — an explicit constructor
+    kwarg always wins over TRELIX_EMBEDDER_PROVIDER. Every CLI command used
+    to pass provider="local" unconditionally (Typer's declared default),
+    which silently overrode the env var even when the user never touched
+    --provider, contradicting the documented "env var, overridden by
+    --provider" contract.
+    """
+    monkeypatch.setenv("TRELIX_EMBEDDER_PROVIDER", "openai")
+    assert _build_embedder_config(None).provider == "openai"
+
+
+def test_build_embedder_config_explicit_flag_overrides_env_var(monkeypatch):
+    monkeypatch.setenv("TRELIX_EMBEDDER_PROVIDER", "openai")
+    assert _build_embedder_config("local").provider == "local"
+
+
+def test_build_embedder_config_defaults_to_local_when_nothing_set(monkeypatch):
+    # pydantic-settings reads .env directly, so an empty shell env isn't
+    # enough to isolate this — monkeypatch.setenv (not delenv) is required
+    # to actually override whatever a developer's local .env has set,
+    # matching conftest.py's _isolate_beast_mode_flags convention.
+    monkeypatch.setenv("TRELIX_EMBEDDER_PROVIDER", "local")
+    assert _build_embedder_config(None).provider == "local"
 
 
 def test_version():
