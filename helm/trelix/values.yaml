@@ -5,10 +5,10 @@
 replicaCount: 1
 
 image:
-  # :2.8.1 is the slim, API-embedder-only tag. Use the "-local" suffix
-  # (e.g. 2.8.1-local) for the variant bundling sentence-transformers/torch.
+  # :2.9.0 is the slim, API-embedder-only tag. Use the "-local" suffix
+  # (e.g. 2.9.0-local) for the variant bundling sentence-transformers/torch.
   repository: ghcr.io/sairam0424/trelix
-  tag: "2.8.1"
+  tag: "2.9.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
