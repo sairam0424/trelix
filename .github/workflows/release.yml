@@ -42,7 +42,7 @@ jobs:
       # macOS's provisioning step changes. See build-binaries.yml.
       - name: Set up uv (macOS — needs a Python with sqlite3 load-extension support)
         if: runner.os == 'macOS'
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.11"
 
