@@ -19,6 +19,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   a no-op for the slim (`EXTRAS=serve`) variant, which never installs torch.
   Also added a `workflow_dispatch` trigger to `docker-publish.yml` to backfill
   a version whose Docker publish failed without cutting a new release tag.
+- **`docker-publish.yml`'s `workflow_dispatch` backfill never moved `:latest`/
+  `:latest-local`**, even when backfilling the current release's own missing
+  variant (e.g. `2.9.0-local` right after `2.9.0` shipped) — the guard added
+  to prevent an *older*-release backfill from repointing `:latest` backwards
+  was too broad and blocked the common case too. Added an explicit
+  `move_latest` boolean input (default `false`) so backfilling the current
+  release can opt in, while backfilling an older one still can't touch
+  `:latest` by default.
 
 ## [2.9.0] — 2026-07-24
 

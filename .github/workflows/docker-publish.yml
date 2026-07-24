@@ -9,6 +9,10 @@ on:
       version:
         description: "Version tag to publish (e.g. 2.9.0) — for backfilling a release whose Docker publish failed without re-tagging"
         required: true
+      move_latest:
+        description: "Also move the :latest / :latest-local tags to this version — only set true when backfilling the CURRENT release, never an older one"
+        type: boolean
+        default: false
 
 jobs:
   publish:
@@ -58,12 +62,13 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: EXTRAS=${{ matrix.extras }}
           push: true
-          # Only move :latest on a real tag push — a manual workflow_dispatch
-          # backfill (e.g. re-running Docker publish for a release whose
-          # build failed, without cutting a new tag) must never repoint
-          # :latest at an older version than what's already published.
+          # :latest moves on a real tag push, or on a workflow_dispatch
+          # backfill that explicitly opts in via move_latest — e.g.
+          # backfilling THIS release's failed variant. Never moves on a
+          # plain backfill dispatch (move_latest unset/false), so re-running
+          # publish for an older release can't repoint :latest backwards.
           tags: |
             ghcr.io/sairam0424/trelix:${{ steps.version.outputs.version }}${{ matrix.tag-suffix }}
-            ${{ github.event_name == 'push' && format('ghcr.io/sairam0424/trelix:latest{0}', matrix.tag-suffix) || '' }}
+            ${{ (github.event_name == 'push' || github.event.inputs.move_latest == 'true') && format('ghcr.io/sairam0424/trelix:latest{0}', matrix.tag-suffix) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
