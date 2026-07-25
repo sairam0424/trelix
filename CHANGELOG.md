@@ -70,6 +70,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   asserts the crash string is absent plus `trelix stats` shows real
   progress, so a regression like this fails CI immediately instead of
   shipping silently.
+- **`astral-sh/setup-uv` still didn't fix the macOS binary — `uv venv
+  --python 3.11` picked up the runner image's pre-installed
+  `/usr/local/bin/python3.11` (Homebrew) instead of downloading its own
+  `python-build-standalone` interpreter**, silently defeating the previous
+  fix; confirmed via a real CI run where the `enable_load_extension` crash
+  came right back. `uv` prefers an already-discoverable interpreter over
+  downloading a new one unless told otherwise. Added `--managed-python` to
+  force `uv` to use its own downloaded interpreter.
+- **Windows release binary crashed on every command that renders Rich's
+  progress spinner** with `'charmap' codec can't encode character
+  '⠋'` — Rich's default spinner uses Unicode braille glyphs, which
+  Windows' legacy console codepage (`cp1252` etc.) can't encode. Surfaced
+  by the new binary smoke test above (the old `--help`-only check never
+  rendered a spinner). Pre-existing, not a v2.9.0 regression — any real
+  Windows user in a non-UTF-8 terminal would hit this. Fixed by
+  reconfiguring `sys.stdout`/`sys.stderr` to UTF-8 with
+  `errors="replace"` at CLI startup, before any `rich.Console` is
+  constructed — a no-op on terminals already using UTF-8 (macOS/Linux,
+  or Windows Terminal with UTF-8 active).
 
 ## [2.9.0] — 2026-07-24
 
