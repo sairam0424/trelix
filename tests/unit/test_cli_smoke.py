@@ -8,12 +8,40 @@ These tests verify that:
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from typer.testing import CliRunner
 
 from trelix import __version__
 from trelix.cli.main import _build_embedder_config, _print_error, app
 
 runner = CliRunner()
+
+
+def test_main_module_reconfigures_stdout_to_utf8_on_legacy_codepage():
+    """Regression test: importing trelix.cli.main must upgrade a legacy-codepage stream.
+
+    Windows' default console codepage (cp1252 etc.) can't encode the
+    Unicode braille glyphs Rich's spinner renders (e.g. U+280B), crashing
+    with "'charmap' codec can't encode character ...". Reproduced via a
+    real PyInstaller-built binary in CI. The module-level reconfigure()
+    call must run before any rich.Console is constructed, so this test
+    simulates a legacy stdout in a fresh subprocess (importing in-process
+    would be a no-op, since trelix.cli.main is already imported above).
+    """
+    code = (
+        "import io, sys\n"
+        "sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding='cp1252', "
+        "errors='strict', write_through=True)\n"
+        "import trelix.cli.main\n"
+        "print(sys.stdout.encoding, sys.stdout.errors, file=sys.stderr)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert "utf-8 replace" in result.stderr
 
 
 def test_print_error_preserves_literal_brackets(capsys):

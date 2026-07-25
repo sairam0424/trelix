@@ -54,7 +54,8 @@ jobs:
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          uv venv --python 3.11 .venv-build
+          # --managed-python is required — see build-binaries.yml's comment.
+          uv venv --python 3.11 --managed-python .venv-build
           source .venv-build/bin/activate
           uv pip install -e ".[local]" pyinstaller
 

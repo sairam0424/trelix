@@ -57,7 +57,14 @@ jobs:
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          uv venv --python 3.11 .venv-build
+          # --managed-python is required: GitHub's macos-latest runner image
+          # ships its own /usr/local/bin/python3.11 (Homebrew), and `uv venv
+          # --python 3.11` prefers an already-discoverable interpreter over
+          # downloading its own — silently defeating the whole point of this
+          # job (confirmed via a real CI run: without this flag, uv picked
+          # up that pre-installed interpreter and the enable_load_extension
+          # crash came right back).
+          uv venv --python 3.11 --managed-python .venv-build
           source .venv-build/bin/activate
           uv pip install -e ".[local]" pyinstaller
 
