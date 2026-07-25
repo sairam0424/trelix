@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import time
 import warnings
 from pathlib import Path
@@ -30,6 +31,17 @@ from trelix.federation.registry import RepoRegistry
 
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig
+
+# Windows' legacy console codepage (cp1252 etc.) can't encode the Unicode
+# braille glyphs Rich's default spinner renders (e.g. U+280B), crashing with
+# "'charmap' codec can't encode character ...". Reconfiguring to UTF-8 with
+# errors="replace" before any Console is constructed makes every command
+# degrade gracefully instead of crashing — must run before Console()
+# below, and reconfigure() is a no-op if stdout/stderr are already UTF-8
+# (macOS/Linux terminals, or Windows Terminal with UTF-8 already active).
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="tree_sitter")
 warnings.filterwarnings("ignore", message=".*HF_TOKEN.*")
