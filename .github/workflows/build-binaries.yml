@@ -34,31 +34,97 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      # macOS only: actions/setup-python's macOS interpreter builds sqlite3
+      # without SQLITE_ENABLE_LOAD_EXTENSION, so any bundled trelix binary
+      # crashes on its first real index/search call with
+      # "'sqlite3.Connection' object has no attribute 'enable_load_extension'"
+      # (sqlite-vec loads via conn.enable_load_extension()) — confirmed via
+      # direct reproduction against both actions/setup-python-style system
+      # Python and a uv-provisioned python-build-standalone interpreter on
+      # the same machine; only the latter supports it. Windows/Linux are
+      # unaffected, so only macOS's provisioning step changes.
+      - name: Set up uv (macOS — needs a Python with sqlite3 load-extension support)
+        if: runner.os == 'macOS'
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - uses: actions/setup-python@v5
+        if: runner.os != 'macOS'
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # --managed-python is required: GitHub's macos-latest runner image
+          # ships its own /usr/local/bin/python3.11 (Homebrew), and `uv venv
+          # --python 3.11` prefers an already-discoverable interpreter over
+          # downloading its own — silently defeating the whole point of this
+          # job (confirmed via a real CI run: without this flag, uv picked
+          # up that pre-installed interpreter and the enable_load_extension
+          # crash came right back).
+          uv venv --python 3.11 --managed-python .venv-build
+          source .venv-build/bin/activate
+          uv pip install -e ".[local]" pyinstaller
+
+      - name: Install dependencies (Windows/Linux)
+        if: runner.os != 'macOS'
         run: pip install -e ".[local]" && pip install pyinstaller
 
-      - name: Build binary
+      - name: Build binary (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          source .venv-build/bin/activate
+          pyinstaller trelix.spec --clean --noconfirm
+
+      - name: Build binary (Windows/Linux)
+        if: runner.os != 'macOS'
         run: pyinstaller trelix.spec --clean --noconfirm
 
+      # The binary excludes sentence-transformers/torch (trelix.spec) to stay
+      # small, so --provider local can never work here — real local
+      # embedding is verified separately (pytest, `pip install trelix[local]`).
+      # --provider openai with a bogus key still reaches SQLiteVectorStore's
+      # sqlite-vec load *before* the network call, so it still catches a
+      # sqlite3 enable_load_extension regression; asserting on the literal
+      # crash string (not exit code) keeps this smoke test working even
+      # when the runner has no outbound network access to OpenAI.
       - name: Verify binary (macOS)
         if: runner.os == 'macOS'
         run: |
           file dist/trelix
           ./dist/trelix --help
+          ./dist/trelix --version
+          mkdir -p /tmp/trelix-smoke/repo
+          printf 'def add(a, b):\n    """Add two numbers."""\n    return a + b\n' > /tmp/trelix-smoke/repo/util.py
+          (OPENAI_API_KEY=sk-fake-key-for-ci-smoke-test ./dist/trelix index /tmp/trelix-smoke/repo --provider openai || true) 2>&1 | tee /tmp/trelix-smoke.log
+          grep -q "enable_load_extension" /tmp/trelix-smoke.log && { echo "sqlite3 enable_load_extension regression detected"; exit 1; } || true
+          ./dist/trelix stats /tmp/trelix-smoke/repo | grep -q "Symbols"
 
       - name: Verify binary (Windows)
         if: runner.os == 'Windows'
-        run: dist/trelix.exe --help
+        shell: bash
+        run: |
+          dist/trelix.exe --help
+          dist/trelix.exe --version
+          mkdir -p /tmp/trelix-smoke/repo
+          printf 'def add(a, b):\n    """Add two numbers."""\n    return a + b\n' > /tmp/trelix-smoke/repo/util.py
+          (OPENAI_API_KEY=sk-fake-key-for-ci-smoke-test dist/trelix.exe index /tmp/trelix-smoke/repo --provider openai || true) 2>&1 | tee /tmp/trelix-smoke.log
+          grep -q "enable_load_extension" /tmp/trelix-smoke.log && { echo "sqlite3 enable_load_extension regression detected"; exit 1; } || true
+          dist/trelix.exe stats /tmp/trelix-smoke/repo | grep -q "Symbols"
 
       - name: Verify binary (Linux)
         if: runner.os == 'Linux'
         run: |
           file dist/trelix
           ./dist/trelix --help
+          ./dist/trelix --version
+          mkdir -p /tmp/trelix-smoke/repo
+          printf 'def add(a, b):\n    """Add two numbers."""\n    return a + b\n' > /tmp/trelix-smoke/repo/util.py
+          (OPENAI_API_KEY=sk-fake-key-for-ci-smoke-test ./dist/trelix index /tmp/trelix-smoke/repo --provider openai || true) 2>&1 | tee /tmp/trelix-smoke.log
+          grep -q "enable_load_extension" /tmp/trelix-smoke.log && { echo "sqlite3 enable_load_extension regression detected"; exit 1; } || true
+          ./dist/trelix stats /tmp/trelix-smoke/repo | grep -q "Symbols"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

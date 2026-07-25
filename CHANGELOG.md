@@ -27,6 +27,79 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `move_latest` boolean input (default `false`) so backfilling the current
   release can opt in, while backfilling an older one still can't touch
   `:latest` by default.
+- **Every CLI command and the MCP `index_codebase` tool silently overrode
+  `TRELIX_EMBEDDER_PROVIDER`** — `--provider` always defaulted to the literal
+  string `"local"` rather than `None`, and `EmbedderConfig` is a
+  pydantic-settings model where an explicit constructor kwarg always wins
+  over the env var. A user who set `TRELIX_EMBEDDER_PROVIDER` (the
+  documented way to configure a default provider) and never touched
+  `--provider` on a given invocation would silently index/search with the
+  local embedder instead, with no warning — surfacing later as a confusing
+  `DimensionMismatchError` once a real provider's vectors got mixed in.
+  Fixed by defaulting `--provider`/`provider` to `None` everywhere and only
+  passing it to `EmbedderConfig` when actually supplied, via a new
+  `_build_embedder_config()` helper (`src/trelix/cli/main.py`) used by all
+  7 CLI commands plus the MCP server's `index_codebase` tool.
+- **CLI error messages containing literal square brackets rendered mangled
+  or misleading** — e.g. the local-embedder-missing error's fix instruction,
+  `pip install 'trelix[local]'`, rendered as `pip install 'trelix'` (the
+  exact broken command the user had already run), because Rich interprets
+  `[...]`-shaped substrings in `console.print()` calls as markup tags and
+  silently strips/mangles unrecognized ones. Every `err_console.print(f"[red]...{exc}...")`
+  call site in `src/trelix/cli/main.py` (34 sites) now routes through a new
+  `_print_error()` helper that escapes the dynamic text via
+  `rich.markup.escape()` before interpolation, preserving literal brackets
+  while keeping the surrounding color markup intact.
+- **macOS PyInstaller binary crashed on every real `index`/`search` call**
+  with `'sqlite3.Connection' object has no attribute 'enable_load_extension'`
+  — macOS's system-style Python (what `actions/setup-python` provisions on
+  GitHub's macOS runners) builds its bundled `sqlite3` without
+  `SQLITE_ENABLE_LOAD_EXTENSION`, which `sqlite-vec` requires to load its
+  extension. Reproduced identically on both v2.8.1 and v2.9.0 binaries —
+  pre-existing, not a v2.9.0 regression, but the binary distribution's core
+  workflow was completely non-functional with zero warning to users.
+  `build-binaries.yml`/`release.yml`'s macOS job now provisions Python via
+  `astral-sh/setup-uv` instead (a `python-build-standalone` interpreter,
+  confirmed to support `enable_load_extension`); Windows/Linux are
+  unaffected and unchanged. All three platforms' binary-verify steps now
+  also run a real `index --provider openai` smoke test (with a bogus API
+  key — the bundled binary excludes `sentence-transformers`/`torch`, so
+  `--provider local` can never work there; `SQLiteVectorStore`'s
+  `sqlite-vec` load happens before the network call, so this still
+  exercises the regression without needing real network egress) and
+  asserts the crash string is absent plus `trelix stats` shows real
+  progress, so a regression like this fails CI immediately instead of
+  shipping silently.
+- **`astral-sh/setup-uv` still didn't fix the macOS binary — `uv venv
+  --python 3.11` picked up the runner image's pre-installed
+  `/usr/local/bin/python3.11` (Homebrew) instead of downloading its own
+  `python-build-standalone` interpreter**, silently defeating the previous
+  fix; confirmed via a real CI run where the `enable_load_extension` crash
+  came right back. `uv` prefers an already-discoverable interpreter over
+  downloading a new one unless told otherwise. Added `--managed-python` to
+  force `uv` to use its own downloaded interpreter.
+- **Windows release binary crashed on every command that renders Rich's
+  progress spinner** with `'charmap' codec can't encode character
+  '⠋'` — Rich's default spinner uses Unicode braille glyphs, which
+  Windows' legacy console codepage (`cp1252` etc.) can't encode. Surfaced
+  by the new binary smoke test above (the old `--help`-only check never
+  rendered a spinner). Pre-existing, not a v2.9.0 regression — any real
+  Windows user in a non-UTF-8 terminal would hit this. Fixed by
+  reconfiguring `sys.stdout`/`sys.stderr` to UTF-8 with
+  `errors="replace"` at CLI startup, before any `rich.Console` is
+  constructed — a no-op on terminals already using UTF-8 (macOS/Linux,
+  or Windows Terminal with UTF-8 active).
+- **The binary smoke test itself assumed `trelix index --provider openai`
+  with a bogus key always exits 0** — it doesn't: whether Phase 2's
+  per-file summary/sub-chunk embedding (both off by default) or Phase 3's
+  batch embed hits the bad key first determines the exit code, and
+  Phase 3's `embed_async()` call has no local `try`/`except`, so a real
+  auth failure there propagates all the way to `typer.Exit(1)`. Wrapped
+  the `index` invocation in a subshell with `|| true` so the smoke test's
+  own exit code no longer depends on whether the deliberately-invalid
+  API key happens to fail before or during the real embedding phase —
+  only the crash-string check and the follow-up `stats` progress check
+  matter.
 
 ## [2.9.0] — 2026-07-24
 
