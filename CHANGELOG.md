@@ -89,6 +89,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `errors="replace"` at CLI startup, before any `rich.Console` is
   constructed — a no-op on terminals already using UTF-8 (macOS/Linux,
   or Windows Terminal with UTF-8 active).
+- **The binary smoke test itself assumed `trelix index --provider openai`
+  with a bogus key always exits 0** — it doesn't: whether Phase 2's
+  per-file summary/sub-chunk embedding (both off by default) or Phase 3's
+  batch embed hits the bad key first determines the exit code, and
+  Phase 3's `embed_async()` call has no local `try`/`except`, so a real
+  auth failure there propagates all the way to `typer.Exit(1)`. Wrapped
+  the `index` invocation in a subshell with `|| true` so the smoke test's
+  own exit code no longer depends on whether the deliberately-invalid
+  API key happens to fail before or during the real embedding phase —
+  only the crash-string check and the follow-up `stats` progress check
+  matter.
 
 ## [2.9.0] — 2026-07-24
 
