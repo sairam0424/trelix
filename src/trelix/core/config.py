@@ -383,6 +383,15 @@ class RetrievalConfig(BaseSettings):
     context_token_budget: int = 12_000
     synthesis_max_tokens: int = 12_000
 
+    # Split context_token_budget across source legs (vector/bm25/grep/...)
+    # proportionally to each leg's result count, instead of one shared pool a
+    # single noisy leg could crowd out. Off by default — False reproduces
+    # today's exact single-pool greedy-pack behavior byte-for-byte.
+    context_budget_per_source: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_CONTEXT_BUDGET_PER_SOURCE",
+    )
+
     # CodeGraph BFS retrieval (4th leg — off by default)
     graph_search_enabled: bool = False  # Enable CodeGraph as 4th retrieval leg
     graph_search_depth: int = 2  # BFS depth for graph expansion
