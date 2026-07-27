@@ -205,6 +205,8 @@ def search_code(
     repo_path: str,
     k: int = 10,
     cursor: int = 0,
+    intent_hint: str | None = None,
+    hyde_snippet_hint: str | None = None,
 ) -> dict:
     """
     Search the indexed codebase using natural language queries.
@@ -224,12 +226,29 @@ def search_code(
     - If next_cursor is not null, pass it as cursor for the next page.
     - k controls page size.
 
+    🧭 Intent hint (optional):
+    - If the calling agent already knows the query's intent, pass it as
+      intent_hint (one of: symbol_lookup, file_overview, feature_flow,
+      project_overview, comparison, config_lookup, dependency_map,
+      blast_radius) to skip trelix's own internal LLM classification and
+      route directly. An unrecognized value is never rejected — it falls
+      through to normal classification.
+    - hyde_snippet_hint (a short hypothetical code snippet) is only used
+      when intent_hint is also valid.
+
     Returns:
         {"results": [...], "next_cursor": int|null, "total_available": int}
     """
     _log.info("search_code query=%r repo=%s k=%d cursor=%d", query, repo_path, k, cursor)
+    from trelix.retrieval.planner.models import plan_from_intent_hint
+
     config = IndexConfig(repo_path=repo_path)
-    ctx = Retriever(config).retrieve(query)
+    plan = (
+        plan_from_intent_hint(query, intent_hint, hyde_snippet_hint)
+        if intent_hint is not None
+        else None
+    )
+    ctx = Retriever(config).retrieve(query, plan=plan)
     all_results = ctx.results
 
     page = all_results[cursor : cursor + k]

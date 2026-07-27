@@ -13,8 +13,10 @@ from trelix.retrieval.planner.models import (
     IntentType,
     QueryPlan,
     RetrievalStrategy,
+    RoutingTier,
     SubQuery,
     default_plan,
+    plan_from_intent_hint,
 )
 
 # ---------------------------------------------------------------------------
@@ -73,6 +75,55 @@ class TestDefaultPlan:
     def test_sub_query_depends_on_empty(self) -> None:
         plan = default_plan("some query")
         assert plan.sub_queries[0].depends_on == []
+
+
+# ---------------------------------------------------------------------------
+# plan_from_intent_hint — caller-supplied intent/HyDE override
+# ---------------------------------------------------------------------------
+
+
+class TestPlanFromIntentHint:
+    def test_valid_intent_returns_matching_plan(self) -> None:
+        plan = plan_from_intent_hint("how does auth work?", "symbol_lookup")
+        assert plan is not None
+        assert plan.intent == IntentType.SYMBOL_LOOKUP
+        assert plan.strategy is INTENT_STRATEGIES[IntentType.SYMBOL_LOOKUP]
+
+    def test_invalid_intent_returns_none(self) -> None:
+        assert plan_from_intent_hint("some query", "not_a_real_intent") is None
+
+    def test_empty_string_intent_returns_none(self) -> None:
+        assert plan_from_intent_hint("some query", "") is None
+
+    def test_valid_intent_stamps_tier1_direct(self) -> None:
+        """Skips the LLM entirely, same as AdaptiveRouter._tier1_plan()."""
+        plan = plan_from_intent_hint("q", "file_overview")
+        assert plan is not None
+        assert plan.routing_tier == RoutingTier.TIER_1_DIRECT
+
+    def test_hyde_snippet_hint_is_used_when_provided(self) -> None:
+        plan = plan_from_intent_hint("q", "symbol_lookup", "def foo(): ...")
+        assert plan is not None
+        assert plan.sub_queries[0].hyde_snippet == "def foo(): ..."
+
+    def test_hyde_snippet_hint_defaults_to_empty_string(self) -> None:
+        plan = plan_from_intent_hint("q", "symbol_lookup")
+        assert plan is not None
+        assert plan.sub_queries[0].hyde_snippet == ""
+
+    def test_raw_query_preserved(self) -> None:
+        raw = "what does embed_batch() do?"
+        plan = plan_from_intent_hint(raw, "symbol_lookup")
+        assert plan is not None
+        assert plan.raw_query == raw
+        assert plan.sub_queries[0].semantic_query == raw
+
+    def test_every_intent_type_value_is_accepted(self) -> None:
+        """Every real IntentType member must round-trip through the hint."""
+        for intent in IntentType:
+            plan = plan_from_intent_hint("q", intent.value)
+            assert plan is not None
+            assert plan.intent == intent
 
 
 # ---------------------------------------------------------------------------

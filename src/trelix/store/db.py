@@ -893,29 +893,50 @@ class Database:
     # BM25 search (FTS5)
     # ------------------------------------------------------------------
 
-    def bm25_search(self, query: str, limit: int = 20) -> list[tuple[int, float]]:
+    def bm25_search(
+        self, query: str, limit: int = 20, path_filter: str | None = None
+    ) -> list[tuple[int, float]]:
         """
         Full-text search over symbols using SQLite FTS5 BM25.
         Returns list of (symbol_id, rank) sorted by relevance.
         Lower rank = more relevant in SQLite FTS5 (it's negative BM25).
 
+        `path_filter`, when set, restricts results to symbols whose file's
+        rel_path starts with that prefix — pushed into the SQL join (same
+        `f.rel_path LIKE ?` pattern as grep_search.py) rather than fetched
+        and discarded, since FTS5 can take the join cheaply.
+
         Draws from the read-only connection pool when enable_bm25_read_pool()
         has been called with pool_size > 0 — otherwise uses the single
         shared writer connection exactly as before.
         """
-        sql = """
-            SELECT rowid, rank
-            FROM symbols_fts
-            WHERE symbols_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-            """
+        if path_filter:
+            sql = """
+                SELECT f.rowid, f.rank
+                FROM symbols_fts f
+                JOIN symbols s ON f.rowid = s.id
+                JOIN files fi ON s.file_id = fi.id
+                WHERE symbols_fts MATCH ?
+                  AND fi.rel_path LIKE ?
+                ORDER BY f.rank
+                LIMIT ?
+                """
+            params: tuple[object, ...] = (query, f"{path_filter}%", limit)
+        else:
+            sql = """
+                SELECT rowid, rank
+                FROM symbols_fts
+                WHERE symbols_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """
+            params = (query, limit)
         if self._bm25_read_pool is not None:
             with self._bm25_read_pool.acquire() as conn:
-                rows = conn.execute(sql, (query, limit)).fetchall()
+                rows = conn.execute(sql, params).fetchall()
         else:
             with self._conn_lock:
-                rows = self._conn.execute(sql, (query, limit)).fetchall()
+                rows = self._conn.execute(sql, params).fetchall()
         return [(r[0], r[1]) for r in rows]
 
     # ------------------------------------------------------------------

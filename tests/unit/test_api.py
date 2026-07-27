@@ -194,6 +194,111 @@ class TestSearchPagination:
             assert data["total_available"] == 3
 
 
+class TestSearchIntentHint:
+    """GET /search's optional intent_hint/hyde_snippet_hint params — a caller
+    that already classified the query's intent can skip trelix's internal
+    LLM classification and route deterministically via
+    plan_from_intent_hint()."""
+
+    def test_valid_intent_hint_passes_a_plan_to_retrieve(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+        from trelix.retrieval.planner.models import IntentType
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(
+                f"/search?query=auth&repo={tmp_path}&intent_hint=symbol_lookup"
+            )
+            assert resp.status_code == 200
+
+            call_kwargs = MockRetriever.return_value.retrieve.call_args
+            passed_plan = call_kwargs.kwargs.get("plan") or (
+                call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
+            )
+            assert passed_plan is not None
+            assert passed_plan.intent == IntentType.SYMBOL_LOOKUP
+
+    def test_invalid_intent_hint_falls_through_to_normal_classification(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """An unrecognized intent_hint must never surface as an error — it
+        silently degrades to plan=None (normal server-side classification)."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(
+                f"/search?query=auth&repo={tmp_path}&intent_hint=not_a_real_intent"
+            )
+            assert resp.status_code == 200
+
+            call_kwargs = MockRetriever.return_value.retrieve.call_args
+            passed_plan = call_kwargs.kwargs.get("plan") or (
+                call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
+            )
+            assert passed_plan is None
+
+    def test_omitted_intent_hint_passes_no_plan(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Omitting intent_hint entirely must reproduce today's exact
+        behavior — no plan override, normal internal classification."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(f"/search?query=auth&repo={tmp_path}")
+            assert resp.status_code == 200
+
+            call_kwargs = MockRetriever.return_value.retrieve.call_args
+            passed_plan = call_kwargs.kwargs.get("plan") or (
+                call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
+            )
+            assert passed_plan is None
+
+    def test_hyde_snippet_hint_threaded_into_plan(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(
+                f"/search?query=auth&repo={tmp_path}&intent_hint=symbol_lookup"
+                "&hyde_snippet_hint=def+authenticate():+..."
+            )
+            assert resp.status_code == 200
+
+            call_kwargs = MockRetriever.return_value.retrieve.call_args
+            passed_plan = call_kwargs.kwargs.get("plan") or (
+                call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
+            )
+            assert passed_plan is not None
+            assert "authenticate" in passed_plan.sub_queries[0].hyde_snippet
+
+
 class TestApiAuth:
     """TRELIX_API_AUTH_TOKEN gates every route except /health. Unset (the
     conftest default) must leave every route open — the compatibility
