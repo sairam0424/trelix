@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from trelix.store.read_pool import ReadOnlyConnectionPool
 
 from trelix.core.models import (
+    Artifact,
     CallEdge,
     Chunk,
     GenericEdge,
@@ -477,6 +478,27 @@ class Database:
         )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_generic_edges_source_ref ON generic_edges(source_ref)"
+        )
+        self._conn.commit()
+
+        # Source-connector artifacts migration: non-code content fetched
+        # from Jira/TestRail (tickets, test cases). Joined to code purely
+        # via generic_edges.source_ref — see Artifact's docstring in
+        # core/models.py for why this is a new table, not a Chunk.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS artifacts ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "source_ref TEXT NOT NULL UNIQUE, "
+            "artifact_kind TEXT NOT NULL, "
+            "title TEXT NOT NULL DEFAULT '', "
+            "body TEXT NOT NULL DEFAULT '', "
+            "url TEXT, "
+            "metadata TEXT NOT NULL DEFAULT '{}', "
+            "fetched_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(artifact_kind)"
         )
         self._conn.commit()
 
@@ -1475,6 +1497,60 @@ class Database:
             " WHERE from_symbol_id IS NOT NULL"
         ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Artifacts (source-connector content — Jira tickets, TestRail cases)
+    # ------------------------------------------------------------------
+
+    def upsert_artifact(self, artifact: Artifact) -> int:
+        """Insert or update by source_ref (UNIQUE) — re-syncing a connector
+        overwrites the previous fetch rather than duplicating rows."""
+        cursor = self._conn.execute(
+            """
+            INSERT INTO artifacts (source_ref, artifact_kind, title, body, url, metadata)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_ref) DO UPDATE SET
+                artifact_kind = excluded.artifact_kind,
+                title = excluded.title,
+                body = excluded.body,
+                url = excluded.url,
+                metadata = excluded.metadata,
+                fetched_at = datetime('now')
+            """,
+            (
+                artifact.source_ref,
+                artifact.artifact_kind,
+                artifact.title,
+                artifact.body,
+                artifact.url,
+                json.dumps(artifact.metadata),
+            ),
+        )
+        self._conn.commit()
+        if cursor.lastrowid:
+            return int(cursor.lastrowid)
+        row = self._conn.execute(
+            "SELECT id FROM artifacts WHERE source_ref = ?", (artifact.source_ref,)
+        ).fetchone()
+        return int(row[0])
+
+    def get_artifact_by_source_ref(self, source_ref: str) -> Artifact | None:
+        row = self._conn.execute(
+            "SELECT id, source_ref, artifact_kind, title, body, url, metadata"
+            " FROM artifacts WHERE source_ref = ?",
+            (source_ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        return Artifact(
+            id=row[0],
+            source_ref=row[1],
+            artifact_kind=row[2],
+            title=row[3],
+            body=row[4],
+            url=row[5],
+            metadata=json.loads(row[6]),
+        )
 
     def get_file_by_id(self, file_id: int) -> IndexedFile | None:
         """Fetch a file record by primary key."""

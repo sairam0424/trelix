@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from trelix.core.models import (
+    Artifact,
     CallEdge,
     Chunk,
     ImportEdge,
@@ -128,6 +129,35 @@ class TestSchemaCreation:
 
         cols = {r[1] for r in db2._conn.execute("PRAGMA table_info(generic_edges)").fetchall()}
         assert cols == {"id", "from_symbol_id", "source_ref", "edge_kind", "weight"}
+
+    def test_artifacts_table_exists(self, db: Database) -> None:
+        row = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='artifacts'"
+        ).fetchone()
+        assert row is not None
+
+    def test_artifacts_table_has_expected_columns(self, db: Database) -> None:
+        cols = {r[1] for r in db._conn.execute("PRAGMA table_info(artifacts)").fetchall()}
+        assert cols == {
+            "id",
+            "source_ref",
+            "artifact_kind",
+            "title",
+            "body",
+            "url",
+            "metadata",
+            "fetched_at",
+        }
+
+    def test_artifacts_migration_is_idempotent(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        db1 = Database(db_path)
+        db1.init_schema()
+        db2 = Database(db_path)
+        db2.init_schema()
+
+        cols = {r[1] for r in db2._conn.execute("PRAGMA table_info(artifacts)").fetchall()}
+        assert "source_ref" in cols
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +446,71 @@ class TestChunks:
     ) -> None:
         sym_id = db.insert_symbol(sample_symbol)
         assert db.get_first_chunk_for_symbol(sym_id) is None
+
+
+# ---------------------------------------------------------------------------
+# Artifacts (source-connector content)
+# ---------------------------------------------------------------------------
+
+
+class TestArtifacts:
+    def test_upsert_artifact_returns_id(self, db: Database) -> None:
+        artifact = Artifact(
+            source_ref="ticket:PROJ-1",
+            artifact_kind="ticket",
+            title="Fix login bug",
+            body="Users cannot log in",
+            url="https://example.atlassian.net/browse/PROJ-1",
+            metadata={"status": "open"},
+        )
+        artifact_id = db.upsert_artifact(artifact)
+        assert isinstance(artifact_id, int)
+        assert artifact_id > 0
+
+    def test_get_artifact_by_source_ref_round_trips(self, db: Database) -> None:
+        artifact = Artifact(
+            source_ref="ticket:PROJ-1",
+            artifact_kind="ticket",
+            title="Fix login bug",
+            body="Users cannot log in",
+            url="https://example.atlassian.net/browse/PROJ-1",
+            metadata={"status": "open"},
+        )
+        db.upsert_artifact(artifact)
+        fetched = db.get_artifact_by_source_ref("ticket:PROJ-1")
+        assert fetched is not None
+        assert fetched.title == "Fix login bug"
+        assert fetched.metadata == {"status": "open"}
+
+    def test_get_artifact_by_source_ref_returns_none_when_missing(self, db: Database) -> None:
+        assert db.get_artifact_by_source_ref("ticket:NOPE") is None
+
+    def test_upsert_same_source_ref_updates_not_duplicates(self, db: Database) -> None:
+        first = Artifact(source_ref="ticket:PROJ-1", artifact_kind="ticket", title="v1", body="")
+        second = Artifact(source_ref="ticket:PROJ-1", artifact_kind="ticket", title="v2", body="")
+
+        id1 = db.upsert_artifact(first)
+        id2 = db.upsert_artifact(second)
+
+        assert id1 == id2
+        count = db._conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
+        assert count == 1
+        updated = db.get_artifact_by_source_ref("ticket:PROJ-1")
+        assert updated is not None
+        assert updated.title == "v2"
+
+    def test_metadata_dict_round_trips_through_json(self, db: Database) -> None:
+        artifact = Artifact(
+            source_ref="test_case:5",
+            artifact_kind="test_case",
+            title="Login test",
+            body="",
+            metadata={"priority": "high", "suite": "auth"},
+        )
+        db.upsert_artifact(artifact)
+        fetched = db.get_artifact_by_source_ref("test_case:5")
+        assert fetched is not None
+        assert fetched.metadata == {"priority": "high", "suite": "auth"}
 
 
 # ---------------------------------------------------------------------------

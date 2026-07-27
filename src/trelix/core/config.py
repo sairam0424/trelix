@@ -840,6 +840,50 @@ class GitLinkerConfig(BaseSettings):
     since: str | None = None  # e.g. "90 days ago" — passed straight to `git log --since`
 
 
+class JiraConnectorConfig(BaseSettings):
+    """
+    Jira Cloud REST API connector. HTTP Basic auth (email + API token) —
+    no OAuth needed for a read-only, single-project-scope connector.
+    Credentials env-only, never in a chart's plaintext values by default,
+    matching every other credential in this file.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_JIRA_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    base_url: str | None = Field(default=None, alias="TRELIX_JIRA_BASE_URL")
+    email: str | None = Field(default=None, alias="TRELIX_JIRA_EMAIL")
+    api_token: str | None = Field(default=None, alias="TRELIX_JIRA_API_TOKEN")
+    project_key: str | None = Field(default=None, alias="TRELIX_JIRA_PROJECT_KEY")
+    page_size: int = Field(default=100, ge=1, le=100)
+
+
+class TestRailConnectorConfig(BaseSettings):
+    """
+    TestRail REST API connector. HTTP Basic auth (username + API key).
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_TESTRAIL_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    base_url: str | None = Field(default=None, alias="TRELIX_TESTRAIL_BASE_URL")
+    username: str | None = Field(default=None, alias="TRELIX_TESTRAIL_USERNAME")
+    api_key: str | None = Field(default=None, alias="TRELIX_TESTRAIL_API_KEY")
+    project_id: int | None = Field(default=None, alias="TRELIX_TESTRAIL_PROJECT_ID")
+    # TestRail's own API max is 250/page.
+    page_size: int = Field(default=250, ge=1, le=250)
+
+
 # ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------
