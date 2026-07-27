@@ -309,10 +309,12 @@ class TestPerSourceBudget:
         # remaining candidates genuinely don't fit.
         assert ctx.total_tokens == 350
         included_ids = {r.chunk.id for r in ctx.results}
-        assert included_ids == {VECTOR_RESULTS[0].chunk.id,
-                                 VECTOR_RESULTS[1].chunk.id,
-                                 VECTOR_RESULTS[2].chunk.id,
-                                 grep_small[0].chunk.id}
+        assert included_ids == {
+            VECTOR_RESULTS[0].chunk.id,
+            VECTOR_RESULTS[1].chunk.id,
+            VECTOR_RESULTS[2].chunk.id,
+            grep_small[0].chunk.id,
+        }
 
 
 # ---------------------------------------------------------------------------

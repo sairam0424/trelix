@@ -207,9 +207,7 @@ class TestParseEndpoint:
 
         app = create_app()
         client = TestClient(app)
-        resp = client.post(
-            "/parse", json={"repo_path": str(tmp_path), "file_path": str(file_path)}
-        )
+        resp = client.post("/parse", json={"repo_path": str(tmp_path), "file_path": str(file_path)})
         assert resp.status_code == 200
         data = resp.json()
         assert [s["name"] for s in data["symbols"]] == ["add"]
@@ -340,9 +338,7 @@ class TestParseEndpoint:
 
         app = create_app()
         client = TestClient(app)
-        resp = client.post(
-            "/parse", json={"repo_path": str(repo), "file_path": "../secret.py"}
-        )
+        resp = client.post("/parse", json={"repo_path": str(repo), "file_path": "../secret.py"})
         assert resp.status_code == 400
         assert "inside repo_path" in resp.json()["detail"]
 
@@ -360,9 +356,7 @@ class TestParseEndpoint:
 
         app = create_app()
         client = TestClient(app)
-        resp = client.post(
-            "/parse", json={"repo_path": str(repo), "file_path": "src/nested.py"}
-        )
+        resp = client.post("/parse", json={"repo_path": str(repo), "file_path": "src/nested.py"})
         assert resp.status_code == 200
         assert [s["name"] for s in resp.json()["symbols"]] == ["nested_fn"]
 

@@ -133,8 +133,7 @@ class ParseRequest(BaseModel):
         has_inline = self.content is not None
         if has_disk == has_inline:
             raise ValueError(
-                "Provide exactly one of: file_path (disk-backed) or "
-                "content+file_name (inline text)"
+                "Provide exactly one of: file_path (disk-backed) or content+file_name (inline text)"
             )
         if has_inline and self.file_name is None:
             raise ValueError("file_name is required when content is provided")
@@ -482,9 +481,7 @@ def create_app() -> Any:  # noqa: ANN201
         with pipeline_stage_span(config.retrieval, "http_graph_search"):
             result = GraphBuilder(config).build(extract_concepts=False)
             db = Database(config.db_path_absolute)
-            results = graph_search(
-                db, result.code_graph, [symbol_id], depth=depth, max_results=20
-            )
+            results = graph_search(db, result.code_graph, [symbol_id], depth=depth, max_results=20)
             return [
                 GraphSearchResultModel(
                     symbol=r.symbol.qualified_name,
