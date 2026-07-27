@@ -194,6 +194,80 @@ class TestSearchPagination:
             assert data["total_available"] == 3
 
 
+class TestApiAuth:
+    """TRELIX_API_AUTH_TOKEN gates every route except /health. Unset (the
+    conftest default) must leave every route open — the compatibility
+    requirement that made every other test class above pass unmodified."""
+
+    def test_no_token_configured_allows_unauthenticated_requests(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(f"/search?query=auth&repo={tmp_path}")
+            assert resp.status_code == 200
+
+    def test_token_configured_rejects_missing_header(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get(f"/search?query=auth&repo={tmp_path}")
+        assert resp.status_code == 401
+
+    def test_token_configured_rejects_wrong_header(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get(
+            f"/search?query=auth&repo={tmp_path}",
+            headers={"X-Trelix-Api-Key": "wrong-token"},
+        )
+        assert resp.status_code == 401
+
+    def test_token_configured_accepts_correct_header(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(
+                f"/search?query=auth&repo={tmp_path}",
+                headers={"X-Trelix-Api-Key": "secret-token"},
+            )
+            assert resp.status_code == 200
+
+    def test_health_always_open_even_with_token_configured(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+
+
 class TestOpenApiSchema:
     """Regression guard: every route must keep a real Pydantic response_model
     (inferred from its return-type annotation) so /openapi.json carries actual

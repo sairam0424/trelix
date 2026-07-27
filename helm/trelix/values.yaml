@@ -117,6 +117,15 @@ embedder:
     existingSecretName: ""
     existingSecretKey: "COHERE_API_KEY"
 
+# REST API auth — opt-in. Unset (both fields empty) leaves every route open,
+# matching trelix serve's own default. Set one of these to require an
+# `X-Trelix-Api-Key` header on every route except /health before enabling
+# ingress. Same apiKey/existingSecretName pattern as store.qdrant above.
+apiAuth:
+  token: ""
+  existingSecretName: ""
+  existingSecretKey: "TRELIX_API_AUTH_TOKEN"
+
 # Plain (non-secret) extra environment variables, e.g. TRELIX_EMBEDDER=openai.
 extraEnv: []
 # - name: TRELIX_EMBEDDER

@@ -24,19 +24,37 @@ Index and query repos as SUBDIRECTORIES of the shared PVC, mounted at
 
 {{- end }}
 
+{{- if or .Values.apiAuth.token .Values.apiAuth.existingSecretName }}
+
+ℹ️  API AUTH ENABLED
+--------------------
+TRELIX_API_AUTH_TOKEN is set. Every route except /health now requires an
+`X-Trelix-Api-Key` header matching that token, e.g.:
+  curl -H "X-Trelix-Api-Key: <token>" http://<host>/search?query=...&repo=...
+
+This is a single shared token, not per-user auth — still recommend a
+fronting proxy/ingress-auth for defense in depth before exposing this
+publicly, and rotate the token by updating the Secret and restarting.
+
+{{- else }}
+
 ⚠️  NO AUTHENTICATION ON THE REST API
 --------------------------------------
-trelix serve has zero auth middleware — every route is open to anyone who
-can reach the Service. This chart defaults `ingress.enabled: false` for
-exactly this reason.
+trelix serve has zero auth middleware by default — every route is open to
+anyone who can reach the Service. This chart defaults `ingress.enabled:
+false` for exactly this reason.
 
-Before setting `ingress.enabled: true`, put an authenticating layer in
-front (an ingress-controller auth annotation, e.g. NGINX
+Before setting `ingress.enabled: true`, either set `apiAuth.token` /
+`apiAuth.existingSecretName` (see values.yaml) to require an
+`X-Trelix-Api-Key` header, or put an authenticating layer in front (an
+ingress-controller auth annotation, e.g. NGINX
 `nginx.ingress.kubernetes.io/auth-*`, or an OAuth2-proxy sidecar/gateway).
 Without one, a public Ingress exposes:
   - POST /index    — lets any caller trigger arbitrary-path indexing
   - GET  /ask      — lets any caller run LLM synthesis at your API-key's cost
   - GET  /search   — exposes full source/body content of every indexed repo
+
+{{- end }}
 
 {{- if eq .Values.store.backend "qdrant" }}
 
