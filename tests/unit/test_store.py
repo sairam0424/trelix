@@ -104,6 +104,31 @@ class TestSchemaCreation:
         cols = {r[1] for r in db._conn.execute("PRAGMA table_info(imports)").fetchall()}
         assert "imported_file_id" in cols
 
+    def test_generic_edges_table_exists(self, db: Database) -> None:
+        """generic_edges table must exist after init (cross-source edges migration)."""
+        row = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='generic_edges'"
+        ).fetchone()
+        assert row is not None
+
+    def test_generic_edges_table_has_expected_columns(self, db: Database) -> None:
+        cols = {r[1] for r in db._conn.execute("PRAGMA table_info(generic_edges)").fetchall()}
+        assert cols == {"id", "from_symbol_id", "source_ref", "edge_kind", "weight"}
+
+    def test_generic_edges_migration_is_idempotent(self, tmp_path: Path) -> None:
+        """Running init_schema() twice on the same DB (the exact scenario a
+        second Database(...) instantiation against an existing file hits)
+        must not raise, per _apply_migrations()'s own docstring guarantee:
+        'safe to run on existing DBs'."""
+        db_path = tmp_path / "index.db"
+        db1 = Database(db_path)
+        db1.init_schema()  # explicit second call on the same connection
+        db2 = Database(db_path)  # a second Database instance against the same file
+        db2.init_schema()
+
+        cols = {r[1] for r in db2._conn.execute("PRAGMA table_info(generic_edges)").fetchall()}
+        assert cols == {"id", "from_symbol_id", "source_ref", "edge_kind", "weight"}
+
 
 # ---------------------------------------------------------------------------
 # upsert_file

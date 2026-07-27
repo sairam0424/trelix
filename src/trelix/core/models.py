@@ -165,6 +165,33 @@ class TypeEdge:
 
 
 # ---------------------------------------------------------------------------
+# Generic (cross-source) edge
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GenericEdge:
+    """
+    A typed edge from a code symbol to a non-code artefact (ticket, test,
+    doc, ...) that has no row of its own in this DB.
+
+    Exclusive arc: `from_symbol_id` is a real symbol id (every writer today,
+    e.g. the git-log ticket linker, always attaches from real code); the
+    other side is `source_ref`, a free-form "<type>:<ref>" string (e.g.
+    "ticket:PROJ-123") rather than a foreign key, since a generic external
+    artefact has no id in this DB to reference.
+
+    edge_kind values:
+      "references_ticket" — code touched by a commit that mentions a ticket ID
+    """
+
+    from_symbol_id: int
+    source_ref: str
+    edge_kind: str
+    weight: float = 1.0
+
+
+# ---------------------------------------------------------------------------
 # Import edge
 # ---------------------------------------------------------------------------
 
