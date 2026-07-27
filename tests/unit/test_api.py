@@ -305,6 +305,67 @@ class TestParseEndpoint:
         )
         assert resp.status_code == 400
 
+    def test_absolute_file_path_outside_repo_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Regression test for a real path-traversal vulnerability: an
+        absolute file_path pointing anywhere on the host (ignoring
+        repo_path entirely) must be rejected, not silently read and parsed."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        repo = tmp_path / "innocent_repo"
+        repo.mkdir()
+        outside = tmp_path / "outside_the_repo"
+        outside.mkdir()
+        secret = outside / "secret.py"
+        secret.write_text("SHOULD_NEVER_BE_READABLE = True\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(repo), "file_path": str(secret)})
+        assert resp.status_code == 400
+        assert "inside repo_path" in resp.json()["detail"]
+
+    def test_relative_file_path_dot_dot_escape_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Regression test: a relative file_path with ../ segments must not
+        be able to escape repo_path either."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        repo = tmp_path / "innocent_repo"
+        repo.mkdir()
+        secret = tmp_path / "secret.py"
+        secret.write_text("SHOULD_NEVER_BE_READABLE = True\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/parse", json={"repo_path": str(repo), "file_path": "../secret.py"}
+        )
+        assert resp.status_code == 400
+        assert "inside repo_path" in resp.json()["detail"]
+
+    def test_relative_file_path_inside_a_subdirectory_still_works(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The containment fix must not break the legitimate case: a
+        relative path into a subdirectory that IS inside repo_path."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        repo = tmp_path / "repo"
+        nested = repo / "src"
+        nested.mkdir(parents=True)
+        (nested / "nested.py").write_text("def nested_fn():\n    pass\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/parse", json={"repo_path": str(repo), "file_path": "src/nested.py"}
+        )
+        assert resp.status_code == 200
+        assert [s["name"] for s in resp.json()["symbols"]] == ["nested_fn"]
+
 
 class TestApiAuth:
     """TRELIX_API_AUTH_TOKEN gates every route except /health. Unset (the

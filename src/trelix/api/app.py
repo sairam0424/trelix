@@ -339,9 +339,23 @@ def create_app() -> Any:  # noqa: ANN201
 
         with pipeline_stage_span(RetrievalConfig(), "http_parse"):
             if body.file_path is not None:
+                repo_root = Path(body.repo_path).resolve()
                 path = Path(body.file_path)
                 if not path.is_absolute():
-                    path = Path(body.repo_path) / path
+                    path = repo_root / path
+                path = path.resolve()
+                # Containment check — same intent as /graph/visualize's, but
+                # using is_relative_to() instead of a raw string prefix match
+                # (a prefix match would wrongly accept a sibling directory
+                # like "<repo>-evil" that merely starts with the same
+                # characters). Without this, an absolute file_path (or a
+                # relative one with ../ segments) could read any file on the
+                # host the server can access, regardless of repo_path.
+                if not path.is_relative_to(repo_root):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="file_path must resolve to a location inside repo_path",
+                    )
                 if not path.exists():
                     raise HTTPException(status_code=400, detail=f"file_path not found: {path}")
                 file_name = path.name
