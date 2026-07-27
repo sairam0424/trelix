@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 from trelix.core.models import (
     CallEdge,
     Chunk,
+    GenericEdge,
     ImportEdge,
     IndexedFile,
     Language,
@@ -450,6 +451,32 @@ class Database:
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_turns_session "
             "ON agent_turns(session_id, turn_index)"
+        )
+        self._conn.commit()
+
+        # Cross-source edges migration: generic typed edges linking a code
+        # symbol to a non-code artefact (ticket, test, doc, ...). Exclusive
+        # arc — from_symbol_id is a real FK (the code side is always a real
+        # symbol for every writer today, e.g. the git-log ticket linker), and
+        # source_ref is the non-symbol side as a free-form "<type>:<ref>"
+        # string (e.g. "ticket:PROJ-123"), since a generic non-code artefact
+        # has no id in this DB to reference. Nullable on both column groups
+        # so the schema doesn't have to change again if a future writer ever
+        # needs an edge between two non-code artefacts.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS generic_edges ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "from_symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE, "
+            "source_ref TEXT, "
+            "edge_kind TEXT NOT NULL, "
+            "weight REAL NOT NULL DEFAULT 1.0"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_generic_edges_from ON generic_edges(from_symbol_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_generic_edges_source_ref ON generic_edges(source_ref)"
         )
         self._conn.commit()
 
@@ -1412,6 +1439,40 @@ class Database:
         rows = self._conn.execute(
             "SELECT from_symbol_id, edge_kind, to_symbol_id FROM type_edges"
             " WHERE to_symbol_id IS NOT NULL"
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Generic (cross-source) edges
+    # ------------------------------------------------------------------
+
+    def insert_generic_edges(self, edges: list[GenericEdge]) -> None:
+        self._conn.executemany(
+            "INSERT INTO generic_edges (from_symbol_id, source_ref, edge_kind, weight)"
+            " VALUES (?, ?, ?, ?)",
+            [(e.from_symbol_id, e.source_ref, e.edge_kind, e.weight) for e in edges],
+        )
+        self._conn.commit()
+
+    def get_generic_edge_targets(self, symbol_id: int) -> list[str]:
+        """Return source_ref strings for every generic edge originating from
+        this symbol (e.g. ["ticket:PROJ-123", "ticket:PROJ-456"])."""
+        rows = self._conn.execute(
+            "SELECT source_ref FROM generic_edges WHERE from_symbol_id = ?",
+            (symbol_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def iter_resolved_generic_edges(self) -> list[tuple[int, str, str]]:
+        """Return (from_symbol_id, edge_kind, source_ref) for every generic
+        edge — mirrors iter_resolved_type_edges(). "Resolved" here just means
+        from_symbol_id is set (always true for every current writer); no
+        further resolution pass exists for the source_ref side, unlike
+        type_edges' to_symbol_id, since source_ref never refers to a row in
+        this DB."""
+        rows = self._conn.execute(
+            "SELECT from_symbol_id, edge_kind, source_ref FROM generic_edges"
+            " WHERE from_symbol_id IS NOT NULL"
         ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 

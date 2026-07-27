@@ -18,6 +18,7 @@ _EDGE_KINDS_TO_LABEL: dict[str, str] = {
     "trait_impl": "TRAIT_IMPL",
     "embedded": "EMBEDDED",
     "angular_selector": "ANGULAR_SELECTOR",
+    "references_ticket": "REFERENCES_TICKET",
 }
 
 
@@ -81,6 +82,37 @@ class CodeGraph:
             label = _EDGE_KINDS_TO_LABEL.get(edge_kind, "TYPE_REL")
             if from_id in self._g and to_id in self._g:
                 self._g.add_edge(from_id, to_id, label=label)
+
+        # --- GENERIC (cross-source) edges — code symbol to non-code artefact ---
+        # The non-code side (source_ref, e.g. "ticket:PROJ-123") has no row of
+        # its own anywhere in this DB, so it gets a synthetic node here keyed
+        # by the source_ref string itself rather than an int symbol id.
+        #
+        # Bidirectional by design: PageRank propagates importance via
+        # INCOMING edges (mirroring CALLS above — many callers pointing at a
+        # callee raise the callee's rank). A single symbol->artifact edge
+        # would only raise the ARTIFACT's rank, the opposite of the intended
+        # "a symbol referenced by many tickets is important" signal. The
+        # relationship is genuinely mutual — a heavily-referenced symbol is
+        # important, and a ticket touching many symbols is also important —
+        # so both directions are added.
+        for from_id, edge_kind, source_ref in self._db.iter_resolved_generic_edges():
+            if from_id not in self._g:
+                continue
+            if source_ref not in self._g:
+                self._g.add_node(
+                    source_ref,
+                    type="artifact",
+                    name=source_ref,
+                    qualified_name=source_ref,
+                    kind="artifact",
+                    file=None,
+                    language=None,
+                    community=None,
+                )
+            label = _EDGE_KINDS_TO_LABEL.get(edge_kind, "GENERIC_REL")
+            self._g.add_edge(from_id, source_ref, label=label)
+            self._g.add_edge(source_ref, from_id, label=label)
 
         logger.debug(
             "CodeGraph built: %d nodes, %d edges",

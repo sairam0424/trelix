@@ -6,6 +6,7 @@ from pathlib import Path
 
 from trelix.core.models import (
     CallEdge,
+    GenericEdge,
     IndexedFile,
     Language,
     Symbol,
@@ -148,3 +149,70 @@ class TestCodeGraphConstruction:
         assert sid1 in sg.nodes
         assert sid2 in sg.nodes
         assert sid3 not in sg.nodes
+
+
+class TestCodeGraphGenericEdges:
+    """Cross-source edges (e.g. git-log ticket links) surface as synthetic
+    string-keyed artifact nodes, distinct from int-keyed symbol/file nodes."""
+
+    def test_generic_edge_creates_artifact_node(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        fid = _insert_file(db, "auth.py")
+        sid = _insert_symbol(db, fid, "login")
+        db.insert_generic_edges(
+            [GenericEdge(from_symbol_id=sid, source_ref="ticket:PROJ-1", edge_kind="references_ticket")]
+        )
+        cg = CodeGraph(db)
+        assert "ticket:PROJ-1" in cg.nx
+        assert cg.nx.nodes["ticket:PROJ-1"]["type"] == "artifact"
+
+    def test_generic_edge_connects_symbol_to_artifact_node(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        fid = _insert_file(db, "auth.py")
+        sid = _insert_symbol(db, fid, "login")
+        db.insert_generic_edges(
+            [GenericEdge(from_symbol_id=sid, source_ref="ticket:PROJ-1", edge_kind="references_ticket")]
+        )
+        cg = CodeGraph(db)
+        neighbors = cg.neighbors(sid)
+        assert "ticket:PROJ-1" in neighbors
+
+    def test_generic_edge_label_uses_edge_kind_mapping(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        fid = _insert_file(db, "auth.py")
+        sid = _insert_symbol(db, fid, "login")
+        db.insert_generic_edges(
+            [GenericEdge(from_symbol_id=sid, source_ref="ticket:PROJ-1", edge_kind="references_ticket")]
+        )
+        cg = CodeGraph(db)
+        edge_data = cg.nx.get_edge_data(sid, "ticket:PROJ-1")
+        assert any(d["label"] == "REFERENCES_TICKET" for d in edge_data.values())
+
+    def test_unknown_generic_edge_kind_falls_back_gracefully(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        fid = _insert_file(db, "auth.py")
+        sid = _insert_symbol(db, fid, "login")
+        db.insert_generic_edges(
+            [GenericEdge(from_symbol_id=sid, source_ref="doc:readme", edge_kind="documents")]
+        )
+        cg = CodeGraph(db)
+        edge_data = cg.nx.get_edge_data(sid, "doc:readme")
+        assert any(d["label"] == "GENERIC_REL" for d in edge_data.values())
+
+    def test_shared_artifact_node_deduplicated_across_symbols(self, tmp_path: Path) -> None:
+        """Two symbols referencing the same ticket must share ONE artifact
+        node, not create two separate nodes for the same source_ref."""
+        db = _make_db(tmp_path)
+        fid = _insert_file(db, "auth.py")
+        sid1 = _insert_symbol(db, fid, "login")
+        sid2 = _insert_symbol(db, fid, "logout")
+        db.insert_generic_edges(
+            [
+                GenericEdge(from_symbol_id=sid1, source_ref="ticket:PROJ-1", edge_kind="references_ticket"),
+                GenericEdge(from_symbol_id=sid2, source_ref="ticket:PROJ-1", edge_kind="references_ticket"),
+            ]
+        )
+        cg = CodeGraph(db)
+        artifact_nodes = [n for n, attrs in cg.nx.nodes(data=True) if attrs.get("type") == "artifact"]
+        assert artifact_nodes == ["ticket:PROJ-1"]
+        assert sid1 in cg.neighbors(sid2) or "ticket:PROJ-1" in cg.neighbors(sid2)

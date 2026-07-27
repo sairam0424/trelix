@@ -14,6 +14,7 @@ import pytest
 from trelix.core.models import (
     CallEdge,
     Chunk,
+    GenericEdge,
     ImportEdge,
     IndexedFile,
     Language,
@@ -325,6 +326,56 @@ class TestRankByPagerank:
         assert len(pr) > 0
         for _, score in pr:
             assert score >= 0.0
+
+    def test_generic_edges_never_leak_into_returned_ranking(self, db: Database) -> None:
+        """Synthetic artifact nodes (source_ref strings) participate in the
+        PageRank computation but must never appear in the caller-facing
+        (symbol_id: int, score) result list."""
+        fid = _insert_file(db)
+        sym = _insert_symbol(db, fid, "login")
+        _insert_chunk(db, sym)
+        db.insert_generic_edges(
+            [GenericEdge(from_symbol_id=sym, source_ref="ticket:PROJ-1", edge_kind="references_ticket")]
+        )
+
+        pr = rank_by_pagerank([sym], db)
+        returned_ids = [x[0] for x in pr]
+        assert all(isinstance(sid, int) for sid in returned_ids)
+        assert "ticket:PROJ-1" not in returned_ids
+
+    def test_symbol_referenced_by_ticket_ranks_higher_than_equivalent_without(
+        self, db: Database
+    ) -> None:
+        """Two symbols with equal call-graph centrality (both call the same
+        third symbol) — the one that ALSO has a cross-source ticket edge
+        should rank higher, proving the generic edge genuinely contributes
+        centrality rather than being silently dropped. (An isolated symbol
+        with zero edges of any kind isn't added to G at all — a pre-existing
+        property of this function, not specific to generic edges — so this
+        test gives both symbols an equal call-edge baseline instead.)"""
+        fid = _insert_file(db)
+        referenced = _insert_symbol(db, fid, "referenced_fn")
+        plain = _insert_symbol(db, fid, "plain_fn")
+        shared_callee = _insert_symbol(db, fid, "shared_callee")
+        for sid in (referenced, plain, shared_callee):
+            _insert_chunk(db, sid)
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=referenced, callee_name="shared_callee", line=1, callee_id=shared_callee),
+                CallEdge(caller_id=plain, callee_name="shared_callee", line=1, callee_id=shared_callee),
+            ]
+        )
+        db._conn.commit()
+        db.insert_generic_edges(
+            [
+                GenericEdge(
+                    from_symbol_id=referenced, source_ref="ticket:PROJ-1", edge_kind="references_ticket"
+                )
+            ]
+        )
+
+        pr = dict(rank_by_pagerank([referenced, plain, shared_callee], db))
+        assert pr[referenced] > pr[plain]
 
 
 # ---------------------------------------------------------------------------

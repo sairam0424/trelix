@@ -811,6 +811,35 @@ class IndexerConfig(BaseSettings):
     )
 
 
+class GitLinkerConfig(BaseSettings):
+    """
+    Walks `git log` to link code symbols to external ticket references found
+    in commit messages (e.g. Jira "PROJ-123", GitHub "#456") — feeds
+    generic_edges for cross-source PageRank. Off by default: requires the
+    repo to actually be a git checkout, and is a separate, slower pass from
+    the main index pipeline (run via `trelix link-tickets`, not auto-invoked
+    from Indexer.index()).
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_GIT_LINKER_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    enabled: bool = False
+    # Matches Jira-style ticket IDs by default (e.g. "PROJ-123"). Different
+    # orgs use different conventions (GitHub "#123", Linear "ENG-123") —
+    # override via TRELIX_GIT_LINKER_TICKET_PATTERN.
+    ticket_pattern: str = r"[A-Z]+-\d+"
+    # Bounds on how much history to walk — required from day one, not an
+    # afterthought, since large repos can have 100k+ commits.
+    max_commits: int = Field(default=5_000, ge=1)
+    since: str | None = None  # e.g. "90 days ago" — passed straight to `git log --since`
+
+
 # ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------
@@ -844,6 +873,7 @@ class IndexConfig(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     sparse: SparseConfig = Field(default_factory=SparseConfig)
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
+    git_linker: GitLinkerConfig = Field(default_factory=GitLinkerConfig)
 
     # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
     # Requires LLM API access. Off by default — zero cost when disabled.

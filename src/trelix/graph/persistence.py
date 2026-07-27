@@ -43,6 +43,12 @@ def save_graph_metadata(db: Database, cg: CodeGraph) -> None:
     except Exception:
         pass
 
+    # Synthetic cross-source artifact nodes (see code_graph.py's GENERIC edge
+    # loop) are keyed by a string source_ref, not an int symbol id — this
+    # table's PK is INTEGER, and these nodes have no symbol row to persist
+    # metadata against, so they're excluded here (they still count toward
+    # centrality via nx.pagerank/degree_centrality above, just not persisted
+    # as if they were a symbol).
     rows = [
         (
             node_id,
@@ -51,6 +57,7 @@ def save_graph_metadata(db: Database, cg: CodeGraph) -> None:
             attrs.get("type", "symbol"),
         )
         for node_id, attrs in cg.nx.nodes(data=True)
+        if isinstance(node_id, int)
     ]
     db._conn.executemany(
         """

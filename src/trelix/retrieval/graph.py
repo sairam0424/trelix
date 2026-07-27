@@ -356,9 +356,26 @@ def rank_by_pagerank(
             G.add_edge(symbol_id, callee)
         for caller in db.get_callers(symbol_id):
             G.add_edge(caller, symbol_id)
+        # Cross-source edges (e.g. ticket references from the git-log
+        # linker) — a symbol referenced by many tickets AND called by many
+        # other symbols gets a higher rank than call-graph centrality alone
+        # would give it. Only the graph gains these edges; the algorithm
+        # itself stays plain nx.pagerank (uniform teleport) — see
+        # docs/ROADMAP.md's note on starting cheap before any Personalized
+        # PageRank investment.
+        #
+        # Bidirectional, same reasoning as code_graph.py's GENERIC edge loop:
+        # PageRank propagates via INCOMING edges, so a single symbol->ticket
+        # edge would only raise the ticket's rank, not the symbol's.
+        for source_ref in db.get_generic_edge_targets(symbol_id):
+            G.add_edge(symbol_id, source_ref)
+            G.add_edge(source_ref, symbol_id)
 
     if not G.nodes:
         return [(sid, 1.0) for sid in symbol_ids]
 
     scores = nx.pagerank(G, alpha=0.85)
-    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    # Drop synthetic artifact nodes (source_ref strings) from the returned
+    # ranking — callers expect (symbol_id: int, score) pairs only.
+    symbol_scores = {sid: score for sid, score in scores.items() if isinstance(sid, int)}
+    return sorted(symbol_scores.items(), key=lambda x: x[1], reverse=True)
