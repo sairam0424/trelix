@@ -1113,7 +1113,10 @@ class Retriever:
     ) -> RetrievedContext:
         from trelix.retrieval.assembler import ContextAssembler
 
-        assembler = ContextAssembler(token_budget=self.config.retrieval.context_token_budget)
+        assembler = ContextAssembler(
+            token_budget=self.config.retrieval.context_token_budget,
+            per_source_budget=self.config.retrieval.context_budget_per_source,
+        )
         return assembler.assemble(
             query=query,
             results=results,
