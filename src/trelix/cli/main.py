@@ -1818,6 +1818,76 @@ def agent_sessions_clear(
 
 
 # ---------------------------------------------------------------------------
+# connector sub-app (Jira/TestRail source-connector sync)
+# ---------------------------------------------------------------------------
+
+connector_app = typer.Typer(help="Sync external artefacts (Jira tickets, TestRail cases).")
+app.add_typer(connector_app, name="connector")
+
+
+@connector_app.command("sync")
+def connector_sync(
+    repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")],
+    name: Annotated[str, typer.Argument(help="Connector to sync: 'jira' or 'testrail'.")],
+) -> None:
+    """
+    Fetch artefacts from an external system and persist them via the
+    connector's ArtifactSource.sync(). Requires generic_edges to exist
+    (from `trelix link-tickets` or another future writer) for the fetched
+    artefacts to be reachable from the code graph — this command only
+    populates the artifacts table, it does not create edges itself.
+    """
+    from trelix.core.config import IndexConfig
+    from trelix.indexing.connectors.registry import get_artifact_source
+    from trelix.store.db import Database
+
+    try:
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except (ValueError, FileNotFoundError) as exc:
+        _print_error("Error", exc)
+        raise typer.Exit(1) from exc
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        from rich.markup import escape
+
+        err_console.print(
+            f"[red]No index found at {escape(str(db_path))}[/red] —"
+            f" run `trelix index {repo}` first."
+        )
+        raise typer.Exit(1)
+
+    try:
+        source = get_artifact_source(name)  # type: ignore[arg-type]
+    except ValueError as exc:
+        _print_error("Error", exc)
+        raise typer.Exit(1) from exc
+
+    try:
+        source.validate_config()
+    except ValueError as exc:
+        _print_error(f"{name} connector is misconfigured", exc)
+        raise typer.Exit(1) from exc
+
+    db = Database(db_path)
+    try:
+        with console.status(f"[bold cyan]Syncing {name}…[/bold cyan]"):
+            result = source.sync(db)
+    except Exception as exc:
+        _print_error(f"Failed to sync {name}", exc)
+        raise typer.Exit(1) from exc
+    finally:
+        db.close()
+
+    console.print(
+        f"[green]Synced {name}:[/green] fetched {result.artifacts_fetched}, "
+        f"wrote {result.artifacts_written}, errors {result.errors}"
+    )
+    if result.errors:
+        raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
