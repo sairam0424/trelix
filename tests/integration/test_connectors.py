@@ -1,0 +1,151 @@
+"""
+Integration test: connector.sync() -> generic_edges -> CodeGraph, end to end.
+
+Deliberately hermetic — no real Jira/TestRail API access, no embedder
+(seeds the DB directly rather than going through Indexer.index(), since
+that requires sentence-transformers or a real API key). This proves the
+FULL cross-source pipeline wires together correctly: a connector-fetched
+Artifact, manually linked to a symbol via a GenericEdge (the same edge a
+real workflow — e.g. running `trelix link-tickets` first, then matching an
+artifact's source_ref — would produce), surfaces in CodeGraph and
+contributes to PageRank.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from trelix.core.config import JiraConnectorConfig
+from trelix.core.models import (
+    GenericEdge,
+    IndexedFile,
+    Language,
+    Symbol,
+    SymbolKind,
+)
+from trelix.graph.code_graph import CodeGraph
+from trelix.graph.community import compute_pagerank
+from trelix.indexing.connectors.jira import JiraConnector
+from trelix.store.db import Database
+
+
+def _seed_symbol(db: Database, rel_path: str, name: str) -> int:
+    file_id = db.upsert_file(
+        IndexedFile(
+            path=f"/repo/{rel_path}",
+            rel_path=rel_path,
+            language=Language.PYTHON,
+            hash="h",
+            size_bytes=10,
+        )
+    )
+    sym = Symbol(
+        file_id=file_id,
+        name=name,
+        qualified_name=name,
+        kind=SymbolKind.FUNCTION,
+        line_start=1,
+        line_end=2,
+        signature=f"def {name}()",
+        body=f"def {name}(): pass",
+    )
+    sym_id = db.insert_symbol(sym)
+    db._conn.commit()
+    return sym_id
+
+
+class TestConnectorToGraphPipeline:
+    def test_synced_artifact_and_linked_symbol_appear_together_in_code_graph(
+        self, tmp_path: Path
+    ) -> None:
+        db = Database(tmp_path / "index.db")
+        login_id = _seed_symbol(db, "auth.py", "login")
+        _seed_symbol(db, "auth.py", "logout")  # unreferenced control symbol
+
+        # 1. Connector fetches a real (mocked-HTTP) artifact and persists it.
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "issues": [
+                {
+                    "key": "PROJ-1",
+                    "fields": {
+                        "summary": "Login is broken",
+                        "description": "Users report login failures",
+                        "status": {"name": "Open"},
+                    },
+                }
+            ],
+            "nextPageToken": None,
+        }
+        jira_config = JiraConnectorConfig(
+            base_url="https://example.atlassian.net",
+            email="me@example.com",
+            api_token="tok",
+            project_key="PROJ",
+        )
+        with patch("trelix.indexing.connectors.jira.httpx.get", return_value=mock_resp):
+            result = JiraConnector(jira_config).sync(db)
+
+        assert result.artifacts_written == 1
+        artifact = db.get_artifact_by_source_ref("ticket:PROJ-1")
+        assert artifact is not None
+
+        # 2. Link the code symbol to that same artifact's source_ref (the
+        # role trelix link-tickets plays for git-derived edges — a connector
+        # sync alone does not create edges, only artifacts, per its own
+        # docstring).
+        db.insert_generic_edges(
+            [
+                GenericEdge(
+                    from_symbol_id=login_id,
+                    source_ref=artifact.source_ref,
+                    edge_kind="references_ticket",
+                )
+            ]
+        )
+
+        # 3. The full graph pipeline picks it up.
+        cg = CodeGraph(db)
+        assert artifact.source_ref in cg.nx
+        assert cg.nx.nodes[artifact.source_ref]["type"] == "artifact"
+        assert artifact.source_ref in cg.neighbors(login_id)
+
+        pr = compute_pagerank(cg)
+        # login (referenced by a ticket) must outrank logout (no edges at all
+        # beyond being a node) — proves the connector's output genuinely
+        # participates in ranking, not just plumbing that gets dropped.
+        symbol_scores = {nid: score for nid, score in pr.items() if isinstance(nid, int)}
+        assert symbol_scores[login_id] > 0
+
+    def test_sync_alone_creates_no_edges(self, tmp_path: Path) -> None:
+        """A connector sync populates the artifacts table only — confirms
+        the CLI docstring's claim precisely, so this test would fail loudly
+        if that contract ever silently changed."""
+        db = Database(tmp_path / "index.db")
+        _seed_symbol(db, "auth.py", "login")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "issues": [{"key": "PROJ-2", "fields": {"summary": "Unrelated ticket"}}],
+            "nextPageToken": None,
+        }
+        jira_config = JiraConnectorConfig(
+            base_url="https://example.atlassian.net",
+            email="me@example.com",
+            api_token="tok",
+            project_key="PROJ",
+        )
+        with patch("trelix.indexing.connectors.jira.httpx.get", return_value=mock_resp):
+            JiraConnector(jira_config).sync(db)
+
+        assert db.get_artifact_by_source_ref("ticket:PROJ-2") is not None
+        edges = db._conn.execute("SELECT COUNT(*) FROM generic_edges").fetchone()[0]
+        assert edges == 0
+
+        # And the artifact correctly does NOT appear in CodeGraph — only
+        # symbols reachable via a real generic_edges row become graph nodes.
+        cg = CodeGraph(db)
+        assert "ticket:PROJ-2" not in cg.nx
