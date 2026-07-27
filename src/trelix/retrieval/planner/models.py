@@ -62,6 +62,7 @@ class SubQuery:
         default_factory=list
     )  # 0-based indices of required prior sub-queries
     lexical_only: bool = False  # v2.6.0: True for short keyword queries — skips vector ANN
+    path_filter: str | None = None  # restrict every leg to files under this rel_path prefix
 
 
 @dataclass
@@ -205,6 +206,49 @@ class QueryPlan:
     sub_queries: list[SubQuery]
     raw_query: str  # original user query, used as final fallback
     routing_tier: RoutingTier = field(default=RoutingTier.TIER_2_SINGLE)
+
+
+def plan_from_intent_hint(
+    raw_query: str, intent_hint: str, hyde_snippet_hint: str | None = None
+) -> QueryPlan | None:
+    """
+    Build a QueryPlan directly from a caller-supplied intent hint, mirroring
+    AdaptiveRouter._tier1_plan()'s construction — skips the internal LLM
+    intent-classification call entirely when the caller already knows the
+    intent (e.g. an agent that already classified the query itself).
+
+    Returns None on an invalid/unrecognized intent_hint value — callers
+    MUST fall through to normal server-side classification in that case,
+    never hard-reject, matching QueryPlanner's own "never raise, always
+    fall back" posture (see module docstring).
+
+    A hint is trusted, not re-validated against the query text — the caller
+    is assumed to have done real classification work; treat it as a
+    narrowing instruction, not a suggestion to second-guess.
+    """
+    try:
+        intent = IntentType(intent_hint)
+    except ValueError:
+        return None
+    if intent not in INTENT_STRATEGIES:
+        return None
+
+    return QueryPlan(
+        intent=intent,
+        routing_tier=RoutingTier.TIER_1_DIRECT,
+        execution_mode="parallel",
+        strategy=INTENT_STRATEGIES[intent],
+        sub_queries=[
+            SubQuery(
+                semantic_query=raw_query,
+                hyde_snippet=hyde_snippet_hint or "",
+                bm25_tokens=raw_query.split(),
+                grep_hints=[],
+                file_hints=[],
+            )
+        ],
+        raw_query=raw_query,
+    )
 
 
 def default_plan(raw_query: str) -> QueryPlan:

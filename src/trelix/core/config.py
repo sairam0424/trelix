@@ -357,6 +357,17 @@ class RetrievalConfig(BaseSettings):
     top_k_vector: int = 20
     top_k_bm25: int = 20
     top_k_grep: int = 10
+
+    # Vector leg has no SQL predicate to push a path_filter into (unlike
+    # BM25/grep), so it over-fetches by this factor and post-filters by
+    # rel_path prefix before truncating back to top_k_vector — protects
+    # recall against the filter discarding some of the raw ANN results.
+    path_filter_oversample: int = Field(
+        default=3,
+        ge=1,
+        alias="TRELIX_RETRIEVAL_PATH_FILTER_OVERSAMPLE",
+    )
+
     graph_expansion_depth: int = 1
     graph_expansion_max_symbols: int = 10
     graph_import_max_extra: int = 3

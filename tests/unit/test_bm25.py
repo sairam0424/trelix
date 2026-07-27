@@ -204,6 +204,37 @@ class TestBm25Search:
         assert body[:2000] in r.chunk.chunk_text or r.chunk.chunk_text in body[:2000]
 
 
+class TestPathFilter:
+    def test_path_filter_excludes_symbols_outside_prefix(self, db: Database) -> None:
+        included_file = _make_file(db, "src/auth/login.py")
+        excluded_file = _make_file(db, "src/billing/invoice.py")
+        included_sym = _insert_symbol(
+            db, included_file, "authenticate_user", "def authenticate_user(): pass"
+        )
+        excluded_sym = _insert_symbol(
+            db, excluded_file, "authenticate_charge", "def authenticate_charge(): pass"
+        )
+        _insert_chunk(db, included_sym, "authenticate_user")
+        _insert_chunk(db, excluded_sym, "authenticate_charge")
+
+        results = bm25_search(db, "authenticate", k=10, path_filter="src/auth")
+        names = {r.symbol.name for r in results}
+        assert "authenticate_user" in names
+        assert "authenticate_charge" not in names
+
+    def test_no_path_filter_returns_symbols_from_every_file(self, db: Database) -> None:
+        file_a = _make_file(db, "src/auth/login.py")
+        file_b = _make_file(db, "src/billing/invoice.py")
+        sym_a = _insert_symbol(db, file_a, "authenticate_user", "def authenticate_user(): pass")
+        sym_b = _insert_symbol(db, file_b, "authenticate_charge", "def authenticate_charge(): pass")
+        _insert_chunk(db, sym_a, "authenticate_user")
+        _insert_chunk(db, sym_b, "authenticate_charge")
+
+        results = bm25_search(db, "authenticate", k=10)
+        names = {r.symbol.name for r in results}
+        assert {"authenticate_user", "authenticate_charge"}.issubset(names)
+
+
 # ---------------------------------------------------------------------------
 # _escape_fts5 unit tests
 # ---------------------------------------------------------------------------

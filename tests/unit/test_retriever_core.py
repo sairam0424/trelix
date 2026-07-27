@@ -1573,6 +1573,62 @@ class TestRetrieverVectorSearch:
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.0)
 
+    def test_path_filter_none_does_not_oversample(self, tmp_path: Path) -> None:
+        """No path_filter → fetch exactly k from the vector store, no oversample."""
+        retriever = _build_retriever(str(tmp_path))
+        retriever.vector_store.search.return_value = []
+
+        retriever._vector_search([0.0] * 1536, k=5, path_filter=None)
+
+        retriever.vector_store.search.assert_called_once_with([0.0] * 1536, k=5)
+
+    def test_path_filter_oversamples_by_configured_factor(self, tmp_path: Path) -> None:
+        """path_filter set → fetch k * path_filter_oversample from the vector store."""
+        retriever = _build_retriever(str(tmp_path))
+        retriever.config.retrieval.path_filter_oversample = 3
+        retriever.vector_store.search.return_value = []
+
+        retriever._vector_search([0.0] * 1536, k=5, path_filter="src/auth")
+
+        retriever.vector_store.search.assert_called_once_with([0.0] * 1536, k=15)
+
+    def test_path_filter_excludes_results_outside_prefix(self, tmp_path: Path) -> None:
+        """Results whose file.rel_path doesn't start with path_filter are dropped."""
+        retriever = _build_retriever(str(tmp_path))
+        included = _make_search_result(idx=1)
+        included.file.rel_path = "src/auth/login.py"
+        excluded = _make_search_result(idx=2)
+        excluded.file.rel_path = "src/billing/invoice.py"
+
+        retriever.vector_store.search.return_value = [(1, 0.1), (2, 0.1)]
+        retriever.db.get_chunk_with_context.side_effect = [
+            (included.chunk, included.symbol, included.file),
+            (excluded.chunk, excluded.symbol, excluded.file),
+        ]
+
+        results = retriever._vector_search([0.0] * 1536, k=5, path_filter="src/auth")
+        assert len(results) == 1
+        assert results[0].file.rel_path == "src/auth/login.py"
+
+    def test_path_filter_truncates_back_to_k_after_filtering(self, tmp_path: Path) -> None:
+        """Even with oversampled candidates, final result count is capped at k."""
+        retriever = _build_retriever(str(tmp_path))
+        retriever.config.retrieval.path_filter_oversample = 3
+
+        matching = []
+        db_returns = []
+        for i in range(1, 7):  # 6 candidates, all under the filter prefix
+            sr = _make_search_result(idx=i)
+            sr.file.rel_path = f"src/auth/file_{i}.py"
+            matching.append(sr)
+            db_returns.append((sr.chunk, sr.symbol, sr.file))
+
+        retriever.vector_store.search.return_value = [(i, 0.1) for i in range(1, 7)]
+        retriever.db.get_chunk_with_context.side_effect = db_returns
+
+        results = retriever._vector_search([0.0] * 1536, k=2, path_filter="src/auth")
+        assert len(results) == 2
+
 
 # ---------------------------------------------------------------------------
 # TestRetrieverFileOverviewGrepHintAsFilename — file hint from grep_hints
