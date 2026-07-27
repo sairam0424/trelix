@@ -57,9 +57,10 @@ from __future__ import annotations
 import hmac
 import logging
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Intentionally at module scope — see "Import contract" in the module docstring.
@@ -67,7 +68,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # only works when they are resolved at import time, not inside the function body.
 # Neither module requires fastapi, so this file stays importable without trelix[serve].
 from trelix import __version__
-from trelix.core.config import IndexConfig
+from trelix.core.config import IndexConfig, RetrievalConfig
+from trelix.core.models import Language
 from trelix.retrieval.otel_tracing import pipeline_stage_span
 from trelix.retrieval.retriever import Retriever
 
@@ -112,6 +114,55 @@ class SearchResponse(BaseModel):
     results: list[SearchResultModel]
     next_cursor: int | None
     total_available: int
+
+
+class ParseRequest(BaseModel):
+    """Exactly one of the two content sources must be set: `file_path` (an
+    already-on-disk file, read fresh — not from the index) or `content`
+    (inline text, for unsaved editor/pre-commit content that was never
+    written to disk)."""
+
+    repo_path: str
+    file_path: str | None = None
+    content: str | None = None
+    file_name: str | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_content_source(self) -> ParseRequest:
+        has_disk = self.file_path is not None
+        has_inline = self.content is not None
+        if has_disk == has_inline:
+            raise ValueError(
+                "Provide exactly one of: file_path (disk-backed) or "
+                "content+file_name (inline text)"
+            )
+        if has_inline and self.file_name is None:
+            raise ValueError("file_name is required when content is provided")
+        return self
+
+
+class ParseSymbolModel(BaseModel):
+    name: str
+    qualified_name: str
+    kind: str
+    line_start: int
+    line_end: int
+    signature: str
+
+
+class ParseResponse(BaseModel):
+    """Mirrors ParseResult (indexing/parser/base.py) — a single-file parse,
+    never persisted to the index. Cross-file call/type resolution is skipped
+    (there is nothing in the DB to resolve against for a file that was never
+    indexed), so `call_edges`/`type_edges` reflect only what Tree-sitter could
+    determine from this file in isolation."""
+
+    symbols: list[ParseSymbolModel]
+    call_edge_count: int
+    import_edge_count: int
+    type_edge_count: int
+    parse_errors: int
+    note: str
 
 
 class IndexResponse(BaseModel):
@@ -264,6 +315,79 @@ def create_app() -> Any:  # noqa: ANN201
         config = IndexConfig(repo_path=body["repo_path"])
         with pipeline_stage_span(config.retrieval, "http_index"):
             return IndexResponse(**Indexer(config).index())
+
+    @app.post("/parse", dependencies=auth)
+    def parse_file(body: ParseRequest) -> ParseResponse:
+        """
+        Parse a single file without persisting anything to the index — for
+        editor/pre-commit tooling that wants structural info on unsaved or
+        not-yet-indexed content. Cross-file call/type resolution is
+        intentionally skipped (there is no DB row for this file to resolve
+        against), so results only reflect what Tree-sitter can determine
+        from this one file in isolation. `IndexConfig(repo_path=...)` is
+        constructed only to reuse its `repo_must_exist` validation — no DB or
+        embedder is touched.
+        """
+        from fastapi import HTTPException
+
+        from trelix.indexing.parser.registry import get_parser
+        from trelix.indexing.walker import EXTENSION_MAP
+
+        # Validates repo_path exists; deliberately not otherwise used below —
+        # this endpoint never touches the index DB or an embedder.
+        IndexConfig(repo_path=body.repo_path)
+
+        with pipeline_stage_span(RetrievalConfig(), "http_parse"):
+            if body.file_path is not None:
+                path = Path(body.file_path)
+                if not path.is_absolute():
+                    path = Path(body.repo_path) / path
+                if not path.exists():
+                    raise HTTPException(status_code=400, detail=f"file_path not found: {path}")
+                file_name = path.name
+                source = path.read_text(encoding="utf-8", errors="replace")
+            else:
+                file_name = body.file_name or ""
+                source = body.content or ""
+
+            language = EXTENSION_MAP.get(Path(file_name).suffix.lower(), Language.UNKNOWN)
+            parser = get_parser(language)
+            if parser is None:
+                return ParseResponse(
+                    symbols=[],
+                    call_edge_count=0,
+                    import_edge_count=0,
+                    type_edge_count=0,
+                    parse_errors=0,
+                    note=f"No parser available for language {language.value!r} "
+                    f"(detected from filename {file_name!r})",
+                )
+
+            # file_id=0: no real DB row exists for a dry-run file — matches
+            # the placeholder Indexer._parse_one() also uses before Phase 2's
+            # DB insert assigns the real id.
+            result = parser.parse(source, file_id=0)
+            return ParseResponse(
+                symbols=[
+                    ParseSymbolModel(
+                        name=s.name,
+                        qualified_name=s.qualified_name,
+                        kind=s.kind.value,
+                        line_start=s.line_start,
+                        line_end=s.line_end,
+                        signature=s.signature,
+                    )
+                    for s in result.symbols
+                ],
+                call_edge_count=len(result.call_edges),
+                import_edge_count=len(result.import_edges),
+                type_edge_count=len(result.type_edges),
+                parse_errors=result.parse_errors,
+                note="Cross-file call/type resolution skipped — this file was "
+                "never indexed, so there is nothing in the DB to resolve "
+                "callee_id/to_symbol_id against. Index the file for full "
+                "cross-file resolution.",
+            )
 
     @app.get("/stats", dependencies=auth)
     def stats(repo: str) -> StatsResponse:

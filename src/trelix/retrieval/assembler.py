@@ -27,8 +27,13 @@ class ContextAssembler:
         context = assembler.assemble(query="...", results=[...])
     """
 
-    def __init__(self, token_budget: int = 8_000) -> None:
+    def __init__(self, token_budget: int = 8_000, per_source_budget: bool = False) -> None:
         self.token_budget = token_budget
+        # Split the budget proportionally to each source leg's result count
+        # (not a fixed weight table — self-tuning, no extra config surface)
+        # instead of one shared pool a single noisy leg could crowd out.
+        # False (default) reproduces the exact prior single-pool behavior.
+        self.per_source_budget = per_source_budget
         self._tokenizer = tiktoken.get_encoding("cl100k_base")
 
     def assemble(
@@ -59,6 +64,8 @@ class ContextAssembler:
 
         if assembly_mode == "breadth_first":
             selected = self._pack_breadth_first(results)
+        elif self.per_source_budget:
+            selected = self._pack_proportional(results)
         else:
             selected = self._pack_greedy(results)
 
@@ -87,6 +94,63 @@ class ContextAssembler:
             if tokens_used + result.chunk.token_count <= self.token_budget:
                 selected.append(result)
                 tokens_used += result.chunk.token_count
+        return selected
+
+    def _pack_proportional(self, results: list[SearchResult]) -> list[SearchResult]:
+        """
+        Split the token budget across source legs (vector/bm25/grep/...)
+        proportionally to each leg's result count, then greedy-pack within
+        each leg's slice — so one noisy leg with many low-value results
+        can't crowd out a smaller, higher-precision leg the way a single
+        shared budget pool would.
+
+        `results` is assumed already score-sorted (the fused/reranked order
+        every caller passes in) — that ordering is preserved both within
+        each leg's slice and in the final merged output.
+
+        Any leg that doesn't spend its full slice (because it simply has
+        fewer candidates than its budget covers, not because the next
+        candidate didn't fit) returns the unused tokens to a shared pool,
+        which a second pass spends on the highest-scoring not-yet-selected
+        results overall, regardless of leg.
+        """
+        total = len(results)
+        source_counts: dict[str, int] = defaultdict(int)
+        for r in results:
+            source_counts[r.source] += 1
+
+        budget_by_source = {
+            source: round(self.token_budget * count / total)
+            for source, count in source_counts.items()
+        }
+
+        selected: list[SearchResult] = []
+        selected_ids: set[int] = set()
+        leftover_budget = 0
+        for source, sub_budget in budget_by_source.items():
+            leg_results = [r for r in results if r.source == source]
+            leg_tokens_used = 0
+            leg_selected: list[SearchResult] = []
+            for result in leg_results:
+                if leg_tokens_used + result.chunk.token_count <= sub_budget:
+                    leg_selected.append(result)
+                    leg_tokens_used += result.chunk.token_count
+            selected.extend(leg_selected)
+            selected_ids.update(id(r) for r in leg_selected)
+            leftover_budget += sub_budget - leg_tokens_used
+
+        if leftover_budget > 0:
+            for result in results:
+                if id(result) in selected_ids:
+                    continue
+                if result.chunk.token_count <= leftover_budget:
+                    selected.append(result)
+                    selected_ids.add(id(result))
+                    leftover_budget -= result.chunk.token_count
+
+        # Preserve the original score-descending order in the merged output.
+        order = {id(r): i for i, r in enumerate(results)}
+        selected.sort(key=lambda r: order[id(r)])
         return selected
 
     def _pack_breadth_first(
