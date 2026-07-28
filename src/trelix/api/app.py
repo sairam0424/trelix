@@ -344,9 +344,7 @@ def create_app() -> Any:  # noqa: ANN201
         with pipeline_stage_span(config.retrieval, "http_graph_search"):
             result = GraphBuilder(config).build(extract_concepts=False)
             db = Database(config.db_path_absolute)
-            results = graph_search(
-                db, result.code_graph, [symbol_id], depth=depth, max_results=20
-            )
+            results = graph_search(db, result.code_graph, [symbol_id], depth=depth, max_results=20)
             return [
                 GraphSearchResultModel(
                     symbol=r.symbol.qualified_name,

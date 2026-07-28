@@ -160,7 +160,11 @@ class TestCodeGraphGenericEdges:
         fid = _insert_file(db, "auth.py")
         sid = _insert_symbol(db, fid, "login")
         db.insert_generic_edges(
-            [GenericEdge(from_symbol_id=sid, source_ref="ticket:PROJ-1", edge_kind="references_ticket")]
+            [
+                GenericEdge(
+                    from_symbol_id=sid, source_ref="ticket:PROJ-1", edge_kind="references_ticket"
+                )
+            ]
         )
         cg = CodeGraph(db)
         assert "ticket:PROJ-1" in cg.nx
@@ -171,7 +175,11 @@ class TestCodeGraphGenericEdges:
         fid = _insert_file(db, "auth.py")
         sid = _insert_symbol(db, fid, "login")
         db.insert_generic_edges(
-            [GenericEdge(from_symbol_id=sid, source_ref="ticket:PROJ-1", edge_kind="references_ticket")]
+            [
+                GenericEdge(
+                    from_symbol_id=sid, source_ref="ticket:PROJ-1", edge_kind="references_ticket"
+                )
+            ]
         )
         cg = CodeGraph(db)
         neighbors = cg.neighbors(sid)
@@ -182,7 +190,11 @@ class TestCodeGraphGenericEdges:
         fid = _insert_file(db, "auth.py")
         sid = _insert_symbol(db, fid, "login")
         db.insert_generic_edges(
-            [GenericEdge(from_symbol_id=sid, source_ref="ticket:PROJ-1", edge_kind="references_ticket")]
+            [
+                GenericEdge(
+                    from_symbol_id=sid, source_ref="ticket:PROJ-1", edge_kind="references_ticket"
+                )
+            ]
         )
         cg = CodeGraph(db)
         edge_data = cg.nx.get_edge_data(sid, "ticket:PROJ-1")
@@ -208,11 +220,17 @@ class TestCodeGraphGenericEdges:
         sid2 = _insert_symbol(db, fid, "logout")
         db.insert_generic_edges(
             [
-                GenericEdge(from_symbol_id=sid1, source_ref="ticket:PROJ-1", edge_kind="references_ticket"),
-                GenericEdge(from_symbol_id=sid2, source_ref="ticket:PROJ-1", edge_kind="references_ticket"),
+                GenericEdge(
+                    from_symbol_id=sid1, source_ref="ticket:PROJ-1", edge_kind="references_ticket"
+                ),
+                GenericEdge(
+                    from_symbol_id=sid2, source_ref="ticket:PROJ-1", edge_kind="references_ticket"
+                ),
             ]
         )
         cg = CodeGraph(db)
-        artifact_nodes = [n for n, attrs in cg.nx.nodes(data=True) if attrs.get("type") == "artifact"]
+        artifact_nodes = [
+            n for n, attrs in cg.nx.nodes(data=True) if attrs.get("type") == "artifact"
+        ]
         assert artifact_nodes == ["ticket:PROJ-1"]
         assert sid1 in cg.neighbors(sid2) or "ticket:PROJ-1" in cg.neighbors(sid2)

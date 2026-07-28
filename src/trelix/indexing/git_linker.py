@@ -87,7 +87,9 @@ class GitLinker:
 
         if edges:
             self._db.insert_generic_edges(edges)
-        logger.info("GitLinker: linked %d symbol-ticket edges from %d commits", len(edges), len(commits))
+        logger.info(
+            "GitLinker: linked %d symbol-ticket edges from %d commits", len(edges), len(commits)
+        )
         return len(edges)
 
     # ------------------------------------------------------------------

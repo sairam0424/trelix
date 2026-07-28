@@ -624,7 +624,8 @@ def link_tickets(
     repo: str = typer.Argument(..., help="Path to the indexed repository (must be a git repo)"),
     max_commits: int = typer.Option(5_000, help="Max commits to walk (bounds cost on large repos)"),
     since: str | None = typer.Option(
-        None, help='Only walk commits after this date, e.g. "90 days ago" (passed to git log --since)'
+        None,
+        help='Only walk commits after this date, e.g. "90 days ago" (passed to git log --since)',
     ),
     ticket_pattern: str = typer.Option(
         r"[A-Z]+-\d+",

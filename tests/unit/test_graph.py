@@ -335,7 +335,11 @@ class TestRankByPagerank:
         sym = _insert_symbol(db, fid, "login")
         _insert_chunk(db, sym)
         db.insert_generic_edges(
-            [GenericEdge(from_symbol_id=sym, source_ref="ticket:PROJ-1", edge_kind="references_ticket")]
+            [
+                GenericEdge(
+                    from_symbol_id=sym, source_ref="ticket:PROJ-1", edge_kind="references_ticket"
+                )
+            ]
         )
 
         pr = rank_by_pagerank([sym], db)
@@ -361,15 +365,24 @@ class TestRankByPagerank:
             _insert_chunk(db, sid)
         db.insert_call_edges(
             [
-                CallEdge(caller_id=referenced, callee_name="shared_callee", line=1, callee_id=shared_callee),
-                CallEdge(caller_id=plain, callee_name="shared_callee", line=1, callee_id=shared_callee),
+                CallEdge(
+                    caller_id=referenced,
+                    callee_name="shared_callee",
+                    line=1,
+                    callee_id=shared_callee,
+                ),
+                CallEdge(
+                    caller_id=plain, callee_name="shared_callee", line=1, callee_id=shared_callee
+                ),
             ]
         )
         db._conn.commit()
         db.insert_generic_edges(
             [
                 GenericEdge(
-                    from_symbol_id=referenced, source_ref="ticket:PROJ-1", edge_kind="references_ticket"
+                    from_symbol_id=referenced,
+                    source_ref="ticket:PROJ-1",
+                    edge_kind="references_ticket",
                 )
             ]
         )
