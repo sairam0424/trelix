@@ -479,6 +479,12 @@ class Database:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_generic_edges_source_ref ON generic_edges(source_ref)"
         )
+        # Re-running a writer (e.g. `trelix link-tickets` on the same repo)
+        # must not duplicate an edge it already inserted.
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_generic_edges_dedup "
+            "ON generic_edges(from_symbol_id, source_ref, edge_kind)"
+        )
         self._conn.commit()
 
         # Source-connector artifacts migration: non-code content fetched
@@ -1469,8 +1475,13 @@ class Database:
     # ------------------------------------------------------------------
 
     def insert_generic_edges(self, edges: list[GenericEdge]) -> None:
+        """Re-inserting an edge already present (same from_symbol_id,
+        source_ref, edge_kind) is a silent no-op — see idx_generic_edges_dedup,
+        so a writer can be re-run against the same repo without duplicating
+        rows."""
         self._conn.executemany(
-            "INSERT INTO generic_edges (from_symbol_id, source_ref, edge_kind, weight)"
+            "INSERT OR IGNORE INTO generic_edges"
+            " (from_symbol_id, source_ref, edge_kind, weight)"
             " VALUES (?, ?, ?, ?)",
             [(e.from_symbol_id, e.source_ref, e.edge_kind, e.weight) for e in edges],
         )
