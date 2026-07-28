@@ -194,6 +194,173 @@ class TestSearchPagination:
             assert data["total_available"] == 3
 
 
+class TestParseEndpoint:
+    """POST /parse — dry-run single-file parse, never persisted to the index."""
+
+    def test_disk_backed_file_parses_symbols(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        file_path = tmp_path / "util.py"
+        file_path.write_text("def add(a, b):\n    return a + b\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(tmp_path), "file_path": str(file_path)})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [s["name"] for s in data["symbols"]] == ["add"]
+        assert data["parse_errors"] == 0
+        assert "never indexed" in data["note"]
+
+    def test_inline_content_parses_symbols(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/parse",
+            json={
+                "repo_path": str(tmp_path),
+                "content": "def mul(a, b):\n    return a * b\n",
+                "file_name": "scratch.py",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [s["name"] for s in data["symbols"]] == ["mul"]
+
+    def test_neither_file_path_nor_content_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(tmp_path)})
+        assert resp.status_code == 422
+
+    def test_both_file_path_and_content_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        file_path = tmp_path / "util.py"
+        file_path.write_text("x = 1\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/parse",
+            json={
+                "repo_path": str(tmp_path),
+                "file_path": str(file_path),
+                "content": "y = 2",
+                "file_name": "other.py",
+            },
+        )
+        assert resp.status_code == 422
+
+    def test_content_without_file_name_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(tmp_path), "content": "x = 1"})
+        assert resp.status_code == 422
+
+    def test_unknown_language_returns_empty_symbols_with_note(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/parse",
+            json={"repo_path": str(tmp_path), "content": "???", "file_name": "data.xyz"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["symbols"] == []
+        assert "No parser available" in data["note"]
+
+    def test_nonexistent_disk_file_returns_400(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/parse",
+            json={"repo_path": str(tmp_path), "file_path": str(tmp_path / "missing.py")},
+        )
+        assert resp.status_code == 400
+
+    def test_absolute_file_path_outside_repo_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Regression test for a real path-traversal vulnerability: an
+        absolute file_path pointing anywhere on the host (ignoring
+        repo_path entirely) must be rejected, not silently read and parsed."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        repo = tmp_path / "innocent_repo"
+        repo.mkdir()
+        outside = tmp_path / "outside_the_repo"
+        outside.mkdir()
+        secret = outside / "secret.py"
+        secret.write_text("SHOULD_NEVER_BE_READABLE = True\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(repo), "file_path": str(secret)})
+        assert resp.status_code == 400
+        assert "inside repo_path" in resp.json()["detail"]
+
+    def test_relative_file_path_dot_dot_escape_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Regression test: a relative file_path with ../ segments must not
+        be able to escape repo_path either."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        repo = tmp_path / "innocent_repo"
+        repo.mkdir()
+        secret = tmp_path / "secret.py"
+        secret.write_text("SHOULD_NEVER_BE_READABLE = True\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(repo), "file_path": "../secret.py"})
+        assert resp.status_code == 400
+        assert "inside repo_path" in resp.json()["detail"]
+
+    def test_relative_file_path_inside_a_subdirectory_still_works(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The containment fix must not break the legitimate case: a
+        relative path into a subdirectory that IS inside repo_path."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        repo = tmp_path / "repo"
+        nested = repo / "src"
+        nested.mkdir(parents=True)
+        (nested / "nested.py").write_text("def nested_fn():\n    pass\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(repo), "file_path": "src/nested.py"})
+        assert resp.status_code == 200
+        assert [s["name"] for s in resp.json()["symbols"]] == ["nested_fn"]
+
+
 class TestApiAuth:
     """TRELIX_API_AUTH_TOKEN gates every route except /health. Unset (the
     conftest default) must leave every route open — the compatibility
