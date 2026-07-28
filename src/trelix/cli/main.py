@@ -615,6 +615,86 @@ def stats(
 
 
 # ---------------------------------------------------------------------------
+# link-tickets
+# ---------------------------------------------------------------------------
+
+
+@app.command("link-tickets")
+def link_tickets(
+    repo: str = typer.Argument(..., help="Path to the indexed repository (must be a git repo)"),
+    max_commits: int = typer.Option(5_000, help="Max commits to walk (bounds cost on large repos)"),
+    since: str | None = typer.Option(
+        None,
+        help='Only walk commits after this date, e.g. "90 days ago" (passed to git log --since)',
+    ),
+    ticket_pattern: str = typer.Option(
+        r"[A-Z]+-\d+",
+        help='Regex for ticket IDs in commit messages (default: Jira-style "PROJ-123")',
+    ),
+) -> None:
+    """
+    Walk git history to link code symbols to ticket references found in
+    commit messages (e.g. "PROJ-123") — feeds cross-source PageRank.
+
+    A separate, slower pass from `trelix index` — run it after indexing, on
+    an already-indexed repo. Requires *repo* to be a real git checkout;
+    non-git directories or shallow clones degrade gracefully to 0 links.
+    """
+    from pydantic import ValidationError as _PydanticValidationError
+
+    from trelix.core.config import GitLinkerConfig, IndexConfig
+    from trelix.indexing.git_linker import GitLinker
+    from trelix.store.db import Database
+
+    try:
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except _PydanticValidationError as exc:
+        first_err = exc.errors()[0]
+        msg = first_err.get("msg", str(exc))
+        field = " -> ".join(str(x) for x in first_err.get("loc", []))
+        detail = f"{field}: {msg}" if field else msg
+        _print_error("Configuration error", detail)
+        raise typer.Exit(1) from exc
+    except (ValueError, FileNotFoundError) as exc:
+        _print_error("Error", exc)
+        raise typer.Exit(1) from exc
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        from rich.markup import escape
+
+        err_console.print(
+            f"[red]No index found at {escape(str(db_path))}[/red] —"
+            f" run `trelix index {repo}` first."
+        )
+        raise typer.Exit(1)
+
+    linker_config = GitLinkerConfig(
+        enabled=True,
+        max_commits=max_commits,
+        since=since,
+        ticket_pattern=ticket_pattern,
+    )
+
+    try:
+        with Database(db_path) as db:
+            with console.status("[bold cyan]Walking git history…[/bold cyan]"):
+                count = GitLinker(db, linker_config).link(config.repo_path)
+    except Exception as exc:
+        _print_error("Failed to link tickets", exc)
+        raise typer.Exit(1) from exc
+
+    if count == 0:
+        console.print(
+            "[yellow]No ticket references linked.[/yellow] Either this isn't a git "
+            "repo, no commits matched the ticket pattern, or no touched files are "
+            "indexed yet."
+        )
+    else:
+        console.print(f"[green]Linked {count} symbol-ticket edge(s).[/green]")
+
+
+# ---------------------------------------------------------------------------
 # update-index
 # ---------------------------------------------------------------------------
 
