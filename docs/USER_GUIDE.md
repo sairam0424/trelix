@@ -21,6 +21,10 @@
 12. [Troubleshooting Common Issues](#12-troubleshooting-common-issues)
 13. [CLI Flags and Configuration Reference](#13-cli-flags-and-configuration-reference)
 14. [API Quick Reference](#14-api-quick-reference)
+    - [REST API authentication](#rest-api-authentication)
+    - [Caller-supplied query routing (`intent_hint` / `hyde_snippet_hint`)](#caller-supplied-query-routing-intent_hint-hyde_snippet_hint)
+    - [Dry-run file parsing](#dry-run-file-parsing)
+    - [Ticket linking and connector sync (CLI-only)](#ticket-linking-and-connector-sync-cli-only)
 
 ---
 
@@ -1619,6 +1623,25 @@ trelix serve ./my-repo --port 8765
 
 All endpoints accept and return JSON. The server binds to `http://127.0.0.1:8765` by default.
 
+### REST API authentication
+
+Auth is opt-in and unset by default — matching trelix's other opt-in flags like `TRELIX_OTEL_ENABLED` and `TRELIX_TELEMETRY_ENABLED`. Set `TRELIX_API_AUTH_TOKEN` to lock down the server:
+
+```bash
+TRELIX_API_AUTH_TOKEN=my-secret-token trelix serve ./my-repo --port 8765
+```
+
+Once set, every request to a protected route must include the token in an `X-Trelix-Api-Key` header:
+
+```bash
+curl -s "http://localhost:8765/search?query=JWT+validation&repo=./my-repo" \
+  -H "X-Trelix-Api-Key: my-secret-token" | jq .
+```
+
+A missing or mismatched header returns `401 Invalid or missing API key` (checked with a constant-time `hmac.compare_digest`, and logged server-side as a warning). If `TRELIX_API_AUTH_TOKEN` is left unset, the server behaves exactly as before — every route is open, no header required.
+
+**`/health` is always exempt** — it has no auth dependency at all, so liveness probes (Kubernetes, load balancers) can reach it without a token even when auth is enabled. Every other route (`/search`, `/ask`, `/index`, `/parse`, `/stats`, `/graph`, `/graph/communities`, `/graph/visualize`, `/graph/search`) is protected once the token is set.
+
 ### Health check
 
 ```bash
@@ -1653,52 +1676,121 @@ curl http://localhost:8765/stats
 
 ### Hybrid code search
 
+`GET /search` is a paginated hybrid search — it returns the same envelope shape as the MCP `search_code` tool.
+
 ```bash
-curl -s -X POST http://localhost:8765/search \
+curl -s "http://localhost:8765/search?query=JWT+validation&repo=./my-repo&k=10&cursor=0" | jq .
+```
+
+```json
+{
+  "results": [
+    {
+      "file": "src/auth/jwt.py",
+      "symbol": "src.auth.jwt.JWTValidator.validate",
+      "kind": "method",
+      "lines": "18-44",
+      "score": 0.924,
+      "source": "vector+bm25",
+      "body": "def validate(self, token: str) -> dict:\n    \"\"\"Validate JWT token signature and claims.\"\"\"\n    ...",
+      "language": "python"
+    }
+  ],
+  "next_cursor": 10,
+  "total_available": 23
+}
+```
+
+To fetch the next page, pass the previous response's `next_cursor` as the `cursor` query parameter. `next_cursor` is `null` on the last page.
+
+**Query parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | yes | Search query |
+| `repo` | string | yes | Path to indexed repo |
+| `k` | integer | no | Number of results per page (default: 10) |
+| `cursor` | integer | no | Pagination offset (default: 0) |
+| `intent_hint` | string | no | One of the 8 `IntentType` values — see [Caller-supplied query routing](#caller-supplied-query-routing-intent_hint-hyde_snippet_hint) below |
+| `hyde_snippet_hint` | string | no | Short hypothetical code snippet (HyDE); only used when `intent_hint` is also valid |
+
+### Caller-supplied query routing (`intent_hint` / `hyde_snippet_hint`)
+
+When the caller (typically an agent that already classified the query itself) already knows what kind of query this is, it can pass `intent_hint` to skip trelix's own internal LLM intent classification and route directly to that intent's retrieval strategy via `plan_from_intent_hint()`. This saves the classification LLM call and its latency.
+
+Valid `intent_hint` values (the `IntentType` enum):
+
+- `symbol_lookup`
+- `file_overview`
+- `feature_flow`
+- `project_overview`
+- `comparison`
+- `config_lookup`
+- `dependency_map`
+- `blast_radius`
+
+An invalid or unrecognized `intent_hint` value is **never rejected** — the request silently falls through to trelix's normal internal classification, exactly as if `intent_hint` had not been passed at all.
+
+`hyde_snippet_hint` (a short hypothetical code snippet, for [HyDE](https://arxiv.org/abs/2212.10496)-style query expansion) is only honored when `intent_hint` is also valid — passing it alongside an invalid `intent_hint` has no effect.
+
+```bash
+curl -s "http://localhost:8765/search?query=where+are+tokens+refreshed&repo=./my-repo&intent_hint=blast_radius" | jq .
+```
+
+### Dry-run file parsing
+
+`POST /parse` runs trelix's Tree-sitter parser over a single file **without touching the index** — no DB write, no embedding call. It is meant for editor or pre-commit tooling that wants structural info (symbols, signatures, edge counts) on unsaved or not-yet-indexed content.
+
+Exactly one of `file_path` (disk-backed, relative paths are resolved against `repo_path`) or `content` (inline unsaved text) must be set — the request is rejected with `422` if both or neither are set. `file_name` is required whenever `content` is set, so the parser can detect the language from the extension (also `422` if missing).
+
+**Disk-backed file:**
+
+```bash
+curl -s -X POST http://localhost:8765/parse \
   -H "Content-Type: application/json" \
-  -d '{"query": "JWT validation", "repo_path": "./my-repo", "k": 10}' \
+  -d '{"repo_path": "./my-repo", "file_path": "src/auth/jwt.py"}' \
+  | jq .
+```
+
+**Inline unsaved content:**
+
+```bash
+curl -s -X POST http://localhost:8765/parse \
+  -H "Content-Type: application/json" \
+  -d '{"repo_path": "./my-repo", "content": "def foo():\n    pass\n", "file_name": "scratch.py"}' \
   | jq .
 ```
 
 ```json
 {
-  "query": "JWT validation",
-  "results": [
+  "symbols": [
     {
-      "score": 0.924,
-      "file": "src/auth/jwt.py",
-      "symbol": "JWTValidator.validate",
+      "name": "validate",
       "qualified_name": "src.auth.jwt.JWTValidator.validate",
+      "kind": "method",
       "line_start": 18,
       "line_end": 44,
-      "language": "python",
-      "source": "vector+bm25",
-      "body": "def validate(self, token: str) -> dict:\n    \"\"\"Validate JWT token signature and claims.\"\"\"\n    ..."
+      "signature": "def validate(self, token: str) -> dict:"
     }
   ],
-  "total": 10,
-  "latency_ms": 43.2,
-  "legs_used": ["vector", "bm25", "grep"]
+  "call_edge_count": 2,
+  "import_edge_count": 1,
+  "type_edge_count": 0,
+  "parse_errors": 0,
+  "note": "Cross-file call/type resolution skipped — this file was never indexed, so there is nothing in the DB to resolve callee_id/to_symbol_id against. Index the file for full cross-file resolution."
 }
 ```
 
-**Request body fields:**
+Because this file was never indexed, `call_edge_count` and `type_edge_count` reflect only what Tree-sitter could resolve in isolation from this one file — cross-file call/type resolution is intentionally skipped (there is no DB row to resolve against). The `note` field always explains this.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `query` | string | yes | Search query |
-| `repo_path` | string | yes | Path to indexed repo |
-| `k` | integer | no | Number of results (default: 10) |
-| `lang` | string | no | Filter by language |
-| `file_prefix` | string | no | Filter by file path prefix |
-| `rerank` | string | no | `cohere`, `cross-encoder`, or `plaid` |
+**Security note:** `file_path` is resolved against `repo_path` and validated to stay inside it (`Path.resolve()` + a containment check). An absolute path or a relative path with `..` segments that would escape `repo_path` is rejected with `400`.
 
 ### Streaming ask (SSE)
 
+`GET /ask` streams a synthesized answer over Server-Sent Events.
+
 ```bash
-curl -s -N -X POST http://localhost:8765/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "how does auth work?", "repo_path": "./my-repo"}'
+curl -s -N "http://localhost:8765/ask?query=how+does+auth+work%3F&repo=./my-repo"
 ```
 
 The response is a Server-Sent Events stream. Each `data:` event is one token. The final event is `data: [DONE]`.
@@ -1716,11 +1808,8 @@ data: [DONE]
 **In JavaScript (browser or Node.js):**
 
 ```javascript
-const response = await fetch('http://localhost:8765/ask', {
-  method: 'POST',
-  headers: {'Content-Type': 'application/json'},
-  body: JSON.stringify({query: "how does auth work?", repo_path: "./my-repo"})
-});
+const params = new URLSearchParams({query: "how does auth work?", repo: "./my-repo"});
+const response = await fetch(`http://localhost:8765/ask?${params}`);
 
 const reader = response.body.getReader();
 const decoder = new TextDecoder();
@@ -1826,6 +1915,24 @@ curl "http://localhost:8765/graph/search?repo=./my-repo&query=auth+middleware&de
 curl "http://localhost:8765/graph/visualize?repo=./my-repo" -o graph.html
 open graph.html  # opens in browser: interactive Pyvis visualization
 ```
+
+### Ticket linking and connector sync (CLI-only)
+
+Two new commands connect trelix's code graph to external project-tracking systems. Both are CLI-only — there is no REST route for either. Full flag documentation lives in [CLI_REFERENCE.md](CLI_REFERENCE.md).
+
+**`trelix link-tickets`** walks the git history of an already-indexed repo, regex-matches ticket IDs (e.g. Jira-style `PROJ-123`) in commit messages, and links every symbol touched by a ticket-referencing commit to that ticket. This feeds a bidirectional edge into PageRank so cross-source references influence result ranking.
+
+```bash
+trelix link-tickets ./my-repo --since "90 days ago"
+```
+
+**`trelix connector sync`** fetches artifacts (Jira tickets or TestRail test cases) from an external system and writes them to trelix's `artifacts` table, keyed by source reference so re-syncing updates rather than duplicates.
+
+```bash
+trelix connector sync ./my-repo jira
+```
+
+Connector credentials (`TRELIX_JIRA_*` / `TRELIX_TESTRAIL_*`) are documented in [CONFIGURATION.md](CONFIGURATION.md).
 
 ### LangChain integration
 

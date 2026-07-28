@@ -37,6 +37,8 @@ Settings are resolved in priority order (highest wins):
 | `TRELIX_RETRIEVAL_MULTI_QUERY_COUNT` | `2` | Number of query variants to generate when multi-query is enabled |
 | `TRELIX_RETRIEVAL_SHORT_QUERY_LEXICAL` | `false` | Route short queries (≤threshold tokens) to BM25+grep only, skipping vector ANN |
 | `TRELIX_RETRIEVAL_SHORT_QUERY_TOKENS` | `5` | Meaningful-token threshold for short-query classification (1–10) |
+| `TRELIX_RETRIEVAL_PATH_FILTER_OVERSAMPLE` | `3` (min: `1`) | **Advanced/internal tuning knob.** When a `SubQuery.path_filter` is set, the vector leg over-fetches by this factor before post-filtering results by path prefix and truncating back to `k` — protects recall against the filter discarding raw ANN hits. There is currently no CLI, REST, or MCP parameter to set `path_filter` itself; it is only set programmatically. |
+| `TRELIX_RETRIEVAL_CONTEXT_BUDGET_PER_SOURCE` | `false` | When enabled, the context-assembly token budget is split proportionally across each retrieval leg's result count instead of one shared pool, so a single noisy leg cannot crowd out the others. `false` reproduces the pre-existing single-pool greedy-pack behavior byte-for-byte. |
 | `TRELIX_INDEXER_STREAMING` | `false` | Enable generator-based streaming indexing pipeline (bounded Queue, lazy file iteration). Default off — zero behavior change when unset. |
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | _(none)_ | Reranker to apply after fusion. One of: `cross_encoder`, `cohere`, `plaid`, `xtr` (**experimental**) |
 | `TRELIX_RETRIEVAL_XTR_TOKENS` | `100` | Candidate token count for XTR reranker (10–1000). Only applies when `TRELIX_RETRIEVAL_RERANK_PROVIDER=xtr` |
@@ -90,6 +92,40 @@ The agentic loop (`trelix ask --agentic` / `TRELIX_RETRIEVAL_AGENTIC=true`) pers
 | `TRELIX_FEDERATION_MAX_REPOS` | `50` | Maximum number of registered repos actually queried per federated search call (1–500). Registered repos beyond this cap are skipped (reported via `repos_skipped` in the MCP `federation_search_all` response); prevents an unbounded `federation_add_repo` loop from making every subsequent query scale linearly |
 
 There is no environment variable for the federation registry file path. The registry JSON file location defaults to `~/.config/trelix/repos.json` and can be overridden per-call via the `--config` CLI option (`trelix search-all --config`, `trelix federation add/list/remove --config`) or the `config_path` argument on the corresponding MCP tools. For security, MCP callers may only point `config_path` at `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/` — paths outside those roots are rejected.
+
+### Git ticket linking
+
+Configuration for [`trelix link-tickets`](CLI_REFERENCE.md#trelix-link-tickets), which walks git history to link code symbols to external ticket references found in commit messages. Off by default — requires the repo to actually be a git checkout, and is a separate, slower pass from the main index pipeline (invoked only via `trelix link-tickets`, never automatically from indexing).
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_GIT_LINKER_ENABLED` | `false` | Enable git-history ticket linking. Set to `true` automatically by `trelix link-tickets`; not something you typically set directly. |
+| `TRELIX_GIT_LINKER_TICKET_PATTERN` | `[A-Z]+-\d+` | Regex for matching ticket IDs in commit messages. The default matches Jira-style tickets (`PROJ-123`); override for other conventions (GitHub `#123`, Linear `ENG-123`). |
+| `TRELIX_GIT_LINKER_MAX_COMMITS` | `5000` (min: `1`) | Maximum number of commits to walk. Bounds cost on repos with 100k+ commit histories. |
+| `TRELIX_GIT_LINKER_SINCE` | _(none)_ | Only walk commits after this date, e.g. `"90 days ago"`. Passed straight through to `git log --since`. |
+
+### Connector credentials (Jira / TestRail)
+
+Configuration for [`trelix connector sync`](CLI_REFERENCE.md#trelix-connector-sync), which fetches artifacts from an external system and writes them to trelix's `artifacts` table. Both connectors use HTTP Basic auth; all four variables per connector are required — missing any of them fails config validation before any HTTP call is made.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_JIRA_BASE_URL` | _(none, required)_ | Base URL of the Jira Cloud instance, e.g. `https://acme.atlassian.net` |
+| `TRELIX_JIRA_EMAIL` | _(none, required)_ | Email address used for HTTP Basic auth against the Jira REST API |
+| `TRELIX_JIRA_API_TOKEN` | _(none, required)_ | Jira API token (paired with `TRELIX_JIRA_EMAIL` for Basic auth) |
+| `TRELIX_JIRA_PROJECT_KEY` | _(none, required)_ | Jira project key to sync tickets from |
+| `TRELIX_JIRA_PAGE_SIZE` | `100` (max `100`) | Page size for Jira API pagination |
+| `TRELIX_TESTRAIL_BASE_URL` | _(none, required)_ | Base URL of the TestRail instance, e.g. `https://acme.testrail.io` |
+| `TRELIX_TESTRAIL_USERNAME` | _(none, required)_ | Username used for HTTP Basic auth against the TestRail REST API |
+| `TRELIX_TESTRAIL_API_KEY` | _(none, required)_ | TestRail API key (paired with `TRELIX_TESTRAIL_USERNAME` for Basic auth) |
+| `TRELIX_TESTRAIL_PROJECT_ID` | _(none, required)_ | TestRail project ID to sync test cases from |
+| `TRELIX_TESTRAIL_PAGE_SIZE` | `250` (max `250` — TestRail's own API ceiling) | Page size for TestRail API pagination |
+
+### REST API
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_API_AUTH_TOKEN` | _(none)_ | Shared secret for `trelix serve`'s REST API. Opt-in: unset (the default) leaves every route open, matching the same "off by default" pattern as `TRELIX_OTEL_ENABLED` and `TRELIX_TELEMETRY_ENABLED`. When set, every route except `GET /health` requires a matching `X-Trelix-Api-Key` header (checked with a constant-time comparison) — see [USER_GUIDE.md § API Quick Reference](USER_GUIDE.md#14-api-quick-reference). |
 
 ### MCP Server
 
@@ -169,6 +205,10 @@ TRELIX_RETRIEVAL_TELEMETRY=false
 # Generate LLM file summaries at index time (requires LLM provider)
 TRELIX_FILE_SUMMARIES_ENABLED=false
 
+# Advanced retrieval tuning (internal knobs — no CLI/REST/MCP param yet)
+# TRELIX_RETRIEVAL_PATH_FILTER_OVERSAMPLE=3
+# TRELIX_RETRIEVAL_CONTEXT_BUDGET_PER_SOURCE=false
+
 # ---------------------------------------------------------------------------
 # LLM / Synthesis
 # ---------------------------------------------------------------------------
@@ -221,6 +261,40 @@ TRELIX_FEDERATION_MAX_WORKERS=4
 
 # Federation registry file path has no env var override — use --config (CLI)
 # or config_path (MCP tools) instead. Defaults to ~/.config/trelix/repos.json.
+
+# ---------------------------------------------------------------------------
+# Git ticket linking (trelix link-tickets)
+# ---------------------------------------------------------------------------
+
+# TRELIX_GIT_LINKER_ENABLED=false
+# TRELIX_GIT_LINKER_TICKET_PATTERN=[A-Z]+-\d+
+# TRELIX_GIT_LINKER_MAX_COMMITS=5000
+# TRELIX_GIT_LINKER_SINCE=90 days ago
+
+# ---------------------------------------------------------------------------
+# Connector credentials (trelix connector sync)
+# ---------------------------------------------------------------------------
+
+# Jira Cloud (base_url/email/api_token/project_key all required to sync)
+# TRELIX_JIRA_BASE_URL=https://acme.atlassian.net
+# TRELIX_JIRA_EMAIL=bot@acme.com
+# TRELIX_JIRA_API_TOKEN=...
+# TRELIX_JIRA_PROJECT_KEY=PROJ
+# TRELIX_JIRA_PAGE_SIZE=100
+
+# TestRail (base_url/username/api_key/project_id all required to sync)
+# TRELIX_TESTRAIL_BASE_URL=https://acme.testrail.io
+# TRELIX_TESTRAIL_USERNAME=bot@acme.com
+# TRELIX_TESTRAIL_API_KEY=...
+# TRELIX_TESTRAIL_PROJECT_ID=7
+# TRELIX_TESTRAIL_PAGE_SIZE=250
+
+# ---------------------------------------------------------------------------
+# REST API
+# ---------------------------------------------------------------------------
+
+# Opt-in auth for `trelix serve` — unset means every route stays open
+# TRELIX_API_AUTH_TOKEN=...
 
 # ---------------------------------------------------------------------------
 # MCP Server

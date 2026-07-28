@@ -33,6 +33,8 @@ on most commands.
    - [eval](#trelix-eval)
    - [taint](#trelix-taint)
    - [review](#trelix-review)
+   - [link-tickets](#trelix-link-tickets)
+   - [connector sync](#trelix-connector-sync)
    - [search-all](#trelix-search-all)
    - [federation add](#trelix-federation-add)
    - [federation list](#trelix-federation-list)
@@ -939,6 +941,144 @@ GITHUB_TOKEN=$TOKEN trelix review . --pr acme/backend#142 --post-comments
 - `--pr` and `--diff`/`--base`/`--head` are mutually exclusive.
 - Binary and oversized files from GitHub PRs are skipped automatically.
 - PRs with more than 3,000 changed files will trigger a truncation warning.
+
+---
+
+### `trelix link-tickets`
+
+#### Synopsis
+
+```
+trelix link-tickets <repo> [--max-commits N] [--since DATE] [--ticket-pattern REGEX]
+```
+
+#### Description
+
+Walks the git history of an already-indexed repository, regex-matches ticket
+IDs (e.g. Jira-style `PROJ-123`) in commit messages, and links every symbol in
+each ticket-referencing commit's touched files to that ticket via a new
+`generic_edges` row (`source_ref` format `ticket:<id>`). This feeds a
+bidirectional edge into `rank_by_pagerank()`'s graph so cross-source
+references influence PageRank.
+
+Requires `<repo>` to already be indexed (`trelix index <repo>` must have been
+run first) and to be a real git checkout. Non-git directories or repos with no
+matching commits degrade gracefully to zero edges linked — the command never
+raises for these cases. Re-running on the same repo is idempotent: a unique
+index prevents duplicate edges from being created.
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--max-commits` | integer | `5000` | Maximum number of commits to walk. Bounds cost on large repos with long histories. |
+| `--since` | string | _(none)_ | Only walk commits after this date, e.g. `"90 days ago"`. Passed straight through to `git log --since`. |
+| `--ticket-pattern` | string (regex) | `[A-Z]+-\d+` | Regex for matching ticket IDs in commit messages. The default matches Jira-style tickets (`PROJ-123`); override for other conventions, e.g. GitHub-issue style (`#\d+`). |
+
+#### Examples
+
+```bash
+# Link tickets referenced in the full history (up to 5,000 commits)
+trelix link-tickets ./my-repo
+
+# Only walk the last 90 days of commits
+trelix link-tickets ./my-repo --since "90 days ago"
+
+# Bound the walk and use a GitHub-issue-style ticket pattern
+trelix link-tickets ./my-repo --max-commits 1000 --ticket-pattern '#\d+'
+```
+
+#### Output
+
+```
+Linked 42 symbol-ticket edge(s).
+```
+
+Or, when no commits matched:
+
+```
+No ticket references linked. Either this isn't a git repo, no commits matched
+the ticket pattern, or no touched files are indexed yet.
+```
+
+#### Notes
+
+- Run `trelix index <repo>` before this command — it exits with code 1 if no
+  index is found.
+- Safe to re-run: existing symbol-ticket edges are never duplicated.
+- This is a separate, slower pass from `trelix index` — it is not invoked
+  automatically during indexing.
+
+---
+
+### `trelix connector sync`
+
+#### Synopsis
+
+```
+trelix connector sync <repo> <jira|testrail>
+```
+
+#### Description
+
+Fetches artifacts (Jira tickets or TestRail test cases) from an external
+system via the connector's `ArtifactSource.fetch()` and writes them to the
+`artifacts` table via `upsert_artifact()`, keyed by source reference so
+re-syncing updates existing rows rather than duplicating them.
+
+Requires `<repo>` to already be indexed (checks that `.trelix/index.db`
+exists before making any HTTP call). Required environment variables differ
+per connector — see [CONFIGURATION.md](CONFIGURATION.md) for the full list of
+`TRELIX_JIRA_*` and `TRELIX_TESTRAIL_*` variables. Missing required
+configuration fails fast with an error, before any network request is made.
+
+This command does **not** create `generic_edges` rows linking the synced
+artifacts to code — that linkage is a separate concern. Only
+[`trelix link-tickets`](#trelix-link-tickets) creates those edges today, and
+only for git-commit-derived ticket references, not for the artifact content
+fetched by this command. This is accepted current scope, not an oversight.
+
+#### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `repo` | Path to the indexed repository. |
+| `name` | Connector to sync: `jira` or `testrail`. |
+
+#### Examples
+
+```bash
+# Sync Jira tickets (requires TRELIX_JIRA_* env vars)
+TRELIX_JIRA_BASE_URL=https://acme.atlassian.net \
+TRELIX_JIRA_EMAIL=bot@acme.com \
+TRELIX_JIRA_API_TOKEN=$JIRA_TOKEN \
+TRELIX_JIRA_PROJECT_KEY=PROJ \
+trelix connector sync ./my-repo jira
+
+# Sync TestRail cases (requires TRELIX_TESTRAIL_* env vars)
+TRELIX_TESTRAIL_BASE_URL=https://acme.testrail.io \
+TRELIX_TESTRAIL_USERNAME=bot@acme.com \
+TRELIX_TESTRAIL_API_KEY=$TESTRAIL_KEY \
+TRELIX_TESTRAIL_PROJECT_ID=7 \
+trelix connector sync ./my-repo testrail
+```
+
+#### Output
+
+```
+Synced jira: fetched 84, wrote 84, errors 0
+```
+
+#### Notes
+
+- Exits with code 1 if `errors > 0`, or if required connector configuration
+  is missing — configuration is validated before any HTTP call is made.
+- Run `trelix index <repo>` before this command — it exits with code 1 if no
+  index is found.
+- Page size (`TRELIX_JIRA_PAGE_SIZE`, default `100`, max `100`;
+  `TRELIX_TESTRAIL_PAGE_SIZE`, default `250`, max `250` — TestRail's own API
+  ceiling) is configured via environment variable only; see
+  [CONFIGURATION.md](CONFIGURATION.md).
 
 ---
 

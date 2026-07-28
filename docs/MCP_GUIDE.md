@@ -122,7 +122,7 @@ Trelix-mcp exposes 15 MCP tools organized into four functional groups:
 ### `search_code`
 
 ```
-search_code(query, repo_path, k=10, cursor=0) → {results, next_cursor, total_available}
+search_code(query, repo_path, k=10, cursor=0, intent_hint=None, hyde_snippet_hint=None) → {results, next_cursor, total_available}
 ```
 
 **What it does:** Runs trelix hybrid search (dense + sparse) over an indexed codebase. Returns ranked code snippets with file path, line range, symbol context, and relevance score.
@@ -139,6 +139,10 @@ search_code(query, repo_path, k=10, cursor=0) → {results, next_cursor, total_a
 | `repo_path` | str | required | Absolute path to the indexed repository |
 | `k` | int | 10 | Number of results per page |
 | `cursor` | int | 0 | Pagination offset (see Section 11) |
+| `intent_hint` | str \| None | None | One of the 8 `IntentType` values — see below |
+| `hyde_snippet_hint` | str \| None | None | Short hypothetical code snippet (HyDE); only used when `intent_hint` is also valid |
+
+**Caller-supplied intent routing:** If the calling agent has already classified the query's intent, pass `intent_hint` — one of `symbol_lookup`, `file_overview`, `feature_flow`, `project_overview`, `comparison`, `config_lookup`, `dependency_map`, or `blast_radius` — to skip trelix's own internal LLM intent classification and route directly to that intent's retrieval strategy. This is useful when an orchestrating agent already knows, from its own reasoning, what kind of question it's asking, and wants to avoid the extra classification round-trip. An unrecognized or invalid `intent_hint` value is never rejected: the call silently falls through to trelix's normal internal classification, as if `intent_hint` had not been passed. `hyde_snippet_hint` is only honored when `intent_hint` is also valid — pass a short snippet of what the target code might look like to steer HyDE-style query expansion toward that shape.
 
 **Response shape:**
 ```json
@@ -146,11 +150,13 @@ search_code(query, repo_path, k=10, cursor=0) → {results, next_cursor, total_a
   "results": [
     {
       "file": "src/auth/service.py",
-      "start_line": 42,
-      "end_line": 67,
       "symbol": "AuthService.login",
+      "kind": "method",
+      "lines": "42-67",
       "score": 0.91,
-      "snippet": "def login(self, username: str, password: str) -> Token:\n    ..."
+      "source": "vector+bm25",
+      "body": "def login(self, username: str, password: str) -> Token:\n    ...",
+      "language": "python"
     }
   ],
   "next_cursor": 10,
