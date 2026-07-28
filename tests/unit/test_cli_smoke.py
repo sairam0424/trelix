@@ -411,7 +411,11 @@ def test_connector_sync_jira_end_to_end(tmp_path, monkeypatch):  # type: ignore[
         "issues": [
             {
                 "key": "PROJ-1",
-                "fields": {"summary": "Fix login", "description": "bug", "status": {"name": "Open"}},
+                "fields": {
+                    "summary": "Fix login",
+                    "description": "bug",
+                    "status": {"name": "Open"},
+                },
             }
         ],
         "nextPageToken": None,

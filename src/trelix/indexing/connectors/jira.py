@@ -46,9 +46,7 @@ class JiraConnector(ArtifactSource):
             if not val
         ]
         if missing:
-            raise ValueError(
-                f"JiraConnector is missing required config: {', '.join(missing)}"
-            )
+            raise ValueError(f"JiraConnector is missing required config: {', '.join(missing)}")
 
     def fetch(self) -> list[Artifact]:
         self.validate_config()

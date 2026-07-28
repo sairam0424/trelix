@@ -44,9 +44,7 @@ class TestRailConnector(ArtifactSource):
             if not val
         ]
         if missing:
-            raise ValueError(
-                f"TestRailConnector is missing required config: {', '.join(missing)}"
-            )
+            raise ValueError(f"TestRailConnector is missing required config: {', '.join(missing)}")
 
     def fetch(self) -> list[Artifact]:
         self.validate_config()

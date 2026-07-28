@@ -13,7 +13,7 @@ import pytest
 
 from trelix.core.config import JiraConnectorConfig, TestRailConnectorConfig
 from trelix.core.models import Artifact
-from trelix.indexing.connectors.base import ArtifactSource, ArtifactWriter, ConnectorSyncResult
+from trelix.indexing.connectors.base import ArtifactSource, ConnectorSyncResult
 from trelix.indexing.connectors.jira import JiraConnector, JiraConnectorError
 from trelix.indexing.connectors.registry import get_artifact_source
 from trelix.indexing.connectors.testrail import TestRailConnector, TestRailConnectorError
@@ -33,7 +33,9 @@ _TESTRAIL_CONFIG = TestRailConnectorConfig(
 )
 
 
-def _mock_response(status_code: int = 200, json_data: dict | None = None, headers=None) -> MagicMock:
+def _mock_response(
+    status_code: int = 200, json_data: dict | None = None, headers=None
+) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
     resp.json.return_value = json_data or {}
@@ -149,18 +151,20 @@ class TestJiraConnectorFetch:
     def test_fetch_retries_on_429_then_succeeds(self) -> None:
         rate_limited = _mock_response(429, headers={"Retry-After": "0"})
         success = _mock_response(200, {"issues": [], "nextPageToken": None})
-        with patch(
-            "trelix.indexing.connectors.jira.httpx.get", side_effect=[rate_limited, success]
-        ), patch("trelix.indexing.connectors.jira.time.sleep"):
+        with (
+            patch("trelix.indexing.connectors.jira.httpx.get", side_effect=[rate_limited, success]),
+            patch("trelix.indexing.connectors.jira.time.sleep"),
+        ):
             artifacts = JiraConnector(_JIRA_CONFIG).fetch()
 
         assert artifacts == []
 
     def test_fetch_exhausts_retries_and_raises(self) -> None:
         rate_limited = _mock_response(429, headers={})
-        with patch(
-            "trelix.indexing.connectors.jira.httpx.get", return_value=rate_limited
-        ), patch("trelix.indexing.connectors.jira.time.sleep"):
+        with (
+            patch("trelix.indexing.connectors.jira.httpx.get", return_value=rate_limited),
+            patch("trelix.indexing.connectors.jira.time.sleep"),
+        ):
             with pytest.raises(JiraConnectorError, match="retries"):
                 JiraConnector(_JIRA_CONFIG).fetch()
 
@@ -169,10 +173,13 @@ class TestJiraConnectorFetch:
         leak the underlying exception type to callers."""
         import httpx
 
-        with patch(
-            "trelix.indexing.connectors.jira.httpx.get",
-            side_effect=httpx.ConnectError("connection refused"),
-        ), patch("trelix.indexing.connectors.jira.time.sleep"):
+        with (
+            patch(
+                "trelix.indexing.connectors.jira.httpx.get",
+                side_effect=httpx.ConnectError("connection refused"),
+            ),
+            patch("trelix.indexing.connectors.jira.time.sleep"),
+        ):
             with pytest.raises(JiraConnectorError):
                 JiraConnector(_JIRA_CONFIG).fetch()
 
