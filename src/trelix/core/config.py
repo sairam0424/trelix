@@ -357,6 +357,17 @@ class RetrievalConfig(BaseSettings):
     top_k_vector: int = 20
     top_k_bm25: int = 20
     top_k_grep: int = 10
+
+    # Vector leg has no SQL predicate to push a path_filter into (unlike
+    # BM25/grep), so it over-fetches by this factor and post-filters by
+    # rel_path prefix before truncating back to top_k_vector — protects
+    # recall against the filter discarding some of the raw ANN results.
+    path_filter_oversample: int = Field(
+        default=3,
+        ge=1,
+        alias="TRELIX_RETRIEVAL_PATH_FILTER_OVERSAMPLE",
+    )
+
     graph_expansion_depth: int = 1
     graph_expansion_max_symbols: int = 10
     graph_import_max_extra: int = 3
@@ -382,6 +393,15 @@ class RetrievalConfig(BaseSettings):
 
     context_token_budget: int = 12_000
     synthesis_max_tokens: int = 12_000
+
+    # Split context_token_budget across source legs (vector/bm25/grep/...)
+    # proportionally to each leg's result count, instead of one shared pool a
+    # single noisy leg could crowd out. Off by default — False reproduces
+    # today's exact single-pool greedy-pack behavior byte-for-byte.
+    context_budget_per_source: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_CONTEXT_BUDGET_PER_SOURCE",
+    )
 
     # CodeGraph BFS retrieval (4th leg — off by default)
     graph_search_enabled: bool = False  # Enable CodeGraph as 4th retrieval leg
@@ -791,6 +811,79 @@ class IndexerConfig(BaseSettings):
     )
 
 
+class GitLinkerConfig(BaseSettings):
+    """
+    Walks `git log` to link code symbols to external ticket references found
+    in commit messages (e.g. Jira "PROJ-123", GitHub "#456") — feeds
+    generic_edges for cross-source PageRank. Off by default: requires the
+    repo to actually be a git checkout, and is a separate, slower pass from
+    the main index pipeline (run via `trelix link-tickets`, not auto-invoked
+    from Indexer.index()).
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_GIT_LINKER_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    enabled: bool = False
+    # Matches Jira-style ticket IDs by default (e.g. "PROJ-123"). Different
+    # orgs use different conventions (GitHub "#123", Linear "ENG-123") —
+    # override via TRELIX_GIT_LINKER_TICKET_PATTERN.
+    ticket_pattern: str = r"[A-Z]+-\d+"
+    # Bounds on how much history to walk — required from day one, not an
+    # afterthought, since large repos can have 100k+ commits.
+    max_commits: int = Field(default=5_000, ge=1)
+    since: str | None = None  # e.g. "90 days ago" — passed straight to `git log --since`
+
+
+class JiraConnectorConfig(BaseSettings):
+    """
+    Jira Cloud REST API connector. HTTP Basic auth (email + API token) —
+    no OAuth needed for a read-only, single-project-scope connector.
+    Credentials env-only, never in a chart's plaintext values by default,
+    matching every other credential in this file.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_JIRA_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    base_url: str | None = Field(default=None, alias="TRELIX_JIRA_BASE_URL")
+    email: str | None = Field(default=None, alias="TRELIX_JIRA_EMAIL")
+    api_token: str | None = Field(default=None, alias="TRELIX_JIRA_API_TOKEN")
+    project_key: str | None = Field(default=None, alias="TRELIX_JIRA_PROJECT_KEY")
+    page_size: int = Field(default=100, ge=1, le=100)
+
+
+class TestRailConnectorConfig(BaseSettings):
+    """
+    TestRail REST API connector. HTTP Basic auth (username + API key).
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_TESTRAIL_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    base_url: str | None = Field(default=None, alias="TRELIX_TESTRAIL_BASE_URL")
+    username: str | None = Field(default=None, alias="TRELIX_TESTRAIL_USERNAME")
+    api_key: str | None = Field(default=None, alias="TRELIX_TESTRAIL_API_KEY")
+    project_id: int | None = Field(default=None, alias="TRELIX_TESTRAIL_PROJECT_ID")
+    # TestRail's own API max is 250/page.
+    page_size: int = Field(default=250, ge=1, le=250)
+
+
 # ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------
@@ -824,6 +917,7 @@ class IndexConfig(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     sparse: SparseConfig = Field(default_factory=SparseConfig)
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
+    git_linker: GitLinkerConfig = Field(default_factory=GitLinkerConfig)
 
     # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
     # Requires LLM API access. Off by default — zero cost when disabled.

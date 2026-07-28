@@ -22,9 +22,17 @@ _BEAST_MODE_DEFAULTS: dict[str, str] = {
     "TRELIX_OTEL_ENABLED": "false",
 }
 
+# Non-boolean settings that must stay unset (not "false") for tests to see the
+# "unconfigured" code default — same rationale as _BEAST_MODE_DEFAULTS above,
+# but these aren't flags, so setenv("...", "false") would misconfigure them
+# instead of disabling them.
+_UNSET_BY_DEFAULT: tuple[str, ...] = ("TRELIX_API_AUTH_TOKEN",)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     """Override beast-mode feature flags to false so unit tests see code defaults."""
     for var, val in _BEAST_MODE_DEFAULTS.items():
         monkeypatch.setenv(var, val)
+    for var in _UNSET_BY_DEFAULT:
+        monkeypatch.delenv(var, raising=False)

@@ -30,8 +30,10 @@ if TYPE_CHECKING:
     from trelix.store.read_pool import ReadOnlyConnectionPool
 
 from trelix.core.models import (
+    Artifact,
     CallEdge,
     Chunk,
+    GenericEdge,
     ImportEdge,
     IndexedFile,
     Language,
@@ -450,6 +452,59 @@ class Database:
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_turns_session "
             "ON agent_turns(session_id, turn_index)"
+        )
+        self._conn.commit()
+
+        # Cross-source edges migration: generic typed edges linking a code
+        # symbol to a non-code artefact (ticket, test, doc, ...). Exclusive
+        # arc — from_symbol_id is a real FK (the code side is always a real
+        # symbol for every writer today, e.g. the git-log ticket linker), and
+        # source_ref is the non-symbol side as a free-form "<type>:<ref>"
+        # string (e.g. "ticket:PROJ-123"), since a generic non-code artefact
+        # has no id in this DB to reference. Nullable on both column groups
+        # so the schema doesn't have to change again if a future writer ever
+        # needs an edge between two non-code artefacts.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS generic_edges ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "from_symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE, "
+            "source_ref TEXT, "
+            "edge_kind TEXT NOT NULL, "
+            "weight REAL NOT NULL DEFAULT 1.0"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_generic_edges_from ON generic_edges(from_symbol_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_generic_edges_source_ref ON generic_edges(source_ref)"
+        )
+        # Re-running a writer (e.g. `trelix link-tickets` on the same repo)
+        # must not duplicate an edge it already inserted.
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_generic_edges_dedup "
+            "ON generic_edges(from_symbol_id, source_ref, edge_kind)"
+        )
+        self._conn.commit()
+
+        # Source-connector artifacts migration: non-code content fetched
+        # from Jira/TestRail (tickets, test cases). Joined to code purely
+        # via generic_edges.source_ref — see Artifact's docstring in
+        # core/models.py for why this is a new table, not a Chunk.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS artifacts ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "source_ref TEXT NOT NULL UNIQUE, "
+            "artifact_kind TEXT NOT NULL, "
+            "title TEXT NOT NULL DEFAULT '', "
+            "body TEXT NOT NULL DEFAULT '', "
+            "url TEXT, "
+            "metadata TEXT NOT NULL DEFAULT '{}', "
+            "fetched_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(artifact_kind)"
         )
         self._conn.commit()
 
@@ -893,29 +948,50 @@ class Database:
     # BM25 search (FTS5)
     # ------------------------------------------------------------------
 
-    def bm25_search(self, query: str, limit: int = 20) -> list[tuple[int, float]]:
+    def bm25_search(
+        self, query: str, limit: int = 20, path_filter: str | None = None
+    ) -> list[tuple[int, float]]:
         """
         Full-text search over symbols using SQLite FTS5 BM25.
         Returns list of (symbol_id, rank) sorted by relevance.
         Lower rank = more relevant in SQLite FTS5 (it's negative BM25).
 
+        `path_filter`, when set, restricts results to symbols whose file's
+        rel_path starts with that prefix — pushed into the SQL join (same
+        `f.rel_path LIKE ?` pattern as grep_search.py) rather than fetched
+        and discarded, since FTS5 can take the join cheaply.
+
         Draws from the read-only connection pool when enable_bm25_read_pool()
         has been called with pool_size > 0 — otherwise uses the single
         shared writer connection exactly as before.
         """
-        sql = """
-            SELECT rowid, rank
-            FROM symbols_fts
-            WHERE symbols_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-            """
+        if path_filter:
+            sql = """
+                SELECT f.rowid, f.rank
+                FROM symbols_fts f
+                JOIN symbols s ON f.rowid = s.id
+                JOIN files fi ON s.file_id = fi.id
+                WHERE symbols_fts MATCH ?
+                  AND fi.rel_path LIKE ?
+                ORDER BY f.rank
+                LIMIT ?
+                """
+            params: tuple[object, ...] = (query, f"{path_filter}%", limit)
+        else:
+            sql = """
+                SELECT rowid, rank
+                FROM symbols_fts
+                WHERE symbols_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """
+            params = (query, limit)
         if self._bm25_read_pool is not None:
             with self._bm25_read_pool.acquire() as conn:
-                rows = conn.execute(sql, (query, limit)).fetchall()
+                rows = conn.execute(sql, params).fetchall()
         else:
             with self._conn_lock:
-                rows = self._conn.execute(sql, (query, limit)).fetchall()
+                rows = self._conn.execute(sql, params).fetchall()
         return [(r[0], r[1]) for r in rows]
 
     # ------------------------------------------------------------------
@@ -1393,6 +1469,99 @@ class Database:
             " WHERE to_symbol_id IS NOT NULL"
         ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Generic (cross-source) edges
+    # ------------------------------------------------------------------
+
+    def insert_generic_edges(self, edges: list[GenericEdge]) -> None:
+        """Re-inserting an edge already present (same from_symbol_id,
+        source_ref, edge_kind) is a silent no-op — see idx_generic_edges_dedup,
+        so a writer can be re-run against the same repo without duplicating
+        rows."""
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO generic_edges"
+            " (from_symbol_id, source_ref, edge_kind, weight)"
+            " VALUES (?, ?, ?, ?)",
+            [(e.from_symbol_id, e.source_ref, e.edge_kind, e.weight) for e in edges],
+        )
+        self._conn.commit()
+
+    def get_generic_edge_targets(self, symbol_id: int) -> list[str]:
+        """Return source_ref strings for every generic edge originating from
+        this symbol (e.g. ["ticket:PROJ-123", "ticket:PROJ-456"])."""
+        rows = self._conn.execute(
+            "SELECT source_ref FROM generic_edges WHERE from_symbol_id = ?",
+            (symbol_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def iter_resolved_generic_edges(self) -> list[tuple[int, str, str]]:
+        """Return (from_symbol_id, edge_kind, source_ref) for every generic
+        edge — mirrors iter_resolved_type_edges(). "Resolved" here just means
+        from_symbol_id is set (always true for every current writer); no
+        further resolution pass exists for the source_ref side, unlike
+        type_edges' to_symbol_id, since source_ref never refers to a row in
+        this DB."""
+        rows = self._conn.execute(
+            "SELECT from_symbol_id, edge_kind, source_ref FROM generic_edges"
+            " WHERE from_symbol_id IS NOT NULL"
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Artifacts (source-connector content — Jira tickets, TestRail cases)
+    # ------------------------------------------------------------------
+
+    def upsert_artifact(self, artifact: Artifact) -> int:
+        """Insert or update by source_ref (UNIQUE) — re-syncing a connector
+        overwrites the previous fetch rather than duplicating rows."""
+        cursor = self._conn.execute(
+            """
+            INSERT INTO artifacts (source_ref, artifact_kind, title, body, url, metadata)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_ref) DO UPDATE SET
+                artifact_kind = excluded.artifact_kind,
+                title = excluded.title,
+                body = excluded.body,
+                url = excluded.url,
+                metadata = excluded.metadata,
+                fetched_at = datetime('now')
+            """,
+            (
+                artifact.source_ref,
+                artifact.artifact_kind,
+                artifact.title,
+                artifact.body,
+                artifact.url,
+                json.dumps(artifact.metadata),
+            ),
+        )
+        self._conn.commit()
+        if cursor.lastrowid:
+            return int(cursor.lastrowid)
+        row = self._conn.execute(
+            "SELECT id FROM artifacts WHERE source_ref = ?", (artifact.source_ref,)
+        ).fetchone()
+        return int(row[0])
+
+    def get_artifact_by_source_ref(self, source_ref: str) -> Artifact | None:
+        row = self._conn.execute(
+            "SELECT id, source_ref, artifact_kind, title, body, url, metadata"
+            " FROM artifacts WHERE source_ref = ?",
+            (source_ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        return Artifact(
+            id=row[0],
+            source_ref=row[1],
+            artifact_kind=row[2],
+            title=row[3],
+            body=row[4],
+            url=row[5],
+            metadata=json.loads(row[6]),
+        )
 
     def get_file_by_id(self, file_id: int) -> IndexedFile | None:
         """Fetch a file record by primary key."""

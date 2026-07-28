@@ -152,6 +152,90 @@ def test_migrate_vectors_help():
     assert result.exit_code == 0
 
 
+def test_link_tickets_help():
+    result = runner.invoke(app, ["link-tickets", "--help"])
+    assert result.exit_code == 0
+    import re
+
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--max-commits" in plain
+    assert "--since" in plain
+    assert "--ticket-pattern" in plain
+
+
+def test_link_tickets_requires_path():
+    result = runner.invoke(app, ["link-tickets"])
+    assert result.exit_code != 0
+
+
+def test_link_tickets_no_index_found():
+    """trelix link-tickets on a repo that was never indexed exits 1 with a
+    helpful message, same as trelix stats on an unindexed repo."""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        result = runner.invoke(app, ["link-tickets", str(repo)])
+        assert result.exit_code == 1
+
+
+def test_link_tickets_links_real_ticket_reference():
+    """End-to-end: a real git repo with a ticket-referencing commit, and a
+    manually-seeded index DB (bypassing the embedder dependency, which this
+    command never touches), produces a real GenericEdge."""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    from trelix.core.config import IndexConfig
+    from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
+    from trelix.store.db import Database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+        (repo / "auth.py").write_text("def login():\n    pass\n")
+        subprocess.run(["git", "add", "auth.py"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "PROJ-1: add login"], cwd=repo, check=True)
+
+        config = IndexConfig(repo_path=str(repo))
+        db = Database(config.db_path_absolute)
+        file_id = db.upsert_file(
+            IndexedFile(
+                path=str(repo / "auth.py"),
+                rel_path="auth.py",
+                language=Language.PYTHON,
+                hash="h",
+                size_bytes=10,
+            )
+        )
+        sym_id = db.insert_symbol(
+            Symbol(
+                file_id=file_id,
+                name="login",
+                qualified_name="login",
+                kind=SymbolKind.FUNCTION,
+                line_start=1,
+                line_end=2,
+                signature="def login()",
+                body="def login(): pass",
+            )
+        )
+        db._conn.commit()
+
+        result = runner.invoke(app, ["link-tickets", str(repo)])
+        assert result.exit_code == 0
+        assert "Linked 1 symbol-ticket edge" in result.output
+        assert db.get_generic_edge_targets(sym_id) == ["ticket:PROJ-1"]
+
+
 def test_index_nonexistent_path():
     result = runner.invoke(app, ["index", "/nonexistent/path/xyz"])
     assert result.exit_code != 0
@@ -270,3 +354,83 @@ def test_agent_sessions_show_help() -> None:
 def test_agent_sessions_clear_help() -> None:
     result = runner.invoke(app, ["agent", "sessions", "clear", "--help"])
     assert result.exit_code == 0
+
+
+def test_connector_sync_help():
+    result = runner.invoke(app, ["connector", "sync", "--help"])
+    assert result.exit_code == 0
+
+
+def test_connector_sync_unknown_name_exits_nonzero(tmp_path):  # type: ignore[no-untyped-def]
+    from trelix.store.db import Database
+
+    Database(tmp_path / ".trelix" / "index.db")
+    result = runner.invoke(app, ["connector", "sync", str(tmp_path), "bogus"])
+    assert result.exit_code != 0
+
+
+def test_connector_sync_no_index_found(tmp_path):  # type: ignore[no-untyped-def]
+    result = runner.invoke(app, ["connector", "sync", str(tmp_path), "jira"])
+    assert result.exit_code != 0
+
+
+def test_connector_sync_missing_config_exits_nonzero(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """No TRELIX_JIRA_* env vars set — validate_config() must fail fast
+    with a clear message, before ever making an HTTP call."""
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
+
+    for var in (
+        "TRELIX_JIRA_BASE_URL",
+        "TRELIX_JIRA_EMAIL",
+        "TRELIX_JIRA_API_TOKEN",
+        "TRELIX_JIRA_PROJECT_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    config = IndexConfig(repo_path=str(tmp_path))
+    Database(config.db_path_absolute)
+
+    result = runner.invoke(app, ["connector", "sync", str(tmp_path), "jira"])
+    assert result.exit_code != 0
+
+
+def test_connector_sync_jira_end_to_end(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Real CLI invocation, mocked Jira HTTP response, real DB round-trip."""
+    from unittest.mock import MagicMock, patch
+
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
+
+    config = IndexConfig(repo_path=str(tmp_path))
+    db = Database(config.db_path_absolute)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "issues": [
+            {
+                "key": "PROJ-1",
+                "fields": {
+                    "summary": "Fix login",
+                    "description": "bug",
+                    "status": {"name": "Open"},
+                },
+            }
+        ],
+        "nextPageToken": None,
+    }
+
+    monkeypatch.setenv("TRELIX_JIRA_BASE_URL", "https://example.atlassian.net")
+    monkeypatch.setenv("TRELIX_JIRA_EMAIL", "me@example.com")
+    monkeypatch.setenv("TRELIX_JIRA_API_TOKEN", "tok")
+    monkeypatch.setenv("TRELIX_JIRA_PROJECT_KEY", "PROJ")
+
+    with patch("trelix.indexing.connectors.jira.httpx.get", return_value=mock_resp):
+        result = runner.invoke(app, ["connector", "sync", str(tmp_path), "jira"])
+
+    assert result.exit_code == 0
+    assert "fetched 1" in result.output
+    fetched = db.get_artifact_by_source_ref("ticket:PROJ-1")
+    assert fetched is not None
+    assert fetched.title == "Fix login"

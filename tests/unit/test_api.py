@@ -194,6 +194,348 @@ class TestSearchPagination:
             assert data["total_available"] == 3
 
 
+class TestSearchIntentHint:
+    """GET /search's optional intent_hint/hyde_snippet_hint params — a caller
+    that already classified the query's intent can skip trelix's internal
+    LLM classification and route deterministically via
+    plan_from_intent_hint()."""
+
+    def test_valid_intent_hint_passes_a_plan_to_retrieve(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+        from trelix.retrieval.planner.models import IntentType
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(f"/search?query=auth&repo={tmp_path}&intent_hint=symbol_lookup")
+            assert resp.status_code == 200
+
+            call_kwargs = MockRetriever.return_value.retrieve.call_args
+            passed_plan = call_kwargs.kwargs.get("plan") or (
+                call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
+            )
+            assert passed_plan is not None
+            assert passed_plan.intent == IntentType.SYMBOL_LOOKUP
+
+    def test_invalid_intent_hint_falls_through_to_normal_classification(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """An unrecognized intent_hint must never surface as an error — it
+        silently degrades to plan=None (normal server-side classification)."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(f"/search?query=auth&repo={tmp_path}&intent_hint=not_a_real_intent")
+            assert resp.status_code == 200
+
+            call_kwargs = MockRetriever.return_value.retrieve.call_args
+            passed_plan = call_kwargs.kwargs.get("plan") or (
+                call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
+            )
+            assert passed_plan is None
+
+    def test_omitted_intent_hint_passes_no_plan(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Omitting intent_hint entirely must reproduce today's exact
+        behavior — no plan override, normal internal classification."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(f"/search?query=auth&repo={tmp_path}")
+            assert resp.status_code == 200
+
+            call_kwargs = MockRetriever.return_value.retrieve.call_args
+            passed_plan = call_kwargs.kwargs.get("plan") or (
+                call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
+            )
+            assert passed_plan is None
+
+    def test_hyde_snippet_hint_threaded_into_plan(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(
+                f"/search?query=auth&repo={tmp_path}&intent_hint=symbol_lookup"
+                "&hyde_snippet_hint=def+authenticate():+..."
+            )
+            assert resp.status_code == 200
+
+            call_kwargs = MockRetriever.return_value.retrieve.call_args
+            passed_plan = call_kwargs.kwargs.get("plan") or (
+                call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
+            )
+            assert passed_plan is not None
+            assert "authenticate" in passed_plan.sub_queries[0].hyde_snippet
+
+
+class TestParseEndpoint:
+    """POST /parse — dry-run single-file parse, never persisted to the index."""
+
+    def test_disk_backed_file_parses_symbols(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        file_path = tmp_path / "util.py"
+        file_path.write_text("def add(a, b):\n    return a + b\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(tmp_path), "file_path": str(file_path)})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [s["name"] for s in data["symbols"]] == ["add"]
+        assert data["parse_errors"] == 0
+        assert "never indexed" in data["note"]
+
+    def test_inline_content_parses_symbols(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/parse",
+            json={
+                "repo_path": str(tmp_path),
+                "content": "def mul(a, b):\n    return a * b\n",
+                "file_name": "scratch.py",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [s["name"] for s in data["symbols"]] == ["mul"]
+
+    def test_neither_file_path_nor_content_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(tmp_path)})
+        assert resp.status_code == 422
+
+    def test_both_file_path_and_content_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        file_path = tmp_path / "util.py"
+        file_path.write_text("x = 1\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/parse",
+            json={
+                "repo_path": str(tmp_path),
+                "file_path": str(file_path),
+                "content": "y = 2",
+                "file_name": "other.py",
+            },
+        )
+        assert resp.status_code == 422
+
+    def test_content_without_file_name_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(tmp_path), "content": "x = 1"})
+        assert resp.status_code == 422
+
+    def test_unknown_language_returns_empty_symbols_with_note(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/parse",
+            json={"repo_path": str(tmp_path), "content": "???", "file_name": "data.xyz"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["symbols"] == []
+        assert "No parser available" in data["note"]
+
+    def test_nonexistent_disk_file_returns_400(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/parse",
+            json={"repo_path": str(tmp_path), "file_path": str(tmp_path / "missing.py")},
+        )
+        assert resp.status_code == 400
+
+    def test_absolute_file_path_outside_repo_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Regression test for a real path-traversal vulnerability: an
+        absolute file_path pointing anywhere on the host (ignoring
+        repo_path entirely) must be rejected, not silently read and parsed."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        repo = tmp_path / "innocent_repo"
+        repo.mkdir()
+        outside = tmp_path / "outside_the_repo"
+        outside.mkdir()
+        secret = outside / "secret.py"
+        secret.write_text("SHOULD_NEVER_BE_READABLE = True\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(repo), "file_path": str(secret)})
+        assert resp.status_code == 400
+        assert "inside repo_path" in resp.json()["detail"]
+
+    def test_relative_file_path_dot_dot_escape_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Regression test: a relative file_path with ../ segments must not
+        be able to escape repo_path either."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        repo = tmp_path / "innocent_repo"
+        repo.mkdir()
+        secret = tmp_path / "secret.py"
+        secret.write_text("SHOULD_NEVER_BE_READABLE = True\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(repo), "file_path": "../secret.py"})
+        assert resp.status_code == 400
+        assert "inside repo_path" in resp.json()["detail"]
+
+    def test_relative_file_path_inside_a_subdirectory_still_works(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The containment fix must not break the legitimate case: a
+        relative path into a subdirectory that IS inside repo_path."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        repo = tmp_path / "repo"
+        nested = repo / "src"
+        nested.mkdir(parents=True)
+        (nested / "nested.py").write_text("def nested_fn():\n    pass\n")
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/parse", json={"repo_path": str(repo), "file_path": "src/nested.py"})
+        assert resp.status_code == 200
+        assert [s["name"] for s in resp.json()["symbols"]] == ["nested_fn"]
+
+
+class TestApiAuth:
+    """TRELIX_API_AUTH_TOKEN gates every route except /health. Unset (the
+    conftest default) must leave every route open — the compatibility
+    requirement that made every other test class above pass unmodified."""
+
+    def test_no_token_configured_allows_unauthenticated_requests(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(f"/search?query=auth&repo={tmp_path}")
+            assert resp.status_code == 200
+
+    def test_token_configured_rejects_missing_header(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get(f"/search?query=auth&repo={tmp_path}")
+        assert resp.status_code == 401
+
+    def test_token_configured_rejects_wrong_header(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get(
+            f"/search?query=auth&repo={tmp_path}",
+            headers={"X-Trelix-Api-Key": "wrong-token"},
+        )
+        assert resp.status_code == 401
+
+    def test_token_configured_accepts_correct_header(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(
+                f"/search?query=auth&repo={tmp_path}",
+                headers={"X-Trelix-Api-Key": "secret-token"},
+            )
+            assert resp.status_code == 200
+
+    def test_health_always_open_even_with_token_configured(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+
+
 class TestOpenApiSchema:
     """Regression guard: every route must keep a real Pydantic response_model
     (inferred from its return-type annotation) so /openapi.json carries actual

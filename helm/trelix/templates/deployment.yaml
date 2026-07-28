@@ -131,6 +131,19 @@ spec:
                   name: {{ include "trelix.fullname" . }}
                   key: COHERE_API_KEY
             {{- end }}
+            {{- if .Values.apiAuth.existingSecretName }}
+            - name: TRELIX_API_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.apiAuth.existingSecretName }}
+                  key: {{ .Values.apiAuth.existingSecretKey }}
+            {{- else if .Values.apiAuth.token }}
+            - name: TRELIX_API_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "trelix.fullname" . }}
+                  key: TRELIX_API_AUTH_TOKEN
+            {{- end }}
             {{- range .Values.extraEnv }}
             - name: {{ .name }}
               value: {{ .value | quote }}

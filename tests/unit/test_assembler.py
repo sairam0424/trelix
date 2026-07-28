@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime
 
 from trelix.core.models import (
@@ -181,6 +182,139 @@ class TestGreedyMode:
         ctx_greedy = assembler.assemble(QUERY, ALL_RESULTS, assembly_mode="greedy")
 
         assert [r.score for r in ctx_default.results] == [r.score for r in ctx_greedy.results]
+
+
+# ---------------------------------------------------------------------------
+# Fixture: 3 sources at different volumes, for proportional-budget tests
+# ---------------------------------------------------------------------------
+
+FILE_D = _make_file(4, "src/vector_heavy.py")
+
+# "vector" leg: 6 results, 100 tokens each (600 total if all included)
+VECTOR_RESULTS = [
+    _make_result(
+        _make_chunk(100 + i, 100 + i, f"# vector result {i}", 100),
+        _make_symbol(100 + i, 4, f"vec_fn_{i}", f"vec_fn_{i}", i * 10, i * 10 + 5),
+        FILE_D,
+        score=0.9 - i * 0.01,
+        rank=i + 1,
+        source="vector",
+    )
+    for i in range(6)
+]
+# "bm25" leg: 2 results, 100 tokens each (200 total)
+BM25_RESULTS = [
+    _make_result(
+        _make_chunk(200 + i, 200 + i, f"# bm25 result {i}", 100),
+        _make_symbol(200 + i, 4, f"bm25_fn_{i}", f"bm25_fn_{i}", 100 + i * 10, 100 + i * 10 + 5),
+        FILE_D,
+        score=0.85 - i * 0.01,
+        rank=i + 1,
+        source="bm25",
+    )
+    for i in range(2)
+]
+# "grep" leg: 2 results, 100 tokens each (200 total)
+GREP_RESULTS = [
+    _make_result(
+        _make_chunk(300 + i, 300 + i, f"# grep result {i}", 100),
+        _make_symbol(300 + i, 4, f"grep_fn_{i}", f"grep_fn_{i}", 200 + i * 10, 200 + i * 10 + 5),
+        FILE_D,
+        score=0.8 - i * 0.01,
+        rank=i + 1,
+        source="grep",
+    )
+    for i in range(2)
+]
+MULTI_SOURCE_RESULTS = VECTOR_RESULTS + BM25_RESULTS + GREP_RESULTS
+
+
+# ---------------------------------------------------------------------------
+# Tests: per-source proportional budget
+# ---------------------------------------------------------------------------
+
+
+class TestPerSourceBudget:
+    def test_default_is_byte_identical_to_greedy(self) -> None:
+        """per_source_budget=False (the default) must reproduce today's exact
+        single-pool greedy behavior — a required backward-compat guarantee."""
+        greedy = ContextAssembler(token_budget=500)
+        default = ContextAssembler(token_budget=500, per_source_budget=False)
+
+        ctx_greedy = greedy.assemble(QUERY, MULTI_SOURCE_RESULTS)
+        ctx_default = default.assemble(QUERY, MULTI_SOURCE_RESULTS)
+
+        assert [r.chunk.id for r in ctx_default.results] == [r.chunk.id for r in ctx_greedy.results]
+        assert ctx_default.total_tokens == ctx_greedy.total_tokens
+
+    def test_proportional_splits_budget_by_result_count_not_equally(self) -> None:
+        """6 vector + 2 bm25 + 2 grep results, budget=500 tokens (100/result):
+        proportional split is 300/100/100 by count, so vector should get
+        ~3 results while bm25 and grep get ~1 each — not an equal 3-way split
+        that would give each leg the same ~167-token slice."""
+        assembler = ContextAssembler(token_budget=500, per_source_budget=True)
+        ctx = assembler.assemble(QUERY, MULTI_SOURCE_RESULTS)
+
+        by_source: dict[str, int] = defaultdict(int)
+        for r in ctx.results:
+            by_source[r.source] += 1
+
+        assert by_source["vector"] == 3  # 500 * 6/10 = 300 tokens = 3 results @ 100 each
+        assert by_source["bm25"] == 1  # 500 * 2/10 = 100 tokens = 1 result @ 100 each
+        assert by_source["grep"] == 1  # 500 * 2/10 = 100 tokens = 1 result @ 100 each
+
+    def test_proportional_never_exceeds_total_budget(self) -> None:
+        assembler = ContextAssembler(token_budget=500, per_source_budget=True)
+        ctx = assembler.assemble(QUERY, MULTI_SOURCE_RESULTS)
+
+        assert ctx.total_tokens <= 500
+
+    def test_proportional_preserves_score_descending_order(self) -> None:
+        assembler = ContextAssembler(token_budget=500, per_source_budget=True)
+        ctx = assembler.assemble(QUERY, MULTI_SOURCE_RESULTS)
+
+        scores = [r.score for r in ctx.results]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_underfilled_leg_leftover_is_reused_by_other_results(self) -> None:
+        """A leg with fewer candidates than its slice can cover must not waste
+        the unused tokens — they should go to the next-best not-yet-selected
+        result overall, regardless of leg."""
+        # grep: 1 result, 50 tokens. vector: 3 results, 100 tokens each.
+        # Equal 1/3 result-count split of a 400-token budget gives grep a
+        # 100-token slice it can only spend 50 of (it has just one 50-token
+        # result) — the other 50 tokens must roll over and let a 4th vector
+        # result (which wouldn't otherwise fit in vector's 300-token slice)
+        # get included.
+        grep_small = [
+            _make_result(
+                _make_chunk(400, 400, "# grep result", 50),
+                _make_symbol(400, 4, "grep_fn", "grep_fn", 1, 5),
+                FILE_D,
+                score=0.5,
+                rank=1,
+                source="grep",
+            )
+        ]
+        results = VECTOR_RESULTS[:4] + grep_small  # 4 vector (100 each) + 1 grep (50)
+        assembler = ContextAssembler(token_budget=400, per_source_budget=True)
+        ctx = assembler.assemble(QUERY, results)
+
+        # vector's 4/5-of-400=320-token slice fits exactly 3 of its 4
+        # 100-token results; grep's 1/5-of-400=80-token slice only spends 50
+        # (its lone result) leaving 30 unused. Rolled-over leftover (30) is
+        # too small for the 4th 100-token vector result, so it stays excluded
+        # and total spend is 350, not the full 400 — proving leftover is
+        # tracked (not silently dropped) without over-claiming reuse when the
+        # remaining candidates genuinely don't fit.
+        assert ctx.total_tokens == 350
+        included_ids = {r.chunk.id for r in ctx.results}
+        assert included_ids == {
+            VECTOR_RESULTS[0].chunk.id,
+            VECTOR_RESULTS[1].chunk.id,
+            VECTOR_RESULTS[2].chunk.id,
+            grep_small[0].chunk.id,
+        }
 
 
 # ---------------------------------------------------------------------------

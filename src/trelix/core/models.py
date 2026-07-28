@@ -165,6 +165,67 @@ class TypeEdge:
 
 
 # ---------------------------------------------------------------------------
+# Generic (cross-source) edge
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GenericEdge:
+    """
+    A typed edge from a code symbol to a non-code artefact (ticket, test,
+    doc, ...) that has no row of its own in this DB.
+
+    Exclusive arc: `from_symbol_id` is a real symbol id (every writer today,
+    e.g. the git-log ticket linker, always attaches from real code); the
+    other side is `source_ref`, a free-form "<type>:<ref>" string (e.g.
+    "ticket:PROJ-123") rather than a foreign key, since a generic external
+    artefact has no id in this DB to reference.
+
+    edge_kind values:
+      "references_ticket" — code touched by a commit that mentions a ticket ID
+    """
+
+    from_symbol_id: int
+    source_ref: str
+    edge_kind: str
+    weight: float = 1.0
+
+
+# ---------------------------------------------------------------------------
+# Artifact  (non-code content fetched by a source connector)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Artifact:
+    """
+    Content fetched from an external system (Jira, TestRail, ...) by a
+    source connector — a ticket, a test case, etc.
+
+    Deliberately NOT a Chunk: Chunk.symbol_id is a hard, NOT NULL foreign
+    key to symbols.id, read through multiple retrieval-leg hydration paths
+    (grep, bm25, vector) that all assume it resolves to a real symbol with a
+    real file/line-span. Relaxing that FK to fit non-code content would
+    require defensive branching sprinkled across every one of those call
+    sites — a much larger blast radius than a new, isolated model. Artifacts
+    join to code purely through generic_edges.source_ref, matching that
+    table's own exclusive-arc design rather than introducing a new pattern
+    on top of it.
+
+    `source_ref` is the same string an edge's source_ref would use for this
+    artefact (e.g. "ticket:PROJ-123") — the join key back to generic_edges.
+    """
+
+    source_ref: str
+    artifact_kind: str  # "ticket" | "test_case"
+    title: str
+    body: str
+    url: str | None = None
+    metadata: dict[str, str] = field(default_factory=dict)
+    id: int | None = None
+
+
+# ---------------------------------------------------------------------------
 # Import edge
 # ---------------------------------------------------------------------------
 

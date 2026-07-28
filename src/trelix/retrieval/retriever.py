@@ -753,7 +753,9 @@ class Retriever:
                 cfg, "vector", query_text=embed_text, top_k=cfg.top_k_vector
             ) as span:
                 embedding = self.embedder.embed_query(embed_text)
-                out["vector"] = self._vector_search(embedding, k=cfg.top_k_vector)
+                out["vector"] = self._vector_search(
+                    embedding, k=cfg.top_k_vector, path_filter=sq.path_filter
+                )
                 span.set_result_count(len(out["vector"]))
 
         if "bm25" in strategy.legs:
@@ -761,7 +763,9 @@ class Retriever:
             with retrieval_leg_span(
                 cfg, "bm25", query_text=bm25_query, top_k=cfg.top_k_bm25
             ) as span:
-                out["bm25"] = bm25_search(self.db, bm25_query, k=cfg.top_k_bm25)
+                out["bm25"] = bm25_search(
+                    self.db, bm25_query, k=cfg.top_k_bm25, path_filter=sq.path_filter
+                )
                 span.set_result_count(len(out["bm25"]))
 
         if "grep" in strategy.legs:
@@ -770,7 +774,9 @@ class Retriever:
                 cfg, "grep", query_text=", ".join(hints), top_k=cfg.top_k_grep
             ) as span:
                 for hint in hints:
-                    out["grep"].extend(grep_search(self.db, hint, k=cfg.top_k_grep))
+                    out["grep"].extend(
+                        grep_search(self.db, hint, k=cfg.top_k_grep, path_filter=sq.path_filter)
+                    )
                 span.set_result_count(len(out["grep"]))
 
         # Sparse leg (SPLADE-Code, 7th leg — off by default)
@@ -894,14 +900,32 @@ class Retriever:
             logger.warning("Sub-chunk search leg failed (non-fatal): %s", exc)
         return results
 
-    def _vector_search(self, query_embedding: list[float], k: int) -> list[SearchResult]:
-        raw = self.vector_store.search(query_embedding, k=k)
+    def _vector_search(
+        self, query_embedding: list[float], k: int, path_filter: str | None = None
+    ) -> list[SearchResult]:
+        """
+        `path_filter`, when set, restricts results to files whose rel_path
+        starts with that prefix. The ANN index has no metadata predicate to
+        push this into (unlike BM25/grep's SQL joins), so this over-fetches
+        by `path_filter_oversample`x and post-filters by prefix after
+        hydration, then truncates back to `k` — protects recall against the
+        filter discarding some of the raw ANN results.
+        """
+        fetch_k = k
+        if path_filter:
+            fetch_k = k * self.config.retrieval.path_filter_oversample
+        raw = self.vector_store.search(query_embedding, k=fetch_k)
         results: list[SearchResult] = []
         for rank, (chunk_id, distance) in enumerate(raw, start=1):
             score = max(0.0, 1.0 - distance)
             result = self._hydrate_chunk(chunk_id, score=score, rank=rank, source="vector")
-            if result:
-                results.append(result)
+            if result is None:
+                continue
+            if path_filter and not result.file.rel_path.startswith(path_filter):
+                continue
+            results.append(result)
+            if len(results) >= k:
+                break
         return results
 
     # ------------------------------------------------------------------
@@ -1113,7 +1137,10 @@ class Retriever:
     ) -> RetrievedContext:
         from trelix.retrieval.assembler import ContextAssembler
 
-        assembler = ContextAssembler(token_budget=self.config.retrieval.context_token_budget)
+        assembler = ContextAssembler(
+            token_budget=self.config.retrieval.context_token_budget,
+            per_source_budget=self.config.retrieval.context_budget_per_source,
+        )
         return assembler.assemble(
             query=query,
             results=results,
