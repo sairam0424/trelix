@@ -255,15 +255,38 @@ def create_app() -> Any:  # noqa: ANN201
         return HealthResponse(status="ok", version=__version__)
 
     @app.get("/search", dependencies=auth)
-    def search(query: str, repo: str, k: int = 10, cursor: int = 0) -> SearchResponse:
+    def search(
+        query: str,
+        repo: str,
+        k: int = 10,
+        cursor: int = 0,
+        intent_hint: str | None = None,
+        hyde_snippet_hint: str | None = None,
+    ) -> SearchResponse:
         """
         Paginated hybrid search. Matches the MCP `search_code` tool's envelope
         exactly: use cursor=0 for the first page; if next_cursor is not null,
         pass it as cursor for the next page.
+
+        `intent_hint` (optional): one of the IntentType values
+        (symbol_lookup/file_overview/feature_flow/project_overview/comparison/
+        config_lookup/dependency_map/blast_radius). When set and valid, skips
+        trelix's internal LLM intent classification and routes directly using
+        that intent's strategy — for callers (e.g. an agent) that already
+        classified the query themselves. An invalid/unrecognized value is
+        never rejected — it silently falls through to normal classification.
+        `hyde_snippet_hint` is only used when `intent_hint` is also valid.
         """
+        from trelix.retrieval.planner.models import plan_from_intent_hint
+
         config = IndexConfig(repo_path=repo)
         with pipeline_stage_span(config.retrieval, "http_search", {"k": k, "cursor": cursor}):
-            ctx = Retriever(config).retrieve(query)
+            plan = (
+                plan_from_intent_hint(query, intent_hint, hyde_snippet_hint)
+                if intent_hint is not None
+                else None
+            )
+            ctx = Retriever(config).retrieve(query, plan=plan)
             all_results = ctx.results
 
             page = all_results[cursor : cursor + k]
