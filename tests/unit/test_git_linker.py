@@ -163,6 +163,30 @@ class TestGitLinkerRealRepo:
         assert count == 1
         assert db.get_generic_edge_targets(sym_id) == ["ticket:PROJ-1"]
 
+    def test_rerunning_link_on_same_repo_does_not_duplicate_edges(self, tmp_path: Path) -> None:
+        """Re-running `trelix link-tickets` on a repo it's already linked
+        (e.g. a cron re-sync, or a user running the command twice) must not
+        duplicate generic_edges rows — the within-run `seen` set in link()
+        only dedupes inside a single call, so this exercises the DB-level
+        guard (idx_generic_edges_dedup + INSERT OR IGNORE) instead."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        _init_git_repo(repo_dir)
+        _commit_file(repo_dir, "auth.py", "def login(): pass\n", "PROJ-1: add login")
+
+        db = Database(tmp_path / "index.db")
+        file_id = _make_file(db, "auth.py")
+        sym_id = _insert_symbol(db, file_id, "login")
+
+        first_count = GitLinker(db).link(str(repo_dir))
+        second_count = GitLinker(db).link(str(repo_dir))
+
+        assert first_count == 1
+        assert second_count == 1  # link() itself still reports what it tried to insert
+        assert db.get_generic_edge_targets(sym_id) == ["ticket:PROJ-1"]  # but no duplicate row
+        row_count = db._conn.execute("SELECT COUNT(*) FROM generic_edges").fetchone()[0]
+        assert row_count == 1
+
     def test_custom_ticket_pattern_matches_github_issue_style(self, tmp_path: Path) -> None:
         repo_dir = tmp_path / "repo"
         repo_dir.mkdir()
