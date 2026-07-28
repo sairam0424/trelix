@@ -1,6 +1,6 @@
-# Trelix v2.9.0 Troubleshooting Guide
+# Trelix v2.10.0 Troubleshooting Guide
 
-This guide covers every common failure mode for trelix v2.9.0. Each entry follows the pattern: **Symptom → Cause → Fix**.
+This guide covers every common failure mode for trelix v2.10.0. Each entry follows the pattern: **Symptom → Cause → Fix**.
 
 ---
 
