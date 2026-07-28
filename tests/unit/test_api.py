@@ -214,9 +214,7 @@ class TestSearchIntentHint:
             MockRetriever.return_value.retrieve.return_value = mock_ctx
             app = create_app()
             client = TestClient(app)
-            resp = client.get(
-                f"/search?query=auth&repo={tmp_path}&intent_hint=symbol_lookup"
-            )
+            resp = client.get(f"/search?query=auth&repo={tmp_path}&intent_hint=symbol_lookup")
             assert resp.status_code == 200
 
             call_kwargs = MockRetriever.return_value.retrieve.call_args
@@ -240,9 +238,7 @@ class TestSearchIntentHint:
             MockRetriever.return_value.retrieve.return_value = mock_ctx
             app = create_app()
             client = TestClient(app)
-            resp = client.get(
-                f"/search?query=auth&repo={tmp_path}&intent_hint=not_a_real_intent"
-            )
+            resp = client.get(f"/search?query=auth&repo={tmp_path}&intent_hint=not_a_real_intent")
             assert resp.status_code == 200
 
             call_kwargs = MockRetriever.return_value.retrieve.call_args
