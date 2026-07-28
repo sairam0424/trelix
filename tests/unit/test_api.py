@@ -194,7 +194,6 @@ class TestSearchPagination:
             assert data["total_available"] == 3
 
 
-
 class TestSearchIntentHint:
     """GET /search's optional intent_hint/hyde_snippet_hint params — a caller
     that already classified the query's intent can skip trelix's internal
