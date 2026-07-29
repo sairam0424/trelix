@@ -49,7 +49,12 @@ class AnthropicBackend(TrelixChatClient):
         if not config.anthropic_api_key:
             logger.debug("AnthropicBackend: ANTHROPIC_API_KEY not set.")
             return None
-        return anthropic.Anthropic(api_key=config.anthropic_api_key)
+        # max_retries=0: the shared @with_retry contract (via _create()/
+        # _open_stream() below) is meant to be the sole retry layer — the
+        # SDK's own default (2 attempts) would otherwise stack underneath
+        # tenacity's 5-attempt loop, multiplying worst-case wall-clock time
+        # on a persistent outage far beyond what max_attempts=5 implies.
+        return anthropic.Anthropic(api_key=config.anthropic_api_key, max_retries=0)
 
     def _extract_system(
         self, messages: list[ChatMessage], system: str | None
