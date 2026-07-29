@@ -759,6 +759,13 @@ class Database:
         ).fetchall()
         return [self._row_to_symbol(r) for r in rows]
 
+    def get_all_symbol_names(self) -> list[tuple[int, str, str]]:
+        """(id, name, qualified_name) for every symbol — bulk lookup for
+        scanning free text (e.g. artifact bodies) for identifier mentions,
+        where repeated single-name queries would be too slow."""
+        rows = self._conn.execute("SELECT id, name, qualified_name FROM symbols").fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
     def get_symbols_for_file(self, file_id: int) -> list[Symbol]:
         rows = self._conn.execute("SELECT * FROM symbols WHERE file_id = ?", (file_id,)).fetchall()
         return [self._row_to_symbol(r) for r in rows]
@@ -1562,6 +1569,26 @@ class Database:
             url=row[5],
             metadata=json.loads(row[6]),
         )
+
+    def get_all_artifacts(self) -> list[Artifact]:
+        """Every artifact fetched by any connector — used by ArtifactLinker
+        to scan for symbol references across the whole table, since
+        get_artifact_by_source_ref() only looks up one at a time."""
+        rows = self._conn.execute(
+            "SELECT id, source_ref, artifact_kind, title, body, url, metadata FROM artifacts"
+        ).fetchall()
+        return [
+            Artifact(
+                id=row[0],
+                source_ref=row[1],
+                artifact_kind=row[2],
+                title=row[3],
+                body=row[4],
+                url=row[5],
+                metadata=json.loads(row[6]),
+            )
+            for row in rows
+        ]
 
     def get_file_by_id(self, file_id: int) -> IndexedFile | None:
         """Fetch a file record by primary key."""

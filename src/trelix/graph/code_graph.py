@@ -19,6 +19,7 @@ _EDGE_KINDS_TO_LABEL: dict[str, str] = {
     "embedded": "EMBEDDED",
     "angular_selector": "ANGULAR_SELECTOR",
     "references_ticket": "REFERENCES_TICKET",
+    "references_artifact": "REFERENCES_ARTIFACT",
 }
 
 

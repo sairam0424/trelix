@@ -695,6 +695,76 @@ def link_tickets(
 
 
 # ---------------------------------------------------------------------------
+# link-artifacts
+# ---------------------------------------------------------------------------
+
+
+@app.command("link-artifacts")
+def link_artifacts(
+    repo: str = typer.Argument(..., help="Path to the indexed repository"),
+    embedding_fallback: bool = typer.Option(
+        False,
+        help="For artifacts with no regex match, fall back to embedding "
+        "similarity against indexed chunks (costs one embed call per "
+        "unmatched artifact)",
+    ),
+    similarity_threshold: float = typer.Option(
+        0.75, help="Minimum similarity for an embedding-fallback match (0.0-1.0)"
+    ),
+) -> None:
+    """
+    Scan connector-fetched artifacts (Jira tickets, TestRail cases, ...) for
+    mentions of indexed symbols — feeds cross-source PageRank the same way
+    `trelix link-tickets` does for git commit messages.
+
+    `trelix connector sync` only writes to the artifacts table; it never
+    creates generic_edges on its own. Run this after syncing to make synced
+    artifacts reachable from the code graph.
+    """
+    from trelix.core.config import ArtifactLinkerConfig, IndexConfig
+    from trelix.indexing.artifact_linker import ArtifactLinker
+    from trelix.store.db import Database
+
+    try:
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except (ValueError, FileNotFoundError) as exc:
+        _print_error("Error", exc)
+        raise typer.Exit(1) from exc
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        from rich.markup import escape
+
+        err_console.print(
+            f"[red]No index found at {escape(str(db_path))}[/red] —"
+            f" run `trelix index {repo}` first."
+        )
+        raise typer.Exit(1)
+
+    linker_config = ArtifactLinkerConfig(
+        embedding_fallback_enabled=embedding_fallback,
+        similarity_threshold=similarity_threshold,
+    )
+
+    try:
+        with Database(db_path) as db:
+            with console.status("[bold cyan]Scanning artifacts…[/bold cyan]"):
+                count = ArtifactLinker(db, linker_config, index_config=config).link()
+    except Exception as exc:
+        _print_error("Failed to link artifacts", exc)
+        raise typer.Exit(1) from exc
+
+    if count == 0:
+        console.print(
+            "[yellow]No artifact references linked.[/yellow] Either no artifacts "
+            "have been synced yet (run `trelix connector sync`), or none mention "
+            "an indexed symbol by name."
+        )
+    else:
+        console.print(f"[green]Linked {count} symbol-artifact edge(s).[/green]")
+
+
+# ---------------------------------------------------------------------------
 # update-index
 # ---------------------------------------------------------------------------
 
@@ -1830,15 +1900,21 @@ app.add_typer(connector_app, name="connector")
 def connector_sync(
     repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")],
     name: Annotated[str, typer.Argument(help="Connector to sync: 'jira' or 'testrail'.")],
+    link: Annotated[
+        bool,
+        typer.Option(help="Auto-link each synced artefact into generic_edges via ArtifactLinker"),
+    ] = True,
 ) -> None:
     """
-    Fetch artefacts from an external system and persist them via the
-    connector's ArtifactSource.sync(). Requires generic_edges to exist
-    (from `trelix link-tickets` or another future writer) for the fetched
-    artefacts to be reachable from the code graph — this command only
-    populates the artifacts table, it does not create edges itself.
+    Fetch artefacts from an external system, persist them via the
+    connector's ArtifactSource.sync(), and (by default) immediately link
+    each synced artefact into generic_edges via ArtifactLinker so it's
+    reachable from the code graph without a separate `trelix link-artifacts`
+    pass. Pass --no-link to skip linking (e.g. to sync many artefacts
+    quickly, then run `trelix link-artifacts` once as a batch afterward).
     """
-    from trelix.core.config import IndexConfig
+    from trelix.core.config import ArtifactLinkerConfig, IndexConfig
+    from trelix.indexing.artifact_linker import ArtifactLinker
     from trelix.indexing.connectors.registry import get_artifact_source
     from trelix.store.db import Database
 
@@ -1872,8 +1948,9 @@ def connector_sync(
 
     db = Database(db_path)
     try:
+        linker = ArtifactLinker(db, ArtifactLinkerConfig(), index_config=config) if link else None
         with console.status(f"[bold cyan]Syncing {name}…[/bold cyan]"):
-            result = source.sync(db)
+            result = source.sync(db, linker=linker)
     except Exception as exc:
         _print_error(f"Failed to sync {name}", exc)
         raise typer.Exit(1) from exc
@@ -1882,7 +1959,8 @@ def connector_sync(
 
     console.print(
         f"[green]Synced {name}:[/green] fetched {result.artifacts_fetched}, "
-        f"wrote {result.artifacts_written}, errors {result.errors}"
+        f"wrote {result.artifacts_written}, errors {result.errors}, "
+        f"linked {result.edges_linked} edge(s)"
     )
     if result.errors:
         raise typer.Exit(1)

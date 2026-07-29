@@ -183,6 +183,9 @@ class GenericEdge:
 
     edge_kind values:
       "references_ticket" — code touched by a commit that mentions a ticket ID
+      "references_artifact" — a symbol whose name/qualified_name (or, absent
+        a match, embedding similarity) was found in a connector-fetched
+        artifact's title/body (see ArtifactLinker)
     """
 
     from_symbol_id: int

@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from trelix.core.config import JiraConnectorConfig
+from trelix.core.config import ArtifactLinkerConfig, JiraConnectorConfig
 from trelix.core.models import (
     GenericEdge,
     IndexedFile,
@@ -26,6 +26,7 @@ from trelix.core.models import (
 )
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import compute_pagerank
+from trelix.indexing.artifact_linker import ArtifactLinker
 from trelix.indexing.connectors.jira import JiraConnector
 from trelix.store.db import Database
 
@@ -149,3 +150,40 @@ class TestConnectorToGraphPipeline:
         # symbols reachable via a real generic_edges row become graph nodes.
         cg = CodeGraph(db)
         assert "ticket:PROJ-2" not in cg.nx
+
+    def test_sync_with_linker_auto_links_into_code_graph(self, tmp_path: Path) -> None:
+        """Passing an ArtifactLinker into sync() closes the gap the two
+        tests above document — a synced artifact is reachable from
+        generic_edges/CodeGraph the moment sync() returns, no separate
+        `trelix link-artifacts` pass required."""
+        db = Database(tmp_path / "index.db")
+        login_id = _seed_symbol(db, "auth.py", "login")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "issues": [
+                {
+                    "key": "PROJ-3",
+                    "fields": {"summary": "login is broken", "status": {"name": "Open"}},
+                }
+            ],
+            "nextPageToken": None,
+        }
+        jira_config = JiraConnectorConfig(
+            base_url="https://example.atlassian.net",
+            email="me@example.com",
+            api_token="tok",
+            project_key="PROJ",
+        )
+        linker = ArtifactLinker(db, ArtifactLinkerConfig())
+        with patch("trelix.indexing.connectors.jira.httpx.get", return_value=mock_resp):
+            result = JiraConnector(jira_config).sync(db, linker=linker)
+
+        assert result.artifacts_written == 1
+        assert result.edges_linked == 1
+        assert db.get_generic_edge_targets(login_id) == ["ticket:PROJ-3"]
+
+        cg = CodeGraph(db)
+        assert "ticket:PROJ-3" in cg.nx
+        assert "ticket:PROJ-3" in cg.neighbors(login_id)
