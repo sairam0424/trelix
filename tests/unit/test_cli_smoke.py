@@ -132,6 +132,24 @@ def test_stats_help():
     assert result.exit_code == 0
 
 
+def test_stats_configures_logging():
+    """Regression test: `stats` previously never called _setup_logging()
+    at all, despite doing real DB I/O with its own logger.* call sites —
+    those log records went to Python's bare logging.lastResort fallback
+    instead of trelix's structured console formatter, an inconsistency
+    every other command (index/search/graph/review/...) doesn't have."""
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        with patch("trelix.cli.main._setup_logging") as mock_setup:
+            runner.invoke(app, ["stats", str(repo)])
+        mock_setup.assert_called_once()
+
+
 def test_query_help():
     result = runner.invoke(app, ["query", "--help"])
     assert result.exit_code == 0

@@ -557,6 +557,8 @@ def stats(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
 ) -> None:
     """Show index statistics (files, symbols, chunks, DB size)"""
+    _setup_logging(False)
+
     from pydantic import ValidationError as _PydanticValidationError
 
     from trelix.core.config import IndexConfig
