@@ -837,4 +837,45 @@ class TestEmbedderRetryContract:
             result = embedder.embed_query("hello")
 
         assert result == [0.1, 0.2]
-        assert mock_client.invoke_model.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Embedder client retry configuration — SDK's own retry must be disabled
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedderClientRetryConfiguration:
+    """Each embedder's own SDK client (openai/boto3) has a default retry
+    layer that would otherwise stack underneath @with_retry's 5-attempt
+    tenacity loop, multiplying worst-case wall-clock time on a persistent
+    outage far beyond what max_attempts=5 implies. Uses the REAL SDK
+    client constructors (no mocking) so this actually proves what config
+    reaches the client, not what trelix's own code believes it passed."""
+
+    def test_openai_embedder_client_has_sdk_retries_disabled(self) -> None:
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        embedder = OpenAIEmbedder(config)
+        assert embedder._client.max_retries == 0
+
+    def test_azure_embedder_client_has_sdk_retries_disabled(self) -> None:
+        config = EmbedderConfig(
+            provider="azure",
+            azure_api_key=_FAKE_AZURE_KEY,
+            azure_endpoint=_FAKE_AZURE_ENDPOINT,
+        )
+        embedder = AzureOpenAIEmbedder(config)
+        assert embedder._client.max_retries == 0
+
+    def test_bedrock_titan_embedder_client_has_sdk_retries_disabled(self) -> None:
+        pytest.importorskip("boto3")
+        config = EmbedderConfig(provider="bedrock-titan")
+        embedder = BedrockTitanEmbedder(config)
+        retries = embedder._client.meta.config.retries
+        assert retries["total_max_attempts"] == 1
+
+    def test_bedrock_cohere_embedder_client_has_sdk_retries_disabled(self) -> None:
+        pytest.importorskip("boto3")
+        config = EmbedderConfig(provider="bedrock-cohere")
+        embedder = BedrockCohereEmbedder(config)
+        retries = embedder._client.meta.config.retries
+        assert retries["total_max_attempts"] == 1

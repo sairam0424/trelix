@@ -55,6 +55,13 @@ class OpenAIBackend(TrelixChatClient):
         self._client = self._build_client(config)
 
     def _build_client(self, config: LLMConfig) -> Any | None:
+        # max_retries=0: the SDK's own default retry (2 attempts) would
+        # otherwise stack underneath @with_retry's 5-attempt tenacity layer
+        # (each of tenacity's attempts silently absorbing up to 2 SDK-level
+        # retries with the SDK's own independent backoff), multiplying
+        # worst-case wall-clock time on a persistent outage far beyond what
+        # max_attempts=5 implies. trelix's shared retry contract is meant to
+        # be the sole retry layer.
         if self._is_azure:
             if not config.azure_api_key or not config.azure_endpoint:
                 logger.debug("OpenAIBackend: Azure credentials not set.")
@@ -64,6 +71,7 @@ class OpenAIBackend(TrelixChatClient):
                     api_key=config.azure_api_key,
                     azure_endpoint=config.azure_endpoint,
                     api_version=config.azure_api_version,
+                    max_retries=0,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("OpenAIBackend: could not build AzureOpenAI: %s", exc)
@@ -73,7 +81,7 @@ class OpenAIBackend(TrelixChatClient):
                 logger.debug("OpenAIBackend: OPENAI_API_KEY not set.")
                 return None
             try:
-                return OpenAI(api_key=config.openai_api_key)
+                return OpenAI(api_key=config.openai_api_key, max_retries=0)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("OpenAIBackend: could not build OpenAI: %s", exc)
                 return None

@@ -284,6 +284,25 @@ class TestBedrockDefaultModels:
         assert backend._primary_model == "us.anthropic.claude-opus-4-8"
 
 
+class TestBedrockClientRetryConfiguration:
+    """botocore's own default retry mode (legacy, up to 5 attempts per
+    call) would otherwise stack underneath @with_retry's 5-attempt
+    tenacity loop, multiplying worst-case wall-clock time on a persistent
+    outage far beyond what max_attempts=5 implies. Uses the REAL boto3
+    session (skips if the optional 'bedrock' extra isn't installed) so
+    this actually proves what config reaches the client, not what
+    trelix's own code believes it passed."""
+
+    def test_bedrock_client_has_sdk_retries_disabled(self) -> None:
+        pytest.importorskip("boto3")
+        from trelix.llm.providers.bedrock_backend import BedrockBackend
+
+        cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
+        backend = BedrockBackend(cfg)
+        retries = backend._client.meta.config.retries
+        assert retries["total_max_attempts"] == 1
+
+
 class TestBedrockRetry:
     """Shared retry contract wiring — ThrottlingException/5xx must retry
     before model-fallback logic ever sees them; ValidationException must

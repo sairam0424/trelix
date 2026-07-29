@@ -91,6 +91,26 @@ class TestIsRetryableHttpError:
         'not retryable' rather than raising an import error."""
         assert is_retryable_http_error(RuntimeError("some boto3-shaped error")) is False
 
+    def test_malformed_sdk_exception_degrades_to_not_retryable_instead_of_crashing(
+        self,
+    ) -> None:
+        """is_retryable_http_error()'s entire contract is 'never raise' —
+        a real openai.APIStatusError instance whose .response attribute
+        raises on access (a torn-down mock, a broken shim, an SDK version
+        bump that changes the attribute's shape) must degrade to False,
+        not propagate AttributeError out of tenacity's retry predicate
+        mid-retry-loop."""
+
+        class _BrokenResponse:
+            @property
+            def status_code(self) -> int:
+                raise AttributeError("response was torn down")
+
+        exc = openai.APIStatusError.__new__(openai.APIStatusError)
+        exc.response = _BrokenResponse()  # type: ignore[assignment]
+
+        assert is_retryable_http_error(exc) is False
+
     @pytest.mark.parametrize("status_code", sorted(RETRYABLE_STATUS_CODES))
     def test_openai_retryable_status_codes(self, status_code: int) -> None:
         """openai.APIStatusError wraps an httpx.Response but is NOT itself

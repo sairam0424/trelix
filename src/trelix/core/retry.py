@@ -74,13 +74,25 @@ def _extract_status_code(exc: BaseException) -> int | None:
     LLM-SDK exceptions (openai, anthropic, google-genai) — the latter wrap an
     httpx.Response internally but expose their own status attribute rather
     than being httpx.HTTPStatusError instances themselves. litellm's
-    exceptions subclass openai's, so the openai check covers both."""
+    exceptions subclass openai's, so the openai check covers both.
+
+    Each block catches Exception, not just ImportError: this function's
+    entire contract is "never raise, always degrade to None on anything
+    unexpected" (is_retryable_http_error() falls back to treating an
+    unclassifiable exception as non-retryable). A malformed or mocked
+    exception object — e.g. a test harness's stand-in whose .response is a
+    plain dict instead of the real SDK's response type, or an SDK version
+    bump that changes an attribute's shape — could raise AttributeError/
+    TypeError from the attribute access itself, not just from a missing
+    import; letting that propagate would crash tenacity's retry predicate
+    mid-retry-loop instead of degrading gracefully.
+    """
     try:
         import httpx
 
         if isinstance(exc, httpx.HTTPStatusError):
             return exc.response.status_code
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -88,7 +100,7 @@ def _extract_status_code(exc: BaseException) -> int | None:
 
         if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
             return exc.response.status_code
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -97,7 +109,7 @@ def _extract_status_code(exc: BaseException) -> int | None:
         if isinstance(exc, ClientError) and exc.response is not None:
             code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
             return int(code) or None
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -105,7 +117,7 @@ def _extract_status_code(exc: BaseException) -> int | None:
 
         if isinstance(exc, openai.APIStatusError):
             return exc.status_code
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -113,7 +125,7 @@ def _extract_status_code(exc: BaseException) -> int | None:
 
         if isinstance(exc, anthropic.APIStatusError):
             return int(exc.status_code)
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -121,7 +133,7 @@ def _extract_status_code(exc: BaseException) -> int | None:
 
         if isinstance(exc, genai_errors.APIError):
             return int(exc.code)
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -129,7 +141,7 @@ def _extract_status_code(exc: BaseException) -> int | None:
 
         if isinstance(exc, voyage_errors.VoyageError) and exc.http_status is not None:
             return int(exc.http_status)
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     return None
@@ -138,13 +150,17 @@ def _extract_status_code(exc: BaseException) -> int | None:
 def _is_connection_level_error(exc: BaseException) -> bool:
     """True for errors that mean the request never got a response at all
     (DNS failure, connection refused, timeout) — as opposed to an error
-    response the server actually sent back."""
+    response the server actually sent back.
+
+    Each block catches Exception, not just ImportError — see
+    _extract_status_code()'s docstring for why: this function must never
+    raise, only ever degrade to False."""
     try:
         import httpx
 
         if isinstance(exc, httpx.HTTPError) and not isinstance(exc, httpx.HTTPStatusError):
             return True
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -152,7 +168,7 @@ def _is_connection_level_error(exc: BaseException) -> bool:
 
         if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
             return True
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -160,7 +176,7 @@ def _is_connection_level_error(exc: BaseException) -> bool:
 
         if isinstance(exc, openai.APIConnectionError):
             return True
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -168,7 +184,7 @@ def _is_connection_level_error(exc: BaseException) -> bool:
 
         if isinstance(exc, anthropic.APIConnectionError):
             return True
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -176,7 +192,7 @@ def _is_connection_level_error(exc: BaseException) -> bool:
 
         if isinstance(exc, (voyage_errors.APIConnectionError, voyage_errors.Timeout)):
             return True
-    except ImportError:
+    except Exception:  # noqa: BLE001
         pass
 
     return False
