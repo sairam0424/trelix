@@ -467,6 +467,7 @@ class Retriever:
                 top,
                 depth=strategy.expand_depth,
                 max_extra=cfg.graph_expansion_max_symbols,
+                personalization_enabled=cfg.pagerank_personalization_enabled,
             )
             import_expanded = expand_with_imports(
                 self.db,

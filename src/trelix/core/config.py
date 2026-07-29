@@ -524,6 +524,28 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR",
     )
 
+    # Personalized PageRank — teleport mass concentrated on symbols with a
+    # cross-source generic_edge (ticket/artifact reference) instead of the
+    # uniform 1/n default. Off by default: nx.pagerank() is called exactly
+    # as before when this is False, so there's zero behavior change for
+    # anyone not opting in. See rank_by_pagerank() (retrieval/graph.py) and
+    # compute_pagerank() (graph/community.py) — both independently gated by
+    # this same flag, since they don't share a PageRank implementation.
+    #
+    # Interaction risk with pagerank_boost_enabled: compute_pagerank()'s
+    # teleport mass is uniform across every ticket/artifact-linked symbol,
+    # with no weighting by call-graph importance. On a repo where only a
+    # small fraction of symbols have ever been referenced by a ticket,
+    # enabling both flags together can invert get_top_central_symbols()'s
+    # ranking — a single ticket-touched leaf can outscore genuinely central
+    # hub symbols that pagerank_boost_enabled is meant to surface. If both
+    # are enabled and boost results look off, try disabling personalization
+    # first to isolate which one is driving the change.
+    pagerank_personalization_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION",
+    )
+
     # XTR late-interaction reranker — candidate token count (experimental, v2.6.0)
     xtr_candidate_tokens: int = Field(
         default=100,
@@ -838,6 +860,34 @@ class GitLinkerConfig(BaseSettings):
     # afterthought, since large repos can have 100k+ commits.
     max_commits: int = Field(default=5_000, ge=1)
     since: str | None = None  # e.g. "90 days ago" — passed straight to `git log --since`
+
+
+class ArtifactLinkerConfig(BaseSettings):
+    """
+    Links connector-fetched artifacts (Jira tickets, TestRail cases, ...)
+    to code symbols by scanning each artifact's title/body for symbol name
+    or qualified_name mentions — feeds generic_edges the same way GitLinker
+    does for git-commit-message ticket references, but for artifact content
+    fetched via `trelix connector sync` (which never touches generic_edges
+    on its own).
+
+    Regex reference-extraction runs unconditionally (free, deterministic).
+    Embedding-similarity fallback is opt-in and only runs for artifacts
+    where the regex pass found zero matches — costs one embed call per
+    unmatched artifact, and lower-confidence matches (weight=0.5 vs. a
+    regex hit's weight=1.0) so they don't dominate PageRank mass.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_ARTIFACT_LINKER_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    embedding_fallback_enabled: bool = False
+    similarity_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
 
 
 class JiraConnectorConfig(BaseSettings):

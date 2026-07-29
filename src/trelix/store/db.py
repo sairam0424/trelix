@@ -759,6 +759,13 @@ class Database:
         ).fetchall()
         return [self._row_to_symbol(r) for r in rows]
 
+    def get_all_symbol_names(self) -> list[tuple[int, str, str]]:
+        """(id, name, qualified_name) for every symbol — bulk lookup for
+        scanning free text (e.g. artifact bodies) for identifier mentions,
+        where repeated single-name queries would be too slow."""
+        rows = self._conn.execute("SELECT id, name, qualified_name FROM symbols").fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
     def get_symbols_for_file(self, file_id: int) -> list[Symbol]:
         rows = self._conn.execute("SELECT * FROM symbols WHERE file_id = ?", (file_id,)).fetchall()
         return [self._row_to_symbol(r) for r in rows]
@@ -1496,18 +1503,21 @@ class Database:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def iter_resolved_generic_edges(self) -> list[tuple[int, str, str]]:
-        """Return (from_symbol_id, edge_kind, source_ref) for every generic
-        edge — mirrors iter_resolved_type_edges(). "Resolved" here just means
-        from_symbol_id is set (always true for every current writer); no
-        further resolution pass exists for the source_ref side, unlike
-        type_edges' to_symbol_id, since source_ref never refers to a row in
-        this DB."""
+    def iter_resolved_generic_edges(self) -> list[tuple[int, str, str, float]]:
+        """Return (from_symbol_id, edge_kind, source_ref, weight) for every
+        generic edge — mirrors iter_resolved_type_edges(). "Resolved" here
+        just means from_symbol_id is set (always true for every current
+        writer); no further resolution pass exists for the source_ref side,
+        unlike type_edges' to_symbol_id, since source_ref never refers to a
+        row in this DB. weight is surfaced so callers (CodeGraph._build())
+        can carry a lower-confidence match's reduced influence into
+        PageRank rather than the column being persisted but silently
+        ignored on every read path."""
         rows = self._conn.execute(
-            "SELECT from_symbol_id, edge_kind, source_ref FROM generic_edges"
+            "SELECT from_symbol_id, edge_kind, source_ref, weight FROM generic_edges"
             " WHERE from_symbol_id IS NOT NULL"
         ).fetchall()
-        return [(r[0], r[1], r[2]) for r in rows]
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
 
     # ------------------------------------------------------------------
     # Artifacts (source-connector content — Jira tickets, TestRail cases)
@@ -1562,6 +1572,26 @@ class Database:
             url=row[5],
             metadata=json.loads(row[6]),
         )
+
+    def get_all_artifacts(self) -> list[Artifact]:
+        """Every artifact fetched by any connector — used by ArtifactLinker
+        to scan for symbol references across the whole table, since
+        get_artifact_by_source_ref() only looks up one at a time."""
+        rows = self._conn.execute(
+            "SELECT id, source_ref, artifact_kind, title, body, url, metadata FROM artifacts"
+        ).fetchall()
+        return [
+            Artifact(
+                id=row[0],
+                source_ref=row[1],
+                artifact_kind=row[2],
+                title=row[3],
+                body=row[4],
+                url=row[5],
+                metadata=json.loads(row[6]),
+            )
+            for row in rows
+        ]
 
     def get_file_by_id(self, file_id: int) -> IndexedFile | None:
         """Fetch a file record by primary key."""
