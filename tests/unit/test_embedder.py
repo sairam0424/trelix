@@ -35,6 +35,24 @@ _FAKE_AZURE_KEY = "azure-test-key-not-real"
 _FAKE_AZURE_ENDPOINT = "https://test.openai.azure.com/"
 
 
+def _mock_boto3_modules(mock_boto3: MagicMock) -> dict[str, MagicMock]:
+    """sys.modules patch dict covering both boto3 and botocore.config —
+    _BedrockEmbedderBase._make_boto3_client() imports both (`import boto3`
+    + `from botocore.config import Config`), but botocore isn't installed
+    in every environment that runs this test suite (it's a transitive
+    dependency of the optional 'bedrock' extra, not a base dependency) —
+    CI's own test job never installs it. Mocking boto3 alone is not
+    enough."""
+    botocore_config_mock = MagicMock()
+    botocore_mock = MagicMock()
+    botocore_mock.config = botocore_config_mock
+    return {
+        "boto3": mock_boto3,
+        "botocore": botocore_mock,
+        "botocore.config": botocore_config_mock,
+    }
+
+
 # ---------------------------------------------------------------------------
 # BaseEmbedder is abstract
 # ---------------------------------------------------------------------------
@@ -624,7 +642,7 @@ class TestBedrockTitanEmbedder:
         mock_session = MagicMock()
         mock_session.client.return_value = MagicMock()
         mock_boto3.Session.return_value = mock_session
-        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        with patch.dict(sys.modules, _mock_boto3_modules(mock_boto3)):
             embedder = make_embedder(config)
         assert isinstance(embedder, BedrockTitanEmbedder)
 
@@ -729,7 +747,7 @@ class TestBedrockCohereEmbedder:
         mock_session = MagicMock()
         mock_session.client.return_value = MagicMock()
         mock_boto3.Session.return_value = mock_session
-        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        with patch.dict(sys.modules, _mock_boto3_modules(mock_boto3)):
             embedder = make_embedder(config)
         assert isinstance(embedder, BedrockCohereEmbedder)
 
