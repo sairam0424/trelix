@@ -7,6 +7,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
+from trelix.core.retry import with_retry
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
@@ -54,6 +55,13 @@ class OpenAIBackend(TrelixChatClient):
         self._client = self._build_client(config)
 
     def _build_client(self, config: LLMConfig) -> Any | None:
+        # max_retries=0: the SDK's own default retry (2 attempts) would
+        # otherwise stack underneath @with_retry's 5-attempt tenacity layer
+        # (each of tenacity's attempts silently absorbing up to 2 SDK-level
+        # retries with the SDK's own independent backoff), multiplying
+        # worst-case wall-clock time on a persistent outage far beyond what
+        # max_attempts=5 implies. trelix's shared retry contract is meant to
+        # be the sole retry layer.
         if self._is_azure:
             if not config.azure_api_key or not config.azure_endpoint:
                 logger.debug("OpenAIBackend: Azure credentials not set.")
@@ -63,6 +71,7 @@ class OpenAIBackend(TrelixChatClient):
                     api_key=config.azure_api_key,
                     azure_endpoint=config.azure_endpoint,
                     api_version=config.azure_api_version,
+                    max_retries=0,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("OpenAIBackend: could not build AzureOpenAI: %s", exc)
@@ -72,7 +81,7 @@ class OpenAIBackend(TrelixChatClient):
                 logger.debug("OpenAIBackend: OPENAI_API_KEY not set.")
                 return None
             try:
-                return OpenAI(api_key=config.openai_api_key)
+                return OpenAI(api_key=config.openai_api_key, max_retries=0)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("OpenAIBackend: could not build OpenAI: %s", exc)
                 return None
@@ -90,6 +99,12 @@ class OpenAIBackend(TrelixChatClient):
         )
         return result
 
+    @with_retry(max_attempts=5)
+    def _create(self, **kwargs: Any) -> Any:
+        # Callers only reach here after their own `self._client is None` check.
+        assert self._client is not None
+        return self._client.chat.completions.create(**kwargs)
+
     def complete(
         self,
         messages: list[ChatMessage],
@@ -104,7 +119,7 @@ class OpenAIBackend(TrelixChatClient):
                 finish_reason="stop",
             )
         token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
-        response = self._client.chat.completions.create(
+        response = self._create(
             model=self._model,
             messages=self._build_messages(messages, system),
             temperature=temperature if temperature is not None else self._config.temperature,
@@ -130,7 +145,11 @@ class OpenAIBackend(TrelixChatClient):
             yield "[trelix] LLM not configured — set OPENAI_API_KEY or AZURE_API_KEY."
             return
         token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
-        stream = self._client.chat.completions.create(
+        # Retry only the call that opens the stream — the connection is made
+        # synchronously here (create() blocks until headers arrive), before
+        # any chunk is yielded. Retrying mid-iteration over an already-open
+        # generator would silently drop or duplicate chunks already consumed.
+        stream = self._create(
             model=self._model,
             messages=self._build_messages(messages, system),
             temperature=temperature if temperature is not None else self._config.temperature,
@@ -154,7 +173,7 @@ class OpenAIBackend(TrelixChatClient):
             {"type": "function", "function": {"name": force_tool}} if force_tool else "auto"
         )
         token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
-        response = self._client.chat.completions.create(
+        response = self._create(
             model=self._model,
             messages=self._build_messages(messages, None),
             tools=tools,

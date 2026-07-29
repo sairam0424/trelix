@@ -21,6 +21,7 @@ import logging
 
 from trelix.core.config import RetrievalConfig
 from trelix.core.models import SearchResult
+from trelix.core.retry import with_retry
 from trelix.retrieval.reranker_xtr import (
     xtr_score_documents,  # noqa: F401 — imported for mock patching
 )
@@ -140,7 +141,11 @@ def _cohere_rerank(
     When requests is not installed or the API key is missing, logs a warning
     and returns the original top-N results unchanged.
 
-    Retries on transient network/SSL errors with exponential backoff.
+    Retries via the shared retry contract (trelix.core.retry.with_retry) —
+    replaces a prior ad-hoc loop that only caught SSLError/ConnectionError/
+    Timeout and therefore never actually retried a 429/5xx response (the
+    exact case a rerank API is most likely to return under load), despite
+    calling raise_for_status() to raise on one.
     Falls back to returning the original top-N results (unmodified) if all
     retries are exhausted so the query pipeline still produces an answer.
     """
@@ -160,8 +165,6 @@ def _cohere_rerank(
         )
         return results[:top_n]
 
-    import time
-
     url = endpoint  # full URL including path (e.g. .../providers/cohere/v2/rerank)
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -175,56 +178,39 @@ def _cohere_rerank(
         "return_documents": False,
     }
 
-    last_error: Exception | None = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=30)  # type: ignore[arg-type]
-            resp.raise_for_status()
-            data = resp.json()
+    @with_retry(max_attempts=max_retries)
+    def _post() -> dict:  # type: ignore[type-arg]
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)  # type: ignore[arg-type]
+        resp.raise_for_status()
+        return dict(resp.json())
 
-            reranked: list[SearchResult] = []
-            for item in data["results"]:
-                result = results[item["index"]]
-                reranked.append(
-                    SearchResult(
-                        chunk=result.chunk,
-                        symbol=result.symbol,
-                        file=result.file,
-                        score=item["relevance_score"],
-                        rank=len(reranked) + 1,
-                        source=result.source,
-                    )
-                )
+    try:
+        data = _post()
+    except Exception as exc:  # noqa: BLE001 — any exhausted-retry failure falls back
+        log.error(
+            "Cohere rerank failed after %d attempt(s): %s. Falling back to un-reranked results.",
+            max_retries,
+            exc,
+        )
+        fallback = results[:top_n]
+        for i, r in enumerate(fallback, start=1):
+            r.rank = i
+        return fallback
 
-            return reranked
-        except (
-            requests.exceptions.SSLError,
-            requests.exceptions.ConnectionError,
-            requests.exceptions.Timeout,
-        ) as exc:
-            last_error = exc
-            if attempt < max_retries:
-                wait = 2 ** (attempt - 1)  # 1s, 2s, 4s …
-                log.warning(
-                    "Cohere rerank attempt %d/%d failed (%s), retrying in %ds …",
-                    attempt,
-                    max_retries,
-                    type(exc).__name__,
-                    wait,
-                )
-                time.sleep(wait)
-
-    # All retries exhausted — fall back to the original ordering so the
-    # query pipeline can still return results (just without reranking).
-    log.error(
-        "Cohere rerank failed after %d attempts: %s. Falling back to un-reranked results.",
-        max_retries,
-        last_error,
-    )
-    fallback = results[:top_n]
-    for i, r in enumerate(fallback, start=1):
-        r.rank = i
-    return fallback
+    reranked: list[SearchResult] = []
+    for item in data["results"]:
+        result = results[item["index"]]
+        reranked.append(
+            SearchResult(
+                chunk=result.chunk,
+                symbol=result.symbol,
+                file=result.file,
+                score=item["relevance_score"],
+                rank=len(reranked) + 1,
+                source=result.source,
+            )
+        )
+    return reranked
 
 
 def _xtr_rerank(

@@ -9,19 +9,18 @@ Pagination: offset/limit, TestRail's own max page size is 250.
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
 import httpx
 
 from trelix.core.config import TestRailConnectorConfig
 from trelix.core.models import Artifact
+from trelix.core.retry import with_retry
 from trelix.indexing.connectors.base import ArtifactSource
 
 logger = logging.getLogger("trelix.indexing.connectors.testrail")
 
 _MAX_RETRIES = 5
-_BASE_BACKOFF_SECONDS = 1.0
 
 
 class TestRailConnectorError(Exception):
@@ -57,11 +56,14 @@ class TestRailConnector(ArtifactSource):
         offset = 0
 
         while True:
-            data = self._get_with_retry(
-                f"{base_url}/index.php?/api/v2/get_cases/{self._config.project_id}",
-                params={"limit": self._config.page_size, "offset": offset},
-                auth=auth,
-            )
+            try:
+                data = self._get(
+                    f"{base_url}/index.php?/api/v2/get_cases/{self._config.project_id}",
+                    params={"limit": self._config.page_size, "offset": offset},
+                    auth=auth,
+                )
+            except httpx.HTTPError as exc:
+                raise TestRailConnectorError(f"TestRail API request failed: {exc}") from exc
             cases = data.get("cases", [])
             for case in cases:
                 artifacts.append(self._case_to_artifact(case, base_url))
@@ -90,46 +92,21 @@ class TestRailConnector(ArtifactSource):
             metadata={"priority_id": str(case.get("priority_id", ""))},
         )
 
-    def _get_with_retry(
-        self, url: str, *, params: dict[str, Any], auth: tuple[str, str]
-    ) -> dict[str, Any]:
-        """Same backoff+jitter-on-429 posture as JiraConnector — a connector
-        failure means real content is missing, so it raises rather than
-        being silently swallowed."""
-        last_exc: Exception | None = None
-        for attempt in range(_MAX_RETRIES):
-            try:
-                response = httpx.get(url, params=params, auth=auth, timeout=30)
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                self._sleep_backoff(attempt)
-                continue
-
-            if response.status_code == 401:
-                raise TestRailConnectorError(
-                    "401 Unauthorized — check TRELIX_TESTRAIL_USERNAME/TRELIX_TESTRAIL_API_KEY"
-                )
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After")
-                self._sleep_backoff(attempt, retry_after=retry_after)
-                continue
-            if response.status_code not in (200, 201):
-                raise TestRailConnectorError(
-                    f"TestRail API error {response.status_code}: {response.text[:200]}"
-                )
-            return dict(response.json())
-
-        raise TestRailConnectorError(
-            f"TestRail API request failed after {_MAX_RETRIES} retries: {last_exc}"
-        )
-
-    def _sleep_backoff(self, attempt: int, retry_after: str | None = None) -> None:
-        if retry_after is not None:
-            try:
-                delay = float(retry_after)
-            except ValueError:
-                delay = _BASE_BACKOFF_SECONDS * (2**attempt)
-        else:
-            delay = _BASE_BACKOFF_SECONDS * (2**attempt)
-        logger.debug("TestRail API backoff: sleeping %.1fs (attempt %d)", delay, attempt)
-        time.sleep(delay)
+    @with_retry(max_attempts=_MAX_RETRIES)
+    def _get(self, url: str, *, params: dict[str, Any], auth: tuple[str, str]) -> dict[str, Any]:
+        """GET with the shared retry contract's full-jitter exponential
+        backoff on 429/5xx and connection-level errors. Same posture as
+        JiraConnector — a connector failure means real content is missing,
+        so it raises rather than being silently swallowed."""
+        response = httpx.get(url, params=params, auth=auth, timeout=30)
+        if response.status_code == 401:
+            raise TestRailConnectorError(
+                "401 Unauthorized — check TRELIX_TESTRAIL_USERNAME/TRELIX_TESTRAIL_API_KEY"
+            )
+        if response.status_code not in (200, 201):
+            raise httpx.HTTPStatusError(
+                f"TestRail API error {response.status_code}: {str(response.text)[:200]}",
+                request=httpx.Request("GET", url),
+                response=response,
+            )
+        return dict(response.json())

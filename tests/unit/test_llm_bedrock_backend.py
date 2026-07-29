@@ -23,6 +23,23 @@ def _make_boto3_mock() -> MagicMock:
     return boto3_mock
 
 
+def _mock_boto3_modules(boto3_mock: MagicMock) -> dict[str, MagicMock]:
+    """sys.modules patch dict covering both boto3 and botocore.config —
+    _build_client() imports both (`import boto3` + `from botocore.config
+    import Config`), but botocore isn't installed in every environment
+    that runs this test suite (it's a transitive dependency of the
+    optional 'bedrock' extra, not a base dependency) — CI's own test job
+    never installs it. Mocking boto3 alone is not enough."""
+    botocore_config_mock = MagicMock()
+    botocore_mock = MagicMock()
+    botocore_mock.config = botocore_config_mock
+    return {
+        "boto3": boto3_mock,
+        "botocore": botocore_mock,
+        "botocore.config": botocore_config_mock,
+    }
+
+
 class TestBedrockBackend:
     def _make_backend(self, model: str = "us.anthropic.claude-sonnet-4-6"):
         from trelix.llm.providers.bedrock_backend import BedrockBackend
@@ -33,7 +50,7 @@ class TestBedrockBackend:
             _env_file=None,  # type: ignore[call-arg]
         )
         boto3_mock = _make_boto3_mock()
-        with patch.dict("sys.modules", {"boto3": boto3_mock}):
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
             backend = BedrockBackend(cfg)
         return backend
 
@@ -155,7 +172,7 @@ class TestBedrockDefaultModels:
             kwargs["model"] = model
         cfg = LLMConfig(**kwargs)  # type: ignore[arg-type]
         boto3_mock = _make_boto3_mock()
-        with patch.dict("sys.modules", {"boto3": boto3_mock}):
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
             backend = BedrockBackend(cfg)
         return backend
 
@@ -279,6 +296,95 @@ class TestBedrockDefaultModels:
             _env_file=None,  # type: ignore[call-arg]
         )
         boto3_mock = _make_boto3_mock()
-        with patch.dict("sys.modules", {"boto3": boto3_mock}):
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
             backend = BedrockBackend(cfg)
         assert backend._primary_model == "us.anthropic.claude-opus-4-8"
+
+
+class TestBedrockClientRetryConfiguration:
+    """botocore's own default retry mode (legacy, up to 5 attempts per
+    call) would otherwise stack underneath @with_retry's 5-attempt
+    tenacity loop, multiplying worst-case wall-clock time on a persistent
+    outage far beyond what max_attempts=5 implies. Uses the REAL boto3
+    session (skips if the optional 'bedrock' extra isn't installed) so
+    this actually proves what config reaches the client, not what
+    trelix's own code believes it passed."""
+
+    def test_bedrock_client_has_sdk_retries_disabled(self) -> None:
+        pytest.importorskip("boto3")
+        from trelix.llm.providers.bedrock_backend import BedrockBackend
+
+        cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
+        backend = BedrockBackend(cfg)
+        retries = backend._client.meta.config.retries
+        assert retries["total_max_attempts"] == 1
+
+
+class TestBedrockRetry:
+    """Shared retry contract wiring — ThrottlingException/5xx must retry
+    before model-fallback logic ever sees them; ValidationException must
+    still fall through to fallback with zero wasted retry attempts."""
+
+    def _client_error(self, code: str, status_code: int) -> Exception:
+        botocore = pytest.importorskip("botocore.exceptions")
+        return botocore.ClientError(
+            {
+                "Error": {"Code": code, "Message": "x"},
+                "ResponseMetadata": {"HTTPStatusCode": status_code},
+            },
+            "Converse",
+        )
+
+    def _make_backend_with_mock_client(self):
+        from trelix.llm.providers.bedrock_backend import BedrockBackend
+
+        cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
+        boto3_mock = _make_boto3_mock()
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
+            return BedrockBackend(cfg)
+
+    def test_throttling_exception_is_retried_then_succeeds(self) -> None:
+        backend = self._make_backend_with_mock_client()
+        mock_client = MagicMock()
+        success = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        mock_client.converse.side_effect = [
+            self._client_error("ThrottlingException", 429),
+            success,
+        ]
+        backend._client = mock_client
+
+        with patch("tenacity.nap.time.sleep"):
+            result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "ok"
+        assert mock_client.converse.call_count == 2
+
+    def test_validation_exception_falls_back_without_wasted_retries(self) -> None:
+        """A non-retryable ClientError (no retryable status) must reach
+        fallback logic on the first attempt, not exhaust retries first."""
+        backend = self._make_backend_with_mock_client()
+        mock_client = MagicMock()
+        fallback_resp = {
+            "output": {"message": {"content": [{"text": "haiku reply"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+
+        def converse_side_effect(**kwargs):
+            if kwargs.get("modelId") == backend._primary_model:
+                raise _ValidationException(
+                    "ValidationException: on-demand throughput not supported"
+                )
+            return fallback_resp
+
+        mock_client.converse.side_effect = converse_side_effect
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "haiku reply"
+        assert mock_client.converse.call_count == 2  # primary (1 try) + fallback (1 try)

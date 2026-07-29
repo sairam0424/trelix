@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import openai
 import pytest
 
 from trelix.core.config import EmbedderConfig
@@ -20,10 +22,35 @@ from trelix.embedder.base import (
     make_embedder,
 )
 
+
+def _status_error(status_code: int) -> openai.APIStatusError:
+    request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
+    response = httpx.Response(status_code, request=request)
+    return openai.APIStatusError(f"{status_code} error", response=response, body=None)
+
+
 # Fake credentials used ONLY in tests — these are not real secrets.
 _FAKE_OPENAI_KEY = "openai-test-key-not-real"
 _FAKE_AZURE_KEY = "azure-test-key-not-real"
 _FAKE_AZURE_ENDPOINT = "https://test.openai.azure.com/"
+
+
+def _mock_boto3_modules(mock_boto3: MagicMock) -> dict[str, MagicMock]:
+    """sys.modules patch dict covering both boto3 and botocore.config —
+    _BedrockEmbedderBase._make_boto3_client() imports both (`import boto3`
+    + `from botocore.config import Config`), but botocore isn't installed
+    in every environment that runs this test suite (it's a transitive
+    dependency of the optional 'bedrock' extra, not a base dependency) —
+    CI's own test job never installs it. Mocking boto3 alone is not
+    enough."""
+    botocore_config_mock = MagicMock()
+    botocore_mock = MagicMock()
+    botocore_mock.config = botocore_config_mock
+    return {
+        "boto3": mock_boto3,
+        "botocore": botocore_mock,
+        "botocore.config": botocore_config_mock,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -615,7 +642,7 @@ class TestBedrockTitanEmbedder:
         mock_session = MagicMock()
         mock_session.client.return_value = MagicMock()
         mock_boto3.Session.return_value = mock_session
-        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        with patch.dict(sys.modules, _mock_boto3_modules(mock_boto3)):
             embedder = make_embedder(config)
         assert isinstance(embedder, BedrockTitanEmbedder)
 
@@ -720,7 +747,7 @@ class TestBedrockCohereEmbedder:
         mock_session = MagicMock()
         mock_session.client.return_value = MagicMock()
         mock_boto3.Session.return_value = mock_session
-        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        with patch.dict(sys.modules, _mock_boto3_modules(mock_boto3)):
             embedder = make_embedder(config)
         assert isinstance(embedder, BedrockCohereEmbedder)
 
@@ -733,3 +760,140 @@ class TestBedrockCohereEmbedder:
     def test_effective_dimension_in_config(self) -> None:
         config = EmbedderConfig(provider="bedrock-cohere")
         assert config.effective_dimension == 1024
+
+
+# ---------------------------------------------------------------------------
+# Shared retry contract — sync + true-async remote embedder paths
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedderRetryContract:
+    def test_openai_embed_retries_on_503_then_succeeds(self) -> None:
+        """A transient 5xx must be retried, not surfaced immediately —
+        confirms the shared retry contract is wired into OpenAIEmbedder.embed()."""
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        mock_client = MagicMock()
+        mock_item = MagicMock()
+        mock_item.embedding = [0.1] * 3072
+        success = MagicMock()
+        success.data = [mock_item]
+        mock_client.embeddings.create.side_effect = [_status_error(503), success]
+
+        with patch("openai.OpenAI", return_value=mock_client):
+            embedder = OpenAIEmbedder(config)
+
+        with patch("tenacity.nap.time.sleep"):
+            result = embedder.embed(["hello world"])
+
+        assert len(result) == 1
+        assert mock_client.embeddings.create.call_count == 2
+
+    def test_openai_embed_400_is_not_retried(self) -> None:
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        mock_client = MagicMock()
+        mock_client.embeddings.create.side_effect = _status_error(400)
+
+        with patch("openai.OpenAI", return_value=mock_client):
+            embedder = OpenAIEmbedder(config)
+
+        with pytest.raises(openai.APIStatusError):
+            embedder.embed(["hello world"])
+
+        assert mock_client.embeddings.create.call_count == 1
+
+    async def test_openai_embed_async_retries_on_503_then_succeeds(self) -> None:
+        """The TRUE async path (AsyncOpenAI) must also honor the shared
+        retry contract — tenacity auto-dispatches sync vs. async decoration."""
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI", return_value=MagicMock()):
+            embedder = OpenAIEmbedder(config)
+
+        mock_item = MagicMock()
+        mock_item.embedding = [0.2] * 3072
+        success = MagicMock()
+        success.data = [mock_item]
+        mock_async_client = MagicMock()
+        mock_async_client.embeddings.create = AsyncMock(side_effect=[_status_error(503), success])
+        mock_async_client.close = AsyncMock()
+
+        with (
+            patch.object(embedder, "_get_async_client", return_value=mock_async_client),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            result = await embedder.embed_async(["hello world"])
+
+        assert len(result) == 1
+        assert mock_async_client.embeddings.create.call_count == 2
+
+    def test_bedrock_titan_invoke_model_retries_on_throttling_then_succeeds(self) -> None:
+        """Bedrock's boto3 invoke_model surfaces ThrottlingException as
+        botocore.exceptions.ClientError — must retry like any other
+        429-shaped failure, not just OpenAI's own exception types."""
+        botocore = pytest.importorskip("botocore.exceptions")
+        config = EmbedderConfig(provider="bedrock-titan")
+        mock_boto3 = MagicMock()
+        mock_client = MagicMock()
+        mock_session = MagicMock()
+        mock_session.client.return_value = mock_client
+        mock_boto3.Session.return_value = mock_session
+
+        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+            embedder = BedrockTitanEmbedder(config)
+
+        throttled = botocore.ClientError(
+            {
+                "Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"},
+                "ResponseMetadata": {"HTTPStatusCode": 429},
+            },
+            "InvokeModel",
+        )
+        success_response = {"body": MagicMock()}
+        success_response["body"].read.return_value = b'{"embedding": [0.1, 0.2]}'
+        mock_client.invoke_model.side_effect = [throttled, success_response]
+
+        with patch("tenacity.nap.time.sleep"):
+            result = embedder.embed_query("hello")
+
+        assert result == [0.1, 0.2]
+
+
+# ---------------------------------------------------------------------------
+# Embedder client retry configuration — SDK's own retry must be disabled
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedderClientRetryConfiguration:
+    """Each embedder's own SDK client (openai/boto3) has a default retry
+    layer that would otherwise stack underneath @with_retry's 5-attempt
+    tenacity loop, multiplying worst-case wall-clock time on a persistent
+    outage far beyond what max_attempts=5 implies. Uses the REAL SDK
+    client constructors (no mocking) so this actually proves what config
+    reaches the client, not what trelix's own code believes it passed."""
+
+    def test_openai_embedder_client_has_sdk_retries_disabled(self) -> None:
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        embedder = OpenAIEmbedder(config)
+        assert embedder._client.max_retries == 0
+
+    def test_azure_embedder_client_has_sdk_retries_disabled(self) -> None:
+        config = EmbedderConfig(
+            provider="azure",
+            azure_api_key=_FAKE_AZURE_KEY,
+            azure_endpoint=_FAKE_AZURE_ENDPOINT,
+        )
+        embedder = AzureOpenAIEmbedder(config)
+        assert embedder._client.max_retries == 0
+
+    def test_bedrock_titan_embedder_client_has_sdk_retries_disabled(self) -> None:
+        pytest.importorskip("boto3")
+        config = EmbedderConfig(provider="bedrock-titan")
+        embedder = BedrockTitanEmbedder(config)
+        retries = embedder._client.meta.config.retries
+        assert retries["total_max_attempts"] == 1
+
+    def test_bedrock_cohere_embedder_client_has_sdk_retries_disabled(self) -> None:
+        pytest.importorskip("boto3")
+        config = EmbedderConfig(provider="bedrock-cohere")
+        embedder = BedrockCohereEmbedder(config)
+        retries = embedder._client.meta.config.retries
+        assert retries["total_max_attempts"] == 1
