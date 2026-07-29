@@ -432,48 +432,57 @@ class TestRankByPagerank:
     def test_personalization_shifts_rank_toward_cross_source_linked_symbol(
         self, db: Database
     ) -> None:
-        """With personalization on, teleport mass concentrates on the
-        ticket-linked symbol — it must rank at least as high as the plain
-        (unpersonalized) call gave it, and the gap to an equivalent
-        unlinked symbol must not shrink."""
+        """Proves personalization= is genuinely wired into the nx.pagerank
+        call, not a no-op — a prior version of this test passed identically
+        whether personalization was hardcoded to None or threaded through,
+        because its fixture never gave call-graph centrality and ticket
+        linkage a chance to disagree.
+
+        This fixture makes them disagree: `hub` is called by 8 distinct
+        callers (real call-graph centrality, no ticket link at all); `target`
+        has zero callers but IS linked to a ticket. With enough callers,
+        plain PageRank ranks `hub` above `target` on pure call centrality.
+        Personalization must be strong enough to flip that ordering —
+        anything that would pass with personalization=None (e.g. a fixture
+        where the ticket-linked node already wins on call-graph structure
+        alone) does not actually exercise the personalization= kwarg.
+        """
         fid = _insert_file(db)
-        referenced = _insert_symbol(db, fid, "referenced_fn")
-        plain = _insert_symbol(db, fid, "plain_fn")
-        shared_callee = _insert_symbol(db, fid, "shared_callee")
-        for sid in (referenced, plain, shared_callee):
+        hub = _insert_symbol(db, fid, "hub_fn")
+        target = _insert_symbol(db, fid, "target_fn")
+        callers = [_insert_symbol(db, fid, f"caller_fn_{i}") for i in range(8)]
+        for sid in (hub, target, *callers):
             _insert_chunk(db, sid)
         db.insert_call_edges(
             [
-                CallEdge(
-                    caller_id=referenced,
-                    callee_name="shared_callee",
-                    line=1,
-                    callee_id=shared_callee,
-                ),
-                CallEdge(
-                    caller_id=plain, callee_name="shared_callee", line=1, callee_id=shared_callee
-                ),
+                CallEdge(caller_id=caller, callee_name="hub_fn", line=1, callee_id=hub)
+                for caller in callers
             ]
         )
         db._conn.commit()
         db.insert_generic_edges(
             [
                 GenericEdge(
-                    from_symbol_id=referenced,
+                    from_symbol_id=target,
                     source_ref="ticket:PROJ-1",
                     edge_kind="references_ticket",
                 )
             ]
         )
 
-        without = dict(rank_by_pagerank([referenced, plain, shared_callee], db))
-        with_ppr = dict(
-            rank_by_pagerank([referenced, plain, shared_callee], db, personalization_enabled=True)
-        )
-        assert with_ppr[referenced] > with_ppr[plain]
-        # The referenced/plain gap should not shrink versus the unpersonalized
-        # call — personalization is meant to amplify this signal, not dilute it.
-        assert (with_ppr[referenced] - with_ppr[plain]) >= (without[referenced] - without[plain])
+        all_ids = [hub, target, *callers]
+        without = dict(rank_by_pagerank(all_ids, db))
+        # Sanity check the fixture's premise: on pure call-graph structure,
+        # the heavily-called hub outranks the zero-callers ticket target.
+        assert without[hub] > without[target]
+
+        with_ppr = dict(rank_by_pagerank(all_ids, db, personalization_enabled=True))
+        # Personalization must be strong enough to flip that ordering — a
+        # no-op personalization (e.g. personalization=None reaching
+        # nx.pagerank regardless of the flag) would leave hub > target
+        # unchanged, since that ordering is exactly what plain PageRank
+        # already produces from call-graph structure alone.
+        assert with_ppr[target] > with_ppr[hub]
 
 
 # ---------------------------------------------------------------------------

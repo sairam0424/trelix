@@ -127,33 +127,100 @@ class TestComputePagerank:
         assert without == with_ppr
 
     def test_personalization_shifts_score_toward_ticket_linked_leaf(self, tmp_path: Path) -> None:
-        """With personalization on, teleport mass concentrates on the
-        leaf that has a generic_edge — its score (relative to an
-        equivalent unlinked leaf) must not shrink versus the plain call."""
-        db, cg, hub_id = _build_star_graph(tmp_path)
-        leaf_ids = [n for n in cg.nx.nodes if n != hub_id and cg.nx.nodes[n]["type"] == "symbol"]
-        linked_leaf = leaf_ids[0]
-        other_leaf = leaf_ids[1]
+        """Proves personalization= is genuinely wired into compute_pagerank's
+        nx.pagerank call, not a no-op — a prior version of this test passed
+        identically whether personalization was hardcoded to None or
+        threaded through, because the star-graph fixture's hub already
+        outranked every leaf regardless of any ticket link (leaves have no
+        way to beat the hub on call-graph structure alone in that
+        topology), so the assertions never actually depended on
+        personalization doing anything.
 
+        This fixture instead builds a hub called by 8 distinct callers
+        (real call-graph centrality, no ticket link) versus a target with
+        zero callers but a ticket link — with enough callers, plain
+        PageRank ranks hub above target on pure centrality. Personalization
+        must be strong enough to flip that ordering; anything that would
+        pass with personalization=None does not actually exercise the
+        personalization= kwarg.
+        """
+        db = Database(tmp_path / "index.db")
+        fid = db.upsert_file(
+            IndexedFile(
+                path="/r/a.py",
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="x",
+                size_bytes=10,
+            )
+        )
+        hub = db.insert_symbol(
+            Symbol(
+                file_id=fid,
+                name="hub",
+                qualified_name="hub",
+                kind=SymbolKind.FUNCTION,
+                line_start=1,
+                line_end=5,
+                signature="def hub()",
+                body="",
+            )
+        )
+        target = db.insert_symbol(
+            Symbol(
+                file_id=fid,
+                name="target",
+                qualified_name="target",
+                kind=SymbolKind.FUNCTION,
+                line_start=10,
+                line_end=14,
+                signature="def target()",
+                body="",
+            )
+        )
+        callers = [
+            db.insert_symbol(
+                Symbol(
+                    file_id=fid,
+                    name=f"caller{i}",
+                    qualified_name=f"caller{i}",
+                    kind=SymbolKind.FUNCTION,
+                    line_start=20 + i,
+                    line_end=20 + i,
+                    signature=f"def caller{i}()",
+                    body="",
+                )
+            )
+            for i in range(8)
+        ]
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=caller, callee_name="hub", callee_id=hub, line=1)
+                for caller in callers
+            ]
+        )
         db.insert_generic_edges(
             [
                 GenericEdge(
-                    from_symbol_id=linked_leaf,
+                    from_symbol_id=target,
                     source_ref="ticket:PROJ-1",
                     edge_kind="references_ticket",
                 )
             ]
         )
-        # Generic edges are read at CodeGraph construction time — rebuild.
         cg = CodeGraph(db)
 
         without = compute_pagerank(cg)
-        with_ppr = compute_pagerank(cg, personalization_enabled=True)
+        # Sanity check the fixture's premise: on pure call-graph structure,
+        # the heavily-called hub outranks the zero-callers ticket target.
+        assert without[hub] > without[target]
 
-        assert with_ppr[linked_leaf] > with_ppr[other_leaf]
-        assert (with_ppr[linked_leaf] - with_ppr[other_leaf]) >= (
-            without[linked_leaf] - without[other_leaf]
-        )
+        with_ppr = compute_pagerank(cg, personalization_enabled=True)
+        # Personalization must be strong enough to flip that ordering — a
+        # no-op personalization would leave hub > target unchanged, since
+        # that's exactly what plain PageRank already produces from
+        # call-graph structure alone.
+        assert with_ppr[target] > with_ppr[hub]
 
 
 class TestGetTopCentralSymbols:

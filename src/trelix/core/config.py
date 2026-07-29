@@ -531,6 +531,16 @@ class RetrievalConfig(BaseSettings):
     # anyone not opting in. See rank_by_pagerank() (retrieval/graph.py) and
     # compute_pagerank() (graph/community.py) — both independently gated by
     # this same flag, since they don't share a PageRank implementation.
+    #
+    # Interaction risk with pagerank_boost_enabled: compute_pagerank()'s
+    # teleport mass is uniform across every ticket/artifact-linked symbol,
+    # with no weighting by call-graph importance. On a repo where only a
+    # small fraction of symbols have ever been referenced by a ticket,
+    # enabling both flags together can invert get_top_central_symbols()'s
+    # ranking — a single ticket-touched leaf can outscore genuinely central
+    # hub symbols that pagerank_boost_enabled is meant to surface. If both
+    # are enabled and boost results look off, try disabling personalization
+    # first to isolate which one is driving the change.
     pagerank_personalization_enabled: bool = Field(
         default=False,
         alias="TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION",
