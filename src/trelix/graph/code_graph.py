@@ -97,7 +97,7 @@ class CodeGraph:
         # relationship is genuinely mutual — a heavily-referenced symbol is
         # important, and a ticket touching many symbols is also important —
         # so both directions are added.
-        for from_id, edge_kind, source_ref in self._db.iter_resolved_generic_edges():
+        for from_id, edge_kind, source_ref, weight in self._db.iter_resolved_generic_edges():
             if from_id not in self._g:
                 continue
             if source_ref not in self._g:
@@ -112,8 +112,8 @@ class CodeGraph:
                     community=None,
                 )
             label = _EDGE_KINDS_TO_LABEL.get(edge_kind, "GENERIC_REL")
-            self._g.add_edge(from_id, source_ref, label=label)
-            self._g.add_edge(source_ref, from_id, label=label)
+            self._g.add_edge(from_id, source_ref, label=label, weight=weight)
+            self._g.add_edge(source_ref, from_id, label=label, weight=weight)
 
         logger.debug(
             "CodeGraph built: %d nodes, %d edges",

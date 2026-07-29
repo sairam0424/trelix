@@ -1503,18 +1503,21 @@ class Database:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def iter_resolved_generic_edges(self) -> list[tuple[int, str, str]]:
-        """Return (from_symbol_id, edge_kind, source_ref) for every generic
-        edge — mirrors iter_resolved_type_edges(). "Resolved" here just means
-        from_symbol_id is set (always true for every current writer); no
-        further resolution pass exists for the source_ref side, unlike
-        type_edges' to_symbol_id, since source_ref never refers to a row in
-        this DB."""
+    def iter_resolved_generic_edges(self) -> list[tuple[int, str, str, float]]:
+        """Return (from_symbol_id, edge_kind, source_ref, weight) for every
+        generic edge — mirrors iter_resolved_type_edges(). "Resolved" here
+        just means from_symbol_id is set (always true for every current
+        writer); no further resolution pass exists for the source_ref side,
+        unlike type_edges' to_symbol_id, since source_ref never refers to a
+        row in this DB. weight is surfaced so callers (CodeGraph._build())
+        can carry a lower-confidence match's reduced influence into
+        PageRank rather than the column being persisted but silently
+        ignored on every read path."""
         rows = self._conn.execute(
-            "SELECT from_symbol_id, edge_kind, source_ref FROM generic_edges"
+            "SELECT from_symbol_id, edge_kind, source_ref, weight FROM generic_edges"
             " WHERE from_symbol_id IS NOT NULL"
         ).fetchall()
-        return [(r[0], r[1], r[2]) for r in rows]
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
 
     # ------------------------------------------------------------------
     # Artifacts (source-connector content — Jira tickets, TestRail cases)
