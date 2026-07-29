@@ -143,14 +143,10 @@ def _build_embedder_config(provider: str | None) -> EmbedderConfig:
 
 def _setup_logging(verbose: bool = False) -> None:
     """Configure the trelix logger. Call once at CLI entry."""
+    from trelix.core.logging_setup import setup_console_logging
+
     level = logging.DEBUG if verbose else logging.WARNING
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-        level=level,
-    )
-    for lib in ("httpx", "httpcore", "openai", "sentence_transformers", "transformers"):
-        logging.getLogger(lib).setLevel(logging.WARNING)
+    setup_console_logging(level)
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +636,8 @@ def link_tickets(
     an already-indexed repo. Requires *repo* to be a real git checkout;
     non-git directories or shallow clones degrade gracefully to 0 links.
     """
+    _setup_logging(False)
+
     from pydantic import ValidationError as _PydanticValidationError
 
     from trelix.core.config import GitLinkerConfig, IndexConfig
@@ -1072,9 +1070,13 @@ def serve(
         typer.echo("trelix serve requires: pip install 'trelix[serve]'")
         raise typer.Exit(1)
 
+    from trelix.core.logging_setup import setup_json_logging, uvicorn_log_config
+
+    setup_json_logging()
+
     api_app = create_app()
     typer.echo(f"trelix API serving {repo_path} at http://{host}:{port}")
-    uvicorn.run(api_app, host=host, port=port)
+    uvicorn.run(api_app, host=host, port=port, log_config=uvicorn_log_config())
 
 
 # ---------------------------------------------------------------------------
@@ -1103,6 +1105,8 @@ def graph(
     NOTE: The old 'trelix graph <repo> <symbol>' command for call-graph display has been
     renamed to 'trelix call-graph'. See 'trelix call-graph --help'.
     """
+    _setup_logging(False)
+
     from pathlib import Path as _Path
 
     from trelix.core.config import IndexConfig
@@ -1373,6 +1377,8 @@ def review(
     ),
 ) -> None:
     """Review a git diff using trelix retrieval-augmented analysis."""
+    _setup_logging(False)
+
     import json as _json
 
     from trelix.core.config import IndexConfig
@@ -1838,6 +1844,8 @@ def connector_sync(
     artefacts to be reachable from the code graph — this command only
     populates the artifacts table, it does not create edges itself.
     """
+    _setup_logging(False)
+
     from trelix.core.config import IndexConfig
     from trelix.indexing.connectors.registry import get_artifact_source
     from trelix.store.db import Database
