@@ -8,12 +8,19 @@ test.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import httpx
 import openai
 import pytest
 import requests
 
-from trelix.core.retry import RETRYABLE_STATUS_CODES, is_retryable_http_error, with_retry
+from trelix.core.retry import (
+    RETRYABLE_STATUS_CODES,
+    _extract_retry_after_seconds,
+    is_retryable_http_error,
+    with_retry,
+)
 
 _ERROR_CODE_TO_OPENAI_EXC: dict[int, type[openai.APIStatusError]] = {
     429: openai.RateLimitError,
@@ -26,6 +33,14 @@ _ERROR_CODE_TO_OPENAI_EXC: dict[int, type[openai.APIStatusError]] = {
 def _httpx_status_error(status_code: int) -> httpx.HTTPStatusError:
     request = httpx.Request("GET", "https://example.com")
     response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError(f"{status_code} error", request=request, response=response)
+
+
+def _httpx_status_error_with_retry_after(
+    status_code: int, retry_after: str
+) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://example.com")
+    response = httpx.Response(status_code, headers={"Retry-After": retry_after}, request=request)
     return httpx.HTTPStatusError(f"{status_code} error", request=request, response=response)
 
 
@@ -110,6 +125,24 @@ class TestIsRetryableHttpError:
         exc.response = _BrokenResponse()  # type: ignore[assignment]
 
         assert is_retryable_http_error(exc) is False
+
+    @pytest.mark.parametrize(
+        "exc_class_name", ["EndpointConnectionError", "ConnectTimeoutError", "ReadTimeoutError"]
+    )
+    def test_botocore_connection_level_errors_are_retryable(self, exc_class_name: str) -> None:
+        """BotoCoreError subclasses (EndpointConnectionError,
+        ConnectTimeoutError, ReadTimeoutError — raised by boto3 on DNS
+        failure, connect timeout, or read timeout talking to
+        bedrock-runtime) are a disjoint hierarchy from ClientError (which
+        carries a real HTTP status via ResponseMetadata and is already
+        handled by status-code extraction) — without a dedicated
+        connection-level check, a network-level Bedrock failure was never
+        retried, unlike every other backend/connector wired into this
+        same contract."""
+        botocore_exceptions = pytest.importorskip("botocore.exceptions")
+        exc_class = getattr(botocore_exceptions, exc_class_name)
+        exc = exc_class(endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com")
+        assert is_retryable_http_error(exc) is True
 
     @pytest.mark.parametrize("status_code", sorted(RETRYABLE_STATUS_CODES))
     def test_openai_retryable_status_codes(self, status_code: int) -> None:
@@ -207,3 +240,60 @@ class TestWithRetry:
         result = await flaky_async()
         assert result == "ok"
         assert attempts["count"] == 2
+
+
+class TestExtractRetryAfterSeconds:
+    def test_seconds_form_is_parsed(self) -> None:
+        exc = _httpx_status_error_with_retry_after(429, "5")
+        assert _extract_retry_after_seconds(exc) == 5.0
+
+    def test_http_date_form_is_parsed(self) -> None:
+        import email.utils
+        import time
+
+        future = time.time() + 10
+        http_date = email.utils.formatdate(future, usegmt=True)
+        exc = _httpx_status_error_with_retry_after(429, http_date)
+        delay = _extract_retry_after_seconds(exc)
+        assert delay is not None
+        # formatdate() truncates to whole seconds — allow a small window.
+        assert 8.0 <= delay <= 11.0
+
+    def test_missing_header_returns_none(self) -> None:
+        exc = _httpx_status_error(429)
+        assert _extract_retry_after_seconds(exc) is None
+
+    def test_unparseable_header_returns_none(self) -> None:
+        exc = _httpx_status_error_with_retry_after(429, "not-a-valid-value")
+        assert _extract_retry_after_seconds(exc) is None
+
+    def test_no_response_attribute_returns_none(self) -> None:
+        assert _extract_retry_after_seconds(ValueError("no response at all")) is None
+
+
+class TestWithRetryHonorsRetryAfter:
+    def test_retry_after_header_is_honored_over_exponential_backoff(self) -> None:
+        """A server-supplied Retry-After must override the default
+        exponential backoff — before this fix, migrating Jira/TestRail's
+        hand-rolled backoff (which read this header explicitly) onto the
+        shared tenacity contract silently dropped it, always using blind
+        exponential backoff regardless of what the server requested."""
+        sleep_calls: list[float] = []
+
+        def _fake_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        attempts = {"count": 0}
+
+        @with_retry(max_attempts=3, min_wait_seconds=0.001, max_wait_seconds=0.01)
+        def flaky() -> str:
+            attempts["count"] += 1
+            if attempts["count"] < 2:
+                raise _httpx_status_error_with_retry_after(429, "17")
+            return "ok"
+
+        with patch("tenacity.nap.time.sleep", side_effect=_fake_sleep):
+            result = flaky()
+
+        assert result == "ok"
+        assert sleep_calls == [17.0]

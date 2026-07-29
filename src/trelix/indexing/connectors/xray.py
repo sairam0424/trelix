@@ -4,10 +4,11 @@ Artifacts, for cross-source linking via generic_edges.
 
 Cloud only (see XrayConnectorConfig's docstring for why Server/DC is out of
 scope). Xray Cloud tests are Jira issues under the hood, but test-specific
-content (steps/definition) has no Jira-native equivalent — this connector
-combines two API calls per page: a plain Jira REST v3 search (title/url,
-same pattern JiraConnector already uses) and Xray's own GraphQL `getTests`
-query (the one genuinely new API surface, for step/definition content).
+content (steps/definition) has no Jira-native equivalent. All content —
+Jira issue fields (key/summary/status) AND test-specific content (steps/
+definition) — comes back from a single GraphQL `getTests` query per page:
+Jira's own `jira(fields: [...])` selection is nested inside the GraphQL
+response, so no separate Jira REST call is needed at all.
 
 Auth: Xray Cloud's own API-key flow — POST /api/v2/authenticate with
 {client_id, client_secret} (issued by a Jira admin in Xray's global
@@ -86,7 +87,10 @@ class XrayConnector(ArtifactSource):
         assert self._config.client_id and self._config.client_secret
         assert self._config.project_key and self._config.jira_base_url
 
-        self._token = self._authenticate()
+        try:
+            self._token = self._authenticate()
+        except httpx.HTTPError as exc:
+            raise XrayConnectorError(f"Xray authenticate request failed: {exc}") from exc
         jira_base_url = self._config.jira_base_url.rstrip("/")
         jql = f"project = {self._config.project_key}"
         artifacts: list[Artifact] = []
@@ -97,8 +101,17 @@ class XrayConnector(ArtifactSource):
                 data = self._get_tests(jql, self._config.page_size, start)
             except httpx.HTTPError as exc:
                 raise XrayConnectorError(f"Xray API request failed: {exc}") from exc
-            page = data.get("data", {}).get("getTests", {})
-            results = page.get("results", [])
+            # A GraphQL query-level error (invalid JQL, no Xray license on
+            # the project, query complexity limit, ...) comes back as HTTP
+            # 200 with `data: null` and an `errors` array — the "data" key
+            # IS present with value None, so `.get("data", {})`'s default
+            # never applies; `(data.get("data") or {})` degrades that to an
+            # empty dict instead of raising AttributeError on the outer
+            # dict's own .get("getTests", ...) call below.
+            if data.get("errors"):
+                raise XrayConnectorError(f"Xray GraphQL error: {data['errors']}")
+            page = data.get("data") or {}
+            results = (page.get("getTests") or {}).get("results", [])
             for test in results:
                 artifacts.append(self._test_to_artifact(test, jira_base_url))
 

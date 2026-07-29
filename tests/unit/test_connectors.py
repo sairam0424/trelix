@@ -419,6 +419,60 @@ class TestXrayConnectorFetch:
             with pytest.raises(XrayConnectorError, match="401"):
                 XrayConnector(_XRAY_CONFIG).fetch()
 
+    def test_graphql_error_response_raises_xray_connector_error_not_attributeerror(
+        self,
+    ) -> None:
+        """Per the GraphQL spec, a query-level error (invalid JQL, no Xray
+        license on the project, query complexity limit, ...) comes back as
+        HTTP 200 with `data: null` and an `errors` array. The outer
+        `.get("data", {})` doesn't help here — the "data" key IS present
+        with value None, so the {} default never applies, and calling
+        .get() on that None used to raise AttributeError instead of the
+        documented XrayConnectorError."""
+        auth_resp = _mock_auth_response()
+        graphql_error_resp = MagicMock()
+        graphql_error_resp.status_code = 200
+        graphql_error_resp.json.return_value = {
+            "data": None,
+            "errors": [{"message": "Invalid JQL syntax"}],
+        }
+        with patch(
+            "trelix.indexing.connectors.xray.httpx.post",
+            side_effect=[auth_resp, graphql_error_resp],
+        ):
+            with pytest.raises(XrayConnectorError, match="Invalid JQL syntax"):
+                XrayConnector(_XRAY_CONFIG).fetch()
+
+    def test_authenticate_retry_exhaustion_raises_xray_connector_error(self) -> None:
+        """A persistent 5xx on /authenticate must surface as
+        XrayConnectorError once retries are exhausted, not leak the raw
+        httpx.HTTPStatusError — matching Jira/TestRail's own contract
+        where every real API failure funnels through their connector's
+        own error type."""
+        always_fails = MagicMock(status_code=500, text="Internal Server Error")
+        with (
+            patch("trelix.indexing.connectors.xray.httpx.post", return_value=always_fails),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            with pytest.raises(XrayConnectorError):
+                XrayConnector(_XRAY_CONFIG).fetch()
+
+    def test_authenticate_connection_error_raises_xray_connector_error(self) -> None:
+        """A connection-level failure (DNS/timeout/refused) on
+        /authenticate must surface as XrayConnectorError, not leak the raw
+        httpx exception type to callers."""
+        import httpx
+
+        with (
+            patch(
+                "trelix.indexing.connectors.xray.httpx.post",
+                side_effect=httpx.ConnectError("connection refused"),
+            ),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            with pytest.raises(XrayConnectorError):
+                XrayConnector(_XRAY_CONFIG).fetch()
+
     def test_fetch_retries_on_429_then_succeeds(self) -> None:
         auth_resp = _mock_auth_response()
         rate_limited = MagicMock(status_code=429, text="")
