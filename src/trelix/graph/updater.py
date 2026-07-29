@@ -29,8 +29,9 @@ logger = logging.getLogger("trelix.graph.updater")
 class GraphUpdater:
     """Lightweight incremental updater for the CodeGraph after file changes."""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, personalization_enabled: bool = False) -> None:
         self._db = db
+        self._personalization_enabled = personalization_enabled
         # Stores the last known {node_id: community_id} partition.
         # Empty on first run — triggers full Louvain; populated on every
         # successful update so subsequent changes use the fast incremental path.
@@ -70,7 +71,7 @@ class GraphUpdater:
             assign_communities(cg, communities)
 
             # Update PageRank scores
-            pr_scores = compute_pagerank(cg)
+            pr_scores = compute_pagerank(cg, personalization_enabled=self._personalization_enabled)
             for node_id, score in pr_scores.items():
                 if node_id in cg.nx.nodes:
                     cg.nx.nodes[node_id]["centrality"] = score
