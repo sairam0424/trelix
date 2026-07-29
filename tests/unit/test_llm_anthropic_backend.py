@@ -40,6 +40,30 @@ def mock_anthropic(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return module
 
 
+class TestClientRetryConfiguration:
+    """The anthropic SDK's own default retry (max_retries=2) would
+    otherwise stack underneath @with_retry's 5-attempt tenacity layer,
+    multiplying worst-case wall-clock time on a persistent outage far
+    beyond what max_attempts=5 implies. Uses the REAL anthropic SDK client
+    (skips if the optional 'anthropic' extra isn't installed) so this
+    actually proves what value reaches the SDK, not what trelix's own
+    code believes it passed."""
+
+    def test_anthropic_client_has_sdk_retries_disabled(self) -> None:
+        pytest.importorskip("anthropic")
+        from trelix.llm.providers.anthropic_backend import AnthropicBackend
+
+        cfg = LLMConfig(
+            provider="anthropic",
+            anthropic_api_key=_FAKE_ANT_KEY,
+            model="claude-3-5-sonnet-20241022",
+            _env_file=None,  # type: ignore[call-arg]
+        )
+        backend = AnthropicBackend(cfg)
+        assert backend._client is not None
+        assert backend._client.max_retries == 0
+
+
 class TestAnthropicBackend:
     def _make_backend(self, mock_anthropic_module: MagicMock):
         from trelix.llm.providers.anthropic_backend import AnthropicBackend

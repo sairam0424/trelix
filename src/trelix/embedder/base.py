@@ -94,10 +94,15 @@ class AzureOpenAIEmbedder(BaseEmbedder):
     def __init__(self, config: EmbedderConfig) -> None:
         from openai import AzureOpenAI
 
+        # max_retries=0: @with_retry below is the sole retry layer — the
+        # SDK's own default (2 attempts) would otherwise stack underneath
+        # tenacity's 5-attempt loop, multiplying worst-case wall-clock time
+        # on a persistent outage far beyond what max_attempts=5 implies.
         self._client = AzureOpenAI(
             api_key=config.azure_api_key,
             azure_endpoint=config.azure_endpoint or "",
             api_version=config.azure_api_version,
+            max_retries=0,
         )
         self._deployment = config.azure_embeddings_deployment
         self._dimensions = config.azure_dimensions
@@ -112,6 +117,7 @@ class AzureOpenAIEmbedder(BaseEmbedder):
             api_key=self._async_client_config.azure_api_key,
             azure_endpoint=self._async_client_config.azure_endpoint or "",
             api_version=self._async_client_config.azure_api_version,
+            max_retries=0,
         )
 
     @with_retry(max_attempts=5)
@@ -169,7 +175,9 @@ class OpenAIEmbedder(BaseEmbedder):
     def __init__(self, config: EmbedderConfig) -> None:
         from openai import OpenAI
 
-        self._client = OpenAI(api_key=config.openai_api_key)
+        # max_retries=0: @with_retry below is the sole retry layer — see
+        # AzureOpenAIEmbedder.__init__'s comment for why.
+        self._client = OpenAI(api_key=config.openai_api_key, max_retries=0)
         self._model = config.openai_model
         self._dimensions = config.openai_dimensions
         self._batch_size = config.batch_size
@@ -179,7 +187,7 @@ class OpenAIEmbedder(BaseEmbedder):
         """Lazily create AsyncOpenAI client."""
         from openai import AsyncOpenAI
 
-        return AsyncOpenAI(api_key=self._async_client_config.openai_api_key)
+        return AsyncOpenAI(api_key=self._async_client_config.openai_api_key, max_retries=0)
 
     @with_retry(max_attempts=5)
     def _create(self, **kwargs: Any) -> Any:
@@ -396,6 +404,7 @@ class _BedrockEmbedderBase(BaseEmbedder):
     def _make_boto3_client(self, config: EmbedderConfig) -> Any:
         try:
             import boto3
+            from botocore.config import Config as BotoConfig
         except ImportError as exc:
             raise ImportError(
                 "Bedrock embedders require boto3. Install it with: pip install 'trelix[bedrock]'"
@@ -404,7 +413,13 @@ class _BedrockEmbedderBase(BaseEmbedder):
         if config.bedrock_aws_profile:
             session_kwargs["profile_name"] = config.bedrock_aws_profile
         session = boto3.Session(**session_kwargs)
-        client_kwargs: dict[str, Any] = {"region_name": config.bedrock_aws_region}
+        client_kwargs: dict[str, Any] = {
+            "region_name": config.bedrock_aws_region,
+            # max_attempts=0: @with_retry (via _invoke_model() on both
+            # Titan/Cohere embedders) is meant to be the sole retry layer —
+            # see BedrockBackend._build_client's comment for why.
+            "config": BotoConfig(retries={"max_attempts": 0, "mode": "standard"}),
+        }
         if config.bedrock_aws_access_key_id:
             client_kwargs["aws_access_key_id"] = self._decode_credential(
                 config.bedrock_aws_access_key_id

@@ -88,6 +88,7 @@ class BedrockBackend(TrelixChatClient):
     def _build_client(self, config: LLMConfig) -> Any:
         try:
             import boto3
+            from botocore.config import Config as BotoConfig
         except ImportError as exc:
             raise ImportError(
                 "Bedrock backend requires boto3. Install it with: pip install 'trelix[bedrock]'"
@@ -96,7 +97,17 @@ class BedrockBackend(TrelixChatClient):
         if config.aws_profile:
             session_kwargs["profile_name"] = config.aws_profile
         session = boto3.Session(**session_kwargs)
-        client_kwargs: dict[str, Any] = {"region_name": config.aws_region}
+        client_kwargs: dict[str, Any] = {
+            "region_name": config.aws_region,
+            # max_attempts=0: the shared @with_retry contract (via
+            # _call_with_retry() below) is meant to be the sole retry
+            # layer — botocore's own default retry mode (legacy, up to 5
+            # attempts per call) would otherwise stack underneath
+            # tenacity's 5-attempt loop, multiplying worst-case wall-clock
+            # time on a persistent outage far beyond what max_attempts=5
+            # implies.
+            "config": BotoConfig(retries={"max_attempts": 0, "mode": "standard"}),
+        }
         if config.aws_access_key_id:
             client_kwargs["aws_access_key_id"] = self._decode_credential(config.aws_access_key_id)
         if config.aws_secret_access_key:
