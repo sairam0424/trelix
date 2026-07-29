@@ -6,10 +6,18 @@ import sys
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from trelix.core.config import LLMConfig
 from trelix.llm.client import ChatMessage, ChatResponse
+
+
+def _retryable_error(status_code: int = 503) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError(f"{status_code} error", request=request, response=response)
+
 
 # Fake key for testing — not a real credential
 _FAKE_ANT_KEY = "test-anthropic-api-key-fake"
@@ -129,3 +137,35 @@ class TestAnthropicBackend:
         with patch.dict("sys.modules", {"anthropic": None}):
             with pytest.raises(ImportError, match="pip install"):
                 AnthropicBackend(cfg)
+
+    def test_complete_retries_on_503_then_succeeds(self, mock_anthropic: MagicMock) -> None:
+        """A transient 5xx must be retried, not surfaced immediately —
+        confirms the shared retry contract is wired into complete()."""
+        backend = self._make_backend(mock_anthropic)
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="ok")]
+        mock_response.model = "claude-3-5-sonnet-20241022"
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage.input_tokens = 1
+        mock_response.usage.output_tokens = 1
+        mock_client.messages.create.side_effect = [_retryable_error(503), mock_response]
+        backend._client = mock_client
+
+        with patch("tenacity.nap.time.sleep"):
+            result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "ok"
+        assert mock_client.messages.create.call_count == 2
+
+    def test_complete_400_is_not_retried(self, mock_anthropic: MagicMock) -> None:
+        """A non-retryable client error must fail on the first attempt."""
+        backend = self._make_backend(mock_anthropic)
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = _retryable_error(400)
+        backend._client = mock_client
+
+        with pytest.raises(httpx.HTTPStatusError):
+            backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert mock_client.messages.create.call_count == 1

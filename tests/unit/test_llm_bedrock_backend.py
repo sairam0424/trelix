@@ -282,3 +282,73 @@ class TestBedrockDefaultModels:
         with patch.dict("sys.modules", {"boto3": boto3_mock}):
             backend = BedrockBackend(cfg)
         assert backend._primary_model == "us.anthropic.claude-opus-4-8"
+
+
+class TestBedrockRetry:
+    """Shared retry contract wiring — ThrottlingException/5xx must retry
+    before model-fallback logic ever sees them; ValidationException must
+    still fall through to fallback with zero wasted retry attempts."""
+
+    def _client_error(self, code: str, status_code: int) -> Exception:
+        botocore = pytest.importorskip("botocore.exceptions")
+        return botocore.ClientError(
+            {
+                "Error": {"Code": code, "Message": "x"},
+                "ResponseMetadata": {"HTTPStatusCode": status_code},
+            },
+            "Converse",
+        )
+
+    def _make_backend_with_mock_client(self):
+        from trelix.llm.providers.bedrock_backend import BedrockBackend
+
+        cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
+        boto3_mock = _make_boto3_mock()
+        with patch.dict("sys.modules", {"boto3": boto3_mock}):
+            return BedrockBackend(cfg)
+
+    def test_throttling_exception_is_retried_then_succeeds(self) -> None:
+        backend = self._make_backend_with_mock_client()
+        mock_client = MagicMock()
+        success = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        mock_client.converse.side_effect = [
+            self._client_error("ThrottlingException", 429),
+            success,
+        ]
+        backend._client = mock_client
+
+        with patch("tenacity.nap.time.sleep"):
+            result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "ok"
+        assert mock_client.converse.call_count == 2
+
+    def test_validation_exception_falls_back_without_wasted_retries(self) -> None:
+        """A non-retryable ClientError (no retryable status) must reach
+        fallback logic on the first attempt, not exhaust retries first."""
+        backend = self._make_backend_with_mock_client()
+        mock_client = MagicMock()
+        fallback_resp = {
+            "output": {"message": {"content": [{"text": "haiku reply"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+
+        def converse_side_effect(**kwargs):
+            if kwargs.get("modelId") == backend._primary_model:
+                raise _ValidationException(
+                    "ValidationException: on-demand throughput not supported"
+                )
+            return fallback_resp
+
+        mock_client.converse.side_effect = converse_side_effect
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "haiku reply"
+        assert mock_client.converse.call_count == 2  # primary (1 try) + fallback (1 try)

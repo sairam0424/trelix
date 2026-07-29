@@ -13,6 +13,8 @@ from typing import Any
 
 import httpx
 
+from trelix.core.retry import with_retry
+
 logger = logging.getLogger("trelix.review.github")
 
 _GITHUB_ACCEPT = "application/vnd.github+json"
@@ -66,6 +68,18 @@ class GitHubPRClient:
 
     def _get(self, url: str, params: dict[str, int | str] | None = None) -> Any:
         """GET a URL, handle pagination, raise GitHubAPIError on non-2xx."""
+        try:
+            return self._get_with_retry(url, params)
+        except httpx.HTTPStatusError as exc:
+            raise GitHubAPIError(
+                f"GitHub API error {exc.response.status_code}: "
+                f"{exc.response.json().get('message', exc.response.text[:200])}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise GitHubAPIError(f"GitHub API request failed: {exc}") from exc
+
+    @with_retry(max_attempts=5)
+    def _get_with_retry(self, url: str, params: dict[str, int | str] | None) -> Any:
         response = httpx.get(url, headers=self._headers, params=params, timeout=30)
         if response.status_code == 401:
             raise GitHubAPIError(
@@ -78,9 +92,10 @@ class GitHubPRClient:
                 f"404 Not Found — PR or repo does not exist, or token lacks access. URL: {url}"
             )
         if response.status_code not in (200, 201):  # pragma: no cover
-            raise GitHubAPIError(
-                f"GitHub API error {response.status_code}: "
-                f"{response.json().get('message', response.text[:200])}"
+            raise httpx.HTTPStatusError(
+                f"GitHub API error {response.status_code}",
+                request=httpx.Request("GET", url),
+                response=response,
             )
         return response.json()
 
@@ -164,15 +179,32 @@ class GitHubPRClient:
                 for c in comments
             ],
         }
-        response = httpx.post(
-            url, headers=self._headers, json=payload, timeout=30
-        )  # pragma: no cover
-        if response.status_code not in (200, 201):  # pragma: no cover
+        try:
+            return self._post_review_with_retry(url, payload)  # pragma: no cover
+        except httpx.HTTPStatusError as exc:  # pragma: no cover
             raise GitHubAPIError(
-                f"Failed to post review: {response.status_code} "
-                f"{response.json().get('message', response.text[:200])}"
+                f"Failed to post review: {exc.response.status_code} "
+                f"{exc.response.json().get('message', exc.response.text[:200])}"
+            ) from exc
+        except httpx.HTTPError as exc:  # pragma: no cover
+            raise GitHubAPIError(f"Failed to post review: {exc}") from exc
+
+    # NOTE: retrying a POST that creates a resource isn't strictly safe —
+    # GitHub's review-creation endpoint has no idempotency key, so a retry
+    # after a timeout where the server actually processed the first attempt
+    # would create a duplicate review. Accepted trade-off: a duplicate
+    # (rare, comment-only) review is far less harmful than the review never
+    # posting at all on a transient 5xx/timeout, which is today's behavior.
+    @with_retry(max_attempts=3)
+    def _post_review_with_retry(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        response = httpx.post(url, headers=self._headers, json=payload, timeout=30)
+        if response.status_code not in (200, 201):
+            raise httpx.HTTPStatusError(
+                f"Failed to post review: {response.status_code}",
+                request=httpx.Request("POST", url),
+                response=response,
             )
-        return response.json()  # type: ignore[no-any-return]  # pragma: no cover
+        return response.json()  # type: ignore[no-any-return]
 
     def get_pr_head_sha(self, owner: str, repo: str, pr_number: int) -> str:
         """Return the HEAD commit SHA of the PR (needed for post_review)."""

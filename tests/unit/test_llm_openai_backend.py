@@ -4,11 +4,21 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import httpx
+import openai
+import pytest
+
 from trelix.core.config import LLMConfig
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse
 from trelix.llm.providers.openai_backend import OpenAIBackend, _token_limit_param
 
 _FAKE_KEY = "test-k"  # short enough not to trigger secret scanner; never sent to any service
+
+
+def _status_error(status_code: int) -> openai.APIStatusError:
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(status_code, request=request)
+    return openai.APIStatusError(f"{status_code} error", response=response, body=None)
 
 
 class TestTokenLimitParam:
@@ -147,3 +157,39 @@ class TestOpenAIBackendComplete:
             MockAzure.return_value = MagicMock()
             OpenAIBackend(cfg)
             assert MockAzure.called
+
+    def test_complete_retries_on_503_then_succeeds(self) -> None:
+        """A transient 5xx must be retried, not surfaced immediately —
+        confirms the shared retry contract is wired into complete()."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.content = "ok"
+        mock_choice = MagicMock()
+        mock_choice.message = mock_msg
+        mock_choice.finish_reason = "stop"
+        success = MagicMock()
+        success.choices = [mock_choice]
+        success.model = "gpt-4o"
+        success.usage.prompt_tokens = 1
+        success.usage.completion_tokens = 1
+        mock_client.chat.completions.create.side_effect = [_status_error(503), success]
+        backend._client = mock_client
+
+        with patch("tenacity.nap.time.sleep"):
+            result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "ok"
+        assert mock_client.chat.completions.create.call_count == 2
+
+    def test_complete_400_is_not_retried(self) -> None:
+        """A non-retryable client error must fail on the first attempt."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = _status_error(400)
+        backend._client = mock_client
+
+        with pytest.raises(openai.APIStatusError):
+            backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert mock_client.chat.completions.create.call_count == 1
