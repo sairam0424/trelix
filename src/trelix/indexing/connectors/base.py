@@ -14,9 +14,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from trelix.core.models import Artifact
+
+if TYPE_CHECKING:
+    from trelix.indexing.artifact_linker import ArtifactLinker
 
 
 @dataclass
@@ -26,6 +29,7 @@ class ConnectorSyncResult:
     artifacts_fetched: int
     artifacts_written: int
     errors: int
+    edges_linked: int = 0
 
 
 class ArtifactSource(ABC):
@@ -61,24 +65,46 @@ class ArtifactSource(ABC):
         """
         ...
 
-    def sync(self, db_writer: ArtifactWriter) -> ConnectorSyncResult:
+    def sync(
+        self,
+        db_writer: ArtifactWriter,
+        linker: ArtifactLinker | None = None,
+    ) -> ConnectorSyncResult:
         """
         fetch() then persist every artefact via *db_writer* (kept as a thin
         protocol rather than a direct Database import, so connector unit
         tests can pass a mock without needing a real Database instance).
+
+        When *linker* is supplied, each successfully-written artefact is
+        immediately passed through ArtifactLinker.link_one() — a synced
+        artefact is reachable from generic_edges/the code graph the moment
+        this call returns, without a separate `trelix link-artifacts` pass.
+        A linking failure for one artefact is non-fatal (best-effort,
+        mirrors ArtifactLinker's own "never raise per-artifact" posture) and
+        does not count against `errors` (which tracks write failures only).
         """
         self.validate_config()
         fetched = self.fetch()
         written = 0
         errors = 0
+        edges_linked = 0
         for artifact in fetched:
             try:
                 db_writer.upsert_artifact(artifact)
                 written += 1
             except Exception:
                 errors += 1
+                continue
+            if linker is not None:
+                try:
+                    edges_linked += linker.link_one(artifact.source_ref)
+                except Exception:
+                    pass
         return ConnectorSyncResult(
-            artifacts_fetched=len(fetched), artifacts_written=written, errors=errors
+            artifacts_fetched=len(fetched),
+            artifacts_written=written,
+            errors=errors,
+            edges_linked=edges_linked,
         )
 
 

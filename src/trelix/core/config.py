@@ -840,6 +840,34 @@ class GitLinkerConfig(BaseSettings):
     since: str | None = None  # e.g. "90 days ago" — passed straight to `git log --since`
 
 
+class ArtifactLinkerConfig(BaseSettings):
+    """
+    Links connector-fetched artifacts (Jira tickets, TestRail cases, ...)
+    to code symbols by scanning each artifact's title/body for symbol name
+    or qualified_name mentions — feeds generic_edges the same way GitLinker
+    does for git-commit-message ticket references, but for artifact content
+    fetched via `trelix connector sync` (which never touches generic_edges
+    on its own).
+
+    Regex reference-extraction runs unconditionally (free, deterministic).
+    Embedding-similarity fallback is opt-in and only runs for artifacts
+    where the regex pass found zero matches — costs one embed call per
+    unmatched artifact, and lower-confidence matches (weight=0.5 vs. a
+    regex hit's weight=1.0) so they don't dominate PageRank mass.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_ARTIFACT_LINKER_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    embedding_fallback_enabled: bool = False
+    similarity_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+
+
 class JiraConnectorConfig(BaseSettings):
     """
     Jira Cloud REST API connector. HTTP Basic auth (email + API token) —
