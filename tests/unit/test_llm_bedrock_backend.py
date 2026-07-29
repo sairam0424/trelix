@@ -23,6 +23,23 @@ def _make_boto3_mock() -> MagicMock:
     return boto3_mock
 
 
+def _mock_boto3_modules(boto3_mock: MagicMock) -> dict[str, MagicMock]:
+    """sys.modules patch dict covering both boto3 and botocore.config —
+    _build_client() imports both (`import boto3` + `from botocore.config
+    import Config`), but botocore isn't installed in every environment
+    that runs this test suite (it's a transitive dependency of the
+    optional 'bedrock' extra, not a base dependency) — CI's own test job
+    never installs it. Mocking boto3 alone is not enough."""
+    botocore_config_mock = MagicMock()
+    botocore_mock = MagicMock()
+    botocore_mock.config = botocore_config_mock
+    return {
+        "boto3": boto3_mock,
+        "botocore": botocore_mock,
+        "botocore.config": botocore_config_mock,
+    }
+
+
 class TestBedrockBackend:
     def _make_backend(self, model: str = "us.anthropic.claude-sonnet-4-6"):
         from trelix.llm.providers.bedrock_backend import BedrockBackend
@@ -33,7 +50,7 @@ class TestBedrockBackend:
             _env_file=None,  # type: ignore[call-arg]
         )
         boto3_mock = _make_boto3_mock()
-        with patch.dict("sys.modules", {"boto3": boto3_mock}):
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
             backend = BedrockBackend(cfg)
         return backend
 
@@ -155,7 +172,7 @@ class TestBedrockDefaultModels:
             kwargs["model"] = model
         cfg = LLMConfig(**kwargs)  # type: ignore[arg-type]
         boto3_mock = _make_boto3_mock()
-        with patch.dict("sys.modules", {"boto3": boto3_mock}):
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
             backend = BedrockBackend(cfg)
         return backend
 
@@ -279,7 +296,7 @@ class TestBedrockDefaultModels:
             _env_file=None,  # type: ignore[call-arg]
         )
         boto3_mock = _make_boto3_mock()
-        with patch.dict("sys.modules", {"boto3": boto3_mock}):
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
             backend = BedrockBackend(cfg)
         assert backend._primary_model == "us.anthropic.claude-opus-4-8"
 
@@ -323,7 +340,7 @@ class TestBedrockRetry:
 
         cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
         boto3_mock = _make_boto3_mock()
-        with patch.dict("sys.modules", {"boto3": boto3_mock}):
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
             return BedrockBackend(cfg)
 
     def test_throttling_exception_is_retried_then_succeeds(self) -> None:
