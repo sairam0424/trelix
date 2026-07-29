@@ -108,6 +108,70 @@ class TestArtifactLinkerRegexMatch:
         count = ArtifactLinker(db, ArtifactLinkerConfig()).link()
         assert count == 0
 
+    def test_matches_despite_trailing_sentence_punctuation(self, tmp_path: Path) -> None:
+        """A mention immediately followed by a period/comma — an ordinary
+        way to end a sentence in real ticket prose — must still match, not
+        silently fail because the trailing punctuation got captured into
+        the token."""
+        db = Database(tmp_path / "index.db")
+        file_id = _make_file(db, "auth.py")
+        sym_id = _insert_symbol(db, file_id, "login")
+        db.upsert_artifact(_make_artifact("ticket:PROJ-PUNCT", title="Cannot access login."))
+
+        count = ArtifactLinker(db, ArtifactLinkerConfig()).link()
+
+        assert count == 1
+        assert db.get_generic_edge_targets(sym_id) == ["ticket:PROJ-PUNCT"]
+
+    def test_matches_case_insensitively(self, tmp_path: Path) -> None:
+        """A capitalized mention at the start of a title — the natural way
+        English capitalizes a sentence/title regardless of the symbol's
+        actual lowercase name — must still match."""
+        db = Database(tmp_path / "index.db")
+        file_id = _make_file(db, "auth.py")
+        sym_id = _insert_symbol(db, file_id, "login")
+        db.upsert_artifact(_make_artifact("ticket:PROJ-CASE", title="Login is broken"))
+
+        count = ArtifactLinker(db, ArtifactLinkerConfig()).link()
+
+        assert count == 1
+        assert db.get_generic_edge_targets(sym_id) == ["ticket:PROJ-CASE"]
+
+    def test_common_word_symbol_name_does_not_match_unrelated_prose(self, tmp_path: Path) -> None:
+        """A symbol named after a common English/programming word (e.g.
+        `run`) must NOT match ordinary prose that happens to use that word
+        with no real relation to the symbol — this is the false-positive
+        class GitLinker avoids by matching a ticket-ID pattern instead of
+        arbitrary human-chosen names."""
+        db = Database(tmp_path / "index.db")
+        file_id = _make_file(db, "auth.py")
+        _insert_symbol(db, file_id, "run")
+        db.upsert_artifact(
+            _make_artifact(
+                "ticket:PROJ-COMMON",
+                title="The test suite failed to run and update the process",
+            )
+        )
+
+        count = ArtifactLinker(db, ArtifactLinkerConfig(embedding_fallback_enabled=False)).link()
+
+        assert count == 0
+
+    def test_common_word_qualified_name_still_matches(self, tmp_path: Path) -> None:
+        """The stoplist gates a literal stoplisted string, not names that
+        merely contain one as a substring — a qualified_name like
+        "auth.run" is a distinct, specific string from the stoplisted
+        "run" itself, so it stays indexed and still matches."""
+        db = Database(tmp_path / "index.db")
+        file_id = _make_file(db, "auth.py")
+        sym_id = _insert_symbol(db, file_id, "run", qualified_name="auth.run")
+        db.upsert_artifact(_make_artifact("ticket:PROJ-QUALIFIED", body="calling auth.run fails"))
+
+        count = ArtifactLinker(db, ArtifactLinkerConfig()).link()
+
+        assert count == 1
+        assert db.get_generic_edge_targets(sym_id) == ["ticket:PROJ-QUALIFIED"]
+
     def test_rerunning_link_on_same_artifacts_does_not_duplicate_edges(
         self, tmp_path: Path
     ) -> None:
@@ -143,6 +207,32 @@ class TestArtifactLinkerRegexMatch:
         db = Database(tmp_path / "index.db")
         count = ArtifactLinker(db, ArtifactLinkerConfig()).link_one("ticket:does-not-exist")
         assert count == 0
+
+    def test_link_one_reuses_name_index_across_calls_on_same_instance(self, tmp_path: Path) -> None:
+        """ArtifactSource.sync() calls link_one() once per synced artifact
+        in a loop, all against one ArtifactLinker instance — the underlying
+        symbol-name table scan (get_all_symbol_names()) must happen exactly
+        once regardless of how many artifacts are linked, not once per
+        artifact (which would turn a connector sync into an
+        O(artifacts * symbols) scan)."""
+        db = Database(tmp_path / "index.db")
+        file_id = _make_file(db, "auth.py")
+        login_id = _insert_symbol(db, file_id, "login")
+        logout_id = _insert_symbol(db, file_id, "logout")
+        db.upsert_artifact(_make_artifact("ticket:PROJ-7A", title="login is broken"))
+        db.upsert_artifact(_make_artifact("ticket:PROJ-7B", title="logout is broken"))
+        db.upsert_artifact(_make_artifact("ticket:PROJ-7C", title="unrelated ticket"))
+
+        linker = ArtifactLinker(db, ArtifactLinkerConfig())
+        with patch.object(db, "get_all_symbol_names", wraps=db.get_all_symbol_names) as spy:
+            count_a = linker.link_one("ticket:PROJ-7A")
+            count_b = linker.link_one("ticket:PROJ-7B")
+            count_c = linker.link_one("ticket:PROJ-7C")
+
+        assert (count_a, count_b, count_c) == (1, 1, 0)
+        assert db.get_generic_edge_targets(login_id) == ["ticket:PROJ-7A"]
+        assert db.get_generic_edge_targets(logout_id) == ["ticket:PROJ-7B"]
+        spy.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

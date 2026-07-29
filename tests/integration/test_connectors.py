@@ -187,3 +187,52 @@ class TestConnectorToGraphPipeline:
         cg = CodeGraph(db)
         assert "ticket:PROJ-3" in cg.nx
         assert "ticket:PROJ-3" in cg.neighbors(login_id)
+
+    def test_low_weight_edge_has_less_pagerank_influence_than_full_weight_edge(
+        self, tmp_path: Path
+    ) -> None:
+        """A weight=0.5 generic_edge (embedding-fallback confidence) must
+        move less PageRank mass than an otherwise-identical weight=1.0 edge
+        (regex-match confidence) — proves the persisted weight column is
+        actually read by CodeGraph._build()/nx.pagerank(), not silently
+        dropped on every read path.
+
+        Weight only affects PageRank when a node has multiple outgoing
+        edges competing for vote share — a lone symbol<->artifact pair in
+        isolation sends 100% of its vote down its one edge regardless of
+        that edge's absolute weight, so two isolated pairs at different
+        weights would (wrongly) look identical even with a correct
+        implementation. This fixture instead shares ONE artifact between
+        two symbols at different weights, so the artifact's vote genuinely
+        splits proportional to weight — a real competition weight must
+        win to move the result at all.
+        """
+        db = Database(tmp_path / "index.db")
+        high_confidence_id = _seed_symbol(db, "auth.py", "login")
+        low_confidence_id = _seed_symbol(db, "auth.py", "logout")
+
+        db.insert_generic_edges(
+            [
+                GenericEdge(
+                    from_symbol_id=high_confidence_id,
+                    source_ref="ticket:SHARED",
+                    edge_kind="references_artifact",
+                    weight=1.0,
+                ),
+                GenericEdge(
+                    from_symbol_id=low_confidence_id,
+                    source_ref="ticket:SHARED",
+                    edge_kind="references_artifact",
+                    weight=0.5,
+                ),
+            ]
+        )
+
+        cg = CodeGraph(db)
+        assert cg.nx["ticket:SHARED"][high_confidence_id][0]["weight"] == 1.0
+        assert cg.nx["ticket:SHARED"][low_confidence_id][0]["weight"] == 0.5
+
+        pr = compute_pagerank(cg)
+        # ticket:SHARED's vote splits 1.0/(1.0+0.5) to login vs.
+        # 0.5/(1.0+0.5) to logout — login must outrank logout.
+        assert pr[high_confidence_id] > pr[low_confidence_id]

@@ -39,6 +39,60 @@ logger = logging.getLogger("trelix.indexing.artifact_linker")
 # indexed symbol's name/qualified_name could look like.
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{2,}")
 
+# Bare (non-qualified) symbol names that collide with ordinary English/
+# generic-programming vocabulary are excluded from the bare-name index —
+# a ticket titled "the test suite failed to run and update the process"
+# would otherwise match `run`/`test`/`process`/`update` purely on English
+# overlap with zero relation to those symbols. Matching via the more
+# specific qualified_name (e.g. "auth.login" instead of bare "login") is
+# unaffected — this list only gates the bare-name key.
+_COMMON_WORD_STOPLIST = frozenset(
+    {
+        "get",
+        "set",
+        "run",
+        "test",
+        "tests",
+        "process",
+        "update",
+        "data",
+        "file",
+        "files",
+        "main",
+        "init",
+        "new",
+        "list",
+        "map",
+        "filter",
+        "type",
+        "value",
+        "item",
+        "items",
+        "check",
+        "load",
+        "save",
+        "start",
+        "stop",
+        "add",
+        "remove",
+        "delete",
+        "create",
+        "build",
+        "parse",
+        "format",
+        "print",
+        "log",
+        "error",
+        "result",
+        "results",
+        "config",
+        "state",
+        "index",
+        "name",
+        "id",
+    }
+)
+
 
 class ArtifactLinker:
     """
@@ -62,6 +116,9 @@ class ArtifactLinker:
         # make_vector_store both key off IndexConfig) — regex matching never
         # touches this, so callers that only want regex linking can omit it.
         self._index_config = index_config
+        # Lazily built, memoized on this instance — see _get_name_index()'s
+        # docstring for why this matters for link_one()'s call pattern.
+        self._name_index: dict[str, int] | None = None
 
     def link(self) -> int:
         """
@@ -73,7 +130,7 @@ class ArtifactLinker:
         if not artifacts:
             return 0
 
-        name_to_id = self._build_name_index()
+        name_to_id = self._get_name_index()
         edges: list[GenericEdge] = []
         for artifact in artifacts:
             edges.extend(self._match_artifact(artifact, name_to_id))
@@ -97,7 +154,7 @@ class ArtifactLinker:
         if artifact is None:
             return 0
 
-        name_to_id = self._build_name_index()
+        name_to_id = self._get_name_index()
         edges = self._match_artifact(artifact, name_to_id)
         if edges:
             self._db.insert_generic_edges(edges)
@@ -107,13 +164,52 @@ class ArtifactLinker:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _get_name_index(self) -> dict[str, int]:
+        """Build the name index once per ArtifactLinker instance, then
+        reuse it. ArtifactSource.sync() (connectors/base.py) constructs one
+        ArtifactLinker and calls link_one() once per synced artifact in a
+        loop — without this memoization, each of those calls would rebuild
+        the full symbol-name index from scratch (_build_name_index()'s own
+        docstring promises an O(symbols) cost "per call, not per
+        artifact", but that promise only held for link()'s single internal
+        call; link_one() called N times reintroduced exactly the O(artifacts
+        * symbols) scan the docstring says this design avoids). A caller
+        that mutates symbols between link_one() calls on the same instance
+        (e.g. a concurrent re-index) should construct a fresh ArtifactLinker
+        rather than reuse a stale one — this class was never safe against
+        that anyway, since Database itself isn't safe for concurrent writes
+        from multiple connections.
+        """
+        if self._name_index is None:
+            self._name_index = self._build_name_index()
+        return self._name_index
+
     def _build_name_index(self) -> dict[str, int]:
-        """name/qualified_name -> symbol_id, built once per call (not per
-        artifact) to avoid an O(artifacts * symbols) scan."""
+        """casefold(name)/casefold(qualified_name) -> symbol_id, built once
+        per call (not per artifact) to avoid an O(artifacts * symbols)
+        scan.
+
+        Keys are casefolded so a title-cased mention ("Login is broken")
+        matches a lowercase symbol name — real prose capitalizes the first
+        word of a sentence/title regardless of the symbol's actual casing.
+
+        Any candidate key that collides with _COMMON_WORD_STOPLIST (e.g. a
+        function named `run` or `process`) is skipped — matching those
+        against arbitrary English prose produces edges with no real
+        relationship to the ticket. This applies to `qualified_name` too,
+        not just bare `name`: many symbols (anything without an enclosing
+        module/class prefix) have qualified_name == name, so gating only
+        on the `name` field would let the exact same stop-worthy string
+        back in through the "qualified" key. A genuinely-qualified name
+        like "auth.run" is unaffected — only the literal stoplisted string
+        itself is excluded, not names that merely contain it as a
+        substring.
+        """
         name_to_id: dict[str, int] = {}
         for symbol_id, name, qualified_name in self._db.get_all_symbol_names():
-            name_to_id.setdefault(name, symbol_id)
-            name_to_id.setdefault(qualified_name, symbol_id)
+            for candidate in (name.casefold(), qualified_name.casefold()):
+                if candidate not in _COMMON_WORD_STOPLIST:
+                    name_to_id.setdefault(candidate, symbol_id)
         return name_to_id
 
     def _match_artifact(self, artifact: Artifact, name_to_id: dict[str, int]) -> list[GenericEdge]:
@@ -142,9 +238,18 @@ class ArtifactLinker:
 
     def _regex_match(self, text: str, name_to_id: dict[str, int]) -> list[int]:
         """De-duplicated, order-preserving list of symbol_ids whose
-        name/qualified_name appears as an identifier-shaped token in *text*."""
+        name/qualified_name appears as an identifier-shaped token in *text*.
+
+        _IDENTIFIER_RE's character class includes '.' (needed to capture
+        qualified-name segments like "auth.login"), so it also greedily
+        swallows a trailing sentence-ending period ("Cannot access
+        login." -> "login.") — stripped here before lookup rather than
+        tightened in the regex itself, since a qualified name can
+        legitimately end right before a period with no way to distinguish
+        the two cases from the regex alone."""
         matched: dict[int, None] = {}
-        for token in _IDENTIFIER_RE.findall(text):
+        for raw_token in _IDENTIFIER_RE.findall(text):
+            token = raw_token.rstrip(".").casefold()
             symbol_id = name_to_id.get(token)
             if symbol_id is not None:
                 matched.setdefault(symbol_id, None)
