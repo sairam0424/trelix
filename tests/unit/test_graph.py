@@ -390,6 +390,91 @@ class TestRankByPagerank:
         pr = dict(rank_by_pagerank([referenced, plain, shared_callee], db))
         assert pr[referenced] > pr[plain]
 
+    def test_personalization_disabled_is_byte_identical_to_default_call(self, db: Database) -> None:
+        """personalization_enabled defaults to False — must reproduce
+        today's exact plain-PageRank scores, not merely 'similar' ones."""
+        fid = _insert_file(db)
+        a = _insert_symbol(db, fid, "hub")
+        b = _insert_symbol(db, fid, "spoke1")
+        c = _insert_symbol(db, fid, "spoke2")
+        for sid in (a, b, c):
+            _insert_chunk(db, sid)
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=b, callee_name="hub", line=1, callee_id=a),
+                CallEdge(caller_id=c, callee_name="hub", line=2, callee_id=a),
+            ]
+        )
+        db._conn.commit()
+
+        default_call = dict(rank_by_pagerank([a, b, c], db))
+        explicit_false = dict(rank_by_pagerank([a, b, c], db, personalization_enabled=False))
+        assert default_call == explicit_false
+
+    def test_personalization_with_no_cross_source_edges_falls_back_to_uniform(
+        self, db: Database
+    ) -> None:
+        """Opting in on a subgraph with zero generic_edges must not error or
+        change scores — there's no seed set to personalize toward, so this
+        degrades to the exact same plain-PageRank call."""
+        fid = _insert_file(db)
+        a = _insert_symbol(db, fid, "hub")
+        b = _insert_symbol(db, fid, "spoke")
+        for sid in (a, b):
+            _insert_chunk(db, sid)
+        db.insert_call_edges([CallEdge(caller_id=b, callee_name="hub", line=1, callee_id=a)])
+        db._conn.commit()
+
+        without_personalization = dict(rank_by_pagerank([a, b], db))
+        with_personalization = dict(rank_by_pagerank([a, b], db, personalization_enabled=True))
+        assert without_personalization == with_personalization
+
+    def test_personalization_shifts_rank_toward_cross_source_linked_symbol(
+        self, db: Database
+    ) -> None:
+        """With personalization on, teleport mass concentrates on the
+        ticket-linked symbol — it must rank at least as high as the plain
+        (unpersonalized) call gave it, and the gap to an equivalent
+        unlinked symbol must not shrink."""
+        fid = _insert_file(db)
+        referenced = _insert_symbol(db, fid, "referenced_fn")
+        plain = _insert_symbol(db, fid, "plain_fn")
+        shared_callee = _insert_symbol(db, fid, "shared_callee")
+        for sid in (referenced, plain, shared_callee):
+            _insert_chunk(db, sid)
+        db.insert_call_edges(
+            [
+                CallEdge(
+                    caller_id=referenced,
+                    callee_name="shared_callee",
+                    line=1,
+                    callee_id=shared_callee,
+                ),
+                CallEdge(
+                    caller_id=plain, callee_name="shared_callee", line=1, callee_id=shared_callee
+                ),
+            ]
+        )
+        db._conn.commit()
+        db.insert_generic_edges(
+            [
+                GenericEdge(
+                    from_symbol_id=referenced,
+                    source_ref="ticket:PROJ-1",
+                    edge_kind="references_ticket",
+                )
+            ]
+        )
+
+        without = dict(rank_by_pagerank([referenced, plain, shared_callee], db))
+        with_ppr = dict(
+            rank_by_pagerank([referenced, plain, shared_callee], db, personalization_enabled=True)
+        )
+        assert with_ppr[referenced] > with_ppr[plain]
+        # The referenced/plain gap should not shrink versus the unpersonalized
+        # call — personalization is meant to amplify this signal, not dilute it.
+        assert (with_ppr[referenced] - with_ppr[plain]) >= (without[referenced] - without[plain])
+
 
 # ---------------------------------------------------------------------------
 # expand_with_imports

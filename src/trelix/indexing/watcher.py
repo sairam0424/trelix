@@ -190,7 +190,12 @@ class FileWatcher:
             try:
                 from trelix.graph.updater import GraphUpdater
 
-                GraphUpdater(self._indexer.db).update_file(rel)
+                GraphUpdater(
+                    self._indexer.db,
+                    personalization_enabled=(
+                        self._indexer.config.retrieval.pagerank_personalization_enabled
+                    ),
+                ).update_file(rel)
             except Exception as exc:
                 logger.debug("GraphUpdater watcher hook failed (non-fatal): %s", exc)
 

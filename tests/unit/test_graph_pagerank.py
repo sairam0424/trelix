@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trelix.core.models import CallEdge, IndexedFile, Language, Symbol, SymbolKind
+from trelix.core.models import CallEdge, GenericEdge, IndexedFile, Language, Symbol, SymbolKind
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import compute_pagerank
 from trelix.graph.persistence import get_top_central_symbols, save_graph_metadata
@@ -107,6 +107,53 @@ class TestComputePagerank:
         db = Database(tmp_path / "index.db")
         cg = CodeGraph(db)
         assert compute_pagerank(cg) == {}
+
+    def test_personalization_disabled_is_default_and_unchanged(self, tmp_path: Path) -> None:
+        """personalization_enabled defaults to False — must reproduce
+        today's exact scores, byte-identical to the pre-PPR behavior."""
+        _, cg, _ = _build_star_graph(tmp_path)
+        default_call = compute_pagerank(cg)
+        explicit_false = compute_pagerank(cg, personalization_enabled=False)
+        assert default_call == explicit_false
+
+    def test_personalization_with_no_generic_edges_falls_back_to_uniform(
+        self, tmp_path: Path
+    ) -> None:
+        """Opting in on a graph with zero generic_edges (no artifact nodes
+        at all) must not error or change scores."""
+        _, cg, _ = _build_star_graph(tmp_path)
+        without = compute_pagerank(cg)
+        with_ppr = compute_pagerank(cg, personalization_enabled=True)
+        assert without == with_ppr
+
+    def test_personalization_shifts_score_toward_ticket_linked_leaf(self, tmp_path: Path) -> None:
+        """With personalization on, teleport mass concentrates on the
+        leaf that has a generic_edge — its score (relative to an
+        equivalent unlinked leaf) must not shrink versus the plain call."""
+        db, cg, hub_id = _build_star_graph(tmp_path)
+        leaf_ids = [n for n in cg.nx.nodes if n != hub_id and cg.nx.nodes[n]["type"] == "symbol"]
+        linked_leaf = leaf_ids[0]
+        other_leaf = leaf_ids[1]
+
+        db.insert_generic_edges(
+            [
+                GenericEdge(
+                    from_symbol_id=linked_leaf,
+                    source_ref="ticket:PROJ-1",
+                    edge_kind="references_ticket",
+                )
+            ]
+        )
+        # Generic edges are read at CodeGraph construction time — rebuild.
+        cg = CodeGraph(db)
+
+        without = compute_pagerank(cg)
+        with_ppr = compute_pagerank(cg, personalization_enabled=True)
+
+        assert with_ppr[linked_leaf] > with_ppr[other_leaf]
+        assert (with_ppr[linked_leaf] - with_ppr[other_leaf]) >= (
+            without[linked_leaf] - without[other_leaf]
+        )
 
 
 class TestGetTopCentralSymbols:

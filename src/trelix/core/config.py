@@ -524,6 +524,18 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR",
     )
 
+    # Personalized PageRank — teleport mass concentrated on symbols with a
+    # cross-source generic_edge (ticket/artifact reference) instead of the
+    # uniform 1/n default. Off by default: nx.pagerank() is called exactly
+    # as before when this is False, so there's zero behavior change for
+    # anyone not opting in. See rank_by_pagerank() (retrieval/graph.py) and
+    # compute_pagerank() (graph/community.py) — both independently gated by
+    # this same flag, since they don't share a PageRank implementation.
+    pagerank_personalization_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION",
+    )
+
     # XTR late-interaction reranker — candidate token count (experimental, v2.6.0)
     xtr_candidate_tokens: int = Field(
         default=100,
