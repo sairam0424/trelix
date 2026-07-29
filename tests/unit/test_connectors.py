@@ -153,7 +153,7 @@ class TestJiraConnectorFetch:
         success = _mock_response(200, {"issues": [], "nextPageToken": None})
         with (
             patch("trelix.indexing.connectors.jira.httpx.get", side_effect=[rate_limited, success]),
-            patch("trelix.indexing.connectors.jira.time.sleep"),
+            patch("tenacity.nap.time.sleep"),
         ):
             artifacts = JiraConnector(_JIRA_CONFIG).fetch()
 
@@ -163,9 +163,9 @@ class TestJiraConnectorFetch:
         rate_limited = _mock_response(429, headers={})
         with (
             patch("trelix.indexing.connectors.jira.httpx.get", return_value=rate_limited),
-            patch("trelix.indexing.connectors.jira.time.sleep"),
+            patch("tenacity.nap.time.sleep"),
         ):
-            with pytest.raises(JiraConnectorError, match="retries"):
+            with pytest.raises(JiraConnectorError, match="429"):
                 JiraConnector(_JIRA_CONFIG).fetch()
 
     def test_fetch_network_error_never_raises_raw_httpx_exception(self) -> None:
@@ -178,7 +178,7 @@ class TestJiraConnectorFetch:
                 "trelix.indexing.connectors.jira.httpx.get",
                 side_effect=httpx.ConnectError("connection refused"),
             ),
-            patch("trelix.indexing.connectors.jira.time.sleep"),
+            patch("tenacity.nap.time.sleep"),
         ):
             with pytest.raises(JiraConnectorError):
                 JiraConnector(_JIRA_CONFIG).fetch()
@@ -262,6 +262,44 @@ class TestTestRailConnectorFetch:
             artifacts = TestRailConnector(_TESTRAIL_CONFIG).fetch()
 
         assert artifacts[0].body == ""
+
+    def test_fetch_retries_on_429_then_succeeds(self) -> None:
+        rate_limited = _mock_response(429, headers={"Retry-After": "0"})
+        success = _mock_response(200, {"cases": []})
+        with (
+            patch(
+                "trelix.indexing.connectors.testrail.httpx.get",
+                side_effect=[rate_limited, success],
+            ),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            artifacts = TestRailConnector(_TESTRAIL_CONFIG).fetch()
+
+        assert artifacts == []
+
+    def test_fetch_exhausts_retries_and_raises(self) -> None:
+        rate_limited = _mock_response(429, headers={})
+        with (
+            patch("trelix.indexing.connectors.testrail.httpx.get", return_value=rate_limited),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            with pytest.raises(TestRailConnectorError, match="429"):
+                TestRailConnector(_TESTRAIL_CONFIG).fetch()
+
+    def test_fetch_network_error_never_raises_raw_httpx_exception(self) -> None:
+        """A raw httpx exception must surface as TestRailConnectorError, not
+        leak the underlying exception type to callers."""
+        import httpx
+
+        with (
+            patch(
+                "trelix.indexing.connectors.testrail.httpx.get",
+                side_effect=httpx.ConnectError("connection refused"),
+            ),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            with pytest.raises(TestRailConnectorError):
+                TestRailConnector(_TESTRAIL_CONFIG).fetch()
 
 
 # ---------------------------------------------------------------------------

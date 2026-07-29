@@ -61,6 +61,12 @@ dependencies = [
     "defusedxml>=0.7.1",
     # --- Graph (PageRank) ---
     "networkx>=3.3.0",
+    # --- Retry/backoff (LLM, embedder, and connector HTTP calls) ---
+    "tenacity>=8.5.0",
+    # --- HTTP client (connectors, GitHub PR client) — was only ever
+    # transitively installed via openai/anthropic/etc.; declared explicitly
+    # now that core/retry.py's error-classification imports it directly ---
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

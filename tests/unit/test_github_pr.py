@@ -125,6 +125,45 @@ class TestGitHubPRClientGetFiles:
             with pytest.raises(GitHubAPIError, match="401|token|credential"):
                 client.get_pr_files("owner", "repo", 1)
 
+    def test_get_pr_files_retries_on_503_then_succeeds(self) -> None:
+        """A transient 5xx must be retried, not surfaced immediately —
+        confirms the shared retry contract is actually wired in."""
+        from trelix.review.github import GitHubPRClient
+
+        rate_limited = MagicMock()
+        rate_limited.status_code = 503
+        rate_limited.text = "Service Unavailable"
+
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = [_make_file_response()]
+        success.headers = {"x-ratelimit-remaining": "100"}
+
+        with (
+            patch("trelix.review.github.httpx.get", side_effect=[rate_limited, success]),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            client = GitHubPRClient(token=_FAKE)
+            files = client.get_pr_files("owner", "repo", 1)
+
+        assert len(files) == 1
+
+    def test_get_pr_files_401_is_not_retried(self) -> None:
+        """401 must fail on the first attempt — retrying a bad credential
+        wastes time and never succeeds."""
+        from trelix.review.github import GitHubAPIError, GitHubPRClient
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.json.return_value = {"message": "Bad credentials"}
+
+        with patch("trelix.review.github.httpx.get", return_value=mock_response) as mock_get:
+            client = GitHubPRClient(token=_FAKE)
+            with pytest.raises(GitHubAPIError):
+                client.get_pr_files("owner", "repo", 1)
+
+        assert mock_get.call_count == 1
+
 
 class TestParsePRRef:
     def test_parse_pr_ref_valid(self) -> None:

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
+from trelix.core.retry import with_retry
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
@@ -55,6 +57,22 @@ class VertexBackend(TrelixChatClient):
             if m.role != "system"
         ]
 
+    @with_retry(max_attempts=5)
+    def _generate_content(self, **kwargs: Any) -> Any:
+        assert self._client is not None
+        return self._client.models.generate_content(**kwargs)
+
+    @with_retry(max_attempts=5)
+    def _open_content_stream(self, **kwargs: Any) -> Any:
+        # generate_content_stream() is itself a generator function — the
+        # actual HTTP request fires on the first next(), not at call time.
+        # Retrying just the first pull (before any chunk reaches the
+        # caller) keeps this safe; chunks already yielded are never re-sent.
+        assert self._client is not None
+        iterator = iter(self._client.models.generate_content_stream(**kwargs))
+        first = next(iterator, None)
+        return iterator, first
+
     def complete(
         self,
         messages: list[ChatMessage],
@@ -76,7 +94,7 @@ class VertexBackend(TrelixChatClient):
             temperature=temperature if temperature is not None else self._config.temperature,
             system_instruction=effective_system,
         )
-        response = self._client.models.generate_content(
+        response = self._generate_content(
             model=self._model,
             contents=self._build_contents(messages),
             config=gen_config,
@@ -117,11 +135,14 @@ class VertexBackend(TrelixChatClient):
             temperature=temperature if temperature is not None else self._config.temperature,
             system_instruction=effective_system,
         )
-        for chunk in self._client.models.generate_content_stream(
+        iterator, first = self._open_content_stream(
             model=self._model,
             contents=self._build_contents(messages),
             config=gen_config,
-        ):
+        )
+        if first is None:
+            return
+        for chunk in itertools.chain([first], iterator):
             if chunk.text:
                 yield chunk.text
 
@@ -152,7 +173,7 @@ class VertexBackend(TrelixChatClient):
             tools=vertex_tools,
             max_output_tokens=max_tokens or self._config.max_tokens,
         )
-        response = self._client.models.generate_content(
+        response = self._generate_content(
             model=self._model,
             contents=self._build_contents(messages),
             config=gen_config,

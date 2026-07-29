@@ -38,6 +38,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from trelix.core.config import EmbedderConfig
+from trelix.core.retry import with_retry
 
 # Module-level thread pool for sync embedders that need to run in an executor.
 # Modest pool: each task is either CPU-bound (local) or a blocking sync SDK call.
@@ -113,11 +114,19 @@ class AzureOpenAIEmbedder(BaseEmbedder):
             api_version=self._async_client_config.azure_api_version,
         )
 
+    @with_retry(max_attempts=5)
+    def _create(self, **kwargs: Any) -> Any:
+        return self._client.embeddings.create(**kwargs)
+
+    @with_retry(max_attempts=5)
+    async def _create_async(self, async_client: Any, **kwargs: Any) -> Any:
+        return await async_client.embeddings.create(**kwargs)
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         results: list[list[float]] = []
         for i in range(0, len(texts), self._batch_size):
             batch = texts[i : i + self._batch_size]
-            response = self._client.embeddings.create(
+            response = self._create(
                 model=self._deployment,  # Azure uses deployment name, not model name
                 input=batch,
                 dimensions=self._dimensions,
@@ -131,7 +140,8 @@ class AzureOpenAIEmbedder(BaseEmbedder):
         results: list[list[float]] = []
         for i in range(0, len(texts), self._batch_size):
             batch = texts[i : i + self._batch_size]
-            response = await async_client.embeddings.create(
+            response = await self._create_async(
+                async_client,
                 model=self._deployment,
                 input=batch,
                 dimensions=self._dimensions,
@@ -171,11 +181,19 @@ class OpenAIEmbedder(BaseEmbedder):
 
         return AsyncOpenAI(api_key=self._async_client_config.openai_api_key)
 
+    @with_retry(max_attempts=5)
+    def _create(self, **kwargs: Any) -> Any:
+        return self._client.embeddings.create(**kwargs)
+
+    @with_retry(max_attempts=5)
+    async def _create_async(self, async_client: Any, **kwargs: Any) -> Any:
+        return await async_client.embeddings.create(**kwargs)
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         results: list[list[float]] = []
         for i in range(0, len(texts), self._batch_size):
             batch = texts[i : i + self._batch_size]
-            response = self._client.embeddings.create(
+            response = self._create(
                 model=self._model,
                 input=batch,
                 dimensions=self._dimensions,
@@ -189,7 +207,8 @@ class OpenAIEmbedder(BaseEmbedder):
         results: list[list[float]] = []
         for i in range(0, len(texts), self._batch_size):
             batch = texts[i : i + self._batch_size]
-            response = await async_client.embeddings.create(
+            response = await self._create_async(
+                async_client,
                 model=self._model,
                 input=batch,
                 dimensions=self._dimensions,
@@ -278,6 +297,10 @@ class VoyageEmbedder(BaseEmbedder):
         self._dimensions = config.voyage_dimensions
         self._output_dimensions = config.voyage_output_dimensions
 
+    @with_retry(max_attempts=5)
+    def _embed(self, texts: list[str], **kwargs: object) -> Any:
+        return self._client.embed(texts, **kwargs)
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         results: list[list[float]] = []
         for i in range(0, len(texts), self._BATCH_LIMIT):
@@ -285,7 +308,7 @@ class VoyageEmbedder(BaseEmbedder):
             kwargs: dict[str, object] = {"model": self._model, "input_type": "document"}
             if self._output_dimensions is not None:
                 kwargs["output_dimension"] = self._output_dimensions
-            response = self._client.embed(batch, **kwargs)
+            response = self._embed(batch, **kwargs)
             results.extend(response.embeddings)
         return results
 
@@ -293,7 +316,7 @@ class VoyageEmbedder(BaseEmbedder):
         kwargs: dict[str, object] = {"model": self._model, "input_type": "query"}
         if self._output_dimensions is not None:
             kwargs["output_dimension"] = self._output_dimensions
-        response = self._client.embed([text], **kwargs)
+        response = self._embed([text], **kwargs)
         return response.embeddings[0]  # type: ignore[no-any-return]
 
     @property
@@ -419,6 +442,10 @@ class BedrockTitanEmbedder(_BedrockEmbedderBase):
         self._dims = config.bedrock_titan_dimensions
         self._normalize = config.bedrock_titan_normalize
 
+    @with_retry(max_attempts=5)
+    def _invoke_model(self, **kwargs: Any) -> Any:
+        return self._client.invoke_model(**kwargs)
+
     def _embed_one(self, text: str) -> list[float]:
         import json
 
@@ -429,7 +456,7 @@ class BedrockTitanEmbedder(_BedrockEmbedderBase):
                 "normalize": self._normalize,
             }
         )
-        response = self._client.invoke_model(
+        response = self._invoke_model(
             modelId=self._model,
             body=body,
             contentType="application/json",
@@ -479,6 +506,10 @@ class BedrockCohereEmbedder(_BedrockEmbedderBase):
         self._client = self._make_boto3_client(config)
         self._model = config.bedrock_cohere_model
 
+    @with_retry(max_attempts=5)
+    def _invoke_model(self, **kwargs: Any) -> Any:
+        return self._client.invoke_model(**kwargs)
+
     def _embed_batch(self, texts: list[str], input_type: str) -> list[list[float]]:
         import json
 
@@ -492,7 +523,7 @@ class BedrockCohereEmbedder(_BedrockEmbedderBase):
                 "truncate": "END",
             }
         )
-        response = self._client.invoke_model(
+        response = self._invoke_model(
             modelId=self._model,
             body=body,
             contentType="application/json",

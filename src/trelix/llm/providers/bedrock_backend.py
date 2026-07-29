@@ -7,6 +7,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
+from trelix.core.retry import with_retry
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
@@ -157,13 +158,23 @@ class BedrockBackend(TrelixChatClient):
             "on-demand throughput" in msg or "inference profile" in msg or "not supported" in msg
         )
 
+    @with_retry(max_attempts=5)
+    def _call_with_retry(self, fn: Any, request: dict[str, Any]) -> Any:
+        # Retries transient failures (ThrottlingException / 5xx, surfaced as
+        # botocore.exceptions.ClientError) before model-fallback logic ever
+        # sees them. ValidationException (model unavailable) has no
+        # retryable status code, so is_retryable_http_error() rejects it and
+        # tenacity re-raises on the first attempt — _try_with_fallback below
+        # still handles that case exactly as before, with zero wasted waits.
+        return fn(**request)
+
     def _try_with_fallback(self, fn: Any, request: dict[str, Any]) -> Any:
         """
         Call fn(request). On ValidationException for the primary model, swap
         to the fallback, update the active model, and retry once.
         """
         try:
-            return fn(**request)
+            return self._call_with_retry(fn, request)
         except Exception as exc:  # noqa: BLE001
             if not self._is_model_unavailable(exc) or self._model == self._fallback_model:
                 raise
@@ -175,7 +186,7 @@ class BedrockBackend(TrelixChatClient):
             )
             self._model = self._fallback_model
             request["modelId"] = self._fallback_model
-            return fn(**request)
+            return self._call_with_retry(fn, request)
 
     def complete(
         self,

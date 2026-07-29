@@ -7,6 +7,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
+from trelix.core.retry import with_retry
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
@@ -90,6 +91,12 @@ class OpenAIBackend(TrelixChatClient):
         )
         return result
 
+    @with_retry(max_attempts=5)
+    def _create(self, **kwargs: Any) -> Any:
+        # Callers only reach here after their own `self._client is None` check.
+        assert self._client is not None
+        return self._client.chat.completions.create(**kwargs)
+
     def complete(
         self,
         messages: list[ChatMessage],
@@ -104,7 +111,7 @@ class OpenAIBackend(TrelixChatClient):
                 finish_reason="stop",
             )
         token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
-        response = self._client.chat.completions.create(
+        response = self._create(
             model=self._model,
             messages=self._build_messages(messages, system),
             temperature=temperature if temperature is not None else self._config.temperature,
@@ -130,7 +137,11 @@ class OpenAIBackend(TrelixChatClient):
             yield "[trelix] LLM not configured — set OPENAI_API_KEY or AZURE_API_KEY."
             return
         token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
-        stream = self._client.chat.completions.create(
+        # Retry only the call that opens the stream — the connection is made
+        # synchronously here (create() blocks until headers arrive), before
+        # any chunk is yielded. Retrying mid-iteration over an already-open
+        # generator would silently drop or duplicate chunks already consumed.
+        stream = self._create(
             model=self._model,
             messages=self._build_messages(messages, system),
             temperature=temperature if temperature is not None else self._config.temperature,
@@ -154,7 +165,7 @@ class OpenAIBackend(TrelixChatClient):
             {"type": "function", "function": {"name": force_tool}} if force_tool else "auto"
         )
         token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
-        response = self._client.chat.completions.create(
+        response = self._create(
             model=self._model,
             messages=self._build_messages(messages, None),
             tools=tools,
