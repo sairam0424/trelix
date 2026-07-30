@@ -4,6 +4,21 @@ Artifacts, for cross-source linking via generic_edges.
 
 Auth: HTTP Basic (email + API token), matching Jira Cloud's own recommended
 scheme for personal/service integrations — no OAuth needed.
+
+Auth verification: confirmed live against a real site that
+`/rest/api/3/search/jql` does NOT signal bad credentials the way every
+other connector's search/list endpoint does — it returns HTTP 200 with an
+empty result set (`{"issues":[],"isLast":true}`) for a bad token, no
+token at all, AND a genuinely empty/nonexistent project, all three
+byte-identical. `_get()`'s existing `response.status_code == 401` check is
+correct code but unreachable dead code against this specific endpoint — a
+misconfigured TRELIX_JIRA_API_TOKEN would silently report "fetched 0" as
+success forever, indistinguishable from "this project has no tickets."
+`/rest/api/3/myself` DOES correctly return a real 401 for bad/missing
+credentials (also confirmed live) — fetch() calls it once as a pre-flight
+check before searching, so a real auth failure surfaces immediately
+instead of being swallowed as an empty project.
+
 Pagination: Jira's v3 search endpoint uses a cursor (nextPageToken), not
 offset/limit.
 
@@ -149,6 +164,12 @@ class JiraConnector(ArtifactSource):
 
         base_url = self._config.base_url.rstrip("/")
         auth = (self._config.email, self._config.api_token)
+
+        try:
+            self._verify_auth(base_url, auth)
+        except httpx.HTTPError as exc:
+            raise JiraConnectorError(f"Jira API request failed: {exc}") from exc
+
         artifacts: list[Artifact] = []
         next_page_token: str | None = None
 
@@ -178,6 +199,14 @@ class JiraConnector(ArtifactSource):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _verify_auth(self, base_url: str, auth: tuple[str, str]) -> None:
+        """Pre-flight auth check via /rest/api/3/myself, which — unlike
+        /search/jql — genuinely returns 401 for bad/missing credentials
+        (confirmed live; see module docstring). Reuses _get() so this gets
+        the same retry/401 handling as every other request, rather than
+        duplicating it."""
+        self._get(f"{base_url}/rest/api/3/myself", params={}, auth=auth)
 
     def _issue_to_artifact(self, issue: dict[str, Any], base_url: str) -> Artifact:
         key = issue["key"]

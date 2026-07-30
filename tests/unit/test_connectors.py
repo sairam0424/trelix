@@ -61,6 +61,13 @@ def _mock_response(
     return resp
 
 
+def _mock_jira_myself_response(status_code: int = 200) -> MagicMock:
+    """fetch() pre-flight-checks auth via /rest/api/3/myself before
+    searching (see jira.py's module docstring) — every test exercising
+    fetch() needs this as the first mocked httpx.get response."""
+    return _mock_response(status_code, {"accountId": "abc123", "emailAddress": "me@example.com"})
+
+
 # ---------------------------------------------------------------------------
 # JiraConnector
 # ---------------------------------------------------------------------------
@@ -114,6 +121,7 @@ class TestJiraConnectorFetch:
         assert a.metadata["status"] == "Open"
 
     def test_fetch_paginates_via_next_page_token(self) -> None:
+        myself = _mock_jira_myself_response()
         page1 = _mock_response(
             200,
             {
@@ -129,12 +137,12 @@ class TestJiraConnectorFetch:
             },
         )
         with patch(
-            "trelix.indexing.connectors.jira.httpx.get", side_effect=[page1, page2]
+            "trelix.indexing.connectors.jira.httpx.get", side_effect=[myself, page1, page2]
         ) as mock_get:
             artifacts = JiraConnector(_JIRA_CONFIG).fetch()
 
         assert {a.source_ref for a in artifacts} == {"ticket:PROJ-1", "ticket:PROJ-2"}
-        assert mock_get.call_count == 2
+        assert mock_get.call_count == 3  # 1 auth pre-flight + 2 search pages
 
     def test_fetch_renders_atlassian_document_format_description_to_plain_text(
         self,
@@ -245,11 +253,46 @@ class TestJiraConnectorFetch:
             with pytest.raises(JiraConnectorError, match="401"):
                 JiraConnector(_JIRA_CONFIG).fetch()
 
+    def test_fetch_bad_credentials_raise_before_any_search_request(self) -> None:
+        """Jira's /search/jql endpoint returns HTTP 200 with an empty
+        result set for bad/missing credentials — indistinguishable from a
+        genuinely empty project (confirmed live). fetch() must catch this
+        via a /rest/api/3/myself pre-flight check that DOES return a real
+        401, and must do so before ever calling /search/jql — proven here
+        by making /search/jql itself unreachable (StopIteration if called)."""
+        myself_401 = _mock_response(401, {"message": "Unauthorized"})
+        with patch(
+            "trelix.indexing.connectors.jira.httpx.get", side_effect=[myself_401]
+        ) as mock_get:
+            with pytest.raises(JiraConnectorError, match="401"):
+                JiraConnector(_JIRA_CONFIG).fetch()
+
+        assert mock_get.call_count == 1  # only the pre-flight call, no search
+
+    def test_fetch_genuinely_empty_project_does_not_raise(self) -> None:
+        """Good credentials + zero tickets in the project must NOT be
+        mistaken for the auth-failure case — the pre-flight check passing
+        (200) followed by an empty /search/jql result is a legitimate,
+        error-free outcome."""
+        myself = _mock_jira_myself_response()
+        empty_search = _mock_response(200, {"issues": [], "nextPageToken": None})
+        with patch(
+            "trelix.indexing.connectors.jira.httpx.get", side_effect=[myself, empty_search]
+        ) as mock_get:
+            artifacts = JiraConnector(_JIRA_CONFIG).fetch()
+
+        assert artifacts == []
+        assert mock_get.call_count == 2  # pre-flight + one (empty) search page
+
     def test_fetch_retries_on_429_then_succeeds(self) -> None:
+        myself = _mock_jira_myself_response()
         rate_limited = _mock_response(429, headers={"Retry-After": "0"})
         success = _mock_response(200, {"issues": [], "nextPageToken": None})
         with (
-            patch("trelix.indexing.connectors.jira.httpx.get", side_effect=[rate_limited, success]),
+            patch(
+                "trelix.indexing.connectors.jira.httpx.get",
+                side_effect=[myself, rate_limited, success],
+            ),
             patch("tenacity.nap.time.sleep"),
         ):
             artifacts = JiraConnector(_JIRA_CONFIG).fetch()
