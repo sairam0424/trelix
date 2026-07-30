@@ -934,6 +934,36 @@ class TestRailConnectorConfig(BaseSettings):
     page_size: int = Field(default=250, ge=1, le=250)
 
 
+class XrayConnectorConfig(BaseSettings):
+    """
+    Xray Cloud connector (Cloud only — Server/DC has a completely different
+    REST-only API surface with PAT/Basic/OAuth1.0a auth, not worth doubling
+    this connector's scope for the lowest-priority item in this plan).
+
+    Auth: client_id/client_secret issued by a Jira admin in Xray's global
+    settings (distinct from a user's own Jira API token) — exchanged for a
+    short-lived bearer JWT via POST /api/v2/authenticate. Xray Cloud tests
+    are Jira issues under the hood, so project_key mirrors Jira's shape.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_XRAY_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    client_id: str | None = Field(default=None, alias="TRELIX_XRAY_CLIENT_ID")
+    client_secret: str | None = Field(default=None, alias="TRELIX_XRAY_CLIENT_SECRET")
+    project_key: str | None = Field(default=None, alias="TRELIX_XRAY_PROJECT_KEY")
+    # Jira base URL is reused for the Jira-issue-fields half of each test
+    # (title/url) — Xray Cloud tests are Jira issues, fetched via Jira's own
+    # REST v3 API, not Xray's GraphQL endpoint.
+    jira_base_url: str | None = Field(default=None, alias="TRELIX_XRAY_JIRA_BASE_URL")
+    page_size: int = Field(default=100, ge=1, le=100)
+
+
 # ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------

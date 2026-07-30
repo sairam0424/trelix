@@ -11,12 +11,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from trelix.core.config import JiraConnectorConfig, TestRailConnectorConfig
+from trelix.core.config import JiraConnectorConfig, TestRailConnectorConfig, XrayConnectorConfig
 from trelix.core.models import Artifact
 from trelix.indexing.connectors.base import ArtifactSource, ConnectorSyncResult
 from trelix.indexing.connectors.jira import JiraConnector, JiraConnectorError
 from trelix.indexing.connectors.registry import get_artifact_source
 from trelix.indexing.connectors.testrail import TestRailConnector, TestRailConnectorError
+from trelix.indexing.connectors.xray import XrayConnector, XrayConnectorError
 
 _JIRA_CONFIG = JiraConnectorConfig(
     base_url="https://example.atlassian.net",
@@ -30,6 +31,13 @@ _TESTRAIL_CONFIG = TestRailConnectorConfig(
     username="me",
     api_key="key",
     project_id=1,
+)
+
+_XRAY_CONFIG = XrayConnectorConfig(
+    client_id="cid",
+    client_secret="sek",
+    project_key="PROJ",
+    jira_base_url="https://example.atlassian.net",
 )
 
 
@@ -303,6 +311,224 @@ class TestTestRailConnectorFetch:
 
 
 # ---------------------------------------------------------------------------
+# XrayConnector
+# ---------------------------------------------------------------------------
+
+
+def _mock_auth_response(status_code: int = 200, token: str = "jwt-token") -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = token
+    resp.text = token
+    return resp
+
+
+def _mock_graphql_response(status_code: int = 200, results: list[dict] | None = None) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = {"data": {"getTests": {"results": results or []}}}
+    resp.text = str(results or [])
+    return resp
+
+
+class TestXrayConnectorValidateConfig:
+    def test_missing_all_fields_raises(self) -> None:
+        connector = XrayConnector(XrayConnectorConfig())
+        with pytest.raises(ValueError, match="TRELIX_XRAY_CLIENT_ID"):
+            connector.validate_config()
+
+    def test_all_fields_present_does_not_raise(self) -> None:
+        XrayConnector(_XRAY_CONFIG).validate_config()
+
+
+class TestXrayConnectorFetch:
+    def test_fetch_authenticates_then_returns_artifacts_from_tests(self) -> None:
+        auth_resp = _mock_auth_response(token="jwt-abc")
+        graphql_resp = _mock_graphql_response(
+            results=[
+                {
+                    "issueId": "10001",
+                    "jira": {"key": "PROJ-1", "summary": "Login test", "status": {"name": "Open"}},
+                    "testType": {"name": "Manual"},
+                    "steps": [{"action": "Open login page", "data": "", "result": "Page loads"}],
+                    "unstructured": "",
+                }
+            ]
+        )
+        with (
+            patch(
+                "trelix.indexing.connectors.xray.httpx.post", side_effect=[auth_resp, graphql_resp]
+            ),
+        ):
+            artifacts = XrayConnector(_XRAY_CONFIG).fetch()
+
+        assert len(artifacts) == 1
+        a = artifacts[0]
+        assert a.source_ref == "xray-test:PROJ-1"
+        assert a.artifact_kind == "test_case"
+        assert a.title == "Login test"
+        assert a.url == "https://example.atlassian.net/browse/PROJ-1"
+        assert a.metadata["status"] == "Open"
+        assert a.metadata["test_type"] == "Manual"
+        assert "Open login page" in a.body
+
+    def test_fetch_paginates_via_limit_start(self) -> None:
+        config = XrayConnectorConfig(
+            client_id="cid",
+            client_secret="sek",
+            project_key="PROJ",
+            jira_base_url="https://example.atlassian.net",
+            page_size=2,
+        )
+        auth_resp = _mock_auth_response()
+        page1 = _mock_graphql_response(
+            results=[
+                {"issueId": "1", "jira": {"key": "PROJ-1", "summary": "One"}},
+                {"issueId": "2", "jira": {"key": "PROJ-2", "summary": "Two"}},
+            ]
+        )
+        page2 = _mock_graphql_response(
+            results=[{"issueId": "3", "jira": {"key": "PROJ-3", "summary": "Three"}}]
+        )
+        with patch(
+            "trelix.indexing.connectors.xray.httpx.post",
+            side_effect=[auth_resp, page1, page2],
+        ) as mock_post:
+            artifacts = XrayConnector(config).fetch()
+
+        assert {a.source_ref for a in artifacts} == {
+            "xray-test:PROJ-1",
+            "xray-test:PROJ-2",
+            "xray-test:PROJ-3",
+        }
+        assert mock_post.call_count == 3  # 1 auth + 2 graphql pages
+
+    def test_authenticate_401_raises_xray_connector_error(self) -> None:
+        resp = _mock_auth_response(status_code=401)
+        with patch("trelix.indexing.connectors.xray.httpx.post", return_value=resp):
+            with pytest.raises(XrayConnectorError, match="401"):
+                XrayConnector(_XRAY_CONFIG).fetch()
+
+    def test_graphql_401_raises_xray_connector_error(self) -> None:
+        auth_resp = _mock_auth_response()
+        graphql_resp = _mock_graphql_response(status_code=401)
+        with patch(
+            "trelix.indexing.connectors.xray.httpx.post",
+            side_effect=[auth_resp, graphql_resp],
+        ):
+            with pytest.raises(XrayConnectorError, match="401"):
+                XrayConnector(_XRAY_CONFIG).fetch()
+
+    def test_graphql_error_response_raises_xray_connector_error_not_attributeerror(
+        self,
+    ) -> None:
+        """Per the GraphQL spec, a query-level error (invalid JQL, no Xray
+        license on the project, query complexity limit, ...) comes back as
+        HTTP 200 with `data: null` and an `errors` array. The outer
+        `.get("data", {})` doesn't help here — the "data" key IS present
+        with value None, so the {} default never applies, and calling
+        .get() on that None used to raise AttributeError instead of the
+        documented XrayConnectorError."""
+        auth_resp = _mock_auth_response()
+        graphql_error_resp = MagicMock()
+        graphql_error_resp.status_code = 200
+        graphql_error_resp.json.return_value = {
+            "data": None,
+            "errors": [{"message": "Invalid JQL syntax"}],
+        }
+        with patch(
+            "trelix.indexing.connectors.xray.httpx.post",
+            side_effect=[auth_resp, graphql_error_resp],
+        ):
+            with pytest.raises(XrayConnectorError, match="Invalid JQL syntax"):
+                XrayConnector(_XRAY_CONFIG).fetch()
+
+    def test_authenticate_retry_exhaustion_raises_xray_connector_error(self) -> None:
+        """A persistent 5xx on /authenticate must surface as
+        XrayConnectorError once retries are exhausted, not leak the raw
+        httpx.HTTPStatusError — matching Jira/TestRail's own contract
+        where every real API failure funnels through their connector's
+        own error type."""
+        always_fails = MagicMock(status_code=500, text="Internal Server Error")
+        with (
+            patch("trelix.indexing.connectors.xray.httpx.post", return_value=always_fails),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            with pytest.raises(XrayConnectorError):
+                XrayConnector(_XRAY_CONFIG).fetch()
+
+    def test_authenticate_connection_error_raises_xray_connector_error(self) -> None:
+        """A connection-level failure (DNS/timeout/refused) on
+        /authenticate must surface as XrayConnectorError, not leak the raw
+        httpx exception type to callers."""
+        import httpx
+
+        with (
+            patch(
+                "trelix.indexing.connectors.xray.httpx.post",
+                side_effect=httpx.ConnectError("connection refused"),
+            ),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            with pytest.raises(XrayConnectorError):
+                XrayConnector(_XRAY_CONFIG).fetch()
+
+    def test_fetch_retries_on_429_then_succeeds(self) -> None:
+        auth_resp = _mock_auth_response()
+        rate_limited = MagicMock(status_code=429, text="")
+        success = _mock_graphql_response(results=[])
+        with (
+            patch(
+                "trelix.indexing.connectors.xray.httpx.post",
+                side_effect=[auth_resp, rate_limited, success],
+            ),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            artifacts = XrayConnector(_XRAY_CONFIG).fetch()
+
+        assert artifacts == []
+
+    def test_fetch_network_error_never_raises_raw_httpx_exception(self) -> None:
+        """A raw httpx exception must surface as XrayConnectorError, not
+        leak the underlying exception type to callers."""
+        import httpx
+
+        auth_resp = _mock_auth_response()
+        call_count = {"n": 0}
+
+        def _post_side_effect(*_args: object, **_kwargs: object) -> MagicMock:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return auth_resp
+            raise httpx.ConnectError("connection refused")
+
+        with (
+            patch(
+                "trelix.indexing.connectors.xray.httpx.post",
+                side_effect=_post_side_effect,
+            ),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            with pytest.raises(XrayConnectorError):
+                XrayConnector(_XRAY_CONFIG).fetch()
+
+    def test_fetch_handles_missing_steps_and_unstructured_gracefully(self) -> None:
+        """A test with no steps/unstructured content must not raise — body
+        just ends up empty."""
+        auth_resp = _mock_auth_response()
+        graphql_resp = _mock_graphql_response(
+            results=[{"issueId": "1", "jira": {"key": "PROJ-1", "summary": "Bare test"}}]
+        )
+        with patch(
+            "trelix.indexing.connectors.xray.httpx.post",
+            side_effect=[auth_resp, graphql_resp],
+        ):
+            artifacts = XrayConnector(_XRAY_CONFIG).fetch()
+
+        assert artifacts[0].body == ""
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -313,6 +539,9 @@ class TestConnectorRegistry:
 
     def test_testrail_resolves_to_testrail_connector(self) -> None:
         assert isinstance(get_artifact_source("testrail"), TestRailConnector)
+
+    def test_xray_resolves_to_xray_connector(self) -> None:
+        assert isinstance(get_artifact_source("xray"), XrayConnector)
 
     def test_unknown_name_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown connector"):

@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from trelix.core.config import ArtifactLinkerConfig, JiraConnectorConfig
+from trelix.core.config import ArtifactLinkerConfig, JiraConnectorConfig, XrayConnectorConfig
 from trelix.core.models import (
     GenericEdge,
     IndexedFile,
@@ -28,6 +28,7 @@ from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import compute_pagerank
 from trelix.indexing.artifact_linker import ArtifactLinker
 from trelix.indexing.connectors.jira import JiraConnector
+from trelix.indexing.connectors.xray import XrayConnector
 from trelix.store.db import Database
 
 
@@ -187,6 +188,62 @@ class TestConnectorToGraphPipeline:
         cg = CodeGraph(db)
         assert "ticket:PROJ-3" in cg.nx
         assert "ticket:PROJ-3" in cg.neighbors(login_id)
+
+    def test_xray_sync_with_linker_auto_links_into_code_graph(self, tmp_path: Path) -> None:
+        """Proves Phase 1's design generalizes: Xray is the third connector,
+        and needs zero Xray-specific linking code — ArtifactLinker operates
+        on the artifacts table generically (any artifact_kind, any
+        source_ref convention), so a synced Xray test is automatically
+        link-eligible the moment it's synced, same as Jira/TestRail."""
+        db = Database(tmp_path / "index.db")
+        login_id = _seed_symbol(db, "auth.py", "login")
+
+        auth_resp = MagicMock()
+        auth_resp.status_code = 200
+        auth_resp.json.return_value = "jwt-token"
+
+        graphql_resp = MagicMock()
+        graphql_resp.status_code = 200
+        graphql_resp.json.return_value = {
+            "data": {
+                "getTests": {
+                    "results": [
+                        {
+                            "issueId": "10001",
+                            "jira": {
+                                "key": "PROJ-9",
+                                "summary": "login is broken",
+                                "status": {"name": "Open"},
+                            },
+                            "testType": {"name": "Manual"},
+                            "steps": [],
+                            "unstructured": "",
+                        }
+                    ]
+                }
+            }
+        }
+
+        xray_config = XrayConnectorConfig(
+            client_id="cid",
+            client_secret="sek",
+            project_key="PROJ",
+            jira_base_url="https://example.atlassian.net",
+        )
+        linker = ArtifactLinker(db, ArtifactLinkerConfig())
+        with patch(
+            "trelix.indexing.connectors.xray.httpx.post",
+            side_effect=[auth_resp, graphql_resp],
+        ):
+            result = XrayConnector(xray_config).sync(db, linker=linker)
+
+        assert result.artifacts_written == 1
+        assert result.edges_linked == 1
+        assert db.get_generic_edge_targets(login_id) == ["xray-test:PROJ-9"]
+
+        cg = CodeGraph(db)
+        assert "xray-test:PROJ-9" in cg.nx
+        assert "xray-test:PROJ-9" in cg.neighbors(login_id)
 
     def test_low_weight_edge_has_less_pagerank_influence_than_full_weight_edge(
         self, tmp_path: Path
