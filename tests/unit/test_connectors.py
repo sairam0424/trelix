@@ -7,14 +7,21 @@ pattern for an external API client in this codebase.
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from trelix.core.config import JiraConnectorConfig, TestRailConnectorConfig, XrayConnectorConfig
+from trelix.core.config import (
+    JiraConnectorConfig,
+    LinearConnectorConfig,
+    TestRailConnectorConfig,
+    XrayConnectorConfig,
+)
 from trelix.core.models import Artifact
 from trelix.indexing.connectors.base import ArtifactSource, ConnectorSyncResult
 from trelix.indexing.connectors.jira import JiraConnector, JiraConnectorError
+from trelix.indexing.connectors.linear import LinearConnector, LinearConnectorError
 from trelix.indexing.connectors.registry import get_artifact_source
 from trelix.indexing.connectors.testrail import TestRailConnector, TestRailConnectorError
 from trelix.indexing.connectors.xray import XrayConnector, XrayConnectorError
@@ -39,6 +46,8 @@ _XRAY_CONFIG = XrayConnectorConfig(
     project_key="PROJ",
     jira_base_url="https://example.atlassian.net",
 )
+
+_LINEAR_CONFIG = LinearConnectorConfig(api_key="key123", team_key="ENG")
 
 
 def _mock_response(
@@ -529,6 +538,257 @@ class TestXrayConnectorFetch:
 
 
 # ---------------------------------------------------------------------------
+# LinearConnector
+# ---------------------------------------------------------------------------
+
+
+def _mock_linear_page(
+    status_code: int = 200,
+    nodes: list[dict] | None = None,
+    has_next_page: bool = False,
+    end_cursor: str | None = None,
+    errors: list[dict] | None = None,
+    headers: dict | None = None,
+) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status_code
+    body: dict = {}
+    if errors is not None:
+        body["errors"] = errors
+    else:
+        body["data"] = {
+            "issues": {
+                "nodes": nodes or [],
+                "pageInfo": {"hasNextPage": has_next_page, "endCursor": end_cursor},
+            }
+        }
+    resp.json.return_value = body
+    resp.text = str(body)
+    resp.headers = headers or {}
+    return resp
+
+
+class TestLinearConnectorValidateConfig:
+    def test_missing_all_fields_raises(self) -> None:
+        connector = LinearConnector(LinearConnectorConfig())
+        with pytest.raises(ValueError, match="TRELIX_LINEAR_API_KEY"):
+            connector.validate_config()
+
+    def test_missing_one_field_lists_only_that_field(self) -> None:
+        config = LinearConnectorConfig(api_key="key123", team_key=None)
+        connector = LinearConnector(config)
+        with pytest.raises(ValueError, match="TRELIX_LINEAR_TEAM_KEY"):
+            connector.validate_config()
+
+    def test_all_fields_present_does_not_raise(self) -> None:
+        LinearConnector(_LINEAR_CONFIG).validate_config()
+
+
+class TestLinearConnectorFetch:
+    def test_fetch_returns_artifacts_from_issues(self) -> None:
+        resp = _mock_linear_page(
+            nodes=[
+                {
+                    "identifier": "ENG-1",
+                    "title": "Fix login bug",
+                    "description": "Users cannot log in",
+                    "url": "https://linear.app/acme/issue/ENG-1",
+                    "priority": 2.0,
+                    "state": {"id": "s1", "name": "In Progress", "type": "started"},
+                    "team": {"id": "t1", "key": "ENG", "name": "Engineering"},
+                    "assignee": {"id": "u1", "name": "Ada Lovelace", "email": "ada@example.com"},
+                    "labels": {"nodes": [{"id": "l1", "name": "bug"}]},
+                }
+            ]
+        )
+        with patch("trelix.indexing.connectors.linear.httpx.post", return_value=resp):
+            artifacts = LinearConnector(_LINEAR_CONFIG).fetch()
+
+        assert len(artifacts) == 1
+        a = artifacts[0]
+        assert a.source_ref == "linear-issue:ENG-1"
+        assert a.artifact_kind == "ticket"
+        assert a.title == "Fix login bug"
+        assert a.body == "Users cannot log in"
+        assert a.url == "https://linear.app/acme/issue/ENG-1"
+        assert a.metadata["status"] == "In Progress"
+        assert a.metadata["team_key"] == "ENG"
+        assert a.metadata["assignee"] == "Ada Lovelace"
+        assert a.metadata["priority"] == "2.0"
+        assert a.metadata["labels"] == "bug"
+
+    def test_fetch_paginates_via_cursor(self) -> None:
+        page1 = _mock_linear_page(
+            nodes=[{"identifier": "ENG-1", "title": "One"}],
+            has_next_page=True,
+            end_cursor="cursor-2",
+        )
+        page2 = _mock_linear_page(nodes=[{"identifier": "ENG-2", "title": "Two"}])
+        with patch(
+            "trelix.indexing.connectors.linear.httpx.post", side_effect=[page1, page2]
+        ) as mock_post:
+            artifacts = LinearConnector(_LINEAR_CONFIG).fetch()
+
+        assert {a.source_ref for a in artifacts} == {"linear-issue:ENG-1", "linear-issue:ENG-2"}
+        assert mock_post.call_count == 2
+        second_call_body = mock_post.call_args_list[1].kwargs["json"]
+        assert second_call_body["variables"]["after"] == "cursor-2"
+
+    def test_fetch_sends_explicit_team_filter_and_page_size(self) -> None:
+        resp = _mock_linear_page()
+        with patch("trelix.indexing.connectors.linear.httpx.post", return_value=resp) as mock_post:
+            LinearConnector(_LINEAR_CONFIG).fetch()
+
+        first_call_body = mock_post.call_args_list[0].kwargs["json"]
+        assert first_call_body["variables"] == {"teamKey": "ENG", "first": 100, "after": None}
+
+    def test_fetch_401_raises_linear_connector_error(self) -> None:
+        resp = _mock_linear_page(status_code=401, errors=[{"extensions": {"code": "AUTH"}}])
+        with patch("trelix.indexing.connectors.linear.httpx.post", return_value=resp):
+            with pytest.raises(LinearConnectorError, match="401"):
+                LinearConnector(_LINEAR_CONFIG).fetch()
+
+    def test_fetch_ratelimited_400_retries_then_succeeds(self) -> None:
+        rate_limited = _mock_linear_page(
+            status_code=400,
+            errors=[{"extensions": {"code": "RATELIMITED"}}],
+            headers={"X-RateLimit-Requests-Reset": "0"},
+        )
+        success = _mock_linear_page()
+        with (
+            patch(
+                "trelix.indexing.connectors.linear.httpx.post",
+                side_effect=[rate_limited, success],
+            ) as mock_post,
+            patch("trelix.indexing.connectors.linear.time.sleep"),
+        ):
+            artifacts = LinearConnector(_LINEAR_CONFIG).fetch()
+
+        assert artifacts == []
+        assert mock_post.call_count == 2
+
+    def test_fetch_ratelimited_400_exhausts_retries_and_raises(self) -> None:
+        always_rate_limited = _mock_linear_page(
+            status_code=400,
+            errors=[{"extensions": {"code": "RATELIMITED"}}],
+            headers={"X-RateLimit-Requests-Reset": "0"},
+        )
+        with (
+            patch(
+                "trelix.indexing.connectors.linear.httpx.post",
+                return_value=always_rate_limited,
+            ) as mock_post,
+            patch("trelix.indexing.connectors.linear.time.sleep"),
+        ):
+            with pytest.raises(LinearConnectorError, match="RATELIMITED"):
+                LinearConnector(_LINEAR_CONFIG).fetch()
+
+        assert mock_post.call_count == 3
+
+    def test_fetch_ratelimited_400_computes_wait_from_reset_headers(self) -> None:
+        future_reset_ms = (time.time() + 42) * 1000
+        rate_limited = _mock_linear_page(
+            status_code=400,
+            errors=[{"extensions": {"code": "RATELIMITED"}}],
+            headers={"X-RateLimit-Requests-Reset": str(future_reset_ms)},
+        )
+        success = _mock_linear_page()
+        with (
+            patch(
+                "trelix.indexing.connectors.linear.httpx.post",
+                side_effect=[rate_limited, success],
+            ),
+            patch("trelix.indexing.connectors.linear.time.sleep") as mock_sleep,
+        ):
+            LinearConnector(_LINEAR_CONFIG).fetch()
+
+        mock_sleep.assert_called_once()
+        waited = mock_sleep.call_args[0][0]
+        assert 35 <= waited <= 42
+
+    def test_fetch_400_non_ratelimited_error_raises_immediately_without_retry(self) -> None:
+        input_error = _mock_linear_page(
+            status_code=400,
+            errors=[{"extensions": {"code": "INPUT_ERROR"}, "message": "too complex"}],
+        )
+        with (
+            patch(
+                "trelix.indexing.connectors.linear.httpx.post", return_value=input_error
+            ) as mock_post,
+            patch("trelix.indexing.connectors.linear.time.sleep") as mock_sleep,
+        ):
+            with pytest.raises(LinearConnectorError, match="too complex"):
+                LinearConnector(_LINEAR_CONFIG).fetch()
+
+        assert mock_post.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_fetch_retries_on_5xx_via_shared_with_retry_then_succeeds(self) -> None:
+        server_error = MagicMock(status_code=500, text="Internal Server Error")
+        success = _mock_linear_page()
+        with (
+            patch(
+                "trelix.indexing.connectors.linear.httpx.post",
+                side_effect=[server_error, success],
+            ),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            artifacts = LinearConnector(_LINEAR_CONFIG).fetch()
+
+        assert artifacts == []
+
+    def test_fetch_exhausts_shared_retry_on_persistent_5xx_and_raises(self) -> None:
+        server_error = MagicMock(status_code=500, text="Internal Server Error")
+        with (
+            patch("trelix.indexing.connectors.linear.httpx.post", return_value=server_error),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            with pytest.raises(LinearConnectorError):
+                LinearConnector(_LINEAR_CONFIG).fetch()
+
+    def test_fetch_network_error_never_raises_raw_httpx_exception(self) -> None:
+        """A raw httpx exception must surface as LinearConnectorError, not
+        leak the underlying exception type to callers."""
+        import httpx
+
+        with (
+            patch(
+                "trelix.indexing.connectors.linear.httpx.post",
+                side_effect=httpx.ConnectError("connection refused"),
+            ),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            with pytest.raises(LinearConnectorError):
+                LinearConnector(_LINEAR_CONFIG).fetch()
+
+    def test_fetch_handles_missing_optional_fields_gracefully(self) -> None:
+        """An issue with no description/state/team/assignee/labels keys at
+        all must not raise — body/metadata just end up empty."""
+        resp = _mock_linear_page(nodes=[{"identifier": "ENG-5", "title": "Bare issue"}])
+        with patch("trelix.indexing.connectors.linear.httpx.post", return_value=resp):
+            artifacts = LinearConnector(_LINEAR_CONFIG).fetch()
+
+        a = artifacts[0]
+        assert a.body == ""
+        assert a.metadata["status"] == ""
+        assert a.metadata["team_key"] == ""
+        assert a.metadata["assignee"] == ""
+        assert a.metadata["priority"] == ""
+        assert a.metadata["labels"] == ""
+
+    def test_fetch_maps_zero_priority_correctly(self) -> None:
+        """priority=0.0 ('No priority' in Linear's scale) must be preserved
+        as "0.0", not blanked to "" by a falsy check."""
+        resp = _mock_linear_page(
+            nodes=[{"identifier": "ENG-6", "title": "No priority", "priority": 0.0}]
+        )
+        with patch("trelix.indexing.connectors.linear.httpx.post", return_value=resp):
+            artifacts = LinearConnector(_LINEAR_CONFIG).fetch()
+
+        assert artifacts[0].metadata["priority"] == "0.0"
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -542,6 +802,9 @@ class TestConnectorRegistry:
 
     def test_xray_resolves_to_xray_connector(self) -> None:
         assert isinstance(get_artifact_source("xray"), XrayConnector)
+
+    def test_linear_resolves_to_linear_connector(self) -> None:
+        assert isinstance(get_artifact_source("linear"), LinearConnector)
 
     def test_unknown_name_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown connector"):

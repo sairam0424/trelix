@@ -25,8 +25,20 @@ _BEAST_MODE_DEFAULTS: dict[str, str] = {
 # Non-boolean settings that must stay unset (not "false") for tests to see the
 # "unconfigured" code default — same rationale as _BEAST_MODE_DEFAULTS above,
 # but these aren't flags, so setenv("...", "false") would misconfigure them
-# instead of disabling them.
+# instead of disabling them. delenv() alone is NOT enough here: it only
+# removes the var from the process environment, but pydantic-settings'
+# .env-file source reads the file directly and independently — if a
+# developer's .env has a real value for one of these (e.g. a live
+# TRELIX_LINEAR_API_KEY for manual connector testing), removing the
+# process-env copy doesn't stop the file fallback from supplying it
+# anyway. Overriding to "" (falsy, same as unset for every `if not val`
+# validate_config() check in this codebase) is what actually neutralizes
+# the .env value for the test process.
 _UNSET_BY_DEFAULT: tuple[str, ...] = ("TRELIX_API_AUTH_TOKEN",)
+_EMPTY_STRING_BY_DEFAULT: tuple[str, ...] = (
+    "TRELIX_LINEAR_API_KEY",
+    "TRELIX_LINEAR_TEAM_KEY",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -36,3 +48,5 @@ def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(var, val)
     for var in _UNSET_BY_DEFAULT:
         monkeypatch.delenv(var, raising=False)
+    for var in _EMPTY_STRING_BY_DEFAULT:
+        monkeypatch.setenv(var, "")

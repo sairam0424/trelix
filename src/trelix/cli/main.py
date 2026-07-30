@@ -1897,11 +1897,11 @@ def agent_sessions_clear(
 
 
 # ---------------------------------------------------------------------------
-# connector sub-app (Jira/TestRail/Xray source-connector sync)
+# connector sub-app (Jira/TestRail/Xray/Linear source-connector sync)
 # ---------------------------------------------------------------------------
 
 connector_app = typer.Typer(
-    help="Sync external artefacts (Jira tickets, TestRail cases, Xray tests)."
+    help="Sync external artefacts (Jira tickets, TestRail cases, Xray tests, Linear issues)."
 )
 app.add_typer(connector_app, name="connector")
 
@@ -1909,7 +1909,9 @@ app.add_typer(connector_app, name="connector")
 @connector_app.command("sync")
 def connector_sync(
     repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")],
-    name: Annotated[str, typer.Argument(help="Connector to sync: 'jira', 'testrail', or 'xray'.")],
+    name: Annotated[
+        str, typer.Argument(help="Connector to sync: 'jira', 'testrail', 'xray', or 'linear'.")
+    ],
     link: Annotated[
         bool,
         typer.Option(help="Auto-link each synced artefact into generic_edges via ArtifactLinker"),

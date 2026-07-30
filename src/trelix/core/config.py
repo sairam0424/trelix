@@ -964,6 +964,38 @@ class XrayConnectorConfig(BaseSettings):
     page_size: int = Field(default=100, ge=1, le=100)
 
 
+class LinearConnectorConfig(BaseSettings):
+    """
+    Linear GraphQL API connector. Personal API key auth via
+    `Authorization: <API_KEY>` (no Bearer prefix — Linear's own documented
+    scheme, distinct from every other connector in this file). Scoped to a
+    single team via its key (e.g. "ENG"), mirroring Jira's project_key /
+    TestRail's project_id precedent. No base_url field: unlike Jira/
+    TestRail/Xray, Linear's GraphQL endpoint is one fixed URL for every
+    user (see linear.py's _LINEAR_GRAPHQL_URL), not per-org configurable.
+
+    v1 always does a full resync (no updatedAt filter) — see linear.py's
+    module docstring for why incremental sync was explicitly deferred.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_LINEAR_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    api_key: str | None = Field(default=None, alias="TRELIX_LINEAR_API_KEY")
+    team_key: str | None = Field(default=None, alias="TRELIX_LINEAR_TEAM_KEY")
+    # No documented max page size found for Linear's issues(first: N)
+    # connection — 100 mirrors Jira/Xray's own ceiling and stays well under
+    # the 10,000-point per-query complexity cap (~771 points at first=100
+    # with this connector's field selection; see linear.py). Not a
+    # confirmed platform ceiling — an assumption, flagged as such.
+    page_size: int = Field(default=100, ge=1, le=100)
+
+
 # ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------
