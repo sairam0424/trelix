@@ -6,6 +6,19 @@ Auth: HTTP Basic (email + API token), matching Jira Cloud's own recommended
 scheme for personal/service integrations — no OAuth needed.
 Pagination: Jira's v3 search endpoint uses a cursor (nextPageToken), not
 offset/limit.
+
+Description text: Jira Cloud's v3 API always returns `description` as
+Atlassian Document Format (ADF) — a nested JSON tree, never a plain string
+(confirmed live against a real site: every issue, unconditionally). The
+original version of this connector fell back to an empty body whenever
+description wasn't a plain `str`, which meant every ticket's description
+was silently dropped in practice — not a rare edge case. `_adf_to_text()`
+below walks the tree and renders a plain-text approximation good enough for
+ArtifactLinker's regex matching and for readable ticket bodies elsewhere;
+it is not a full ADF renderer (no tables, no user/date mentions resolved
+to names) but covers every node type observed on a real Jira Cloud site:
+paragraphs, headings, bullet/ordered lists, code blocks, inline code,
+blockquotes, panels, expand sections, rules, links, and embedded cards.
 """
 
 from __future__ import annotations
@@ -27,6 +40,86 @@ _MAX_RETRIES = 5
 
 class JiraConnectorError(Exception):
     """Raised on a real, non-retryable Jira API failure."""
+
+
+# ADF node types whose children are inline text that flows together with no
+# separator (concatenated directly) — as opposed to block-level children
+# (paragraphs, list items, panels, ...) which are newline-separated.
+_INLINE_CONTAINER_TYPES = frozenset({"paragraph", "heading", "codeBlock"})
+
+
+def _adf_node_to_text(node: Any) -> str:
+    """Render one ADF node (and its descendants) to a plain-text
+    approximation. Unknown/unhandled node types fall through to rendering
+    their `content` children as block-level (newline-joined) — safer than
+    dropping an unrecognized node outright, since a future/undocumented
+    node type is far more likely to still carry meaningful nested text
+    than to be purely structural."""
+    if not isinstance(node, dict):
+        return ""
+    node_type = node.get("type")
+    content = node.get("content") or []
+
+    if node_type == "text":
+        text = str(node.get("text", ""))
+        for mark in node.get("marks") or []:
+            if mark.get("type") == "link":
+                href = (mark.get("attrs") or {}).get("href")
+                if href:
+                    text = f"{text} ({href})"
+        return text
+
+    if node_type == "hardBreak":
+        return "\n"
+
+    if node_type in ("embedCard", "inlineCard"):
+        return str((node.get("attrs") or {}).get("url", ""))
+
+    if node_type == "mention":
+        return str((node.get("attrs") or {}).get("text", ""))
+
+    if node_type == "status":
+        return str((node.get("attrs") or {}).get("text", ""))
+
+    if node_type == "emoji":
+        attrs = node.get("attrs") or {}
+        return str(attrs.get("text") or attrs.get("shortName", ""))
+
+    if node_type == "rule":
+        return ""
+
+    if node_type in ("bulletList", "orderedList", "taskList", "decisionList"):
+        lines = []
+        for i, item in enumerate(content, start=1):
+            item_text = _adf_node_to_text(item).strip()
+            if not item_text:
+                continue
+            prefix = f"{i}. " if node_type == "orderedList" else "- "
+            lines.append(f"{prefix}{item_text}")
+        return "\n".join(lines)
+
+    if node_type == "expand":
+        title = (node.get("attrs") or {}).get("title", "")
+        body = _join_block_children(content)
+        return f"{title}:\n{body}" if title else body
+
+    if node_type in _INLINE_CONTAINER_TYPES:
+        return "".join(_adf_node_to_text(child) for child in content)
+
+    # doc, blockquote, panel, listItem, table/tableRow/tableCell, or any
+    # unrecognized future node type: treat children as block-level.
+    return _join_block_children(content)
+
+
+def _join_block_children(content: list[Any]) -> str:
+    parts = (_adf_node_to_text(child).strip() for child in content)
+    return "\n".join(part for part in parts if part)
+
+
+def _adf_to_text(doc: dict[str, Any]) -> str:
+    """Entry point: render a full ADF document (the `description` field's
+    value) to plain text."""
+    return _adf_node_to_text(doc).strip()
 
 
 class JiraConnector(ArtifactSource):
@@ -90,12 +183,12 @@ class JiraConnector(ArtifactSource):
         key = issue["key"]
         fields = issue.get("fields", {})
         description = fields.get("description")
-        # Jira's v3 API returns description as Atlassian Document Format
-        # (a nested JSON structure), not plain text. Extracting readable
-        # text from ADF properly needs a real renderer; falling back to the
-        # summary alone (never crashing on the ADF shape) is an accepted
-        # simplification for this connector's first version.
-        body = description if isinstance(description, str) else ""
+        if isinstance(description, str):
+            body = description
+        elif isinstance(description, dict):
+            body = _adf_to_text(description)
+        else:
+            body = ""
         return Artifact(
             source_ref=f"ticket:{key}",
             artifact_kind="ticket",

@@ -394,7 +394,15 @@ def test_connector_sync_no_index_found(tmp_path):  # type: ignore[no-untyped-def
 
 def test_connector_sync_missing_config_exits_nonzero(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
     """No TRELIX_JIRA_* env vars set — validate_config() must fail fast
-    with a clear message, before ever making an HTTP call."""
+    with a clear message, before ever making an HTTP call.
+
+    setenv("", ...) rather than delenv(): a developer's .env may have real
+    Jira credentials (e.g. for live connector testing), and
+    pydantic-settings reads that file directly regardless of the process
+    environment — delenv() only clears the latter, so the .env value would
+    still surface here. Overriding to "" (falsy, same as unset for
+    validate_config()'s `if not val` checks) is what actually neutralizes
+    it, same fix as tests/unit/conftest.py's _EMPTY_STRING_BY_DEFAULT."""
     from trelix.core.config import IndexConfig
     from trelix.store.db import Database
 
@@ -404,7 +412,7 @@ def test_connector_sync_missing_config_exits_nonzero(tmp_path, monkeypatch):  # 
         "TRELIX_JIRA_API_TOKEN",
         "TRELIX_JIRA_PROJECT_KEY",
     ):
-        monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv(var, "")
 
     config = IndexConfig(repo_path=str(tmp_path))
     Database(config.db_path_absolute)
