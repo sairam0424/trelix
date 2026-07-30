@@ -136,9 +136,89 @@ class TestJiraConnectorFetch:
         assert {a.source_ref for a in artifacts} == {"ticket:PROJ-1", "ticket:PROJ-2"}
         assert mock_get.call_count == 2
 
-    def test_fetch_ignores_atlassian_document_format_description(self) -> None:
+    def test_fetch_renders_atlassian_document_format_description_to_plain_text(
+        self,
+    ) -> None:
         """Jira v3's description is ADF (nested JSON), not plain text — the
-        connector falls back to empty body rather than crashing on it."""
+        connector must render real, readable content out of it rather than
+        dropping it to an empty body (the pre-fix behavior)."""
+        resp = _mock_response(
+            200,
+            {
+                "issues": [
+                    {
+                        "key": "PROJ-1",
+                        "fields": {
+                            "summary": "Fix bug",
+                            "description": {
+                                "type": "doc",
+                                "content": [
+                                    {
+                                        "type": "paragraph",
+                                        "content": [
+                                            {"type": "text", "text": "Users cannot log in. See "},
+                                            {
+                                                "type": "text",
+                                                "text": "the runbook",
+                                                "marks": [
+                                                    {
+                                                        "type": "link",
+                                                        "attrs": {
+                                                            "href": "https://example.com/runbook"
+                                                        },
+                                                    }
+                                                ],
+                                            },
+                                            {"type": "text", "text": " for details."},
+                                        ],
+                                    },
+                                    {
+                                        "type": "bulletList",
+                                        "content": [
+                                            {
+                                                "type": "listItem",
+                                                "content": [
+                                                    {
+                                                        "type": "paragraph",
+                                                        "content": [
+                                                            {"type": "text", "text": "Step one"}
+                                                        ],
+                                                    }
+                                                ],
+                                            },
+                                            {
+                                                "type": "listItem",
+                                                "content": [
+                                                    {
+                                                        "type": "paragraph",
+                                                        "content": [
+                                                            {"type": "text", "text": "Step two"}
+                                                        ],
+                                                    }
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        },
+                    }
+                ],
+                "nextPageToken": None,
+            },
+        )
+        with patch("trelix.indexing.connectors.jira.httpx.get", return_value=resp):
+            artifacts = JiraConnector(_JIRA_CONFIG).fetch()
+
+        body = artifacts[0].body
+        assert "Users cannot log in" in body
+        assert "the runbook (https://example.com/runbook)" in body
+        assert "- Step one" in body
+        assert "- Step two" in body
+
+    def test_fetch_empty_adf_document_produces_empty_body(self) -> None:
+        """An ADF doc with genuinely no content (not a malformed one) must
+        still produce an empty body, not a crash or placeholder text."""
         resp = _mock_response(
             200,
             {
@@ -199,6 +279,154 @@ class TestJiraConnectorFetch:
         ):
             with pytest.raises(JiraConnectorError):
                 JiraConnector(_JIRA_CONFIG).fetch()
+
+
+class TestAdfToText:
+    """Direct tests of the ADF-to-plain-text renderer against node shapes
+    confirmed by fetching real descriptions from a live Jira Cloud site —
+    not just the paragraph/link/bulletList shapes already covered by
+    TestJiraConnectorFetch's end-to-end test."""
+
+    def test_heading(self) -> None:
+        from trelix.indexing.connectors.jira import _adf_to_text
+
+        doc = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "heading",
+                    "attrs": {"level": 2},
+                    "content": [{"type": "text", "text": "Prerequisites"}],
+                }
+            ],
+        }
+        assert _adf_to_text(doc) == "Prerequisites"
+
+    def test_ordered_list_numbers_items(self) -> None:
+        from trelix.indexing.connectors.jira import _adf_to_text
+
+        doc = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "orderedList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {
+                                    "type": "paragraph",
+                                    "content": [{"type": "text", "text": "First"}],
+                                }
+                            ],
+                        },
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {
+                                    "type": "paragraph",
+                                    "content": [{"type": "text", "text": "Second"}],
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+        text = _adf_to_text(doc)
+        assert "1. First" in text
+        assert "2. Second" in text
+
+    def test_code_block_preserves_code_text(self) -> None:
+        from trelix.indexing.connectors.jira import _adf_to_text
+
+        doc = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "codeBlock",
+                    "attrs": {"language": "json"},
+                    "content": [{"type": "text", "text": '{"key": "value"}'}],
+                }
+            ],
+        }
+        assert '{"key": "value"}' in _adf_to_text(doc)
+
+    def test_panel_and_expand_render_nested_content(self) -> None:
+        from trelix.indexing.connectors.jira import _adf_to_text
+
+        doc = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "panel",
+                    "attrs": {"panelType": "info"},
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "Need help?"}]}
+                    ],
+                },
+                {
+                    "type": "expand",
+                    "attrs": {"title": "Advanced setup"},
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": "Extra steps here."}],
+                        }
+                    ],
+                },
+            ],
+        }
+        text = _adf_to_text(doc)
+        assert "Need help?" in text
+        assert "Advanced setup:" in text
+        assert "Extra steps here." in text
+
+    def test_rule_produces_no_stray_text(self) -> None:
+        from trelix.indexing.connectors.jira import _adf_to_text
+
+        doc = {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Above"}]},
+                {"type": "rule"},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Below"}]},
+            ],
+        }
+        text = _adf_to_text(doc)
+        assert text == "Above\nBelow"
+
+    def test_embed_card_renders_url(self) -> None:
+        from trelix.indexing.connectors.jira import _adf_to_text
+
+        doc = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "embedCard",
+                    "attrs": {"url": "https://www.loom.com/share/abc123"},
+                }
+            ],
+        }
+        assert _adf_to_text(doc) == "https://www.loom.com/share/abc123"
+
+    def test_unknown_node_type_falls_through_to_children(self) -> None:
+        """A future/undocumented ADF node type must not crash or drop its
+        text — it degrades to block-level rendering of its children."""
+        from trelix.indexing.connectors.jira import _adf_to_text
+
+        doc = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "someBrandNewNodeType",
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "Still here"}]}
+                    ],
+                }
+            ],
+        }
+        assert "Still here" in _adf_to_text(doc)
 
 
 # ---------------------------------------------------------------------------
