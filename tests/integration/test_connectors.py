@@ -16,7 +16,12 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from trelix.core.config import ArtifactLinkerConfig, JiraConnectorConfig, XrayConnectorConfig
+from trelix.core.config import (
+    ArtifactLinkerConfig,
+    JiraConnectorConfig,
+    LinearConnectorConfig,
+    XrayConnectorConfig,
+)
 from trelix.core.models import (
     GenericEdge,
     IndexedFile,
@@ -28,6 +33,7 @@ from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import compute_pagerank
 from trelix.indexing.artifact_linker import ArtifactLinker
 from trelix.indexing.connectors.jira import JiraConnector
+from trelix.indexing.connectors.linear import LinearConnector
 from trelix.indexing.connectors.xray import XrayConnector
 from trelix.store.db import Database
 
@@ -244,6 +250,50 @@ class TestConnectorToGraphPipeline:
         cg = CodeGraph(db)
         assert "xray-test:PROJ-9" in cg.nx
         assert "xray-test:PROJ-9" in cg.neighbors(login_id)
+
+    def test_linear_sync_with_linker_auto_links_into_code_graph(self, tmp_path: Path) -> None:
+        """Proves Phase 1's design generalizes to a fourth connector with a
+        single-call-per-request flow (no separate auth exchange, unlike
+        Xray) and no ADF/markdown quirks (unlike Jira) — ArtifactLinker
+        still needs zero Linear-specific code."""
+        db = Database(tmp_path / "index.db")
+        login_id = _seed_symbol(db, "auth.py", "login")
+
+        issues_resp = MagicMock()
+        issues_resp.status_code = 200
+        issues_resp.json.return_value = {
+            "data": {
+                "issues": {
+                    "nodes": [
+                        {
+                            "identifier": "ENG-42",
+                            "title": "login is broken",
+                            "description": "",
+                            "url": "https://linear.app/acme/issue/ENG-42",
+                            "state": {"id": "s1", "name": "Open", "type": "unstarted"},
+                            "team": {"id": "t1", "key": "ENG", "name": "Engineering"},
+                        }
+                    ],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            }
+        }
+
+        linear_config = LinearConnectorConfig(api_key="key123", team_key="ENG")
+        linker = ArtifactLinker(db, ArtifactLinkerConfig())
+        with patch(
+            "trelix.indexing.connectors.linear.httpx.post",
+            return_value=issues_resp,
+        ):
+            result = LinearConnector(linear_config).sync(db, linker=linker)
+
+        assert result.artifacts_written == 1
+        assert result.edges_linked == 1
+        assert db.get_generic_edge_targets(login_id) == ["linear-issue:ENG-42"]
+
+        cg = CodeGraph(db)
+        assert "linear-issue:ENG-42" in cg.nx
+        assert "linear-issue:ENG-42" in cg.neighbors(login_id)
 
     def test_low_weight_edge_has_less_pagerank_influence_than_full_weight_edge(
         self, tmp_path: Path

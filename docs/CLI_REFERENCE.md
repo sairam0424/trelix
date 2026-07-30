@@ -1016,34 +1016,43 @@ the ticket pattern, or no touched files are indexed yet.
 #### Synopsis
 
 ```
-trelix connector sync <repo> <jira|testrail>
+trelix connector sync <repo> <jira|testrail|xray|linear> [--link/--no-link]
 ```
 
 #### Description
 
-Fetches artifacts (Jira tickets or TestRail test cases) from an external
-system via the connector's `ArtifactSource.fetch()` and writes them to the
-`artifacts` table via `upsert_artifact()`, keyed by source reference so
-re-syncing updates existing rows rather than duplicating them.
+Fetches artifacts (Jira tickets, TestRail test cases, Xray Cloud tests, or
+Linear issues) from an external system via the connector's
+`ArtifactSource.fetch()` and writes them to the `artifacts` table via
+`upsert_artifact()`, keyed by source reference so re-syncing updates existing
+rows rather than duplicating them.
 
 Requires `<repo>` to already be indexed (checks that `.trelix/index.db`
 exists before making any HTTP call). Required environment variables differ
 per connector — see [CONFIGURATION.md](CONFIGURATION.md) for the full list of
-`TRELIX_JIRA_*` and `TRELIX_TESTRAIL_*` variables. Missing required
-configuration fails fast with an error, before any network request is made.
+`TRELIX_JIRA_*`, `TRELIX_TESTRAIL_*`, `TRELIX_XRAY_*`, and `TRELIX_LINEAR_*`
+variables. Missing required configuration fails fast with an error, before
+any network request is made.
 
-This command does **not** create `generic_edges` rows linking the synced
-artifacts to code — that linkage is a separate concern. Only
-[`trelix link-tickets`](#trelix-link-tickets) creates those edges today, and
-only for git-commit-derived ticket references, not for the artifact content
-fetched by this command. This is accepted current scope, not an oversight.
+By default (`--link`, the default), each successfully-synced artifact is
+immediately linked into `generic_edges` via `ArtifactLinker` — it's reachable
+from the code graph the moment this command returns, no separate
+`trelix link-artifacts` pass required. Pass `--no-link` to skip linking
+(e.g. when syncing many artifacts quickly, then running
+`trelix link-artifacts` once as a batch afterward).
 
 #### Arguments
 
 | Argument | Description |
 |----------|-------------|
 | `repo` | Path to the indexed repository. |
-| `name` | Connector to sync: `jira` or `testrail`. |
+| `name` | Connector to sync: `jira`, `testrail`, `xray`, or `linear`. |
+
+#### Options
+
+| Option | Description |
+|--------|-------------|
+| `--link` / `--no-link` | Auto-link each synced artifact into `generic_edges` via `ArtifactLinker` (default: `--link`). |
 
 #### Examples
 
@@ -1061,12 +1070,24 @@ TRELIX_TESTRAIL_USERNAME=bot@acme.com \
 TRELIX_TESTRAIL_API_KEY=$TESTRAIL_KEY \
 TRELIX_TESTRAIL_PROJECT_ID=7 \
 trelix connector sync ./my-repo testrail
+
+# Sync Xray Cloud tests (requires TRELIX_XRAY_* env vars)
+TRELIX_XRAY_CLIENT_ID=$XRAY_CLIENT_ID \
+TRELIX_XRAY_CLIENT_SECRET=$XRAY_CLIENT_SECRET \
+TRELIX_XRAY_PROJECT_KEY=PROJ \
+TRELIX_XRAY_JIRA_BASE_URL=https://acme.atlassian.net \
+trelix connector sync ./my-repo xray
+
+# Sync Linear issues (requires TRELIX_LINEAR_* env vars)
+TRELIX_LINEAR_API_KEY=$LINEAR_API_KEY \
+TRELIX_LINEAR_TEAM_KEY=ENG \
+trelix connector sync ./my-repo linear
 ```
 
 #### Output
 
 ```
-Synced jira: fetched 84, wrote 84, errors 0
+Synced jira: fetched 84, wrote 84, errors 0, linked 79 edge(s)
 ```
 
 #### Notes
@@ -1075,10 +1096,13 @@ Synced jira: fetched 84, wrote 84, errors 0
   is missing — configuration is validated before any HTTP call is made.
 - Run `trelix index <repo>` before this command — it exits with code 1 if no
   index is found.
-- Page size (`TRELIX_JIRA_PAGE_SIZE`, default `100`, max `100`;
-  `TRELIX_TESTRAIL_PAGE_SIZE`, default `250`, max `250` — TestRail's own API
-  ceiling) is configured via environment variable only; see
-  [CONFIGURATION.md](CONFIGURATION.md).
+- Page size is configured via environment variable only; see
+  [CONFIGURATION.md](CONFIGURATION.md). Defaults: `TRELIX_JIRA_PAGE_SIZE`
+  (`100`, max `100`), `TRELIX_TESTRAIL_PAGE_SIZE` (`250`, max `250` —
+  TestRail's own API ceiling), `TRELIX_XRAY_PAGE_SIZE` (`100`, max `100`),
+  `TRELIX_LINEAR_PAGE_SIZE` (`100`, max `100` — not a confirmed Linear
+  platform ceiling, chosen to stay well under its GraphQL query-complexity
+  cap).
 
 ---
 
