@@ -208,7 +208,11 @@ def detect_communities_incremental(
     return new_partition
 
 
-def compute_pagerank(cg: CodeGraph, alpha: float = 0.85) -> dict[int, float]:
+def compute_pagerank(
+    cg: CodeGraph,
+    alpha: float = 0.85,
+    personalization_enabled: bool = False,
+) -> dict[int, float]:
     """
     Compute PageRank over the code graph. Returns node_id → normalized score.
 
@@ -218,6 +222,16 @@ def compute_pagerank(cg: CodeGraph, alpha: float = 0.85) -> dict[int, float]:
     Args:
         cg: CodeGraph instance (networkx MultiDiGraph under the hood)
         alpha: damping factor (default 0.85, standard PageRank value)
+        personalization_enabled: when True (default False — zero behavior
+            change unless a caller opts in via
+            RetrievalConfig.pagerank_personalization_enabled), replaces the
+            uniform teleport vector with a Personalized PageRank vector
+            concentrated on symbol nodes with a cross-source generic_edge
+            (i.e. every symbol adjacent to a `type="artifact"` node — see
+            CodeGraph._build()'s bidirectional GENERIC edge loop). Same
+            construction as retrieval/graph.py's rank_by_pagerank(), applied
+            here to the full persistent graph rather than a per-query
+            subgraph.
 
     Returns:
         dict[int, float] — empty dict if graph has no edges
@@ -226,10 +240,27 @@ def compute_pagerank(cg: CodeGraph, alpha: float = 0.85) -> dict[int, float]:
     if g.number_of_nodes() == 0:
         return {}
 
+    personalization = None
+    if personalization_enabled:
+        artifact_nodes = [n for n, attrs in g.nodes(data=True) if attrs.get("type") == "artifact"]
+        cross_source_nodes: set[int] = set()
+        for artifact_node in artifact_nodes:
+            for neighbor in g.successors(artifact_node):
+                if isinstance(neighbor, int):
+                    cross_source_nodes.add(neighbor)
+            for neighbor in g.predecessors(artifact_node):
+                if isinstance(neighbor, int):
+                    cross_source_nodes.add(neighbor)
+        if cross_source_nodes:
+            mass = 1.0 / len(cross_source_nodes)
+            personalization = {node: mass for node in cross_source_nodes}
+
     try:
-        raw: dict[int, float] = nx.pagerank(g, alpha=alpha, max_iter=100)
+        raw: dict[int, float] = nx.pagerank(
+            g, alpha=alpha, max_iter=100, personalization=personalization
+        )
     except nx.PowerIterationFailedConvergence:
-        raw = nx.pagerank(g, alpha=alpha, max_iter=500, tol=1e-4)
+        raw = nx.pagerank(g, alpha=alpha, max_iter=500, tol=1e-4, personalization=personalization)
 
     # Normalize to [0, 1]
     max_score = max(raw.values()) if raw else 1.0

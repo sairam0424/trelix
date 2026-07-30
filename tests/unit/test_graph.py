@@ -390,6 +390,100 @@ class TestRankByPagerank:
         pr = dict(rank_by_pagerank([referenced, plain, shared_callee], db))
         assert pr[referenced] > pr[plain]
 
+    def test_personalization_disabled_is_byte_identical_to_default_call(self, db: Database) -> None:
+        """personalization_enabled defaults to False — must reproduce
+        today's exact plain-PageRank scores, not merely 'similar' ones."""
+        fid = _insert_file(db)
+        a = _insert_symbol(db, fid, "hub")
+        b = _insert_symbol(db, fid, "spoke1")
+        c = _insert_symbol(db, fid, "spoke2")
+        for sid in (a, b, c):
+            _insert_chunk(db, sid)
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=b, callee_name="hub", line=1, callee_id=a),
+                CallEdge(caller_id=c, callee_name="hub", line=2, callee_id=a),
+            ]
+        )
+        db._conn.commit()
+
+        default_call = dict(rank_by_pagerank([a, b, c], db))
+        explicit_false = dict(rank_by_pagerank([a, b, c], db, personalization_enabled=False))
+        assert default_call == explicit_false
+
+    def test_personalization_with_no_cross_source_edges_falls_back_to_uniform(
+        self, db: Database
+    ) -> None:
+        """Opting in on a subgraph with zero generic_edges must not error or
+        change scores — there's no seed set to personalize toward, so this
+        degrades to the exact same plain-PageRank call."""
+        fid = _insert_file(db)
+        a = _insert_symbol(db, fid, "hub")
+        b = _insert_symbol(db, fid, "spoke")
+        for sid in (a, b):
+            _insert_chunk(db, sid)
+        db.insert_call_edges([CallEdge(caller_id=b, callee_name="hub", line=1, callee_id=a)])
+        db._conn.commit()
+
+        without_personalization = dict(rank_by_pagerank([a, b], db))
+        with_personalization = dict(rank_by_pagerank([a, b], db, personalization_enabled=True))
+        assert without_personalization == with_personalization
+
+    def test_personalization_shifts_rank_toward_cross_source_linked_symbol(
+        self, db: Database
+    ) -> None:
+        """Proves personalization= is genuinely wired into the nx.pagerank
+        call, not a no-op — a prior version of this test passed identically
+        whether personalization was hardcoded to None or threaded through,
+        because its fixture never gave call-graph centrality and ticket
+        linkage a chance to disagree.
+
+        This fixture makes them disagree: `hub` is called by 8 distinct
+        callers (real call-graph centrality, no ticket link at all); `target`
+        has zero callers but IS linked to a ticket. With enough callers,
+        plain PageRank ranks `hub` above `target` on pure call centrality.
+        Personalization must be strong enough to flip that ordering —
+        anything that would pass with personalization=None (e.g. a fixture
+        where the ticket-linked node already wins on call-graph structure
+        alone) does not actually exercise the personalization= kwarg.
+        """
+        fid = _insert_file(db)
+        hub = _insert_symbol(db, fid, "hub_fn")
+        target = _insert_symbol(db, fid, "target_fn")
+        callers = [_insert_symbol(db, fid, f"caller_fn_{i}") for i in range(8)]
+        for sid in (hub, target, *callers):
+            _insert_chunk(db, sid)
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=caller, callee_name="hub_fn", line=1, callee_id=hub)
+                for caller in callers
+            ]
+        )
+        db._conn.commit()
+        db.insert_generic_edges(
+            [
+                GenericEdge(
+                    from_symbol_id=target,
+                    source_ref="ticket:PROJ-1",
+                    edge_kind="references_ticket",
+                )
+            ]
+        )
+
+        all_ids = [hub, target, *callers]
+        without = dict(rank_by_pagerank(all_ids, db))
+        # Sanity check the fixture's premise: on pure call-graph structure,
+        # the heavily-called hub outranks the zero-callers ticket target.
+        assert without[hub] > without[target]
+
+        with_ppr = dict(rank_by_pagerank(all_ids, db, personalization_enabled=True))
+        # Personalization must be strong enough to flip that ordering — a
+        # no-op personalization (e.g. personalization=None reaching
+        # nx.pagerank regardless of the flag) would leave hub > target
+        # unchanged, since that ordering is exactly what plain PageRank
+        # already produces from call-graph structure alone.
+        assert with_ppr[target] > with_ppr[hub]
+
 
 # ---------------------------------------------------------------------------
 # expand_with_imports

@@ -8,7 +8,7 @@ Personalized PageRank (teleport mass concentrated on ticket/test nodes)
 until there was real evidence it was needed. This script produces that
 evidence by measuring trelix's OWN self-eval before and after real
 generic_edges (from GitLinker walking trelix's own git history) are
-present, on two axes:
+present, on three axes:
 
   1. End-to-end retrieval quality (TRELIX_SELF_CASES via EvalHarness) —
      does cross-source-edge-influenced PageRank move the needle on the
@@ -16,6 +16,12 @@ present, on two axes:
   2. Direct PageRank rank-position deltas for symbols that gained a
      generic_edge — does the signal even reach the ranking, before it can
      reach end-to-end metrics?
+  3. Personalized PageRank vs. plain PageRank (both WITH generic_edges
+     present) — now that (1)/(2) proved the graph-edge change alone moves
+     real numbers, does concentrating teleport mass on those same
+     cross-source-linked nodes (rank_by_pagerank(..., personalization_enabled
+     =True), RetrievalConfig.pagerank_personalization_enabled=True) move
+     them further still, or was plain PageRank already capturing the signal?
 
 trelix's own commit history has ZERO "[A-Z]+-\\d+" (Jira-style) matches but
 95+ "#\\d+" (GitHub-issue-style) matches, so this self-eval overrides
@@ -205,6 +211,67 @@ def main() -> None:
         print(f"  median |delta|: {statistics.median(abs(d) for d in deltas):.2f} positions")
     else:
         print("  n/a — no affected candidates")
+
+    # --- Step (f): Personalized PageRank vs. plain PageRank (both WITH
+    # generic_edges present) — the actual Decision #7 validation this eval
+    # was always meant to produce, now that (b)-(e) established real
+    # graph-edge impact. -----------------------------------------------
+    print("\n" + "=" * 78)
+    print("STEP (f): Personalized PageRank vs. plain PageRank (generic_edges present)")
+    print("=" * 78)
+    ppr_ranked = rank_by_pagerank(candidate_ids, db, personalization_enabled=True)
+    ppr_positions = _rank_positions(ppr_ranked)
+
+    ppr_deltas = [
+        after_positions[sid] - ppr_positions.get(sid, after_positions[sid]) for sid in affected
+    ]
+    ppr_changed = [d for d in ppr_deltas if d != 0]
+    print(
+        f"Of the same {len(affected)} affected candidates, comparing plain "
+        f"PageRank (Step d) against Personalized PageRank (this step):"
+    )
+    if affected:
+        frac_ppr_changed = len(ppr_changed) / len(affected)
+        print(
+            f"  Fraction with a further rank-position change from PPR: "
+            f"{frac_ppr_changed:.2%} ({len(ppr_changed)}/{len(affected)})"
+        )
+        print(
+            f"  Mean rank-position delta (abs, plain->PPR):   "
+            f"{statistics.mean(abs(d) for d in ppr_deltas):.2f}"
+        )
+        print(
+            f"  Median rank-position delta (abs, plain->PPR): "
+            f"{statistics.median(abs(d) for d in ppr_deltas):.2f}"
+        )
+        print(f"  Raw deltas (plain_rank - ppr_rank): {ppr_deltas}")
+    else:
+        print("  n/a — no affected candidates")
+
+    print("\nEnd-to-end retrieval metrics WITH Personalized PageRank enabled:")
+    ppr_config = IndexConfig(
+        repo_path=REPO_PATH,
+        embedder=EmbedderConfig(provider="local"),
+        retrieval=RetrievalConfig(rerank=False, pagerank_personalization_enabled=True),
+    )
+    ppr_harness = EvalHarness(REPO_PATH, ppr_config)
+    t0 = time.time()
+    ppr_report = ppr_harness.run(TRELIX_SELF_CASES)
+    print(f"(eval wall time: {time.time() - t0:.1f}s)")
+
+    print("\n" + "=" * 78)
+    print("STEP (g): PLAIN PAGERANK / PERSONALIZED PAGERANK COMPARISON")
+    print("=" * 78)
+    print("\nEnd-to-end retrieval metrics (TRELIX_SELF_CASES, 50 queries):")
+    _print_metrics_row("PLAIN", after_report)
+    _print_metrics_row("PPR", ppr_report)
+    ppr_recall5_delta = ppr_report.mean_recall_at_5 - after_report.mean_recall_at_5
+    ppr_mrr_delta = ppr_report.mrr - after_report.mrr
+    ppr_ndcg_delta = ppr_report.mean_ndcg_at_10 - after_report.mean_ndcg_at_10
+    print(
+        f"  {'DELTA':<8}  recall@5={ppr_recall5_delta:+.3f}   "
+        f"mrr={ppr_mrr_delta:+.3f}   ndcg@10={ppr_ndcg_delta:+.3f}"
+    )
 
     db.close()
 

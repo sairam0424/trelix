@@ -26,6 +26,7 @@ def expand_with_call_graph(
     results: list[SearchResult],
     depth: int = 1,
     max_extra: int = 10,
+    personalization_enabled: bool = False,
 ) -> list[SearchResult]:
     """
     Expand result set by following call graph edges (callers + callees).
@@ -62,7 +63,7 @@ def expand_with_call_graph(
     total_resolved = sum(1 for sid, _ in candidates if db.get_callees(sid) or db.get_callers(sid))
     if total_resolved >= 3:
         all_ids = [r.chunk.symbol_id for r in results] + [sid for sid, _ in candidates]
-        pr_scores = dict(rank_by_pagerank(all_ids, db))
+        pr_scores = dict(rank_by_pagerank(all_ids, db, personalization_enabled))
         # Closer hops win; PageRank breaks ties within the same hop
         candidates.sort(key=lambda x: (x[1], -pr_scores.get(x[0], 0.0)))
 
@@ -336,6 +337,7 @@ def seed_from_import_paths(
 def rank_by_pagerank(
     symbol_ids: list[int],
     db: Database,
+    personalization_enabled: bool = False,
 ) -> list[tuple[int, float]]:
     """
     Run PageRank on the call subgraph of the given symbols.
@@ -344,6 +346,17 @@ def rank_by_pagerank(
     Falls back to uniform scores if networkx is not installed.
     Stolen from Aider's approach of using graph centrality to prioritize
     which symbols are most important for a limited context window.
+
+    `personalization_enabled` (default False — zero behavior change unless
+    a caller opts in via RetrievalConfig.pagerank_personalization_enabled):
+    when True, replaces the uniform 1/n teleport vector with a Personalized
+    PageRank teleport vector concentrated on nodes with a cross-source
+    generic_edge in THIS subgraph — the classic topic-sensitive PageRank
+    construction (uniform mass 1/|T| over seed set T; see Haveliwala 2003).
+    A prior eval proved the graph-edge change alone shifts real rankings
+    (95% of ticket-linked symbols changed PageRank position) — this makes
+    the algorithm itself aware of which nodes that signal actually touched,
+    instead of treating every node as equally likely to be "home base".
     """
     try:
         import networkx as nx
@@ -351,30 +364,36 @@ def rank_by_pagerank(
         return [(sid, 1.0) for sid in symbol_ids]
 
     G: nx.DiGraph = nx.DiGraph()
+    cross_source_nodes: set[int] = set()
     for symbol_id in symbol_ids:
         for callee in db.get_callees(symbol_id):
             G.add_edge(symbol_id, callee)
         for caller in db.get_callers(symbol_id):
             G.add_edge(caller, symbol_id)
-        # Cross-source edges (e.g. ticket references from the git-log
-        # linker) — a symbol referenced by many tickets AND called by many
-        # other symbols gets a higher rank than call-graph centrality alone
-        # would give it. Only the graph gains these edges; the algorithm
-        # itself stays plain nx.pagerank (uniform teleport) — see
-        # docs/ROADMAP.md's note on starting cheap before any Personalized
-        # PageRank investment.
+        # Cross-source edges (e.g. ticket/artifact references from the
+        # git-log linker or ArtifactLinker) — a symbol referenced by many
+        # tickets AND called by many other symbols gets a higher rank than
+        # call-graph centrality alone would give it.
         #
         # Bidirectional, same reasoning as code_graph.py's GENERIC edge loop:
         # PageRank propagates via INCOMING edges, so a single symbol->ticket
         # edge would only raise the ticket's rank, not the symbol's.
-        for source_ref in db.get_generic_edge_targets(symbol_id):
+        generic_targets = db.get_generic_edge_targets(symbol_id)
+        for source_ref in generic_targets:
             G.add_edge(symbol_id, source_ref)
             G.add_edge(source_ref, symbol_id)
+        if generic_targets:
+            cross_source_nodes.add(symbol_id)
 
     if not G.nodes:
         return [(sid, 1.0) for sid in symbol_ids]
 
-    scores = nx.pagerank(G, alpha=0.85)
+    personalization = None
+    if personalization_enabled and cross_source_nodes:
+        mass = 1.0 / len(cross_source_nodes)
+        personalization = {node: mass for node in cross_source_nodes}
+
+    scores = nx.pagerank(G, alpha=0.85, personalization=personalization)
     # Drop synthetic artifact nodes (source_ref strings) from the returned
     # ranking — callers expect (symbol_id: int, score) pairs only.
     symbol_scores = {sid: score for sid, score in scores.items() if isinstance(sid, int)}
