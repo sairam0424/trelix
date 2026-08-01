@@ -1,7 +1,7 @@
 # trelix CLI Reference
 
-**Version:** 2.10.0  
-**Last updated:** 2026-07-28
+**Version:** 2.11.0  
+**Last updated:** 2026-08-02
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
 capability of the library — indexing, retrieval, analysis, federation, watching
@@ -57,7 +57,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 2.10.0
+trelix --version        # trelix 2.11.0
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -1310,4 +1310,4 @@ Deletes a persisted session and all its turns.
 
 ---
 
-*End of CLI Reference — trelix v2.10.0*
+*End of CLI Reference — trelix v2.11.0*
