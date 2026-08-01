@@ -112,8 +112,23 @@ def _configure_stdlib_root(level: int, renderer: structlog.typing.Processor) -> 
 
 def setup_console_logging(level: int = logging.WARNING) -> None:
     """CLI mode — human-readable console output. Called from
-    cli/main.py's _setup_logging() at the start of every CLI command."""
-    _configure_stdlib_root(level, structlog.dev.ConsoleRenderer())
+    cli/main.py's _setup_logging() at the start of every CLI command.
+
+    colors=False: this codebase's actual color output comes from Rich
+    (cli/main.py's Console/Panel/Table), never from structlog's own
+    ConsoleRenderer — the ~164 stdlib logger.* call sites this renders are
+    incidental, mostly-invisible-at-default-level plumbing, not the CLI's
+    visible UI. Leaving colors on its Windows default (auto-True whenever
+    colorama is importable) makes every command call colorama.init() on
+    construction, which monkeypatches sys.stdout/stderr into
+    AnsiToWin32/StreamWrapper objects — confirmed to collide with Rich's
+    own legacy_windows_render path on the same stream, crashing with
+    `OSError: [Errno 22] Invalid argument` the next time Rich writes
+    (reproduced on the Windows binary-build CI job). Rich already handles
+    its own Windows color/encoding story independently; structlog's is
+    redundant and actively harmful here.
+    """
+    _configure_stdlib_root(level, structlog.dev.ConsoleRenderer(colors=False))
     _quiet_noisy_libraries()
 
 

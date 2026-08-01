@@ -47,6 +47,26 @@ class TestConsoleLogging:
         with pytest.raises(json.JSONDecodeError):
             json.loads(line)
 
+    def test_console_renderer_never_requests_colors(self) -> None:
+        """Regression test: ConsoleRenderer(colors=True) (structlog's
+        Windows-auto-True default whenever colorama is importable) calls
+        colorama.init() on construction, monkeypatching sys.stdout/stderr
+        into AnsiToWin32 wrappers that collide with Rich's own
+        legacy_windows_render write path — confirmed to crash the Windows
+        CI binary build with `OSError: [Errno 22] Invalid argument` the
+        next time Rich writes to the same stream (this codebase's actual
+        color output always comes from Rich, never structlog's renderer,
+        so requesting colors here was pure incidental risk with no
+        product benefit). Asserting the real constructor argument, not
+        just observed output shape, since a monochrome terminal could
+        produce identical plain-text output whether colors was True or
+        False."""
+        from unittest.mock import patch
+
+        with patch("trelix.core.logging_setup.structlog.dev.ConsoleRenderer") as mock_renderer:
+            setup_console_logging()
+        mock_renderer.assert_called_once_with(colors=False)
+
     def test_includes_event_and_logger_name(self) -> None:
         line = _capture_one_line(setup_console_logging)
         assert "hello world" in line
