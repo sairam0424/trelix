@@ -132,6 +132,24 @@ def test_stats_help():
     assert result.exit_code == 0
 
 
+def test_stats_configures_logging():
+    """Regression test: `stats` previously never called _setup_logging()
+    at all, despite doing real DB I/O with its own logger.* call sites —
+    those log records went to Python's bare logging.lastResort fallback
+    instead of trelix's structured console formatter, an inconsistency
+    every other command (index/search/graph/review/...) doesn't have."""
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        with patch("trelix.cli.main._setup_logging") as mock_setup:
+            runner.invoke(app, ["stats", str(repo)])
+        mock_setup.assert_called_once()
+
+
 def test_query_help():
     result = runner.invoke(app, ["query", "--help"])
     assert result.exit_code == 0
@@ -376,7 +394,15 @@ def test_connector_sync_no_index_found(tmp_path):  # type: ignore[no-untyped-def
 
 def test_connector_sync_missing_config_exits_nonzero(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
     """No TRELIX_JIRA_* env vars set — validate_config() must fail fast
-    with a clear message, before ever making an HTTP call."""
+    with a clear message, before ever making an HTTP call.
+
+    setenv("", ...) rather than delenv(): a developer's .env may have real
+    Jira credentials (e.g. for live connector testing), and
+    pydantic-settings reads that file directly regardless of the process
+    environment — delenv() only clears the latter, so the .env value would
+    still surface here. Overriding to "" (falsy, same as unset for
+    validate_config()'s `if not val` checks) is what actually neutralizes
+    it, same fix as tests/unit/conftest.py's _EMPTY_STRING_BY_DEFAULT."""
     from trelix.core.config import IndexConfig
     from trelix.store.db import Database
 
@@ -386,7 +412,7 @@ def test_connector_sync_missing_config_exits_nonzero(tmp_path, monkeypatch):  # 
         "TRELIX_JIRA_API_TOKEN",
         "TRELIX_JIRA_PROJECT_KEY",
     ):
-        monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv(var, "")
 
     config = IndexConfig(repo_path=str(tmp_path))
     Database(config.db_path_absolute)

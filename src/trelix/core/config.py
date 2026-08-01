@@ -524,6 +524,28 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR",
     )
 
+    # Personalized PageRank — teleport mass concentrated on symbols with a
+    # cross-source generic_edge (ticket/artifact reference) instead of the
+    # uniform 1/n default. Off by default: nx.pagerank() is called exactly
+    # as before when this is False, so there's zero behavior change for
+    # anyone not opting in. See rank_by_pagerank() (retrieval/graph.py) and
+    # compute_pagerank() (graph/community.py) — both independently gated by
+    # this same flag, since they don't share a PageRank implementation.
+    #
+    # Interaction risk with pagerank_boost_enabled: compute_pagerank()'s
+    # teleport mass is uniform across every ticket/artifact-linked symbol,
+    # with no weighting by call-graph importance. On a repo where only a
+    # small fraction of symbols have ever been referenced by a ticket,
+    # enabling both flags together can invert get_top_central_symbols()'s
+    # ranking — a single ticket-touched leaf can outscore genuinely central
+    # hub symbols that pagerank_boost_enabled is meant to surface. If both
+    # are enabled and boost results look off, try disabling personalization
+    # first to isolate which one is driving the change.
+    pagerank_personalization_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION",
+    )
+
     # XTR late-interaction reranker — candidate token count (experimental, v2.6.0)
     xtr_candidate_tokens: int = Field(
         default=100,
@@ -840,6 +862,34 @@ class GitLinkerConfig(BaseSettings):
     since: str | None = None  # e.g. "90 days ago" — passed straight to `git log --since`
 
 
+class ArtifactLinkerConfig(BaseSettings):
+    """
+    Links connector-fetched artifacts (Jira tickets, TestRail cases, ...)
+    to code symbols by scanning each artifact's title/body for symbol name
+    or qualified_name mentions — feeds generic_edges the same way GitLinker
+    does for git-commit-message ticket references, but for artifact content
+    fetched via `trelix connector sync` (which never touches generic_edges
+    on its own).
+
+    Regex reference-extraction runs unconditionally (free, deterministic).
+    Embedding-similarity fallback is opt-in and only runs for artifacts
+    where the regex pass found zero matches — costs one embed call per
+    unmatched artifact, and lower-confidence matches (weight=0.5 vs. a
+    regex hit's weight=1.0) so they don't dominate PageRank mass.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_ARTIFACT_LINKER_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    embedding_fallback_enabled: bool = False
+    similarity_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+
+
 class JiraConnectorConfig(BaseSettings):
     """
     Jira Cloud REST API connector. HTTP Basic auth (email + API token) —
@@ -882,6 +932,68 @@ class TestRailConnectorConfig(BaseSettings):
     project_id: int | None = Field(default=None, alias="TRELIX_TESTRAIL_PROJECT_ID")
     # TestRail's own API max is 250/page.
     page_size: int = Field(default=250, ge=1, le=250)
+
+
+class XrayConnectorConfig(BaseSettings):
+    """
+    Xray Cloud connector (Cloud only — Server/DC has a completely different
+    REST-only API surface with PAT/Basic/OAuth1.0a auth, not worth doubling
+    this connector's scope for the lowest-priority item in this plan).
+
+    Auth: client_id/client_secret issued by a Jira admin in Xray's global
+    settings (distinct from a user's own Jira API token) — exchanged for a
+    short-lived bearer JWT via POST /api/v2/authenticate. Xray Cloud tests
+    are Jira issues under the hood, so project_key mirrors Jira's shape.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_XRAY_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    client_id: str | None = Field(default=None, alias="TRELIX_XRAY_CLIENT_ID")
+    client_secret: str | None = Field(default=None, alias="TRELIX_XRAY_CLIENT_SECRET")
+    project_key: str | None = Field(default=None, alias="TRELIX_XRAY_PROJECT_KEY")
+    # Jira base URL is reused for the Jira-issue-fields half of each test
+    # (title/url) — Xray Cloud tests are Jira issues, fetched via Jira's own
+    # REST v3 API, not Xray's GraphQL endpoint.
+    jira_base_url: str | None = Field(default=None, alias="TRELIX_XRAY_JIRA_BASE_URL")
+    page_size: int = Field(default=100, ge=1, le=100)
+
+
+class LinearConnectorConfig(BaseSettings):
+    """
+    Linear GraphQL API connector. Personal API key auth via
+    `Authorization: <API_KEY>` (no Bearer prefix — Linear's own documented
+    scheme, distinct from every other connector in this file). Scoped to a
+    single team via its key (e.g. "ENG"), mirroring Jira's project_key /
+    TestRail's project_id precedent. No base_url field: unlike Jira/
+    TestRail/Xray, Linear's GraphQL endpoint is one fixed URL for every
+    user (see linear.py's _LINEAR_GRAPHQL_URL), not per-org configurable.
+
+    v1 always does a full resync (no updatedAt filter) — see linear.py's
+    module docstring for why incremental sync was explicitly deferred.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_LINEAR_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    api_key: str | None = Field(default=None, alias="TRELIX_LINEAR_API_KEY")
+    team_key: str | None = Field(default=None, alias="TRELIX_LINEAR_TEAM_KEY")
+    # No documented max page size found for Linear's issues(first: N)
+    # connection — 100 mirrors Jira/Xray's own ceiling and stays well under
+    # the 10,000-point per-query complexity cap (~771 points at first=100
+    # with this connector's field selection; see linear.py). Not a
+    # confirmed platform ceiling — an assumption, flagged as such.
+    page_size: int = Field(default=100, ge=1, le=100)
 
 
 # ---------------------------------------------------------------------------

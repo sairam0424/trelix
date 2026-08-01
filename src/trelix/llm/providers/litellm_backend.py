@@ -6,6 +6,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
+from trelix.core.retry import with_retry
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
@@ -50,6 +51,10 @@ class LiteLLMBackend(TrelixChatClient):
         )
         return result
 
+    @with_retry(max_attempts=5)
+    def _completion(self, **kwargs: Any) -> Any:
+        return self._litellm.completion(**kwargs)
+
     def complete(
         self,
         messages: list[ChatMessage],
@@ -57,7 +62,7 @@ class LiteLLMBackend(TrelixChatClient):
         temperature: float | None = None,
         system: str | None = None,
     ) -> ChatResponse:
-        response = self._litellm.completion(
+        response = self._completion(
             model=self._model,
             messages=self._build_messages(messages, system),
             max_completion_tokens=max_tokens or self._config.max_tokens,
@@ -79,7 +84,11 @@ class LiteLLMBackend(TrelixChatClient):
         temperature: float | None = None,
         system: str | None = None,
     ) -> Iterator[str]:
-        response = self._litellm.completion(
+        # litellm.completion() is a plain function, not a generator — with
+        # stream=True it still opens the connection synchronously before
+        # returning the CustomStreamWrapper, so retrying the whole call is
+        # safe (unlike openai/vertex, where the SDK method IS the generator).
+        response = self._completion(
             model=self._model,
             messages=self._build_messages(messages, system),
             max_completion_tokens=max_tokens or self._config.max_tokens,
@@ -102,7 +111,7 @@ class LiteLLMBackend(TrelixChatClient):
         tool_choice: Any = (
             {"type": "function", "function": {"name": force_tool}} if force_tool else "auto"
         )
-        response = self._litellm.completion(
+        response = self._completion(
             model=self._model,
             messages=self._build_messages(messages, None),
             tools=tools,

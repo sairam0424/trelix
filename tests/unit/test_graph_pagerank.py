@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trelix.core.models import CallEdge, IndexedFile, Language, Symbol, SymbolKind
+from trelix.core.models import CallEdge, GenericEdge, IndexedFile, Language, Symbol, SymbolKind
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import compute_pagerank
 from trelix.graph.persistence import get_top_central_symbols, save_graph_metadata
@@ -107,6 +107,120 @@ class TestComputePagerank:
         db = Database(tmp_path / "index.db")
         cg = CodeGraph(db)
         assert compute_pagerank(cg) == {}
+
+    def test_personalization_disabled_is_default_and_unchanged(self, tmp_path: Path) -> None:
+        """personalization_enabled defaults to False — must reproduce
+        today's exact scores, byte-identical to the pre-PPR behavior."""
+        _, cg, _ = _build_star_graph(tmp_path)
+        default_call = compute_pagerank(cg)
+        explicit_false = compute_pagerank(cg, personalization_enabled=False)
+        assert default_call == explicit_false
+
+    def test_personalization_with_no_generic_edges_falls_back_to_uniform(
+        self, tmp_path: Path
+    ) -> None:
+        """Opting in on a graph with zero generic_edges (no artifact nodes
+        at all) must not error or change scores."""
+        _, cg, _ = _build_star_graph(tmp_path)
+        without = compute_pagerank(cg)
+        with_ppr = compute_pagerank(cg, personalization_enabled=True)
+        assert without == with_ppr
+
+    def test_personalization_shifts_score_toward_ticket_linked_leaf(self, tmp_path: Path) -> None:
+        """Proves personalization= is genuinely wired into compute_pagerank's
+        nx.pagerank call, not a no-op — a prior version of this test passed
+        identically whether personalization was hardcoded to None or
+        threaded through, because the star-graph fixture's hub already
+        outranked every leaf regardless of any ticket link (leaves have no
+        way to beat the hub on call-graph structure alone in that
+        topology), so the assertions never actually depended on
+        personalization doing anything.
+
+        This fixture instead builds a hub called by 8 distinct callers
+        (real call-graph centrality, no ticket link) versus a target with
+        zero callers but a ticket link — with enough callers, plain
+        PageRank ranks hub above target on pure centrality. Personalization
+        must be strong enough to flip that ordering; anything that would
+        pass with personalization=None does not actually exercise the
+        personalization= kwarg.
+        """
+        db = Database(tmp_path / "index.db")
+        fid = db.upsert_file(
+            IndexedFile(
+                path="/r/a.py",
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="x",
+                size_bytes=10,
+            )
+        )
+        hub = db.insert_symbol(
+            Symbol(
+                file_id=fid,
+                name="hub",
+                qualified_name="hub",
+                kind=SymbolKind.FUNCTION,
+                line_start=1,
+                line_end=5,
+                signature="def hub()",
+                body="",
+            )
+        )
+        target = db.insert_symbol(
+            Symbol(
+                file_id=fid,
+                name="target",
+                qualified_name="target",
+                kind=SymbolKind.FUNCTION,
+                line_start=10,
+                line_end=14,
+                signature="def target()",
+                body="",
+            )
+        )
+        callers = [
+            db.insert_symbol(
+                Symbol(
+                    file_id=fid,
+                    name=f"caller{i}",
+                    qualified_name=f"caller{i}",
+                    kind=SymbolKind.FUNCTION,
+                    line_start=20 + i,
+                    line_end=20 + i,
+                    signature=f"def caller{i}()",
+                    body="",
+                )
+            )
+            for i in range(8)
+        ]
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=caller, callee_name="hub", callee_id=hub, line=1)
+                for caller in callers
+            ]
+        )
+        db.insert_generic_edges(
+            [
+                GenericEdge(
+                    from_symbol_id=target,
+                    source_ref="ticket:PROJ-1",
+                    edge_kind="references_ticket",
+                )
+            ]
+        )
+        cg = CodeGraph(db)
+
+        without = compute_pagerank(cg)
+        # Sanity check the fixture's premise: on pure call-graph structure,
+        # the heavily-called hub outranks the zero-callers ticket target.
+        assert without[hub] > without[target]
+
+        with_ppr = compute_pagerank(cg, personalization_enabled=True)
+        # Personalization must be strong enough to flip that ordering — a
+        # no-op personalization would leave hub > target unchanged, since
+        # that's exactly what plain PageRank already produces from
+        # call-graph structure alone.
+        assert with_ppr[target] > with_ppr[hub]
 
 
 class TestGetTopCentralSymbols:

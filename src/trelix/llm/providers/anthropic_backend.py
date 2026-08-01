@@ -6,6 +6,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
+from trelix.core.retry import with_retry
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
 if TYPE_CHECKING:
@@ -48,7 +49,12 @@ class AnthropicBackend(TrelixChatClient):
         if not config.anthropic_api_key:
             logger.debug("AnthropicBackend: ANTHROPIC_API_KEY not set.")
             return None
-        return anthropic.Anthropic(api_key=config.anthropic_api_key)
+        # max_retries=0: the shared @with_retry contract (via _create()/
+        # _open_stream() below) is meant to be the sole retry layer — the
+        # SDK's own default (2 attempts) would otherwise stack underneath
+        # tenacity's 5-attempt loop, multiplying worst-case wall-clock time
+        # on a persistent outage far beyond what max_attempts=5 implies.
+        return anthropic.Anthropic(api_key=config.anthropic_api_key, max_retries=0)
 
     def _extract_system(
         self, messages: list[ChatMessage], system: str | None
@@ -59,6 +65,22 @@ class AnthropicBackend(TrelixChatClient):
 
     def _normalize_finish_reason(self, stop_reason: str) -> str:
         return _FINISH_REASON_MAP.get(stop_reason, "stop")
+
+    @with_retry(max_attempts=5)
+    def _create(self, **kwargs: Any) -> Any:
+        assert self._client is not None
+        return self._client.messages.create(**kwargs)
+
+    @with_retry(max_attempts=5)
+    def _open_stream(self, **kwargs: Any) -> tuple[Any, Any]:
+        # __enter__ (not .stream() itself) makes the actual HTTP request —
+        # retrying here, before any chunk is yielded, is what keeps this
+        # safe: no partially-consumed generator is ever retried. The manager
+        # is returned alongside the stream so the caller can still __exit__
+        # it for cleanup once iteration finishes.
+        assert self._client is not None
+        manager = self._client.messages.stream(**kwargs)
+        return manager, manager.__enter__()
 
     def complete(
         self,
@@ -77,7 +99,7 @@ class AnthropicBackend(TrelixChatClient):
         kwargs: dict[str, Any] = {}
         if sys_prompt:
             kwargs["system"] = sys_prompt
-        response = self._client.messages.create(
+        response = self._create(
             model=self._model,
             messages=user_msgs,
             max_tokens=max_tokens or self._config.max_tokens,
@@ -107,14 +129,17 @@ class AnthropicBackend(TrelixChatClient):
         kwargs: dict[str, Any] = {}
         if sys_prompt:
             kwargs["system"] = sys_prompt
-        with self._client.messages.stream(
+        manager, stream = self._open_stream(
             model=self._model,
             messages=user_msgs,
             max_tokens=max_tokens or self._config.max_tokens,
             temperature=temperature if temperature is not None else self._config.temperature,
             **kwargs,
-        ) as stream:
+        )
+        try:
             yield from stream.text_stream
+        finally:
+            manager.__exit__(None, None, None)
 
     def tool_call(
         self,
@@ -134,7 +159,7 @@ class AnthropicBackend(TrelixChatClient):
         kwargs: dict[str, Any] = {}
         if sys_prompt:
             kwargs["system"] = sys_prompt
-        response = self._client.messages.create(
+        response = self._create(
             model=self._model,
             messages=user_msgs,
             tools=anthropic_tools,

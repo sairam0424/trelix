@@ -263,13 +263,34 @@ class TestCohereReranker:
         )
 
     def _mock_requests_module(self, resp: MagicMock) -> MagicMock:
-        """Build a mock 'requests' module whose .post() returns resp."""
+        """Build a mock 'requests' module whose .post() returns resp.
+
+        exceptions.HTTPError is the REAL requests exception class (not a
+        MagicMock-generated stand-in) — trelix.core.retry.is_retryable_http_error
+        also does its own `import requests` when classifying the raised
+        exception, so isinstance() must see the real class both places.
+        """
+        import requests as _real_requests
+
         mock_requests = MagicMock()
         mock_requests.post.return_value = resp
         mock_requests.exceptions.SSLError = OSError
         mock_requests.exceptions.ConnectionError = OSError
         mock_requests.exceptions.Timeout = OSError
+        mock_requests.exceptions.HTTPError = _real_requests.exceptions.HTTPError
         return mock_requests
+
+    def _http_error_response(self, status_code: int) -> MagicMock:
+        """A mock response whose raise_for_status() raises a real HTTPError
+        carrying the given status code, matching real requests semantics."""
+        import requests as _real_requests
+
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.raise_for_status.side_effect = _real_requests.exceptions.HTTPError(
+            f"{status_code} error", response=resp
+        )
+        return resp
 
     def test_reorders_by_score(self) -> None:
         """Cohere API result order (by index) is respected."""
@@ -348,6 +369,63 @@ class TestCohereReranker:
             out = rerank("q", results, self._cohere_cfg(), top_n=3)
 
         assert [r.rank for r in out] == [1, 2, 3]
+
+    def test_429_response_is_retried_then_succeeds(self) -> None:
+        """A rate-limited response must be retried, not surfaced or
+        silently falling back on the first attempt — this is the bug the
+        shared retry contract fixes: the prior ad-hoc loop only caught
+        SSLError/ConnectionError/Timeout, never the HTTPError that
+        raise_for_status() raises for a 429/5xx response, so a rate limit
+        used to fall straight through to the un-reranked fallback."""
+        from trelix.retrieval.reranker import rerank
+
+        results = [_make_result("doc A"), _make_result("doc B")]
+        rate_limited = self._http_error_response(429)
+        success = self._cohere_response(order=[1, 0], scores=[0.9, 0.5])
+        mock_req_mod = self._mock_requests_module(success)
+        mock_req_mod.post.side_effect = [rate_limited, success]
+
+        with (
+            patch.dict(sys.modules, {"requests": mock_req_mod}),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            out = rerank("q", results, self._cohere_cfg(), top_n=2)
+
+        assert mock_req_mod.post.call_count == 2
+        assert out[0].chunk.chunk_text == "doc B"
+
+    def test_retries_exhausted_falls_back_to_unreranked(self) -> None:
+        """A persistent 500 must exhaust retries and fall back to the
+        original top-N ordering, not raise out of rerank()."""
+        from trelix.retrieval.reranker import rerank
+
+        results = [_make_result(f"d{i}") for i in range(3)]
+        always_fails = self._http_error_response(500)
+        mock_req_mod = self._mock_requests_module(always_fails)
+
+        with (
+            patch.dict(sys.modules, {"requests": mock_req_mod}),
+            patch("tenacity.nap.time.sleep"),
+        ):
+            out = rerank("q", results, self._cohere_cfg(), top_n=2)
+
+        assert mock_req_mod.post.call_count == 3  # default max_retries=3
+        assert out == results[:2]
+
+    def test_400_response_is_not_retried(self) -> None:
+        """A non-retryable client error must fail on the first attempt —
+        retrying a bad request wastes time and never succeeds."""
+        from trelix.retrieval.reranker import rerank
+
+        results = [_make_result(f"d{i}") for i in range(3)]
+        bad_request = self._http_error_response(400)
+        mock_req_mod = self._mock_requests_module(bad_request)
+
+        with patch.dict(sys.modules, {"requests": mock_req_mod}):
+            out = rerank("q", results, self._cohere_cfg(), top_n=2)
+
+        assert mock_req_mod.post.call_count == 1
+        assert out == results[:2]
 
 
 # ---------------------------------------------------------------------------

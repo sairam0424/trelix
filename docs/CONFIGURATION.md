@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v2.10.0
+# Trelix Configuration Reference — v2.11.0
 
 Complete reference for all configuration options available in trelix.
 
@@ -104,9 +104,9 @@ Configuration for [`trelix link-tickets`](CLI_REFERENCE.md#trelix-link-tickets),
 | `TRELIX_GIT_LINKER_MAX_COMMITS` | `5000` (min: `1`) | Maximum number of commits to walk. Bounds cost on repos with 100k+ commit histories. |
 | `TRELIX_GIT_LINKER_SINCE` | _(none)_ | Only walk commits after this date, e.g. `"90 days ago"`. Passed straight through to `git log --since`. |
 
-### Connector credentials (Jira / TestRail)
+### Connector credentials (Jira / TestRail / Xray / Linear)
 
-Configuration for [`trelix connector sync`](CLI_REFERENCE.md#trelix-connector-sync), which fetches artifacts from an external system and writes them to trelix's `artifacts` table. Both connectors use HTTP Basic auth; all four variables per connector are required — missing any of them fails config validation before any HTTP call is made.
+Configuration for [`trelix connector sync`](CLI_REFERENCE.md#trelix-connector-sync), which fetches artifacts from an external system and writes them to trelix's `artifacts` table. Jira and TestRail use HTTP Basic auth; Xray Cloud exchanges a client_id/client_secret for a short-lived bearer JWT; Linear uses a personal API key sent directly in the `Authorization` header with no `Bearer` prefix. All required variables per connector must be set — missing any of them fails config validation before any HTTP call is made.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -120,6 +120,14 @@ Configuration for [`trelix connector sync`](CLI_REFERENCE.md#trelix-connector-sy
 | `TRELIX_TESTRAIL_API_KEY` | _(none, required)_ | TestRail API key (paired with `TRELIX_TESTRAIL_USERNAME` for Basic auth) |
 | `TRELIX_TESTRAIL_PROJECT_ID` | _(none, required)_ | TestRail project ID to sync test cases from |
 | `TRELIX_TESTRAIL_PAGE_SIZE` | `250` (max `250` — TestRail's own API ceiling) | Page size for TestRail API pagination |
+| `TRELIX_XRAY_CLIENT_ID` | _(none, required)_ | Xray Cloud client ID, issued by a Jira admin in Xray's global settings (distinct from a user's own Jira API token) |
+| `TRELIX_XRAY_CLIENT_SECRET` | _(none, required)_ | Xray Cloud client secret, paired with `TRELIX_XRAY_CLIENT_ID` and exchanged for a short-lived bearer JWT |
+| `TRELIX_XRAY_PROJECT_KEY` | _(none, required)_ | Jira project key whose tests to sync (Xray Cloud tests are Jira issues under the hood) |
+| `TRELIX_XRAY_JIRA_BASE_URL` | _(none, required)_ | Base URL of the Jira Cloud instance backing this Xray project, e.g. `https://acme.atlassian.net` |
+| `TRELIX_XRAY_PAGE_SIZE` | `100` (max `100`) | Page size for Xray's GraphQL `getTests` pagination |
+| `TRELIX_LINEAR_API_KEY` | _(none, required)_ | Linear personal API key — sent verbatim as `Authorization: <key>` (no `Bearer` prefix) |
+| `TRELIX_LINEAR_TEAM_KEY` | _(none, required)_ | Linear team key to scope issue sync to, e.g. `ENG` |
+| `TRELIX_LINEAR_PAGE_SIZE` | `100` (max `100`) | Page size for Linear's cursor-paginated `issues` query — not a confirmed Linear platform ceiling, chosen to stay well under its GraphQL query-complexity cap |
 
 ### REST API
 
@@ -152,7 +160,7 @@ Copy this to `<repo-root>/.env` and fill in the values relevant to your setup. L
 
 ```dotenv
 # =============================================================================
-# Trelix v2.10.0 — complete .env example
+# Trelix v2.11.0 — complete .env example
 # Copy to .env and fill in values. Never commit this file.
 # =============================================================================
 
@@ -288,6 +296,18 @@ TRELIX_FEDERATION_MAX_WORKERS=4
 # TRELIX_TESTRAIL_API_KEY=...
 # TRELIX_TESTRAIL_PROJECT_ID=7
 # TRELIX_TESTRAIL_PAGE_SIZE=250
+
+# Xray Cloud (client_id/client_secret/project_key/jira_base_url all required to sync)
+# TRELIX_XRAY_CLIENT_ID=...
+# TRELIX_XRAY_CLIENT_SECRET=...
+# TRELIX_XRAY_PROJECT_KEY=PROJ
+# TRELIX_XRAY_JIRA_BASE_URL=https://acme.atlassian.net
+# TRELIX_XRAY_PAGE_SIZE=100
+
+# Linear (api_key/team_key both required to sync)
+# TRELIX_LINEAR_API_KEY=...
+# TRELIX_LINEAR_TEAM_KEY=ENG
+# TRELIX_LINEAR_PAGE_SIZE=100
 
 # ---------------------------------------------------------------------------
 # REST API

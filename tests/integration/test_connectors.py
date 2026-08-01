@@ -16,7 +16,12 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from trelix.core.config import JiraConnectorConfig
+from trelix.core.config import (
+    ArtifactLinkerConfig,
+    JiraConnectorConfig,
+    LinearConnectorConfig,
+    XrayConnectorConfig,
+)
 from trelix.core.models import (
     GenericEdge,
     IndexedFile,
@@ -26,7 +31,10 @@ from trelix.core.models import (
 )
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import compute_pagerank
+from trelix.indexing.artifact_linker import ArtifactLinker
 from trelix.indexing.connectors.jira import JiraConnector
+from trelix.indexing.connectors.linear import LinearConnector
+from trelix.indexing.connectors.xray import XrayConnector
 from trelix.store.db import Database
 
 
@@ -149,3 +157,189 @@ class TestConnectorToGraphPipeline:
         # symbols reachable via a real generic_edges row become graph nodes.
         cg = CodeGraph(db)
         assert "ticket:PROJ-2" not in cg.nx
+
+    def test_sync_with_linker_auto_links_into_code_graph(self, tmp_path: Path) -> None:
+        """Passing an ArtifactLinker into sync() closes the gap the two
+        tests above document — a synced artifact is reachable from
+        generic_edges/CodeGraph the moment sync() returns, no separate
+        `trelix link-artifacts` pass required."""
+        db = Database(tmp_path / "index.db")
+        login_id = _seed_symbol(db, "auth.py", "login")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "issues": [
+                {
+                    "key": "PROJ-3",
+                    "fields": {"summary": "login is broken", "status": {"name": "Open"}},
+                }
+            ],
+            "nextPageToken": None,
+        }
+        jira_config = JiraConnectorConfig(
+            base_url="https://example.atlassian.net",
+            email="me@example.com",
+            api_token="tok",
+            project_key="PROJ",
+        )
+        linker = ArtifactLinker(db, ArtifactLinkerConfig())
+        with patch("trelix.indexing.connectors.jira.httpx.get", return_value=mock_resp):
+            result = JiraConnector(jira_config).sync(db, linker=linker)
+
+        assert result.artifacts_written == 1
+        assert result.edges_linked == 1
+        assert db.get_generic_edge_targets(login_id) == ["ticket:PROJ-3"]
+
+        cg = CodeGraph(db)
+        assert "ticket:PROJ-3" in cg.nx
+        assert "ticket:PROJ-3" in cg.neighbors(login_id)
+
+    def test_xray_sync_with_linker_auto_links_into_code_graph(self, tmp_path: Path) -> None:
+        """Proves Phase 1's design generalizes: Xray is the third connector,
+        and needs zero Xray-specific linking code — ArtifactLinker operates
+        on the artifacts table generically (any artifact_kind, any
+        source_ref convention), so a synced Xray test is automatically
+        link-eligible the moment it's synced, same as Jira/TestRail."""
+        db = Database(tmp_path / "index.db")
+        login_id = _seed_symbol(db, "auth.py", "login")
+
+        auth_resp = MagicMock()
+        auth_resp.status_code = 200
+        auth_resp.json.return_value = "jwt-token"
+
+        graphql_resp = MagicMock()
+        graphql_resp.status_code = 200
+        graphql_resp.json.return_value = {
+            "data": {
+                "getTests": {
+                    "results": [
+                        {
+                            "issueId": "10001",
+                            "jira": {
+                                "key": "PROJ-9",
+                                "summary": "login is broken",
+                                "status": {"name": "Open"},
+                            },
+                            "testType": {"name": "Manual"},
+                            "steps": [],
+                            "unstructured": "",
+                        }
+                    ]
+                }
+            }
+        }
+
+        xray_config = XrayConnectorConfig(
+            client_id="cid",
+            client_secret="sek",
+            project_key="PROJ",
+            jira_base_url="https://example.atlassian.net",
+        )
+        linker = ArtifactLinker(db, ArtifactLinkerConfig())
+        with patch(
+            "trelix.indexing.connectors.xray.httpx.post",
+            side_effect=[auth_resp, graphql_resp],
+        ):
+            result = XrayConnector(xray_config).sync(db, linker=linker)
+
+        assert result.artifacts_written == 1
+        assert result.edges_linked == 1
+        assert db.get_generic_edge_targets(login_id) == ["xray-test:PROJ-9"]
+
+        cg = CodeGraph(db)
+        assert "xray-test:PROJ-9" in cg.nx
+        assert "xray-test:PROJ-9" in cg.neighbors(login_id)
+
+    def test_linear_sync_with_linker_auto_links_into_code_graph(self, tmp_path: Path) -> None:
+        """Proves Phase 1's design generalizes to a fourth connector with a
+        single-call-per-request flow (no separate auth exchange, unlike
+        Xray) and no ADF/markdown quirks (unlike Jira) — ArtifactLinker
+        still needs zero Linear-specific code."""
+        db = Database(tmp_path / "index.db")
+        login_id = _seed_symbol(db, "auth.py", "login")
+
+        issues_resp = MagicMock()
+        issues_resp.status_code = 200
+        issues_resp.json.return_value = {
+            "data": {
+                "issues": {
+                    "nodes": [
+                        {
+                            "identifier": "ENG-42",
+                            "title": "login is broken",
+                            "description": "",
+                            "url": "https://linear.app/acme/issue/ENG-42",
+                            "state": {"id": "s1", "name": "Open", "type": "unstarted"},
+                            "team": {"id": "t1", "key": "ENG", "name": "Engineering"},
+                        }
+                    ],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            }
+        }
+
+        linear_config = LinearConnectorConfig(api_key="key123", team_key="ENG")
+        linker = ArtifactLinker(db, ArtifactLinkerConfig())
+        with patch(
+            "trelix.indexing.connectors.linear.httpx.post",
+            return_value=issues_resp,
+        ):
+            result = LinearConnector(linear_config).sync(db, linker=linker)
+
+        assert result.artifacts_written == 1
+        assert result.edges_linked == 1
+        assert db.get_generic_edge_targets(login_id) == ["linear-issue:ENG-42"]
+
+        cg = CodeGraph(db)
+        assert "linear-issue:ENG-42" in cg.nx
+        assert "linear-issue:ENG-42" in cg.neighbors(login_id)
+
+    def test_low_weight_edge_has_less_pagerank_influence_than_full_weight_edge(
+        self, tmp_path: Path
+    ) -> None:
+        """A weight=0.5 generic_edge (embedding-fallback confidence) must
+        move less PageRank mass than an otherwise-identical weight=1.0 edge
+        (regex-match confidence) — proves the persisted weight column is
+        actually read by CodeGraph._build()/nx.pagerank(), not silently
+        dropped on every read path.
+
+        Weight only affects PageRank when a node has multiple outgoing
+        edges competing for vote share — a lone symbol<->artifact pair in
+        isolation sends 100% of its vote down its one edge regardless of
+        that edge's absolute weight, so two isolated pairs at different
+        weights would (wrongly) look identical even with a correct
+        implementation. This fixture instead shares ONE artifact between
+        two symbols at different weights, so the artifact's vote genuinely
+        splits proportional to weight — a real competition weight must
+        win to move the result at all.
+        """
+        db = Database(tmp_path / "index.db")
+        high_confidence_id = _seed_symbol(db, "auth.py", "login")
+        low_confidence_id = _seed_symbol(db, "auth.py", "logout")
+
+        db.insert_generic_edges(
+            [
+                GenericEdge(
+                    from_symbol_id=high_confidence_id,
+                    source_ref="ticket:SHARED",
+                    edge_kind="references_artifact",
+                    weight=1.0,
+                ),
+                GenericEdge(
+                    from_symbol_id=low_confidence_id,
+                    source_ref="ticket:SHARED",
+                    edge_kind="references_artifact",
+                    weight=0.5,
+                ),
+            ]
+        )
+
+        cg = CodeGraph(db)
+        assert cg.nx["ticket:SHARED"][high_confidence_id][0]["weight"] == 1.0
+        assert cg.nx["ticket:SHARED"][low_confidence_id][0]["weight"] == 0.5
+
+        pr = compute_pagerank(cg)
+        # ticket:SHARED's vote splits 1.0/(1.0+0.5) to login vs.
+        # 0.5/(1.0+0.5) to logout — login must outrank logout.
+        assert pr[high_confidence_id] > pr[low_confidence_id]

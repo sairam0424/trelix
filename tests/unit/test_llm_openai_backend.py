@@ -4,11 +4,51 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import httpx
+import openai
+import pytest
+
 from trelix.core.config import LLMConfig
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse
 from trelix.llm.providers.openai_backend import OpenAIBackend, _token_limit_param
 
 _FAKE_KEY = "test-k"  # short enough not to trigger secret scanner; never sent to any service
+
+
+def _status_error(status_code: int) -> openai.APIStatusError:
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(status_code, request=request)
+    return openai.APIStatusError(f"{status_code} error", response=response, body=None)
+
+
+class TestClientRetryConfiguration:
+    """The SDK client's own default retry (max_retries=2) would otherwise
+    stack underneath @with_retry's 5-attempt tenacity layer — each of
+    tenacity's attempts silently absorbing up to 2 SDK-level retries with
+    the SDK's own independent backoff, multiplying worst-case wall-clock
+    time on a persistent outage far beyond what max_attempts=5 implies.
+    trelix's shared retry contract must be the sole retry layer, so the
+    SDK client itself must be built with max_retries=0. Uses the REAL
+    openai SDK client (no mocking of the constructor) so this actually
+    proves what value reaches the SDK, not what trelix's own code
+    believes it passed."""
+
+    def test_openai_client_has_sdk_retries_disabled(self) -> None:
+        cfg = LLMConfig(provider="openai", openai_api_key=_FAKE_KEY, _env_file=None)  # type: ignore[call-arg]
+        backend = OpenAIBackend(cfg)
+        assert backend._client is not None
+        assert backend._client.max_retries == 0
+
+    def test_azure_client_has_sdk_retries_disabled(self) -> None:
+        cfg = LLMConfig(
+            provider="azure",
+            azure_api_key=_FAKE_KEY,
+            azure_endpoint="https://test.openai.azure.com/",
+            _env_file=None,  # type: ignore[call-arg]
+        )
+        backend = OpenAIBackend(cfg)
+        assert backend._client is not None
+        assert backend._client.max_retries == 0
 
 
 class TestTokenLimitParam:
@@ -147,3 +187,39 @@ class TestOpenAIBackendComplete:
             MockAzure.return_value = MagicMock()
             OpenAIBackend(cfg)
             assert MockAzure.called
+
+    def test_complete_retries_on_503_then_succeeds(self) -> None:
+        """A transient 5xx must be retried, not surfaced immediately —
+        confirms the shared retry contract is wired into complete()."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.content = "ok"
+        mock_choice = MagicMock()
+        mock_choice.message = mock_msg
+        mock_choice.finish_reason = "stop"
+        success = MagicMock()
+        success.choices = [mock_choice]
+        success.model = "gpt-4o"
+        success.usage.prompt_tokens = 1
+        success.usage.completion_tokens = 1
+        mock_client.chat.completions.create.side_effect = [_status_error(503), success]
+        backend._client = mock_client
+
+        with patch("tenacity.nap.time.sleep"):
+            result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "ok"
+        assert mock_client.chat.completions.create.call_count == 2
+
+    def test_complete_400_is_not_retried(self) -> None:
+        """A non-retryable client error must fail on the first attempt."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = _status_error(400)
+        backend._client = mock_client
+
+        with pytest.raises(openai.APIStatusError):
+            backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert mock_client.chat.completions.create.call_count == 1

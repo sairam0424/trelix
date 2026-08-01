@@ -143,14 +143,10 @@ def _build_embedder_config(provider: str | None) -> EmbedderConfig:
 
 def _setup_logging(verbose: bool = False) -> None:
     """Configure the trelix logger. Call once at CLI entry."""
+    from trelix.core.logging_setup import setup_console_logging
+
     level = logging.DEBUG if verbose else logging.WARNING
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-        level=level,
-    )
-    for lib in ("httpx", "httpcore", "openai", "sentence_transformers", "transformers"):
-        logging.getLogger(lib).setLevel(logging.WARNING)
+    setup_console_logging(level)
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +557,8 @@ def stats(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
 ) -> None:
     """Show index statistics (files, symbols, chunks, DB size)"""
+    _setup_logging(False)
+
     from pydantic import ValidationError as _PydanticValidationError
 
     from trelix.core.config import IndexConfig
@@ -640,6 +638,8 @@ def link_tickets(
     an already-indexed repo. Requires *repo* to be a real git checkout;
     non-git directories or shallow clones degrade gracefully to 0 links.
     """
+    _setup_logging(False)
+
     from pydantic import ValidationError as _PydanticValidationError
 
     from trelix.core.config import GitLinkerConfig, IndexConfig
@@ -692,6 +692,76 @@ def link_tickets(
         )
     else:
         console.print(f"[green]Linked {count} symbol-ticket edge(s).[/green]")
+
+
+# ---------------------------------------------------------------------------
+# link-artifacts
+# ---------------------------------------------------------------------------
+
+
+@app.command("link-artifacts")
+def link_artifacts(
+    repo: str = typer.Argument(..., help="Path to the indexed repository"),
+    embedding_fallback: bool = typer.Option(
+        False,
+        help="For artifacts with no regex match, fall back to embedding "
+        "similarity against indexed chunks (costs one embed call per "
+        "unmatched artifact)",
+    ),
+    similarity_threshold: float = typer.Option(
+        0.75, help="Minimum similarity for an embedding-fallback match (0.0-1.0)"
+    ),
+) -> None:
+    """
+    Scan connector-fetched artifacts (Jira tickets, TestRail cases, ...) for
+    mentions of indexed symbols — feeds cross-source PageRank the same way
+    `trelix link-tickets` does for git commit messages.
+
+    `trelix connector sync` only writes to the artifacts table; it never
+    creates generic_edges on its own. Run this after syncing to make synced
+    artifacts reachable from the code graph.
+    """
+    from trelix.core.config import ArtifactLinkerConfig, IndexConfig
+    from trelix.indexing.artifact_linker import ArtifactLinker
+    from trelix.store.db import Database
+
+    try:
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except (ValueError, FileNotFoundError) as exc:
+        _print_error("Error", exc)
+        raise typer.Exit(1) from exc
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        from rich.markup import escape
+
+        err_console.print(
+            f"[red]No index found at {escape(str(db_path))}[/red] —"
+            f" run `trelix index {repo}` first."
+        )
+        raise typer.Exit(1)
+
+    linker_config = ArtifactLinkerConfig(
+        embedding_fallback_enabled=embedding_fallback,
+        similarity_threshold=similarity_threshold,
+    )
+
+    try:
+        with Database(db_path) as db:
+            with console.status("[bold cyan]Scanning artifacts…[/bold cyan]"):
+                count = ArtifactLinker(db, linker_config, index_config=config).link()
+    except Exception as exc:
+        _print_error("Failed to link artifacts", exc)
+        raise typer.Exit(1) from exc
+
+    if count == 0:
+        console.print(
+            "[yellow]No artifact references linked.[/yellow] Either no artifacts "
+            "have been synced yet (run `trelix connector sync`), or none mention "
+            "an indexed symbol by name."
+        )
+    else:
+        console.print(f"[green]Linked {count} symbol-artifact edge(s).[/green]")
 
 
 # ---------------------------------------------------------------------------
@@ -1072,9 +1142,13 @@ def serve(
         typer.echo("trelix serve requires: pip install 'trelix[serve]'")
         raise typer.Exit(1)
 
+    from trelix.core.logging_setup import setup_json_logging, uvicorn_log_config
+
+    setup_json_logging()
+
     api_app = create_app()
     typer.echo(f"trelix API serving {repo_path} at http://{host}:{port}")
-    uvicorn.run(api_app, host=host, port=port)
+    uvicorn.run(api_app, host=host, port=port, log_config=uvicorn_log_config())
 
 
 # ---------------------------------------------------------------------------
@@ -1103,6 +1177,8 @@ def graph(
     NOTE: The old 'trelix graph <repo> <symbol>' command for call-graph display has been
     renamed to 'trelix call-graph'. See 'trelix call-graph --help'.
     """
+    _setup_logging(False)
+
     from pathlib import Path as _Path
 
     from trelix.core.config import IndexConfig
@@ -1373,6 +1449,8 @@ def review(
     ),
 ) -> None:
     """Review a git diff using trelix retrieval-augmented analysis."""
+    _setup_logging(False)
+
     import json as _json
 
     from trelix.core.config import IndexConfig
@@ -1819,26 +1897,38 @@ def agent_sessions_clear(
 
 
 # ---------------------------------------------------------------------------
-# connector sub-app (Jira/TestRail source-connector sync)
+# connector sub-app (Jira/TestRail/Xray/Linear source-connector sync)
 # ---------------------------------------------------------------------------
 
-connector_app = typer.Typer(help="Sync external artefacts (Jira tickets, TestRail cases).")
+connector_app = typer.Typer(
+    help="Sync external artefacts (Jira tickets, TestRail cases, Xray tests, Linear issues)."
+)
 app.add_typer(connector_app, name="connector")
 
 
 @connector_app.command("sync")
 def connector_sync(
     repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")],
-    name: Annotated[str, typer.Argument(help="Connector to sync: 'jira' or 'testrail'.")],
+    name: Annotated[
+        str, typer.Argument(help="Connector to sync: 'jira', 'testrail', 'xray', or 'linear'.")
+    ],
+    link: Annotated[
+        bool,
+        typer.Option(help="Auto-link each synced artefact into generic_edges via ArtifactLinker"),
+    ] = True,
 ) -> None:
     """
-    Fetch artefacts from an external system and persist them via the
-    connector's ArtifactSource.sync(). Requires generic_edges to exist
-    (from `trelix link-tickets` or another future writer) for the fetched
-    artefacts to be reachable from the code graph — this command only
-    populates the artifacts table, it does not create edges itself.
+    Fetch artefacts from an external system, persist them via the
+    connector's ArtifactSource.sync(), and (by default) immediately link
+    each synced artefact into generic_edges via ArtifactLinker so it's
+    reachable from the code graph without a separate `trelix link-artifacts`
+    pass. Pass --no-link to skip linking (e.g. to sync many artefacts
+    quickly, then run `trelix link-artifacts` once as a batch afterward).
     """
-    from trelix.core.config import IndexConfig
+    _setup_logging(False)
+
+    from trelix.core.config import ArtifactLinkerConfig, IndexConfig
+    from trelix.indexing.artifact_linker import ArtifactLinker
     from trelix.indexing.connectors.registry import get_artifact_source
     from trelix.store.db import Database
 
@@ -1872,8 +1962,9 @@ def connector_sync(
 
     db = Database(db_path)
     try:
+        linker = ArtifactLinker(db, ArtifactLinkerConfig(), index_config=config) if link else None
         with console.status(f"[bold cyan]Syncing {name}…[/bold cyan]"):
-            result = source.sync(db)
+            result = source.sync(db, linker=linker)
     except Exception as exc:
         _print_error(f"Failed to sync {name}", exc)
         raise typer.Exit(1) from exc
@@ -1882,7 +1973,8 @@ def connector_sync(
 
     console.print(
         f"[green]Synced {name}:[/green] fetched {result.artifacts_fetched}, "
-        f"wrote {result.artifacts_written}, errors {result.errors}"
+        f"wrote {result.artifacts_written}, errors {result.errors}, "
+        f"linked {result.edges_linked} edge(s)"
     )
     if result.errors:
         raise typer.Exit(1)

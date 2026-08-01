@@ -4,30 +4,137 @@ Artifacts, for cross-source linking via generic_edges.
 
 Auth: HTTP Basic (email + API token), matching Jira Cloud's own recommended
 scheme for personal/service integrations — no OAuth needed.
+
+Auth verification: confirmed live against a real site that
+`/rest/api/3/search/jql` does NOT signal bad credentials the way every
+other connector's search/list endpoint does — it returns HTTP 200 with an
+empty result set (`{"issues":[],"isLast":true}`) for a bad token, no
+token at all, AND a genuinely empty/nonexistent project, all three
+byte-identical. `_get()`'s existing `response.status_code == 401` check is
+correct code but unreachable dead code against this specific endpoint — a
+misconfigured TRELIX_JIRA_API_TOKEN would silently report "fetched 0" as
+success forever, indistinguishable from "this project has no tickets."
+`/rest/api/3/myself` DOES correctly return a real 401 for bad/missing
+credentials (also confirmed live) — fetch() calls it once as a pre-flight
+check before searching, so a real auth failure surfaces immediately
+instead of being swallowed as an empty project.
+
 Pagination: Jira's v3 search endpoint uses a cursor (nextPageToken), not
 offset/limit.
+
+Description text: Jira Cloud's v3 API always returns `description` as
+Atlassian Document Format (ADF) — a nested JSON tree, never a plain string
+(confirmed live against a real site: every issue, unconditionally). The
+original version of this connector fell back to an empty body whenever
+description wasn't a plain `str`, which meant every ticket's description
+was silently dropped in practice — not a rare edge case. `_adf_to_text()`
+below walks the tree and renders a plain-text approximation good enough for
+ArtifactLinker's regex matching and for readable ticket bodies elsewhere;
+it is not a full ADF renderer (no tables, no user/date mentions resolved
+to names) but covers every node type observed on a real Jira Cloud site:
+paragraphs, headings, bullet/ordered lists, code blocks, inline code,
+blockquotes, panels, expand sections, rules, links, and embedded cards.
 """
 
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
 import httpx
 
 from trelix.core.config import JiraConnectorConfig
 from trelix.core.models import Artifact
+from trelix.core.retry import with_retry
 from trelix.indexing.connectors.base import ArtifactSource
 
 logger = logging.getLogger("trelix.indexing.connectors.jira")
 
 _MAX_RETRIES = 5
-_BASE_BACKOFF_SECONDS = 1.0
 
 
 class JiraConnectorError(Exception):
     """Raised on a real, non-retryable Jira API failure."""
+
+
+# ADF node types whose children are inline text that flows together with no
+# separator (concatenated directly) — as opposed to block-level children
+# (paragraphs, list items, panels, ...) which are newline-separated.
+_INLINE_CONTAINER_TYPES = frozenset({"paragraph", "heading", "codeBlock"})
+
+
+def _adf_node_to_text(node: Any) -> str:
+    """Render one ADF node (and its descendants) to a plain-text
+    approximation. Unknown/unhandled node types fall through to rendering
+    their `content` children as block-level (newline-joined) — safer than
+    dropping an unrecognized node outright, since a future/undocumented
+    node type is far more likely to still carry meaningful nested text
+    than to be purely structural."""
+    if not isinstance(node, dict):
+        return ""
+    node_type = node.get("type")
+    content = node.get("content") or []
+
+    if node_type == "text":
+        text = str(node.get("text", ""))
+        for mark in node.get("marks") or []:
+            if mark.get("type") == "link":
+                href = (mark.get("attrs") or {}).get("href")
+                if href:
+                    text = f"{text} ({href})"
+        return text
+
+    if node_type == "hardBreak":
+        return "\n"
+
+    if node_type in ("embedCard", "inlineCard"):
+        return str((node.get("attrs") or {}).get("url", ""))
+
+    if node_type == "mention":
+        return str((node.get("attrs") or {}).get("text", ""))
+
+    if node_type == "status":
+        return str((node.get("attrs") or {}).get("text", ""))
+
+    if node_type == "emoji":
+        attrs = node.get("attrs") or {}
+        return str(attrs.get("text") or attrs.get("shortName", ""))
+
+    if node_type == "rule":
+        return ""
+
+    if node_type in ("bulletList", "orderedList", "taskList", "decisionList"):
+        lines = []
+        for i, item in enumerate(content, start=1):
+            item_text = _adf_node_to_text(item).strip()
+            if not item_text:
+                continue
+            prefix = f"{i}. " if node_type == "orderedList" else "- "
+            lines.append(f"{prefix}{item_text}")
+        return "\n".join(lines)
+
+    if node_type == "expand":
+        title = (node.get("attrs") or {}).get("title", "")
+        body = _join_block_children(content)
+        return f"{title}:\n{body}" if title else body
+
+    if node_type in _INLINE_CONTAINER_TYPES:
+        return "".join(_adf_node_to_text(child) for child in content)
+
+    # doc, blockquote, panel, listItem, table/tableRow/tableCell, or any
+    # unrecognized future node type: treat children as block-level.
+    return _join_block_children(content)
+
+
+def _join_block_children(content: list[Any]) -> str:
+    parts = (_adf_node_to_text(child).strip() for child in content)
+    return "\n".join(part for part in parts if part)
+
+
+def _adf_to_text(doc: dict[str, Any]) -> str:
+    """Entry point: render a full ADF document (the `description` field's
+    value) to plain text."""
+    return _adf_node_to_text(doc).strip()
 
 
 class JiraConnector(ArtifactSource):
@@ -57,6 +164,12 @@ class JiraConnector(ArtifactSource):
 
         base_url = self._config.base_url.rstrip("/")
         auth = (self._config.email, self._config.api_token)
+
+        try:
+            self._verify_auth(base_url, auth)
+        except httpx.HTTPError as exc:
+            raise JiraConnectorError(f"Jira API request failed: {exc}") from exc
+
         artifacts: list[Artifact] = []
         next_page_token: str | None = None
 
@@ -69,9 +182,10 @@ class JiraConnector(ArtifactSource):
             if next_page_token:
                 params["nextPageToken"] = next_page_token
 
-            data = self._get_with_retry(
-                f"{base_url}/rest/api/3/search/jql", params=params, auth=auth
-            )
+            try:
+                data = self._get(f"{base_url}/rest/api/3/search/jql", params=params, auth=auth)
+            except httpx.HTTPError as exc:
+                raise JiraConnectorError(f"Jira API request failed: {exc}") from exc
             issues = data.get("issues", [])
             for issue in issues:
                 artifacts.append(self._issue_to_artifact(issue, base_url))
@@ -86,16 +200,24 @@ class JiraConnector(ArtifactSource):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _verify_auth(self, base_url: str, auth: tuple[str, str]) -> None:
+        """Pre-flight auth check via /rest/api/3/myself, which — unlike
+        /search/jql — genuinely returns 401 for bad/missing credentials
+        (confirmed live; see module docstring). Reuses _get() so this gets
+        the same retry/401 handling as every other request, rather than
+        duplicating it."""
+        self._get(f"{base_url}/rest/api/3/myself", params={}, auth=auth)
+
     def _issue_to_artifact(self, issue: dict[str, Any], base_url: str) -> Artifact:
         key = issue["key"]
         fields = issue.get("fields", {})
         description = fields.get("description")
-        # Jira's v3 API returns description as Atlassian Document Format
-        # (a nested JSON structure), not plain text. Extracting readable
-        # text from ADF properly needs a real renderer; falling back to the
-        # summary alone (never crashing on the ADF shape) is an accepted
-        # simplification for this connector's first version.
-        body = description if isinstance(description, str) else ""
+        if isinstance(description, str):
+            body = description
+        elif isinstance(description, dict):
+            body = _adf_to_text(description)
+        else:
+            body = ""
         return Artifact(
             source_ref=f"ticket:{key}",
             artifact_kind="ticket",
@@ -105,48 +227,24 @@ class JiraConnector(ArtifactSource):
             metadata={"status": (fields.get("status") or {}).get("name", "")},
         )
 
-    def _get_with_retry(
-        self, url: str, *, params: dict[str, Any], auth: tuple[str, str]
-    ) -> dict[str, Any]:
-        """GET with exponential backoff + jitter on 429, matching the
-        design's "backoff+jitter on 429" decision. Raises JiraConnectorError
-        on a real failure (auth error, exhausted retries) — a connector
-        failure means real content is missing, so it must not be silently
-        swallowed the way GitLinker's git-command failures are."""
-        last_exc: Exception | None = None
-        for attempt in range(_MAX_RETRIES):
-            try:
-                response = httpx.get(url, params=params, auth=auth, timeout=30)
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                self._sleep_backoff(attempt)
-                continue
-
-            if response.status_code == 401:
-                raise JiraConnectorError(
-                    "401 Unauthorized — check TRELIX_JIRA_EMAIL/TRELIX_JIRA_API_TOKEN"
-                )
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After")
-                self._sleep_backoff(attempt, retry_after=retry_after)
-                continue
-            if response.status_code not in (200, 201):
-                raise JiraConnectorError(
-                    f"Jira API error {response.status_code}: {response.text[:200]}"
-                )
-            return dict(response.json())
-
-        raise JiraConnectorError(
-            f"Jira API request failed after {_MAX_RETRIES} retries: {last_exc}"
-        )
-
-    def _sleep_backoff(self, attempt: int, retry_after: str | None = None) -> None:
-        if retry_after is not None:
-            try:
-                delay = float(retry_after)
-            except ValueError:
-                delay = _BASE_BACKOFF_SECONDS * (2**attempt)
-        else:
-            delay = _BASE_BACKOFF_SECONDS * (2**attempt)
-        logger.debug("Jira API backoff: sleeping %.1fs (attempt %d)", delay, attempt)
-        time.sleep(delay)
+    @with_retry(max_attempts=_MAX_RETRIES)
+    def _get(self, url: str, *, params: dict[str, Any], auth: tuple[str, str]) -> dict[str, Any]:
+        """GET with the shared retry contract's full-jitter exponential
+        backoff on 429/5xx and connection-level errors. 401 is raised
+        immediately (not retryable — a bad credential never becomes valid
+        by waiting). Raises on a real failure (auth error, exhausted
+        retries) — a connector failure means real content is missing, so it
+        must not be silently swallowed the way GitLinker's git-command
+        failures are."""
+        response = httpx.get(url, params=params, auth=auth, timeout=30)
+        if response.status_code == 401:
+            raise JiraConnectorError(
+                "401 Unauthorized — check TRELIX_JIRA_EMAIL/TRELIX_JIRA_API_TOKEN"
+            )
+        if response.status_code not in (200, 201):
+            raise httpx.HTTPStatusError(
+                f"Jira API error {response.status_code}: {str(response.text)[:200]}",
+                request=httpx.Request("GET", url),
+                response=response,
+            )
+        return dict(response.json())

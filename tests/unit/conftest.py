@@ -25,8 +25,33 @@ _BEAST_MODE_DEFAULTS: dict[str, str] = {
 # Non-boolean settings that must stay unset (not "false") for tests to see the
 # "unconfigured" code default — same rationale as _BEAST_MODE_DEFAULTS above,
 # but these aren't flags, so setenv("...", "false") would misconfigure them
-# instead of disabling them.
+# instead of disabling them. delenv() alone is NOT enough here: it only
+# removes the var from the process environment, but pydantic-settings'
+# .env-file source reads the file directly and independently — if a
+# developer's .env has a real value for one of these (e.g. a live
+# TRELIX_LINEAR_API_KEY for manual connector testing), removing the
+# process-env copy doesn't stop the file fallback from supplying it
+# anyway. Overriding to "" (falsy, same as unset for every `if not val`
+# validate_config() check in this codebase) is what actually neutralizes
+# the .env value for the test process.
 _UNSET_BY_DEFAULT: tuple[str, ...] = ("TRELIX_API_AUTH_TOKEN",)
+_EMPTY_STRING_BY_DEFAULT: tuple[str, ...] = (
+    "TRELIX_LINEAR_API_KEY",
+    "TRELIX_LINEAR_TEAM_KEY",
+    "TRELIX_JIRA_BASE_URL",
+    "TRELIX_JIRA_EMAIL",
+    "TRELIX_JIRA_API_TOKEN",
+    "TRELIX_JIRA_PROJECT_KEY",
+    "TRELIX_TESTRAIL_BASE_URL",
+    "TRELIX_TESTRAIL_USERNAME",
+    "TRELIX_TESTRAIL_API_KEY",
+)
+# Int-typed connector fields (project_id: int | None) can't take the ""
+# override above — pydantic would fail to parse "" as an int the same way
+# it fails on a malformed real value. "0" parses fine and is falsy, so
+# every `if not val` validate_config() check in this codebase still treats
+# it as "missing" — same effective behavior as the string fields above.
+_ZERO_INT_BY_DEFAULT: tuple[str, ...] = ("TRELIX_TESTRAIL_PROJECT_ID",)
 
 
 @pytest.fixture(autouse=True)
@@ -36,3 +61,7 @@ def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(var, val)
     for var in _UNSET_BY_DEFAULT:
         monkeypatch.delenv(var, raising=False)
+    for var in _EMPTY_STRING_BY_DEFAULT:
+        monkeypatch.setenv(var, "")
+    for var in _ZERO_INT_BY_DEFAULT:
+        monkeypatch.setenv(var, "0")

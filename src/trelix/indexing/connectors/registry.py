@@ -8,16 +8,22 @@ from __future__ import annotations
 
 from typing import Literal
 
-from trelix.core.config import JiraConnectorConfig, TestRailConnectorConfig
+from trelix.core.config import (
+    JiraConnectorConfig,
+    LinearConnectorConfig,
+    TestRailConnectorConfig,
+    XrayConnectorConfig,
+)
 from trelix.indexing.connectors.base import ArtifactSource
 
-ConnectorName = Literal["jira", "testrail"]
+ConnectorName = Literal["jira", "testrail", "xray", "linear"]
 
 
 def get_artifact_source(name: ConnectorName) -> ArtifactSource:
     """Instantiate the named connector, reading its config from env/`.env`
     (each connector's Config class handles that itself — see
-    core/config.py's JiraConnectorConfig/TestRailConnectorConfig)."""
+    core/config.py's JiraConnectorConfig/TestRailConnectorConfig/
+    XrayConnectorConfig/LinearConnectorConfig)."""
     match name:
         case "jira":
             from trelix.indexing.connectors.jira import JiraConnector
@@ -27,5 +33,15 @@ def get_artifact_source(name: ConnectorName) -> ArtifactSource:
             from trelix.indexing.connectors.testrail import TestRailConnector
 
             return TestRailConnector(TestRailConnectorConfig())
+        case "xray":
+            from trelix.indexing.connectors.xray import XrayConnector
+
+            return XrayConnector(XrayConnectorConfig())
+        case "linear":
+            from trelix.indexing.connectors.linear import LinearConnector
+
+            return LinearConnector(LinearConnectorConfig())
         case _:
-            raise ValueError(f"Unknown connector: {name!r}. Expected 'jira' or 'testrail'.")
+            raise ValueError(
+                f"Unknown connector: {name!r}. Expected 'jira', 'testrail', 'xray', or 'linear'."
+            )
