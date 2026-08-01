@@ -42,7 +42,16 @@ _EMPTY_STRING_BY_DEFAULT: tuple[str, ...] = (
     "TRELIX_JIRA_EMAIL",
     "TRELIX_JIRA_API_TOKEN",
     "TRELIX_JIRA_PROJECT_KEY",
+    "TRELIX_TESTRAIL_BASE_URL",
+    "TRELIX_TESTRAIL_USERNAME",
+    "TRELIX_TESTRAIL_API_KEY",
 )
+# Int-typed connector fields (project_id: int | None) can't take the ""
+# override above — pydantic would fail to parse "" as an int the same way
+# it fails on a malformed real value. "0" parses fine and is falsy, so
+# every `if not val` validate_config() check in this codebase still treats
+# it as "missing" — same effective behavior as the string fields above.
+_ZERO_INT_BY_DEFAULT: tuple[str, ...] = ("TRELIX_TESTRAIL_PROJECT_ID",)
 
 
 @pytest.fixture(autouse=True)
@@ -54,3 +63,5 @@ def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
     for var in _EMPTY_STRING_BY_DEFAULT:
         monkeypatch.setenv(var, "")
+    for var in _ZERO_INT_BY_DEFAULT:
+        monkeypatch.setenv(var, "0")
