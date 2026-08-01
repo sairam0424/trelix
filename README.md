@@ -140,9 +140,11 @@ trelix watch ./my-repo
 
 ## What's New
 
-**v2.8.1 — Multi-Repo Federation & Persistent Agent Memory:** MCP now exposes multi-repo search (`federation_search_all`) and persistent agent sessions (`ask_agent` with session_id resumption). Security hardening for federation config paths. See [CHANGELOG.md](CHANGELOG.md) for full v2.8.0/v2.8.1 details.
+**v2.11.0 — Cross-Source Depth & Reliability:** Connector-fetched artifacts (Jira/TestRail/Xray/Linear) now auto-link into the code graph on sync (`ArtifactLinker`, `trelix link-artifacts`); opt-in Personalized PageRank (`TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION`); a unified retry/backoff contract shared by every LLM backend, embedder, connector, and reranker; structured JSON logging for `trelix serve` with OpenTelemetry trace correlation; and two new connectors — Xray Cloud and Linear.
 
-**v2.7.2 — Scale & Concurrency Hardening:** Qdrant Cloud readiness (gRPC + configurable timeout), incremental per-symbol embedding on partial re-index, an opt-in parallel BM25 read pool, Linux ARM64 binaries, and 5 concurrency/correctness fixes.
+**v2.10.0 — REST API Auth & Cross-Source Graph:** REST API-key auth (`TRELIX_API_AUTH_TOKEN`) + HTTP-layer OpenTelemetry spans, a new `/parse` endpoint, leg-level path filtering, cross-source `generic_edges` + a git-log ticket linker (`trelix link-tickets`), and the original Jira/TestRail artifact connectors.
+
+**v2.9.0 — Python 3.13, Tracing & TypeScript SDK:** Python 3.13 support, OpenTelemetry tracing for the retrieval pipeline, typed REST API response models with cursor pagination, an official `@trelix/sdk` TypeScript client, and a Docker image + Helm chart.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
@@ -172,6 +174,8 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **HyDE query expansion** — synthesizes a hypothetical code answer as the ANN query vector, improving recall on abstract questions (`TRELIX_RETRIEVAL_HYDE_FALLBACK=true`)
 - **FLARE confidence-gated re-retrieval** — detects low-confidence synthesis spans and re-queries before finalising the answer (`TRELIX_RETRIEVAL_FLARE=true`)
 - **PageRank symbol boost** — weights retrieval candidates by graph centrality so hub symbols surface first (`TRELIX_RETRIEVAL_PAGERANK_BOOST=true`)
+- **Personalized PageRank** — teleport mass weighted toward ticket/artifact-linked symbols instead of uniform, opt-in (`TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION=true`)
+- **Cross-source connectors** — `trelix connector sync ./repo <jira|testrail|xray|linear>` fetches tickets/tests and auto-links them into the code graph via `ArtifactLinker`
 - **Incremental graph updater** — `trelix watch` automatically patches the Code Property Graph on every file save (no manual `trelix graph` re-run needed)
 - **Query telemetry** — per-query latency breakdown, retrieval leg hit rates, and token usage via `trelix telemetry` CLI or `TRELIX_TELEMETRY_ENABLED=true`
 - **CoIR eval harness** — `trelix eval ./repo --golden <path>` measures Recall@1/5/10, MRR, and NDCG against a JSONL golden set
