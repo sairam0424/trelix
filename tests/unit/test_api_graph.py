@@ -132,3 +132,56 @@ class TestGraphApiEndpoints:
         data = response.json()
         assert isinstance(data, list)
         assert len(data) >= 1  # fn_b is a neighbor of fn_a
+
+
+class TestGraphVisualizeContainment:
+    """Regression tests for the output-path containment check.
+
+    Before the fix, the check was a raw string prefix match
+    (str(requested).startswith(str(allowed))), which wrongly accepts a
+    sibling directory that merely starts with the same characters as
+    "<repo>/.trelix" (e.g. "<repo>/.trelix-evil"). Path.is_relative_to()
+    correctly rejects it.
+    """
+
+    def test_default_output_path_is_accepted(self, tmp_path: Path) -> None:
+        repo = _make_indexed_repo(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        response = client.get(f"/graph/visualize?repo={repo}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["path"] == str(repo / ".trelix" / "graph.html")
+        assert Path(data["path"]).exists()
+
+    def test_output_inside_trelix_dir_is_accepted(self, tmp_path: Path) -> None:
+        repo = _make_indexed_repo(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        output = str(repo / ".trelix" / "custom.html")
+        response = client.get(f"/graph/visualize?repo={repo}&output={output}")
+        assert response.status_code == 200
+        assert response.json()["path"] == output
+
+    def test_sibling_directory_sharing_trelix_prefix_is_rejected(self, tmp_path: Path) -> None:
+        """<repo>/.trelix-evil/x.html starts with the same characters as
+        <repo>/.trelix but is not inside it — must be rejected."""
+        repo = _make_indexed_repo(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        evil_dir = repo / ".trelix-evil"
+        evil_dir.mkdir()
+        output = str(evil_dir / "x.html")
+        response = client.get(f"/graph/visualize?repo={repo}&output={output}")
+        assert response.status_code == 400
+        assert "must be inside" in response.json()["detail"]
+        assert not Path(output).exists()
+
+    def test_output_outside_repo_entirely_is_rejected(self, tmp_path: Path) -> None:
+        repo = _make_indexed_repo(tmp_path)
+        app = create_app()
+        client = TestClient(app)
+        outside = tmp_path.parent / "outside.html"
+        response = client.get(f"/graph/visualize?repo={repo}&output={outside}")
+        assert response.status_code == 400
+        assert not outside.exists()
