@@ -10,6 +10,8 @@ from trelix.api.app import create_app
 from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
 from trelix.store.db import Database
 
+from .test_graph_visualizer import _make_pyvis_mock
+
 
 def _make_indexed_repo(tmp_path: Path) -> Path:
     """Create a minimal indexed repo under tmp_path.
@@ -145,6 +147,7 @@ class TestGraphVisualizeContainment:
     """
 
     def test_default_output_path_is_accepted(self, tmp_path: Path) -> None:
+        _make_pyvis_mock()
         repo = _make_indexed_repo(tmp_path)
         app = create_app()
         client = TestClient(app)
@@ -155,6 +158,7 @@ class TestGraphVisualizeContainment:
         assert Path(data["path"]).exists()
 
     def test_output_inside_trelix_dir_is_accepted(self, tmp_path: Path) -> None:
+        _make_pyvis_mock()
         repo = _make_indexed_repo(tmp_path)
         app = create_app()
         client = TestClient(app)
