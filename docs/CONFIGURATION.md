@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v2.11.0
+# Trelix Configuration Reference — v2.11.1
 
 Complete reference for all configuration options available in trelix.
 
@@ -161,7 +161,7 @@ Copy this to `<repo-root>/.env` and fill in the values relevant to your setup. L
 
 ```dotenv
 # =============================================================================
-# Trelix v2.11.0 — complete .env example
+# Trelix v2.11.1 — complete .env example
 # Copy to .env and fill in values. Never commit this file.
 # =============================================================================
 

@@ -6,6 +6,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [2.11.1] — 2026-08-02
+
+### Security
+- **`/graph/visualize` output-path containment bypass via sibling directory** —
+  the `output` query param's containment check used a raw string-prefix
+  match (`str(requested).startswith(str(allowed))`) to confirm the resolved
+  path stays inside `<repo>/.trelix/`. A sibling directory that merely
+  starts with the same characters — e.g. `<repo>/.trelix-evil/x.html` —
+  passed this check, letting a caller write an arbitrary-named HTML file
+  outside the intended directory. `/parse` already fixed this exact bug
+  class earlier in the same file (`src/trelix/api/app.py`, with a comment
+  explicitly warning about the string-prefix pitfall), but the fix was
+  never back-ported to `/graph/visualize`. Fixed by switching to
+  `Path.is_relative_to()`, mirroring `/parse`'s existing correct check.
+  Severity: MEDIUM — a file write of graph HTML, not arbitrary read or
+  RCE, and only reachable when `TRELIX_API_AUTH_TOKEN` is unset (default)
+  or the caller already has a valid API key. Found during a full
+  production dry-run of v2.11.0's REST API surface (path-traversal probing
+  against a live container). New regression tests in
+  `tests/unit/test_api_graph.py::TestGraphVisualizeContainment` (4 cases,
+  confirmed fail-before/pass-after against the reverted check).
+
 ## [2.11.0] — 2026-08-02
 
 ### Overview
@@ -1294,7 +1316,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.11.0...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.11.1...HEAD
+[2.11.1]: https://github.com/sairam0424/trelix/compare/v2.11.0...v2.11.1
 [2.11.0]: https://github.com/sairam0424/trelix/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/sairam0424/trelix/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/sairam0424/trelix/compare/v2.8.1...v2.9.0
