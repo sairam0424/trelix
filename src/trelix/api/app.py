@@ -478,7 +478,11 @@ def create_app() -> Any:  # noqa: ANN201
             if output:
                 requested = _Path(output).resolve()
                 allowed = repo_root / ".trelix"
-                if not str(requested).startswith(str(allowed)):
+                # is_relative_to(), not a raw string prefix match — same fix
+                # as /parse's containment check above. A prefix match would
+                # wrongly accept a sibling directory like "<repo>/.trelix-evil"
+                # that merely starts with the same characters as "<repo>/.trelix".
+                if not requested.is_relative_to(allowed):
                     raise HTTPException(
                         status_code=400,
                         detail="output path must be inside <repo>/.trelix/",

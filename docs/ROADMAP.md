@@ -1,13 +1,13 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 2.11.0 (current) | **Next:** 3.0.0
+> **Version:** 2.11.1 (current) | **Next:** 3.0.0
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
 ---
 
-## ✅ Shipped (v2.0 – v2.11.0)
+## ✅ Shipped (v2.0 – v2.11.1)
 
 | Version | Feature |
 |---------|---------|
@@ -27,6 +27,7 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.9.0 | Python 3.13 support (`tree-sitter-language-pack` migration), OpenTelemetry tracing for the retrieval pipeline, typed REST API response models + `/search` cursor pagination, `@trelix/sdk` TypeScript client, official Docker image + Helm chart, VS Code extension hardening (XSS fix, bundler) + live search refinement, GitHub App GA hardening (installation-token auth, webhook signature verification, Check-annotation posting). All additive/opt-in — no breaking changes. |
 | v2.10.0 | REST API-key auth (`TRELIX_API_AUTH_TOKEN`) + HTTP-layer OpenTelemetry spans, `/parse` endpoint + per-source context budgeting, leg-level path filtering + `intent_hint`/`hyde_snippet_hint` on `/search`, cross-source `generic_edges` table + git-log ticket linker (`trelix link-tickets`), Jira/TestRail artifact connectors (`trelix connector sync`), and a PageRank eval showing +0.040 recall@5 / +0.031 NDCG@10 from the new bidirectional graph edges. All new surface additive/opt-in — no breaking changes. |
 | v2.11.0 | Connector-fetched artifacts auto-link into `generic_edges` on sync (`ArtifactLinker`, `trelix link-artifacts`), opt-in Personalized PageRank (`TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION`), a unified retry/backoff contract (`tenacity`-based) shared by every LLM backend/embedder/connector/reranker/PR client, structured JSON logging with OTel trace correlation, and two new artifact connectors — Xray Cloud and Linear (`trelix connector sync <repo> xray\|linear`). Plus two real bugs found by live-testing Jira against a production site (ADF descriptions silently dropped to empty bodies; bad credentials silently reported as success) and a `.env`-leakage test-isolation fix. All new surface additive/opt-in — no breaking changes. |
+| v2.11.1 | Fixed a path-containment bug in `/graph/visualize`'s `output` query param: a raw string-prefix check accepted a sibling directory sharing the same prefix as `<repo>/.trelix` (e.g. `<repo>/.trelix-evil`), letting a caller write an arbitrary-named HTML file outside the intended directory. Switched to `Path.is_relative_to()`, mirroring `/parse`'s existing correct check in the same file. Found via a full production dry-run of v2.11.0's REST API surface. |
 
 ---
 
