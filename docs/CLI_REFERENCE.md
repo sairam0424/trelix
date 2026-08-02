@@ -35,6 +35,7 @@ on most commands.
    - [review](#trelix-review)
    - [link-tickets](#trelix-link-tickets)
    - [connector sync](#trelix-connector-sync)
+   - [link-artifacts](#trelix-link-artifacts)
    - [search-all](#trelix-search-all)
    - [federation add](#trelix-federation-add)
    - [federation list](#trelix-federation-list)
@@ -646,6 +647,14 @@ trelix serve /my/repo --host 0.0.0.0 --port 9000
 - The API is undocumented in this reference. Point a browser at
   `http://127.0.0.1:8765/docs` after starting for the auto-generated OpenAPI
   docs.
+- Logs are always structured JSON lines (one object per log entry, keys
+  include `event`/`level`/`timestamp`/`logger`), including uvicorn's own
+  access/error logs — not just the app's own `trelix.*` loggers. This
+  differs from every other command, which logs human-readable console text
+  via the same underlying `logging.*` call sites. When `TRELIX_OTEL_ENABLED=true`,
+  each JSON line emitted from inside an active span also carries `trace_id`/
+  `span_id`, correlating logs with the OpenTelemetry traces described under
+  [Environment variables](#environment-variables).
 
 ---
 
@@ -1037,9 +1046,10 @@ any network request is made.
 By default (`--link`, the default), each successfully-synced artifact is
 immediately linked into `generic_edges` via `ArtifactLinker` — it's reachable
 from the code graph the moment this command returns, no separate
-`trelix link-artifacts` pass required. Pass `--no-link` to skip linking
-(e.g. when syncing many artifacts quickly, then running
-`trelix link-artifacts` once as a batch afterward).
+[`trelix link-artifacts`](#trelix-link-artifacts) pass required. Pass
+`--no-link` to skip linking (e.g. when syncing many artifacts quickly, then
+running [`trelix link-artifacts`](#trelix-link-artifacts) once as a batch
+afterward).
 
 #### Arguments
 
@@ -1103,6 +1113,78 @@ Synced jira: fetched 84, wrote 84, errors 0, linked 79 edge(s)
   `TRELIX_LINEAR_PAGE_SIZE` (`100`, max `100` — not a confirmed Linear
   platform ceiling, chosen to stay well under its GraphQL query-complexity
   cap).
+
+---
+
+### `trelix link-artifacts`
+
+#### Synopsis
+
+```
+trelix link-artifacts <repo> [--embedding-fallback] [--similarity-threshold FLOAT]
+```
+
+#### Description
+
+Scans every artifact already synced into the `artifacts` table (via
+`trelix connector sync`) for mentions of indexed symbol names/qualified
+names, and links matches into `generic_edges` (`source_ref` matching the
+artifact's own, `edge_kind="references_artifact"`) — the artifact-content
+counterpart to `trelix link-tickets`'s git-commit-message matching. `trelix
+connector sync` writes to the `artifacts` table only; it does not create
+`generic_edges` rows on its own unless run with its default `--link` flag,
+which calls this same linking logic per-artifact as it syncs. Run
+`link-artifacts` standalone when you want a full re-link pass — e.g. after
+syncing with `--no-link`, or after a schema/symbol change that could surface
+new matches against already-synced artifacts.
+
+Regex reference-extraction runs unconditionally (free, deterministic) and
+always takes priority. An opt-in embedding-similarity fallback
+(`--embedding-fallback`) runs only for artifacts where the regex pass found
+zero matches — it costs one embed call per unmatched artifact, and produces
+lower-confidence edges (`weight=0.5` vs. a regex hit's `weight=1.0`) so
+fallback matches don't dominate PageRank mass.
+
+Requires `<repo>` to already be indexed (`trelix index <repo>` must have been
+run first). Re-running is idempotent — the same `generic_edges` unique index
+that backs `link-tickets` prevents duplicate edges.
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--embedding-fallback` | flag | off | For artifacts with no regex match, fall back to embedding similarity against indexed chunks. Costs one embed call per unmatched artifact. |
+| `--similarity-threshold` | float | `0.75` | Minimum similarity score (0.0–1.0) for an embedding-fallback match to count. Ignored unless `--embedding-fallback` is set. |
+
+Both options map to `ArtifactLinkerConfig`'s `TRELIX_ARTIFACT_LINKER_EMBEDDING_FALLBACK`/`TRELIX_ARTIFACT_LINKER_SIMILARITY_THRESHOLD` — see [CONFIGURATION.md](CONFIGURATION.md).
+
+#### Examples
+
+```bash
+# Regex-only re-link pass over everything already synced
+trelix link-artifacts ./my-repo
+
+# Also fall back to embedding similarity for artifacts with no regex match
+trelix link-artifacts ./my-repo --embedding-fallback --similarity-threshold 0.8
+```
+
+#### Output
+
+```
+Linked 17 symbol-artifact edge(s).
+```
+
+Or, when nothing matched:
+
+```
+No artifact references linked. Either no artifacts have been synced yet
+(run `trelix connector sync`), or none mention an indexed symbol by name.
+```
+
+#### Notes
+
+- Exits with code 1 if no index is found at `<repo>` — run `trelix index <repo>` first.
+- `trelix connector sync`'s default `--link` behavior already calls this linker per-artifact as it syncs — most workflows never need to run `link-artifacts` directly; it exists for a standalone/batch re-link pass.
 
 ---
 

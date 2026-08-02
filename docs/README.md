@@ -112,7 +112,6 @@ Looking for a specific term?
 |------|-------------|
 | [../CHANGELOG.md](../CHANGELOG.md) | Full version history with breaking changes and migration notes |
 | [v2.4.0-world-release-report.md](v2.4.0-world-release-report.md) | v2.4.0 release readiness audit: what shipped, benchmarks, blockers found before tagging |
-| [superpowers/CHANGELOG.md](superpowers/CHANGELOG.md) | Superpowers module changelog |
 
 ---
 

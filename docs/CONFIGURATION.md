@@ -47,6 +47,7 @@ Settings are resolved in priority order (highest wins):
 | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Enable HyDE (Hypothetical Document Embeddings) fallback when standard retrieval returns weak results |
 | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable the file-summary retrieval leg — retrieves against LLM-generated file summaries in addition to raw chunks |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Enable PageRank-based symbol boosting — surfaces frequently referenced symbols higher in results |
+| `TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION` | `false` | Enable Personalized PageRank: teleport mass is weighted toward symbols with a `generic_edges` connector-artifact/ticket relationship (uniform `1/\|T\|` over that seed set) instead of uniform teleportation across every node. Applies to both `rank_by_pagerank()` (query-time) and `compute_pagerank()` (index-time). Falls back to plain uniform-teleportation PageRank when disabled or when the seed set is empty — zero behavior change unless opted in. Interaction risk with `TRELIX_RETRIEVAL_PAGERANK_BOOST`: on a repo where only a few symbols have ever been referenced by a ticket/artifact, enabling both together can invert `get_top_central_symbols()`'s ranking — if boost results look off with both enabled, try disabling personalization first to isolate which flag is driving the change. |
 | `TRELIX_RETRIEVAL_GRAPH_SEARCH` | `false` | Enable knowledge graph search leg — queries the code graph in addition to vector search |
 | `TRELIX_RETRIEVAL_TELEMETRY` | `false` | Emit per-query telemetry (latency, hit counts, scores) to the configured telemetry sink |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM-powered file summaries at index time (requires a configured LLM provider) |
@@ -205,6 +206,7 @@ TRELIX_RETRIEVAL_HYDE_FALLBACK=false
 # Extra retrieval legs
 TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=false
 TRELIX_RETRIEVAL_PAGERANK_BOOST=false
+TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION=false
 TRELIX_RETRIEVAL_GRAPH_SEARCH=false
 
 # Telemetry

@@ -1926,6 +1926,73 @@ class HyDEExpander:
     # Research: Gao et al. 2022, arXiv:2212.10496
 ```
 
+### Unified Retry Contract (v2.11.0)
+
+**Module:** `src/trelix/core/retry.py`
+
+A single `tenacity`-based retry/backoff contract shared by every outbound
+network call in the codebase — all 5 LLM backends, all remote embedder
+providers, `GitHubPRClient`, the Cohere reranker, and the Jira/TestRail/
+Xray/Linear connectors. Replaces what used to be hand-rolled, per-connector
+backoff loops (and, for LLM/embedder backends, no retry protection at all).
+
+```python
+def is_retryable_http_error(exc: BaseException) -> bool
+    # True for connection-level failures (always retryable) or an HTTP
+    # response with status in {429, 500, 502, 503, 504}. Recognizes httpx,
+    # requests, boto3/botocore, openai, anthropic, google-genai, and
+    # voyageai exception shapes without hard-importing any of them.
+
+def with_retry(max_attempts: int = 5, min_wait_seconds: float = 1.0,
+               max_wait_seconds: float = 60.0) -> Callable
+    # Returns a tenacity @retry decorator: honors a server-supplied
+    # Retry-After header when present (integer-seconds or HTTP-date form,
+    # RFC 9110 §10.2.3), else full-jitter exponential backoff.
+    # Works on both sync and async functions (tenacity auto-detects).
+```
+
+Each LLM SDK's own built-in retry is explicitly disabled at client
+construction (`max_retries=0` for OpenAI/Anthropic; a `botocore.Config`
+with `retries={"max_attempts": 0}` for boto3-backed Bedrock) so this
+contract is the sole retry layer — otherwise the SDK's own retries would
+stack underneath tenacity's, multiplying worst-case latency on a sustained
+outage. Linear's connector additionally layers a small, connector-local
+bounded retry loop on top of `@with_retry` for its own rate-limit signal
+(HTTP 400 + a GraphQL body error code, rather than a standard 429/
+`Retry-After`) — deliberately kept out of the shared contract, since
+teaching `is_retryable_http_error()` one connector's response shape would
+couple every other call site to it.
+
+### Structured Logging (v2.11.0)
+
+**Module:** `src/trelix/core/logging_setup.py`
+
+Two output modes, both built on `structlog.stdlib.ProcessorFormatter` over
+the same ~164 existing `logging.getLogger("trelix.*")` call sites across
+the codebase — no call-site rewrite required, only the formatter attached
+to the root logger's handler changes:
+
+```python
+def setup_console_logging(level: int = logging.WARNING) -> None
+    # CLI mode — human-readable console text. Called by _setup_logging()
+    # at the start of every CLI command (cli/main.py).
+
+def setup_json_logging(level: int = logging.INFO) -> None
+    # Server mode — one JSON object per log line (keys: event, level,
+    # timestamp, logger). Called by `trelix serve` before uvicorn.run(...).
+
+def uvicorn_log_config(level: str = "info") -> dict[str, Any]
+    # A uvicorn log_config= dict rendering uvicorn's own access/error logs
+    # through the same JSON formatter, so `trelix serve`'s output isn't
+    # half-JSON (the app's logger) / half-default-colorized-text (uvicorn's).
+```
+
+When `TRELIX_OTEL_ENABLED=true`, a processor injects the active span's
+`trace_id`/`span_id` into every JSON log line — correlating log output with
+the OTel traces already present on the REST layer, at zero cost when OTel
+is disabled (the `opentelemetry` package is never imported unless something
+else in the process has already imported it).
+
 ---
 
 ## 20. LLM Client Abstraction
