@@ -149,6 +149,7 @@ class ChunkerConfig(BaseSettings):
     include_imports_in_header: bool = True
     max_imports_in_header: int = 8
     include_parent_signature: bool = True
+    include_diagram_tags: bool = True
 
     # Contextual chunking (off by default — requires LLM API access)
     contextual: bool = False
