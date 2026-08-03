@@ -1,6 +1,6 @@
 # Trelix MCP Server Guide
 
-Complete guide for using trelix as an MCP (Model Context Protocol) server in Claude Code, Cursor, Windsurf, and Continue.dev.
+Complete guide for using trelix as an MCP (Model Context Protocol) server in Claude Code, Cursor, Windsurf, Continue.dev, and JetBrains IDEs.
 
 ---
 
@@ -107,7 +107,30 @@ Reload Continue.dev (Cmd+Shift+P → **Continue: Reload**). The tools are availa
 
 ---
 
-## 7. The 15 MCP Tools
+## 7. Setup in JetBrains IDEs (2025.2+)
+
+JetBrains IDEs (IntelliJ IDEA, PyCharm, WebStorm, GoLand, RustRover, etc.), version 2025.2 and later, ship a first-party built-in MCP client — no plugin install required. Configure it via **Settings → Tools → AI Assistant → Model Context Protocol (MCP)** and add a new server:
+
+```json
+{
+  "mcpServers": {
+    "trelix": {
+      "command": "trelix-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Or, via the IDE's MCP settings UI: set **Command** to `trelix-mcp` and leave **Arguments** empty.
+
+Restart the IDE after saving. Trelix's tools then appear alongside JetBrains' built-in AI Assistant tools in any chat session.
+
+> **Note:** This is JetBrains' first-party built-in MCP client, not a trelix-published JetBrains plugin — there is currently no dedicated trelix plugin for the JetBrains Marketplace.
+
+---
+
+## 8. The 15 MCP Tools
 
 Trelix-mcp exposes 15 MCP tools organized into four functional groups:
 
@@ -684,7 +707,7 @@ agent_clear_session(repo_path, session_id) → {cleared, session_id}
 
 ---
 
-## 8. Federation Security & Configuration (v2.8.1)
+## 9. Federation Security & Configuration (v2.8.1)
 
 ### Path Confinement for `config_path`
 
@@ -726,7 +749,7 @@ export TRELIX_FEDERATION_MAX_REPOS=100  # raise the cap to 100
 
 ---
 
-## 9. The 3 MCP Resources
+## 10. The 3 MCP Resources
 
 MCP resources are read-only data endpoints that the AI can fetch without executing a tool. Use them to give the model static context about the indexed codebase.
 
@@ -772,7 +795,7 @@ trelix://repo//Users/you/projects/myapp/symbols/AuthService.login
 
 ---
 
-## 10. The 3 MCP Prompts
+## 11. The 3 MCP Prompts
 
 MCP prompts are pre-built instruction templates that the client can inject into a conversation. They configure the model to perform a specific trelix-powered workflow.
 
@@ -796,7 +819,7 @@ Prompts the model to run `blast_radius`, group the results by dependency depth, 
 
 ---
 
-## 11. Watch Bridge (v2.7.0)
+## 12. Watch Bridge (v2.7.0)
 
 The `trelix watch` command now fires `notifications/resources/updated` events to all subscribed MCP clients after every file re-index. This enables real-time codebase awareness in Claude Code and other agents without polling.
 
@@ -813,7 +836,7 @@ This is useful for:
 
 ---
 
-## 12. v2.4.0 Breaking Change — `search_code` Pagination
+## 13. v2.4.0 Breaking Change — `search_code` Pagination
 
 In v2.3.x and earlier, `search_code` accepted an `offset` integer parameter and returned a flat list:
 
@@ -850,7 +873,7 @@ results = response["results"]
 
 ---
 
-## 13. Pagination Example (Full Paging Loop)
+## 14. Pagination Example (Full Paging Loop)
 
 ```python
 def fetch_all_results(query: str, repo_path: str, page_size: int = 10) -> list:
@@ -883,7 +906,7 @@ def fetch_all_results(query: str, repo_path: str, page_size: int = 10) -> list:
 
 ---
 
-## 14. IDE Integrations
+## 15. IDE Integrations
 
 ### VS Code Extension
 
@@ -905,7 +928,7 @@ Then use in the command palette (Cmd+Shift+P):
 
 ---
 
-## 15. Example Claude Code Session
+## 16. Example Claude Code Session
 
 The following shows three realistic prompts you might use once trelix-mcp is registered.
 
@@ -939,7 +962,7 @@ Claude will call `build_knowledge_graph`, then `graph_search_mcp("database ORM q
 
 ---
 
-## 16. Resource Subscriptions (v2.5.0)
+## 17. Resource Subscriptions (v2.5.0)
 
 trelix-mcp v2.5.0 implements the MCP resource subscription protocol
 ([MCP spec §Resources](https://modelcontextprotocol.io/specification/2024-11-05/server/resources)).
@@ -974,7 +997,7 @@ Client → Server:  resources/read  { uri }
 
 ---
 
-## 17. Troubleshooting MCP Issues
+## 18. Troubleshooting MCP Issues
 
 ### `trelix-mcp: command not found`
 
