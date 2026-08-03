@@ -1,13 +1,13 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 2.11.1 (current) | **Next:** 3.0.0
+> **Version:** 2.12.0 (current) | **Next:** 3.0.0
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
 ---
 
-## ✅ Shipped (v2.0 – v2.11.1)
+## ✅ Shipped (v2.0 – v2.12.0)
 
 | Version | Feature |
 |---------|---------|
@@ -28,6 +28,7 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.10.0 | REST API-key auth (`TRELIX_API_AUTH_TOKEN`) + HTTP-layer OpenTelemetry spans, `/parse` endpoint + per-source context budgeting, leg-level path filtering + `intent_hint`/`hyde_snippet_hint` on `/search`, cross-source `generic_edges` table + git-log ticket linker (`trelix link-tickets`), Jira/TestRail artifact connectors (`trelix connector sync`), and a PageRank eval showing +0.040 recall@5 / +0.031 NDCG@10 from the new bidirectional graph edges. All new surface additive/opt-in — no breaking changes. |
 | v2.11.0 | Connector-fetched artifacts auto-link into `generic_edges` on sync (`ArtifactLinker`, `trelix link-artifacts`), opt-in Personalized PageRank (`TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION`), a unified retry/backoff contract (`tenacity`-based) shared by every LLM backend/embedder/connector/reranker/PR client, structured JSON logging with OTel trace correlation, and two new artifact connectors — Xray Cloud and Linear (`trelix connector sync <repo> xray\|linear`). Plus two real bugs found by live-testing Jira against a production site (ADF descriptions silently dropped to empty bodies; bad credentials silently reported as success) and a `.env`-leakage test-isolation fix. All new surface additive/opt-in — no breaking changes. |
 | v2.11.1 | Fixed a path-containment bug in `/graph/visualize`'s `output` query param: a raw string-prefix check accepted a sibling directory sharing the same prefix as `<repo>/.trelix` (e.g. `<repo>/.trelix-evil`), letting a caller write an arbitrary-named HTML file outside the intended directory. Switched to `Path.is_relative_to()`, mirroring `/parse`'s existing correct check in the same file. Found via a full production dry-run of v2.11.0's REST API surface. |
+| v2.12.0 | Fixed a real call-graph/type-edge resolver bug (same-named methods across classes silently wired to the wrong symbol; ~2,400 provably-wrong edges removed on trelix's own self-index), activated per-leg RRF weight config (`TRELIX_RETRIEVAL_LEG_WEIGHT_<LEG>`) at the primary retrieval call site, clamped an unbounded `Retry-After` header that could crash the retry loop, capped unbounded Jira ADF recursion, documented `trelix eval-synthesis`, and extended CI to lint/type-check `trelix-mcp`/`trelix-langchain`/`trelix-llama-index` — which surfaced and fixed a missing PEP 561 `py.typed` marker on the core `trelix` package and an unresolvable `mcp`/`fastmcp` dependency-floor landmine. |
 
 ---
 
@@ -70,11 +71,12 @@ This roadmap describes planned features, research directions, and long-term visi
       `docs/superpowers/plans/v3-0-0-breaking-changes.md` for the removal
       checklist. Everything else originally scoped under v3.0.0 shipped
       additively in v2.9.0/v2.10.0 instead (see the Shipped table above).
-- [ ] **MCP protocol currency** — bump `mcp`/`fastmcp` version floors in
-      `packages/trelix-mcp/pyproject.toml` (currently declared `mcp>=1.0.0`/
-      `fastmcp>=2.0.0`, far behind the installed `1.28.0`/`3.4.2`) and adopt
-      SEP-2322's `InputRequiredResult` pattern for `ask_agent`'s input-wait
-      behavior. Scoped out of v2.9.0/v2.10.0 — never started.
+- [ ] **MCP `InputRequiredResult` pattern** — adopt SEP-2322's
+      `InputRequiredResult` pattern for `ask_agent`'s input-wait behavior.
+      This is a real behavioral/protocol change, not a dependency-floor
+      edit — needs its own design pass. (The `mcp`/`fastmcp` version-floor
+      bump this item used to bundle shipped in v2.12.0 as
+      `mcp>=1.24.0,<2.0`/`fastmcp>=3.4.0`.)
 - [ ] **MCP streaming** — true streaming tool responses once MCP spec supports it
 - [ ] **GitHub App Marketplace listing** — the App itself (`infra/github-app/`)
       is installable and hardened as of v2.9.0 (signature verification,

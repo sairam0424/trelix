@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [2.12.0] — 2026-08-03
+
+### Overview
+Three-phase post-v2.11.1 optimization pass, scoped from a `/deep-research` pass (110 subagents, 27 primary sources) plus direct codebase exploration: a real call-graph/type-edge correctness fix, a per-leg RRF weight config activating an already-built-but-unwired fusion mechanism, and a bundle of four independent hardening/doc/CI items — including a previously-unknown packaging gap affecting every downstream consumer of the `trelix` PyPI package. All new surface is additive/opt-in; no breaking changes.
+
+### Fixed
+- **Call-graph/type-edge resolver silently picked the wrong symbol on a name collision** — `Indexer._store_call_edges()`/`_store_type_edges()` resolved a bare-name match by taking `matches[0]` unconditionally from `Database.get_symbol_by_name()`, with zero ambiguity check. When two classes defined a same-named method (e.g. `Retriever.retrieve` vs `FederatedRetriever.retrieve`), every call site anywhere in the codebase got wired to whichever symbol had the lower DB id, regardless of which one was actually called — violating a documented design invariant (`docs/architecture.md` §21 #5: "a wrong edge is worse than a missing edge"). The safe 4-priority cascade already existed in `Database.resolve_cross_file_calls()`, but that only runs for batches ≥5 files — a single-file watch re-index never reached it. Fixed by inlining the same priority cascade (exact qualified_name match, unique among candidates → type-hint-assisted match, unique among candidates → unique bare-name match → else unresolved) via a new `Indexer._resolve_symbol_match()` helper shared by both call- and type-edge resolution. Measured on trelix's own self-index: 56/65 incorrectly-resolved same-named-method calls → 4/61 correctly resolved (remainder correctly left unresolved); ~2,400 provably-wrong call edges removed codebase-wide.
+- **`core/retry.py`: unbounded `Retry-After` value crashed the retry loop** — `_wait_retry_after_or_exponential` now clamps a server-supplied `Retry-After` value to `max_wait_seconds` before returning it. A hostile/malformed header (e.g. `Retry-After: 99999999999999999999999999999999`) previously reached `time.sleep()` unbounded, raising `OverflowError` and crashing the retry loop instead of retrying or failing cleanly — bypassing `stop_after_attempt` entirely. Affected every `@with_retry`-wrapped call site (all connectors, all LLM/embedder backends).
+- **`indexing/connectors/jira.py`: unbounded ADF recursion crashed on deep descriptions** — `_adf_node_to_text()` now tracks recursion depth and truncates past `_ADF_MAX_DEPTH` (150 — empirically verified safe to 50,000+ nesting levels, since each ADF level costs more than one real Python stack frame). A sufficiently deep Jira description previously raised an uncaught `RecursionError`, aborting the entire connector sync run over one malformed document.
+- **`trelix`'s own PyPI package shipped with no `py.typed` marker (PEP 561)** — without it, mypy silently treated every `trelix` import as `Any` once checked across the installed-package boundary, masking real type errors in every downstream package. Added `src/trelix/py.typed` (verified correctly bundled into a real built wheel) and fixed every newly-visible error in `trelix-mcp`/`trelix-langchain`/`trelix-llama-index` (missing return-type annotations, an untyped decorator chain, a genuine mypy list-invariance bug in `resources.py`'s symbol-lookup fallback).
+- **`packages/trelix-mcp`'s `mcp`/`fastmcp` dependency floor was stale and would have been wrong if naively bumped** — the declared `mcp>=1.0.0` floor was stale, but bumping straight to latest (`mcp==2.0.0`) would have made `trelix-mcp` uninstallable alongside `fastmcp` (whose own latest release pins `mcp<2.0,>=1.24.0` — confirmed via a real `pip install` reproduction that fails with `ResolutionImpossible`). Set to `mcp>=1.24.0,<2.0` / `fastmcp>=3.4.0`, matching what's actually installable and was tested against.
+
+### Added
+- **Per-leg RRF weight config** — new `RetrievalConfig.leg_weights: dict[str, float]`, keyed by `vector`/`bm25`/`grep`/`summary`/`sub_chunk`/`sparse`, all default `1.0` (a no-op). Threaded through the primary single-repo `reciprocal_rank_fusion(...)` call site via the mechanism's pre-existing `list_weights=` param — already implemented, tested, and in production use by `FederatedRetriever` for per-repo weighting, just never wired up outside federation. Activates investigation of RRF's documented "weakest-link" failure mode (a weak retrieval leg fused with a strong one can drag the strong leg's score below what it would score alone — VLDB 2026, 11-dataset benchmark) without shipping any new default weights. Env var overrides: `TRELIX_RETRIEVAL_LEG_WEIGHT_<VECTOR|BM25|GREP|SUMMARY|SUB_CHUNK|SPARSE>`, mirroring the existing `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_<LANG>` pattern.
+- **`docs/CLI_REFERENCE.md`: documented `trelix eval-synthesis`** — the command existed with zero documentation. New section covers Synopsis/Description/Options/Examples/Golden file format/Output/Notes, including a genuine discovered gotcha: unlike `trelix eval`, a missing golden file for `eval-synthesis` does not error or exit non-zero — it silently prints an all-zero-score table.
+- **CI now lints and type-checks `packages/trelix-mcp`, `packages/trelix-langchain`, and `packages/trelix-llama-index`** — previously unchecked anywhere, CI or locally. This is what surfaced the `py.typed` gap and the dependency-floor landmine above.
+
 ## [2.11.1] — 2026-08-02
 
 ### Security
@@ -1316,7 +1333,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.11.1...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v2.12.0...HEAD
+[2.12.0]: https://github.com/sairam0424/trelix/compare/v2.11.1...v2.12.0
 [2.11.1]: https://github.com/sairam0424/trelix/compare/v2.11.0...v2.11.1
 [2.11.0]: https://github.com/sairam0424/trelix/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/sairam0424/trelix/compare/v2.9.0...v2.10.0

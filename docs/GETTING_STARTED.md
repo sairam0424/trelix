@@ -20,7 +20,7 @@ Verify the install:
 
 ```bash
 trelix --version
-# trelix 2.11.1
+# trelix 2.12.0
 ```
 
 ---

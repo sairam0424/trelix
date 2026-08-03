@@ -1,4 +1,4 @@
 """trelix MCP server — expose trelix code intelligence as MCP tools."""
 
-__version__ = "2.11.1"
+__version__ = "2.12.0"
 __all__ = ["__version__"]

@@ -140,6 +140,8 @@ trelix watch ./my-repo
 
 ## What's New
 
+**v2.12.0 — Call-Graph Correctness & Fusion Tuning:** Fixed a call-graph/type-edge resolver bug where same-named methods across different classes (e.g. `Retriever.retrieve` vs `FederatedRetriever.retrieve`) could get silently wired to the wrong symbol (~2,400 provably-wrong edges removed on trelix's own self-index); activated per-leg RRF weight config (`TRELIX_RETRIEVAL_LEG_WEIGHT_<LEG>`) so any retrieval leg (vector/BM25/grep/summary/sub-chunk/sparse) can be tuned independently; clamped an unbounded `Retry-After` header that could crash the shared retry contract; capped unbounded Jira ADF recursion; and extended CI to type-check `trelix-mcp`/`trelix-langchain`/`trelix-llama-index`, which surfaced and fixed a missing PEP 561 `py.typed` marker on the core `trelix` package.
+
 **v2.11.0 — Cross-Source Depth & Reliability:** Connector-fetched artifacts (Jira/TestRail/Xray/Linear) now auto-link into the code graph on sync (`ArtifactLinker`, `trelix link-artifacts`); opt-in Personalized PageRank (`TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION`); a unified retry/backoff contract shared by every LLM backend, embedder, connector, and reranker; structured JSON logging for `trelix serve` with OpenTelemetry trace correlation; and two new connectors — Xray Cloud and Linear.
 
 **v2.10.0 — REST API Auth & Cross-Source Graph:** REST API-key auth (`TRELIX_API_AUTH_TOKEN`) + HTTP-layer OpenTelemetry spans, a new `/parse` endpoint, leg-level path filtering, cross-source `generic_edges` + a git-log ticket linker (`trelix link-tickets`), and the original Jira/TestRail artifact connectors.
