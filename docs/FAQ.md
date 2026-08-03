@@ -1,6 +1,6 @@
-# trelix v2.11.1 — Frequently Asked Questions
+# trelix v2.12.0 — Frequently Asked Questions
 
-> Last updated: 2026-08-02 — covers trelix 2.11.1, trelix-mcp 2.11.1, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
+> Last updated: 2026-08-03 — covers trelix 2.12.0, trelix-mcp 2.12.0, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
 
 ---
 
@@ -215,7 +215,7 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v2.11.1 exposes **15 tools**:
+trelix-mcp v2.12.0 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|

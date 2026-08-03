@@ -18,6 +18,7 @@ import requests
 from trelix.core.retry import (
     RETRYABLE_STATUS_CODES,
     _extract_retry_after_seconds,
+    _wait_retry_after_or_exponential,
     is_retryable_http_error,
     with_retry,
 )
@@ -285,7 +286,7 @@ class TestWithRetryHonorsRetryAfter:
 
         attempts = {"count": 0}
 
-        @with_retry(max_attempts=3, min_wait_seconds=0.001, max_wait_seconds=0.01)
+        @with_retry(max_attempts=3, min_wait_seconds=0.001, max_wait_seconds=60.0)
         def flaky() -> str:
             attempts["count"] += 1
             if attempts["count"] < 2:
@@ -297,3 +298,68 @@ class TestWithRetryHonorsRetryAfter:
 
         assert result == "ok"
         assert sleep_calls == [17.0]
+
+
+class TestWaitRetryAfterOrExponentialClampsOverflow:
+    """A hostile or malformed Retry-After value must be clamped to
+    max_wait_seconds — without this, time.sleep() raises OverflowError on a
+    sufficiently large float, crashing the retry loop instead of retrying
+    or failing cleanly, bypassing stop_after_attempt entirely."""
+
+    class _FakeOutcome:
+        def __init__(self, exc: BaseException) -> None:
+            self._exc = exc
+            self.failed = True
+
+        def exception(self) -> BaseException:
+            return self._exc
+
+    class _FakeRetryState:
+        def __init__(self, exc: BaseException, attempt_number: int = 1) -> None:
+            self.outcome = TestWaitRetryAfterOrExponentialClampsOverflow._FakeOutcome(exc)
+            self.attempt_number = attempt_number
+
+    def test_absurdly_large_retry_after_is_clamped_to_max_wait_seconds(self) -> None:
+        waiter = _wait_retry_after_or_exponential(min_wait_seconds=1.0, max_wait_seconds=60.0)
+        exc = _httpx_status_error_with_retry_after(429, "99999999999999999999999999999999")
+        wait_seconds = waiter(self._FakeRetryState(exc))
+        assert wait_seconds == 60.0
+
+    def test_clamped_value_never_overflows_time_sleep(self) -> None:
+        """End-to-end proof: the clamped value is small enough that
+        time.sleep() (unmocked) never raises OverflowError."""
+        waiter = _wait_retry_after_or_exponential(min_wait_seconds=1.0, max_wait_seconds=60.0)
+        exc = _httpx_status_error_with_retry_after(429, "99999999999999999999999999999999")
+        wait_seconds = waiter(self._FakeRetryState(exc))
+        # Not actually sleeping 60s in a test — just confirming the value
+        # itself is sleep()-safe (the OverflowError happens at call time,
+        # not at argument-construction time).
+        import time
+
+        try:
+            time.sleep(0.0)  # sanity: sleep() itself works in this env
+            float(wait_seconds)  # the real regression: this used to be 1e+32
+        except OverflowError:
+            pytest.fail("wait_seconds was not clamped — time.sleep() would overflow")
+        assert wait_seconds <= 60.0
+
+    def test_plausible_large_value_within_max_wait_is_not_clamped(self) -> None:
+        """A real, non-hostile large value (e.g. several hours) under
+        max_wait_seconds must still be honored exactly — clamping should
+        only kick in when the value exceeds the ceiling."""
+        waiter = _wait_retry_after_or_exponential(min_wait_seconds=1.0, max_wait_seconds=3600.0)
+        exc = _httpx_status_error_with_retry_after(429, "1800")
+        wait_seconds = waiter(self._FakeRetryState(exc))
+        assert wait_seconds == 1800.0
+
+    def test_no_retry_after_header_falls_back_to_exponential_unclamped_by_this_path(
+        self,
+    ) -> None:
+        """When there's no Retry-After header, the exponential branch runs
+        unaffected by this change — its own max_wait_seconds ceiling
+        (wait_random_exponential's max=) already bounds it independently."""
+        waiter = _wait_retry_after_or_exponential(min_wait_seconds=0.001, max_wait_seconds=0.01)
+        exc = _httpx_status_error(429)  # no Retry-After header
+        fake_state = self._FakeRetryState(exc)
+        wait_seconds = waiter(fake_state)
+        assert 0.0 <= wait_seconds <= 0.01

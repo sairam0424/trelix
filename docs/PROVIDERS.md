@@ -1,4 +1,4 @@
-# trelix v2.11.1 — Providers Reference
+# trelix v2.12.0 — Providers Reference
 
 Complete guide to all embedding providers and LLM providers supported by trelix.
 
@@ -459,6 +459,14 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 | `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_<LANG>` | (per-language defaults) | Single-language override, e.g. `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_MARKDOWN=0.1` |
 
 Default weights: source code `1.0`, config/data `0.5`, HTML/CSS `0.4`, Markdown `0.3`, unknown `0.8`.
+
+### Retrieval — Per-leg Weighting
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_RETRIEVAL_LEG_WEIGHT_<LEG>` | `1.0` per leg | Per-leg RRF score multiplier, applied during fusion (before summing, not after like file-type weights). `<LEG>` is one of `VECTOR`, `BM25`, `GREP`, `SUMMARY`, `SUB_CHUNK`, `SPARSE`, e.g. `TRELIX_RETRIEVAL_LEG_WEIGHT_BM25=0.7`. |
+
+All-`1.0` (the default) is a no-op — byte-for-byte identical to unweighted fusion.
 
 ### Cohere Reranker
 

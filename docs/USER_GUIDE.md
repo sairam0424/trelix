@@ -1,4 +1,4 @@
-# trelix User Guide — v2.11.1
+# trelix User Guide — v2.12.0
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -190,7 +190,7 @@ The practical meaning: a result that appears at rank 3 in the vector leg AND ran
 
 ## 4. The Retrieval Pipeline — All 7 Legs
 
-trelix v2.11.1 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
+trelix v2.12.0 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
 
 ```
 User Query
@@ -369,7 +369,7 @@ trelix index ./my-repo
 You will see output like this:
 
 ```
-trelix v2.11.1 — indexing ./my-repo
+trelix v2.12.0 — indexing ./my-repo
 ✓ FileWalker: 243 files found (.gitignore applied)
   Phase 1/4 — Parse
     [████████████████████] 243/243 files  3.2s
@@ -468,7 +468,7 @@ trelix stats ./my-repo
 trelix stats — ./my-repo
 
   Index:        ./my-repo/.trelix/index.db
-  Version:      2.11.1
+  Version:      2.12.0
   Last indexed: 2026-07-05 10:32:14 UTC
 
   Files:        243
@@ -1649,7 +1649,7 @@ curl http://localhost:8765/health
 ```
 
 ```json
-{"status": "ok", "version": "2.11.1", "repo": "./my-repo"}
+{"status": "ok", "version": "2.12.0", "repo": "./my-repo"}
 ```
 
 ### Index statistics
@@ -2102,4 +2102,4 @@ print(f"Overall: {metrics['overall']:.3f}")
 
 ---
 
-*trelix v2.11.1 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v2.12.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

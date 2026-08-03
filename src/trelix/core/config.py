@@ -688,6 +688,38 @@ class RetrievalConfig(BaseSettings):
     the default dict at construction time.
     """
 
+    # ── Per-leg RRF weighting ────────────────────────────────────────────────
+    # Multiplies each retrieval leg's RRF contribution (1/(k+rank)) before
+    # summing, via reciprocal_rank_fusion()'s existing list_weights= param —
+    # already implemented, tested, and used in production by
+    # FederatedRetriever for per-repo weighting; this just threads it through
+    # the main single-repo Retriever._retrieve_standard() call site too.
+    # All-1.0 (the default) is a no-op — byte-for-byte identical to today's
+    # unweighted fusion. No master enable/disable flag: an all-1.0 dict is
+    # already inert, so a separate bool would add config surface without
+    # adding capability.
+    leg_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "vector": 1.0,
+            "bm25": 1.0,
+            "grep": 1.0,
+            "summary": 1.0,
+            "sub_chunk": 1.0,
+            "sparse": 1.0,
+        },
+    )
+    """
+    Per-leg RRF score multiplier applied during fusion (before summing, not
+    after like file_type_weights). Keys match the leg names used in
+    Retriever's own leg-size telemetry logging: vector, bm25, grep, summary,
+    sub_chunk, sparse. Missing key -> multiplier = 1.0.
+
+    Individual overrides via env (one var per leg):
+      TRELIX_RETRIEVAL_LEG_WEIGHT_VECTOR=1.2
+      TRELIX_RETRIEVAL_LEG_WEIGHT_BM25=0.8
+      ...
+    """
+
     def model_post_init(self, __context: Any) -> None:
         import json
         import os
@@ -743,6 +775,24 @@ class RetrievalConfig(BaseSettings):
             if key.startswith(prefix):
                 lang = key[len(prefix) :].lower()
                 self.file_type_weights[lang] = float(val)
+
+        # Per-leg RRF weighting — same defaults-then-env-merge pattern as
+        # file_type_weights above.
+        _leg_defaults: dict[str, float] = {
+            "vector": 1.0,
+            "bm25": 1.0,
+            "grep": 1.0,
+            "summary": 1.0,
+            "sub_chunk": 1.0,
+            "sparse": 1.0,
+        }
+        self.leg_weights = {**_leg_defaults, **self.leg_weights}
+
+        leg_prefix = "TRELIX_RETRIEVAL_LEG_WEIGHT_"
+        for key, val in os.environ.items():
+            if key.startswith(leg_prefix):
+                leg = key[len(leg_prefix) :].lower()
+                self.leg_weights[leg] = float(val)
 
 
 class LLMConfig(BaseSettings):

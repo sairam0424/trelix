@@ -14,6 +14,8 @@ from pathlib import Path  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
 from fastmcp import Context, FastMCP  # noqa: E402
+from mcp.server.lowlevel.server import NotificationOptions  # noqa: E402
+from mcp.types import ServerCapabilities  # noqa: E402
 
 from trelix.agent.loop import AgentLoop  # noqa: E402
 from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig  # noqa: E402
@@ -49,7 +51,10 @@ _subscription_registry = SubscriptionRegistry(
 _orig_get_capabilities = mcp._mcp_server.get_capabilities
 
 
-def _get_capabilities_with_subscribe(notification_options, experimental_capabilities):
+def _get_capabilities_with_subscribe(
+    notification_options: NotificationOptions,
+    experimental_capabilities: dict[str, dict[str, Any]],
+) -> ServerCapabilities:
     """Wrap get_capabilities to advertise resources.subscribe=True."""
     caps = _orig_get_capabilities(notification_options, experimental_capabilities)
     if caps.resources is not None:
@@ -71,7 +76,7 @@ mcp._mcp_server.get_capabilities = _get_capabilities_with_subscribe  # type: ign
 
 
 @mcp.tool()
-def subscribe_resource(uri: str, subscription_id: str) -> dict:
+def subscribe_resource(uri: str, subscription_id: str) -> dict[str, Any]:
     """Register a subscription for a trelix:// resource URI.
 
     MCP clients call this after receiving resources.subscribe=True in capabilities.
@@ -102,7 +107,7 @@ def subscribe_resource(uri: str, subscription_id: str) -> dict:
 
 
 @mcp.tool()
-def unsubscribe_resource(subscription_id: str) -> dict:
+def unsubscribe_resource(subscription_id: str) -> dict[str, Any]:
     """Deregister a resource subscription by its subscription ID.
 
     Args:
@@ -207,7 +212,7 @@ def search_code(
     cursor: int = 0,
     intent_hint: str | None = None,
     hyde_snippet_hint: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """
     Search the indexed codebase using natural language queries.
 
@@ -301,7 +306,7 @@ def index_codebase(
     # Omit the kwarg when unset so pydantic-settings falls through to
     # TRELIX_EMBEDDER_PROVIDER — passing provider="local" unconditionally
     # would silently override the env var on every call.
-    embedder_config = EmbedderConfig() if provider is None else EmbedderConfig(provider=provider)  # type: ignore[call-arg]
+    embedder_config = EmbedderConfig() if provider is None else EmbedderConfig(provider=provider)
     config = IndexConfig(repo_path=repo_path, embedder=embedder_config)
 
     def _send_progress(current: int, total: int) -> None:
@@ -413,7 +418,7 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dict:
+def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dict[str, Any]:
     """
     Build a knowledge graph for an indexed codebase.
 
@@ -447,7 +452,7 @@ def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dic
 
 
 @mcp.tool()
-def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict]:
+def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict[str, Any]]:
     """
     Graph-traversal search: find structurally related symbols by starting
     from semantically similar seeds and following code relationships.
@@ -541,7 +546,7 @@ def _confine_federation_config_path(config_path: str | None) -> str | None:
 
 
 @mcp.tool()
-def federation_list_repos(config_path: str | None = None) -> dict:
+def federation_list_repos(config_path: str | None = None) -> dict[str, Any]:
     """List all repos registered for federated (multi-repo) search.
 
     Args:
@@ -573,7 +578,7 @@ def federation_add_repo(
     path: str,
     weight: float = 1.0,
     config_path: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Register a repo for federated search across MCP tool calls.
 
     ⚠️ IMPORTANT:
@@ -610,7 +615,7 @@ def federation_add_repo(
 
 
 @mcp.tool()
-def federation_remove_repo(alias: str, config_path: str | None = None) -> dict:
+def federation_remove_repo(alias: str, config_path: str | None = None) -> dict[str, Any]:
     """Unregister a repo from federated search by alias.
 
     Args:
@@ -639,7 +644,7 @@ def federation_search_all(
     k: int = 10,
     cursor: int = 0,
     config_path: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Search across ALL registered repos simultaneously (federated search).
 
     ⚠️ IMPORTANT:
@@ -726,7 +731,7 @@ def ask_agent(
     query: str,
     repo_path: str,
     session_id: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Ask a question using the multi-turn ReAct agentic loop, with persistent memory.
 
     ⚠️ IMPORTANT:
@@ -768,7 +773,7 @@ def ask_agent(
 
 
 @mcp.tool()
-def agent_list_sessions(repo_path: str, limit: int = 50) -> dict:
+def agent_list_sessions(repo_path: str, limit: int = 50) -> dict[str, Any]:
     """List recent agent sessions for a repo, most recently active first.
 
     Args:
@@ -793,7 +798,7 @@ def agent_list_sessions(repo_path: str, limit: int = 50) -> dict:
 
 
 @mcp.tool()
-def agent_clear_session(repo_path: str, session_id: str) -> dict:
+def agent_clear_session(repo_path: str, session_id: str) -> dict[str, Any]:
     """Delete a persisted agent session and all its turn history.
 
     Args:

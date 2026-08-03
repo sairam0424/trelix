@@ -1,15 +1,20 @@
+from typing import TYPE_CHECKING
+
 from llama_index.core.retrievers import BaseRetriever
 from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 
+if TYPE_CHECKING:
+    from trelix.retrieval.retriever import Retriever
+
 
 class TrelixIndexRetriever(BaseRetriever):
-    def __init__(self, repo_path, provider="local", k=10):
+    def __init__(self, repo_path: str, provider: str = "local", k: int = 10) -> None:
         self._repo_path = repo_path
         self._provider = provider
         self._k = k
         super().__init__()
 
-    def _get_trelix_retriever(self):
+    def _get_trelix_retriever(self) -> "Retriever":
         from typing import Literal, cast
 
         from trelix.core.config import EmbedderConfig, IndexConfig

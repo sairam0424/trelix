@@ -48,5 +48,5 @@ trelix uses PyPI Trusted Publishing with automatic Sigstore attestations (PEP 74
 Verify a release:
 ```bash
 pip install pypi-attestations
-python -m pypi_attestations verify trelix==2.11.1
+python -m pypi_attestations verify trelix==2.12.0
 ```
