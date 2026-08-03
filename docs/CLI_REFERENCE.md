@@ -31,6 +31,7 @@ on most commands.
    - [graph](#trelix-graph)
    - [telemetry](#trelix-telemetry)
    - [eval](#trelix-eval)
+   - [eval-synthesis](#trelix-eval-synthesis)
    - [taint](#trelix-taint)
    - [review](#trelix-review)
    - [link-tickets](#trelix-link-tickets)
@@ -819,6 +820,82 @@ Each line is a JSON object:
 - `<repo_path>` defaults to `.` if omitted.
 - Exits with code 1 if the golden file does not exist, and prints instructions
   for creating one.
+
+---
+
+### `trelix eval-synthesis`
+
+#### Synopsis
+
+```
+trelix eval-synthesis [<repo_path>] --golden <file>
+```
+
+#### Description
+
+Evaluates LLM synthesis quality (not just retrieval) by running every query in
+a golden JSONL file through the full retrieve-and-synthesize pipeline and
+scoring the generated answer GroUSE-style: hallucination rate, completeness,
+and faithfulness against the expected answer fragments and symbols.
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--golden` | `-g` | string | `.trelix/golden_synthesis.jsonl` | Path to the golden JSONL file. |
+
+#### Examples
+
+```bash
+# Evaluate with the default golden file
+trelix eval-synthesis .
+
+# Use a custom golden file
+trelix eval-synthesis . --golden tests/golden_synthesis_queries.jsonl
+trelix eval-synthesis /my/repo -g /shared/golden_synthesis.jsonl
+```
+
+#### Golden file format
+
+Each line is a JSON object — a superset of `trelix eval`'s golden format,
+adding two optional fields:
+
+```jsonl
+{"query": "how does JWT validation work?", "relevant_files": ["src/auth/middleware.py"], "expected_answer_fragments": ["decode", "secret", "bearer"], "expected_symbols": ["AuthMiddleware.verify", "jwt.decode"]}
+```
+
+- `expected_answer_fragments` — substrings the synthesized answer should
+  contain (case-insensitive). Optional.
+- `expected_symbols` — qualified symbol names the answer should reference.
+  Optional.
+- Queries that omit both optional fields still contribute to `n_queries` with
+  a score of `1.0`.
+
+#### Output
+
+```
+    Synthesis Quality Results (GroUSE-style)     
+┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ Metric             ┃  Score ┃ Direction       ┃
+┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ Hallucination rate │ 0.0500 │ lower = better  │
+│ Completeness       │ 0.9100 │ higher = better │
+│ Faithfulness       │ 0.9400 │ higher = better │
+│ Overall            │ 0.9300 │ higher = better │
+│ Queries evaluated  │     12 │                 │
+└────────────────────┴────────┴─────────────────┘
+```
+
+#### Notes
+
+- `<repo_path>` defaults to `.` if omitted.
+- Requires a configured LLM provider (synthesis makes real LLM calls) —
+  unlike `trelix eval`, which only exercises retrieval.
+- **Unlike `trelix eval`**, a missing golden file does *not* raise an error
+  or exit non-zero — it exits `0` and prints a table of all-zero scores with
+  `Queries evaluated = 0`. Double-check the `--golden` path if you see an
+  all-zero result; it usually means the file wasn't found, not that
+  synthesis quality is actually zero.
 
 ---
 

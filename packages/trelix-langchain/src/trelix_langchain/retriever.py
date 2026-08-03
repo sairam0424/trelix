@@ -1,6 +1,11 @@
+from typing import TYPE_CHECKING
+
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
+
+if TYPE_CHECKING:
+    from trelix.retrieval.retriever import Retriever
 
 
 class TrelixRetriever(BaseRetriever):
@@ -8,7 +13,7 @@ class TrelixRetriever(BaseRetriever):
     provider: str = "local"
     k: int = 10
 
-    def _get_trelix_retriever(self):
+    def _get_trelix_retriever(self) -> "Retriever":
         from typing import Literal, cast
 
         from trelix.core.config import EmbedderConfig, IndexConfig
