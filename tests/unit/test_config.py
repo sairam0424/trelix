@@ -448,6 +448,24 @@ class TestRetrievalConfigLegWeights:
         assert cfg.leg_weights["bm25"] == 1.0
 
 
+class TestRetrievalConfigDeclarationBoost:
+    def test_default_disabled_weight_1_0(self) -> None:
+        cfg = RetrievalConfig()
+        assert cfg.declaration_boost_enabled is False
+        assert cfg.declaration_boost_weight == 1.0
+
+    def test_env_override_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_DECLARATION_BOOST", "true")
+        monkeypatch.setenv("TRELIX_RETRIEVAL_DECLARATION_BOOST_WEIGHT", "3.0")
+        cfg = RetrievalConfig()
+        assert cfg.declaration_boost_enabled is True
+        assert cfg.declaration_boost_weight == 3.0
+
+    def test_weight_below_lower_bound_raises(self) -> None:
+        with pytest.raises(Exception):
+            RetrievalConfig(declaration_boost_weight=0.5)
+
+
 class TestRetrievalConfigPlanCache:
     def test_default_plan_cache_size_is_128(self) -> None:
         from trelix.core.config import RetrievalConfig

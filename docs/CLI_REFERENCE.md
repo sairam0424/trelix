@@ -115,6 +115,8 @@ below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 | `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTING` | `true` | Apply per-language RRF score multipliers |
 | `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_<LANG>` | varies | Per-language override, e.g. `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_MARKDOWN=0.1` |
 | `TRELIX_RETRIEVAL_LEG_WEIGHT_<LEG>` | `1.0` | Per-leg RRF score multiplier applied during fusion. `<LEG>` is one of `VECTOR`, `BM25`, `GREP`, `SUMMARY`, `SUB_CHUNK`, `SPARSE`, e.g. `TRELIX_RETRIEVAL_LEG_WEIGHT_BM25=0.7` |
+| `TRELIX_RETRIEVAL_DECLARATION_BOOST` | `false` | Boost BM25 matches on a symbol's `name`/`qualified_name` over incidental `docstring`/`body` mentions |
+| `TRELIX_RETRIEVAL_DECLARATION_BOOST_WEIGHT` | `1.0` | Declaration-boost multiplier (range: 1.0–10.0) |
 
 ### Indexing and chunking
 

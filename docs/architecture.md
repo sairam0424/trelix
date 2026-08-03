@@ -352,6 +352,8 @@ class RetrievalConfig(BaseSettings):
     flare_max_retries: int = 1           # ge=1, le=3 — v2.4.0 rename
     pagerank_boost_enabled: bool = False
     pagerank_boost_factor: float = 1.3   # 1.0–3.0
+    declaration_boost_enabled: bool = False
+    declaration_boost_weight: float = 1.0  # 1.0–10.0, no-op at default
     agentic_enabled: bool = False        # ReAct AgentLoop
     agent_max_turns: int = 8             # 1–20
     agent_token_budget: int = 6_000      # history compression budget

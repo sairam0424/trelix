@@ -411,6 +411,74 @@ class TestFTS5Search:
         results = db.bm25_search("process data", limit=3)
         assert len(results) <= 3
 
+    def test_bm25_search_declaration_boost_ranks_name_match_above_incidental_mention(
+        self, db: Database, sample_file: IndexedFile
+    ) -> None:
+        """Real, reproduced ranking defect: unweighted BM25 can rank a symbol
+        that only *mentions* the query term in its body/docstring above the
+        symbol whose *name* actually matches it. declaration_boost_weight
+        boosts the name/qualified_name columns to fix this."""
+        file_id = db.upsert_file(sample_file)
+        declaration_id = self._insert_symbol(
+            db,
+            file_id,
+            "process_payment",
+            body="def process_payment(amount): pass",
+        )
+        mentions_body = "\n".join(
+            f"    process_payment(amount_{i})  # calls process_payment" for i in range(15)
+        )
+        incidental_id = self._insert_symbol(
+            db,
+            file_id,
+            "batch_orchestrator",
+            body=f"def batch_orchestrator(amounts):\n{mentions_body}",
+            docstring=" ".join(["process_payment"] * 15),
+        )
+        for i in range(10):
+            self._insert_symbol(
+                db,
+                file_id,
+                f"unrelated_{i}",
+                body=f"def unrelated_{i}(): return {i}",
+                docstring=f"unrelated {i}",
+            )
+
+        default_results = db.bm25_search("process_payment")
+        default_order = [symbol_id for symbol_id, _rank in default_results]
+        assert default_order.index(incidental_id) < default_order.index(declaration_id), (
+            "expected the unweighted baseline to reproduce the defect "
+            "(incidental mention outranking the actual declaration)"
+        )
+
+        boosted_results = db.bm25_search("process_payment", declaration_boost_weight=5.0)
+        boosted_order = [symbol_id for symbol_id, _rank in boosted_results]
+        assert boosted_order.index(declaration_id) < boosted_order.index(incidental_id)
+
+    def test_bm25_search_default_weight_preserves_unweighted_ordering(
+        self, db: Database, sample_file: IndexedFile
+    ) -> None:
+        """Regression safety: declaration_boost_weight=1.0 must be
+        byte-identical to today's unweighted rank ordering."""
+        file_id = db.upsert_file(sample_file)
+        self._insert_symbol(
+            db,
+            file_id,
+            "process_payment",
+            body="def process_payment(amount): stripe.charge(amount)",
+            docstring="Process a Stripe payment.",
+        )
+        self._insert_symbol(
+            db,
+            file_id,
+            "log_payment_event",
+            body="def log_payment_event(amount): audit.log(amount)",
+            docstring="Logs a payment event mentioning process_payment for traceability.",
+        )
+        default_results = db.bm25_search("process_payment")
+        explicit_noop_results = db.bm25_search("process_payment", declaration_boost_weight=1.0)
+        assert default_results == explicit_noop_results
+
 
 # ---------------------------------------------------------------------------
 # Chunks

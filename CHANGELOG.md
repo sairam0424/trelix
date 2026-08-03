@@ -6,6 +6,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Added
+- **FTS5 declaration-boost ranking (opt-in)** — new `RetrievalConfig.declaration_boost_enabled`/`declaration_boost_weight` (`TRELIX_RETRIEVAL_DECLARATION_BOOST`/`_WEIGHT`), threaded into `Database.bm25_search()`'s previously-unweighted FTS5 query via an explicit `bm25(symbols_fts, ...)` call. Fixes a real ranking defect: unweighted BM25 can rank a symbol that only *mentions* a query term in its body/docstring above the symbol whose *name* actually matches it — reproduced live on trelix's own self-index, where `Database.bm25_search` (the method implementing the very feature being searched for) doesn't appear in the top 15 results for the query `"bm25_search"` under the old unweighted ranking, but reaches rank #9 with `declaration_boost_weight=5.0`. Default weight `1.0` is a verified no-op — byte-for-byte identical to today's unweighted ranking. No FTS5 schema change; the existing 5-column virtual table is reweighted, not rebuilt.
+
 ### Fixed
 - **`IndexConfig` missing `populate_by_name=True`** — every other aliased-field
   config class in `core/config.py` (`EmbedderConfig`, `GitLinkerConfig`, and 9
