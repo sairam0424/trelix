@@ -1042,6 +1042,62 @@ class Indexer:
     # Helpers
     # ──────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _resolve_symbol_match(
+        matches: list[Symbol],
+        name: str,
+        type_hint: str | None = None,
+    ) -> int | None:
+        """
+        Pick the correct symbol id out of `matches` (all rows returned by
+        `Database.get_symbol_by_name(name)`) using the same priority order as
+        `Database.resolve_cross_file_calls()`'s SQL cascade — kept in sync
+        deliberately, since this runs at insert time (every index() and
+        index_file() call) while that method only runs for batches >=
+        `_FULL_RESOLVE_THRESHOLD` files. Taking `matches[0]` unconditionally
+        (the old behavior) silently picked whichever symbol SQLite happened
+        to return first whenever two symbols shared a bare name — e.g. two
+        classes each defining a same-named method — wiring every call site
+        to the wrong one. "Leave unresolved" is correct here, not a fallback:
+        a wrong edge is worse than a missing edge (see docs/architecture.md
+        Key Design Invariants #5).
+
+        Every priority below requires the match to be UNIQUE at that
+        priority level, not merely present — for a top-level class/function,
+        qualified_name equals the bare name, so two unrelated top-level
+        symbols sharing that name (e.g. two files each defining `class
+        Base`) both satisfy "qualified_name exact match" without a
+        uniqueness check; that would silently reintroduce the same
+        wrong-edge risk this method exists to close. Note this makes
+        priorities 1-2 here slightly stricter than `resolve_cross_file_calls`'s
+        SQL (`... LIMIT 1`, no uniqueness check on those two passes) — a
+        pre-existing, narrower gap in the batch-mode cascade that's out of
+        scope for this fix.
+
+        1. Exact qualified_name match against `name`, if exactly one match has it.
+        2. If `type_hint` is set, a match whose qualified_name starts with
+           "<type_hint>.", if exactly one match has it.
+        3. The single match, only if `matches` has exactly one entry overall.
+        4. Otherwise None — ambiguous, leave unresolved for the batch-mode
+           cascade (or forever, in watch mode — still correct).
+        """
+        if not matches:
+            return None
+
+        qualified = [m for m in matches if m.qualified_name == name]
+        if len(qualified) == 1:
+            return qualified[0].id
+
+        if type_hint:
+            prefix = f"{type_hint}."
+            hinted = [m for m in matches if m.qualified_name.startswith(prefix)]
+            if len(hinted) == 1:
+                return hinted[0].id
+
+        if len(matches) == 1:
+            return matches[0].id
+        return None
+
     def _store_call_edges(
         self,
         edges: list[Any],
@@ -1049,7 +1105,8 @@ class Indexer:
     ) -> None:
         """
         Remap caller local_idx → DB id and resolve callee_name → callee DB id.
-        Unresolved callees (external libs, stdlib) get callee_id = None — fine.
+        Unresolved callees (external libs, stdlib, or ambiguous bare-name
+        matches) get callee_id = None — fine, see _resolve_symbol_match().
         """
         for edge in edges:
             db_caller_id = local_to_db.get(edge.caller_id)
@@ -1057,8 +1114,9 @@ class Indexer:
                 continue
             edge.caller_id = db_caller_id
             matches = self.db.get_symbol_by_name(edge.callee_name)
-            if matches:
-                edge.callee_id = matches[0].id
+            edge.callee_id = self._resolve_symbol_match(
+                matches, edge.callee_name, edge.callee_type_hint
+            )
 
         valid = [e for e in edges if e.caller_id in local_to_db.values()]
         if valid:
@@ -1072,7 +1130,8 @@ class Indexer:
     ) -> None:
         """
         Remap from_symbol_id local_idx → DB id and best-effort resolve to_symbol_id.
-        Unresolvable types (external libs) remain with to_symbol_id = None.
+        Unresolvable types (external libs, or ambiguous bare-name matches)
+        remain with to_symbol_id = None — see _resolve_symbol_match().
         """
         from trelix.core.models import TypeEdge
 
@@ -1084,8 +1143,7 @@ class Indexer:
             edge.from_symbol_id = db_from_id
             # Best-effort intra-file resolution
             matches = self.db.get_symbol_by_name(edge.to_type_name)
-            if matches:
-                edge.to_symbol_id = matches[0].id
+            edge.to_symbol_id = self._resolve_symbol_match(matches, edge.to_type_name)
             valid.append(edge)
 
         if valid:
