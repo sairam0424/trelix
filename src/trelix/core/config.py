@@ -1064,6 +1064,7 @@ class IndexConfig(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     repo_path: str

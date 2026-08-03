@@ -271,6 +271,25 @@ class TestIndexConfig:
         cfg = IndexConfig(repo_path=str(tmp_path), embedder={"_env_file": None})  # type: ignore[arg-type]
         assert cfg.embedder.provider == "local"
 
+    def test_file_summaries_enabled_kwarg_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Passing file_summaries_enabled=True by field name (not alias) must
+        take effect — regression test for the missing populate_by_name=True
+        on IndexConfig's model_config, which previously let this kwarg be
+        silently ignored (falling back to the alias env var / default)."""
+        monkeypatch.delenv("TRELIX_FILE_SUMMARIES_ENABLED", raising=False)
+        cfg = IndexConfig(repo_path=str(tmp_path), file_summaries_enabled=True, _env_file=None)
+        assert cfg.file_summaries_enabled is True
+
+    def test_telemetry_enabled_kwarg_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same regression coverage as above for telemetry_enabled."""
+        monkeypatch.delenv("TRELIX_TELEMETRY_ENABLED", raising=False)
+        cfg = IndexConfig(repo_path=str(tmp_path), telemetry_enabled=True, _env_file=None)
+        assert cfg.telemetry_enabled is True
+
 
 class TestRetrievalConfigQueryCache:
     def test_default_query_cache_size_is_256(self) -> None:

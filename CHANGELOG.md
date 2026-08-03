@@ -6,6 +6,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+- **`IndexConfig` missing `populate_by_name=True`** — every other aliased-field
+  config class in `core/config.py` (`EmbedderConfig`, `GitLinkerConfig`, and 9
+  others) sets `populate_by_name=True` in `model_config`; `IndexConfig` was the
+  sole exception, added when `file_summaries_enabled`/`telemetry_enabled` first
+  gained their `alias=` (unlike every sibling class's identical addition).
+  Without it, passing `file_summaries_enabled=`/`telemetry_enabled=` as a
+  constructor kwarg by field name was silently ignored — the value fell back
+  to the alias env var or default with no error, since `model_config` also
+  sets `extra="ignore"`. Fixed by adding the missing `populate_by_name=True`,
+  matching every sibling config class.
+
 ## [2.12.0] — 2026-08-03
 
 ### Overview
