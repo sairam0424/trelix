@@ -22,6 +22,19 @@ export interface SearchPage {
   totalAvailable: number;
 }
 
+export interface Symbol {
+  name: string;
+  qualifiedName: string;
+  kind: string;
+  file: string;
+  lineStart: number;
+  lineEnd: number;
+  signature: string;
+  docstring: string;
+  body: string;
+  language: string;
+}
+
 export class TrelixMcpClient {
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
@@ -81,6 +94,49 @@ export class TrelixMcpClient {
       results,
       nextCursor: parsed.next_cursor ?? null,
       totalAvailable: parsed.total_available ?? results.length,
+    };
+  }
+
+  /**
+   * Matches get_symbol's real response shape exactly (see
+   * packages/trelix-mcp/src/trelix_mcp/server.py): a single nullable dict
+   * keyed by name/qualified_name/kind/file/line_start/line_end/signature/
+   * docstring/body/language — not a paginated {results, next_cursor} page
+   * like search_code. Returns null both when the server returns null (no
+   * match) and when the JSON body itself parses to null/undefined.
+   */
+  async getSymbol(qualifiedName: string, repoPath: string): Promise<Symbol | null> {
+    if (!this.client) throw new Error("Not connected");
+    const result = await this.client.callTool({
+      name: "get_symbol",
+      arguments: { qualified_name: qualifiedName, repo_path: repoPath },
+    });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const text = content.find((c) => c.type === "text")?.text ?? "null";
+    const parsed = JSON.parse(text) as {
+      name?: string;
+      qualified_name?: string;
+      kind?: string;
+      file?: string;
+      line_start?: number;
+      line_end?: number;
+      signature?: string;
+      docstring?: string;
+      body?: string;
+      language?: string;
+    } | null;
+    if (!parsed) return null;
+    return {
+      name: parsed.name ?? "",
+      qualifiedName: parsed.qualified_name ?? "",
+      kind: parsed.kind ?? "",
+      file: parsed.file ?? "",
+      lineStart: parsed.line_start ?? 0,
+      lineEnd: parsed.line_end ?? 0,
+      signature: parsed.signature ?? "",
+      docstring: parsed.docstring ?? "",
+      body: parsed.body ?? "",
+      language: parsed.language ?? "",
     };
   }
 
