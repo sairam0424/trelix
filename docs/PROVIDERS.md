@@ -440,6 +440,8 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Max FLARE re-retrieval passes (1–3) |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Boost results by PageRank symbol importance |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR` | `1.3` | PageRank score multiplier (1.0–3.0) |
+| `TRELIX_RETRIEVAL_DECLARATION_BOOST` | `false` | Boost BM25 matches on a symbol's `name`/`qualified_name` over incidental `docstring`/`body` mentions |
+| `TRELIX_RETRIEVAL_DECLARATION_BOOST_WEIGHT` | `1.0` | Declaration-boost multiplier (1.0–10.0) |
 | `TRELIX_RETRIEVAL_AGENTIC` | `false` | Agentic ReAct multi-turn retrieve+observe+synthesize loop |
 | `TRELIX_RETRIEVAL_AGENT_MAX_TURNS` | `8` | Max ReAct turns (1–20) |
 | `TRELIX_RETRIEVAL_AGENT_TOKEN_BUDGET` | `6000` | Token budget per ReAct agent session |

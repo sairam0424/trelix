@@ -956,7 +956,11 @@ class Database:
     # ------------------------------------------------------------------
 
     def bm25_search(
-        self, query: str, limit: int = 20, path_filter: str | None = None
+        self,
+        query: str,
+        limit: int = 20,
+        path_filter: str | None = None,
+        declaration_boost_weight: float = 1.0,
     ) -> list[tuple[int, float]]:
         """
         Full-text search over symbols using SQLite FTS5 BM25.
@@ -968,31 +972,39 @@ class Database:
         `f.rel_path LIKE ?` pattern as grep_search.py) rather than fetched
         and discarded, since FTS5 can take the join cheaply.
 
+        `declaration_boost_weight` (default 1.0 — a no-op) is applied to the
+        `name`/`qualified_name` FTS5 columns via an explicit bm25() call;
+        `docstring`/`body`/`context_summary` stay at weight 1.0. Must call
+        `bm25(symbols_fts, ...)` using the real table name even in the
+        `path_filter` branch's aliased join — `bm25(f, ...)` raises
+        "no such column: f".
+
         Draws from the read-only connection pool when enable_bm25_read_pool()
         has been called with pool_size > 0 — otherwise uses the single
         shared writer connection exactly as before.
         """
+        w = declaration_boost_weight
         if path_filter:
             sql = """
-                SELECT f.rowid, f.rank
+                SELECT f.rowid, bm25(symbols_fts, ?, ?, 1.0, 1.0, 1.0) AS rank
                 FROM symbols_fts f
                 JOIN symbols s ON f.rowid = s.id
                 JOIN files fi ON s.file_id = fi.id
                 WHERE symbols_fts MATCH ?
                   AND fi.rel_path LIKE ?
-                ORDER BY f.rank
+                ORDER BY rank
                 LIMIT ?
                 """
-            params: tuple[object, ...] = (query, f"{path_filter}%", limit)
+            params: tuple[object, ...] = (w, w, query, f"{path_filter}%", limit)
         else:
             sql = """
-                SELECT rowid, rank
+                SELECT rowid, bm25(symbols_fts, ?, ?, 1.0, 1.0, 1.0) AS rank
                 FROM symbols_fts
                 WHERE symbols_fts MATCH ?
                 ORDER BY rank
                 LIMIT ?
                 """
-            params = (query, limit)
+            params = (w, w, query, limit)
         if self._bm25_read_pool is not None:
             with self._bm25_read_pool.acquire() as conn:
                 rows = conn.execute(sql, params).fetchall()

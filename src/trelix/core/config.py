@@ -524,6 +524,23 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_PAGERANK_BOOST_FACTOR",
     )
 
+    # FTS5 declaration-boost ranking — boosts symbols whose name/qualified_name
+    # contain the query match (a declaration-like hit) over ones where the
+    # match only appears in docstring/body/context_summary (an incidental
+    # mention). Threaded into Database.bm25_search()'s explicit bm25()
+    # call; default weight=1.0 is a guaranteed no-op, verified byte-identical
+    # to today's unweighted `rank` column ordering.
+    declaration_boost_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_DECLARATION_BOOST",
+    )
+    declaration_boost_weight: float = Field(
+        default=1.0,
+        ge=1.0,
+        le=10.0,
+        alias="TRELIX_RETRIEVAL_DECLARATION_BOOST_WEIGHT",
+    )
+
     # Personalized PageRank — teleport mass concentrated on symbols with a
     # cross-source generic_edge (ticket/artifact reference) instead of the
     # uniform 1/n default. Off by default: nx.pagerank() is called exactly

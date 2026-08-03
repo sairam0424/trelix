@@ -775,7 +775,13 @@ class Retriever:
                 cfg, "bm25", query_text=bm25_query, top_k=cfg.top_k_bm25
             ) as span:
                 out["bm25"] = bm25_search(
-                    self.db, bm25_query, k=cfg.top_k_bm25, path_filter=sq.path_filter
+                    self.db,
+                    bm25_query,
+                    k=cfg.top_k_bm25,
+                    path_filter=sq.path_filter,
+                    declaration_boost_weight=(
+                        cfg.declaration_boost_weight if cfg.declaration_boost_enabled else 1.0
+                    ),
                 )
                 span.set_result_count(len(out["bm25"]))
 

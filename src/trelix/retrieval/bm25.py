@@ -12,7 +12,11 @@ from trelix.store.db import Database
 
 
 def bm25_search(
-    db: Database, query: str, k: int = 20, path_filter: str | None = None
+    db: Database,
+    query: str,
+    k: int = 20,
+    path_filter: str | None = None,
+    declaration_boost_weight: float = 1.0,
 ) -> list[SearchResult]:
     """
     Run FTS5 BM25 search over the symbols table.
@@ -21,10 +25,19 @@ def bm25_search(
     `path_filter`, when set, restricts results to files whose rel_path
     starts with that prefix — pushed into the SQL join in db.bm25_search()
     (cheap for FTS5) rather than post-filtered after hydration.
+
+    `declaration_boost_weight` (default 1.0 — a no-op) boosts symbols whose
+    name/qualified_name match the query over ones matched only via an
+    incidental docstring/body mention. See RetrievalConfig.declaration_boost_*.
     """
     # Escape FTS5 special chars to avoid query parse errors on raw identifiers
     safe_query = _escape_fts5(query)
-    raw = db.bm25_search(safe_query, limit=k, path_filter=path_filter)
+    raw = db.bm25_search(
+        safe_query,
+        limit=k,
+        path_filter=path_filter,
+        declaration_boost_weight=declaration_boost_weight,
+    )
 
     results: list[SearchResult] = []
     for rank, (symbol_id, bm25_rank) in enumerate(raw, start=1):
