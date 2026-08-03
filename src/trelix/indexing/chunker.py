@@ -14,11 +14,25 @@ Example chunk_text:
     def authenticate_user(self, username: str, password: str) -> Optional[User]:
         \"\"\"Authenticate user credentials.\"\"\"
         ...
+
+Markdown sections get the same header treatment, plus a diagram tag when
+the section's body contains a fenced mermaid/plantuml block (only the
+first such fence per section is tagged):
+    # File: docs/architecture.md | Language: Markdown
+    # Diagram: mermaid
+
+    ## Architecture Overview
+
+    ```mermaid
+    graph TD
+        A --> B
+    ```
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import tiktoken
@@ -28,6 +42,8 @@ from trelix.core.models import Chunk, ImportEdge, Symbol
 from trelix.llm.client import ChatMessage, TrelixChatClient
 
 logger = logging.getLogger("trelix.indexing.chunker")
+
+_DIAGRAM_FENCE_RE = re.compile(r"^```(mermaid|plantuml)\b", re.MULTILINE)
 
 
 class Chunker:
@@ -111,6 +127,14 @@ class Chunker:
         ):
             parent = parent_symbols[symbol.parent_id]
             lines.append(f"# {parent.kind.value.capitalize()}: {parent.name}")
+
+        # Diagram-block tagging: mirrors the "# File:"/"# Class:" header
+        # convention. Only the first fenced mermaid/plantuml block in the
+        # symbol body is tagged (v1 limitation, not a bug).
+        if self.config.include_diagram_tags:
+            diagram_match = _DIAGRAM_FENCE_RE.search(symbol.body)
+            if diagram_match:
+                lines.append(f"# Diagram: {diagram_match.group(1)}")
 
         lines.append("")  # blank line between header and body
 

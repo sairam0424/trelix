@@ -458,3 +458,84 @@ class TestContextualChunker:
         assert call_kwargs.kwargs["model"] == "gpt-4o-mini"
         assert call_kwargs.kwargs["max_completion_tokens"] == 100
         assert call_kwargs.kwargs["temperature"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Diagram-block tagging (markdown mermaid/plantuml fences)
+# ---------------------------------------------------------------------------
+
+
+class TestDiagramBlockTagging:
+    def test_mermaid_fence_adds_diagram_header(self) -> None:
+        chunker = _make_chunker()
+        symbol = _make_symbol(
+            name="architecture_overview",
+            qualified_name="architecture_overview",
+            kind=SymbolKind.SECTION,
+            body="## Architecture\n\n```mermaid\ngraph TD\n    A --> B\n```\n",
+        )
+        chunks = chunker.build_chunks([symbol], [], "docs/architecture.md", "markdown")
+        assert "# Diagram: mermaid" in chunks[0].chunk_text
+
+    def test_plantuml_fence_adds_diagram_header(self) -> None:
+        chunker = _make_chunker()
+        symbol = _make_symbol(
+            name="sequence_diagram",
+            qualified_name="sequence_diagram",
+            kind=SymbolKind.SECTION,
+            body="## Sequence\n\n```plantuml\n@startuml\n@enduml\n```\n",
+        )
+        chunks = chunker.build_chunks([symbol], [], "docs/architecture.md", "markdown")
+        assert "# Diagram: plantuml" in chunks[0].chunk_text
+
+    def test_no_diagram_header_when_no_fenced_diagram_block(self) -> None:
+        chunker = _make_chunker()
+        symbol = _make_symbol(
+            name="plain_section",
+            qualified_name="plain_section",
+            kind=SymbolKind.SECTION,
+            body="## Plain\n\nJust prose, no fences at all.\n",
+        )
+        chunks = chunker.build_chunks([symbol], [], "docs/notes.md", "markdown")
+        assert "# Diagram:" not in chunks[0].chunk_text
+
+    def test_regular_fenced_code_block_does_not_trigger_diagram_header(self) -> None:
+        """A plain ```python fence must not be mistaken for a diagram block."""
+        chunker = _make_chunker()
+        symbol = _make_symbol(
+            name="code_example",
+            qualified_name="code_example",
+            kind=SymbolKind.SECTION,
+            body="## Example\n\n```python\nprint('hi')\n```\n",
+        )
+        chunks = chunker.build_chunks([symbol], [], "docs/notes.md", "markdown")
+        assert "# Diagram:" not in chunks[0].chunk_text
+
+    def test_diagram_header_absent_when_flag_disabled(self) -> None:
+        chunker = _make_chunker(include_diagram_tags=False)
+        symbol = _make_symbol(
+            name="architecture_overview",
+            qualified_name="architecture_overview",
+            kind=SymbolKind.SECTION,
+            body="## Architecture\n\n```mermaid\ngraph TD\n    A --> B\n```\n",
+        )
+        chunks = chunker.build_chunks([symbol], [], "docs/architecture.md", "markdown")
+        assert "# Diagram:" not in chunks[0].chunk_text
+
+    def test_diagram_header_only_first_of_multiple_fences(self) -> None:
+        """v1 limitation, not a bug: only the first diagram fence in a
+        section's body is tagged."""
+        chunker = _make_chunker()
+        symbol = _make_symbol(
+            name="two_diagrams",
+            qualified_name="two_diagrams",
+            kind=SymbolKind.SECTION,
+            body=(
+                "## Two Diagrams\n\n"
+                "```mermaid\ngraph TD\n    A --> B\n```\n\n"
+                "```plantuml\n@startuml\n@enduml\n```\n"
+            ),
+        )
+        chunks = chunker.build_chunks([symbol], [], "docs/architecture.md", "markdown")
+        assert chunks[0].chunk_text.count("# Diagram:") == 1
+        assert "# Diagram: mermaid" in chunks[0].chunk_text

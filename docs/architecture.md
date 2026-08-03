@@ -283,6 +283,7 @@ class ChunkerConfig(BaseSettings):
     include_imports_in_header: bool = True
     max_imports_in_header: int = 8
     include_parent_signature: bool = True   # method gets enclosing class in header
+    include_diagram_tags: bool = True       # tags fenced mermaid/plantuml blocks
     contextual: bool = False                # LLM context summaries (TRELIX_CHUNKER_CONTEXTUAL)
     contextual_model: str = "gpt-4o-mini"
     contextual_max_tokens: int = 100
