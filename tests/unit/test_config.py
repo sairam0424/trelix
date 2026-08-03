@@ -394,6 +394,41 @@ class TestRetrievalConfigFileTypeWeighting:
         assert cfg.file_type_weights["markdown"] == 0.02
 
 
+class TestRetrievalConfigLegWeights:
+    def test_default_all_legs_weight_1_0(self) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        cfg = RetrievalConfig()
+        assert cfg.leg_weights == {
+            "vector": 1.0,
+            "bm25": 1.0,
+            "grep": 1.0,
+            "summary": 1.0,
+            "sub_chunk": 1.0,
+            "sparse": 1.0,
+        }
+
+    def test_per_leg_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        monkeypatch.setenv("TRELIX_RETRIEVAL_LEG_WEIGHT_BM25", "0.7")
+        cfg = RetrievalConfig()
+        assert cfg.leg_weights["bm25"] == 0.7
+        # Other legs must still be at defaults
+        assert cfg.leg_weights["vector"] == 1.0
+        assert cfg.leg_weights["grep"] == 1.0
+
+    def test_multiple_per_leg_env_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trelix.core.config import RetrievalConfig
+
+        monkeypatch.setenv("TRELIX_RETRIEVAL_LEG_WEIGHT_VECTOR", "1.2")
+        monkeypatch.setenv("TRELIX_RETRIEVAL_LEG_WEIGHT_SPARSE", "0.0")
+        cfg = RetrievalConfig()
+        assert cfg.leg_weights["vector"] == 1.2
+        assert cfg.leg_weights["sparse"] == 0.0
+        assert cfg.leg_weights["bm25"] == 1.0
+
+
 class TestRetrievalConfigPlanCache:
     def test_default_plan_cache_size_is_128(self) -> None:
         from trelix.core.config import RetrievalConfig

@@ -428,6 +428,15 @@ class Retriever:
         )
 
         _weights = cfg.file_type_weights if cfg.file_type_weighting_enabled else None
+        # Order must match the ranked_lists order below exactly.
+        _list_weights = [
+            cfg.leg_weights.get("vector", 1.0),
+            cfg.leg_weights.get("bm25", 1.0),
+            cfg.leg_weights.get("grep", 1.0),
+            cfg.leg_weights.get("summary", 1.0),
+            cfg.leg_weights.get("sub_chunk", 1.0),
+            cfg.leg_weights.get("sparse", 1.0),
+        ]
         with pipeline_stage_span(cfg, "fusion", {"rrf_k": cfg.rrf_k}):
             fused = reciprocal_rank_fusion(
                 [
@@ -440,6 +449,7 @@ class Retriever:
                 ],
                 k=cfg.rrf_k,
                 weights=_weights,
+                list_weights=_list_weights,
             )
 
         # -- Trace: post-fusion ranking --

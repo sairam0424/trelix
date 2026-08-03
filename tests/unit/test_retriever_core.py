@@ -1150,6 +1150,128 @@ class TestRetrieverCallGraphExpansion:
 
 
 # ---------------------------------------------------------------------------
+# TestRetrieverLegWeights — RetrievalConfig.leg_weights threaded into
+# reciprocal_rank_fusion()'s list_weights= param
+# ---------------------------------------------------------------------------
+
+
+class TestRetrieverLegWeights:
+    """_retrieve_standard passes cfg.leg_weights through to
+    reciprocal_rank_fusion()'s list_weights= param, in the same fixed leg
+    order as ranked_lists (vector, bm25, grep, summary, sub_chunk, sparse)."""
+
+    def _make_standard_plan(self):
+        intent = IntentType.SYMBOL_LOOKUP
+        return QueryPlan(
+            intent=intent,
+            execution_mode="sequential",
+            strategy=INTENT_STRATEGIES[intent],
+            sub_queries=[
+                SubQuery(
+                    semantic_query="find auth handler",
+                    hyde_snippet="def authenticate(token): ...",
+                    bm25_tokens=["auth", "handler"],
+                    grep_hints=["authenticate"],
+                    file_hints=[],
+                )
+            ],
+            raw_query="find auth handler",
+        )
+
+    def test_default_leg_weights_pass_all_ones(self, tmp_path: Path) -> None:
+        """Default (untouched) RetrievalConfig.leg_weights results in
+        list_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0] — the backward-compatible
+        no-op case."""
+        retriever = _build_retriever(str(tmp_path))
+
+        sr = _make_search_result(idx=1, score=0.9)
+        retriever.vector_store.search.return_value = [(1, 0.1)]
+        retriever.db.get_chunk_with_context.return_value = (sr.chunk, sr.symbol, sr.file)
+        retriever.embedder.embed_query.return_value = [0.0] * 1536
+
+        expected_ctx = _make_retrieved_context()
+
+        with (
+            patch("trelix.retrieval.retriever.bm25_search", return_value=[]),
+            patch("trelix.retrieval.retriever.grep_search", return_value=[]),
+            patch(
+                "trelix.retrieval.retriever.reciprocal_rank_fusion", return_value=[sr]
+            ) as mock_rrf,
+            patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
+            patch.object(retriever, "_assemble", return_value=expected_ctx),
+        ):
+            plan = self._make_standard_plan()
+            retriever._retrieve_standard(plan)
+
+        _, kwargs = mock_rrf.call_args
+        assert kwargs["list_weights"] == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+    def test_custom_leg_weights_passed_in_correct_order(self, tmp_path: Path) -> None:
+        """A non-default leg_weights dict is threaded through in the fixed
+        vector/bm25/grep/summary/sub_chunk/sparse order, not dict order."""
+        from trelix.core.config import IndexConfig, RetrievalConfig
+
+        with (
+            patch("trelix.retrieval.retriever.Database") as mock_db_cls,
+            patch("trelix.retrieval.retriever.make_embedder") as mock_emb_cls,
+            patch("trelix.retrieval.retriever.make_vector_store") as mock_vs_cls,
+            patch("trelix.retrieval.retriever.QueryPlanner") as mock_planner_cls,
+            patch.dict(os.environ, {"OPENAI_API_KEY": "test-placeholder"}),
+        ):
+            mock_emb = MagicMock()
+            mock_emb.dimension = 1536
+            mock_emb_cls.return_value = mock_emb
+            mock_db_cls.return_value = MagicMock()
+            mock_vs_cls.return_value = MagicMock()
+            mock_planner_cls.return_value = MagicMock()
+
+            config = IndexConfig(
+                repo_path=str(tmp_path),
+                retrieval=RetrievalConfig(
+                    query_cache_size=0,
+                    leg_weights={
+                        "sparse": 0.0,
+                        "vector": 1.5,
+                        "bm25": 0.5,
+                        "grep": 1.0,
+                        "summary": 1.0,
+                        "sub_chunk": 1.0,
+                    },
+                ),
+            )
+            from trelix.retrieval.retriever import Retriever
+
+            retriever = Retriever(config)
+
+        sr = _make_search_result(idx=1, score=0.9)
+        retriever.vector_store.search.return_value = [(1, 0.1)]
+        retriever.db.get_chunk_with_context.return_value = (sr.chunk, sr.symbol, sr.file)
+        retriever.embedder.embed_query.return_value = [0.0] * 1536
+
+        expected_ctx = _make_retrieved_context()
+
+        with (
+            patch("trelix.retrieval.retriever.bm25_search", return_value=[]),
+            patch("trelix.retrieval.retriever.grep_search", return_value=[]),
+            patch(
+                "trelix.retrieval.retriever.reciprocal_rank_fusion", return_value=[sr]
+            ) as mock_rrf,
+            patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
+            patch.object(retriever, "_assemble", return_value=expected_ctx),
+        ):
+            plan = self._make_standard_plan()
+            retriever._retrieve_standard(plan)
+
+        _, kwargs = mock_rrf.call_args
+        # Order: vector, bm25, grep, summary, sub_chunk, sparse
+        assert kwargs["list_weights"] == [1.5, 0.5, 1.0, 1.0, 1.0, 0.0]
+
+
+# ---------------------------------------------------------------------------
 # TestRetrieverConfigLookup — _retrieve_config paths
 # ---------------------------------------------------------------------------
 
