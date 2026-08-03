@@ -22,6 +22,7 @@ import logging
 from pathlib import Path
 
 from trelix.core.config import IndexConfig
+from trelix.core.models import Symbol
 from trelix.store.db import Database
 
 _log = logging.getLogger("trelix_mcp.resources")
@@ -128,7 +129,8 @@ def get_symbol_source(repo_path: str, qualified_name: str) -> str:
         short_name = qualified_name.split(".")[-1]
         symbols = db.get_symbol_by_name(short_name)
         exact = [s for s in symbols if s.qualified_name == qualified_name]
-        sym = (exact or symbols[:1] or [None])[0]
+        best_match = exact or symbols[:1]
+        sym: Symbol | None = best_match[0] if best_match else None
         if sym is None:
             return json.dumps({"error": f"Symbol '{qualified_name}' not found"})
         kind_val = sym.kind.value if hasattr(sym.kind, "value") else str(sym.kind)

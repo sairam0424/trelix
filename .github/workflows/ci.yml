@@ -17,14 +17,23 @@ jobs:
           python-version: "3.11"
       - name: Install project + dev deps
         run: pip install -e ".[local,dev]"
+      - name: Install trelix-mcp, trelix-langchain, trelix-llama-index
+        run: |
+          pip install -e packages/trelix-mcp
+          pip install -e packages/trelix-langchain
+          pip install -e packages/trelix-llama-index
       - name: Ruff check
-        run: ruff check src/ tests/
+        run: ruff check src/ tests/ packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src
       - name: Ruff format check
         run: |
-          ruff format src/ tests/
-          git diff --exit-code -- src/ tests/ || (echo "ruff format changed files — commit the formatted output" && exit 1)
+          ruff format src/ tests/ packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src
+          git diff --exit-code -- src/ tests/ packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src || (echo "ruff format changed files — commit the formatted output" && exit 1)
       - name: Mypy
-        run: mypy src/trelix/ --ignore-missing-imports
+        run: |
+          mypy src/trelix/ --ignore-missing-imports
+          mypy packages/trelix-mcp/src/ --ignore-missing-imports
+          mypy packages/trelix-langchain/src/ --ignore-missing-imports
+          mypy packages/trelix-llama-index/src/ --ignore-missing-imports
 
   test:
     name: Test (Python ${{ matrix.python-version }})

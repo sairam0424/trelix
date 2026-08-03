@@ -471,6 +471,37 @@ class TestAdfToText:
         }
         assert "Still here" in _adf_to_text(doc)
 
+    def test_deeply_nested_content_does_not_raise_recursion_error(self) -> None:
+        """A 600-level-deep nested bulletList/listItem chain (well beyond
+        any legitimate hand-authored description) must not raise
+        RecursionError — it should render whatever fits within the depth
+        cap and stop cleanly, not crash the whole Jira sync run over one
+        malformed/hostile description."""
+        from trelix.indexing.connectors.jira import _adf_to_text
+
+        node: dict = {"type": "text", "text": "leaf"}
+        for _ in range(600):
+            node = {"type": "bulletList", "content": [{"type": "listItem", "content": [node]}]}
+        doc = {"type": "doc", "content": [node]}
+
+        result = _adf_to_text(doc)  # must not raise RecursionError
+        assert isinstance(result, str)
+        assert result != ""
+
+    def test_shallow_content_within_depth_cap_is_unaffected(self) -> None:
+        """A normal, shallowly-nested description must render exactly as
+        before — the depth cap must not truncate realistic content."""
+        from trelix.indexing.connectors.jira import _adf_to_text
+
+        node: dict = {"type": "text", "text": "leaf"}
+        for _ in range(10):
+            node = {"type": "bulletList", "content": [{"type": "listItem", "content": [node]}]}
+        doc = {"type": "doc", "content": [node]}
+
+        result = _adf_to_text(doc)
+        assert "leaf" in result
+        assert "truncated" not in result
+
 
 # ---------------------------------------------------------------------------
 # TestRailConnector

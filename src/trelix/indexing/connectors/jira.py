@@ -63,13 +63,33 @@ class JiraConnectorError(Exception):
 _INLINE_CONTAINER_TYPES = frozenset({"paragraph", "heading", "codeBlock"})
 
 
-def _adf_node_to_text(node: Any) -> str:
+# Depth cap for _adf_node_to_text()'s recursion. ADF descriptions are
+# nested JSON of unbounded depth (e.g. deeply nested bulletList/listItem
+# chains); without a cap, a sufficiently deep description raises an
+# uncaught RecursionError, aborting the entire connector sync run over one
+# malformed/hostile document. Each ADF nesting level costs more than one
+# Python stack frame here (e.g. bulletList -> listItem -> the generator
+# inside _join_block_children -> the recursive call), so this cap is kept
+# well below Python's default sys.getrecursionlimit() (1000) rather than
+# just under it — 150 comfortably exceeds any legitimate hand-authored
+# Jira description's nesting depth (verified empirically: 150 succeeds,
+# 1000+ would overflow the real call stack well before this counter did).
+_ADF_MAX_DEPTH = 150
+_ADF_TRUNCATION_MARKER = "[... content truncated: exceeded max ADF nesting depth ...]"
+
+
+def _adf_node_to_text(node: Any, depth: int = 0) -> str:
     """Render one ADF node (and its descendants) to a plain-text
     approximation. Unknown/unhandled node types fall through to rendering
     their `content` children as block-level (newline-joined) — safer than
     dropping an unrecognized node outright, since a future/undocumented
     node type is far more likely to still carry meaningful nested text
-    than to be purely structural."""
+    than to be purely structural.
+
+    `depth` guards against unbounded recursion on a maliciously or
+    accidentally deeply-nested document — see _ADF_MAX_DEPTH."""
+    if depth > _ADF_MAX_DEPTH:
+        return _ADF_TRUNCATION_MARKER
     if not isinstance(node, dict):
         return ""
     node_type = node.get("type")
@@ -106,7 +126,7 @@ def _adf_node_to_text(node: Any) -> str:
     if node_type in ("bulletList", "orderedList", "taskList", "decisionList"):
         lines = []
         for i, item in enumerate(content, start=1):
-            item_text = _adf_node_to_text(item).strip()
+            item_text = _adf_node_to_text(item, depth + 1).strip()
             if not item_text:
                 continue
             prefix = f"{i}. " if node_type == "orderedList" else "- "
@@ -115,19 +135,19 @@ def _adf_node_to_text(node: Any) -> str:
 
     if node_type == "expand":
         title = (node.get("attrs") or {}).get("title", "")
-        body = _join_block_children(content)
+        body = _join_block_children(content, depth + 1)
         return f"{title}:\n{body}" if title else body
 
     if node_type in _INLINE_CONTAINER_TYPES:
-        return "".join(_adf_node_to_text(child) for child in content)
+        return "".join(_adf_node_to_text(child, depth + 1) for child in content)
 
     # doc, blockquote, panel, listItem, table/tableRow/tableCell, or any
     # unrecognized future node type: treat children as block-level.
-    return _join_block_children(content)
+    return _join_block_children(content, depth + 1)
 
 
-def _join_block_children(content: list[Any]) -> str:
-    parts = (_adf_node_to_text(child).strip() for child in content)
+def _join_block_children(content: list[Any], depth: int = 0) -> str:
+    parts = (_adf_node_to_text(child, depth).strip() for child in content)
     return "\n".join(part for part in parts if part)
 
 

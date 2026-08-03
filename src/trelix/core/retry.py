@@ -264,9 +264,20 @@ class _wait_retry_after_or_exponential:
     regardless of what the server explicitly requested, risking either
     retrying sooner than a rate limiter wants (escalating the throttle) or
     waiting longer than necessary when the header requested a short delay.
+
+    The Retry-After value is clamped to max_wait_seconds before being
+    returned. Without this, a hostile or malformed header (e.g.
+    "Retry-After: 99999999999999") reaches tenacity's wait callback
+    unbounded, and time.sleep() raises OverflowError on a sufficiently
+    large float — crashing the retry loop entirely instead of retrying or
+    failing cleanly, bypassing stop_after_attempt. A plausible-but-large
+    value (e.g. several hours) is also clamped, consistent with
+    max_wait_seconds already being the ceiling for the exponential-backoff
+    branch below.
     """
 
     def __init__(self, min_wait_seconds: float, max_wait_seconds: float) -> None:
+        self._max_wait_seconds = max_wait_seconds
         self._exponential = wait_random_exponential(min=min_wait_seconds, max=max_wait_seconds)
 
     def __call__(self, retry_state: RetryCallState) -> float:
@@ -276,7 +287,7 @@ class _wait_retry_after_or_exponential:
             if exc is not None:
                 retry_after = _extract_retry_after_seconds(exc)
                 if retry_after is not None:
-                    return retry_after
+                    return min(retry_after, self._max_wait_seconds)
         return self._exponential(retry_state)
 
 
