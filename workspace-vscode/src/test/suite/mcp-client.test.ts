@@ -96,6 +96,73 @@ suite("TrelixMcpClient.search", () => {
   });
 });
 
+suite("TrelixMcpClient.getSymbol", () => {
+  test("parses the real get_symbol envelope into a Symbol", async () => {
+    const client = new TrelixMcpClient();
+    withMockedClient(client, {
+      callTool: async () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              name: "validate_token",
+              qualified_name: "AuthService.validate_token",
+              kind: "method",
+              file: "src/auth.py",
+              line_start: 10,
+              line_end: 25,
+              signature: "def validate_token(self, token: str) -> bool",
+              docstring: "Validate a JWT token.",
+              body: "def validate_token(self, token): ...",
+              language: "python",
+            }),
+          },
+        ],
+      }),
+    });
+
+    const symbol = await client.getSymbol("AuthService.validate_token", "/repo");
+
+    assert.ok(symbol);
+    assert.strictEqual(symbol!.name, "validate_token");
+    assert.strictEqual(symbol!.qualifiedName, "AuthService.validate_token");
+    assert.strictEqual(symbol!.lineStart, 10);
+    assert.strictEqual(symbol!.lineEnd, 25);
+    assert.strictEqual(symbol!.docstring, "Validate a JWT token.");
+  });
+
+  test("returns null when the server returns null (symbol not found)", async () => {
+    const client = new TrelixMcpClient();
+    withMockedClient(client, {
+      callTool: async () => ({
+        content: [{ type: "text", text: "null" }],
+      }),
+    });
+
+    const symbol = await client.getSymbol("does_not_exist", "/repo");
+
+    assert.strictEqual(symbol, null);
+  });
+
+  test("forwards qualified_name and repo_path arguments to callTool", async () => {
+    const client = new TrelixMcpClient();
+    let receivedArgs: unknown;
+    withMockedClient(client, {
+      callTool: async (call: { arguments: unknown }) => {
+        receivedArgs = call.arguments;
+        return { content: [{ type: "text", text: "null" }] };
+      },
+    });
+
+    await client.getSymbol("MyClass.my_method", "/repo/path");
+
+    assert.deepStrictEqual(receivedArgs, {
+      qualified_name: "MyClass.my_method",
+      repo_path: "/repo/path",
+    });
+  });
+});
+
 suite("TrelixMcpClient.ask", () => {
   test("joins prompt message contents into a single string", async () => {
     const client = new TrelixMcpClient();

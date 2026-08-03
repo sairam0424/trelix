@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { TrelixMcpClient, SearchResult } from "./mcp-client";
 import { SnippetPreviewProvider } from "./preview";
 import { SearchController } from "./search-controller";
+import { TrelixHoverProvider } from "./hover-provider";
 
 const SEARCH_DEBOUNCE_MS = 250;
 const PAGE_SIZE = 10;
@@ -74,6 +75,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     return client;
   }
+
+  const hoverProvider = new TrelixHoverProvider(ensureConnected, getRepoPath);
+  context.subscriptions.push(
+    vscode.languages.registerHoverProvider({ scheme: "file" }, hoverProvider)
+  );
 
   async function openResult(result: SearchResult, repoPath: string): Promise<void> {
     const absolutePath = vscode.Uri.file(

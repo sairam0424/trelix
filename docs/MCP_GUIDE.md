@@ -887,10 +887,11 @@ def fetch_all_results(query: str, repo_path: str, page_size: int = 10) -> list:
 
 ### VS Code Extension
 
-The `workspace-vscode/` extension provides two command shortcuts for rapid trelix access:
+The `workspace-vscode/` extension provides two command shortcuts plus a hover provider for rapid trelix access:
 
 - **`trelix.search`** — Search the workspace codebase with trelix hybrid search
 - **`trelix.ask`** — Ask a natural-language question about the code
+- **Hover** — hovering over any identifier looks it up via `get_symbol` and shows its signature, docstring, and file/line location. Results are cached per word+repo for the session (no TTL). **Known limitation:** `get_symbol` falls back to an ambiguous bare-name lookup when the exact qualified name doesn't resolve — if multiple symbols share a name, hover may show the wrong one.
 
 Install from the `workspace-vscode/` directory:
 
