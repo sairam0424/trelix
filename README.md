@@ -639,4 +639,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide including how to add a
 
 MIT — see [LICENSE](LICENSE).
 
-**Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) · **Security:** [SECURITY.md](SECURITY.md) · **Support:** [SUPPORT.md](SUPPORT.md) · **Roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md)
+**Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) · **Security:** [SECURITY.md](SECURITY.md) · **Support:** [SUPPORT.md](SUPPORT.md) · **Roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md).
