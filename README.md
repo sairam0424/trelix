@@ -1,3 +1,26 @@
+<div align="center">
+
+<br/>
+
+<pre>
+████████╗██████╗ ███████╗██╗     ██╗██╗  ██╗
+╚══██╔══╝██╔══██╗██╔════╝██║     ██║╚██╗██╔╝
+   ██║   ██████╔╝█████╗  ██║     ██║ ╚███╔╝ 
+   ██║   ██╔══██╗██╔══╝  ██║     ██║ ██╔██╗ 
+   ██║   ██║  ██║███████╗███████╗██║██╔╝ ██╗
+   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝╚═╝  ╚═╝
+</pre>
+
+**Code Intelligence for Your Entire Codebase**
+
+*Search deeper. Understand context. Build smarter.*
+
+<br/>
+
+</div>
+
+---
+
 # trelix
 
 [![CI](https://github.com/sairam0424/trelix/actions/workflows/ci.yml/badge.svg)](https://github.com/sairam0424/trelix/actions/workflows/ci.yml)
