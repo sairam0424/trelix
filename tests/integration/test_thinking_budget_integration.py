@@ -122,24 +122,39 @@ def test_no_namespace_collision():
     assert not hasattr(cfg.retrieval, "thinking_enabled")
 
 
-def test_anthropic_and_openai_backends_accept_thinking():
-    """Anthropic and OpenAI backends accept thinking parameter."""
+@pytest.mark.parametrize(
+    ("provider", "module_path", "class_name", "required_sdk"),
+    [
+        # openai>=1.35.0 is a CORE dependency, so this case always runs.
+        ("openai", "trelix.llm.providers.openai_backend", "OpenAIBackend", None),
+        # anthropic is an optional extra. CI installs .[local,otel,sso,dev], which
+        # does not include it, so this case skips there rather than failing.
+        ("anthropic", "trelix.llm.providers.anthropic_backend", "AnthropicBackend", "anthropic"),
+    ],
+)
+def test_backends_accept_thinking(provider, module_path, class_name, required_sdk):
+    """Each backend's complete/stream accepts the thinking parameter.
+
+    Parametrized rather than looping over both backends in one test on purpose:
+    constructing a backend imports its provider SDK, so a single test covering
+    both is only as available as its least-available SDK. Splitting them keeps
+    the openai case running in CI instead of skipping the assertion entirely.
+    """
+    if required_sdk:
+        pytest.importorskip(
+            required_sdk,
+            reason=f"{required_sdk} extra not installed (pip install 'trelix[{required_sdk}]')",
+        )
+
+    import importlib
     import inspect
 
-    from trelix.llm.providers.anthropic_backend import AnthropicBackend
-    from trelix.llm.providers.openai_backend import OpenAIBackend
+    backend_class = getattr(importlib.import_module(module_path), class_name)
+    backend = backend_class(LLMConfig(provider=provider))
 
-    backends_and_cfg = [
-        (AnthropicBackend, LLMConfig(provider="anthropic")),
-        (OpenAIBackend, LLMConfig(provider="openai")),
-    ]
-
-    for backend_class, cfg in backends_and_cfg:
-        backend = backend_class(cfg)
-        sig_complete = inspect.signature(backend.complete)
-        sig_stream = inspect.signature(backend.stream)
-        assert "thinking" in sig_complete.parameters
-        assert "thinking" in sig_stream.parameters
+    for method_name in ("complete", "stream"):
+        sig = inspect.signature(getattr(backend, method_name))
+        assert "thinking" in sig.parameters, f"{class_name}.{method_name} lacks 'thinking'"
 
 
 def test_config_overrides_compose():
