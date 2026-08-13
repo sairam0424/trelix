@@ -8,6 +8,8 @@ Tests:
 - Other backends accept thinking parameter
 """
 
+import pytest
+
 from trelix.core.config import LLMConfig
 from trelix.llm.client import ChatResponse, TrelixChatClient
 
@@ -129,7 +131,24 @@ class MockUsage:
 
 
 class TestAnthropicBackend:
-    """Test Anthropic backend thinking support."""
+    """Test Anthropic backend thinking support.
+
+    These construct a real AnthropicBackend, whose __init__ imports the
+    `anthropic` SDK — an optional extra. CI installs only
+    `.[local,otel,sso,dev]`, so without this guard the class fails there while
+    passing on any machine that happens to have the SDK installed.
+
+    The same `_split_content` / `_thinking_kwargs` logic is covered
+    SDK-independently in tests/unit/test_llm_thinking.py, which fakes the module
+    via monkeypatch.setitem(sys.modules, "anthropic", ...) and therefore always
+    runs. So skipping here loses no coverage.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_anthropic_sdk(self):
+        pytest.importorskip(
+            "anthropic", reason="anthropic extra not installed (pip install 'trelix[anthropic]')"
+        )
 
     def test_split_content_text_only(self):
         """_split_content extracts text when no thinking blocks."""
