@@ -123,6 +123,7 @@ class Synthesizer:
             # Use the explicitly supplied LLMConfig (e.g. IndexConfig.llm).
             # This is the correct path for non-OpenAI providers such as
             # Anthropic, Bedrock, and Vertex.
+            self._llm_config = llm_config
             self._llm_client = build_chat_client(llm_config)
         else:
             # Backward-compat shim: rebuild LLMConfig from EmbedderConfig.
@@ -145,6 +146,7 @@ class Synthesizer:
                     "model": config.openai_chat_model,
                 }
             )
+            self._llm_config = shim_cfg
             self._llm_client = build_chat_client(shim_cfg)
 
         # Keep _client for the None check used by synthesize()
@@ -246,6 +248,7 @@ class Synthesizer:
                 system=system_prompt,
                 max_tokens=max_tokens,
                 temperature=0.0,
+                thinking=self._llm_config.thinking_enabled,
             )
         except Exception as exc:
             logger.warning("Streaming synthesis failed: %s", exc)
@@ -290,6 +293,7 @@ class Synthesizer:
                 system=self._system_prompt(context.intent),
                 max_tokens=max_tokens,
                 temperature=0.2,
+                thinking=self._llm_config.thinking_enabled,
             ):
                 sys.stdout.write(chunk)
                 sys.stdout.flush()

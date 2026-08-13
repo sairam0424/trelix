@@ -80,7 +80,10 @@ class TestAnthropicBackend:
         backend = self._make_backend(mock_anthropic)
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="hello")]
+        mock_content_block = MagicMock()
+        mock_content_block.type = "text"
+        mock_content_block.text = "hello"
+        mock_response.content = [mock_content_block]
         mock_response.model = "claude-3-5-sonnet-20241022"
         mock_response.stop_reason = "end_turn"
         mock_response.usage.input_tokens = 10
@@ -98,7 +101,10 @@ class TestAnthropicBackend:
         backend = self._make_backend(mock_anthropic)
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="ok")]
+        mock_content_block = MagicMock()
+        mock_content_block.type = "text"
+        mock_content_block.text = "ok"
+        mock_response.content = [mock_content_block]
         mock_response.model = "claude-3-5-sonnet-20241022"
         mock_response.stop_reason = "end_turn"
         mock_response.usage.input_tokens = 1
@@ -117,7 +123,10 @@ class TestAnthropicBackend:
         backend = self._make_backend(mock_anthropic)
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="ok")]
+        mock_content_block = MagicMock()
+        mock_content_block.type = "text"
+        mock_content_block.text = "ok"
+        mock_response.content = [mock_content_block]
         mock_response.model = "claude-3-5-sonnet-20241022"
         mock_response.stop_reason = "end_turn"
         mock_response.usage.input_tokens = 1
@@ -139,7 +148,10 @@ class TestAnthropicBackend:
         backend = self._make_backend(mock_anthropic)
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="ok")]
+        mock_content_block = MagicMock()
+        mock_content_block.type = "text"
+        mock_content_block.text = "ok"
+        mock_response.content = [mock_content_block]
         mock_response.model = "claude"
         mock_response.stop_reason = "max_tokens"  # Anthropic name
         mock_response.usage.input_tokens = 1
@@ -168,7 +180,10 @@ class TestAnthropicBackend:
         backend = self._make_backend(mock_anthropic)
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="ok")]
+        mock_content_block = MagicMock()
+        mock_content_block.type = "text"
+        mock_content_block.text = "ok"
+        mock_response.content = [mock_content_block]
         mock_response.model = "claude-3-5-sonnet-20241022"
         mock_response.stop_reason = "end_turn"
         mock_response.usage.input_tokens = 1

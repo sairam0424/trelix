@@ -17,8 +17,50 @@
       {
         "command": "trelix.ask",
         "title": "trelix: Ask about Code"
+      },
+      {
+        "command": "trelix.findSimilar",
+        "title": "trelix: Find Similar Code"
+      },
+      {
+        "command": "trelix.blastRadius",
+        "title": "trelix: Show Blast Radius"
       }
     ],
+    "chatParticipants": [
+      {
+        "id": "trelix.chat",
+        "name": "trelix",
+        "description": "Ask trelix about this codebase",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "search",
+            "description": "Semantic code search across the codebase"
+          },
+          {
+            "name": "explain",
+            "description": "Explain the selected code"
+          },
+          {
+            "name": "impact",
+            "description": "Show what depends on a symbol (blast radius)"
+          }
+        ]
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "trelix.findSimilar",
+          "when": "false"
+        },
+        {
+          "command": "trelix.blastRadius",
+          "when": "false"
+        }
+      ]
+    },
     "configuration": {
       "title": "trelix",
       "properties": {
@@ -26,6 +68,11 @@
           "type": "string",
           "default": "",
           "description": "Path to trelix-indexed repository (defaults to workspace root)"
+        },
+        "trelix.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show trelix code lenses (Find similar, blast radius) above symbols"
         }
       }
     }
@@ -36,6 +83,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "npm run build",
     "test": "node ./dist/test/runTest.js",
+    "test:unit": "npm run build && mocha --require ./dist/test/headless-boot.js --ui tdd dist/test/suite/mcp-client.test.js dist/test/suite/search-controller.test.js dist/test/suite/code-lens-provider.test.js dist/test/suite/chat-handler.test.js dist/test/suite/hover-provider.test.js",
     "package": "vsce package"
   },
   "dependencies": {

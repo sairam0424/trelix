@@ -30,6 +30,9 @@ class ChatResponse:
     finish_reason: str  # "stop" | "length" | "tool_calls" (normalized across providers)
     input_tokens: int = 0
     output_tokens: int = 0
+    thinking: str | None = None  # Extended thinking content (Anthropic only)
+    cache_read_tokens: int = 0  # Prompt cache hits (Anthropic only)
+    cache_write_tokens: int = 0  # Prompt cache writes (Anthropic only)
 
 
 @dataclass
@@ -55,6 +58,7 @@ class TrelixChatClient(ABC):
         max_tokens: int | None = None,
         temperature: float | None = None,
         system: str | None = None,
+        thinking: bool = False,
     ) -> ChatResponse:
         """Non-streaming chat completion. Returns full response."""
         ...
@@ -66,6 +70,7 @@ class TrelixChatClient(ABC):
         max_tokens: int | None = None,
         temperature: float | None = None,
         system: str | None = None,
+        thinking: bool = False,
     ) -> Iterator[str]:
         """Streaming chat completion. Yields text chunks as they arrive."""
         ...

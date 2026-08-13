@@ -61,6 +61,7 @@ class LiteLLMBackend(TrelixChatClient):
         max_tokens: int | None = None,
         temperature: float | None = None,
         system: str | None = None,
+        thinking: bool = False,
     ) -> ChatResponse:
         response = self._completion(
             model=self._model,
@@ -83,6 +84,7 @@ class LiteLLMBackend(TrelixChatClient):
         max_tokens: int | None = None,
         temperature: float | None = None,
         system: str | None = None,
+        thinking: bool = False,
     ) -> Iterator[str]:
         # litellm.completion() is a plain function, not a generator — with
         # stream=True it still opens the connection synchronously before

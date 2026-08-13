@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from trelix.core.config import (
     EmbedderConfig,
@@ -21,6 +22,11 @@ from trelix.core.models import (
     Symbol,
     SymbolKind,
     TypeEdge,
+)
+from trelix.retrieval.planner.models import (
+    INTENT_STRATEGIES,
+    IntentType,
+    compression_ratio_for_intent,
 )
 
 # ---------------------------------------------------------------------------
@@ -232,6 +238,76 @@ class TestRetrievalConfig:
         monkeypatch.setenv("TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS", "0")
         cfg = RetrievalConfig()
         assert cfg.agent_session_max_age_seconds == 0.0
+
+
+class TestContextTokenBudgetEnvCoercion:
+    """Regression: the DOCUMENTED ``=null`` env route used to raise.
+
+    ``TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null`` — the exact spelling in the
+    field's own docstring and in docs/CONFIGURATION.md — raised
+    ValidationError ("Input should be a valid integer"), because env values
+    arrive as strings and an ``int | None`` field cannot coerce ``"null"``.
+    Since the whole model-aware auto-budget path is gated on
+    ``context_token_budget is None``, v3.0's headline feature was reachable
+    ONLY from the Python API — never from env, and therefore never from the
+    CLI. A ``mode="before"`` validator now maps the auto sentinels to None.
+
+    Budget *resolution* itself is covered in tests/unit/test_model_aware_budget.py;
+    what is pinned here is the env plumbing that feeds it.
+    """
+
+    VAR = "TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET"
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["null", "none", "auto", "~", "", "NULL", "None", "AUTO", " null ", "  auto\t"],
+    )
+    def test_auto_sentinels_become_none(self, monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+        monkeypatch.setenv(self.VAR, raw)
+        assert RetrievalConfig().context_token_budget is None
+
+    def test_explicit_int_string_is_preserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(self.VAR, "12000")
+        budget = RetrievalConfig().context_token_budget
+        assert budget == 12_000
+        assert isinstance(budget, int)
+
+    def test_unset_var_keeps_the_12000_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # delenv alone would not prove "unset": pydantic-settings reads ./.env
+        # directly, and this repo's root .env carries 30+ TRELIX_* vars, so
+        # _env_file=None is what actually isolates the file source.
+        monkeypatch.delenv(self.VAR, raising=False)
+        cfg = RetrievalConfig(_env_file=None)  # type: ignore[call-arg]
+        assert cfg.context_token_budget == 12_000
+
+    def test_genuinely_invalid_value_still_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The coercion must not swallow a real typo into a silent auto-budget."""
+        monkeypatch.setenv(self.VAR, "banana")
+        with pytest.raises(ValidationError):
+            RetrievalConfig()
+
+    def test_env_null_actually_reaches_the_auto_budget_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The point of the fix: the env route must engage the model-aware budget.
+
+        Without the validator this raised at IndexConfig construction, so no
+        env/CLI user could ever get an auto-derived budget.
+        """
+        from trelix.retrieval.retriever import Retriever
+
+        monkeypatch.setenv(self.VAR, "null")
+        # Pinned so a developer's .env cannot change the arithmetic below.
+        monkeypatch.setenv("TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION", "0.5")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        cfg = IndexConfig(repo_path=str(repo))
+        assert cfg.retrieval.context_token_budget is None  # nested model saw the env var
+        cfg.llm.model = "gpt-4o"
+
+        # gpt-4o's 128k window x the 0.5 default fraction.
+        assert Retriever(cfg)._effective_budget == 64_000
 
 
 class TestSparseConfig:
@@ -557,3 +633,143 @@ class TestShortQueryConfig:
         monkeypatch.setenv("TRELIX_RETRIEVAL_SHORT_QUERY_TOKENS", "3")
         cfg = RetrievalConfig()
         assert cfg.short_query_token_threshold == 3
+
+
+# ---------------------------------------------------------------------------
+# Context compression (SeleCom)
+# ---------------------------------------------------------------------------
+
+
+class TestCompressionConfig:
+    def test_compression_disabled_by_default(self) -> None:
+        assert RetrievalConfig().compression_enabled is False
+
+    def test_provider_defaults_to_extractive(self) -> None:
+        assert RetrievalConfig().compression_provider == "extractive"
+
+    def test_target_ratio_default_is_0_45(self) -> None:
+        assert RetrievalConfig().compression_target_ratio == 0.45
+
+    def test_min_tokens_default_is_120(self) -> None:
+        assert RetrievalConfig().compression_min_tokens == 120
+
+    def test_enabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION", "true")
+        assert RetrievalConfig().compression_enabled is True
+
+    def test_provider_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_PROVIDER", "extractive")
+        assert RetrievalConfig().compression_provider == "extractive"
+
+    def test_unknown_provider_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_PROVIDER", "abstractive")
+        with pytest.raises(ValidationError):
+            RetrievalConfig()
+
+    def test_target_ratio_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO", "0.7")
+        assert RetrievalConfig().compression_target_ratio == 0.7
+
+    def test_min_tokens_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS", "0")
+        assert RetrievalConfig().compression_min_tokens == 0
+
+    def test_ratio_below_lower_bound_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO", "0.05")
+        with pytest.raises(ValidationError):
+            RetrievalConfig()
+
+    def test_ratio_above_upper_bound_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO", "1.5")
+        with pytest.raises(ValidationError):
+            RetrievalConfig()
+
+    def test_ratio_accepts_both_bounds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO", "0.1")
+        assert RetrievalConfig().compression_target_ratio == 0.1
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO", "1.0")
+        assert RetrievalConfig().compression_target_ratio == 1.0
+
+    def test_negative_min_tokens_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS", "-1")
+        with pytest.raises(ValidationError):
+            RetrievalConfig()
+
+    def test_kwarg_by_name(self) -> None:
+        cfg = RetrievalConfig(compression_enabled=True, compression_target_ratio=0.9)
+        assert cfg.compression_enabled is True
+        assert cfg.compression_target_ratio == 0.9
+
+
+class TestPerIntentCompressionRatio:
+    """Per-intent ratios live on RetrievalStrategy; 1.0 means 'never compress'."""
+
+    EXPECTED: dict[IntentType, float] = {
+        IntentType.SYMBOL_LOOKUP: 1.0,
+        IntentType.CONFIG_LOOKUP: 1.0,
+        IntentType.FILE_OVERVIEW: 1.0,
+        IntentType.PROJECT_OVERVIEW: 1.0,
+        IntentType.FEATURE_FLOW: 0.45,
+        IntentType.DEPENDENCY_MAP: 0.30,
+        IntentType.BLAST_RADIUS: 0.30,
+        IntentType.COMPARISON: 0.65,
+    }
+
+    def test_every_intent_has_a_baked_ratio(self) -> None:
+        assert set(INTENT_STRATEGIES) == set(self.EXPECTED)
+
+    def test_baked_defaults_match_the_spec(self) -> None:
+        actual = {intent: s.compression_ratio for intent, s in INTENT_STRATEGIES.items()}
+        assert actual == self.EXPECTED
+
+    def test_resolver_returns_the_baked_ratio(self) -> None:
+        for intent, expected in self.EXPECTED.items():
+            assert compression_ratio_for_intent(intent) == expected
+
+    def test_resolver_accepts_the_intent_string(self) -> None:
+        assert compression_ratio_for_intent("blast_radius") == 0.30
+
+    def test_unknown_intent_returns_none_for_config_fallback(self) -> None:
+        assert compression_ratio_for_intent("not_an_intent") is None
+
+    def test_absent_intent_returns_none_for_config_fallback(self) -> None:
+        assert compression_ratio_for_intent(None) is None
+
+    def test_per_intent_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO_BLAST_RADIUS", "0.8")
+        assert compression_ratio_for_intent(IntentType.BLAST_RADIUS) == 0.8
+        # Other intents are unaffected — one var per intent, like leg_weights.
+        assert compression_ratio_for_intent(IntentType.DEPENDENCY_MAP) == 0.30
+
+    def test_env_override_can_disable_compression_for_one_intent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO_FEATURE_FLOW", "1.0")
+        assert compression_ratio_for_intent(IntentType.FEATURE_FLOW) == 1.0
+
+    def test_env_override_can_enable_compression_for_an_opted_out_intent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO_SYMBOL_LOOKUP", "0.5")
+        assert compression_ratio_for_intent(IntentType.SYMBOL_LOOKUP) == 0.5
+
+    def test_unparseable_env_override_falls_back_to_baked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO_COMPARISON", "aggressive")
+        assert compression_ratio_for_intent(IntentType.COMPARISON) == 0.65
+
+    def test_out_of_range_env_override_falls_back_to_baked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO_COMPARISON", "0.0")
+        assert compression_ratio_for_intent(IntentType.COMPARISON) == 0.65
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO_COMPARISON", "2.0")
+        assert compression_ratio_for_intent(IntentType.COMPARISON) == 0.65
+
+    def test_scalar_ratio_env_var_is_not_read_as_a_per_intent_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TRELIX_RETRIEVAL_COMPRESSION_RATIO must not leak into any intent."""
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO", "0.99")
+        assert compression_ratio_for_intent(IntentType.FEATURE_FLOW) == 0.45

@@ -111,6 +111,7 @@ class OpenAIBackend(TrelixChatClient):
         max_tokens: int | None = None,
         temperature: float | None = None,
         system: str | None = None,
+        thinking: bool = False,
     ) -> ChatResponse:
         if self._client is None:
             return ChatResponse(
@@ -140,6 +141,7 @@ class OpenAIBackend(TrelixChatClient):
         max_tokens: int | None = None,
         temperature: float | None = None,
         system: str | None = None,
+        thinking: bool = False,
     ) -> Iterator[str]:
         if self._client is None:
             yield "[trelix] LLM not configured — set OPENAI_API_KEY or AZURE_API_KEY."
