@@ -7,7 +7,7 @@ packages = ["src/trelix"]
 
 [project]
 name = "trelix"
-version = "2.12.0"
+version = "3.0.0"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -108,6 +108,9 @@ serve = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
 ]
+sso = [
+    "pyjwt[crypto]>=2.9",             # OIDC JWT verification (RS256/ES256)
+]
 otel = [
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
@@ -141,7 +144,7 @@ llm-all   = ["trelix[anthropic,bedrock,vertex,litellm]"]
 graph-viz = ["pyvis>=0.3.2"]
 knowledge-graph = ["networkx>=3.3.0", "pyvis>=0.3.2"]
 all = [
-    "trelix[local,rerank,voyage,qdrant,watch]",
+    "trelix[local,rerank,voyage,qdrant,watch,sso]",
 ]
 
 [project.scripts]

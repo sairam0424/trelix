@@ -3,7 +3,7 @@ name: trelix
 description: Helm chart for trelix serve — fast, reliable code indexing and retrieval REST API
 type: application
 version: 0.1.0
-appVersion: "2.12.0"
+appVersion: "3.0.0"
 home: https://github.com/sairam0424/trelix
 sources:
   - https://github.com/sairam0424/trelix
