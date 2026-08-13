@@ -34,5 +34,23 @@ jobs:
       - name: Build (tsc + esbuild)
         run: npm run build
 
+      # Headless first: these 36 tests stub the `vscode` module and need no
+      # Extension Host or display, so a failure here is attributable to our own
+      # code rather than to the runner. Keeping it as a separate step means CI
+      # still produces signal if the Extension Host download/launch below is
+      # flaky on the runner.
+      - name: Run headless unit tests (no Extension Host)
+        run: npm run test:unit
+
+      # Packaging is the ONLY step that catches a manifest/dependency mismatch:
+      # vsce refuses to package when @types/vscode is newer (major.minor) than
+      # engines.vscode, so bumping @types/vscode to ^1.95.0 while engines stayed
+      # ^1.90.0 left the extension completely unpackageable — and typecheck,
+      # build and both test steps all still passed. The .vsix it emits is a
+      # throwaway (workspace-vscode/.gitignore ignores *.vsix) and is not
+      # uploaded as an artifact.
+      - name: Package (vsce — catches engines.vscode / @types/vscode mismatch)
+        run: npm run package
+
       - name: Run tests (xvfb — VS Code test runner needs a display)
         run: xvfb-run -a npm test
