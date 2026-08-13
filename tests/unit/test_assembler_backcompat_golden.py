@@ -63,11 +63,23 @@ def _load_legacy_assembler() -> type:
         text=True,
         check=False,
     )
+    # allow_module_level: this runs at import time (the legacy class is built once
+    # for the module), so a bare pytest.skip() here is a COLLECTION ERROR rather
+    # than a skip. Both branches are expected in normal operation: no git/shallow
+    # checkout hits the first, and any run after the compression change is
+    # committed hits the second — including every CI run, since HEAD there always
+    # contains it. This suite can only truly execute pre-commit, which is exactly
+    # when byte-identical output is the thing under review.
     if proc.returncode != 0:
-        pytest.skip(f"cannot read HEAD:assembler.py ({proc.stderr.strip()})")
+        pytest.skip(
+            f"cannot read HEAD:assembler.py ({proc.stderr.strip()})", allow_module_level=True
+        )
     source = proc.stdout
     if "compressor" in source:
-        pytest.skip("HEAD already contains the compression change — no baseline to diff")
+        pytest.skip(
+            "HEAD already contains the compression change — no baseline to diff",
+            allow_module_level=True,
+        )
 
     path = pathlib.Path(tempfile.gettempdir()) / "trelix_legacy_assembler_golden.py"
     path.write_text(source, encoding="utf-8")
