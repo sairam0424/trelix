@@ -6,6 +6,70 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+
+- **`trelix ask`, `search`, `query`, `call-graph`, `review`, `taint`,
+  `agent sessions show` and six more commands crashed or silently corrupted
+  their output when rendering ordinary indexed content.** The CLI's module-level
+  `Console()` has Rich markup enabled, so every string reaching
+  `console.print()`, `Table.add_row()`, a Table title or a Panel body was parsed
+  for `[tag]` console markup — and most of what these commands render is
+  arbitrary text: indexed file paths and symbol names, retrieved source code,
+  LLM answers and agent observations quoting that code, Semgrep findings, GitHub
+  PR filenames, and persisted queries.
+
+  Two distinct failure modes, neither requiring an attacker. An unmatched
+  closing tag raises `MarkupError`, so the command renders **nothing** and exits
+  nonzero; a balanced-looking tag pair is silently swallowed, so the command
+  exits 0 having **dropped characters from the value**. trelix's own source trips
+  the first: `src/trelix/indexing/parser/extractors/rust.py` contains
+  `re.sub(r"^//[/!]?\s?", ...)`, whose `[/!]` is an unmatched closing tag — so
+  `trelix ask` against any repository holding a Rust comment-stripping regex,
+  trelix included, died instead of showing results.
+
+  Fixed by escaping the value at every markup-interpreting sink — 73 new
+  `escape()` call sites across 22 sink groups — while leaving trelix's own
+  `[red]…[/red]` markup unescaped so colouring still works. The worst sink was
+  `agent sessions show`, which replays LLM thoughts and tool observations, and a
+  tool observation *is* retrieved repository source. `trelix audit list`'s Table
+  **title** was also still unsafe: that command's earlier fix escaped every row
+  but not the title, so `--db '/tmp/a[/x].db'` still raised.
+
+- **`trelix review --json`, `taint --json` and `graph --json` emitted
+  unparseable JSON.** These payloads went out through `console.print()`, which is
+  a markup sink like any other, so they inherited both failure modes plus a
+  third: Rich hard-wraps at the console width, and a wrap landing inside a JSON
+  *string* injects a raw newline that `json.loads` rejects as `Invalid control
+  character`. One long unbroken token in an LLM review comment was enough.
+  Whitespace *between* JSON tokens is semantically free, which is why the
+  existing `--json` contract tests — all using short, bracket-free comments —
+  never caught it.
+
+  Escaping is the wrong fix for a machine-readable payload (it would write stray
+  backslashes into consumers' parsed strings), so these seven sites now go
+  through a `_print_json()` helper that disables Rich's markup parser, syntax
+  highlighter and line wrapping instead of altering the value. Output is
+  byte-identical for payloads that already worked.
+
+- **Nine functions in `cli/main.py` carried a redundant function-local
+  `from rich.markup import escape`.** A function-local import binds the name for
+  the *entire* function scope, so any `escape()` call above the import line
+  raises `UnboundLocalError` — a live trap for exactly the kind of change made
+  above, and one `mypy` does not detect (`ruff`'s F823 does). All nine removed;
+  the module-level import is now the single source. Four dead
+  `import json as _json` locals went with them.
+
+### Added
+
+- 13 regression tests (`tests/unit/test_cli_markup_safety.py`, plus two in
+  `tests/unit/test_review_pr_json.py`). Every test asserts the payload's
+  **literal characters** appear in the output rather than merely that no
+  exception was raised — a command that renders nothing also raises nothing, and
+  the silent-swallow mode exits 0. The trigger line is read out of
+  `extractors/rust.py` at test time rather than pasted, so the tests cannot
+  drift from the code they pin. 11 of the 13 fail against the previous release;
+  the other two are negative controls asserting `--json` output stays unescaped.
+
 ## [3.0.1] — 2026-08-13
 
 ### Overview
