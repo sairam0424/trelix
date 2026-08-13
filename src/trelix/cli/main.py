@@ -70,9 +70,79 @@ def _print_error(label: str, detail: object) -> None:
     "pip install 'trelix'". escape() neutralizes detail's brackets while
     leaving the surrounding [red]/[/red] markup intact.
     """
-    from rich.markup import escape
 
     err_console.print(f"[red]{label}:[/red] {escape(str(detail))}")
+
+
+def _print_json(payload: object, *, indent: int | None = 2) -> None:
+    """Emit `payload` on stdout as JSON a consumer can parse.
+
+    This is the OPPOSITE fix to escape(). A display sink wants the value
+    transformed so Rich cannot misread it; a machine-readable sink wants the
+    value byte-identical and the renderer's features switched off instead —
+    escaping here would write stray backslashes into consumers' parsed strings.
+
+    Rich broke these payloads two ways, and neither needed hostile input:
+
+      * markup=False — `console.print(json.dumps(...))` parses the JSON text
+        for "[tag]" markup, so a reviewed file path or LLM comment containing
+        "[/red]" raised MarkupError and `trelix review --json` emitted nothing.
+      * soft_wrap=True — Rich hard-wraps at console width, and a wrap landing
+        inside a JSON *string* injects a literal newline, which json.loads
+        rejects as "Invalid control character". A single long unbroken token in
+        an LLM review comment was enough; whitespace *between* JSON tokens is
+        semantically free, which is why short payloads hid this for so long.
+
+    highlight=False drops Rich's JSON syntax highlighter, whose ANSI codes
+    would corrupt stdout whenever it is a terminal rather than a pipe.
+    """
+    console.print(
+        json.dumps(payload, indent=indent),
+        markup=False,
+        highlight=False,
+        soft_wrap=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rich markup safety — READ THIS BEFORE REMOVING ANY escape() BELOW
+# ---------------------------------------------------------------------------
+#
+# The module-level Console() above has markup ENABLED, so every string handed
+# to console.print(), err_console.print(), Table.add_row(), a Table title, or a
+# Panel body is parsed for "[tag]" console markup. Two failure modes follow:
+#
+#   1. An unmatched closing tag raises rich.errors.MarkupError, so the command
+#      renders NOTHING and exits nonzero.
+#   2. A well-formed-looking opening tag is silently swallowed, so the value
+#      renders WRONG (this is the bug _print_error() above documents: a real
+#      "pip install 'trelix[local]'" hint rendered as "pip install 'trelix'").
+#
+# Most values these commands render are arbitrary text, not tame identifiers:
+# indexed file paths and symbol names, retrieved source code, LLM answers and
+# agent observations that quote that code, Semgrep findings, GitHub PR
+# filenames, and persisted queries. Neither failure mode needs an attacker —
+# trelix's own source trips it. src/trelix/indexing/parser/extractors/rust.py
+# contains
+#
+#       raw = re.sub(r"^//[/!]?\s?", "", raw, flags=re.MULTILINE)
+#
+# whose "[/!]" is an unmatched closing tag, so `trelix ask` / `trelix search`
+# against any repo holding a Rust comment-stripping regex — including trelix
+# itself — used to die with MarkupError instead of showing results. Symbol
+# names are equally arbitrary: the HTML extractor derives one from an attribute
+# value via script_src.split("/")[-1], and HTML attributes may legally contain
+# a newline.
+#
+# THE INVARIANT: interpolate no dynamic value into a markup-interpreting sink
+# unescaped. rich.markup.escape() renders the value identically (its only
+# artifact is doubling a trailing lone backslash) while neutralizing brackets.
+# Escape the VALUE only — trelix's own literal "[red]…[/red]" markup around it
+# must stay unescaped to keep working. Sites that emit machine-readable JSON are
+# deliberately NOT escaped — they go through _print_json() above, which turns
+# Rich's markup parser and line wrapping OFF instead of altering the value.
+#
+# `trelix audit list` was fixed this way first (see the comment there).
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +255,9 @@ def index(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
-    console.print(Panel(f"[bold cyan]Indexing[/bold cyan] {repo}", expand=False))
+    # escape(repo): a directory legitimately named e.g. "Project [old]" would
+    # otherwise render with "[old]" swallowed as a markup tag.
+    console.print(Panel(f"[bold cyan]Indexing[/bold cyan] {escape(repo)}", expand=False))
 
     t0 = time.perf_counter()
     try:
@@ -259,6 +331,10 @@ def search(
         raise typer.Exit(1) from exc
 
     if json_output:
+        # NOT escaped, deliberately: these values go into a JSON document
+        # emitted with builtin print(), which never interprets markup. Escaping
+        # here would corrupt the machine-readable contract by writing stray
+        # backslashes into consumers' parsed strings.
         results_json = []
         for r in context.results:
             results_json.append(
@@ -276,7 +352,12 @@ def search(
         console.print("[yellow]No results found.[/yellow]")
         return
 
-    table = Table(title=f"Search: {query}", show_header=True, header_style="bold cyan")
+    # The Rich path is the opposite case: title and cells are markup-parsed, and
+    # rel_path / symbol.name are indexed-repository text — a "[/!]" anywhere in
+    # them raised MarkupError and rendered zero rows. See the markup-safety note
+    # near the top of this file. `query` is escaped too: searching for the very
+    # regex that triggers this bug ("trelix search . '[/!]'") must not crash.
+    table = Table(title=f"Search: {escape(query)}", show_header=True, header_style="bold cyan")
     table.add_column("File", style="dim", max_width=40)
     table.add_column("Symbol", style="bold")
     table.add_column("Lines", justify="right")
@@ -284,8 +365,8 @@ def search(
 
     for r in context.results:
         table.add_row(
-            r.file.rel_path,
-            r.symbol.name,
+            escape(r.file.rel_path),
+            escape(r.symbol.name),
             f"{r.symbol.line_start}-{r.symbol.line_end}",
             f"{r.score:.4f}",
         )
@@ -348,8 +429,14 @@ def ask(
 
             agent_loop = AgentLoop(config)
             answer, resolved_session = agent_loop.run(query, session_id=session)
-            console.print(answer)
-            err_console.print(f"[dim]Session: {resolved_session}[/dim]")
+            # Every answer/context blob printed in this command is escaped: an
+            # LLM answer quotes the code it retrieved, and context_text below IS
+            # that code verbatim. Rendering trelix's own rust.py line
+            # `re.sub(r"^//[/!]?\s?", ...)` raised MarkupError, so `trelix ask`
+            # printed nothing and exited nonzero. escape() is display-only —
+            # nothing here is trelix-authored markup meant to be interpreted.
+            console.print(escape(answer))
+            err_console.print(f"[dim]Session: {escape(resolved_session)}[/dim]")
             return
 
         retriever = Retriever(config)
@@ -364,7 +451,7 @@ def ask(
 
             loop = FLARELoop(retriever, synth, config)
             answer = loop.run(query)
-            console.print(answer)
+            console.print(escape(answer))
         else:
             context = retriever.retrieve(query)
             # If provider=local (no API key), print the context text directly.
@@ -372,14 +459,20 @@ def ask(
             # effective value may come from TRELIX_EMBEDDER_PROVIDER when
             # --provider wasn't passed.
             if config.embedder.provider == "local":
-                console.print(Panel(f"[bold cyan]Context for:[/bold cyan] {query}", expand=False))
+                console.print(
+                    Panel(f"[bold cyan]Context for:[/bold cyan] {escape(query)}", expand=False)
+                )
                 if context.context_text:
-                    console.print(context.context_text)
+                    console.print(escape(context.context_text))
                 else:
                     console.print("[yellow]No relevant code found.[/yellow]")
                 return
+            # Escaped per token, not per answer: each print() renders in
+            # isolation, so a bracket pair split across two tokens can never
+            # form a tag, and a complete "[/!]" inside one token can no longer
+            # abort the stream mid-answer.
             for token in synth.stream(context, config.retrieval):
-                console.print(token, end="", highlight=False)
+                console.print(escape(token), end="", highlight=False)
             console.print()  # final newline
     except Exception as exc:
         _print_error("Synthesis failed", exc)
@@ -422,7 +515,7 @@ def query(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
-    console.print(Panel(f"[bold cyan]Query:[/bold cyan] {query_str}", expand=False))
+    console.print(Panel(f"[bold cyan]Query:[/bold cyan] {escape(query_str)}", expand=False))
 
     try:
         retriever = Retriever(config)
@@ -446,10 +539,11 @@ def query(
     table.add_column("Lines", justify="right")
     table.add_column("Score", justify="right")
 
+    # Indexed-repository text into markup-parsed cells — same sink as search().
     for r in context.results:
         table.add_row(
-            r.file.rel_path,
-            r.symbol.name,
+            escape(r.file.rel_path),
+            escape(r.symbol.name),
             f"{r.symbol.line_start}-{r.symbol.line_end}",
             f"{r.score:.4f}",
         )
@@ -505,7 +599,7 @@ def call_graph(
         _print_error("Failed to open index", exc)
         raise typer.Exit(1) from exc
 
-    console.print(f"\n[bold] Graph:[/bold] {symbol}\n")
+    console.print(f"\n[bold] Graph:[/bold] {escape(symbol)}\n")
 
     def _render_table(title: str, results: list[_SearchResult]) -> None:
         tbl = Table(show_header=True, header_style="bold cyan", title=title)
@@ -514,10 +608,13 @@ def call_graph(
         tbl.add_column("Lines", justify="right")
         tbl.add_column("Kind")
         if results:
+            # File/symbol are indexed-repository text and must be escaped;
+            # `kind` is a closed SymbolKind enum validated at hydration, so it
+            # is left alone. The "(none)" row below is trelix's own markup.
             for r in results:
                 tbl.add_row(
-                    r.file.rel_path,
-                    r.symbol.qualified_name or r.symbol.name,
+                    escape(r.file.rel_path),
+                    escape(r.symbol.qualified_name or r.symbol.name),
                     f"{r.symbol.line_start}-{r.symbol.line_end}",
                     r.symbol.kind.value if hasattr(r.symbol.kind, "value") else str(r.symbol.kind),
                 )
@@ -527,8 +624,6 @@ def call_graph(
 
     valid_directions = {"callers", "callees", "importers", "all"}
     if direction not in valid_directions:
-        from rich.markup import escape
-
         err_console.print(
             f"[red]Invalid direction[/red] {escape(repr(direction))}. "
             f"Choose from: {', '.join(sorted(valid_directions))}"
@@ -545,7 +640,7 @@ def call_graph(
 
     if direction in ("importers", "all"):
         importers = retriever.get_importers(symbol)
-        _render_table(f'Importers of "{symbol}" ({len(importers)})', importers)
+        _render_table(f'Importers of "{escape(symbol)}" ({len(importers)})', importers)
 
 
 # ---------------------------------------------------------------------------
@@ -580,11 +675,9 @@ def stats(
 
     db_path = config.db_path_absolute
     if not db_path.exists():
-        from rich.markup import escape
-
         err_console.print(
             f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {repo}` first."
+            f" run `trelix index {escape(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -601,7 +694,7 @@ def stats(
 
     db_size_kb = db_size_bytes / 1024
 
-    console.print(Panel(f"[bold cyan]Index Stats:[/bold cyan] {repo}", expand=False))
+    console.print(Panel(f"[bold cyan]Index Stats:[/bold cyan] {escape(repo)}", expand=False))
 
     table = Table(show_header=True, header_style="bold cyan")
     table.add_column("Metric", style="dim")
@@ -662,11 +755,9 @@ def link_tickets(
 
     db_path = config.db_path_absolute
     if not db_path.exists():
-        from rich.markup import escape
-
         err_console.print(
             f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {repo}` first."
+            f" run `trelix index {escape(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -734,11 +825,9 @@ def link_artifacts(
 
     db_path = config.db_path_absolute
     if not db_path.exists():
-        from rich.markup import escape
-
         err_console.print(
             f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {repo}` first."
+            f" run `trelix index {escape(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -868,8 +957,6 @@ def migrate_vectors(
         return
 
     if to != "qdrant":
-        from rich.markup import escape
-
         err_console.print(
             f"[red]Unsupported target backend:[/red] {escape(repr(to))}."
             " Only 'qdrant' is supported."
@@ -892,11 +979,9 @@ def migrate_vectors(
 
     db_path = config.db_path_absolute
     if not db_path.exists():
-        from rich.markup import escape
-
         err_console.print(
             f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {repo}` first."
+            f" run `trelix index {escape(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -943,7 +1028,9 @@ def migrate_vectors(
     # Stream all rows from sqlite-vec in batches
     total_row = conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()
     total = total_row[0] if total_row else 0
-    console.print(f"[cyan]Migrating {total:,} embeddings (dim={dimension}) → Qdrant {url}[/cyan]")
+    console.print(
+        f"[cyan]Migrating {total:,} embeddings (dim={dimension}) → Qdrant {escape(url)}[/cyan]"
+    )
 
     BATCH = 500
     offset = 0
@@ -1023,7 +1110,7 @@ def watch(
         raise typer.Exit(1) from exc
 
     # Run initial full index so the watcher starts from a known-good state
-    console.print(Panel(f"[bold cyan]Initial index[/bold cyan] {repo}", expand=False))
+    console.print(Panel(f"[bold cyan]Initial index[/bold cyan] {escape(repo)}", expand=False))
     try:
         indexer.index()
     except Exception as exc:
@@ -1080,7 +1167,9 @@ def watch_all(
     console.print(
         Panel(
             f"[bold cyan]watch-all[/bold cyan] — watching {len(entries)} repo(s):\n"
-            + "\n".join(f"  [green]{e.alias}[/green]  {e.path}" for e in entries),
+            # Alias/path come from the federation registry JSON on disk, not
+            # from argv — bracket-shaped values there must not eat the Panel.
+            + "\n".join(f"  [green]{escape(e.alias)}[/green]  {escape(e.path)}" for e in entries),
             expand=False,
         )
     )
@@ -1192,15 +1281,15 @@ def graph(
         result = builder.build(extract_concepts=concepts)
 
     if json_output:
-        import json as _json
-
         data = {
             "node_count": result.node_count,
             "edge_count": result.edge_count,
             "community_count": result.community_count,
             "concept_count": result.concept_count,
         }
-        console.print(_json.dumps(data))
+        # indent=None keeps this payload compact, as it has always been —
+        # _print_json's default would reformat a machine-readable contract.
+        _print_json(data, indent=None)
         return
 
     console.print("[green]Knowledge Graph built[/green]")
@@ -1213,8 +1302,11 @@ def graph(
 
     if result.community_summary:
         console.print("\n[bold]Top Communities:[/bold]")
+        # top_files are indexed-repository paths. community_id is an int, and
+        # "[3]" is not tag-shaped to Rich (a tag must start [a-z#/@]), so the
+        # surrounding brackets are left as the literal formatting they are.
         for c in result.community_summary[:5]:
-            files = ", ".join(c["top_files"][:3])
+            files = escape(", ".join(c["top_files"][:3]))
             console.print(f"  [{c['community_id']}] {c['size']} nodes — {files}")
 
     if visualize:
@@ -1223,7 +1315,7 @@ def graph(
         out = output or str(_Path(repo_path) / ".trelix" / "graph.html")
         viz = GraphVisualizer()
         path = viz.export_html(result.code_graph, out)
-        console.print(f"\n[blue]Graph visualization:[/blue] {path}")
+        console.print(f"\n[blue]Graph visualization:[/blue] {escape(str(path))}")
 
 
 # ---------------------------------------------------------------------------
@@ -1258,11 +1350,15 @@ def telemetry(
     table.add_column("ms", justify="right")
     table.add_column("results", justify="right")
 
+    # `query` is replayed text recorded by whoever issued the search (CLI user,
+    # REST API caller, MCP client, agent loop), so it is arbitrary. Truncate
+    # first and escape after: escaping first could let [:50] slice through an
+    # inserted backslash, and a truncated half-tag renders literally anyway.
     for row in rows:
         table.add_row(
-            row["ts"],
-            row["query"][:50],
-            row["intent"],
+            escape(str(row["ts"])),
+            escape(row["query"][:50]),
+            escape(str(row["intent"])),
             f"{row['elapsed_ms']:.0f}",
             str(row["result_count"]),
         )
@@ -1290,7 +1386,7 @@ def eval(
     try:
         metrics = harness.run(golden)
     except FileNotFoundError:
-        console.print(f"[red]Golden file not found: {golden}[/red]")
+        console.print(f"[red]Golden file not found: {escape(golden)}[/red]")
         console.print("Create a golden.jsonl with lines like:")
         console.print('  {"query": "how does auth work", "relevant_files": ["src/auth.py"]}')
         raise typer.Exit(1)
@@ -1321,7 +1417,7 @@ def eval_synthesis(
     try:
         metrics = harness.run(golden)
     except FileNotFoundError:
-        console.print(f"[red]Golden file not found: {golden}[/red]")
+        console.print(f"[red]Golden file not found: {escape(golden)}[/red]")
         console.print("Create a golden_synthesis.jsonl with lines like:")
         console.print(
             '  {"query": "how does auth work", "relevant_files": ["src/auth.py"],'
@@ -1361,7 +1457,6 @@ def taint(
 
     Requires: pip install trelix[taint]
     """
-    import json as _json
 
     from trelix.analysis.taint import TaintAnalyzer
     from trelix.core.config import IndexConfig
@@ -1386,19 +1481,18 @@ def taint(
     filtered = [f for f in flows if not severity or f.severity == severity.upper()]
 
     if json_output:
-        console.print(
-            _json.dumps(
-                [
-                    {
-                        "rule": f.rule_id,
-                        "severity": f.severity,
-                        "source": f"{f.source_file}:{f.source_line}",
-                        "sink": f"{f.sink_file}:{f.sink_line}",
-                    }
-                    for f in filtered
-                ],
-                indent=2,
-            )
+        # Semgrep rule ids and scanned file paths are third-party text; a
+        # bracket in either used to abort this with MarkupError. See _print_json.
+        _print_json(
+            [
+                {
+                    "rule": f.rule_id,
+                    "severity": f.severity,
+                    "source": f"{f.source_file}:{f.source_line}",
+                    "sink": f"{f.sink_file}:{f.sink_line}",
+                }
+                for f in filtered
+            ]
         )
         return
 
@@ -1407,12 +1501,14 @@ def taint(
     table.add_column("Rule")
     table.add_column("Source")
     table.add_column("Sink")
+    # Severity/rule id come from Semgrep's rule pack and the file paths from the
+    # scanned repository — all third-party text landing in markup-parsed cells.
     for f in filtered[:50]:
         table.add_row(
-            f.severity,
-            f.rule_id,
-            f"{f.source_file}:{f.source_line}",
-            f"{f.sink_file}:{f.sink_line}",
+            escape(f.severity),
+            escape(f.rule_id),
+            f"{escape(f.source_file)}:{f.source_line}",
+            f"{escape(f.sink_file)}:{f.sink_line}",
         )
     console.print(table)
 
@@ -1452,8 +1548,6 @@ def review(
     """Review a git diff using trelix retrieval-augmented analysis."""
     _setup_logging(False)
 
-    import json as _json
-
     from trelix.core.config import IndexConfig
     from trelix.review.diff_parser import DiffParser
     from trelix.review.reviewer import DiffReviewer
@@ -1487,7 +1581,7 @@ def review(
         # file and parse it as JSON.
         status_console = err_console if json_output else console
 
-        status_console.print(f"[cyan]Fetching PR diff from GitHub:[/cyan] {pr}")
+        status_console.print(f"[cyan]Fetching PR diff from GitHub:[/cyan] {escape(pr)}")
         gh_client = GitHubPRClient(token=token)
 
         try:
@@ -1500,7 +1594,9 @@ def review(
         diff_lines: list[str] = []
         for f in pr_files:
             if f.patch is None:
-                status_console.print(f"[dim]Skipping binary/oversized file: {f.filename}[/dim]")
+                status_console.print(
+                    f"[dim]Skipping binary/oversized file: {escape(f.filename)}[/dim]"
+                )
                 continue
             diff_lines.append(f"diff --git a/{f.filename} b/{f.filename}")
             diff_lines.append(f"--- a/{f.previous_filename or f.filename}")
@@ -1510,7 +1606,7 @@ def review(
 
         if not pr_diff_str.strip():
             if json_output:
-                console.print(_json.dumps([]))
+                _print_json([])
             else:
                 console.print(
                     "[yellow]No textual changes found in PR (all binary files?).[/yellow]"
@@ -1523,25 +1619,25 @@ def review(
 
         if not comments:
             if json_output:
-                console.print(_json.dumps([]))
+                _print_json([])
             else:
                 console.print("[green]No issues found.[/green]")
             raise typer.Exit(0)
 
         if json_output:
-            console.print(
-                _json.dumps(
-                    [
-                        {
-                            "file": c.file_path,
-                            "lines": f"{c.line_start}-{c.line_end}",
-                            "severity": c.severity,
-                            "comment": c.comment,
-                        }
-                        for c in comments
-                    ],
-                    indent=2,
-                )
+            # `comment` is LLM prose and `file_path` comes from the PR diff. A
+            # bracket in either raised MarkupError, and a long comment wrapped
+            # mid-string into unparseable JSON. See _print_json.
+            _print_json(
+                [
+                    {
+                        "file": c.file_path,
+                        "lines": f"{c.line_start}-{c.line_end}",
+                        "severity": c.severity,
+                        "comment": c.comment,
+                    }
+                    for c in comments
+                ]
             )
         else:
             from rich.table import Table as _Table
@@ -1551,13 +1647,18 @@ def review(
             table.add_column("Lines")
             table.add_column("Severity", style="bold")
             table.add_column("Comment", max_width=80)
+            # `comment` is LLM prose that quotes the reviewed diff, and
+            # file_path comes from that diff — both arbitrary text. `color` is
+            # trelix's own whitelisted markup and stays unescaped; the severity
+            # *inside* it is model output, so an "[/x]" severity would otherwise
+            # make "[white][/x][/white]" unparseable.
             for c in comments:
                 color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
                 table.add_row(
-                    c.file_path,
+                    escape(c.file_path),
                     f"{c.line_start}-{c.line_end}",
-                    f"[{color}]{c.severity}[/{color}]",
-                    c.comment,
+                    f"[{color}]{escape(c.severity)}[/{color}]",
+                    escape(c.comment),
                 )
             console.print(table)
 
@@ -1587,8 +1688,6 @@ def review(
                     f"[green]Posted review with {len(inline_comments)} inline comments.[/green]"
                 )
             except Exception as exc:
-                from rich.markup import escape
-
                 err_console.print(
                     f"[yellow]Warning: failed to post comments: {escape(str(exc))}[/yellow]"
                 )
@@ -1631,21 +1730,18 @@ def review(
         return
 
     if json_output:
-        import json as _json
-
-        console.print(
-            _json.dumps(
-                [
-                    {
-                        "file": c.file_path,
-                        "lines": f"{c.line_start}-{c.line_end}",
-                        "severity": c.severity,
-                        "comment": c.comment,
-                    }
-                    for c in comments
-                ],
-                indent=2,
-            )
+        # Same untrusted pair as the --pr branch above: LLM comment text and a
+        # file path out of the reviewed diff. See _print_json.
+        _print_json(
+            [
+                {
+                    "file": c.file_path,
+                    "lines": f"{c.line_start}-{c.line_end}",
+                    "severity": c.severity,
+                    "comment": c.comment,
+                }
+                for c in comments
+            ]
         )
         return
 
@@ -1656,13 +1752,15 @@ def review(
     table.add_column("Lines")
     table.add_column("Severity", style="bold")
     table.add_column("Comment", max_width=80)
+    # Same untrusted trio as the --pr table above: LLM comment text, diff file
+    # path, model-supplied severity nested in trelix's own colour markup.
     for c in comments:
         color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
         table.add_row(
-            c.file_path,
+            escape(c.file_path),
             f"{c.line_start}-{c.line_end}",
-            f"[{color}]{c.severity}[/{color}]",
-            c.comment,
+            f"[{color}]{escape(c.severity)}[/{color}]",
+            escape(c.comment),
         )
     console.print(table)
 
@@ -1682,7 +1780,6 @@ def search_all(
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """Search across all registered repos (federated search)."""
-    import json as _json
 
     from trelix.federation.registry import RepoRegistry
     from trelix.federation.retriever import FederatedRetriever
@@ -1703,32 +1800,40 @@ def search_all(
         return
 
     if json_output:
-        console.print(
-            _json.dumps(
-                [
-                    {
-                        "file": r.file.rel_path,
-                        "symbol": r.symbol.qualified_name,
-                        "score": round(r.score, 4),
-                        "source": r.source,
-                    }
-                    for r in results
-                ],
-                indent=2,
-            )
+        # rel_path/qualified_name are indexed text from every federated repo.
+        # See _print_json.
+        _print_json(
+            [
+                {
+                    "file": r.file.rel_path,
+                    "symbol": r.symbol.qualified_name,
+                    "score": round(r.score, 4),
+                    "source": r.source,
+                }
+                for r in results
+            ]
         )
         return
 
     from rich.table import Table
 
-    table = Table(title=f"Federated Search: '{query}' ({len(results)} results)")
+    table = Table(title=f"Federated Search: '{escape(query)}' ({len(results)} results)")
     table.add_column("Repo", style="dim")
     table.add_column("File")
     table.add_column("Symbol")
     table.add_column("Score", justify="right")
+    # rel_path/qualified_name are indexed text from every federated repo, and
+    # repo_tag is the registry alias — see the note in search(). Federation
+    # widens the blast radius: one hostile symbol name in one registered repo
+    # would otherwise blank the whole cross-repo result table.
     for r in results[:20]:
         repo_tag = r.source.split(":")[0] if ":" in r.source else ""
-        table.add_row(repo_tag, r.file.rel_path, r.symbol.qualified_name, f"{r.score:.4f}")
+        table.add_row(
+            escape(repo_tag),
+            escape(r.file.rel_path),
+            escape(r.symbol.qualified_name),
+            f"{r.score:.4f}",
+        )
     console.print(table)
 
 
@@ -1754,9 +1859,9 @@ def federation_add(
     try:
         registry.add(alias, path, weight)
         registry.save()
-        console.print(f"[green]Registered '{alias}' -> {path}[/green]")
+        console.print(f"[green]Registered '{escape(alias)}' -> {escape(path)}[/green]")
     except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
 
 
@@ -1777,7 +1882,7 @@ def federation_list(
     table.add_column("Path")
     table.add_column("Weight", justify="right")
     for e in entries:
-        table.add_row(e.alias, e.path, str(e.weight))
+        table.add_row(escape(e.alias), escape(e.path), str(e.weight))
     console.print(table)
 
 
@@ -1794,9 +1899,9 @@ def federation_remove(
     registry.remove(alias)
     registry.save()
     if existed:
-        console.print(f"[green]Removed '{alias}'[/green]")
+        console.print(f"[green]Removed '{escape(alias)}'[/green]")
     else:
-        console.print(f"[yellow]No repo registered with alias '{alias}'[/yellow]")
+        console.print(f"[yellow]No repo registered with alias '{escape(alias)}'[/yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -1838,8 +1943,14 @@ def agent_sessions_list(
     table.add_column("Query")
     table.add_column("Turns", justify="right")
     table.add_column("Last Active")
+    # The recorded `query` is arbitrary text (same sink as telemetry()).
     for s in sessions:
-        table.add_row(s["session_id"], s["query"][:60], str(s["turn_count"]), s["last_active_at"])
+        table.add_row(
+            escape(str(s["session_id"])),
+            escape(s["query"][:60]),
+            str(s["turn_count"]),
+            escape(str(s["last_active_at"])),
+        )
     console.print(table)
 
 
@@ -1860,16 +1971,22 @@ def agent_sessions_show(
         db.close()
 
     if not turns:
-        console.print(f"[yellow]No turns found for session '{session_id}'.[/yellow]")
+        console.print(f"[yellow]No turns found for session '{escape(session_id)}'.[/yellow]")
         return
 
     for t in turns:
+        # The worst offender in this file: `thought` is raw LLM prose and
+        # `observation_content` is a tool result — i.e. retrieved repository
+        # source, verbatim. Replaying a session that ever read a Rust
+        # comment-stripping regex used to abort on the first "[/!]". Only the
+        # [bold] labels are trelix's own markup.
         console.print(
             Panel(
-                f"[bold]Thought:[/bold] {t['thought']}\n"
-                f"[bold]Action:[/bold] {t['action_type']} {t['action_arguments']}\n"
+                f"[bold]Thought:[/bold] {escape(str(t['thought']))}\n"
+                f"[bold]Action:[/bold] {escape(str(t['action_type']))} "
+                f"{escape(str(t['action_arguments']))}\n"
                 f"[bold]Observation ({'ok' if t['observation_success'] else 'err'}):[/bold] "
-                f"{t['observation_content'][:500]}",
+                f"{escape(t['observation_content'][:500])}",
                 title=f"Turn {t['turn_index'] + 1}",
             )
         )
@@ -1892,9 +2009,9 @@ def agent_sessions_clear(
         db.close()
 
     if existed:
-        console.print(f"[green]Cleared session '{session_id}'[/green]")
+        console.print(f"[green]Cleared session '{escape(session_id)}'[/green]")
     else:
-        console.print(f"[yellow]No session found with ID '{session_id}'[/yellow]")
+        console.print(f"[yellow]No session found with ID '{escape(session_id)}'[/yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -1941,11 +2058,9 @@ def connector_sync(
 
     db_path = config.db_path_absolute
     if not db_path.exists():
-        from rich.markup import escape
-
         err_console.print(
             f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {repo}` first."
+            f" run `trelix index {escape(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -2024,7 +2139,12 @@ def audit_list(
         console.print("[yellow]No audit entries.[/yellow]")
         return
 
-    table = Table(title=f"Audit Log ({path})", show_header=True, header_style="bold cyan")
+    # The title was the one sink this command's original fix missed: a Table
+    # title is markup-parsed like any cell, so `--db '/tmp/a[/x].db'` still
+    # raised MarkupError after every row had been made safe.
+    table = Table(
+        title=f"Audit Log ({escape(str(path))})", show_header=True, header_style="bold cyan"
+    )
     table.add_column("id", justify="right", style="dim")
     table.add_column("ts", style="dim")
     table.add_column("principal")
