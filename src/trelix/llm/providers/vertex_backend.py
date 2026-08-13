@@ -171,9 +171,20 @@ class VertexBackend(TrelixChatClient):
             )
             for t in tools
         ]
+        # system_instruction is as load-bearing here as it is in complete().
+        # _build_contents() drops every role="system" message and never re-injects
+        # it, so without this line a system prompt sent through tool_call()
+        # vanished silently: the model got the tools and the user turn and no
+        # instructions at all. That already degraded QueryPlanner._call_llm, which
+        # passes its rules as a system message, and it would have made the agent
+        # loop's _SYSTEM_PROMPT a no-op on Vertex alone while working everywhere
+        # else. Derived from the messages the same way complete() does it, since
+        # tool_call() takes no system= parameter on the ABC.
+        effective_system = next((m.content for m in messages if m.role == "system"), None)
         gen_config = types.GenerateContentConfig(
             tools=vertex_tools,
             max_output_tokens=max_tokens or self._config.max_tokens,
+            system_instruction=effective_system,
         )
         response = self._generate_content(
             model=self._model,

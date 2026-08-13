@@ -154,3 +154,79 @@ class TestVertexBackend:
                 backend.complete([ChatMessage(role="user", content="hi")])
 
         assert mock_client.models.generate_content.call_count == 1
+
+
+class TestVertexToolCallSystemInstruction:
+    """`tool_call()` must forward a system message, like `complete()` already does.
+
+    `_build_contents()` filters out every `role="system"` message and never
+    re-injects it, so a system prompt sent through `tool_call()` was discarded:
+    the model received the tool declarations and the user turn with no
+    instructions. `complete()` and `stream()` avoid this by computing
+    `effective_system` and passing `system_instruction=`; `tool_call()` did not.
+
+    This mattered for two callers. `QueryPlanner._call_llm` passes its planning
+    rules as a system message, so planning silently degraded on Vertex only. And
+    the ReAct loop's `_SYSTEM_PROMPT` is delivered as a `role="system"` message
+    because `tool_call()` takes no `system=` parameter on the ABC — so the agent
+    would have run instruction-free on Vertex while working on every other
+    provider, which is the hardest kind of gap to notice.
+    """
+
+    def _backend_and_config_mock(self):
+        mods = _google_genai_modules()
+        with patch.dict("sys.modules", mods):
+            from trelix.llm.providers.vertex_backend import VertexBackend
+
+            cfg = LLMConfig(
+                provider="vertex",
+                model="gemini-2.0-flash",
+                google_api_key=_FAKE_GKEY,
+                _env_file=None,  # type: ignore[call-arg]
+            )
+            backend = VertexBackend(cfg)
+
+        # A realistic function-call response, so tool_call() returns normally and
+        # the assertion is on a completed call rather than on a raised path.
+        mock_client = MagicMock()
+        part = MagicMock()
+        part.function_call.name = "done"
+        part.function_call.args = {"answer": "ok"}
+        response = MagicMock()
+        response.candidates = [MagicMock(content=MagicMock(parts=[part]))]
+        mock_client.models.generate_content.return_value = response
+        backend._client = mock_client
+        return backend, mods
+
+    _TOOLS = [{"function": {"name": "done", "description": "finish", "parameters": {}}}]
+
+    def test_system_message_becomes_system_instruction(self) -> None:
+        backend, mods = self._backend_and_config_mock()
+        config_ctor = mods["google.genai.types"].GenerateContentConfig
+        config_ctor.reset_mock()
+
+        with patch.dict("sys.modules", mods):
+            backend.tool_call(
+                [
+                    ChatMessage(role="system", content="Never call done before retrieving."),
+                    ChatMessage(role="user", content="how does auth work?"),
+                ],
+                tools=self._TOOLS,
+            )
+
+        assert config_ctor.call_args is not None, "GenerateContentConfig was never built"
+        kwargs = config_ctor.call_args.kwargs
+        assert kwargs.get("system_instruction") == "Never call done before retrieving.", (
+            "the system message was dropped — the model would receive no instructions"
+        )
+
+    def test_no_system_message_passes_none(self) -> None:
+        """Absent a system message the behaviour is unchanged from before the fix."""
+        backend, mods = self._backend_and_config_mock()
+        config_ctor = mods["google.genai.types"].GenerateContentConfig
+        config_ctor.reset_mock()
+
+        with patch.dict("sys.modules", mods):
+            backend.tool_call([ChatMessage(role="user", content="hi")], tools=self._TOOLS)
+
+        assert config_ctor.call_args.kwargs.get("system_instruction") is None

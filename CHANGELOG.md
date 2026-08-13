@@ -68,6 +68,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   the changed-diff and retrieved-context blocks in the PR reviewer
   (`review/reviewer.py`).
 
+  **Deriving the fence length repaired the two reviewer sites but was a no-op at
+  the agent site until two further defects were fixed**, both in
+  `agent/history.py:to_text()`, which is what actually renders an observation
+  into the prompt:
+
+  - It interpolated the observation after a label on the *same line*. A
+    CommonMark fence only opens a block at the **start** of a line, so
+    `**Observation [ok]:** ```{code}` opened no block at all — the payload
+    reached the model as prose and the *closing* fence opened an empty block
+    instead. Confirmed against markdown-it-py at fence lengths 3, 4 and 11, and
+    for a payload containing no backticks whatsoever: the defect is structural,
+    so no fence length could ever have fixed it.
+  - It sliced the rendered block at a fixed 500 characters, cutting the closing
+    fence off any longer body. The block then never closed and **every later turn
+    was swallowed into it** as though it were quoted code.
+
+  Both were pre-existing rather than regressions, but together they meant the
+  agent-side half of this fix would have shipped inert. The label now occupies its
+  own line and truncation re-closes a fence it cuts.
+
   This breaks on ordinary use, not only under attack. trelix indexes markdown —
   `MarkdownParser` is wired into the parser registry — and **72 of the 79
   tracked markdown files in this repository contain a three-backtick run**, so a
@@ -103,15 +123,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   turn is unchanged byte-for-byte, so this adds the missing system message rather
   than rewriting the prompt.
 
-  Two notes for operators. This is a deliberate behaviour change to what the
-  agentic loop sends — the effect on model output has not been measured, because
-  it cannot be without live LLM calls; the loop's public contract (`run()`'s
-  return type, the tool schemas, turn accounting) is untouched. And it is a no-op
-  on Vertex AI specifically: `VertexBackend.tool_call()` builds its
-  `GenerateContentConfig` without `system_instruction=` while `_build_contents()`
-  filters `role == "system"` out, so the message is silently dropped. That is a
-  pre-existing defect that already degrades the query planner on Vertex today and
-  is left for a separate fix.
+  One note for operators: this is a deliberate behaviour change to what the
+  agentic loop sends. The effect on model output has not been measured, because it
+  cannot be without live LLM calls; the loop's public contract (`run()`'s return
+  type, the tool schemas, turn accounting) is untouched.
+
+- **`VertexBackend.tool_call()` silently discarded every system message.** It
+  built its `GenerateContentConfig` without `system_instruction=` while
+  `_build_contents()` filters `role == "system"` out and never re-injects it, so
+  the model received the tool declarations and the user turn with no instructions
+  at all. `complete()` and `stream()` in the same file compute an
+  `effective_system` and pass it; only `tool_call()` did not.
+
+  This was pre-existing and already degraded `QueryPlanner._call_llm`, which
+  passes its planning rules as a system message — so query planning was quietly
+  worse on Vertex than on every other provider. It would also have made the agent
+  system prompt above a no-op on Vertex alone, which is the hardest kind of gap to
+  notice: correct everywhere except one backend. Fixed by deriving
+  `effective_system` from the messages exactly as `complete()` does, since
+  `tool_call()` takes no `system=` parameter on the client ABC.
 
 ### Added
 

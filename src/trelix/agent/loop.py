@@ -266,6 +266,12 @@ class AgentLoop:
         # Fence length is derived from the body: a markdown symbol body carrying
         # its own ``` would otherwise close this fence early, spilling the rest
         # of the body into the prompt as unquoted prose.
+        #
+        # Deriving the length is necessary but was NOT sufficient on its own.
+        # This observation is rendered by TurnHistory.to_text(), which used to
+        # interpolate it after a label on the same line — and a CommonMark fence
+        # only opens a block at the START of a line, so no fence length whatsoever
+        # opened a block here. See the comment in agent/history.py:to_text().
         return Observation(fenced_block(sym.body), "get_symbol", True)
 
     def _fallback_answer(self, query: str, history: TurnHistory) -> str:
