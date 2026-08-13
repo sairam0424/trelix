@@ -12,8 +12,8 @@ DimensionGuard:
 4. Provides reset() to clear stored dimension when the user re-indexes
 
 Migration workflow:
-    trelix migrate-vectors --reset   # clear old embeddings
-    trelix index ./my-repo           # re-index with new provider
+    trelix migrate-vectors ./my-repo --reset   # clear old embeddings (REPO is positional)
+    trelix index ./my-repo                     # re-index with new provider
 """
 
 from __future__ import annotations

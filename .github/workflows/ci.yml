@@ -15,8 +15,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      # 'sso' installs pyjwt[crypto], so mypy type-checks src/trelix/auth/
+      # against real PyJWT types instead of silently treating jwt as Any.
       - name: Install project + dev deps
-        run: pip install -e ".[local,dev]"
+        run: pip install -e ".[local,sso,dev]"
       - name: Install trelix-mcp, trelix-langchain, trelix-llama-index
         run: |
           pip install -e packages/trelix-mcp
@@ -46,8 +48,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # 'sso' is required by tests, not just by the feature: tests/unit/test_oidc.py
+      # and tests/unit/test_api_audit.py import pyjwt/cryptography at module
+      # scope, so without this extra the whole unit run fails at collection.
       - name: Install trelix + dev deps
-        run: pip install -e ".[local,otel,dev]"
+        run: pip install -e ".[local,otel,sso,dev]"
       - name: Install trelix-mcp + deps
         run: pip install -e packages/trelix-mcp
       - name: Locate tree-sitter grammar cache dir
@@ -60,10 +65,24 @@ jobs:
           key: tree-sitter-language-pack-${{ hashFiles('pyproject.toml') }}
       - name: Prefetch tree-sitter grammars
         run: python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
+      # --cov is required for two things that were previously silently dead:
+      # the htmlcov/ artifact uploaded below, and pyproject's
+      # [tool.coverage.report] fail_under = 75 gate (pytest-cov reads
+      # fail_under from the coverage config, so the gate only runs when
+      # coverage is actually collected).
       - name: Run unit tests
-        run: pytest tests/unit/ -v --tb=short
+        run: pytest tests/unit/ -v --tb=short --cov=src/trelix --cov-report=term-missing --cov-report=html
       - name: Run trelix-mcp tests
         run: pytest packages/trelix-mcp/tests/ -v --tb=short
+      # tests/integration/ is deliberately NOT run in CI. Two blockers, both
+      # verified locally rather than assumed:
+      #   1. Fixture scoping — one fixture indexes the entire worktree, so 16
+      #      tests never complete (three timed-out attempts).
+      #   2. Env isolation — 4 tests fail purely because a developer .env leaks
+      #      an embedder that mismatches the fixture's index, and the .env is
+      #      inherited by subprocesses the tests spawn.
+      # To enable: scope the indexing fixture to a small fixture repo, and make
+      # the spawned subprocesses ignore ambient .env / TRELIX_* vars.
       - name: Upload coverage
         if: matrix.python-version == '3.11'
         uses: actions/upload-artifact@v4

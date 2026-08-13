@@ -1,6 +1,6 @@
 # Trelix MCP Server Guide
 
-Complete guide for using trelix as an MCP (Model Context Protocol) server in Claude Code, Cursor, Windsurf, and Continue.dev.
+Complete guide for using trelix as an MCP (Model Context Protocol) server in Claude Code, Cursor, Windsurf, Continue.dev, and JetBrains IDEs.
 
 ---
 
@@ -13,14 +13,22 @@ Model Context Protocol (MCP) is an open standard that lets AI assistants connect
 ## 2. Install trelix-mcp
 
 ```bash
-pip install trelix-mcp==2.12.0
+pip install trelix-mcp==3.0.0
 ```
 
 Verify the binary is on your PATH:
 
 ```bash
-trelix-mcp --version
-# trelix-mcp 2.12.0
+which trelix-mcp
+```
+
+`trelix-mcp` parses **no command-line arguments** — running it starts the stdio MCP
+server immediately, so there is no `--version` or `--help` flag. Read the installed
+version from the package instead:
+
+```bash
+python -c "import trelix_mcp; print(trelix_mcp.__version__)"
+# 3.0.0
 ```
 
 > **Note:** Python 3.10+ is required. Use a virtual environment if you manage multiple projects.
@@ -107,7 +115,30 @@ Reload Continue.dev (Cmd+Shift+P → **Continue: Reload**). The tools are availa
 
 ---
 
-## 7. The 15 MCP Tools
+## 7. Setup in JetBrains IDEs (2025.2+)
+
+JetBrains IDEs (IntelliJ IDEA, PyCharm, WebStorm, GoLand, RustRover, etc.), version 2025.2 and later, ship a first-party built-in MCP client — no plugin install required. Configure it via **Settings → Tools → AI Assistant → Model Context Protocol (MCP)** and add a new server:
+
+```json
+{
+  "mcpServers": {
+    "trelix": {
+      "command": "trelix-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Or, via the IDE's MCP settings UI: set **Command** to `trelix-mcp` and leave **Arguments** empty.
+
+Restart the IDE after saving. Trelix's tools then appear alongside JetBrains' built-in AI Assistant tools in any chat session.
+
+> **Note:** This is JetBrains' first-party built-in MCP client, not a trelix-published JetBrains plugin — there is currently no dedicated trelix plugin for the JetBrains Marketplace.
+
+---
+
+## 8. The 15 MCP Tools
 
 Trelix-mcp exposes 15 MCP tools organized into four functional groups:
 
@@ -205,7 +236,7 @@ index_codebase(repo_path, provider="local") → stats dict
   "symbols_extracted": 1847,
   "chunks_stored": 4203,
   "elapsed_seconds": 18.4,
-  "index_version": "2.12.0"
+  "index_version": "3.0.0"
 }
 ```
 
@@ -684,7 +715,7 @@ agent_clear_session(repo_path, session_id) → {cleared, session_id}
 
 ---
 
-## 8. Federation Security & Configuration (v2.8.1)
+## 9. Federation Security & Configuration (v2.8.1)
 
 ### Path Confinement for `config_path`
 
@@ -726,7 +757,7 @@ export TRELIX_FEDERATION_MAX_REPOS=100  # raise the cap to 100
 
 ---
 
-## 9. The 3 MCP Resources
+## 10. The 3 MCP Resources
 
 MCP resources are read-only data endpoints that the AI can fetch without executing a tool. Use them to give the model static context about the indexed codebase.
 
@@ -740,7 +771,7 @@ Returns aggregate statistics for all indexed repositories managed by the running
   "total_files": 654,
   "total_symbols": 3891,
   "total_chunks": 8702,
-  "server_version": "2.12.0"
+  "server_version": "3.0.0"
 }
 ```
 
@@ -772,7 +803,7 @@ trelix://repo//Users/you/projects/myapp/symbols/AuthService.login
 
 ---
 
-## 10. The 3 MCP Prompts
+## 11. The 3 MCP Prompts
 
 MCP prompts are pre-built instruction templates that the client can inject into a conversation. They configure the model to perform a specific trelix-powered workflow.
 
@@ -796,7 +827,7 @@ Prompts the model to run `blast_radius`, group the results by dependency depth, 
 
 ---
 
-## 11. Watch Bridge (v2.7.0)
+## 12. Watch Bridge (v2.7.0)
 
 The `trelix watch` command now fires `notifications/resources/updated` events to all subscribed MCP clients after every file re-index. This enables real-time codebase awareness in Claude Code and other agents without polling.
 
@@ -813,7 +844,7 @@ This is useful for:
 
 ---
 
-## 12. v2.4.0 Breaking Change — `search_code` Pagination
+## 13. v2.4.0 Breaking Change — `search_code` Pagination
 
 In v2.3.x and earlier, `search_code` accepted an `offset` integer parameter and returned a flat list:
 
@@ -850,7 +881,7 @@ results = response["results"]
 
 ---
 
-## 13. Pagination Example (Full Paging Loop)
+## 14. Pagination Example (Full Paging Loop)
 
 ```python
 def fetch_all_results(query: str, repo_path: str, page_size: int = 10) -> list:
@@ -883,14 +914,15 @@ def fetch_all_results(query: str, repo_path: str, page_size: int = 10) -> list:
 
 ---
 
-## 14. IDE Integrations
+## 15. IDE Integrations
 
 ### VS Code Extension
 
-The `workspace-vscode/` extension provides two command shortcuts for rapid trelix access:
+The `workspace-vscode/` extension surfaces trelix inside the editor through palette commands, a hover provider, actionable code lenses, and a `@trelix` chat participant. It spawns `trelix-mcp` over stdio on first use — the same server this guide configures for every other client — so nothing extra needs to be running.
 
 - **`trelix.search`** — Search the workspace codebase with trelix hybrid search
 - **`trelix.ask`** — Ask a natural-language question about the code
+- **Hover** — hovering over any identifier looks it up via `get_symbol` and shows its signature, docstring, and file/line location. Results are cached per word+repo for the session (no TTL). **Known limitation:** `get_symbol` falls back to an ambiguous bare-name lookup when the exact qualified name doesn't resolve — if multiple symbols share a name, hover may show the wrong one.
 
 Install from the `workspace-vscode/` directory:
 
@@ -899,12 +931,48 @@ cd workspace-vscode && npm install && code --install-extension .
 ```
 
 Then use in the command palette (Cmd+Shift+P):
-- `Trelix: Search` — Opens search input, runs hybrid query
-- `Trelix: Ask` — Opens question input, streams conversational response
+- `trelix: Search Codebase` — Opens search input, runs hybrid query
+- `trelix: Ask about Code` — Opens question input, shows the synthesized answer in a side panel
+
+`trelix: Find Similar Code` (`trelix.findSimilar`) and `trelix: Show Blast Radius` (`trelix.blastRadius`) are also registered, but deliberately hidden from the palette — they are what the code lenses below invoke.
+
+**Fixed in v3.0.0:** `trelix.ask` used to call `getPrompt("trelix-search")` and render the interpolated *prompt template* as if it were the answer. It now calls the `ask_agent` tool and renders the real `answer` (the tool also returns `session_id` and `turn_count`).
+
+#### Actionable code lenses
+
+Two lenses appear above every symbol reported by VS Code's own document-symbol provider:
+
+| Lens | Calls | What you get |
+|------|-------|--------------|
+| `Find similar` | `search_code`, seeded with the symbol name | A QuickPick of semantically similar code; pick one to jump to it |
+| `N dependents` | `blast_radius` on that symbol | A QuickPick of the symbols that call/import it; pick one to jump to `file:line` |
+
+- **Setting:** `trelix.codeLens.enabled` (boolean, default `true`) — "Show trelix code lenses (Find similar, blast radius) above symbols". Flipping it re-queries lenses immediately; no window reload needed.
+- Symbols come from `vscode.executeDocumentSymbolProvider`, i.e. whichever language extension you already have installed. A file with no symbol provider gets no lenses (and no error).
+- At most 200 symbols per document are annotated, and nesting is followed to depth 2 — top-level symbols, their children, and their grandchildren — so a deeply nested file does not produce an unreadable wall of lenses.
+- **Lens resolution is lazy, so typing never triggers MCP traffic.** `provideCodeLenses` makes zero MCP calls: it derives lens ranges locally and returns the count-bearing lens *unresolved*. The single `blast_radius` call happens in `resolveCodeLens`, which VS Code invokes only for lenses it actually paints. Each result is cached per `uri@version::symbol`, so scrolling back over the same revision is free, while an edit bumps the document version and correctly invalidates the count.
+- Lens failures are silent by design — never an error dialog. A `blast_radius` call that errors resolves the lens to `0 dependents` for that document revision, so treat a surprising zero as "check the server" rather than "nothing depends on this".
+
+#### `@trelix` chat participant
+
+In the Chat view, type `@trelix` followed by a question. The participant is sticky, so follow-ups stay addressed to trelix without retyping the mention.
+
+| Invocation | Calls | Behavior |
+|------------|-------|----------|
+| `@trelix <question>` | `ask_agent` | Runs the agentic ReAct loop and renders the answer as markdown (a progress note shows while retrieval runs; the answer itself arrives in one piece, not token-by-token) |
+| `@trelix /search <query>` | `search_code` | Up to 10 results, each listed as `` `symbol` — file:lines (kind) `` plus a clickable reference to that line range |
+| `@trelix /explain [question]` | `ask_agent` | Explains the active editor's selection (and/or the text you type) in the context of the codebase |
+| `@trelix /impact <symbol>` | `blast_radius` | Lists the symbols that depend on it, with a clickable reference each. Falls back to the editor selection if you pass no symbol name |
+
+Invoking `@trelix` with no prompt prints a usage hint instead of calling the server, and any client error is rendered as markdown in the chat rather than thrown.
+
+**Availability.** The extension declares `engines.vscode: ^1.90.0`, but the chat participant registers only when `vscode.chat.createChatParticipant` exists. On builds that do not ship the chat API, activation succeeds normally and the participant is simply absent — you get the palette commands, hover, and code lenses, with no error and no failed activation.
+
+**Session limitation (honest).** The chat API exposes no thread/conversation id, so trelix sessions are keyed by a single constant: **two chat threads open at the same time share one trelix agent session.** The only per-conversation signal available is the chat history — an empty history starts a fresh session, a non-empty one resumes the stored `session_id`. Note also that only plain `@trelix` asks participate in the session; `/search`, `/explain`, and `/impact` are stateless one-shot calls.
 
 ---
 
-## 15. Example Claude Code Session
+## 16. Example Claude Code Session
 
 The following shows three realistic prompts you might use once trelix-mcp is registered.
 
@@ -938,7 +1006,7 @@ Claude will call `build_knowledge_graph`, then `graph_search_mcp("database ORM q
 
 ---
 
-## 16. Resource Subscriptions (v2.5.0)
+## 17. Resource Subscriptions (v2.5.0)
 
 trelix-mcp v2.5.0 implements the MCP resource subscription protocol
 ([MCP spec §Resources](https://modelcontextprotocol.io/specification/2024-11-05/server/resources)).
@@ -973,7 +1041,7 @@ Client → Server:  resources/read  { uri }
 
 ---
 
-## 17. Troubleshooting MCP Issues
+## 18. Troubleshooting MCP Issues
 
 ### `trelix-mcp: command not found`
 
@@ -988,8 +1056,9 @@ python -m site --user-base
 export PATH="$HOME/Library/Python/3.11/bin:$PATH"
 source ~/.zshrc
 
-# Verify
-trelix-mcp --version
+# Verify (trelix-mcp takes no flags — starting it would launch the stdio server)
+which trelix-mcp
+python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 ```
 
 ### Claude Code does not list the trelix server
@@ -1005,12 +1074,14 @@ Restart Claude Code after re-registering.
 ### `index_codebase` fails or returns 0 files
 
 - Confirm `repo_path` is an **absolute** path (not `~/...` — expand the tilde).
-- Trelix skips files matched by `.gitignore` and `.trelixignore`. Check those files if expected sources are missing.
-- Large repos may hit default memory limits. Set `TRELIX_MAX_WORKERS=2` to lower parallelism:
+- Trelix skips files matched by the **repo-root** `.gitignore` only — a nested `.gitignore` in a subdirectory is not read. There is no `.trelixignore`. If expected sources are missing, check the root `.gitignore`, or set `TRELIX_WALKER_RESPECT_GITIGNORE=false` to index them anyway.
+- Large repos may hit memory limits. There is no worker/parallelism env var; the levers are the walker's file-size ceiling and the embedder batch size:
 
 ```bash
-TRELIX_MAX_WORKERS=2 trelix-mcp
+TRELIX_WALKER_MAX_FILE_SIZE_BYTES=200000 TRELIX_EMBEDDER_BATCH_SIZE=16 trelix-mcp
 ```
+
+> `TRELIX_WALKER_*` variables are read from the process environment only — they ignore `.env`. See [CONFIGURATION.md](CONFIGURATION.md#file-walker-which-files-get-indexed).
 
 ### `search_code` returns empty results
 
@@ -1022,33 +1093,51 @@ The knowledge graph must be built separately from the index. Call `build_knowled
 
 ### MCP server crashes silently in Cursor / Windsurf
 
-Enable debug logging by setting the environment variable in your MCP config:
+`trelix-mcp` accepts no CLI arguments and has no log-file or log-level setting — it logs
+unconditionally to **stderr** at INFO via a hardcoded `logging.basicConfig`. To capture that
+stream, point the MCP host at a tiny wrapper that redirects stderr to a file:
+
+```bash
+cat > /usr/local/bin/trelix-mcp-logged <<'EOF'
+#!/bin/sh
+exec trelix-mcp 2>>/tmp/trelix-mcp.log
+EOF
+chmod +x /usr/local/bin/trelix-mcp-logged
+```
 
 ```json
 {
   "mcpServers": {
     "trelix": {
-      "command": "trelix-mcp",
-      "args": ["--log-level", "debug"],
-      "env": {
-        "TRELIX_LOG_FILE": "/tmp/trelix-mcp.log"
-      }
+      "command": "/usr/local/bin/trelix-mcp-logged",
+      "args": []
     }
   }
 }
 ```
 
-Then inspect `/tmp/trelix-mcp.log` for the error.
+Then inspect `/tmp/trelix-mcp.log` for the error. Do **not** redirect stdout — stdout is the
+MCP stdio transport, and writing to it corrupts the protocol stream.
 
-### Version mismatch between trelix-mcp and a pinned index
+### Version mismatch between trelix-mcp and an existing index
 
-If you downgrade trelix-mcp after indexing, the cached index may be incompatible. Delete the index cache and re-index:
+There is no separate MCP cache directory — `trelix-mcp` reads the same index the CLI
+writes, at `<repo>/.trelix/index.db`. If you downgrade `trelix-mcp` (or switch
+embedding providers) and the existing index is no longer compatible, delete the index
+and re-index the repo:
 
 ```bash
-rm -rf ~/.trelix/cache/<repo_hash>
+rm -rf ./my-repo/.trelix/index.db
+trelix index ./my-repo
 ```
 
-The cache location is printed by `trelix-mcp --cache-dir`.
+If the failure is specifically an embedding-dimension mismatch, clear just the stored
+vectors instead of the whole DB:
+
+```bash
+trelix migrate-vectors ./my-repo --reset
+trelix index ./my-repo
+```
 
 ### Pagination returns duplicate results
 

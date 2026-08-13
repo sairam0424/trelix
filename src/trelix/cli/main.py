@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
@@ -1978,6 +1979,107 @@ def connector_sync(
     )
     if result.errors:
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# audit sub-app (inspect the tamper-evident audit log)
+# ---------------------------------------------------------------------------
+
+audit_app = typer.Typer(help="Inspect the tamper-evident audit log (audit.db).")
+app.add_typer(audit_app, name="audit")
+
+
+def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
+    """Open the AuditStore at *db*, or AuditConfig's resolved default path.
+
+    Exits nonzero when the database could not be opened. AuditStore's init is
+    intentionally non-raising, so without this guard every command silently
+    operated on an unopened store — `audit verify` would print "chain intact"
+    and exit 0 for a path it never read, which is a false integrity assurance.
+    """
+    from trelix.audit.store import AuditStore
+    from trelix.core.config import AuditConfig
+
+    path = Path(db) if db else AuditConfig().resolved_db_path
+    store = AuditStore(path)
+    if not store.is_open:
+        err_console.print(
+            f"[red]Could not open audit database[/red] at {escape(str(path))} — "
+            "nothing was read. Check the path (it must be a file, not a directory) "
+            "and that it is readable."
+        )
+        raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
+    return store, path
+
+
+@audit_app.command("list")
+def audit_list(
+    db: Annotated[str | None, typer.Option("--db", help="Path to audit.db")] = None,
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Rows to show")] = 50,
+) -> None:
+    """Show the most recent audit entries (newest first)."""
+    store, path = _open_audit_store(db)
+    rows = store.recent(limit)
+    if not rows:
+        console.print("[yellow]No audit entries.[/yellow]")
+        return
+
+    table = Table(title=f"Audit Log ({path})", show_header=True, header_style="bold cyan")
+    table.add_column("id", justify="right", style="dim")
+    table.add_column("ts", style="dim")
+    table.add_column("principal")
+    table.add_column("action")
+    table.add_column("resource")
+    table.add_column("outcome")
+    table.add_column("status", justify="right")
+    # Every cell is escaped: audit rows record attacker-controlled data (a request
+    # path, a JWT `sub`), and Rich would otherwise parse "[...]" as console markup.
+    # An unauthenticated `GET /%5B/red%5D` used to store "/[/red]" and make this
+    # command die with MarkupError — a request-side DoS of the audit tooling, i.e.
+    # exactly the log a responder needs during an incident.
+    for r in rows:
+        table.add_row(
+            escape(str(r.get("id", ""))),
+            escape(str(r.get("ts", ""))),
+            escape(str(r.get("principal", ""))),
+            escape(str(r.get("action", ""))),
+            escape(str(r.get("resource", "") or "")),
+            escape(str(r.get("outcome", ""))),
+            escape(str(r.get("status_code", "") if r.get("status_code") is not None else "")),
+        )
+    console.print(table)
+
+
+@audit_app.command("verify")
+def audit_verify(
+    db: Annotated[str | None, typer.Option("--db", help="Path to audit.db")] = None,
+) -> None:
+    """Verify the hash chain. Exits nonzero and names the first divergent id on tamper."""
+    store, _ = _open_audit_store(db)
+    divergent = store.verify_chain()
+    if divergent is None:
+        console.print("[green]Audit chain intact.[/green]")
+        return
+    err_console.print(
+        f"[red]Audit chain TAMPERED[/red] — first divergent entry id: [bold]{divergent}[/bold]"
+    )
+    raise typer.Exit(1)
+
+
+@audit_app.command("export")
+def audit_export(
+    db: Annotated[str | None, typer.Option("--db", help="Path to audit.db")] = None,
+    export_format: Annotated[
+        str, typer.Option("--format", help="Export format (ndjson)")
+    ] = "ndjson",
+) -> None:
+    """Export every audit entry (oldest first) to stdout as NDJSON."""
+    if export_format != "ndjson":
+        _print_error("Unsupported format", f"{export_format!r} (only 'ndjson' is supported)")
+        raise typer.Exit(1)
+    store, _ = _open_audit_store(db)
+    for row in store.iter_for_export():
+        print(json.dumps(row))
 
 
 # ---------------------------------------------------------------------------

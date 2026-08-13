@@ -1,6 +1,6 @@
-# Trelix v2.12.0 Troubleshooting Guide
+# Trelix v3.0.0 Troubleshooting Guide
 
-This guide covers every common failure mode for trelix v2.12.0. Each entry follows the pattern: **Symptom → Cause → Fix**.
+This guide covers every common failure mode for trelix v3.0.0. Each entry follows the pattern: **Symptom → Cause → Fix**.
 
 ---
 
@@ -27,8 +27,8 @@ This guide covers every common failure mode for trelix v2.12.0. Each entry follo
 
 **Fix:**
 ```bash
-# Run a full index of the current repository
-trelix index
+# Run a full index of the current repository (REPO is a required argument)
+trelix index .
 
 # Or index a specific path explicitly
 trelix index /path/to/your/repo
@@ -44,12 +44,15 @@ trelix index /path/to/your/repo
 
 **Fix:**
 ```bash
-# Reset all stored vectors and re-embed with the current provider
-trelix migrate-vectors --reset
+# Reset all stored vectors, then re-embed with the current provider
+trelix migrate-vectors ./repo --reset
+trelix index ./repo
 
-# If you want to switch providers permanently, set the provider first, then reset
-trelix config set provider voyage
-trelix migrate-vectors --reset
+# If you want to switch providers permanently, set the provider in the environment
+# (or in ./.env), then reset. There is no `trelix config` command and no config file.
+export TRELIX_EMBEDDER_PROVIDER=voyage
+trelix migrate-vectors ./repo --reset
+trelix index ./repo
 ```
 
 > **Note:** `--reset` discards all existing embeddings. The index metadata (file paths, symbols, AST data) is preserved — only the vector data is re-computed.
@@ -64,20 +67,22 @@ trelix migrate-vectors --reset
 
 **Fix:**
 
-Option A — Incremental update (fast, updates only changed files):
+Option A — Incremental update of a single edited file (`update-index` takes REPO and FILE):
 ```bash
-trelix update-index
+trelix update-index ./repo src/changed_file.py
 ```
 
 Option B — Continuous background watching (recommended for active development):
 ```bash
 # Watch for file changes and update automatically
-trelix watch
+trelix watch ./repo
 ```
 
-Option C — Full re-index (use when in doubt about index state):
+Option C — Full re-index from scratch (use when in doubt about index state). `trelix index`
+has no `--force` flag; delete the index DB and re-run:
 ```bash
-trelix index --force
+rm -rf ./repo/.trelix/index.db
+trelix index ./repo
 ```
 
 ---
@@ -92,10 +97,10 @@ trelix index --force
 ```bash
 # Delete the entire index directory and rebuild from scratch
 rm -rf .trelix/
-trelix index
+trelix index .
 ```
 
-> **Warning:** This deletes all cached embeddings and re-indexes from zero. On large repositories with a remote provider, this will consume API credits. Use `trelix index --provider local` for a cost-free baseline, then switch providers if needed.
+> **Warning:** This deletes all cached embeddings and re-indexes from zero. On large repositories with a remote provider, this will consume API credits. Use `trelix index . --provider local` for a cost-free baseline, then switch providers if needed.
 
 ---
 
@@ -109,12 +114,12 @@ trelix index
 
 **Fix:**
 ```bash
-trelix index
+trelix index .
 ```
 
 Verify indexing completed successfully:
 ```bash
-trelix stats
+trelix stats .
 # Expected: shows file count, chunk count, symbol count
 ```
 
@@ -131,12 +136,13 @@ trelix stats
 # Always pass an absolute path to avoid ambiguity
 trelix index /absolute/path/to/repo
 
-# Then search from anywhere using the same path
-trelix search "query" --repo /absolute/path/to/repo
+# Then search from anywhere — REPO is the first positional argument
+# (there is no --repo flag on `trelix search`)
+trelix search /absolute/path/to/repo "query"
 
-# Or cd into the repo root before running trelix
+# Or cd into the repo root and pass `.`
 cd /absolute/path/to/repo
-trelix search "query"
+trelix search . "query"
 ```
 
 ---
@@ -149,23 +155,34 @@ trelix search "query"
 
 **Fix:**
 
+Configuration is environment-variable only — there is no `trelix config` command and no
+config file. Set `TRELIX_EMBEDDER_PROVIDER` (or pass `--provider` per invocation).
+
 Option A — Switch back to the provider used at index time:
 ```bash
-trelix config set provider local
-trelix search "query"
+export TRELIX_EMBEDDER_PROVIDER=local
+trelix search ./repo "query"
+
+# Or, without exporting anything, per-invocation:
+trelix search ./repo "query" --provider local
 ```
 
 Option B — Re-index with the new provider:
 ```bash
-trelix config set provider azure
-trelix migrate-vectors --reset
-trelix search "query"
+export TRELIX_EMBEDDER_PROVIDER=azure
+trelix migrate-vectors ./repo --reset
+trelix index ./repo
+trelix search ./repo "query"
 ```
 
-Check which provider was used when the index was built:
+Check what the index currently holds. `trelix stats` reports files/symbols/chunks/DB size but
+not the provider — the only provider fact recorded in the index is the embedding dimension,
+which you can read directly:
 ```bash
-trelix stats --verbose
-# Shows: provider, dimensions, indexed-at timestamp
+trelix stats ./repo
+
+sqlite3 ./repo/.trelix/index.db \
+  "SELECT value FROM index_metadata WHERE key = 'embedding_dimension';"
 ```
 
 ---
@@ -177,23 +194,37 @@ trelix stats --verbose
 **Cause:** trelix only indexes supported file types (Python, TypeScript, JavaScript, Go, Rust, Java, C/C++, and others). Binary files, lock files, generated files, and unsupported languages are excluded.
 
 **Fix:**
+
+There is no trelix-specific ignore file. Exclusions come from the **repo-root** `.gitignore`
+(honoured by default) plus three env-configurable lists. A nested `.gitignore` inside a
+subdirectory is **not** read — patterns must live in the root file, path-qualified.
+
 ```bash
-# Check what was actually indexed
-trelix stats
+# Check what was actually indexed (files / symbols / chunks / DB size)
+trelix stats ./repo
 
-# List all indexed file extensions
-trelix stats --extensions
-
-# If a supported language is missing, check .trelixignore or trelix.toml
-cat .trelixignore
-cat trelix.toml
+# If a supported language is missing, the exclusion is in .gitignore
+cat .gitignore
 ```
 
-To add a file pattern that was excluded by ignore rules:
+To un-exclude something `.gitignore` is hiding, either remove the pattern from `.gitignore`,
+or turn gitignore handling off entirely for the index run:
 ```bash
-# Edit trelix.toml to remove the exclusion
-trelix config edit
+export TRELIX_WALKER_RESPECT_GITIGNORE=false
+trelix index ./repo
 ```
+
+To inspect or override the built-in ignore lists (these are read from the process
+environment only — `TRELIX_WALKER_*` settings ignore `.env`):
+```bash
+# JSON lists; setting one REPLACES the built-in default list, it does not append
+export TRELIX_WALKER_EXTRA_IGNORE_DIRS='[".git","node_modules","dist"]'
+export TRELIX_WALKER_EXTRA_IGNORE_FILENAMES='["package-lock.json"]'
+export TRELIX_WALKER_EXTRA_IGNORE_EXTENSIONS='[".pyc",".min.js"]'
+```
+
+See [CONFIGURATION.md](CONFIGURATION.md) for the full `TRELIX_WALKER_*` table and the
+default lists.
 
 ---
 
@@ -238,9 +269,14 @@ source ~/.zshrc
 export AZURE_API_KEY="your-azure-key"
 export AZURE_ENDPOINT="https://your-resource.openai.azure.com/"
 export AZURE_CHAT_MODEL="your-deployment-name"
+export TRELIX_EMBEDDER_PROVIDER=azure
 
-# Verify
-trelix config check --provider azure
+# Verify the variables are actually exported (there is no `trelix config check`
+# command — the real check is whether an indexing run succeeds)
+env | grep -E '^AZURE_|^TRELIX_EMBEDDER_PROVIDER='
+
+# End-to-end verification: index a tiny throwaway repo with the Azure provider
+trelix index /tmp/scratch-repo --provider azure --verbose
 ```
 
 ---
@@ -290,7 +326,7 @@ pip install --upgrade "trelix[bedrock]"
 
 ### Local Provider Is Slow on First Run
 
-**Symptom:** `trelix index --provider local` appears to hang or takes several minutes on the first invocation. CPU usage is high.
+**Symptom:** `trelix index . --provider local` appears to hang or takes several minutes on the first invocation. CPU usage is high.
 
 **Cause:** This is expected behavior. The local provider uses a small transformer model (e.g., `all-MiniLM-L6-v2`) which must be downloaded from Hugging Face on first use (~90 MB). Subsequent runs use the cached model and are significantly faster.
 
@@ -305,7 +341,7 @@ If the download stalls due to network issues:
 ```bash
 # Set a mirror or proxy if needed
 export HF_ENDPOINT="https://hf-mirror.com"
-trelix index --provider local
+trelix index . --provider local
 ```
 
 ---
@@ -338,18 +374,19 @@ HF_HUB_DISABLE_SYMLINKS_WARNING=1 trelix index .
 
 ### DimensionGuard Firing After Provider Switch
 
-**Symptom:** After changing `provider` in `trelix.toml` or via `trelix config set provider`, the next index or search raises `DimensionGuard: stored=1536, requested=1024. Run trelix migrate-vectors --reset`.
+**Symptom:** After changing `TRELIX_EMBEDDER_PROVIDER` (or passing a different `--provider`), the next index or search raises `DimensionGuard: stored=1536, requested=1024. Run trelix migrate-vectors --reset`.
 
 **Cause:** DimensionGuard is a safety mechanism that prevents silently mixing vectors from different embedding spaces. It fires whenever the new provider's output dimension does not match the dimension recorded in the index metadata.
 
 **Fix:**
 ```bash
-# Reset embeddings to match the new provider
-trelix migrate-vectors --reset
+# Reset embeddings and the recorded dimension, then re-embed with the new provider
+trelix migrate-vectors ./repo --reset
+trelix index ./repo
 
-# Confirm the guard is satisfied
-trelix stats --verbose
-# Look for: DimensionGuard: OK (provider=voyage, dims=1024)
+# Confirm the recorded dimension now matches the new provider
+sqlite3 ./repo/.trelix/index.db \
+  "SELECT value FROM index_metadata WHERE key = 'embedding_dimension';"
 ```
 
 ---
@@ -371,9 +408,10 @@ pip install trelix-mcp
 source .venv/bin/activate
 pip install trelix-mcp
 
-# Verify the binary is on PATH
+# Verify the binary is on PATH. trelix-mcp accepts no flags — invoking it starts the
+# stdio server, so read the version from the package instead of a --version flag.
 which trelix-mcp
-trelix-mcp --version
+python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 ```
 
 If you are using `uv`:
@@ -489,7 +527,7 @@ For Claude Code tool call handlers, update any skill or prompt that iterates the
 
 ### "GITHUB_TOKEN not set"
 
-**Symptom:** `trelix review pr <number>` fails with `EnvironmentError: GITHUB_TOKEN is not set` or `401 Unauthorized` from the GitHub API.
+**Symptom:** `trelix review --pr owner/repo#<number>` fails with `EnvironmentError: GITHUB_TOKEN is not set` or `401 Unauthorized` from the GitHub API.
 
 **Cause:** The `GITHUB_TOKEN` environment variable is not exported.
 
@@ -511,7 +549,7 @@ For CI/CD environments, set `GITHUB_TOKEN` as a secret in your pipeline configur
 
 ### 404 on PR
 
-**Symptom:** `trelix review pr <number>` fails with `404 Not Found: Pull request not found`.
+**Symptom:** `trelix review --pr owner/repo#<number>` fails with `404 Not Found: Pull request not found`.
 
 **Cause — Private repo, insufficient token scope:** The token was created without the `repo` scope (required for private repositories). Public repos only need `public_repo`.
 
@@ -526,8 +564,9 @@ gh auth status
 curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/rate_limit \
   | grep -i "x-oauth-scopes" || true
 
-# Explicitly specify the repo
-trelix review pr <number> --repo owner/repo-name
+# Name the repo explicitly in the --pr ref (there is no --repo flag on
+# `trelix review`; the positional REPO argument is the local indexed path)
+trelix review ./repo --pr owner/repo-name#123
 ```
 
 To generate a token with the correct scope:
@@ -539,7 +578,7 @@ To generate a token with the correct scope:
 
 ### 3000-File Truncation Warning
 
-**Symptom:** `trelix review pr <number>` prints `Warning: PR contains 3000+ changed files. Results truncated. Review manually for full coverage.`
+**Symptom:** `trelix review --pr owner/repo#<number>` prints `Warning: PR contains 3000+ changed files. Results truncated. Review manually for full coverage.`
 
 **Cause:** The GitHub API caps PR file listings at 3000 files. trelix enforces this ceiling and warns when it is hit. PRs of this size (e.g., large automated migrations, vendoring commits) cannot be fully reviewed programmatically.
 
@@ -547,7 +586,7 @@ To generate a token with the correct scope:
 
 1. Review the PR manually on GitHub.
 2. Break the PR into smaller PRs with fewer than 3000 changed files each.
-3. Use `trelix review pr <number> --paths "src/**"` to scope the review to a specific subdirectory.
+3. Cap the work with `trelix review ./repo --pr owner/repo#<number> --max-files 10` (default is `10`). `trelix review` has no path-scoping flag — to review a subset of paths, save a filtered diff to a file and pass it with `--diff`.
 
 ---
 
@@ -572,9 +611,11 @@ trelix federation add frontend /home/user/projects/frontend
 trelix federation list
 ```
 
-Then index each repo:
+Then index each repo. `trelix federation` has exactly three subcommands — `add`, `list`, and
+`remove` — so there is no bulk index-all; index each registered repo with `trelix index`:
 ```bash
-trelix federation index-all
+trelix index /home/user/projects/backend
+trelix index /home/user/projects/frontend
 ```
 
 ---
@@ -586,16 +627,27 @@ trelix federation index-all
 **Cause:** Different repos in the federation were indexed with different embedding providers, producing vectors of incompatible dimensions. Federation search requires all member repos to use the same provider and dimension.
 
 **Fix:**
+
+There is no `trelix federation stats`. Read each repo's recorded embedding dimension straight
+out of its index, then re-index the odd ones out under one provider.
+
 ```bash
-# Check which provider each repo used
-trelix federation stats
+# List the registered repos and their paths
+trelix federation list
 
-# Re-index all repos with the same provider
-trelix config set provider openai  # or your preferred provider
-trelix federation index-all --reset
+# Compare the recorded dimension per repo — they must all match
+for repo in /home/user/projects/backend /home/user/projects/frontend; do
+  printf '%s: ' "$repo"
+  sqlite3 "$repo/.trelix/index.db" \
+    "SELECT value FROM index_metadata WHERE key = 'embedding_dimension';"
+done
 
-# Verify all repos show the same provider and dims
-trelix federation stats --verbose
+# Re-index every repo under one provider
+export TRELIX_EMBEDDER_PROVIDER=openai
+for repo in /home/user/projects/backend /home/user/projects/frontend; do
+  trelix migrate-vectors "$repo" --reset
+  trelix index "$repo"
+done
 ```
 
 ---
@@ -636,14 +688,16 @@ trelix watch-all
 
 Use the local provider for zero-latency, unlimited-throughput indexing:
 ```bash
-trelix index --provider local
+trelix index . --provider local
 ```
 
-Increase embedding concurrency for remote providers:
+Tune embedding batching for remote providers. There is no concurrency env var; the real knobs
+are batch size, the per-batch token ceiling, and an optional TPM cap:
 ```bash
-export CC_EMBED_CONCURRENCY=16  # default is 4
-trelix index
-```
+export TRELIX_EMBEDDER_BATCH_SIZE=128              # default 64
+export TRELIX_EMBEDDER_EMBED_MAX_TOKENS_PER_BATCH=100000   # default 100000
+export TRELIX_EMBEDDER_TPM_LIMIT=1000000           # default 0 = unlimited
+trelix index .
 
 Check your API tier and increase limits if needed (OpenAI: Platform → Settings → Rate limits).
 
@@ -661,27 +715,31 @@ Check your API tier and increase limits if needed (OpenAI: Platform → Settings
 
 Check index size:
 ```bash
-trelix stats
+trelix stats ./repo
 # If chunks > 100,000, consider switching to Qdrant
 ```
 
-Switch to Qdrant for large indices (HNSW indexing, sub-millisecond queries):
+Switch to Qdrant for large indices (HNSW indexing, sub-millisecond queries). The backend is
+selected by environment variable — see [CONFIGURATION.md](CONFIGURATION.md#storage):
 ```bash
 # Start Qdrant locally
 docker run -d -p 6333:6333 qdrant/qdrant
 
-# Configure trelix to use Qdrant
-trelix config set vector-store qdrant
-trelix config set qdrant-url http://localhost:6333
+# Point trelix at Qdrant
+export TRELIX_STORE_BACKEND=qdrant
+export QDRANT_URL=http://localhost:6333
+# export QDRANT_API_KEY=...        # only for authenticated Qdrant Cloud
+# export QDRANT_COLLECTION=trelix  # default is `trelix`
 
-# Re-index to populate Qdrant
-trelix index --force
+# Copy the existing SQLite embeddings into Qdrant (no re-embedding needed)
+trelix migrate-vectors ./repo --to qdrant --url http://localhost:6333
 ```
 
 Switch to local provider to eliminate API round-trip latency:
 ```bash
-trelix config set provider local
-trelix migrate-vectors --reset
+export TRELIX_EMBEDDER_PROVIDER=local
+trelix migrate-vectors ./repo --reset
+trelix index ./repo
 ```
 
 ---
@@ -694,20 +752,24 @@ trelix migrate-vectors --reset
 
 **Fix:**
 
-Increase the debounce window:
+Exclude noisy directories (build outputs, caches). There is no `.trelixignore` — trelix
+honours the repo-root `.gitignore` (nested ones are not read):
 ```bash
-trelix watch --debounce 2000  # 2 seconds, default is 500ms
+echo "dist/" >> .gitignore
+echo "build/" >> .gitignore
+echo "__pycache__/" >> .gitignore
+echo "node_modules/" >> .gitignore
+
+trelix watch ./repo
 ```
 
-Exclude noisy directories (build outputs, caches):
-```bash
-# Add to .trelixignore
-echo "dist/" >> .trelixignore
-echo "build/" >> .trelixignore
-echo "__pycache__/" >> .trelixignore
-echo "node_modules/" >> .trelixignore
+Increase the debounce window. `trelix watch` exposes no `--debounce` flag and there is no env
+var for it — the 500 ms default is only overridable through the Python API:
+```python
+from trelix.indexing.watcher import FileWatcher
 
-trelix watch
+watcher = FileWatcher(indexer, indexer.walker, debounce_ms=2000)
+watcher.start()
 ```
 
 Use `update-index` as a manual alternative if continuous watching is not required:
@@ -835,15 +897,21 @@ Run these commands to collect a baseline snapshot when something is wrong:
 # System info
 python --version
 trelix --version
-trelix-mcp --version 2>/dev/null || echo "trelix-mcp not installed"
+python -c "import trelix_mcp; print('trelix-mcp', trelix_mcp.__version__)" 2>/dev/null \
+  || echo "trelix-mcp not installed"
 
 # Index health
-trelix stats --verbose
+trelix stats ./repo
 
-# Provider and config
-trelix config show
+# Recorded embedding dimension (the only provider fact stored in the index)
+sqlite3 ./repo/.trelix/index.db \
+  "SELECT key, value FROM index_metadata;" 2>/dev/null
 
-# Environment variables (safe subset)
+# Effective configuration. There is no `trelix config show` — configuration is
+# environment-variable only, so dump the relevant env instead.
+env | grep -E '^TRELIX_' | sort
+
+# Credentials (presence only — never paste the values)
 echo "OPENAI_API_KEY set: $([ -n "$OPENAI_API_KEY" ] && echo yes || echo NO)"
 echo "AZURE_API_KEY set:  $([ -n "$AZURE_API_KEY" ] && echo yes || echo NO)"
 echo "VOYAGE_API_KEY set: $([ -n "$VOYAGE_API_KEY" ] && echo yes || echo NO)"
@@ -860,5 +928,5 @@ Paste this output when opening a bug report at https://github.com/your-org/treli
 ## Still Stuck?
 
 - Check the [GitHub Issues](https://github.com/your-org/trelix/issues) for known problems and workarounds.
-- Run `trelix doctor` for an automated health check (available in v2.4.0+).
+- There is no automated health-check command. Run the [Quick Diagnostic Checklist](#quick-diagnostic-checklist) above by hand and attach its output.
 - Open a new issue with the output of the diagnostic checklist above.

@@ -222,17 +222,18 @@ claude mcp add trelix -- trelix-mcp
 
 ### 10. FLARE Re-Retrieval Loop — Confidence-Gated Iterative Retrieval
 
-**What it does:** During synthesis, Trelix monitors token-level generation probability. When the LLM emits a low-confidence span (probability below `TRELIX_FLARE_THRESHOLD`, default 0.3), synthesis pauses, uses the uncertain span as a new retrieval query, injects the supplemental results into context, and resumes generation.
+**What it does:** After a synthesis completes, Trelix inspects the generated answer for uncertainty markers. If the answer says it could not find something, the loop re-retrieves with an enriched query and re-synthesizes, up to `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` total synthesis calls.
+
+**Honest scope — this is the paper's heuristic, not its full method.** The original FLARE (Jiang et al., EMNLP 2023, arXiv:2305.06983) monitors token-level log-probabilities mid-generation. Trelix does **not**: it uses a post-hoc phrase check against a fixed list (`"i don't know"`, `"cannot find"`, `"no relevant code"`, `"insufficient context"`, and seven more in `_DEFAULT_UNCERTAINTY_PHRASES`). There is no probability threshold and no `TRELIX_FLARE_THRESHOLD` setting — the only knobs are `TRELIX_RETRIEVAL_FLARE` (default `false`) and `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` (default `1`, bounded `1`–`3`). Because the check is post-hoc, generation is never paused or resumed mid-stream; the whole answer is regenerated.
 
 **Implementation:**
 ```
-Synthesis in progress
-  → LLM token probability < FLARE_THRESHOLD?
-       YES → extract uncertain span
+retrieve → synthesize
+  → answer contains an uncertainty phrase?
+       YES → build an enriched query from the original + uncertainty context
              → re-retrieve (all enabled legs)
-             → inject new results into context
-             → resume synthesis
-       NO  → continue normally
+             → re-synthesize            (repeat while under max_retries)
+       NO  → return the answer
 ```
 
 **Why it matters:** Standard RAG retrieves once before generation begins. If the initial retrieval missed relevant context, the LLM either hallucinates or produces a confident-sounding wrong answer. FLARE catches the uncertainty at generation time and retrieves targeted supplemental context before it can become a hallucination. This is the difference between "I don't have enough context" and "let me go look for more."
@@ -385,15 +386,22 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 - A code review platform with UI (GitHub PR review is CLI-based and MCP-based, not a hosted product)
 - A real-time streaming completions service (retrieval happens at query time, not keystroke time)
 
-### Current version scope (v2.12.0)
+### Current version scope (v3.0.0)
 
-| In v2.12.0 | Planned (v3.0+) |
+| In v3.0.0 | Planned (post-3.0) |
 |-----------|-----------------|
 | 7-leg hybrid retrieval pipeline | Streaming retrieval with incremental result delivery |
 | FederatedRetriever with TTL cache (~90% hit rate) | Advanced taint analysis (Semgrep integration GA) |
 | 20-language Tree-sitter AST parsing | Hosted cloud index option |
 | 6 LLM backends + LiteLLM 100+ providers | |
 | MCP server (15 tools, stdio transport) | |
+| Extended thinking on Anthropic synthesis (`TRELIX_LLM_THINKING_ENABLED`, opt-in) | |
+| Model-aware context budget derived from the LLM's real context window (opt-in) | |
+| SeleCom query-conditioned context compression (opt-in, result-lossless) | |
+| Hash-chained append-only audit trail in its own `audit.db` (opt-in) | |
+| OIDC SSO with an asymmetric-only algorithm allowlist (`trelix[sso]`, opt-in) | |
+| VS Code code lenses, hover provider, and `@trelix` chat participant | |
+| FTS5 declaration-boost BM25 ranking (opt-in) | |
 | Multi-repo MCP federation (4 new tools) | |
 | Persistent agent session memory (3 new tools) | |
 | GitHub PR review + batch comment posting | |

@@ -9,6 +9,8 @@ pydantic-settings reads env vars BEFORE the .env file, so setenv("X", "false")
 overrides whatever .env contains for that key.
 """
 
+import os
+
 import pytest
 
 _BEAST_MODE_DEFAULTS: dict[str, str] = {
@@ -18,9 +20,26 @@ _BEAST_MODE_DEFAULTS: dict[str, str] = {
     "TRELIX_RETRIEVAL_MULTI_QUERY": "false",
     "TRELIX_RETRIEVAL_FLARE": "false",
     "TRELIX_RETRIEVAL_PAGERANK_BOOST": "false",
+    "TRELIX_RETRIEVAL_COMPRESSION": "false",
     "TRELIX_TELEMETRY_ENABLED": "false",
     "TRELIX_OTEL_ENABLED": "false",
 }
+
+# Non-flag settings pinned to their CODE defaults. Same rationale as
+# _BEAST_MODE_DEFAULTS, but these carry a value rather than a boolean, so they
+# must be pinned to the default itself instead of "false" — a developer's .env
+# tuning compression for a local experiment must not change what the
+# "unconfigured" unit tests observe.
+_CODE_DEFAULTS: dict[str, str] = {
+    "TRELIX_RETRIEVAL_COMPRESSION_PROVIDER": "extractive",
+    "TRELIX_RETRIEVAL_COMPRESSION_RATIO": "0.45",
+    "TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS": "120",
+}
+
+# Per-intent override families read straight from os.environ (NOT via
+# pydantic-settings), so pinning the scalar above does not neutralize them —
+# every var under these prefixes has to be removed by name.
+_ENV_PREFIXES_TO_SCRUB: tuple[str, ...] = ("TRELIX_RETRIEVAL_COMPRESSION_RATIO_",)
 
 # Non-boolean settings that must stay unset (not "false") for tests to see the
 # "unconfigured" code default — same rationale as _BEAST_MODE_DEFAULTS above,
@@ -59,6 +78,11 @@ def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     """Override beast-mode feature flags to false so unit tests see code defaults."""
     for var, val in _BEAST_MODE_DEFAULTS.items():
         monkeypatch.setenv(var, val)
+    for var, val in _CODE_DEFAULTS.items():
+        monkeypatch.setenv(var, val)
+    for prefix in _ENV_PREFIXES_TO_SCRUB:
+        for var in [k for k in os.environ if k.startswith(prefix)]:
+            monkeypatch.delenv(var, raising=False)
     for var in _UNSET_BY_DEFAULT:
         monkeypatch.delenv(var, raising=False)
     for var in _EMPTY_STRING_BY_DEFAULT:

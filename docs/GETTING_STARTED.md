@@ -20,7 +20,7 @@ Verify the install:
 
 ```bash
 trelix --version
-# trelix 2.12.0
+# trelix 3.0.0
 ```
 
 ---
@@ -142,7 +142,7 @@ All trelix capabilities are exposed as CLI subcommands. Here is the full referen
 | `trelix search-all "query"` | Search across all federated repos in one command |
 | `trelix serve ./my-repo --port 8765` | Start a REST API server for the repo's index |
 
-**Embedding providers** (`--embedder` flag or `TRELIX_EMBEDDER` env var):
+**Embedding providers** (`--provider` flag on `index`/`search`/`ask`/`query`/`call-graph`/`update-index`/`watch`, or the `TRELIX_EMBEDDER_PROVIDER` env var):
 
 | Provider | Key required | Best for |
 |----------|-------------|---------|

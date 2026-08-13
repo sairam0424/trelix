@@ -24,8 +24,12 @@ or inside a devcontainer/remote host if you use one):
 
 ```bash
 pip install trelix-mcp
-trelix-mcp --help
+which trelix-mcp
+python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 ```
+
+`trelix-mcp` accepts no command-line arguments — there is no `--help` or `--version`
+flag; invoking it starts the stdio MCP server immediately.
 
 The extension spawns it by name (`trelix-mcp`, no args) — it must be on
 `PATH` for whichever Python environment the VS Code process resolves.

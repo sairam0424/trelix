@@ -79,6 +79,7 @@ class VertexBackend(TrelixChatClient):
         max_tokens: int | None = None,
         temperature: float | None = None,
         system: str | None = None,
+        thinking: bool = False,
     ) -> ChatResponse:
         if self._client is None:
             return ChatResponse(
@@ -123,6 +124,7 @@ class VertexBackend(TrelixChatClient):
         max_tokens: int | None = None,
         temperature: float | None = None,
         system: str | None = None,
+        thinking: bool = False,
     ) -> Iterator[str]:
         if self._client is None:
             yield "[trelix] Vertex AI not configured."
