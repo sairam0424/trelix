@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from trelix.agent.loop import AgentLoop
@@ -201,3 +202,92 @@ class TestAgentLoopRun:
         assert cfg.retrieval.agent_max_turns == 8
         assert cfg.retrieval.agent_token_budget == 6000
         assert cfg.retrieval.agent_session_max_age_seconds == 604_800.0
+
+
+def _symbol(qualified_name: str, body: str) -> MagicMock:
+    sym = MagicMock()
+    sym.qualified_name = qualified_name
+    sym.body = body
+    return sym
+
+
+class TestGetSymbolFencing:
+    """_do_get_symbol wraps a symbol body in a fence the body cannot break."""
+
+    def _observe(self, tmp_path: Path, body: str) -> str:
+        cfg = _make_config(tmp_path)
+        loop = AgentLoop(cfg)
+        mock_db_cls = _mock_db_class()
+        mock_db_cls.return_value.get_symbol_by_name.return_value = [_symbol("docs.readme", body)]
+        with patch("trelix.store.db.Database", mock_db_cls):
+            obs = loop._do_get_symbol("docs.readme")
+        assert obs.success is True
+        return str(obs.content)
+
+    def test_plain_body_is_byte_identical_to_legacy_output(self, tmp_path: Path) -> None:
+        """Guarantees the fence change is a no-op for bodies without backticks."""
+        body = "def login(user):\n    return check(user)"
+        assert self._observe(tmp_path, body) == f"```\n{body}\n```"
+
+    def test_body_containing_a_fence_is_still_well_formed(self, tmp_path: Path) -> None:
+        # A markdown symbol body — trelix indexes markdown, and 72 of the 79
+        # tracked .md files in this repo contain a three-backtick run.
+        body = "Verify a release:\n```bash\npip install pypi-attestations\n```"
+        content = self._observe(tmp_path, body)
+        lines = content.split("\n")
+        assert lines[0] == "````"
+        assert lines[-1] == "````"
+        # The body must survive intact between the fences, and no line in it may
+        # open a fence long enough to close the block early.
+        assert content == f"````\n{body}\n````"
+        for line in body.split("\n"):
+            assert not line.lstrip().startswith("````")
+
+    def test_body_with_a_long_run_grows_the_fence_further(self, tmp_path: Path) -> None:
+        body = "outer\n`````\ninner\n`````"
+        content = self._observe(tmp_path, body)
+        assert content == f"``````\n{body}\n``````"
+
+
+def _capture_tool_call_kwargs(tmp_path: Path, query: str = "how does auth work") -> dict[str, Any]:
+    """Run one turn against a fake client and return the tool_call() kwargs."""
+    cfg = _make_config(tmp_path)
+    mock_client = MagicMock()
+    mock_client.tool_call.return_value = MagicMock(tool_name="done", tool_arguments={"answer": "a"})
+    loop = AgentLoop(cfg)
+    loop._llm_client = mock_client
+    loop._retriever = MagicMock()
+    with patch("trelix.store.db.Database", _mock_db_class()):
+        loop.run(query)
+    assert mock_client.tool_call.call_count == 1
+    return dict(mock_client.tool_call.call_args.kwargs)
+
+
+class TestSystemPromptReachesModel:
+    """_SYSTEM_PROMPT must actually be sent, not just defined."""
+
+    def test_a_system_message_is_sent(self, tmp_path: Path) -> None:
+        kwargs = _capture_tool_call_kwargs(tmp_path)
+        # tool_call() declares no system= parameter on the ABC or any of the five
+        # backends, so a role="system" message is the only route they honour.
+        assert "system" not in kwargs
+        assert [m.role for m in kwargs["messages"]] == ["system", "user"]
+
+    def test_system_message_carries_the_strategy_rules(self, tmp_path: Path) -> None:
+        kwargs = _capture_tool_call_kwargs(tmp_path)
+        system = next(m.content for m in kwargs["messages"] if m.role == "system")
+        assert "Never call done until you've done at least one retrieval." in system
+        assert "You have access to four tools: retrieve, grep, get_symbol, and done." in system
+        assert "Be concise in thoughts; be thorough in answers." in system
+
+    def test_user_message_still_carries_the_question(self, tmp_path: Path) -> None:
+        kwargs = _capture_tool_call_kwargs(tmp_path)
+        user = next(m.content for m in kwargs["messages"] if m.role == "user")
+        assert user.startswith("Question: how does auth work\n\n")
+        assert user.endswith(
+            "What is your next action? Think step by step, then call the appropriate tool."
+        )
+        # The rules belong in the system message, not smuggled into the user
+        # turn — keeping the user turn byte-identical is what makes this a
+        # wiring fix rather than a prompt rewrite.
+        assert "Never call done" not in user

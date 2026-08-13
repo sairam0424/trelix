@@ -17,6 +17,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from trelix.llm.prompt import fenced_block
+
 if TYPE_CHECKING:
     from trelix.core.config import IndexConfig
     from trelix.review.diff_parser import DiffHunk
@@ -144,13 +146,18 @@ class DiffReviewer:
             diff_lines.append(f"+ {line}")
         diff_text = "\n".join(diff_lines)
 
+        # Each fence length is derived from its own payload. Reviewing a change
+        # to a markdown file puts ``` directly into diff_text, and retrieved
+        # context is a symbol body that can carry one too; a hard-coded three-
+        # backtick fence closes early on either and the remainder of the payload
+        # reaches the model as instructions rather than as quoted code.
         user_content = (
             f"File: {hunk.file_path} (lines {hunk.new_start}–"
             f"{hunk.new_start + hunk.new_lines})\n\n"
-            f"Changed code:\n```\n{diff_text}\n```\n\n"
+            f"Changed code:\n{fenced_block(diff_text)}\n\n"
         )
         if context_text:
-            user_content += f"Related codebase context:\n```\n{context_text}\n```\n\n"
+            user_content += f"Related codebase context:\n{fenced_block(context_text)}\n\n"
         user_content += "Provide review comments as a JSON array."
 
         response = client.complete(
