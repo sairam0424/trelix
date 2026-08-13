@@ -32,6 +32,11 @@ Extracts:
 Parent linkage:
   parent_id in Symbol is set to the LOCAL INDEX in the symbols list during
   parsing. The Indexer remaps this to the actual DB id after insertion.
+
+  The Indexer resolves these indices against the FINAL symbols list, so the
+  list must never be reordered or have anything inserted into the middle of it
+  after the walk has recorded an index. See the comment in parse() about the
+  reserved symbols[0] slot for the synthetic "<module>" symbol.
 """
 
 from __future__ import annotations
@@ -81,6 +86,32 @@ class PythonParser(BaseParser):
         import_edges: list[ImportEdge] = []
         type_edges: list[TypeEdge] = []
 
+        # Module-level docstring → file-level summary symbol so architectural
+        # queries ("how does X work end-to-end", "what is the Y architecture")
+        # can find the right file via its module description.
+        #
+        # The docstring is probed BEFORE the walk so that symbols[0] can be
+        # RESERVED for the synthetic "<module>" symbol up front.
+        #
+        # WHY the slot is reserved instead of inserted afterwards: the walk
+        # records LOCAL INDICES into `symbols` as it goes, and three separate
+        # families of index point into this list —
+        #     Symbol.parent_id        (method/field -> enclosing class)
+        #     raw_calls[i][0]         (call site -> enclosing function)
+        #     TypeEdge.from_symbol_id (subclass -> its base)
+        # Inserting at index 0 *after* the walk shifts every symbol by one and
+        # silently invalidates all three at once: a method's parent_id names
+        # whatever class was declared before its real parent, a call is
+        # attributed to the previous function (fabricating self-recursion), and
+        # a class appears to inherit from itself. Reserving the slot first
+        # means every index recorded during the walk is already correct for the
+        # list's final layout, so no remapping is needed anywhere.
+        #
+        # Do not turn this back into symbols.insert(0, ...).
+        module_doc = self._get_docstring(root, source_bytes)
+        if module_doc:
+            symbols.append(self._module_symbol(file_id, root, module_doc))
+
         # Walk the module-level children to extract top-level constructs
         self._walk(
             node=root,
@@ -96,33 +127,17 @@ class PythonParser(BaseParser):
             depth=0,
         )
 
-        # Module-level docstring → file-level summary symbol so architectural
-        # queries ("how does X work end-to-end", "what is the Y architecture")
-        # can find the right file via its module description.
-        module_doc = self._get_docstring(root, source_bytes)
+        # The top-level signature index can only be built once the walk has
+        # run, so rebuild the reserved symbol now that its body is knowable.
+        # symbols[1:] skips the reserved slot itself; replacing the slot (rather
+        # than mutating the Symbol in place) keeps Symbol values immutable.
         if module_doc:
             top_sigs = [
                 s.signature
-                for s in symbols
+                for s in symbols[1:]
                 if s.parent_id is None and s.kind not in (SymbolKind.CONSTANT,)
             ][:20]
-            body = module_doc
-            if top_sigs:
-                body += "\n\n# Symbols:\n" + "\n".join(top_sigs)
-            symbols.insert(
-                0,
-                Symbol(
-                    file_id=file_id,
-                    name="<module>",
-                    qualified_name="<module>",
-                    kind=SymbolKind.MODULE,
-                    line_start=1,
-                    line_end=root.end_point[0] + 1,
-                    signature="module",
-                    body=body,
-                    docstring=module_doc,
-                ),
-            )
+            symbols[0] = self._module_symbol(file_id, root, module_doc, top_sigs)
 
         # Build CallEdge list — caller_id is a local index here, remapped by Indexer
         call_edges: list[CallEdge] = [
@@ -142,6 +157,35 @@ class PythonParser(BaseParser):
             import_edges=import_edges,
             parse_errors=self._count_errors(root),
             type_edges=type_edges,
+        )
+
+    def _module_symbol(
+        self,
+        file_id: int,
+        root: Node,
+        module_doc: str,
+        top_sigs: list[str] | None = None,
+    ) -> Symbol:
+        """
+        Build the synthetic file-level "<module>" symbol.
+
+        Called twice: once to reserve symbols[0] before the walk (without
+        `top_sigs`, which are not known yet) and once afterwards to replace
+        that slot with the same symbol carrying the top-level signature index.
+        """
+        body = module_doc
+        if top_sigs:
+            body += "\n\n# Symbols:\n" + "\n".join(top_sigs)
+        return Symbol(
+            file_id=file_id,
+            name="<module>",
+            qualified_name="<module>",
+            kind=SymbolKind.MODULE,
+            line_start=1,
+            line_end=root.end_point[0] + 1,
+            signature="module",
+            body=body,
+            docstring=module_doc,
         )
 
     # ------------------------------------------------------------------
