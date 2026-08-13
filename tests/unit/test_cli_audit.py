@@ -21,6 +21,13 @@ Two audit-tooling defects are pinned here.
    exactly the record a responder needs mid-incident. Every cell is escaped
    now, so markup-shaped values render literally.
 
+Beyond those two pins, the remaining branches of the sub-app are covered here
+directly: ``audit list``'s empty-result branch (an *openable* log with nothing
+to show, which must not look like the exit-2 unopenable case), and ``audit
+export``'s format gate plus its NDJSON happy path (one machine-readable JSON
+object per line, oldest first, chain hashes included, markup-shaped values
+byte-preserved because export uses builtin ``print`` and not the Rich console).
+
 Style mirrors tests/unit/test_cli_smoke.py: real CliRunner invocations against
 the real ``app``, with a real (temp) audit.db. See tests/unit/test_audit_store.py
 for the store-level ``is_open`` tests.
@@ -28,6 +35,7 @@ for the store-level ``is_open`` tests.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -220,3 +228,180 @@ def test_list_renders_closing_tag_only_resource_without_markup_error(tmp_path: P
     assert not isinstance(result.exception, MarkupError)
     assert result.exit_code == 0
     assert "/[/red]" in _combined_output(result)
+
+
+# --- `audit list`: the empty-but-openable log ------------------------------
+def test_list_on_openable_empty_db_says_no_entries_and_exits_0(tmp_path: Path) -> None:
+    """An openable log with zero rows is a *success*, not a failure.
+
+    This is the other half of the exit-code contract: exit 2 means "could not
+    check", so a log that opened fine and simply has nothing in it must exit 0
+    and say so — and must NOT render a table header, which would suggest rows
+    exist. Constructing the store creates the schema, so the file is a valid,
+    empty audit.db rather than an unopenable path.
+    """
+    db = tmp_path / "audit.db"
+    AuditStore(db).close()
+    assert db.exists()
+
+    result = runner.invoke(app, ["audit", "list", "--db", str(db)])
+    combined = _combined_output(result)
+
+    assert result.exit_code == 0
+    assert "No audit entries." in combined
+    assert "Could not open audit database" not in combined
+    # The table (title + header row) must not be printed for an empty log.
+    assert "Audit Log" not in combined
+    assert "principal" not in combined
+
+
+def test_list_with_nonpositive_limit_shows_nothing_instead_of_the_whole_log(
+    tmp_path: Path,
+) -> None:
+    """``--limit -1`` must show no rows, not every row.
+
+    ``AuditStore.recent`` guards ``n <= 0`` and returns ``[]``. Without that
+    guard the value reaches sqlite as ``LIMIT -1``, which sqlite defines as *no
+    limit* — so a negative ``--limit`` would silently dump the entire audit log
+    to the terminal. Pinned here because the guard is invisible at this layer.
+    """
+    db = tmp_path / "audit.db"
+    _seed(db, 3)
+
+    result = runner.invoke(app, ["audit", "list", "--limit", "-1", "--db", str(db)])
+    combined = _combined_output(result)
+
+    assert result.exit_code == 0
+    assert "No audit entries." in combined
+    assert "/search#1" not in combined
+    assert "/search#3" not in combined
+
+
+# --- `audit export`: format gate ------------------------------------------
+def test_export_with_unsupported_format_exits_1_and_names_the_format(tmp_path: Path) -> None:
+    """A typo'd ``--format`` must fail loudly and emit no rows.
+
+    Silently falling back to NDJSON (or emitting a partial stream before
+    complaining) would let a pipeline believe it received the format it asked
+    for. The message has to name the offending value so the operator can see
+    the typo, and nothing from the log may reach stdout.
+    """
+    db = tmp_path / "audit.db"
+    _seed(db, 3)
+
+    result = runner.invoke(app, ["audit", "export", "--format", "csv", "--db", str(db)])
+    combined = _combined_output(result)
+
+    assert result.exit_code == 1
+    assert "Unsupported format" in combined
+    assert "'csv'" in combined
+    assert "only 'ndjson' is supported" in combined
+    # Not one exported row escaped the gate.
+    assert "user-1@https://idp.example" not in combined
+    assert "entry_hash" not in combined
+
+
+def test_export_validates_format_before_touching_the_database(tmp_path: Path) -> None:
+    """Exit 1 (bad format), not exit 2 (could not open), when both are wrong.
+
+    The format gate runs before ``_open_audit_store``, so a bad ``--format``
+    reports the bad format even if ``--db`` is also unusable (``tmp_path`` is a
+    directory). Ordering matters: telling the user their database is broken
+    when the real mistake was the format sends them down the wrong path.
+    """
+    result = runner.invoke(app, ["audit", "export", "--format", "csv", "--db", str(tmp_path)])
+    combined = _combined_output(result)
+
+    assert result.exit_code == 1
+    assert "Unsupported format" in combined
+    assert "Could not open audit database" not in combined
+
+
+# --- `audit export`: the NDJSON happy path ---------------------------------
+@pytest.mark.parametrize("format_args", [[], ["--format", "ndjson"]])
+def test_export_emits_one_json_object_per_line_oldest_first(
+    tmp_path: Path, format_args: list[str]
+) -> None:
+    """The actual export: valid NDJSON, oldest first, chain hashes included.
+
+    Parametrized over the default and the explicit ``--format ndjson`` so the
+    documented default cannot drift away from the named format. ``iter_for_export``
+    yields append order (oldest first) — the opposite of ``audit list``'s
+    newest-first ``recent()`` — because an offline verifier has to replay the
+    hash chain forwards, which is also why ``prev_hash``/``entry_hash`` must be
+    part of every exported row.
+    """
+    db = tmp_path / "audit.db"
+    _seed(db, 3)
+
+    result = runner.invoke(app, ["audit", "export", *format_args, "--db", str(db)])
+
+    assert result.exception is None, f"export raised {result.exception!r}"
+    assert result.exit_code == 0
+
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    assert len(lines) == 3, f"expected 3 NDJSON lines, got {lines!r}"
+
+    rows = []
+    for line in lines:
+        row = json.loads(line)  # must be valid JSON on its own — this is NDJSON
+        assert isinstance(row, dict), f"expected a JSON object per line, got {row!r}"
+        rows.append(row)
+
+    required = {
+        "id",
+        "ts",
+        "principal",
+        "action",
+        "resource",
+        "outcome",
+        "status_code",
+        "client_ip",
+        "request_id",
+        "trace_id",
+        "duration_ms",
+        "detail",
+        "prev_hash",
+        "entry_hash",
+    }
+    for row in rows:
+        assert required <= set(row), f"missing keys: {sorted(required - set(row))}"
+
+    assert [row["id"] for row in rows] == [1, 2, 3]
+    assert [row["resource"] for row in rows] == ["/search#1", "/search#2", "/search#3"]
+    assert [row["principal"] for row in rows] == [
+        f"user-{i}@https://idp.example" for i in (1, 2, 3)
+    ]
+    assert [row["status_code"] for row in rows] == [200, 200, 200]
+    assert rows[0]["prev_hash"] == "0" * 64  # genesis
+    # The chain links forward, which is what an offline verifier replays.
+    assert [row["prev_hash"] for row in rows[1:]] == [row["entry_hash"] for row in rows[:-1]]
+    assert rows[0]["detail"] is None  # SQL NULL round-trips as JSON null, not ""
+
+
+def test_export_preserves_markup_shaped_values_byte_for_byte(tmp_path: Path) -> None:
+    """Export is machine-readable, so it must NOT go through the Rich console.
+
+    ``audit list`` escapes markup for display; export must do the opposite and
+    reproduce the stored bytes exactly. Routing this through ``console.print``
+    instead of builtin ``print`` would strip "[/bold]" as a style tag and wrap
+    long lines, corrupting the JSON — so the payload is re-read from the parsed
+    object, not merely searched for in the output.
+    """
+    db = tmp_path / "audit.db"
+    hostile = "/[/red] [bold]x[/bold]"
+    store = AuditStore(db)
+    assert (
+        store.append(_event(1, resource=hostile, outcome=OUTCOME_DENIED, status_code=401)) is True
+    )
+    store.close()
+
+    result = runner.invoke(app, ["audit", "export", "--db", str(db)])
+
+    assert result.exit_code == 0
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    assert len(lines) == 1, f"expected 1 NDJSON line, got {lines!r}"
+    row = json.loads(lines[0])
+    assert row["resource"] == hostile
+    assert row["outcome"] == OUTCOME_DENIED
+    assert row["status_code"] == 401
