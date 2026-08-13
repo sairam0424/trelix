@@ -6,6 +6,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every call edge, parent link, and type edge produced by the Python parser was
+  wrong in any file with a module docstring.** `PythonParser` recorded local
+  indices into its `symbols` list during the AST walk, then did
+  `symbols.insert(0, <module>)` afterwards when the module had a docstring —
+  shifting every element by one and silently invalidating all three index
+  families at once: `Symbol.parent_id` (method → enclosing class),
+  `CallEdge.caller_id` (call site → enclosing function), and
+  `TypeEdge.from_symbol_id` (subclass → base). The module docstring claimed the
+  Indexer remapped these; it does not. `indexer.py` builds `local_to_db` by
+  enumerating the *final* list, so a pre-insert index resolved to a **valid but
+  wrong** row. It never raised, never logged, never produced a null — which is
+  why it shipped in v2.12.0 and again in v3.0.0.
+
+  Measured across trelix's own 139 source files, resolving every index to a
+  symbol name in both arms: **8,815 of 8,815 index references (100%) were
+  wrong** — 7,190 call edges, 1,525 parent links, 100 type edges. 434 parent
+  links named `<module>` instead of the declaring class, and 77 call edges were
+  fabricated self-recursion. 100% is arithmetic rather than a measurement
+  artifact: all 2,179 symbols live in the 131 docstring-bearing files, and the 8
+  files without a docstring are zero-byte `__init__.py` that emit no symbols.
+
+  Fixed by reserving `symbols[0]` for the `<module>` symbol *before* the walk, so
+  every index recorded is already correct for the list's final layout. This
+  removes the bug class rather than compensating for it — no remapping exists to
+  get out of step later. Verified against an oracle derived from CPython's own
+  `ast` module (0 violations across 22 cases, down from 69), with 5 of 5 mutants
+  killed.
+
+  **A reindex is required to obtain a correct call graph.** This corrects
+  v3.0.0's release note that "upgrading from v2.12.0 needs no reindex and no
+  migration" — true of the schema, but the graph built by the old parser is
+  wrong. Expect call-graph expansion, blast radius, PageRank centrality, the
+  knowledge graph, and symbol hierarchy to return different, accurate results
+  afterwards: on trelix's own index, 100% of PageRank values and 95.1% of ranks
+  change (e.g. `CachingPlanner.plan` moves from rank 1975 to 34).
+
 ## [3.0.0] — 2026-08-13
 
 ### Overview
