@@ -6,6 +6,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [3.0.1] — 2026-08-13
+
+### Overview
+A correctness release. One defect, but a total one: every call edge, parent link, and type edge the Python parser produced was wrong in any file with a module docstring — 8,815 of 8,815 index references on trelix's own source. It shipped silently in v2.12.0 and v3.0.0 because the off-by-one always resolved to a valid (just incorrect) row, so nothing ever raised or logged. **A reindex is required to get a correct call graph.** Also restores 177 byte-identical backcompat assertions that had gone dark, and unblocks an integration suite that could not complete.
+
 ### Fixed
 
 - **Every call edge, parent link, and type edge produced by the Python parser was
@@ -43,6 +48,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   knowledge graph, and symbol hierarchy to return different, accurate results
   afterwards: on trelix's own index, 100% of PageRank values and 95.1% of ranks
   change (e.g. `CachingPlanner.plan` moves from rank 1975 to 34).
+
+### Test coverage
+
+- **Restored 177 byte-identical backcompat assertions that had silently stopped
+  running.** `tests/unit/test_assembler_backcompat_golden.py` proves that with
+  compression disabled, `ContextAssembler` output is unchanged from pre-v3.0.0 —
+  including an object-identity check on the result list, so no reordering can
+  hide. It built its baseline from `git show HEAD:...assembler.py`, so it only
+  worked while the change was uncommitted; once merged, HEAD contained the change
+  and the module skipped, contributing 0 of 2,190 passing tests. Now pinned to the
+  `v2.12.0` tag, which is permanent — preferred over recording golden fixtures
+  because it preserves the identity assertion a snapshot cannot express. `ci.yml`
+  gained `fetch-depth: 0` / `fetch-tags: true`, without which the tag is
+  unreachable in CI and the suite would go dark again. Proven to bite: two
+  injected mutations were caught (141 and 8 failures) while a byte-identical
+  control passed all 177.
+- **Unblocked the integration suite.** `test_graph_api_integration.py` indexed the
+  entire worktree, exceeding 390s across three attempts, so 16 tests had no result
+  at all; it is now scoped to a fixture tree and runs in 36s. Four `test_cli.py`
+  failures came from the developer `.env` leaking an embedder provider into spawned
+  subprocesses — `monkeypatch` isolation is in-process only and cannot reach a
+  child. All 11 files now pass (99 passed, 1 skipped) in ~576s.
+- Covered the remaining `trelix audit` CLI branches: `audit_list`'s empty-log path
+  and `audit_export`'s format handling including an unknown format.
 
 ## [3.0.0] — 2026-08-13
 
@@ -1427,7 +1456,8 @@ Beast-mode upgrade across three axes simultaneously: **retrieval quality** (+49%
 - Providers: `local` (no API key), `openai`, `azure`
 - Zero-infra store: single SQLite file with sqlite-vec + FTS5 BM25
 
-[Unreleased]: https://github.com/sairam0424/trelix/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/sairam0424/trelix/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/sairam0424/trelix/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/sairam0424/trelix/compare/v2.12.0...v3.0.0
 [2.12.0]: https://github.com/sairam0424/trelix/compare/v2.11.1...v2.12.0
 [2.11.1]: https://github.com/sairam0424/trelix/compare/v2.11.0...v2.11.1
