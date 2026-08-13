@@ -44,7 +44,17 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
+      # fetch-tags is load-bearing, not hygiene: tests/unit/test_assembler_backcompat_golden.py
+      # builds its baseline from `git show v2.12.0:src/trelix/retrieval/assembler.py` to prove
+      # the compression-disabled assembler is byte-identical to the last pre-compression
+      # release. actions/checkout does a shallow, tag-less fetch by default, so without this
+      # the tag is missing, the suite skips at module level, and 177 assertions go dark
+      # silently. fetch-depth: 0 fetches full history including tags; fetch-tags keeps the
+      # tag requirement explicit so a future depth reduction does not re-break the suite.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}

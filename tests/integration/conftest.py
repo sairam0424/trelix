@@ -15,6 +15,15 @@ pydantic-settings reads env vars BEFORE the .env file, so setenv("X", "false")
 overrides whatever .env contains for that key. RetrievalConfig uses
 ``extra="ignore"``, so neutralizing a compression flag that hasn't landed as a
 field yet is harmless (ignored now, auto-neutralized once the field exists).
+
+SCOPE LIMIT — read this before adding isolation here
+----------------------------------------------------
+``monkeypatch`` is IN-PROCESS ONLY. Nothing in this file affects a `trelix`
+binary spawned via ``subprocess``: the child re-reads the process environment
+*and* the ``.env`` file in its own cwd from scratch. Tests that shell out
+(``tests/integration/test_cli.py``) must isolate their child explicitly — that
+file scrubs ``TRELIX_*`` out of the child env and runs it from a directory with
+no ``.env``. Adding a var here will NOT fix a subprocess test.
 """
 
 import pytest

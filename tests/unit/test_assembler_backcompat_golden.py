@@ -5,9 +5,14 @@ implementation.
 Unlike ``test_assembler_compression.py`` (which compares the new assembler
 against *itself* with ``compression_ratio=1.0``), this file diffs the new
 assembler against the ACTUAL previous implementation, loaded verbatim out of
-``git show HEAD:src/trelix/retrieval/assembler.py``. That is the only way to
+``git show v2.12.0:src/trelix/retrieval/assembler.py``. That is the only way to
 catch a regression introduced by the ``_pack_breadth_first`` refactor or by the
 new ``eligible``/``compressed`` plumbing in ``assemble()``.
+
+The baseline is pinned to a RELEASE TAG rather than ``HEAD`` on purpose: a
+``HEAD`` baseline self-destructs the instant the change under test is committed
+(HEAD then contains compression, so there is nothing to diff and the whole
+module skips). A tag is immutable, so these assertions keep running forever.
 
 Zero network, zero embedding, zero DB: pure in-memory dataclasses + tiktoken.
 """
@@ -52,36 +57,54 @@ INTENTS = [
 
 
 # ---------------------------------------------------------------------------
-# Load the PRE-CHANGE assembler straight out of git HEAD
+# Load the PRE-CHANGE assembler straight out of a pinned git tag
 # ---------------------------------------------------------------------------
+
+#: The baseline to diff against. v2.12.0 is the LAST RELEASE BEFORE SeleCom
+#: context compression landed (it shipped in v3.0.0), so this tree is the
+#: genuine pre-compression assembler — verified two ways: the file contains no
+#: "compress" token at all, and it is byte-identical to the parent commit of the
+#: change that introduced compression.
+#:
+#: Do NOT bump this to a newer tag. It is not "the previous release", it is "the
+#: last compression-free release"; every tag from v3.0.0 on contains the change
+#: under test, which would make the comparison vacuous (and is caught below).
+_BASELINE_REF = "v2.12.0"
+_BASELINE_PATH = "src/trelix/retrieval/assembler.py"
 
 
 def _load_legacy_assembler() -> type:
     proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["git", "-C", str(_REPO), "show", "HEAD:src/trelix/retrieval/assembler.py"],  # noqa: S607
+        ["git", "-C", str(_REPO), "show", f"{_BASELINE_REF}:{_BASELINE_PATH}"],  # noqa: S607
         capture_output=True,
         text=True,
         check=False,
     )
     # allow_module_level: this runs at import time (the legacy class is built once
     # for the module), so a bare pytest.skip() here is a COLLECTION ERROR rather
-    # than a skip. Both branches are expected in normal operation: no git/shallow
-    # checkout hits the first, and any run after the compression change is
-    # committed hits the second — including every CI run, since HEAD there always
-    # contains it. This suite can only truly execute pre-commit, which is exactly
-    # when byte-identical output is the thing under review.
+    # than a skip. This is the FALLBACK path, not the normal one: it fires only
+    # where git is missing or the tag was never fetched (e.g. actions/checkout
+    # without fetch-tags — .github/workflows/ci.yml sets that so CI takes the
+    # real path). If you see this skip, fix the checkout; do not accept it.
     if proc.returncode != 0:
         pytest.skip(
-            f"cannot read HEAD:assembler.py ({proc.stderr.strip()})", allow_module_level=True
+            f"cannot read {_BASELINE_REF}:{_BASELINE_PATH} ({proc.stderr.strip()}) — "
+            "is the tag fetched? (actions/checkout needs fetch-tags: true)",
+            allow_module_level=True,
         )
     source = proc.stdout
     if "compressor" in source:
-        pytest.skip(
-            "HEAD already contains the compression change — no baseline to diff",
-            allow_module_level=True,
+        # A hard error, deliberately NOT a skip: a baseline that already contains
+        # compression makes all 177 assertions below compare the change to
+        # itself. Silently skipping is how this suite went dark the first time.
+        raise RuntimeError(
+            f"baseline {_BASELINE_REF}:{_BASELINE_PATH} already contains the compression "
+            "change, so it is not a valid pre-change baseline. _BASELINE_REF must point at "
+            "the last compression-free release, not simply the previous release."
         )
 
-    path = pathlib.Path(tempfile.gettempdir()) / "trelix_legacy_assembler_golden.py"
+    slug = "".join(c if c.isalnum() else "_" for c in _BASELINE_REF)
+    path = pathlib.Path(tempfile.gettempdir()) / f"trelix_legacy_assembler_golden_{slug}.py"
     path.write_text(source, encoding="utf-8")
     spec = importlib.util.spec_from_file_location("trelix_legacy_assembler_golden", path)
     assert spec is not None and spec.loader is not None
@@ -349,13 +372,16 @@ def test_retriever_assemble_enabled_does_write_a_trace_section() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Frozen digests — the tripwire that OUTLIVES the commit
+# Frozen digests — a second, independent tripwire
 #
-# The git-HEAD diff above self-skips once this change is committed. These
-# digests were captured from the implementation AFTER it was proven identical
-# to HEAD by the tests above, so they keep pinning the disabled-path output
-# forever. A change here means the default-off assembled context moved: either
-# fix the change or (deliberately, with a reason) re-freeze.
+# These digests were captured from the implementation AFTER it was proven
+# identical to the v2.12.0 baseline by the tests above. They pin the exact
+# disabled-path text without consulting the baseline at all, so they also catch a
+# drift that hits BOTH implementations (e.g. a change in _format_context shared
+# via trelix.core.models). Note they still share this module's baseline-load
+# skip; making them survive it would mean loading the baseline lazily per test.
+# A change here means the default-off assembled context moved: either fix the
+# change or (deliberately, with a reason) re-freeze.
 # ---------------------------------------------------------------------------
 
 _FROZEN_TOTAL = 2835  # sum of CORPUS chunk token_counts — guards the fixture itself
