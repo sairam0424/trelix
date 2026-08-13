@@ -65,10 +65,33 @@ The `trelix.*`-namespaced pipeline-stage spans (fusion/expansion/rerank/etc.) ar
 
 This is additive — it does not replace either of trelix's existing telemetry mechanisms:
 
-- **`TelemetryWriter`** (`TRELIX_TELEMETRY_ENABLED=true`) — writes one row per `retrieve()` call to the `query_telemetry` SQLite table. Used by `trelix eval` and for offline analysis.
+- **`TelemetryWriter`** (`TRELIX_TELEMETRY_ENABLED=true`) — writes one row per `retrieve()` call to the `query_telemetry` SQLite table (query text, intent, latency, result count, expansion columns) in the index DB. The only reader is the `trelix telemetry` CLI report. `trelix eval` does **not** read this table — it re-runs the queries in a golden JSONL file live through `Retriever` and computes nDCG@10 / recall@10 / MRR from those fresh results, so telemetry can be off and `eval` still works. (Earlier revisions of this doc claimed `eval` consumed the telemetry table; that was never true.)
 - **Debug trace JSON** (always on unless commented out in `retriever.py`) — writes a structured `.trelix/debug/<ts>_<slug>.json` file per query with plan/legs/fusion/expansion/rerank/assembly data.
 
 Use OTel tracing when you want to export spans to an existing observability stack (Jaeger, Grafana Tempo, Honeycomb, Datadog, etc. — anything that accepts OTLP). Use the other two when you want local-file or in-DB analysis without standing up a collector.
+
+---
+
+## Relationship to audit logging
+
+The v3.0.0 audit trail (`TRELIX_AUDIT_ENABLED=true`, documented in [AUDIT.md](AUDIT.md)) is **not** a telemetry mechanism and does not replace any of the above. The distinction matters when deciding where to look during an incident:
+
+| | Audit log | Query telemetry | OTel tracing |
+|---|---|---|---|
+| Question | Who did what, when, and was it allowed? | How did retrieval perform over time? | Where did the time go inside one query? |
+| Unit | one row per **HTTP request** | one row per **`retrieve()` call** | one span per pipeline stage/leg |
+| Records caller identity | **yes** (`principal` — `sub@iss` or `static-token`) | no | no |
+| Records query text | no (deliberately) | **yes**, verbatim | as span attributes |
+| Stored in | a separate `audit.db` that survives re-indexing | `query_telemetry` in the **disposable** index DB | your OTLP backend |
+| Integrity | hash-chained, append-only, `trelix audit verify` | none — plain rows, deleted with the index | none — sampled, ephemeral |
+| Covers | the HTTP API only (not MCP, not the agent loop, not the CLI) | every `retrieve()` regardless of caller | every `retrieve()` regardless of caller |
+
+Two practical consequences:
+
+- **Telemetry is not an audit trail.** It has no identity column, it lives in a DB that gets deleted on every re-index, and nothing detects modification of its rows. Do not use it for compliance questions.
+- **The audit log is not a performance tool.** It records one coarse `duration_ms` per request and nothing about legs, fusion or reranking.
+
+They do join in one place: when OTel tracing is enabled, each audit row carries the `trace_id` of the request that produced it, so a suspicious audit entry can be opened as a trace in your tracing backend.
 
 ---
 

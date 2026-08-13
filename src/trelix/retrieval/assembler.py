@@ -10,11 +10,18 @@ Key insight stolen from Aider's repo-map:
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
 import tiktoken
 
 from trelix.core.models import RetrievedContext, SearchResult
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from trelix.compression.base import CompressionResult, Compressor
+
+logger = logging.getLogger(__name__)
 
 
 class ContextAssembler:
@@ -27,14 +34,37 @@ class ContextAssembler:
         context = assembler.assemble(query="...", results=[...])
     """
 
-    def __init__(self, token_budget: int = 8_000, per_source_budget: bool = False) -> None:
+    def __init__(
+        self,
+        token_budget: int = 8_000,
+        per_source_budget: bool = False,
+        *,
+        compressor: Compressor | None = None,
+        compression_ratio: float = 1.0,
+        compression_min_tokens: int = 120,
+    ) -> None:
         self.token_budget = token_budget
         # Split the budget proportionally to each source leg's result count
         # (not a fixed weight table — self-tuning, no extra config surface)
         # instead of one shared pool a single noisy leg could crowd out.
         # False (default) reproduces the exact prior single-pool behavior.
         self.per_source_budget = per_source_budget
+        # Compression is opt-in and additive: with compressor=None (the default)
+        # or ratio >= 1.0, NOTHING below changes and the assembled context is
+        # byte-identical to the pre-compression implementation.
+        self.compressor = compressor
+        self.compression_ratio = compression_ratio
+        self.compression_min_tokens = compression_min_tokens
+        #: Trace-friendly summary of the last assemble() compression pass
+        #: (None when compression was inactive). Mirrors the compressor's own
+        #: ``last_path`` attribute so the retriever can record both.
+        self.last_compression_stats: dict[str, object] | None = None
         self._tokenizer = tiktoken.get_encoding("cl100k_base")
+
+    @property
+    def _compression_active(self) -> bool:
+        """True only when a compressor was supplied AND the ratio asks to shrink."""
+        return self.compressor is not None and 0.0 < self.compression_ratio < 1.0
 
     def assemble(
         self,
@@ -42,6 +72,8 @@ class ContextAssembler:
         results: list[SearchResult],
         intent: str | None = None,
         assembly_mode: str = "greedy",
+        *,
+        query_embedding: list[float] | None = None,
     ) -> RetrievedContext:
         """
         Pack results into context within the token budget.
@@ -53,7 +85,13 @@ class ContextAssembler:
                                        where breadth matters more than depth.
 
         `intent` adds a structured preamble so the LLM understands the answer shape.
+
+        `query_embedding` is an embedding the caller ALREADY computed. It is only
+        forwarded to the compressor (which uses it to score already-stored
+        sub-chunk vectors); assembly never computes one itself, so no code path
+        here can trigger an embedding or network call.
         """
+        self.last_compression_stats = None
         if not results:
             return RetrievedContext(
                 query=query,
@@ -62,12 +100,22 @@ class ContextAssembler:
                 total_tokens=0,
             )
 
+        # `eligible` is the ordered candidate pool the pack considered — for
+        # breadth-first that is the max_per_file-truncated list, so compression
+        # inherits that cap instead of quietly reopening it.
         if assembly_mode == "breadth_first":
-            selected = self._pack_breadth_first(results)
+            eligible = self._breadth_first_candidates(results)
+            selected = self._pack_greedy(eligible)
         elif self.per_source_budget:
+            eligible = results
             selected = self._pack_proportional(results)
         else:
+            eligible = results
             selected = self._pack_greedy(results)
+
+        compressed: dict[int, CompressionResult] = {}
+        if self._compression_active:
+            selected, compressed = self._pack_compressed(query, eligible, selected, query_embedding)
 
         source_counts: dict[str, int] = defaultdict(int)
         tokens_used = 0
@@ -75,7 +123,7 @@ class ContextAssembler:
             source_counts[r.source] += 1
             tokens_used += r.chunk.token_count
 
-        context_text = self._format_context(selected, intent=intent)
+        context_text = self._format_context(selected, intent=intent, compressed=compressed)
 
         return RetrievedContext(
             query=query,
@@ -161,11 +209,27 @@ class ContextAssembler:
         """
         Prefer breadth (many files) over depth (many symbols per file).
 
-        Groups results by file, orders files by their best symbol score,
-        then takes up to max_per_file symbols from each file within the budget.
-        Ensures dependency_map and blast_radius queries surface at least one
-        representative symbol from every relevant file rather than exhausting
-        the token budget on a single file.
+        Greedy-pack over the breadth-first candidate ordering — identical to the
+        prior inline implementation, which was itself an accumulate-if-fits scan
+        over exactly that ordering.
+        """
+        return self._pack_greedy(self._breadth_first_candidates(results, max_per_file))
+
+    def _breadth_first_candidates(
+        self,
+        results: list[SearchResult],
+        max_per_file: int = 2,
+    ) -> list[SearchResult]:
+        """
+        The breadth-first candidate ordering, budget-independent.
+
+        Groups results by file, orders files by their best symbol score, then
+        takes up to max_per_file symbols from each file. Ensures dependency_map
+        and blast_radius queries surface at least one representative symbol from
+        every relevant file rather than exhausting the budget on a single file.
+
+        Returned separately from packing so compression can reuse the SAME
+        truncated pool — max_per_file stays enforced through wave 2.
         """
         # Group by file, preserve best-score ordering across files
         file_groups: dict[str, list[SearchResult]] = defaultdict(list)
@@ -179,17 +243,57 @@ class ContextAssembler:
             reverse=True,
         )
 
-        selected: list[SearchResult] = []
-        tokens_used = 0
+        candidates: list[SearchResult] = []
         for _file_path, file_results in sorted_files:
-            top_for_file = sorted(file_results, key=lambda r: r.score, reverse=True)[:max_per_file]
-            for result in top_for_file:
-                if tokens_used + result.chunk.token_count <= self.token_budget:
-                    selected.append(result)
-                    tokens_used += result.chunk.token_count
-        return selected
+            candidates.extend(
+                sorted(file_results, key=lambda r: r.score, reverse=True)[:max_per_file]
+            )
+        return candidates
 
-    def _format_context(self, results: list[SearchResult], intent: str | None = None) -> str:
+    def _pack_compressed(
+        self,
+        query: str,
+        eligible: list[SearchResult],
+        wave1: list[SearchResult],
+        query_embedding: list[float] | None,
+    ) -> tuple[list[SearchResult], dict[int, CompressionResult]]:
+        """
+        Wave 2: re-offer the candidates wave 1 could not fit, compressed.
+
+        Result-lossless — the output is always a superset of `wave1`, so no
+        result the uncompressed pack would have kept is ever displaced. Any
+        failure degrades to the uncompressed selection with a warning and a
+        trace note (never raises, never silently worsens).
+        """
+        assert self.compressor is not None  # guarded by _compression_active
+        from trelix.retrieval.context_compression import pack_compressed
+
+        try:
+            selected, compressed, stats = pack_compressed(
+                query=query,
+                eligible=eligible,
+                wave1=wave1,
+                token_budget=self.token_budget,
+                compressor=self.compressor,
+                target_ratio=self.compression_ratio,
+                min_tokens=self.compression_min_tokens,
+                query_embedding=query_embedding,
+            )
+        except Exception as exc:  # noqa: BLE001 — graceful degradation contract
+            logger.warning("Context compression failed (%s); packing uncompressed", exc)
+            self.last_compression_stats = {"error": str(exc), "wave1_kept": len(wave1)}
+            return wave1, {}
+        stats["ratio"] = self.compression_ratio
+        stats["min_tokens"] = self.compression_min_tokens
+        self.last_compression_stats = stats
+        return selected, compressed
+
+    def _format_context(
+        self,
+        results: list[SearchResult],
+        intent: str | None = None,
+        compressed: dict[int, CompressionResult] | None = None,
+    ) -> str:
         """
         Format results into a clean, LLM-readable context block.
 
@@ -201,6 +305,10 @@ class ContextAssembler:
                 ...
 
         With intent preamble prepended for structured query types.
+
+        A result in `compressed` was only partially kept, so it is rendered as
+        one truthful line-range block PER kept span instead of a single header
+        that would claim lines the text no longer contains.
         """
         preamble = self._make_preamble(results, intent)
 
@@ -214,6 +322,12 @@ class ContextAssembler:
         for file_path, file_results in by_file.items():
             blocks.append(f"=== {file_path} ===\n")
             for r in sorted(file_results, key=lambda x: x.symbol.line_start):
+                cresult = compressed.get(r.chunk.symbol_id) if compressed else None
+                if cresult is not None:
+                    from trelix.retrieval.context_compression import format_compressed_blocks
+
+                    blocks.append(f"{format_compressed_blocks(r, cresult)}\n")
+                    continue
                 header = (
                     f"[Lines {r.symbol.line_start}-{r.symbol.line_end}] {r.symbol.qualified_name}"
                 )

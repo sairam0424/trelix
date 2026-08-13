@@ -392,7 +392,80 @@ class RetrievalConfig(BaseSettings):
     cohere_endpoint: str | None = Field(default=None, alias="COHERE_ENDPOINT")
     cohere_rerank_model: str = Field(default="Cohere-rerank-v4.0-pro", alias="COHERE_MODEL_RERANK")
 
-    context_token_budget: int = 12_000
+    context_token_budget: int | None = 12_000
+    """
+    Token budget for context assembly.
+
+    When set to an explicit int (default 12000), uses that fixed budget —
+    preserves exact v2.12.0 behavior.
+
+    When set to None, derives budget automatically from the LLM's context window:
+      effective_budget = window_size * context_window_fraction
+    For example:
+      - gpt-4o (128k window) × 0.5 = 64,000 tokens
+      - claude-sonnet-4 (200k window) × 0.5 = 100,000 tokens
+      - gemini-2.5-pro (1M window) × 0.5 = 500,000 tokens
+
+    Env: TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null (or omit for default 12000)
+    """
+
+    @field_validator("context_token_budget", mode="before")
+    @classmethod
+    def _blank_budget_means_auto(cls, v: object) -> object:
+        """Make the documented ``=null`` env route actually work.
+
+        Env vars arrive as strings and an ``int | None`` field cannot coerce
+        ``"null"``/``"none"``/``""`` to ``None``, so the documented setting above
+        raised ValidationError. Since the whole model-aware budget path is gated
+        on ``context_token_budget is None``, that made v3.0's auto-derived budget
+        reachable only from the Python API — never from env or the CLI.
+        """
+        if isinstance(v, str) and v.strip().lower() in {"", "null", "none", "auto", "~"}:
+            return None
+        return v
+
+    context_window_fraction: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=0.9,
+        alias="TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION",
+    )
+    """
+    Fraction of model context window to use when context_token_budget=None.
+
+    Default 0.5 leaves half the window for the LLM's response. Conservative
+    values (0.3-0.4) prevent context overflow; aggressive values (0.7-0.8)
+    maximize retrieval recall at the risk of hitting the window ceiling.
+
+    Only applies when context_token_budget is None — ignored when an explicit
+    int budget is set.
+
+    Env: TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION=0.5
+    """
+
+    scale_top_k_to_budget: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET",
+    )
+    """
+    Scale retrieval ceilings (top_k_vector, rerank_top_n) when auto-deriving budget.
+
+    When True and context_token_budget=None, top_k_vector and rerank_top_n are
+    scaled proportionally to the effective budget:
+      scale_factor = effective_budget / 12000
+      top_k_vector = top_k_vector * scale_factor
+      rerank_top_n = rerank_top_n * scale_factor
+
+    When False (default), top_k values remain unchanged — preserves v2.12.0
+    behavior where rerank_top_n=15 caps candidates BEFORE budget is applied.
+
+    Example: gpt-4o (64k effective budget) with top_k_vector=20:
+      scale_factor = 64000 / 12000 = 5.33
+      scaled top_k_vector = 20 * 5.33 = ~107
+
+    Env: TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET=false
+    """
+
     synthesis_max_tokens: int = 12_000
 
     # Split context_token_budget across source legs (vector/bm25/grep/...)
@@ -609,6 +682,51 @@ class RetrievalConfig(BaseSettings):
         ge=1,
         alias="TRELIX_RETRIEVAL_SUB_CHUNK_TOP_K",
     )
+
+    # ── Context compression (SeleCom, off by default) ─────────────────────────
+    # Lets a result that does NOT fit the packing budget be INCLUDED in a
+    # shrunk, citation-faithful form instead of dropped. Strictly additive:
+    # False reproduces today's assembled context byte-for-byte, because the
+    # assembler is only handed a compressor when this is True.
+    compression_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_COMPRESSION",
+    )
+    compression_provider: Literal["extractive"] = Field(
+        default="extractive",
+        alias="TRELIX_RETRIEVAL_COMPRESSION_PROVIDER",
+    )
+    """
+    Compression backend. "extractive" is zero-inference (it reuses already-stored
+    sub-chunk vectors, or a lexical splitter) — it never makes an embedding, API,
+    or network call. Abstractive/LLM providers are reserved for v3.4.
+    """
+
+    compression_target_ratio: float = Field(
+        default=0.45,
+        ge=0.1,
+        le=1.0,
+        alias="TRELIX_RETRIEVAL_COMPRESSION_RATIO",
+    )
+    """
+    Fallback target fraction of a body's original tokens to keep.
+
+    Used only when the intent is unknown/absent — a known intent takes its ratio
+    from RetrievalStrategy.compression_ratio (see retrieval/planner/models.py),
+    which is per-intent and individually overridable via
+    TRELIX_RETRIEVAL_COMPRESSION_RATIO_<INTENT>. 1.0 means "no compression".
+    """
+
+    compression_min_tokens: int = Field(
+        default=120,
+        ge=0,
+        alias="TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS",
+    )
+    """
+    Bodies below this token count are never compressed — the elision markers and
+    per-span headers would cost more than the shrink saves. Such a result is
+    handled exactly as today (kept if it fits, skipped if it doesn't).
+    """
 
     # ── Multi-repo federated search ───────────────────────────────────────────
     federation_enabled: bool = Field(
@@ -874,6 +992,10 @@ class LLMConfig(BaseSettings):
     temperature: float = 0.0
     timeout: float = 30.0
 
+    # ── Extended thinking (Anthropic only) ────────────────────────────────────
+    thinking_enabled: bool = Field(default=False, alias="TRELIX_LLM_THINKING_ENABLED")
+    thinking_budget_tokens: int = Field(default=4096, alias="TRELIX_LLM_THINKING_BUDGET_TOKENS")
+
 
 # ---------------------------------------------------------------------------
 # Indexer pipeline config
@@ -1132,3 +1254,80 @@ class IndexConfig(BaseSettings):
         if not gitignore.exists():
             gitignore.write_text("*\n", encoding="utf-8")
         return p
+
+
+# ---------------------------------------------------------------------------
+# Audit config (API-layer, standalone — like _ApiAuthSettings in api/app.py)
+# ---------------------------------------------------------------------------
+
+
+class AuditConfig(BaseSettings):
+    """Tamper-evident request auditing — additive and OFF by default.
+
+    Standalone BaseSettings (not nested on IndexConfig) because auditing is an
+    API-layer concern loaded once in ``create_app()``, mirroring the
+    ``_ApiAuthSettings`` precedent. ``enabled=False`` (the default) means the
+    audit middleware is never registered and no ``audit.db`` is ever created —
+    byte-identical to pre-audit behavior.
+
+    The audit trail lives in its OWN ``audit.db``, deliberately separate from
+    the disposable index DB (which is rebuilt at will) so the trail survives
+    re-indexing. When ``db_path`` is unset it defaults to
+    ``<cwd>/.trelix/audit.db``.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_AUDIT_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    enabled: bool = False
+    db_path: str | None = None
+    log_queries: bool = False
+    fail_closed: bool = False
+    retention_days: int = 365
+
+    @property
+    def resolved_db_path(self) -> Path:
+        """Absolute-or-relative path to the audit DB, defaulting under .trelix/."""
+        if self.db_path:
+            return Path(self.db_path)
+        return Path.cwd() / ".trelix" / "audit.db"
+
+
+# ---------------------------------------------------------------------------
+# SSO / OIDC config (API-layer, standalone — like _ApiAuthSettings in app.py)
+# ---------------------------------------------------------------------------
+
+
+class SSOConfig(BaseSettings):
+    """OIDC single-sign-on — additive and OFF by default.
+
+    Standalone BaseSettings (not nested on IndexConfig) because SSO is an
+    API-layer concern loaded once in ``create_app()``, mirroring the
+    ``_ApiAuthSettings`` / ``AuditConfig`` precedent. ``enabled=False`` (the
+    default) means no :class:`~trelix.auth.oidc.OidcVerifier` is ever built and
+    the API behaves byte-identically to today (static-token / open modes).
+
+    ``algorithms`` is an asymmetric-only allowlist — the verifier rejects
+    ``alg: none`` and every ``HS*`` variant, so a symmetric algorithm can never
+    be configured here in practice.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_OIDC_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    enabled: bool = False
+    issuer: str = ""
+    audience: str = ""
+    algorithms: list[str] = Field(default_factory=lambda: ["RS256", "ES256"])
+    jwks_uri: str = ""
+    jwks_ttl_seconds: int = 3600

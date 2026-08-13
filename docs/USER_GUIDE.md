@@ -1,4 +1,4 @@
-# trelix User Guide — v2.12.0
+# trelix User Guide — v3.0.0
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -190,7 +190,7 @@ The practical meaning: a result that appears at rank 3 in the vector leg AND ran
 
 ## 4. The Retrieval Pipeline — All 7 Legs
 
-trelix v2.12.0 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
+trelix v3.0.0 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
 
 ```
 User Query
@@ -369,7 +369,7 @@ trelix index ./my-repo
 You will see output like this:
 
 ```
-trelix v2.12.0 — indexing ./my-repo
+trelix v3.0.0 — indexing ./my-repo
 ✓ FileWalker: 243 files found (.gitignore applied)
   Phase 1/4 — Parse
     [████████████████████] 243/243 files  3.2s
@@ -468,7 +468,7 @@ trelix stats ./my-repo
 trelix stats — ./my-repo
 
   Index:        ./my-repo/.trelix/index.db
-  Version:      2.12.0
+  Version:      3.0.0
   Last indexed: 2026-07-05 10:32:14 UTC
 
   Files:        243
@@ -509,13 +509,25 @@ trelix search ./my-repo "<query>"
 - You are doing exploratory navigation: "what files are involved in X?"
 - You want to see raw retrieval quality before asking a full question.
 
-**Key options:**
+**Key options:** `trelix search` takes exactly two flags — `--provider` and `--json`.
+Everything else is tuned through environment variables:
+
 ```bash
-trelix search ./my-repo "JWT validation" --top-k 20      # return 20 results (default: 10)
-trelix search ./my-repo "auth" --lang python             # filter by language
-trelix search ./my-repo "database" --file src/db/        # filter by file path prefix
-trelix search ./my-repo "login" --rerank cohere          # apply Cohere reranker
+# Only two real flags
+trelix search ./my-repo "JWT validation" --provider voyage
+trelix search ./my-repo "JWT validation" --json
+
+# Result-count tuning is env-only (no --top-k flag exists)
+TRELIX_RETRIEVAL_TOP_K_VECTOR=40 trelix search ./my-repo "JWT validation"
+
+# Reranking: `search` disables the reranker internally, so these apply to `ask`
+# and to the Python/MCP APIs, not to `trelix search`.
+TRELIX_RETRIEVAL_RERANK_PROVIDER=plaid trelix ask ./my-repo "how is JWT validated?"
 ```
+
+There is no language filter and no path-prefix filter on the CLI. Path filtering is
+reachable only from the Python API, by setting `SubQuery.path_filter` on a hand-built
+`QueryPlan` and passing it as `Retriever.retrieve(query, plan=my_plan)`.
 
 ### `trelix ask` — Retrieval + LLM synthesis
 
@@ -535,10 +547,22 @@ trelix ask ./my-repo "<question>"
 
 **Requires:** An LLM API key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY`, etc.) or a local Ollama instance via LiteLLM.
 
-**Key options:**
+**Key options:** `trelix ask` takes three flags — `--provider`, `--agentic`, and
+`--session`. Streaming is the built-in behaviour whenever an LLM is available; there is
+no `--stream`/`--no-stream` flag to turn it on or off. Retrieval breadth and model
+choice are environment variables:
+
 ```bash
-trelix ask ./my-repo "how does auth work?" --stream          # explicit streaming flag
-trelix ask ./my-repo "explain the request lifecycle" --top-k 30  # more context
+trelix ask ./my-repo "how does auth work?" --provider voyage         # embedding provider
+trelix ask ./my-repo "how does auth work?" --agentic                 # multi-turn ReAct loop
+
+# More context (no --top-k flag exists)
+TRELIX_RETRIEVAL_TOP_K_VECTOR=40 TRELIX_RETRIEVAL_RERANK_TOP_N=30 \
+  trelix ask ./my-repo "explain the request lifecycle"
+
+# Pick the synthesis model (no --model flag exists)
+TRELIX_LLM_MODEL=gpt-4o-mini trelix ask ./my-repo "explain the request lifecycle"
+
 TRELIX_RETRIEVAL_FLARE=true trelix ask ./my-repo "complex question"  # enable FLARE re-retrieval
 ```
 
@@ -571,41 +595,54 @@ trelix agent sessions clear ./my-repo <id>     # delete a session
 
 Agentic mode is also available via the MCP `ask_agent` tool — see [MCP_GUIDE.md](MCP_GUIDE.md) and [FEDERATION_GUIDE.md](FEDERATION_GUIDE.md).
 
-### `trelix query` — Structured JSON output
+### `trelix query` — Retrieval with a result-count summary
 
 ```bash
-trelix query ./my-repo "<query>" --json
+trelix query ./my-repo "<query>"
 ```
 
-**What it does:** Runs the same retrieval pipeline as `trelix search` but outputs JSON to stdout instead of a Rich table. Useful for scripting, CI pipelines, or feeding results into other tools.
+**What it does:** Runs the same retrieval pipeline as `trelix search`, then prints a
+banner with the query, a one-line summary (`Retrieved N results (T tokens) in Xs`), and
+a Rich table of file / symbol / lines / score. No LLM synthesis. `--provider` is its
+only flag — **`trelix query` has no `--json` flag.**
 
-**Output:**
+**When to use it:** interactive lookups where you want the retrieved-result count and
+token total alongside the hits.
+
+### Structured JSON output — use `trelix search --json`
+
+JSON output comes from `trelix search`, which is the command that has the `--json` flag:
+
+```bash
+trelix search ./my-repo "JWT validation" --json
+```
+
+**Output** (this is the complete schema — four fields per result):
 ```json
 {
-  "query": "JWT validation",
+  "status": "ok",
   "results": [
     {
-      "score": 0.924,
       "file": "src/auth/jwt.py",
       "symbol": "JWTValidator.validate",
-      "qualified_name": "src.auth.jwt.JWTValidator.validate",
-      "line_start": 18,
-      "line_end": 44,
-      "language": "python",
-      "source": "vector+bm25",
-      "body": "def validate(self, token: str) -> dict:\n    ..."
+      "lines": "18-44",
+      "score": 0.9241
     }
-  ],
-  "total": 10,
-  "latency_ms": 43.2,
-  "legs_used": ["vector", "bm25", "grep"]
+  ]
 }
 ```
 
 **When to use it:**
 - Scripting: feeding trelix output into a CI step, a report generator, or a custom tool.
 - Building integrations: connecting trelix to your own dashboard or notification system.
-- Debugging the retrieval pipeline: seeing exactly which legs contributed to which results.
+
+If you need richer per-result data than these four fields — bodies, languages,
+qualified names, which legs fired, latency — use the Python API
+(`Retriever.retrieve()` returns a `RetrievedContext` with all of it) or the REST
+`/search` endpoint. The CLI's `--json` payload is deliberately minimal.
+
+The other commands that support `--json` are `graph`, `taint`, `review`, and
+`search-all`. No other command has it.
 
 ---
 
@@ -686,7 +723,7 @@ The source code body of the symbol. In JSON output (`--json` flag), the full bod
 
 **Step 1 — Find direct callers:**
 ```bash
-trelix search ./my-repo "UserRepository.get_by_email callers" --top-k 20
+TRELIX_RETRIEVAL_TOP_K_VECTOR=20 trelix search ./my-repo "UserRepository.get_by_email callers"
 ```
 
 Look at results with `source` containing `"grep"` or `"bm25"` — these are exact matches and likely direct call sites.
@@ -746,7 +783,7 @@ trelix ask ./my-repo "what are the main modules and what does each one do?"
 
 If you have an LLM API key configured, this gives you a module-by-module summary. Without an LLM, use:
 ```bash
-trelix search ./my-repo "main module architecture overview" --top-k 15
+trelix search ./my-repo "main module architecture overview"
 ```
 
 This surfaces the top-level entry points and key organizational units.
@@ -760,13 +797,13 @@ The multi-step query planner decomposes this into: HTTP handler lookup → servi
 
 **Minutes 6–8 — Understand the data model:**
 ```bash
-trelix search ./my-repo "User model schema database" --top-k 10
+trelix search ./my-repo "User model schema database"
 trelix ask ./my-repo "what are the main data models and how do they relate to each other?"
 ```
 
 **Minutes 9–10 — Find your entry point for the task:**
 ```bash
-trelix search ./my-repo "payment processing" --top-k 10
+trelix search ./my-repo "payment processing"
 trelix ask ./my-repo "if I need to add a new payment provider, which files would I need to change?"
 ```
 
@@ -855,18 +892,28 @@ trelix index ./service-c
 # ... repeat for all repos
 ```
 
-**Step 2 — Register a multi-repo federation:**
+**Step 2 — Register each repo under an alias:**
 
-Create a `trelix.registry.json` in your workspace root:
+```bash
+trelix federation add auth-service         ./service-a
+trelix federation add billing-service      ./service-b
+trelix federation add user-service         ./service-c
+trelix federation add notification-service ./service-d
+trelix federation add api-gateway          ./service-e
+trelix federation add analytics-service    ./service-f --weight 0.8   # de-prioritise a repo
+
+trelix federation list
+```
+
+This writes `~/.config/trelix/repos.json` (override the location with `--config`, or
+place a `.trelix/federation.json` inside a repo). The on-disk format keys each entry by
+`alias`, not `name`:
+
 ```json
 {
   "repos": [
-    {"path": "./service-a", "name": "auth-service"},
-    {"path": "./service-b", "name": "billing-service"},
-    {"path": "./service-c", "name": "user-service"},
-    {"path": "./service-d", "name": "notification-service"},
-    {"path": "./service-e", "name": "api-gateway"},
-    {"path": "./service-f", "name": "analytics-service"}
+    {"alias": "auth-service", "path": "/abs/path/to/service-a", "weight": 1.0},
+    {"alias": "billing-service", "path": "/abs/path/to/service-b", "weight": 1.0}
   ]
 }
 ```
@@ -874,17 +921,28 @@ Create a `trelix.registry.json` in your workspace root:
 Federation is also available via MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) — see [MCP_GUIDE.md](MCP_GUIDE.md) and [FEDERATION_GUIDE.md](FEDERATION_GUIDE.md) for the full interface.
 
 **Step 3 — Query across all repos simultaneously:**
+
+Federated search is a **separate command**, `trelix search-all` — there is no
+`--federated` flag on `search` or `ask`:
+
 ```bash
-trelix search . "subscription management" --federated
-trelix ask . "which service handles user subscription upgrades and downgrades?" --federated
+trelix search-all "subscription management"
+trelix search-all "subscription management" --k 20 --json
 ```
 
-The `FederatedRetriever` fans out the query to all registered repos simultaneously (parallel), then merges and re-ranks the results. A TTL cache (120 seconds by default) ensures that repeated queries in the same debugging session return instantly without re-querying all repos.
+`search-all` takes only a query (no repo argument) plus `--config`, `--k`, and `--json`.
+The `FederatedRetriever` behind it fans the query out to all registered repos in
+parallel, then merges and re-ranks the results. A TTL cache (120 seconds by default)
+makes repeated queries in the same debugging session return instantly.
 
 **Cache stats during a debugging session:**
 ```python
-from trelix.retrieval.federated import FederatedRetriever
-retriever = FederatedRetriever.from_registry("trelix.registry.json")
+from trelix.federation.registry import RepoRegistry
+from trelix.federation.retriever import FederatedRetriever
+
+registry = RepoRegistry.load()          # ~/.config/trelix/repos.json
+retriever = FederatedRetriever(registry, max_workers=4, cache_ttl=120.0)
+retriever.retrieve("subscription management", k=10)
 print(retriever.cache_stats())
 # {'hits': 47, 'misses': 6, 'size': 6}  ← ~88% cache hit rate
 ```
@@ -1218,8 +1276,15 @@ Telemetry rows are written to `./my-repo/.trelix/index.db` in the `query_telemet
 
 ```bash
 trelix telemetry ./my-repo             # last 20 queries
-trelix telemetry ./my-repo --limit 100 # last 100 queries
-trelix telemetry ./my-repo --json      # JSON output for dashboards
+trelix telemetry ./my-repo --limit 100 # last 100 queries (-n is the short form)
+```
+
+`--limit`/`-n` is the only flag `telemetry` has — there is no `--json`, `--since`, or
+`--query-filter`. For dashboards, read the `query_telemetry` table directly:
+
+```bash
+sqlite3 -json ./my-repo/.trelix/index.db \
+  "SELECT * FROM query_telemetry ORDER BY id DESC LIMIT 100;"
 ```
 
 Example output:
@@ -1450,9 +1515,6 @@ while cursor is not None:
 
 **If significantly slower:**
 ```bash
-# Use label_prop algorithm (O(n) vs O(n log n) for Louvain)
-TRELIX_GRAPH_COMMUNITY_ALGORITHM=label_prop trelix graph ./my-repo
-
 # Skip concept extraction (adds one LLM call per batch)
 trelix graph ./my-repo  # omit --concepts flag
 
@@ -1473,8 +1535,9 @@ trelix graph ./my-repo &
 # Reduce context budget (default: 12000 tokens)
 TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=4000 trelix ask ./my-repo "question"
 
-# Reduce top-k results
-trelix ask ./my-repo "question" --top-k 5
+# Reduce retrieval breadth (env vars — there is no --top-k flag)
+TRELIX_RETRIEVAL_TOP_K_VECTOR=5 TRELIX_RETRIEVAL_RERANK_TOP_N=5 \
+  trelix ask ./my-repo "question"
 
 # Use a faster/cheaper LLM for synthesis
 TRELIX_LLM_MODEL=gpt-4o-mini trelix ask ./my-repo "question"
@@ -1487,102 +1550,91 @@ TRELIX_LLM_PROVIDER=anthropic TRELIX_LLM_MODEL=claude-haiku-4-5 trelix ask ./my-
 
 ## 13. CLI Flags and Configuration Reference
 
-### Global flags (apply to all commands)
+**[docs/CLI_REFERENCE.md](CLI_REFERENCE.md) is the authoritative, per-command flag
+reference.** It is generated against the real Typer application and covers all 30
+commands and subcommands with synopsis, options, examples, and notes. Read it there
+rather than here — a second full flag table in this guide would only drift out of date.
+
+Three things are worth stating plainly before you go looking for a flag:
+
+**1. The repo is a positional argument, never a flag.** Every command that operates on a
+repository takes it as the first positional argument. There is no `--repo` anywhere in
+trelix.
 
 ```bash
-trelix <command> ./repo --help          # full help for any command
-trelix <command> ./repo --provider local|openai|azure|voyage|bge-code|nomic-code
-trelix <command> ./repo --top-k N       # return N results (default: 10)
-trelix <command> ./repo --json          # output as JSON
-trelix <command> ./repo --verbose       # verbose logging
+trelix index  ./my-repo
+trelix search ./my-repo "JWT validation"
+trelix ask    ./my-repo "how does auth work?"
 ```
 
-### `trelix index` flags
+**2. Most tuning is done with environment variables, not flags — that is the design.**
+trelix's configuration surface is [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)
+(see [CONFIGURATION.md](CONFIGURATION.md)), so knobs are exposed as
+`TRELIX_<SECTION>_<FIELD>` variables rather than being duplicated as CLI flags. The CLI
+flag set is deliberately small. If you are hunting for a flag to change retrieval
+breadth, the reranker, the LLM model, worker counts, or ignore rules, it is an
+environment variable:
+
+| What you want to change | How to do it |
+|---|---|
+| Number of results retrieved | `TRELIX_RETRIEVAL_TOP_K_VECTOR`, `TRELIX_RETRIEVAL_TOP_K_BM25`, `TRELIX_RETRIEVAL_RERANK_TOP_N` |
+| Reranker on/off and which one | `TRELIX_RETRIEVAL_RERANK=false`, `TRELIX_RETRIEVAL_RERANK_PROVIDER=cohere\|cross_encoder\|plaid\|xtr` |
+| Synthesis model / provider | `TRELIX_LLM_MODEL`, `TRELIX_LLM_PROVIDER`, `TRELIX_LLM_MAX_TOKENS`, `TRELIX_LLM_TEMPERATURE` |
+| Context budget sent to the LLM | `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` |
+| Parallel parse workers at index time | `TRELIX_PARSE_WORKERS` (default `4`) |
+| Skip call-graph / import extraction | `TRELIX_PARSER_EXTRACT_CALLS=false`, `TRELIX_PARSER_EXTRACT_IMPORTS=false` |
+| Which files get indexed | `.gitignore` (honoured by default) plus `TRELIX_WALKER_EXTRA_IGNORE_DIRS`, `TRELIX_WALKER_EXTRA_IGNORE_FILENAMES`, `TRELIX_WALKER_EXTRA_IGNORE_EXTENSIONS`, `TRELIX_WALKER_MAX_FILE_SIZE_BYTES`, `TRELIX_WALKER_RESPECT_GITIGNORE` |
+| Embedding provider | `--provider` flag, or `TRELIX_EMBEDDER_PROVIDER` |
+| Force a full re-index | no flag — delete the index and re-run: `rm -rf ./my-repo/.trelix/index.db && trelix index ./my-repo` |
+
+All list-valued walker variables take a JSON array, e.g.
+`TRELIX_WALKER_EXTRA_IGNORE_DIRS='["fixtures","generated"]'`. Note that these replace the
+built-in default list rather than appending to it.
+
+**3. `--json` exists on five commands only.** `search`, `graph`, `taint`, `review`, and
+`search-all`. It is *not* available on `index`, `ask`, `query`, `stats`, `telemetry`,
+`call-graph`, or anything else. `audit export` emits NDJSON and is controlled by
+`--format`, not `--json`.
+
+### Global flags
+
+Only two flags are processed before a subcommand:
 
 ```bash
-trelix index ./repo                     # index entire repo
-trelix index ./repo --provider voyage   # use specific embedding provider
-trelix index ./repo --workers 8         # parallel parse workers (default: 4)
-trelix index ./repo --no-call-graph     # skip call graph extraction (faster)
-trelix index ./repo --force             # re-index all files (ignore SHA-256 cache)
-trelix index ./repo --include "*.py"    # index only Python files
-trelix index ./repo --exclude "tests/"  # skip tests directory
+trelix --version        # or -V; prints e.g. "trelix 3.0.0"
+trelix --help           # top-level help
+trelix <command> --help  # per-command help — the ground truth for any flag question
 ```
 
-### `trelix search` flags
+`--help` is the fastest way to settle a flag question; it is generated from the code.
 
-```bash
-trelix search ./repo "query"
-  --top-k N          # number of results (default: 10)
-  --lang python       # filter by language
-  --file src/auth/    # filter by file path prefix
-  --rerank cohere     # apply Cohere reranker
-  --rerank plaid      # apply PLAID ColBERT reranker
-  --json              # JSON output
-  --no-graph          # skip graph expansion
-  --legs vector,bm25  # use only specified legs (comma-separated)
-```
+### Flags that do not exist
 
-### `trelix ask` flags
+These appeared in earlier revisions of this guide and were never implemented. Listed so
+that copy-pasted commands fail loudly rather than silently:
 
-```bash
-trelix ask ./repo "question"
-  --top-k N           # number of retrieval results (default: 10)
-  --stream            # force streaming output (default: true)
-  --no-stream         # buffer complete answer, print at end
-  --provider bedrock  # override LLM provider for this query
-  --model gpt-4o-mini # override LLM model for this query
-  --json              # return JSON with answer + sources
-```
+| Not a flag | What to do instead |
+|---|---|
+| `--top-k` | `TRELIX_RETRIEVAL_TOP_K_VECTOR` / `TRELIX_RETRIEVAL_RERANK_TOP_N` |
+| `--rerank` | `TRELIX_RETRIEVAL_RERANK` / `TRELIX_RETRIEVAL_RERANK_PROVIDER` |
+| `--model` (on `ask`) | `TRELIX_LLM_MODEL` |
+| `--workers` (on `index`) | `TRELIX_PARSE_WORKERS` |
+| `--workers`, `--reload` (on `serve`) | nothing — `serve` takes only `--host` and `--port` |
+| `--force`, `--include`, `--exclude`, `--no-call-graph` (on `index`) | see the table above |
+| `--lang`, `--file`, `--no-graph`, `--legs` (on `search`) | no CLI equivalent; use the Python API |
+| `--stream` / `--no-stream` (on `ask`) | nothing — streaming is the built-in behaviour |
+| `--federated` (on `search` / `ask`) | the separate `trelix search-all` command |
+| `--algorithm` (on `graph`) | nothing — `graph` has `--visualize`, `--output`, `--concepts`, `--json` |
+| `--depth` (on `call-graph`) | `--direction callers\|callees\|importers\|all` |
+| `--token` (on `review`) | the `GITHUB_TOKEN` environment variable |
+| `--debounce`, `--graph` (on `watch`) | nothing — `watch` takes only `--provider`; there is no debounce flag *or* env var |
+| `--since`, `--query-filter`, `--json` (on `telemetry`) | `--limit`/`-n`, or query the `query_telemetry` table with `sqlite3` |
+| `--repo` (anywhere) | the repo is positional |
+| `--embedder` | `--provider` |
+| `trelix-mcp --version` / `--cache-dir` | `trelix-mcp` parses no arguments at all; use `python -c "import trelix_mcp; print(trelix_mcp.__version__)"` |
 
-### `trelix graph` flags
-
-```bash
-trelix graph ./repo
-  --visualize         # export Pyvis HTML to .trelix/graph.html
-  --json              # machine-readable stats to stdout
-  --concepts          # run LLM concept extraction (adds latency)
-  --algorithm louvain|girvan_newman|label_prop  # community detection algorithm
-```
-
-### `trelix review` flags
-
-```bash
-trelix review --pr owner/repo#N
-  --post-comments     # post findings as GitHub review comment
-  --token TOKEN       # GitHub token (overrides GITHUB_TOKEN env var)
-  --json              # JSON output instead of terminal table
-  --top-k N           # blast radius depth (default: 10)
-```
-
-### `trelix serve` flags
-
-```bash
-trelix serve ./repo
-  --port 8765         # HTTP port (default: 8765)
-  --host 0.0.0.0      # bind address (default: 127.0.0.1)
-  --workers 4         # uvicorn workers
-  --reload            # auto-reload on code changes (dev mode)
-```
-
-### `trelix watch` flags
-
-```bash
-trelix watch ./repo
-  --provider openai   # embedding provider for incremental updates
-  --debounce 500      # debounce ms (default: 500)
-  --graph             # also maintain Code Property Graph in watch mode
-```
-
-### `trelix telemetry` flags
-
-```bash
-trelix telemetry ./repo
-  --limit N           # number of rows (default: 20)
-  --json              # JSON output
-  --since "2026-07-01" # filter by date
-  --query-filter "auth" # filter by query text substring
-```
+There is also no `trelix config`, `trelix doctor`, `trelix mcp`, or `trelix federation
+stats` command. `trelix --help` lists the real 23 top-level commands.
 
 ### Key environment variables
 
@@ -1593,14 +1645,18 @@ trelix telemetry ./repo
 | `TRELIX_LLM_MODEL` | `gpt-4o` | LLM model override |
 | `TRELIX_STORE_BACKEND` | `sqlite` | Vector store: `sqlite`, `qdrant`, `lance` |
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel parse threads |
+| `TRELIX_RETRIEVAL_TOP_K_VECTOR` | `20` | Candidates from the vector leg |
+| `TRELIX_RETRIEVAL_TOP_K_BM25` | `20` | Candidates from the BM25 leg |
+| `TRELIX_RETRIEVAL_RERANK` | `true` | Reranking on/off |
+| `TRELIX_RETRIEVAL_RERANK_TOP_N` | `15` | Results kept after reranking |
 | `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` | `12000` | Max context tokens to LLM |
 | `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` | `false` | Enable CodeGraph BFS leg |
-| `TRELIX_GRAPH_SEARCH_DEPTH` | `2` | BFS depth from seed nodes |
+| `TRELIX_RETRIEVAL_GRAPH_SEARCH_DEPTH` | `2` | BFS depth from seed nodes |
 | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable file-summary retrieval leg |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM summaries at index time |
 | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Enable HyDE query expansion |
 | `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE confidence-gated re-retrieval |
-| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `2` | Max FLARE re-retrieval loops |
+| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Total FLARE synthesis-call budget (min `1`, max `3`) |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Enable PageRank centrality boost |
 | `TRELIX_RETRIEVAL_SPARSE` | `false` | Enable SPLADE-Code sparse leg |
 | `TRELIX_CHUNKER_MULTI_GRANULARITY` | `false` | Enable sub-chunk indexing |
@@ -1608,7 +1664,14 @@ trelix telemetry ./repo
 | `TRELIX_PARSER_DATAFLOW` | `false` | Enable def-use data-flow analysis |
 | `TRELIX_TELEMETRY_ENABLED` | `false` | Enable query telemetry |
 | `TRELIX_CHUNKER_CONTEXTUAL` | `false` | Enable LLM context summaries per chunk |
-| `TRELIX_RETRIEVAL_RERANK_PROVIDER` | — | Reranker: `cohere`, `cross-encoder`, `plaid` |
+| `TRELIX_PARSER_EXTRACT_CALLS` | `true` | Extract call edges at index time |
+| `TRELIX_PARSER_EXTRACT_IMPORTS` | `true` | Extract import edges at index time |
+| `TRELIX_WALKER_RESPECT_GITIGNORE` | `true` | Honour `.gitignore` while walking |
+| `TRELIX_WALKER_EXTRA_IGNORE_DIRS` | *(built-in list)* | JSON array of directory names to skip; **replaces** the default list |
+| `TRELIX_WALKER_EXTRA_IGNORE_FILENAMES` | *(built-in list)* | JSON array of filenames to skip; replaces the default list |
+| `TRELIX_WALKER_EXTRA_IGNORE_EXTENSIONS` | *(built-in list)* | JSON array of extensions to skip; replaces the default list |
+| `TRELIX_WALKER_MAX_FILE_SIZE_BYTES` | `500000` | Skip files larger than this |
+| `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | Reranker: `cohere`, `cross_encoder`, `plaid`, `xtr` (underscore, not hyphen — `cross-encoder` is rejected) |
 
 ---
 
@@ -1649,7 +1712,7 @@ curl http://localhost:8765/health
 ```
 
 ```json
-{"status": "ok", "version": "2.12.0", "repo": "./my-repo"}
+{"status": "ok", "version": "3.0.0", "repo": "./my-repo"}
 ```
 
 ### Index statistics
@@ -2092,6 +2155,26 @@ metrics = harness.run("./eval/golden_synthesis.jsonl")
 print(f"Overall: {metrics['overall']:.3f}")
 ```
 
+---
+
+## What's New in v3.0.0
+
+Everything below is **additive and off by default** — a v2.12.0 setup keeps behaving exactly as it did until you flip a flag. Each item lists the primary switch; the full env-var tables live in [CONFIGURATION.md](CONFIGURATION.md).
+
+- **Extended thinking on synthesis** (`TRELIX_LLM_THINKING_ENABLED=true`, budget `TRELIX_LLM_THINKING_BUDGET_TOKENS`, default `4096`) — lets an Anthropic model reason before it answers, for the "why does this design work?" questions where a one-pass answer is thin. Only the synthesizer opts in: the index-time call sites (per-symbol contextual chunking, per-file summarization) deliberately never do, so enabling it does not inflate indexing cost. Thinking tokens are billed as **output** tokens, and the request is forced to `temperature=1.0`.
+
+- **Model-aware context budgets** — `context_token_budget` still defaults to `12000`, which is byte-for-byte v2.12.0 behavior. Set `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` (`none`/`auto`/empty also work) to derive it from the model's own context window instead: `window × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION` (default `0.5`). Expect little change from the budget alone — `rerank_top_n` and `top_k_vector` still cap candidates first. Set `TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET=true` (default `false`) to scale those ceilings too, which does raise per-query cost.
+
+- **Query-conditioned context compression** (`TRELIX_RETRIEVAL_COMPRESSION=true`) — shrinks retrieved symbol bodies so more results fit the same budget. The default `extractive` provider does **zero query-time inference**. It is result-lossless by construction: a body that still won't fit is included signature-only rather than dropped, and kept spans render as separate `[Lines a-b]` blocks with explicit `# ... N lines elided ...` markers so citations never claim lines the text lacks. Compression is per-intent — `symbol_lookup`, `config_lookup`, `file_overview`, and `project_overview` keep a ratio of `1.0` (off, because those answers *are* the exact text), while `dependency_map` and `blast_radius` compress hardest at `0.30`. Realistic effect on a network-API synthesis path: roughly 30–60% fewer synthesis input tokens and 15–35% lower latency on the compressible intents.
+
+- **Tamper-evident audit logging** (`TRELIX_AUDIT_ENABLED=true`) — records HTTP API requests into a hash-chained, append-only `audit.db` that is deliberately separate from the disposable index DB (default `.trelix/audit.db`), so the trail survives a re-index. Inspect it with `trelix audit list`, prove the chain with `trelix audit verify`, and ship it to a SIEM with `trelix audit export` (NDJSON, so Filebeat/Vector/Fluent Bit can tail it). Two honest limits: it is tamper-**evident**, not tamper-proof (chain and anchor live in the same file), and only the HTTP surface is audited — MCP tool calls and the internal agent loop are not. See [CLI_REFERENCE.md](CLI_REFERENCE.md) for the subcommand flags.
+
+- **OIDC single sign-on** (`TRELIX_OIDC_ENABLED=true`, plus `TRELIX_OIDC_ISSUER` / `TRELIX_OIDC_AUDIENCE` / `TRELIX_OIDC_JWKS_URI`) — the REST API can accept OIDC ID tokens from your identity provider and JIT-provision a principal on first sight. Asymmetric algorithms only (`RS256`, `ES256`); `alg: none` and every `HS*` variant are rejected outright. Identity is the `(sub, iss)` pair, never email, because emails get reassigned. Requires the new extra: `pip install 'trelix[sso]'`. Static-token auth is unchanged, and this is **OIDC only** — SAML is not implemented.
+
+- **VS Code: `@trelix` chat and code lenses** — the extension now ships a `@trelix` chat participant (`/search`, `/explain`, `/impact`) and two actionable lenses above every symbol — `Find similar` and `N dependents` — toggled with `trelix.codeLens.enabled` (default `true`). Lens resolution is lazy, so typing never triggers MCP traffic. See the VS Code Extension section of [MCP_GUIDE.md](MCP_GUIDE.md) for setup, the availability caveat on builds without the chat API, and the shared-session limitation.
+
+---
+
 ## Phase 1–3 Features (v2.7.0)
 
 - **Watch bridge MCP notifications** — file-system watcher now emits real-time MCP events when the index is updated, enabling editors and agents to subscribe to live re-indexing signals.
@@ -2102,4 +2185,4 @@ print(f"Overall: {metrics['overall']:.3f}")
 
 ---
 
-*trelix v2.12.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v3.0.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

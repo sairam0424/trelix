@@ -205,6 +205,7 @@ class BedrockBackend(TrelixChatClient):
         max_tokens: int | None = None,
         temperature: float | None = None,
         system: str | None = None,
+        thinking: bool = False,
     ) -> ChatResponse:
         request = self._build_request(messages, max_tokens, system)
         if temperature is not None:
@@ -227,6 +228,7 @@ class BedrockBackend(TrelixChatClient):
         max_tokens: int | None = None,
         temperature: float | None = None,
         system: str | None = None,
+        thinking: bool = False,
     ) -> Iterator[str]:
         request = self._build_request(messages, max_tokens, system)
         if temperature is not None:

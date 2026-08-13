@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v2.12.0
+# Trelix Configuration Reference — v3.0.0
 
 Complete reference for all configuration options available in trelix.
 
@@ -6,28 +6,67 @@ Complete reference for all configuration options available in trelix.
 
 ## Configuration Methods
 
-Settings are resolved in priority order (highest wins):
+There are exactly two ways to configure trelix, plus the built-in defaults. Settings are
+resolved in priority order (highest wins):
 
 1. **Environment variables** — set in the shell or via CI/CD secrets
-2. **.env file** — `<repo-root>/.env`, auto-loaded on startup
+2. **`.env` file** — auto-loaded on startup
 3. **Defaults** — built-in fallbacks documented in the tables below
+
+Two things about the `.env` file are worth knowing before you rely on it:
+
+- **It is resolved relative to the current working directory, not the indexed repo.**
+  `trelix` loads `./.env` — the `.env` in whatever directory you launch the process from.
+  A `.env` sitting inside the repo passed as the positional `REPO` argument (`repo_path`)
+  is *not* read unless that directory also happens to be your cwd.
+- **Not every setting group reads it.** The `TRELIX_WALKER_*`, `TRELIX_PARSER_*`,
+  `TRELIX_CHUNKER_*`, and `TRELIX_SPARSE_*` groups are read from the process environment
+  only; they ignore `.env` entirely.
+- **Four dynamic, suffix-named settings also ignore `.env`.** These are read directly from
+  the process environment (`os.environ`) rather than through the settings loader, because
+  their names are not fixed fields — the suffix is part of the key:
+  `TRELIX_RETRIEVAL_LEG_WEIGHT_<LEG>`, `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_<EXT>`,
+  `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTS` (the JSON form), and
+  `TRELIX_RETRIEVAL_COMPRESSION_RATIO_<INTENT>`.
+  Put them in your shell/systemd unit/container env, **not** in `.env` — a `.env` entry is
+  silently ignored, which looks configured but is not.
+
+There is **no per-project config file** — no TOML, YAML, or JSON config is read from
+anywhere. See [Per-Project Configuration](#per-project-configuration).
 
 ---
 
 ## Environment Variables
 
+> **Naming rule — read this before adding a row below.** These are `pydantic-settings`
+> classes, and a field's env name comes from one of two mutually exclusive routes. A field
+> with an explicit `Field(alias="X")` is settable as **`X` verbatim** — the class's
+> `env_prefix` does **not** apply to it (e.g. `azure_embeddings_deployment` on
+> `EmbedderConfig` is `AZURE_EMBEDDINGS_MODEL`, *not* `TRELIX_EMBEDDER_AZURE_...`). A field
+> with **no** explicit alias is settable as `<env_prefix><FIELD_NAME_UPPER>` (e.g.
+> `graph_search_enabled` on `RetrievalConfig` is `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED`).
+> Concatenating the prefix onto an alias produces a name that is silently ignored. Always
+> confirm a name against `src/trelix/core/config.py` — or by setting it and checking the
+> field actually changed — before documenting it.
+
 ### Embedder
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider. One of: `local`, `openai`, `azure`, `voyage`, `bge-code`, `nomic-code` |
-| `TRELIX_EMBEDDER_OPENAI_MODEL` | `text-embedding-3-small` | OpenAI embedding model name |
-| `TRELIX_EMBEDDER_AZURE_DEPLOYMENT` | `text-embedding-3-small` | Azure deployment name for embeddings |
+| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider. One of: `local`, `openai`, `azure`, `voyage`, `local-code`, `bge-code`, `nomic-code`, `bedrock-titan`, `bedrock-cohere` — see [PROVIDERS.md](PROVIDERS.md) |
+| `TRELIX_EMBEDDER_OPENAI_MODEL` | `text-embedding-3-large` | OpenAI embedding model name |
+| `AZURE_EMBEDDINGS_MODEL` | `text-embedding-3-large` | Azure deployment name for embeddings. **Not** `TRELIX_EMBEDDER_AZURE_DEPLOYMENT` — this field carries an explicit alias, so the `TRELIX_EMBEDDER_` prefix does not apply (see the naming rule above) |
 | `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS` | _(none)_ | Matryoshka output dimension for Voyage models. Accepted values: `256`, `512`, `1024`, `2048` |
 | `OPENAI_API_KEY` | _(none)_ | API key — required when `TRELIX_EMBEDDER_PROVIDER=openai` |
 | `AZURE_API_KEY` | _(none)_ | API key — required when `TRELIX_EMBEDDER_PROVIDER=azure` |
 | `AZURE_ENDPOINT` | _(none)_ | Full Azure endpoint URL (e.g. `https://<name>.openai.azure.com/`) |
 | `VOYAGE_API_KEY` | _(none)_ | API key — required when `TRELIX_EMBEDDER_PROVIDER=voyage` |
+| `TRELIX_EMBEDDER_BATCH_SIZE` | `64` | Number of texts sent per embedding request. Raise for higher throughput against a generous API tier; lower it if you are hitting per-request size limits |
+| `TRELIX_EMBEDDER_EMBED_MAX_TOKENS_PER_BATCH` | `100000` | Token ceiling per embedding batch. A batch is flushed early once this is reached, even if `TRELIX_EMBEDDER_BATCH_SIZE` is not yet full |
+| `TRELIX_EMBEDDER_TPM_LIMIT` | `0` | Client-side tokens-per-minute cap for remote providers. `0` disables the limiter (correct for `local`, which has no rate limit) |
+
+There is **no embedding concurrency setting.** Indexing throughput against a remote provider is
+tuned via the three batching variables above, not by a worker/concurrency count.
 
 ### Retrieval
 
@@ -39,31 +78,101 @@ Settings are resolved in priority order (highest wins):
 | `TRELIX_RETRIEVAL_SHORT_QUERY_TOKENS` | `5` | Meaningful-token threshold for short-query classification (1–10) |
 | `TRELIX_RETRIEVAL_PATH_FILTER_OVERSAMPLE` | `3` (min: `1`) | **Advanced/internal tuning knob.** When a `SubQuery.path_filter` is set, the vector leg over-fetches by this factor before post-filtering results by path prefix and truncating back to `k` — protects recall against the filter discarding raw ANN hits. There is currently no CLI, REST, or MCP parameter to set `path_filter` itself; it is only set programmatically. |
 | `TRELIX_RETRIEVAL_CONTEXT_BUDGET_PER_SOURCE` | `false` | When enabled, the context-assembly token budget is split proportionally across each retrieval leg's result count instead of one shared pool, so a single noisy leg cannot crowd out the others. `false` reproduces the pre-existing single-pool greedy-pack behavior byte-for-byte. |
+| `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` | `12000` | Token budget for context assembly. An explicit integer is used verbatim and reproduces v2.12.0 behavior exactly. Set it to `null` — `none`, `auto`, `~`, and the empty string are also accepted, case-insensitively — to auto-derive the budget from the synthesis model's context window instead. See [Model-Aware Context Budget](#model-aware-context-budget). No range validation: `0` and negative integers are accepted and taken literally. |
+| `TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION` | `0.5` | Fraction of the resolved model context window to spend on retrieved context when the budget is auto-derived (`budget = window × fraction`), range `0.1`–`0.9` — an out-of-range value fails validation at startup. **Only** consulted when `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` is `null`; silently ignored when an explicit integer budget is set. |
+| `TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET` | `false` | Also scale the retrieval ceilings `top_k_vector` (default `20`) and `rerank_top_n` (default `15`) by `effective_budget / 12000` when the budget is auto-derived. Requires `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` — a no-op with an explicit integer budget. Those ceilings, not the budget, are what actually limit how much context is assembled, so this is the flag that widens context; it also raises per-query reranker and synthesis cost. |
+| `TRELIX_RETRIEVAL_COMPRESSION` | `false` | Master switch for SeleCom query-conditioned compression — shrinks retrieved symbol bodies so results that would not fit the budget are included in compressed form instead of dropped. `false` leaves the assembler without a compressor at all, reproducing the pre-existing assembled context byte-for-byte. See [Context Compression (SeleCom)](#context-compression-selecom). |
+| `TRELIX_RETRIEVAL_COMPRESSION_PROVIDER` | `extractive` | Compression backend. `extractive` is the only accepted value — anything else fails validation at startup. It makes no embedding, API, or network call at query time. |
+| `TRELIX_RETRIEVAL_COMPRESSION_RATIO` | `0.45` | **Fallback** target fraction of a body's tokens to keep, range `0.1`–`1.0`. Consulted only when the query's intent is unknown or absent — a recognised intent takes its ratio from the per-intent table in [Context Compression (SeleCom)](#context-compression-selecom) instead, so this value rarely applies. |
+| `TRELIX_RETRIEVAL_COMPRESSION_RATIO_<INTENT>` | (per-intent defaults) | Override a single intent's compression ratio, e.g. `TRELIX_RETRIEVAL_COMPRESSION_RATIO_BLAST_RADIUS=0.5`. `<INTENT>` is the upper-case intent name: `SYMBOL_LOOKUP`, `FILE_OVERVIEW`, `FEATURE_FLOW`, `PROJECT_OVERVIEW`, `COMPARISON`, `CONFIG_LOOKUP`, `DEPENDENCY_MAP`, `BLAST_RADIUS`. A non-numeric value or one outside `0.1`–`1.0` is logged at WARNING and ignored in favour of the baked ratio — the planner never raises into the retrieval path. |
+| `TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS` | `120` (min: `0`) | Bodies below this token count are never compressed — the elision markers and per-span headers would cost more than the shrink saves. Such a result is handled exactly as before: kept if it fits, skipped if it does not. |
 | `TRELIX_INDEXER_STREAMING` | `false` | Enable generator-based streaming indexing pipeline (bounded Queue, lazy file iteration). Default off — zero behavior change when unset. |
-| `TRELIX_RETRIEVAL_RERANK_PROVIDER` | _(none)_ | Reranker to apply after fusion. One of: `cross_encoder`, `cohere`, `plaid`, `xtr` (**experimental**) |
+| `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | Reranker to apply after fusion. One of: `cross_encoder`, `cohere`, `plaid`, `xtr` (**experimental**). Reranking itself is gated separately by `TRELIX_RETRIEVAL_RERANK` (default `true`) |
 | `TRELIX_RETRIEVAL_XTR_TOKENS` | `100` | Candidate token count for XTR reranker (10–1000). Only applies when `TRELIX_RETRIEVAL_RERANK_PROVIDER=xtr` |
-| `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE re-retrieval — iteratively retrieves more context when confidence is low |
+| `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE re-retrieval. Not the paper's token-log-probability method: after a synthesis completes, the answer is scanned for a fixed list of uncertainty phrases (`"i don't know"`, `"cannot find"`, …) and, on a hit, the query is enriched and re-synthesized. There is no probability threshold setting |
 | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Maximum FLARE iterations per query (min: 1, max: 3) |
 | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Enable HyDE (Hypothetical Document Embeddings) fallback when standard retrieval returns weak results |
 | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable the file-summary retrieval leg — retrieves against LLM-generated file summaries in addition to raw chunks |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Enable PageRank-based symbol boosting — surfaces frequently referenced symbols higher in results |
 | `TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION` | `false` | Enable Personalized PageRank: teleport mass is weighted toward symbols with a `generic_edges` connector-artifact/ticket relationship (uniform `1/\|T\|` over that seed set) instead of uniform teleportation across every node. Applies to both `rank_by_pagerank()` (query-time) and `compute_pagerank()` (index-time). Falls back to plain uniform-teleportation PageRank when disabled or when the seed set is empty — zero behavior change unless opted in. Interaction risk with `TRELIX_RETRIEVAL_PAGERANK_BOOST`: on a repo where only a few symbols have ever been referenced by a ticket/artifact, enabling both together can invert `get_top_central_symbols()`'s ranking — if boost results look off with both enabled, try disabling personalization first to isolate which flag is driving the change. |
-| `TRELIX_RETRIEVAL_GRAPH_SEARCH` | `false` | Enable knowledge graph search leg — queries the code graph in addition to vector search |
+| `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` | `false` | Enable knowledge graph search leg — queries the code graph in addition to vector search. Note the `_ENABLED` suffix: this field has no explicit alias, so its name is the prefix plus the full field name (see the naming rule above). The shorter `TRELIX_RETRIEVAL_GRAPH_SEARCH` is **not** read |
 | `TRELIX_RETRIEVAL_LEG_WEIGHT_<LEG>` | `1.0` per leg | Per-leg RRF score multiplier applied during fusion, before summing (not after, like file-type weights). `<LEG>` is one of `VECTOR`, `BM25`, `GREP`, `SUMMARY`, `SUB_CHUNK`, `SPARSE`, e.g. `TRELIX_RETRIEVAL_LEG_WEIGHT_BM25=0.7`. All-`1.0` (the default) is a no-op — byte-for-byte identical to unweighted fusion. |
 | `TRELIX_RETRIEVAL_DECLARATION_BOOST` | `false` | Enable FTS5 declaration-boost ranking — boosts BM25 matches on a symbol's `name`/`qualified_name` over incidental matches in `docstring`/`body`/`context_summary`. Fixes cases where a symbol only *mentioning* a term outranks the symbol actually *named* that term. |
 | `TRELIX_RETRIEVAL_DECLARATION_BOOST_WEIGHT` | `1.0` | Declaration-boost multiplier applied to the `name`/`qualified_name` FTS5 columns (range: 1.0–10.0). Default `1.0` is a no-op — byte-for-byte identical to unweighted BM25 ranking. Only takes effect when `TRELIX_RETRIEVAL_DECLARATION_BOOST=true`. |
-| `TRELIX_RETRIEVAL_TELEMETRY` | `false` | Emit per-query telemetry (latency, hit counts, scores) to the configured telemetry sink |
+| `TRELIX_TELEMETRY_ENABLED` | `false` | Record every `retrieve()` call to the `query_telemetry` table in the index DB. Zero overhead when disabled. This setting lives on the top-level index config, not on the retrieval config — so it is `TRELIX_TELEMETRY_ENABLED`, **not** `TRELIX_RETRIEVAL_TELEMETRY`, which is not read. For OpenTelemetry spans see `TRELIX_OTEL_ENABLED` under [Observability](#observability-opentelemetry) — a separate, independent switch |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM-powered file summaries at index time (requires a configured LLM provider) |
+
+### Model-Aware Context Budget
+
+By default `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` is the fixed integer `12000`, which is exactly what v2.12.0 did. Setting it to `null` switches on auto-derivation: at `Retriever` construction time trelix resolves the context window of the model named by `TRELIX_LLM_MODEL` and computes `budget = int(window × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`. The result is memoized for the session and logged at INFO.
+
+| `TRELIX_LLM_MODEL` | Resolved window | Budget at fraction `0.5` |
+|---|---|---|
+| `gpt-4o` (and `gpt-4o-2024-11-20`) | 128,000 | 64,000 |
+| `claude-sonnet-4-6` | 200,000 | 100,000 |
+| `gemini-2.5-pro` | 1,000,000 | 500,000 |
+| unrecognised (e.g. `my-finetune`) | — | 12,000 (fallback) |
+
+Window lookup is **prefix** matching against a longest-prefix-first table, lower-cased on both sides, so version and date suffixes resolve correctly (`gpt-4o-2024-11-20` → `gpt-4o`). Matching is anchored at the **start** of the string: a provider-namespaced model id such as `us.anthropic.claude-sonnet-4-6`, `anthropic.claude-3-5-sonnet-...`, or `bedrock/claude-3-5-sonnet` does **not** match, and an unrecognised model falls back to a flat `12,000`-token budget (the fraction is not applied) with a WARNING in the log. Any failure resolving the window falls back the same way, so auto-derivation can never harden into a startup error.
+
+**The budget is not the real ceiling.** `rerank_top_n` (default `15`), `top_k_vector` (default `20`), and `top_k_bm25` cap the candidate set *before* the budget is ever applied, so raising the budget alone usually changes very little — there simply aren't more candidates to pack. `TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET=true` is what actually widens the assembled context: it scales `top_k_vector` and `rerank_top_n` by `effective_budget / 12000`. It requires `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` and it raises per-query cost — more candidates through the reranker and more tokens into synthesis.
+
+### Context Compression (SeleCom)
+
+Off by default. When `TRELIX_RETRIEVAL_COMPRESSION=true`, context assembly runs in two waves. Wave 1 is the existing uncompressed pack, untouched. Wave 2 takes **only** the candidates wave 1 could not fit — the ones that were previously dropped — compresses them, and re-offers them against the leftover budget. The compressed selection is therefore always a superset of the uncompressed one, which is why ranking metrics (Recall/MRR/nDCG) cannot degrade by construction. A result that already fits is never touched, so its text stays byte-identical.
+
+Per wave-2 candidate the packer walks a ladder and stops at the first rung that fits: the target ratio tightened to the leftover budget, then a floor of signature + docstring only, then skip. A skip is recorded in the per-query compression stats rather than happening silently.
+
+**Citation fidelity** is the point of the design: kept spans are rendered as separate `[Lines a-b] <qualified_name>` blocks separated by explicit `# ... N lines elided ...` markers, so no line-range header ever claims lines the text below it does not contain.
+
+The `extractive` provider does zero query-time inference and picks one of two scoring paths at runtime:
+
+- **`sub_chunk`** — scores each stored sub-chunk by cosine similarity against the query embedding, reusing vectors already written at index time. No new embedding, API, or network call.
+- **`lexical`** — splits the body on blank lines and brace balance and scores segments by query-token overlap. Works in any language.
+
+**`lexical` is the common path**, for three compounding reasons: sub-chunk rows only exist when `TRELIX_CHUNKER_MULTI_GRANULARITY=true` at index time (it defaults to `false`); the multi-granularity chunker parses with the Python grammar only, so even when enabled the rows are Python-only; and the `sub_chunk` path additionally needs the query embedding to already be sitting in the `embed_query` LRU (`TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`, default `256`, `0` disables it) — compression peeks that cache and never computes an embedding itself.
+
+Ratios are per intent. `1.0` means the intent opts out entirely — the compressor is not even constructed for that query.
+
+| Intent | Ratio | Why |
+|---|---|---|
+| `symbol_lookup` | `1.0` (off) | the body *is* the answer — never elide it |
+| `file_overview` | `1.0` (off) | structural walk of one file — verbatim |
+| `project_overview` | `1.0` (off) | already summary-level (module/README symbols) |
+| `config_lookup` | `1.0` (off) | config values are the answer — never elide |
+| `comparison` | `0.65` | both sides must fit, but detail still matters |
+| `feature_flow` | `0.45` | many hops matter more than any one full body |
+| `dependency_map` | `0.30` | breadth over depth — coverage is the answer |
+| `blast_radius` | `0.30` | "what breaks" = how many callers, not their guts |
+
+Unknown or absent intents fall back to `TRELIX_RETRIEVAL_COMPRESSION_RATIO` (`0.45`).
+
+**Expected effect:** roughly a 30–60% reduction in synthesis input tokens and roughly a 15–35% latency reduction on a network-API synthesis path, where the token count dominates wall-clock time. These are expectations for that shape of workload, not a benchmark measured in this repo — a local or cached synthesis path will see far less. Compression does not make retrieval itself faster and is not a "4x faster" feature.
 
 ### LLM / Synthesis
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_LLM_PROVIDER` | `openai` | LLM provider used for answer synthesis. One of: `openai`, `azure`, `anthropic` |
-| `TRELIX_LLM_OPENAI_MODEL` | `gpt-4o-mini` | OpenAI chat model for synthesis |
-| `TRELIX_LLM_AZURE_MODEL` | `gpt-4o` | Azure chat model deployment name |
+| `TRELIX_LLM_PROVIDER` | `openai` | LLM provider used for answer synthesis. One of: `openai`, `azure`, `anthropic`, `bedrock`, `vertex`, `litellm` — see [PROVIDERS.md](PROVIDERS.md#llm-providers-for-trelix-ask) |
+| `TRELIX_LLM_MODEL` | `gpt-4o` | Chat model for synthesis. Used verbatim by the `openai`, `anthropic`, and `vertex` backends, and it is the model name the auto-derived context budget resolves its window from — see [Model-Aware Context Budget](#model-aware-context-budget). |
+| `AZURE_CHAT_MODEL` | `gpt-4o` | Azure chat deployment name — what the `azure` backend actually calls, instead of `TRELIX_LLM_MODEL` |
 | `ANTHROPIC_API_KEY` | _(none)_ | Anthropic API key — required when `TRELIX_LLM_PROVIDER=anthropic` |
+| `TRELIX_LLM_THINKING_ENABLED` | `false` | Opt the answer synthesizer into Anthropic extended thinking. Only has an effect when `TRELIX_LLM_PROVIDER=anthropic` — every other backend accepts the flag and ignores it. See [Extended Thinking (Anthropic)](#extended-thinking-anthropic). |
+| `TRELIX_LLM_THINKING_BUDGET_TOKENS` | `4096` | Value sent as `thinking.budget_tokens` on the Anthropic Messages API request. Not range-validated locally — `0` or a negative value is accepted by config and forwarded to the API as-is. |
 | `TRELIX_RETRIEVAL_AGENTIC` | `false` | Enable the agentic ReAct loop — the LLM iteratively issues retrieval calls before producing a final answer |
+
+### Extended Thinking (Anthropic)
+
+Extended thinking is a **request parameter**, not a model: enabling it sends `thinking={"type": "enabled", "budget_tokens": N}` alongside the messages. You do not change `TRELIX_LLM_MODEL` to turn it on, and there is no separate "thinking model" to select.
+
+Opt-in is **per call site, and only the synthesizer opts in.** The index-time LLM call sites — contextual chunking (one call per symbol) and file summarization (one call per file) — deliberately never pass the flag. A single global switch would multiply indexing cost several-fold across thousands of calls for no retrieval-quality gain, so the flag is wired only where a human is waiting on one answer.
+
+Behaviour to expect when it is on:
+
+- **`temperature` is forced to `1.0`** for that request, overriding the temperature the synthesizer would otherwise use — the API requires it.
+- **Incompatible with a forced `tool_choice`**; do not combine it with a call site that pins tool selection.
+- **Thinking bills as output tokens.** There is no separate thinking counter — the tokens land in `output_tokens`, so raising `TRELIX_LLM_THINKING_BUDGET_TOKENS` directly raises the per-answer bill.
+- Thinking blocks are split out of the response rather than concatenated into the answer: `ChatResponse.thinking` carries the reasoning text (`None` when absent), alongside the `cache_read_tokens` / `cache_write_tokens` counters.
 
 ### Agentic ReAct Loop — Persistent Sessions
 
@@ -75,11 +184,40 @@ The agentic loop (`trelix ask --agentic` / `TRELIX_RETRIEVAL_AGENTIC=true`) pers
 | `TRELIX_RETRIEVAL_AGENT_TOKEN_BUDGET` | `6000` | Token budget for `HistoryCompressor` when trimming turn history (minimum 1000) |
 | `TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS` | `604800` (7 days) | Idle time before a persisted agent session is auto-evicted. `0` disables eviction entirely. Use `trelix agent sessions clear <id>` (or the `agent_clear_session` MCP tool) to remove a session explicitly |
 
+### File walker (which files get indexed)
+
+This is the only mechanism trelix has for including/excluding paths. There is **no
+`.trelixignore` and no ignore section in any config file** — exclusion is `.gitignore` plus
+the three list variables below.
+
+> **These variables are read from the process environment only.** `WalkerConfig` does not
+> declare `env_file`, so a `TRELIX_WALKER_*` entry in `.env` is silently ignored.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_WALKER_RESPECT_GITIGNORE` | `true` | Honour the **repo-root** `.gitignore` via `pathspec`. Only `<repo>/.gitignore` is read — a nested `.gitignore` in a subdirectory is ignored, so patterns must be path-qualified in the root file (`pkg/secret.py`, not `secret.py` inside `pkg/.gitignore`). Set `false` to index everything git ignores |
+| `TRELIX_WALKER_MAX_FILE_SIZE_BYTES` | `500000` | Files larger than this are skipped entirely |
+| `TRELIX_WALKER_LANGUAGES` | 21 languages (Python, JS, TS, TSX, Go, Rust, Java, Kotlin, Ruby, C++, C, C#, Razor, cshtml, csproj, Markdown, JSON, YAML, TOML, HTML, CSS) | JSON array of language names to parse, e.g. `'["python","go"]'` |
+| `TRELIX_WALKER_EXTRA_IGNORE_DIRS` | 30 entries (`.git`, `node_modules`, `__pycache__`, `venv`, `.venv`, `dist`, `build`, `target`, `.next`, `vendor`, `bin`, `obj`, `.trelix`, …) | JSON array of directory names to skip |
+| `TRELIX_WALKER_EXTRA_IGNORE_FILENAMES` | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `angular.json` | JSON array of exact filenames to skip |
+| `TRELIX_WALKER_EXTRA_IGNORE_EXTENSIONS` | 27 entries (`.pyc`, `.so`, `.dll`, `.png`, `.pdf`, `.zip`, `.min.js`, `.lock`, …) | JSON array of file extensions to skip |
+
+> **Setting a list REPLACES the default, it does not append.** `TRELIX_WALKER_EXTRA_IGNORE_DIRS='["dist"]'`
+> stops skipping `node_modules`, `.venv`, `.git`, and the other 27 defaults. To add one entry
+> you must restate the whole list.
+
+To exclude a path, the simplest route is `.gitignore` — it is honoured by default and needs
+no env var:
+
+```bash
+echo "dist/" >> .gitignore
+```
+
 ### Storage
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_STORE_BACKEND` | `sqlite-vec` | Vector store backend. One of: `sqlite-vec`, `qdrant`, `lance` |
+| `TRELIX_STORE_BACKEND` | `sqlite` | Vector store backend. One of: `sqlite`, `qdrant`, `lance`. The default `sqlite` backend is the sqlite-vec-backed store; the accepted **value** is the bare string `sqlite` — passing `sqlite-vec` fails validation at startup with a `literal_error` |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL — required when backend is `qdrant` |
 | `QDRANT_API_KEY` | _(none)_ | Qdrant API key — required for authenticated Qdrant Cloud instances |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
@@ -160,11 +298,13 @@ Requires `pip install trelix[otel]`. See [OBSERVABILITY.md](OBSERVABILITY.md) fo
 
 ## .env File Example
 
-Copy this to `<repo-root>/.env` and fill in the values relevant to your setup. Lines beginning with `#` are comments and are ignored.
+Copy this to `./.env` — the directory you run `trelix` **from**, not necessarily the repo you
+are indexing (see [Configuration Methods](#configuration-methods)) — and fill in the values
+relevant to your setup. Lines beginning with `#` are comments and are ignored.
 
 ```dotenv
 # =============================================================================
-# Trelix v2.12.0 — complete .env example
+# Trelix v3.0.0 — complete .env example
 # Copy to .env and fill in values. Never commit this file.
 # =============================================================================
 
@@ -176,11 +316,12 @@ Copy this to `<repo-root>/.env` and fill in the values relevant to your setup. L
 TRELIX_EMBEDDER_PROVIDER=local
 
 # OpenAI embeddings
-# TRELIX_EMBEDDER_OPENAI_MODEL=text-embedding-3-small
+# TRELIX_EMBEDDER_OPENAI_MODEL=text-embedding-3-large
 # OPENAI_API_KEY=sk-...
 
-# Azure embeddings
-# TRELIX_EMBEDDER_AZURE_DEPLOYMENT=text-embedding-3-small
+# Azure embeddings — the deployment var is AZURE_EMBEDDINGS_MODEL (explicit
+# alias, so no TRELIX_EMBEDDER_ prefix)
+# AZURE_EMBEDDINGS_MODEL=text-embedding-3-large
 # AZURE_API_KEY=...
 # AZURE_ENDPOINT=https://<your-resource>.openai.azure.com/
 
@@ -210,10 +351,10 @@ TRELIX_RETRIEVAL_HYDE_FALLBACK=false
 TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=false
 TRELIX_RETRIEVAL_PAGERANK_BOOST=false
 TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION=false
-TRELIX_RETRIEVAL_GRAPH_SEARCH=false
+TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=false
 
-# Telemetry
-TRELIX_RETRIEVAL_TELEMETRY=false
+# Query telemetry -> query_telemetry table. Index-level, so no RETRIEVAL_ infix.
+TRELIX_TELEMETRY_ENABLED=false
 
 # Generate LLM file summaries at index time (requires LLM provider)
 TRELIX_FILE_SUMMARIES_ENABLED=false
@@ -222,22 +363,49 @@ TRELIX_FILE_SUMMARIES_ENABLED=false
 # TRELIX_RETRIEVAL_PATH_FILTER_OVERSAMPLE=3
 # TRELIX_RETRIEVAL_CONTEXT_BUDGET_PER_SOURCE=false
 
+# Context budget: an explicit int (default 12000) or null/none/auto/"" to
+# auto-derive from the synthesis model's context window.
+TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=12000
+# TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null
+# Only read when the budget is null (range 0.1-0.9)
+# TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION=0.5
+# Scales top_k_vector/rerank_top_n too — needs the budget to be null, costs more
+# TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET=false
+
+# Query-conditioned compression (SeleCom) — extractive is the only provider
+TRELIX_RETRIEVAL_COMPRESSION=false
+# TRELIX_RETRIEVAL_COMPRESSION_PROVIDER=extractive
+# Fallback ratio for unknown intents only (range 0.1-1.0)
+# TRELIX_RETRIEVAL_COMPRESSION_RATIO=0.45
+# Per-intent override, e.g. BLAST_RADIUS defaults to 0.30 — NOTE: the per-intent
+# suffix form is read from the process environment only and is IGNORED here in
+# .env (see "Four dynamic, suffix-named settings" above). Export it in your
+# shell/unit/container instead:
+#   export TRELIX_RETRIEVAL_COMPRESSION_RATIO_BLAST_RADIUS=0.5
+# TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS=120
+
 # ---------------------------------------------------------------------------
 # LLM / Synthesis
 # ---------------------------------------------------------------------------
 
-# Provider: openai | azure | anthropic
+# Provider: openai | azure | anthropic | bedrock | vertex | litellm
 TRELIX_LLM_PROVIDER=openai
 
-# OpenAI chat
-TRELIX_LLM_OPENAI_MODEL=gpt-4o-mini
+# Chat model. Also the name the auto-derived context budget resolves its
+# window from, for every provider.
+TRELIX_LLM_MODEL=gpt-4o
 # OPENAI_API_KEY=sk-...  (shared with embedder if both use OpenAI)
 
-# Azure chat
-# TRELIX_LLM_AZURE_MODEL=gpt-4o
+# Azure chat — the azure backend calls this deployment, not TRELIX_LLM_MODEL
+# AZURE_CHAT_MODEL=gpt-4o
 
 # Anthropic
 # ANTHROPIC_API_KEY=sk-ant-...
+
+# Anthropic extended thinking — synthesizer only, forces temperature=1.0,
+# and the budget bills as OUTPUT tokens. Ignored by non-Anthropic backends.
+TRELIX_LLM_THINKING_ENABLED=false
+# TRELIX_LLM_THINKING_BUDGET_TOKENS=4096
 
 # Agentic ReAct loop
 TRELIX_RETRIEVAL_AGENTIC=false
@@ -251,8 +419,9 @@ TRELIX_RETRIEVAL_AGENTIC=false
 # Storage
 # ---------------------------------------------------------------------------
 
-# Backend: sqlite-vec | qdrant | lance
-TRELIX_STORE_BACKEND=sqlite-vec
+# Backend: sqlite | qdrant | lance  ("sqlite" is the sqlite-vec store; the
+# literal string "sqlite-vec" is NOT accepted and fails validation)
+TRELIX_STORE_BACKEND=sqlite
 
 # Qdrant (required when backend=qdrant)
 # QDRANT_URL=http://localhost:6333
@@ -333,57 +502,42 @@ TRELIX_FEDERATION_MAX_WORKERS=4
 
 ## Per-Project Configuration
 
-Trelix supports a per-project TOML config file at `.trelix/config.toml` inside any indexed repository. Settings in this file override the global defaults for that project only. Environment variables still take precedence over per-project config.
+**Trelix has no per-project config file.** There is no TOML, YAML, or JSON settings file —
+nothing is read from `.trelix/config.toml`, `trelix.toml`, `pyproject.toml`, or any other
+file-based config source. Configuration comes from exactly two places, both of which are
+process-wide rather than per-repo:
 
-### Supported keys
+1. **Environment variables** — every setting in the tables above.
+2. **A `.env` file** — loaded from the **current working directory** (`./.env`), which is a
+   property of where you launch the process, not of the repo you pass as the positional
+   `REPO` argument.
 
-```toml
-# .trelix/config.toml
+A `.trelix/` directory holds trelix's own generated data, never configuration: the index
+lives at `<repo>/.trelix/index.db`, the optional audit log at `<cwd>/.trelix/audit.db`, and
+trelix auto-writes a `.gitignore` alongside the index so watchers and git ignore it. The
+file walker also skips `.trelix/` while indexing. Creating a `.trelix/config.toml` has no
+effect whatsoever — the file is never opened.
 
-[embedder]
-provider = "openai"                    # override global TRELIX_EMBEDDER_PROVIDER
-openai_model = "text-embedding-3-large"
+> **Security note.** Because no config file is read, putting a setting like
+> `TRELIX_API_AUTH_TOKEN` in a `.trelix/config.toml` would leave `trelix serve` running with
+> **every route open** while looking configured. Auth, connector credentials, and API keys
+> must be set as environment variables or in `.env`.
 
-[retrieval]
-multi_query = true
-multi_query_count = 3
-flare = false
-flare_max_retries = 1
-hyde_fallback = true
-file_summary_leg = true
-pagerank_boost = true
-graph_search = false
-telemetry = false
-file_summaries_enabled = true
-agentic = true
+### Sharing settings across a team
 
-[llm]
-provider = "openai"
-openai_model = "gpt-4o"
-azure_model = "gpt-4o"
+Since no committed config file is consulted, share defaults the way the loading mechanism
+actually supports:
 
-[store]
-backend = "sqlite-vec"
-qdrant_url = "http://localhost:6333"
-```
+- **Commit a `.env.example`** documenting the variables your project expects, and have each
+  developer copy it to a git-ignored `.env`. Keep `.env` out of version control — it is
+  where secrets live.
+- **Set the variables in CI/CD** as pipeline environment variables or secrets.
+- **Wrap invocations in a `Makefile` target or shell script** that exports the project's
+  variables before calling `trelix`, so everyone gets the same settings regardless of cwd.
 
-### Resolution order (most specific wins)
-
-```
-Environment variable
-  > .trelix/config.toml (per-project)
-    > .env (repo root)
-      > built-in defaults
-```
-
-### Creating the file
-
-```bash
-mkdir -p .trelix
-touch .trelix/config.toml
-```
-
-Add `.trelix/config.toml` to version control so all contributors share the same project-level defaults. Do **not** put secrets in this file — use environment variables or `.env` (which should be git-ignored) for those.
+Remember that `.env` is resolved against the cwd: if contributors run `trelix` from
+different directories, an env var exported by a wrapper script is more reliable than a
+`.env` file.
 
 ---
 

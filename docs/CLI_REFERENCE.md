@@ -1,6 +1,6 @@
 # trelix CLI Reference
 
-**Version:** 2.12.0  
+**Version:** 3.0.0  
 **Last updated:** 2026-08-03
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
@@ -44,6 +44,9 @@ on most commands.
    - [agent sessions list](#trelix-agent-sessions-list)
    - [agent sessions show](#trelix-agent-sessions-show)
    - [agent sessions clear](#trelix-agent-sessions-clear)
+   - [audit list](#trelix-audit-list)
+   - [audit verify](#trelix-audit-verify)
+   - [audit export](#trelix-audit-export)
 
 ---
 
@@ -59,7 +62,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 2.12.0
+trelix --version        # trelix 3.0.0
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -110,7 +113,7 @@ below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 | `TRELIX_RETRIEVAL_SPARSE` | `false` | Enable SPLADE-Code sparse retrieval leg |
 | `TRELIX_RETRIEVAL_AGENTIC` | `false` | Enable multi-turn ReAct loop (also set by `--agentic`) |
 | `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE confidence-gated re-retrieval |
-| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Max FLARE retries (range: 1–3). Replaces the old `TRELIX_RETRIEVAL_FLARE_MAX_ITER` (deprecated, removed in v3.0.0). Values > 3 raise `ValidationError` at startup. |
+| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Max FLARE retries (range: 1–3). Replaces the old `TRELIX_RETRIEVAL_FLARE_MAX_ITER`, which is **deprecated but still honoured** as of v3.0.0 — it remains in the field's `AliasChoices` and setting it logs a deprecation warning rather than being ignored. Values > 3 raise `ValidationError` at startup. |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Boost results by PageRank symbol importance |
 | `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTING` | `true` | Apply per-language RRF score multipliers |
 | `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_<LANG>` | varies | Per-language override, e.g. `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_MARKDOWN=0.1` |
@@ -276,8 +279,11 @@ trelix search /my/repo "database connection pool" --provider openai
 
 #### Notes
 
-- Reranking is enabled by default (Cohere cross-encoder). Disable with
-  `TRELIX_RETRIEVAL_RERANK_PROVIDER` or set `rerank=false`.
+- `trelix search` disables the reranker for its own invocation (it constructs
+  `RetrievalConfig(rerank=False)`), so `TRELIX_RETRIEVAL_RERANK*` affects `ask`, the MCP
+  tools, the REST API, and the Python API rather than this command. Elsewhere reranking
+  is on by default; turn it off with `TRELIX_RETRIEVAL_RERANK=false` and choose the
+  backend with `TRELIX_RETRIEVAL_RERANK_PROVIDER=cohere|cross_encoder|plaid|xtr`.
 - The `--provider` flag affects the query embedding, not index scanning.
   Always use the same provider that was used for `trelix index`.
 
@@ -288,7 +294,7 @@ trelix search /my/repo "database connection pool" --provider openai
 #### Synopsis
 
 ```
-trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic]
+trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session ID]
 ```
 
 #### Description
@@ -304,6 +310,7 @@ used when an LLM is available.
 |--------|------|---------|-------------|
 | `--provider` | string | `local` | Embedding provider for retrieval. |
 | `--agentic` | flag | `false` | Enable a multi-turn ReAct loop: the agent can issue multiple sub-queries, observe results, and refine its answer. Requires an LLM API key. |
+| `--session` | string | — | Resume a persisted agent session by ID. Implies `--agentic`. See [`trelix agent sessions list`](#trelix-agent-sessions-list). |
 
 #### Examples
 
@@ -1236,7 +1243,7 @@ that backs `link-tickets` prevents duplicate edges.
 | `--embedding-fallback` | flag | off | For artifacts with no regex match, fall back to embedding similarity against indexed chunks. Costs one embed call per unmatched artifact. |
 | `--similarity-threshold` | float | `0.75` | Minimum similarity score (0.0–1.0) for an embedding-fallback match to count. Ignored unless `--embedding-fallback` is set. |
 
-Both options map to `ArtifactLinkerConfig`'s `TRELIX_ARTIFACT_LINKER_EMBEDDING_FALLBACK`/`TRELIX_ARTIFACT_LINKER_SIMILARITY_THRESHOLD` — see [CONFIGURATION.md](CONFIGURATION.md).
+Both options map to `ArtifactLinkerConfig`'s `TRELIX_ARTIFACT_LINKER_EMBEDDING_FALLBACK_ENABLED`/`TRELIX_ARTIFACT_LINKER_SIMILARITY_THRESHOLD` — note the `_ENABLED` suffix, since the field is `embedding_fallback_enabled` and carries no alias. See [CONFIGURATION.md](CONFIGURATION.md).
 
 #### Examples
 
@@ -1472,4 +1479,180 @@ Deletes a persisted session and all its turns.
 
 ---
 
-*End of CLI Reference — trelix v2.12.0*
+### `trelix audit list`
+
+#### Synopsis
+
+```
+trelix audit list [--db PATH] [--limit N]
+```
+
+#### Description
+
+Shows the most recent entries of the tamper-evident audit log, newest first, as
+a Rich table (`id`, `ts`, `principal`, `action`, `resource`, `outcome`,
+`status`).
+
+The audit log lives in its own `audit.db` — never in the code index, which is
+disposable and rebuilt at will. Written only when
+`TRELIX_AUDIT_ENABLED=true` and only for requests through the HTTP API
+(`trelix serve`). See [AUDIT.md](AUDIT.md) for the full event schema and the
+integrity model.
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--db` | string | `TRELIX_AUDIT_DB_PATH`, else `<cwd>/.trelix/audit.db` | Path to `audit.db`. |
+| `--limit` / `-n` | integer | `50` | Number of most-recent rows to show. |
+
+#### Examples
+
+```bash
+# Last 50 entries from the default location
+trelix audit list
+
+# Last 10 entries
+trelix audit list -n 10
+
+# An audit DB kept outside the repo
+trelix audit list --db /var/log/trelix/audit.db
+```
+
+#### Output example
+
+```
+                   Audit Log (/var/log/trelix/audit.db)
+┏━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━┓
+┃ id ┃ ts           ┃ principal    ┃ action ┃ resource      ┃ outcome ┃ status ┃
+┡━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━┩
+│  3 │ 2026-08-13T… │ static-token │ admin  │ /graph/commu… │ denied  │    401 │
+│  2 │ 2026-08-13T… │ a1b2c3d4@ht… │ ask    │ /ask          │ success │    200 │
+│  1 │ 2026-08-13T… │ static-token │ search │ /search       │ success │    200 │
+└────┴──────────────┴──────────────┴────────┴───────────────┴─────────┴────────┘
+```
+
+#### Notes
+
+- Prints `No audit entries.` and exits 0 when the log is empty.
+- Opening a path that does not exist **creates** an empty `audit.db` (parent
+  directories included), so a typo in `--db` yields an empty table rather than
+  an error.
+- Long values are truncated to fit the terminal, and the two hash columns are
+  not shown at all. Use [`trelix audit export`](#trelix-audit-export) when you
+  need full values.
+- Every cell is escaped before printing: audit rows record request-controlled
+  strings (a URL path, a JWT `sub`), which Rich would otherwise interpret as
+  console markup.
+
+---
+
+### `trelix audit verify`
+
+#### Synopsis
+
+```
+trelix audit verify [--db PATH]
+```
+
+#### Description
+
+Walks the whole hash chain and reports whether the audit log is intact. Detects
+a mutated row (its recomputed `entry_hash` no longer matches), a
+deleted/reordered row (the next row's `prev_hash` no longer links, or the `id`
+sequence has a gap), and a deleted tail (the live row count / head hash no
+longer match the in-DB anchor).
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--db` | string | `TRELIX_AUDIT_DB_PATH`, else `<cwd>/.trelix/audit.db` | Path to `audit.db`. |
+
+#### Examples
+
+```bash
+# Verify the default audit DB
+trelix audit verify
+
+# Verify in CI / a cron job and fail the job on tamper
+trelix audit verify --db /var/log/trelix/audit.db || echo "AUDIT TAMPERED"
+```
+
+#### Output
+
+```
+# intact (exit 0)
+Audit chain intact.
+
+# tampered (exit 1, on stderr)
+Audit chain TAMPERED — first divergent entry id: 3
+```
+
+#### Notes
+
+- **Exit code `0`** = chain intact, **`1`** = tamper detected. The failure
+  message names the id of the *first* divergent entry, which is where to start
+  an investigation — entries before it verified cleanly.
+- An empty log verifies as intact (exit 0).
+- This is tamper **evidence**, not tamper **proofing** — see
+  [AUDIT.md](AUDIT.md#integrity-model--tamper-evident-not-tamper-proof) for
+  exactly what it does and does not protect against.
+
+---
+
+### `trelix audit export`
+
+#### Synopsis
+
+```
+trelix audit export [--db PATH] [--format ndjson]
+```
+
+#### Description
+
+Writes every audit entry to stdout as NDJSON (one JSON object per line), in
+append order (oldest first) so a downstream consumer can re-verify the chain.
+Unlike `audit list`, the export includes every column — including `prev_hash`
+and `entry_hash`.
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--db` | string | `TRELIX_AUDIT_DB_PATH`, else `<cwd>/.trelix/audit.db` | Path to `audit.db`. |
+| `--format` | string | `ndjson` | Export format. `ndjson` is the only accepted value; anything else prints an error and exits 1. |
+
+#### Examples
+
+```bash
+# Export to a file for SIEM ingestion
+trelix audit export > /var/log/trelix/audit.ndjson
+
+# Only denied requests
+trelix audit export | jq -c 'select(.outcome == "denied")'
+
+# Count requests per principal
+trelix audit export | jq -r '.principal' | sort | uniq -c
+```
+
+#### NDJSON output schema
+
+```json
+{"id": 1, "ts": "2026-08-13T09:14:02.115331+00:00", "principal": "static-token", "action": "search", "resource": "/search", "outcome": "success", "status_code": 200, "client_ip": "127.0.0.1", "request_id": "4f1c9e2b8a7d4c10", "trace_id": null, "duration_ms": 87, "detail": null, "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000", "entry_hash": "5d71295c36283eaac08929a0bac81f68b025a3fb62ac69c0659d6d5ff95c06ee"}
+```
+
+#### Notes
+
+- NDJSON is the shipping format on purpose: Filebeat, Vector and Fluent Bit all
+  tail newline-delimited JSON natively, so no bespoke HTTP transport is needed.
+  See [AUDIT.md](AUDIT.md#shipping-to-a-siem) for ready-to-adapt shipper
+  configs.
+- The whole table is read into memory before the first line is printed. That is
+  fine for the operational sizes this log is meant for, but it is not a
+  streaming cursor over a multi-GB log.
+- The export is a snapshot: entries appended while it runs are not included.
+
+---
+
+*End of CLI Reference — trelix v3.0.0*

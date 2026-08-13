@@ -1,6 +1,6 @@
-# trelix v2.12.0 — Frequently Asked Questions
+# trelix v3.0.0 — Frequently Asked Questions
 
-> Last updated: 2026-08-03 — covers trelix 2.12.0, trelix-mcp 2.12.0, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
+> Last updated: 2026-08-13 — covers trelix 3.0.0, trelix-mcp 3.0.0, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
 
 ---
 
@@ -185,7 +185,7 @@ In v2.4.0, `FederatedRetriever` gained a **TTL cache** (SHA-256-keyed, thread-sa
 
 The `score` is the RRF aggregate score after all active retrieval legs have been merged. Higher is better. The scale is not fixed — it depends on how many legs contributed a rank for that result. A score above 0.05 typically indicates a strong multi-leg match; a score near 0.016 (= 1/62) indicates the result came from exactly one leg at rank 1.
 
-If a reranker is active (`TRELIX_RETRIEVAL_RERANK_PROVIDER=cohere` or `cross-encoder`), the final score is the reranker's relevance score (0.0–1.0) rather than the RRF score.
+If a reranker is active (`TRELIX_RETRIEVAL_RERANK_PROVIDER=cohere` or `cross_encoder` — underscore; the hyphenated `cross-encoder` is rejected), the final score is the reranker's relevance score (0.0–1.0) rather than the RRF score.
 
 ---
 
@@ -215,7 +215,7 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v2.12.0 exposes **15 tools**:
+trelix-mcp v3.0.0 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|
@@ -365,8 +365,8 @@ Yes, but you must reset and re-index. Embedding vectors from different providers
 Migration steps:
 
 ```bash
-# 1. Clear existing vectors and dimension metadata
-trelix migrate-vectors --reset
+# 1. Clear existing vectors and dimension metadata (REPO is a required positional)
+trelix migrate-vectors ./my-repo --reset
 
 # 2. Set the new provider
 export TRELIX_EMBEDDER_PROVIDER=voyage
@@ -389,7 +389,7 @@ When you run `trelix index`, trelix records the embedding dimension in a new `in
 ```
 DimensionMismatchError: Index was built with dimension 3072 (azure) but current
 provider produces dimension 384 (local). Run:
-  trelix migrate-vectors --reset
+  trelix migrate-vectors --reset ./your-repo
 then re-index to continue.
 ```
 

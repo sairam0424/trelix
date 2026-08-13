@@ -513,8 +513,8 @@ graph_search_enabled: bool = False      # set True to activate 4th retrieval leg
 graph_search_depth: int = 2
 graph_search_max_results: int = 15
 
-# Or via env var
-TRELIX_GRAPH_SEARCH_ENABLED=true
+# Or via env var (note the TRELIX_RETRIEVAL_ prefix — TRELIX_GRAPH_SEARCH_ENABLED is not read)
+TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true
 ```
 
 ### Breaking change note (v2.0.0)

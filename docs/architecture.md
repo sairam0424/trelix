@@ -1,6 +1,6 @@
 # trelix Architecture
 
-> **Version:** 2.12.0 | **Python:** 3.11+ | **110+ source modules**
+> **Version:** 3.0.0 | **Python:** 3.11+ | **110+ source modules**
 
 This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
 
@@ -1590,7 +1590,7 @@ The `list_weights` parameter (v2.8.0) applies each repo's registered `weight` as
 
 All four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) accept an optional `config_path` parameter to override the default registry location (`~/.config/trelix/repos.json`). To prevent path-traversal attacks and prompt-injection exploits, v2.8.1 introduced path confinement: the resolved `config_path` must fall within one of two allowed roots:
 
-1. `~/.config/trelix/` (the user's global trelix config directory)
+1. `~/.config/trelix/` (the user's global trelix state directory — it holds the federation registry `repos.json`, not settings; trelix reads no config file)
 2. `<mcp-server-cwd>/.trelix/` (the MCP server process's working directory)
 
 The check uses `Path.is_relative_to()` (not a naive string `startswith()`) to avoid sibling-directory bypasses like `~/.config/trelixevil/`. If the path is outside both roots, a `ConfigPathNotAllowedError` (a `ValueError` subclass) is raised, and the MCP tool returns `{"...: False/[]/0, "error": str}` rather than raising. `config_path=None` passes through unchanged (meaning "use the registry's own default").
@@ -1790,27 +1790,45 @@ Single entry point: `trelix = "trelix.cli.main:app"` (Typer application).
 
 ### Command Summary
 
-| Command | Key flags | Description |
+Repo paths are **positional arguments**, never flags — there is no `--repo` anywhere.
+Most tuning is done through environment variables rather than flags; see
+[CLI_REFERENCE.md](CLI_REFERENCE.md) for the authoritative per-command flag list.
+
+| Command | Real flags | Description |
 |---------|-----------|-------------|
-| `index <repo>` | --provider, --workers, --json | Build search index |
-| `search <repo> <query>` | --k, --json, --provider | Hybrid search |
-| `ask <repo> <question>` | --provider, --agentic, --json | LLM synthesis |
-| `query <repo> <question>` | --k, --json | Search without LLM |
-| `call-graph <repo> <symbol>` | --depth, --json | Call/import graph |
-| `stats <repo>` | --json | Index statistics |
-| `update-index <repo> <file>` | | Re-index single file |
-| `migrate-vectors <repo>` | --reset, --to | Vector migration |
+| `index <repo>` | --provider, --verbose/-v | Build search index |
+| `search <repo> <query>` | --provider, --json | Hybrid search |
+| `ask <repo> <question>` | --provider, --agentic, --session | LLM synthesis |
+| `query <repo> <query>` | --provider | Search without LLM (table output only) |
+| `call-graph <repo> <symbol>` | --provider, --direction/-d | Call/import graph |
+| `stats <repo>` | *(none)* | Index statistics |
+| `link-tickets <repo>` | --max-commits, --since, --ticket-pattern | Link git commits to tickets |
+| `link-artifacts <repo>` | --embedding-fallback/--no-embedding-fallback, --similarity-threshold | Link external artefacts into the graph |
+| `update-index <repo> <file>` | --provider | Re-index single file |
+| `migrate-vectors <repo>` | --to, --url, --collection, --api-key, --reset | Vector migration |
 | `watch <repo>` | --provider | Single-repo watch |
 | `watch-all` | --config | All federated repos (v2.4.0) |
-| `serve <repo>` | --port, --host | REST API server |
-| `graph <repo>` | --concepts, --export-html | Build knowledge graph |
-| `telemetry <repo>` | --limit, --json | Query telemetry |
-| `eval <repo>` | --golden, --k | nDCG@10/Recall/MRR |
-| `taint <repo>` | --json | Semgrep taint analysis |
-| `review <repo>` | --diff, --base, --head, --json, --pr, --post-comments | Diff review (v2.4.0) |
-| `search-all <query>` | --k, --json, --config | Federated search |
-| `federation add` | alias, path, --weight | Register repo |
+| `serve <repo>` | --host, --port | REST API server |
+| `graph <repo>` | --visualize/-v, --output/-o, --concepts/-c, --json | Build knowledge graph |
+| `telemetry [repo]` | --limit/-n | Query telemetry |
+| `eval [repo]` | --golden/-g | nDCG@10/Recall/MRR |
+| `eval-synthesis [repo]` | --golden/-g | GroUSE synthesis scoring |
+| `taint [repo]` | --tier/-t, --severity/-s, --json | Semgrep taint analysis |
+| `review [repo]` | --diff/-d, --base, --head, --json, --max-files, --pr, --post-comments | Diff review (v2.4.0) |
+| `search-all <query>` | --config, --k, --json | Federated search |
+| `federation add <alias> <path>` | --weight, --config | Register repo |
 | `federation list` | --config | List registered repos |
+| `federation remove <alias>` | --config | Unregister repo |
+| `agent sessions list <repo>` | --limit | List persisted agentic sessions |
+| `agent sessions show <repo> <id>` | *(none)* | Show one session's turn history |
+| `agent sessions clear <repo> <id>` | *(none)* | Delete a persisted session |
+| `connector sync <repo> <name>` | --link/--no-link | Sync an external artefact source |
+| `audit list` | --db, --limit/-n | Recent audit entries |
+| `audit export` | --db, --format | Export audit log as NDJSON |
+| `audit verify` | --db | Verify the audit hash chain |
+
+Only `search`, `graph`, `taint`, `review`, and `search-all` have a `--json` flag.
+`--version`/`-V` and `--help` are the only global (pre-subcommand) flags.
 
 ---
 
@@ -2228,4 +2246,4 @@ That's it — no changes to `Retriever` needed.
 
 ---
 
-*trelix v2.12.0 — last updated 2026-08-03*
+*trelix v3.0.0 — last updated 2026-08-13*

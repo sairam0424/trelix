@@ -25,7 +25,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from trelix.core.config import IndexConfig
 from trelix.core.models import Chunk, RetrievedContext, SearchResult
@@ -50,9 +50,13 @@ from .planner.models import (
     RetrievalStrategy,
     RoutingTier,
     SubQuery,
+    compression_ratio_for_intent,
     default_plan,
 )
 from .reranker import rerank
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from trelix.compression.base import Compressor
 
 # Thread-local storage so parallel eval workers don't mix each other's traces
 _trace_local = threading.local()
@@ -132,6 +136,81 @@ class Retriever:
         self._sparse_embedder: object | None = None
         self._sparse_embedder_lock = threading.Lock()
 
+        # Resolve effective context budget at startup (memoized for the session)
+        self._effective_budget = self._resolve_effective_budget()
+        # Scale retrieval ceilings if requested
+        self._effective_top_k_vector = config.retrieval.top_k_vector
+        self._effective_rerank_top_n = config.retrieval.rerank_top_n
+        if config.retrieval.scale_top_k_to_budget and config.retrieval.context_token_budget is None:
+            scale_factor = self._effective_budget / 12_000
+            self._effective_top_k_vector = max(1, int(config.retrieval.top_k_vector * scale_factor))
+            self._effective_rerank_top_n = max(1, int(config.retrieval.rerank_top_n * scale_factor))
+            logger.info(
+                "Scaled retrieval ceilings: top_k_vector=%d→%d, rerank_top_n=%d→%d (scale=%.2fx)",
+                config.retrieval.top_k_vector,
+                self._effective_top_k_vector,
+                config.retrieval.rerank_top_n,
+                self._effective_rerank_top_n,
+                scale_factor,
+            )
+
+    # ------------------------------------------------------------------
+    # Budget resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_effective_budget(self) -> int:
+        """
+        Resolve the effective context token budget.
+
+        Returns the explicit budget when context_token_budget is an int.
+        When context_token_budget is None, auto-derives from model window:
+          effective_budget = window_size * context_window_fraction
+
+        Falls back to 12,000 when:
+        - Model name is not recognized by resolve_window()
+        - LLM config is invalid/missing
+
+        Logged at INFO level so operators can see the resolved budget in logs.
+        """
+        cfg = self.config.retrieval
+
+        # Explicit budget (default 12000) — preserves v2.12.0 behavior
+        if cfg.context_token_budget is not None:
+            logger.info(
+                "Using explicit context budget: %d tokens (no auto-scaling)",
+                cfg.context_token_budget,
+            )
+            return cfg.context_token_budget
+
+        # Auto-derive from model window
+        try:
+            from trelix.llm.context_windows import resolve_window
+
+            model = self.config.llm.model
+            window = resolve_window(model)
+            if window is None:
+                logger.warning(
+                    "Model %r not recognized by context_windows — falling back to 12,000 tokens",
+                    model,
+                )
+                return 12_000
+
+            effective = int(window * cfg.context_window_fraction)
+            logger.info(
+                "Auto-derived context budget from model %r: window=%d × fraction=%.2f = %d tokens",
+                model,
+                window,
+                cfg.context_window_fraction,
+                effective,
+            )
+            return effective
+
+        except Exception as exc:
+            logger.warning(
+                "Failed to resolve model context window (falling back to 12,000): %s", exc
+            )
+            return 12_000
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -195,11 +274,9 @@ class Retriever:
                     "intent": plan.intent.value,
                     "results_count": len(context.results),
                     "tokens_used": context.total_tokens,
-                    "token_budget": self.config.retrieval.context_token_budget,
+                    "token_budget": self._effective_budget,
                     "budget_pct": round(
-                        context.total_tokens
-                        / max(1, self.config.retrieval.context_token_budget)
-                        * 100,
+                        context.total_tokens / max(1, self._effective_budget) * 100,
                         1,
                     ),
                     "sources": context.retrieval_sources,
@@ -223,7 +300,7 @@ class Retriever:
                 plan.intent.value,
                 len(context.results),
                 context.total_tokens,
-                context.total_tokens / max(1, self.config.retrieval.context_token_budget) * 100,
+                context.total_tokens / max(1, self._effective_budget) * 100,
                 context.retrieval_sources,
                 context.elapsed_seconds,
             )
@@ -561,13 +638,19 @@ class Retriever:
             )
 
         # Rerank — skipped when strategy says exact ordering is already correct.
+        # Use scaled rerank_top_n when budget scaling is enabled.
+        effective_rerank_top_n = (
+            self._effective_rerank_top_n
+            if cfg.scale_top_k_to_budget and cfg.context_token_budget is None
+            else strategy.rerank_top_n
+        )
         if cfg.rerank and candidates and not strategy.skip_reranker:
-            with pipeline_stage_span(cfg, "rerank", {"top_n": strategy.rerank_top_n}):
+            with pipeline_stage_span(cfg, "rerank", {"top_n": effective_rerank_top_n}):
                 candidates = rerank(
                     query=plan.raw_query,
                     results=candidates,
                     config=cfg,
-                    top_n=strategy.rerank_top_n,
+                    top_n=effective_rerank_top_n,
                 )
 
                 # -- Trace: post-rerank ordering --
@@ -760,12 +843,18 @@ class Retriever:
                 snippet = HyDEExpander(self.config.llm).expand(sq.semantic_query)
                 if snippet:
                     embed_text = snippet
+            # Use scaled top_k_vector when budget scaling is enabled
+            effective_k = (
+                self._effective_top_k_vector
+                if cfg.scale_top_k_to_budget and cfg.context_token_budget is None
+                else cfg.top_k_vector
+            )
             with retrieval_leg_span(
-                cfg, "vector", query_text=embed_text, top_k=cfg.top_k_vector
+                cfg, "vector", query_text=embed_text, top_k=effective_k
             ) as span:
                 embedding = self.embedder.embed_query(embed_text)
                 out["vector"] = self._vector_search(
-                    embedding, k=cfg.top_k_vector, path_filter=sq.path_filter
+                    embedding, k=effective_k, path_filter=sq.path_filter
                 )
                 span.set_result_count(len(out["vector"]))
 
@@ -1154,16 +1243,77 @@ class Retriever:
     ) -> RetrievedContext:
         from trelix.retrieval.assembler import ContextAssembler
 
+        cfg = self.config.retrieval
+        compressor, ratio = self._make_compressor(intent)
         assembler = ContextAssembler(
-            token_budget=self.config.retrieval.context_token_budget,
-            per_source_budget=self.config.retrieval.context_budget_per_source,
+            token_budget=self._effective_budget,
+            per_source_budget=cfg.context_budget_per_source,
+            compressor=compressor,
+            compression_ratio=ratio,
+            compression_min_tokens=cfg.compression_min_tokens,
         )
-        return assembler.assemble(
+        context = assembler.assemble(
             query=query,
             results=results,
             intent=intent,
             assembly_mode=assembly_mode,
+            query_embedding=self._cached_query_embedding(query) if compressor else None,
         )
+        # Traced whenever the feature is ON — including the intent-opted-out case
+        # (active=False), so "why did nothing compress?" is answerable from the
+        # trace alone. Nothing is written when the feature is OFF, keeping today's
+        # trace files byte-identical too.
+        if cfg.compression_enabled:
+            self._trace(
+                "compression",
+                {
+                    "provider": cfg.compression_provider,
+                    "ratio": ratio,
+                    "active": compressor is not None,
+                    "path": getattr(compressor, "last_path", None),
+                    **(assembler.last_compression_stats or {}),
+                },
+            )
+        return context
+
+    def _make_compressor(self, intent: str | None) -> tuple[Compressor | None, float]:
+        """
+        Build the compressor and resolve the per-intent target ratio.
+
+        Returns ``(None, 1.0)`` — i.e. today's exact uncompressed assembly — when
+        compression is disabled, when the intent opts out (ratio 1.0, e.g.
+        symbol_lookup / config_lookup, where the body IS the answer), or when
+        constructing the provider fails (graceful degradation: log + carry on,
+        same contract as the reranker).
+        """
+        cfg = self.config.retrieval
+        if not cfg.compression_enabled:
+            return None, 1.0
+        ratio = compression_ratio_for_intent(intent)
+        if ratio is None:  # unknown/absent intent — fall back to the global target
+            ratio = cfg.compression_target_ratio
+        if ratio >= 1.0:
+            return None, 1.0
+        try:
+            from trelix.compression import make_compressor
+
+            return make_compressor(self.config, self.db, self.embedder), ratio
+        except Exception as exc:
+            logger.warning("Compressor init failed (%s); assembling uncompressed", exc)
+            return None, 1.0
+
+    def _cached_query_embedding(self, query: str) -> list[float] | None:
+        """
+        Peek the embed_query LRU for an embedding we ALREADY paid for.
+
+        Deliberately a peek, never a call: compression must not add inference or
+        network cost to assembly. A miss simply returns None and the extractive
+        compressor falls back to its zero-inference lexical path.
+        """
+        cache = getattr(self.embedder, "_cache", None)
+        if not isinstance(cache, dict):
+            return None
+        return cache.get(query.strip().lower())
 
     # ------------------------------------------------------------------
     # Structured per-query trace

@@ -75,6 +75,12 @@ from trelix.retrieval.retriever import Retriever
 
 logger = logging.getLogger("trelix.api")
 
+# Local (API-key / open) mode principal. Must stay identical to
+# audit.middleware.DEFAULT_PRINCIPAL — the audit recorder falls back to that
+# same string when request.state.principal is unset. Duplicated (not imported)
+# so this module stays importable without starlette/fastapi installed.
+_LOCAL_PRINCIPAL = "static-token"
+
 
 class _ApiAuthSettings(BaseSettings):
     """REST-API auth gate — independent of IndexConfig (which is per-request,
@@ -214,6 +220,30 @@ class GraphSearchResultModel(BaseModel):
     source: str
 
 
+def _build_oidc_verifier(sso: Any) -> Any:  # noqa: ANN401
+    """Construct the OIDC verifier from SSO config, or ``None`` when SSO is off.
+
+    Kept at module scope (not inside ``create_app``) purely so tests can patch
+    it — ``patch("trelix.api.app._build_oidc_verifier")`` — to inject a verifier
+    wired to an *offline* (fake) key resolver, mirroring the
+    ``patch("trelix.api.app.Retriever")`` seam. The ``trelix[sso]`` optional
+    extra (``pyjwt[crypto]``) is imported lazily here so this module stays
+    importable without it — the same lazy-import discipline the FastAPI import
+    in ``create_app`` follows.
+    """
+    if not sso.enabled:
+        return None
+    from trelix.auth.oidc import OidcVerifier
+
+    return OidcVerifier(
+        issuer=sso.issuer,
+        audience=sso.audience,
+        algorithms=tuple(sso.algorithms),
+        jwks_uri=sso.jwks_uri,
+        jwks_ttl_seconds=sso.jwks_ttl_seconds,
+    )
+
+
 def create_app() -> Any:  # noqa: ANN201
     """Create and return the FastAPI application.
 
@@ -223,7 +253,7 @@ def create_app() -> Any:  # noqa: ANN201
     at module scope intentionally — see the module-level docstring for details.
     """
     try:
-        from fastapi import Depends, FastAPI, Header, HTTPException
+        from fastapi import Depends, FastAPI, Header, HTTPException, Request
         from fastapi.responses import StreamingResponse  # noqa: F401
     except ImportError as e:
         raise ImportError(
@@ -236,17 +266,105 @@ def create_app() -> Any:  # noqa: ANN201
     # unset means every route stays open (today's behavior, unchanged).
     auth_settings = _ApiAuthSettings()
 
-    def verify_api_key(
-        x_trelix_api_key: str | None = Header(default=None, alias="X-Trelix-Api-Key"),
-    ) -> None:
-        token = auth_settings.api_auth_token
-        if token is None:
-            return
-        if x_trelix_api_key is None or not hmac.compare_digest(x_trelix_api_key, token):
-            logger.warning("Rejected request: missing or invalid X-Trelix-Api-Key")
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    # Audit is additive and OFF by default: when disabled, no middleware is
+    # registered and no audit.db is created — byte-identical to pre-audit
+    # behavior. When enabled, the audit middleware is the FIRST add_middleware
+    # call so it stays outermost and observes the final status code (incl. the
+    # 401 raised below and any 500 from an unhandled route error).
+    from trelix.core.config import AuditConfig, SSOConfig
 
-    auth = [Depends(verify_api_key)]
+    audit_config = AuditConfig()
+    if audit_config.enabled:
+        from trelix.audit.middleware import AuditMiddleware
+        from trelix.audit.store import AuditStore
+
+        audit_store = AuditStore(audit_config.resolved_db_path)
+        app.add_middleware(AuditMiddleware, store=audit_store, config=audit_config)
+
+    # SSO / OIDC is additive and OFF by default: with TRELIX_OIDC_ENABLED unset
+    # no verifier is built and the block below is byte-identical to the prior
+    # static-token / open gate. When enabled, a verified bearer token yields a
+    # real (sub, iss) principal that is JIT-provisioned into the same audit.db
+    # (so identity survives re-indexing) and recorded by the audit trail.
+    sso_config = SSOConfig()
+    oidc_verifier = _build_oidc_verifier(sso_config)
+    principal_store = None
+    oidc_error_cls: type[Exception] = Exception
+    if oidc_verifier is not None:
+        from trelix.auth.oidc import OidcError
+        from trelix.auth.store import PrincipalStore
+
+        oidc_error_cls = OidcError
+        principal_store = PrincipalStore(audit_config.resolved_db_path)
+
+    def authenticate(
+        request: Request,
+        x_trelix_api_key: str | None = Header(default=None, alias="X-Trelix-Api-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> None:
+        """Resolve the caller's identity for every gated route.
+
+        Precedence (all additive — every unset flag reproduces today's exact
+        behavior):
+
+          1. **OIDC** — only when SSO is enabled AND an
+             ``Authorization: Bearer <jwt>`` header is present. A verified token
+             becomes a real ``sub@iss`` principal (JIT-provisioned); a
+             present-but-invalid token is a 401.
+          2. **Static token** — ``X-Trelix-Api-Key`` compared via
+             ``hmac.compare_digest``, exactly as before.
+          3. **Open** — neither OIDC nor a static token configured: every route
+             stays open (unchanged default); principal = ``"static-token"``.
+          4. Otherwise (auth configured but no valid credential): 401.
+
+        ``request.state.principal`` is the seam the audit middleware reads — set
+        to the verified ``sub@iss`` in the OIDC branch, else the local label.
+        """
+        # Local-mode default; the OIDC branch overwrites it with the verified
+        # sub@iss so the audit middleware records the real identity.
+        request.state.principal = _LOCAL_PRINCIPAL
+
+        # 1. OIDC bearer path — only when SSO is enabled and a bearer is present.
+        if oidc_verifier is not None and authorization:
+            scheme, _, raw_token = authorization.partition(" ")
+            if scheme.lower() == "bearer" and raw_token:
+                try:
+                    principal = oidc_verifier.authenticate(raw_token)
+                except oidc_error_cls:
+                    # The verifier scrubs token/claim material from its error;
+                    # log only that verification failed — never the token.
+                    logger.warning("Rejected request: OIDC token verification failed")
+                    raise HTTPException(
+                        status_code=401, detail="Invalid or missing credentials"
+                    ) from None
+                request.state.principal = principal.principal_id
+                if principal_store is not None:
+                    principal_store.jit_upsert(principal)
+                return
+
+        # 2. Static-token path — behavior unchanged from the pre-OIDC gate.
+        token = auth_settings.api_auth_token
+        if token is not None:
+            if x_trelix_api_key is None or not hmac.compare_digest(x_trelix_api_key, token):
+                logger.warning("Rejected request: missing or invalid X-Trelix-Api-Key")
+                raise HTTPException(status_code=401, detail="Invalid or missing API key")
+            return
+
+        # 3./4. No static token configured: open when SSO is also off (today's
+        # default), else 401 (SSO on but no valid bearer credential supplied).
+        if oidc_verifier is not None:
+            logger.warning("Rejected request: authentication required (no credentials)")
+            raise HTTPException(status_code=401, detail="Invalid or missing credentials")
+
+    # `from __future__ import annotations` stringifies the `request: Request`
+    # annotation above, and FastAPI resolves dependency annotations against
+    # this module's globals (not create_app's locals) — where `Request` is not
+    # imported. Bind the real class onto the annotation so FastAPI recognizes
+    # the parameter as the Starlette Request to inject, rather than treating it
+    # as a required query field (which yields a 422 on every route).
+    authenticate.__annotations__["request"] = Request
+
+    auth = [Depends(authenticate)]
 
     @app.get("/health")
     def health() -> HealthResponse:

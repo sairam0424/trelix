@@ -12,8 +12,12 @@ INTENT_STRATEGIES. No changes needed anywhere else.
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
+
+logger = logging.getLogger(__name__)
 
 
 class RoutingTier(int, Enum):
@@ -90,6 +94,13 @@ class RetrievalStrategy:
     )
     # ── Reranker budget ──────────────────────────────────────────
     rerank_top_n: int  # candidates passed to the reranker; higher = more recall at cost of latency
+    # ── Context compression ──────────────────────────────────────
+    # Target fraction of an oversized body to keep when it would otherwise be
+    # dropped for not fitting the budget. 1.0 = never compress this intent
+    # (the answer depends on reading the body verbatim). Only consulted when
+    # RetrievalConfig.compression_enabled is True; defaults to 1.0 so any
+    # strategy built without this field is a guaranteed no-op.
+    compression_ratio: float = 1.0
 
 
 # Pre-baked strategies — the ONLY place that controls retrieval behaviour per intent.
@@ -105,6 +116,7 @@ INTENT_STRATEGIES: dict[IntentType, RetrievalStrategy] = {
         import_direction="both",
         assembly_mode="greedy",
         rerank_top_n=20,
+        compression_ratio=1.0,  # the body IS the answer — never elide it
     ),
     # ── File-level overview ("tell me about auth.py") ────────────────────────
     IntentType.FILE_OVERVIEW: RetrievalStrategy(
@@ -116,6 +128,7 @@ INTENT_STRATEGIES: dict[IntentType, RetrievalStrategy] = {
         import_direction="both",
         assembly_mode="greedy",
         rerank_top_n=20,
+        compression_ratio=1.0,  # structural walk of one file — verbatim
     ),
     # ── End-to-end feature flows ("how does indexing work?") ─────────────────
     IntentType.FEATURE_FLOW: RetrievalStrategy(
@@ -127,6 +140,7 @@ INTENT_STRATEGIES: dict[IntentType, RetrievalStrategy] = {
         import_direction="both",
         assembly_mode="greedy",
         rerank_top_n=30,
+        compression_ratio=0.45,  # many hops matter more than any one full body
     ),
     # ── Overall project architecture ─────────────────────────────────────────
     IntentType.PROJECT_OVERVIEW: RetrievalStrategy(
@@ -138,6 +152,7 @@ INTENT_STRATEGIES: dict[IntentType, RetrievalStrategy] = {
         import_direction="both",
         assembly_mode="greedy",
         rerank_top_n=20,
+        compression_ratio=1.0,  # already summary-level (module/README symbols)
     ),
     # ── Comparisons ("compare X and Y") ──────────────────────────────────────
     IntentType.COMPARISON: RetrievalStrategy(
@@ -149,6 +164,7 @@ INTENT_STRATEGIES: dict[IntentType, RetrievalStrategy] = {
         import_direction="both",
         assembly_mode="greedy",
         rerank_top_n=35,
+        compression_ratio=0.65,  # both sides must fit, but detail still matters
     ),
     # ── Config file lookups ───────────────────────────────────────────────────
     IntentType.CONFIG_LOOKUP: RetrievalStrategy(
@@ -160,6 +176,7 @@ INTENT_STRATEGIES: dict[IntentType, RetrievalStrategy] = {
         import_direction="both",
         assembly_mode="greedy",
         rerank_top_n=20,
+        compression_ratio=1.0,  # config values are the answer — never elide
     ),
     # ── "What does X depend on / what services does Y use?" ──────────────────
     # Forward import walk (2 hops) to enumerate all transitive dependencies.
@@ -173,6 +190,7 @@ INTENT_STRATEGIES: dict[IntentType, RetrievalStrategy] = {
         import_direction="forward",
         assembly_mode="breadth_first",
         rerank_top_n=30,
+        compression_ratio=0.30,  # breadth over depth — coverage is the answer
     ),
     # ── "What breaks if X changes / what imports Y?" ─────────────────────────
     # grep-first to seed from exact matches, then reverse import walk to find
@@ -187,8 +205,71 @@ INTENT_STRATEGIES: dict[IntentType, RetrievalStrategy] = {
         import_direction="reverse",
         assembly_mode="breadth_first",
         rerank_top_n=40,
+        compression_ratio=0.30,  # "what breaks" = how many callers, not their guts
     ),
 }
+
+# Per-intent compression-ratio env override — one var per intent, mirroring the
+# TRELIX_RETRIEVAL_LEG_WEIGHT_<LEG> / TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_<LANG>
+# precedent in RetrievalConfig.model_post_init(). Example:
+#     TRELIX_RETRIEVAL_COMPRESSION_RATIO_BLAST_RADIUS=0.5
+_COMPRESSION_RATIO_ENV_PREFIX = "TRELIX_RETRIEVAL_COMPRESSION_RATIO_"
+
+# Same bounds as RetrievalConfig.compression_target_ratio — an out-of-range or
+# unparseable override is logged and ignored rather than raised (the planner
+# never raises into the retrieval path).
+_COMPRESSION_RATIO_MIN = 0.1
+_COMPRESSION_RATIO_MAX = 1.0
+
+
+def compression_ratio_for_intent(intent: IntentType | str | None) -> float | None:
+    """
+    Resolve the compression ratio for ``intent``.
+
+    Precedence: ``TRELIX_RETRIEVAL_COMPRESSION_RATIO_<INTENT>`` env override >
+    the intent's baked ``RetrievalStrategy.compression_ratio``.
+
+    Returns ``None`` for an unknown/absent intent so the caller can fall back to
+    ``RetrievalConfig.compression_target_ratio``. A returned ``1.0`` means "do
+    not compress this intent" and callers MUST skip compression entirely.
+    """
+    if intent is None:
+        return None
+    try:
+        resolved = IntentType(intent)
+    except ValueError:
+        return None
+    strategy = INTENT_STRATEGIES.get(resolved)
+    if strategy is None:
+        return None
+
+    baked = strategy.compression_ratio
+    raw = os.environ.get(f"{_COMPRESSION_RATIO_ENV_PREFIX}{resolved.name}")
+    if raw is None:
+        return baked
+    try:
+        override = float(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring %s%s=%r — not a float; using baked ratio %s",
+            _COMPRESSION_RATIO_ENV_PREFIX,
+            resolved.name,
+            raw,
+            baked,
+        )
+        return baked
+    if not _COMPRESSION_RATIO_MIN <= override <= _COMPRESSION_RATIO_MAX:
+        logger.warning(
+            "Ignoring %s%s=%s — outside [%s, %s]; using baked ratio %s",
+            _COMPRESSION_RATIO_ENV_PREFIX,
+            resolved.name,
+            override,
+            _COMPRESSION_RATIO_MIN,
+            _COMPRESSION_RATIO_MAX,
+            baked,
+        )
+        return baked
+    return override
 
 
 @dataclass
