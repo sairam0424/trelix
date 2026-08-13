@@ -84,21 +84,48 @@ jobs:
         run: pytest tests/unit/ -v --tb=short --cov=src/trelix --cov-report=term-missing --cov-report=html
       - name: Run trelix-mcp tests
         run: pytest packages/trelix-mcp/tests/ -v --tb=short
-      # tests/integration/ is deliberately NOT run in CI. Two blockers, both
-      # verified locally rather than assumed:
-      #   1. Fixture scoping — one fixture indexes the entire worktree, so 16
-      #      tests never complete (three timed-out attempts).
-      #   2. Env isolation — 4 tests fail purely because a developer .env leaks
-      #      an embedder that mismatches the fixture's index, and the .env is
-      #      inherited by subprocesses the tests spawn.
-      # To enable: scope the indexing fixture to a small fixture repo, and make
-      # the spawned subprocesses ignore ambient .env / TRELIX_* vars.
+      # tests/integration/ runs in its own `integration` job below, not here —
+      # it takes ~10 minutes, and putting it in this 3-version matrix would cost
+      # ~30 minutes of runner time per push for no extra signal.
       - name: Upload coverage
         if: matrix.python-version == '3.11'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: htmlcov/
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    # Single Python version on purpose. The suite is end-to-end (real indexing,
+    # real SQLite, spawned CLI subprocesses) and takes ~10 minutes; running it
+    # across the 3-version matrix would cost ~30 minutes per push while
+    # exercising the same code paths.
+    #
+    # This ran nowhere until the two blockers were fixed: one fixture indexed the
+    # entire worktree, so 16 tests never completed (three timed-out attempts),
+    # and 4 more failed because a developer .env leaked an embedder into spawned
+    # subprocesses, which in-process monkeypatch isolation cannot reach.
+    #
+    # timeout-minutes is load-bearing rather than hygiene: "never completes" was
+    # the original failure mode, so a regression there must fail the job in
+    # minutes instead of occupying a runner until GitHub's 6-hour default.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install project + dev deps
+        run: pip install -e ".[local,otel,sso,dev]"
+      # The suite indexes fixture repos with the local embedder, so a fresh runner
+      # has to download the sentence-transformers model on first use — HF_HUB_OFFLINE
+      # is deliberately NOT set here. That download is the main reason this job is
+      # slower and more network-dependent than the unit job; if it becomes a source
+      # of flakes, cache ~/.cache/huggingface keyed on the model name rather than
+      # forcing offline mode, which would just fail on a cold cache.
+      - name: Run integration tests
+        run: pytest tests/integration/ -v --tb=short
 
   typescript-sdk:
     name: TypeScript SDK
