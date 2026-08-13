@@ -1,3 +1,26 @@
+<div align="center">
+
+<br/>
+
+<pre>
+████████╗██████╗ ███████╗██╗     ██╗██╗  ██╗
+╚══██╔══╝██╔══██╗██╔════╝██║     ██║╚██╗██╔╝
+   ██║   ██████╔╝█████╗  ██║     ██║ ╚███╔╝ 
+   ██║   ██╔══██╗██╔══╝  ██║     ██║ ██╔██╗ 
+   ██║   ██║  ██║███████╗███████╗██║██╔╝ ██╗
+   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝╚═╝  ╚═╝
+</pre>
+
+**Code Intelligence for Your Entire Codebase**
+
+*Search deeper. Understand context. Build smarter.*
+
+<br/>
+
+</div>
+
+---
+
 # trelix
 
 [![CI](https://github.com/sairam0424/trelix/actions/workflows/ci.yml/badge.svg)](https://github.com/sairam0424/trelix/actions/workflows/ci.yml)
@@ -9,7 +32,9 @@
 [![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
 [![trelix-llama-index](https://img.shields.io/pypi/v/trelix-llama-index?label=trelix-llama-index)](https://pypi.org/project/trelix-llama-index/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
+```
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sairam0424/trelix/badge)](https://scorecard.dev/viewer/?uri=github.com/sairam0424/trelix)
+```
 
 <!-- mcp-name: trelix -->
 
@@ -641,4 +666,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide including how to add a
 
 MIT — see [LICENSE](LICENSE).
 
-**Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) · **Security:** [SECURITY.md](SECURITY.md) · **Support:** [SUPPORT.md](SUPPORT.md) · **Roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md)
+**Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) · **Security:** [SECURITY.md](SECURITY.md) · **Support:** [SUPPORT.md](SUPPORT.md) · **Roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md).
