@@ -253,24 +253,23 @@ class TestGetImportersIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Known defect: module docstring shifts caller attribution
+# Regression: module docstring must not shift caller attribution
 # ---------------------------------------------------------------------------
+#
+# This carried a strict xfail describing the defect it exercises: the synthetic
+# '<module>' symbol was inserted at symbols[0] AFTER the walk had recorded each
+# call site's caller as an index into that list, so every caller index was off
+# by one in any file with a module docstring. Observed effect on the shipped
+# repo: get_callees('Retriever.retrieve') returned [] (its callees were
+# misattributed to Retriever.__init__) and get_callers reported '<module>'
+# instead of the calling function.
+#
+# The extractor now reserves symbols[0] before the walk instead of inserting
+# afterwards, so the assertions below hold and the xfail has been removed as
+# its own reason text instructed. The assertions are unchanged.
+# See tests/unit/test_parser_module_insert_indices.py for the unit-level pins.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known defect in src/trelix/indexing/parser/extractors/python.py: the "
-        "synthetic '<module>' symbol is inserted at symbols[0] AFTER the walk "
-        "recorded each call site's caller as an index into that list, so every "
-        "caller index is off by one in any file that has a module docstring. "
-        "Real effect on the shipped repo: get_callees('Retriever.retrieve') "
-        "returns [] for src/trelix/retrieval/retriever.py (its callees are "
-        "misattributed to Retriever.__init__), and get_callers reports "
-        "'<module>' instead of the calling function. Remove this xfail when the "
-        "extractor is fixed."
-    ),
-)
 def test_module_docstring_does_not_shift_caller_attribution(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
