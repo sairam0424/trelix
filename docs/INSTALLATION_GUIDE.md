@@ -1,6 +1,6 @@
-# Trelix v2.12.0 — Installation Guide
+# Trelix v3.0.0 — Installation Guide
 
-This guide covers every installation scenario for Trelix v2.12.0, from a quick
+This guide covers every installation scenario for Trelix v3.0.0, from a quick
 one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 ---
@@ -26,7 +26,7 @@ one-liner to Docker, standalone binaries, and virtual-environment setups.
 |-------------|-------|
 | **Python 3.11, 3.12, or 3.13** | No known upper bound |
 | **pip** or **uv** | pip ships with Python; uv is optional but significantly faster |
-| **~500 MB free disk** | The local embedder model is downloaded on first use and cached in `~/.cache/trelix/` |
+| **~500 MB free disk** | The local embedder model is downloaded on first use and cached by `sentence-transformers`/HuggingFace, i.e. under `$HF_HOME` (default `~/.cache/huggingface/hub/`). trelix passes no custom cache directory and has no `TRELIX_CACHE_DIR` setting. |
 | `OPENAI_API_KEY` | Optional — enables OpenAI embeddings (higher quality, requires internet) |
 | `AZURE_API_KEY` + `AZURE_ENDPOINT` | Optional — enables Azure OpenAI embeddings |
 | `VOYAGE_API_KEY` | Optional — enables Voyage AI embeddings |
@@ -47,11 +47,12 @@ so no API key is required.
 
 ```bash
 pip install "trelix[local]"
-trelix --version   # should print 2.12.0
+trelix --version   # should print 3.0.0
 ```
 
 On first use, Trelix downloads the embedder model (~420 MB) to
-`~/.cache/trelix/models/`. Subsequent runs use the cached copy.
+the HuggingFace cache (`$HF_HOME`, default `~/.cache/huggingface/hub/`). Subsequent runs
+use the cached copy.
 
 ---
 
@@ -91,7 +92,7 @@ Requires an Azure OpenAI resource with an embeddings deployment.
 pip install trelix
 export AZURE_API_KEY="..."
 export AZURE_ENDPOINT="https://<resource>.openai.azure.com/"
-export AZURE_DEPLOYMENT="text-embedding-3-large"   # your deployment name
+export AZURE_EMBEDDINGS_MODEL="text-embedding-3-large"   # your deployment name
 ```
 
 Set `TRELIX_EMBEDDER_PROVIDER=azure` to activate.
@@ -102,10 +103,10 @@ Exposes Trelix as an MCP tool your AI assistant can call directly.
 
 ```bash
 pip install trelix-mcp
-trelix-mcp --help
+which trelix-mcp   # trelix-mcp takes no arguments — running it starts the stdio server
 ```
 
-See `docs/integrations/mcp.md` for the full Claude Code / Cursor setup.
+See [MCP_GUIDE.md](MCP_GUIDE.md) for the full Claude Code / Cursor setup.
 
 ### 3.5 LangChain integration
 
@@ -163,12 +164,12 @@ backend.
 
 ```bash
 pip install "trelix[lance]"
-export TRELIX_VECTOR_BACKEND=lance
+export TRELIX_STORE_BACKEND=lance
 trelix index ./
 ```
 
-LanceDB stores data in `~/.cache/trelix/lance/` by default (override with
-`TRELIX_LANCE_PATH`).
+LanceDB stores data at `.trelix/lance` inside the repo by default (override with
+`LANCE_URI`; the table name is `LANCE_TABLE`, default `chunks`).
 
 ### 3.11 Reranking (Cohere)
 
@@ -177,7 +178,8 @@ Cross-encoder reranking improves precision on ambiguous queries.
 ```bash
 pip install "trelix[rerank]"
 export COHERE_API_KEY="..."
-export TRELIX_RERANK=true
+# Reranking is ON by default (TRELIX_RETRIEVAL_RERANK=true); set it to false to disable.
+export TRELIX_RETRIEVAL_RERANK_PROVIDER=cross_encoder   # or cohere (default) / plaid / xtr
 ```
 
 ### 3.12 Everything (all extras)
@@ -195,13 +197,13 @@ and must be installed independently.
 ## 4. Standalone Binaries (no Python needed)
 
 Pre-compiled single-file binaries are published to the
-[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v2.12.0)
+[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v3.0.0)
 page for each platform. No Python or pip required.
 
 ### macOS ARM64 (Apple Silicon)
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.12.0/trelix-macos-arm64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v3.0.0/trelix-macos-arm64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -219,7 +221,7 @@ somewhere on your `PATH`, or run it directly:
 ### Linux x64
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.12.0/trelix-linux-x64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v3.0.0/trelix-linux-x64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -228,14 +230,15 @@ trelix --version
 ### Linux ARM64
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v2.12.0/trelix-linux-arm64 \
+curl -L https://github.com/sairam0424/trelix/releases/download/v3.0.0/trelix-linux-arm64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
 ```
 
 Binaries are built with PyInstaller and include all Python dependencies. The
-local embedder model is still downloaded to `~/.cache/trelix/` on first use.
+local embedder model is still downloaded to the HuggingFace cache
+(`$HF_HOME`, default `~/.cache/huggingface/hub/`) on first use.
 
 ---
 
@@ -307,7 +310,7 @@ directory you mount.
 ```bash
 docker run --rm \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.12.0 \
+  ghcr.io/sairam0424/trelix:3.0.0 \
   index /repo
 ```
 
@@ -319,7 +322,7 @@ The index is written to `/repo/.trelix/` inside the container (which maps to
 ```bash
 docker run --rm -p 8765:8765 \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.12.0 \
+  ghcr.io/sairam0424/trelix:3.0.0 \
   serve /repo --host 0.0.0.0 --port 8765
 ```
 
@@ -332,7 +335,7 @@ docker run --rm \
   -e OPENAI_API_KEY="sk-..." \
   -e TRELIX_EMBEDDER_PROVIDER=openai \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:2.12.0 \
+  ghcr.io/sairam0424/trelix:3.0.0 \
   index /repo
 ```
 
@@ -370,7 +373,7 @@ Run these commands after any installation method to confirm everything is
 working correctly.
 
 ```bash
-# Print version (must show 2.12.0)
+# Print version (must show 3.0.0)
 trelix --version
 
 # Print usage summary
@@ -382,15 +385,15 @@ trelix index ./
 # Show index statistics
 trelix stats ./
 
-# Run a test search query
-trelix search "hybrid search" --repo ./
+# Run a test search query (REPO is a positional argument — there is no --repo flag)
+trelix search ./ "hybrid search"
 ```
 
 Expected output for `trelix stats ./`:
 
 ```
 Trelix Index Stats
-  Version   : 2.12.0
+  Version   : 3.0.0
   Chunks    : <n>
   Embedder  : local (all-MiniLM-L6-v2)
   Backend   : sqlite
@@ -407,38 +410,104 @@ If `trelix --version` prints nothing or fails, check that:
 
 ## 9. Environment Variables Reference
 
-All variables can be placed in a `.env` file at the repository root; Trelix
-loads it automatically via `python-dotenv`.
+Trelix's entire configuration surface is [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/).
+Variable names follow `TRELIX_<SECTION>_<FIELD>`, where `<SECTION>` is the config group
+(`WALKER`, `PARSER`, `CHUNKER`, `EMBEDDER`, `STORE`, `RETRIEVAL`, `LLM`, `SPARSE`,
+`INDEXER`) — plus a handful of conventional third-party names (`OPENAI_API_KEY`,
+`QDRANT_URL`, …) that are read under their standard names. There is no config *file*:
+`.env` in the current working directory and the process environment are the only two
+sources. See [CONFIGURATION.md](CONFIGURATION.md) for the exhaustive list and the
+per-group `.env` caveats, and [CLI_REFERENCE.md](CLI_REFERENCE.md) for which handful of
+these are also exposed as CLI flags.
+
+**`.env` is resolved relative to your current working directory, not the indexed repo.**
+The `TRELIX_WALKER_*`, `TRELIX_PARSER_*`, `TRELIX_CHUNKER_*`, and `TRELIX_SPARSE_*` groups
+are read from the process environment only and ignore `.env` entirely.
+
+### Provider credentials
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TRELIX_EMBEDDER` | `local` | Embedder backend. Options: `local`, `openai`, `azure`, `voyage` |
-| `TRELIX_LOCAL_MODEL` | `all-MiniLM-L6-v2` | HuggingFace model name for the local embedder |
-| `TRELIX_CACHE_DIR` | `~/.cache/trelix` | Directory for cached models and index data |
-| `TRELIX_INDEX_PATH` | `.trelix/` | Path (relative to repo root) where the index is stored |
-| `TRELIX_VECTOR_BACKEND` | `sqlite` | Vector store backend. Options: `sqlite`, `lance`, `qdrant` |
-| `TRELIX_LANCE_PATH` | `~/.cache/trelix/lance` | Storage path when `TRELIX_VECTOR_BACKEND=lance` |
-| `TRELIX_CHUNK_SIZE` | `512` | Token size for code chunk splitting |
-| `TRELIX_CHUNK_OVERLAP` | `64` | Token overlap between consecutive chunks |
-| `TRELIX_HYBRID_ALPHA` | `0.7` | Dense/sparse blend weight (1.0 = dense only, 0.0 = sparse only) |
-| `TRELIX_RERANK` | `false` | Enable cross-encoder reranking. Set to `true` to activate |
-| `TRELIX_RERANK_TOP_K` | `5` | Number of results to return after reranking |
-| `TRELIX_FLARE_MAX_RETRIES` | `3` | Maximum FLARE loop iterations (renamed from `flare_max_iterations` in v2.4.0) |
-| `TRELIX_LOG_LEVEL` | `WARNING` | Log verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `TRELIX_WATCH_DEBOUNCE_MS` | `500` | Debounce delay (ms) for file-watch re-indexing |
-| `OPENAI_API_KEY` | _(none)_ | OpenAI API key; required when `TRELIX_EMBEDDER_PROVIDER=openai` |
-| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model name |
-| `AZURE_API_KEY` | _(none)_ | Azure OpenAI API key; required when `TRELIX_EMBEDDER_PROVIDER=azure` |
+| `OPENAI_API_KEY` | _(none)_ | OpenAI key; used for both embeddings and LLM synthesis |
+| `AZURE_API_KEY` | _(none)_ | Azure OpenAI key |
 | `AZURE_ENDPOINT` | _(none)_ | Azure OpenAI resource endpoint URL |
-| `AZURE_DEPLOYMENT` | _(none)_ | Azure OpenAI embeddings deployment name |
-| `AZURE_API_VERSION` | `2024-02-01` | Azure OpenAI API version |
-| `VOYAGE_API_KEY` | _(none)_ | Voyage AI API key; required when `TRELIX_EMBEDDER_PROVIDER=voyage` |
-| `VOYAGE_MODEL` | `voyage-code-2` | Voyage embedding model name |
-| `COHERE_API_KEY` | _(none)_ | Cohere API key; required when `TRELIX_RERANK=true` |
-| `COHERE_RERANK_MODEL` | `rerank-english-v3.0` | Cohere reranking model name |
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint; required when `TRELIX_VECTOR_BACKEND=qdrant` |
+| `AZURE_API_VERSION` | `2025-04-01-preview` | Azure OpenAI API version |
+| `VOYAGE_API_KEY` | _(none)_ | Voyage AI key; required for `--provider voyage` |
+| `ANTHROPIC_API_KEY` | _(none)_ | Anthropic key for `TRELIX_LLM_PROVIDER=anthropic` |
+| `COHERE_API_KEY` | _(none)_ | Cohere key; required by the default Cohere reranker |
+| `GITHUB_TOKEN` | _(none)_ | Required by `trelix review --pr` and `--post-comments` |
+| `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE` | _(standard AWS defaults)_ | Bedrock embedding and LLM providers |
+
+### Embedding
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRELIX_EMBEDDER_PROVIDER` | `local` | `local`, `openai`, `azure`, `voyage`, `local-code`, `bge-code`, `nomic-code`, `bedrock-titan`, `bedrock-cohere`. Same values as the `--provider` flag. |
+| `TRELIX_EMBEDDER_LOCAL_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | HuggingFace model for the local embedder |
+| `TRELIX_EMBEDDER_OPENAI_MODEL` | `text-embedding-3-large` | OpenAI embedding model |
+| `AZURE_EMBEDDINGS_MODEL` | `text-embedding-3-large` | Azure embeddings *deployment* name |
+| `TRELIX_EMBEDDER_VOYAGE_MODEL` | `voyage-code-3` | Voyage embedding model |
+| `TRELIX_EMBEDDER_BATCH_SIZE` | `64` | Embeddings per model/API call |
+
+### Storage and vector backend
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRELIX_STORE_DB_PATH` | `.trelix/index.db` | Index location, relative to the repo root |
+| `TRELIX_STORE_BACKEND` | `sqlite` | Vector store: `sqlite`, `qdrant`, `lance` |
+| `TRELIX_STORE_HNSW` | `true` | Use an HNSW ANN index for the vector leg |
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint; used when `TRELIX_STORE_BACKEND=qdrant` |
 | `QDRANT_API_KEY` | _(none)_ | Qdrant API key for cloud deployments |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
+| `LANCE_URI` | `.trelix/lance` | LanceDB path; used when `TRELIX_STORE_BACKEND=lance` |
+
+### Chunking, indexing, retrieval
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRELIX_CHUNKER_MAX_TOKENS_PER_CHUNK` | `512` | Token ceiling per code chunk |
+| `TRELIX_PARSE_WORKERS` | `4` | Parallel parse workers at index time |
+| `TRELIX_INCREMENTAL` | `true` | Skip files whose content hash is unchanged |
+| `TRELIX_RETRIEVAL_TOP_K_VECTOR` | `20` | Candidates from the vector leg |
+| `TRELIX_RETRIEVAL_TOP_K_BM25` | `20` | Candidates from the BM25 leg |
+| `TRELIX_RETRIEVAL_RRF_K` | `60` | Reciprocal Rank Fusion `k` constant |
+| `TRELIX_RETRIEVAL_RERANK` | `true` | Reranking on/off |
+| `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | `cohere`, `cross_encoder`, `plaid`, `xtr` (underscore — `cross-encoder` is rejected) |
+| `TRELIX_RETRIEVAL_RERANK_TOP_N` | `15` | Results kept after reranking |
+| `COHERE_MODEL_RERANK` | `Cohere-rerank-v4.0-pro` | Cohere rerank model name |
+| `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` | `12000` | Context tokens sent to the LLM |
+| `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE confidence-gated re-retrieval |
+| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | FLARE synthesis-call budget (min `1`, max `3`) |
+| `TRELIX_LLM_PROVIDER` | `openai` | Synthesis provider |
+| `TRELIX_LLM_MODEL` | `gpt-4o` | Synthesis model |
+| `TRELIX_TELEMETRY_ENABLED` | `false` | Record every `retrieve()` to the `query_telemetry` table |
+
+### Names that do NOT exist
+
+Earlier revisions of this guide listed the variables below. None of them bind to
+anything — setting one is silently ignored, so a command appears to accept your setting
+and then uses the default. Use the replacement instead:
+
+| Not a variable | Use instead |
+|---|---|
+| `TRELIX_EMBEDDER` | `TRELIX_EMBEDDER_PROVIDER`. Setting the bare `TRELIX_EMBEDDER` does not merely no-op — it makes `IndexConfig` raise a pydantic `SettingsError`, because pydantic tries to parse it as the nested `embedder` model. |
+| `TRELIX_LOCAL_MODEL` | `TRELIX_EMBEDDER_LOCAL_MODEL` |
+| `TRELIX_VECTOR_BACKEND` | `TRELIX_STORE_BACKEND` |
+| `TRELIX_INDEX_PATH` | `TRELIX_STORE_DB_PATH` |
+| `TRELIX_LANCE_PATH` | `LANCE_URI` |
+| `TRELIX_CHUNK_SIZE` | `TRELIX_CHUNKER_MAX_TOKENS_PER_CHUNK` |
+| `TRELIX_RERANK` | `TRELIX_RETRIEVAL_RERANK` |
+| `TRELIX_RERANK_TOP_K` | `TRELIX_RETRIEVAL_RERANK_TOP_N` |
+| `TRELIX_FLARE_MAX_RETRIES` | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` |
+| `OPENAI_EMBEDDING_MODEL` | `TRELIX_EMBEDDER_OPENAI_MODEL` |
+| `AZURE_DEPLOYMENT` | `AZURE_EMBEDDINGS_MODEL` (embeddings) or `AZURE_CHAT_MODEL` (synthesis) |
+| `VOYAGE_MODEL` | `TRELIX_EMBEDDER_VOYAGE_MODEL` |
+| `COHERE_RERANK_MODEL` | `COHERE_MODEL_RERANK` |
+| `TRELIX_CHUNK_OVERLAP` | nothing — chunking follows AST boundaries; there is no token-overlap setting |
+| `TRELIX_HYBRID_ALPHA` | nothing — legs are fused by Reciprocal Rank Fusion, not a dense/sparse blend weight. The nearest knob is `TRELIX_RETRIEVAL_RRF_K`. |
+| `TRELIX_CACHE_DIR` | nothing — model caches follow the underlying libraries (e.g. `HF_HOME`); the index lives at `<repo>/.trelix/index.db` |
+| `TRELIX_LOG_LEVEL` | nothing — use `trelix index --verbose` / `-v` |
+| `TRELIX_WATCH_DEBOUNCE_MS` | nothing — **there is no debounce flag or environment variable.** `trelix watch` uses `FileWatcher(debounce_ms=500)` and `trelix watch-all` uses `MultiRepoWatcher(debounce_ms=1600)`, both hardcoded at the call site. Change it only from Python by constructing the watcher yourself. |
 
 ---
 
@@ -448,7 +517,7 @@ loads it automatically via `python-dotenv`.
 
 ```bash
 pip install --upgrade "trelix[local]"   # or whatever extras you use
-trelix --version   # confirm 2.12.0
+trelix --version   # confirm 3.0.0
 ```
 
 ### Step 2 — Review breaking changes
@@ -478,25 +547,32 @@ Update every call site that unpacks the return value directly as a list.
 
 #### `flare_max_iterations` renamed to `flare_max_retries`
 
-The environment variable `TRELIX_FLARE_MAX_ITERATIONS` still works but emits a
-`DeprecationWarning`. It will be removed in v3.0.0 — migrate to the new name:
+The field on `RetrievalConfig` is now `flare_max_retries`. There is **no** deprecation
+shim: the old name is simply ignored, as are the unprefixed spellings
+`TRELIX_FLARE_MAX_ITERATIONS` and `TRELIX_FLARE_MAX_RETRIES`. The only name that binds is
+the fully prefixed one:
 
 ```bash
-# Old (still works in 2.4.0 with a warning)
-export TRELIX_FLARE_MAX_ITERATIONS=5
+# Neither of these does anything (silently ignored — no warning is emitted)
+export TRELIX_FLARE_MAX_ITERATIONS=3
+export TRELIX_FLARE_MAX_RETRIES=3
 
-# New (preferred)
-export TRELIX_FLARE_MAX_RETRIES=5
+# The real variable
+export TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=3   # allowed range: 1-3, default 1
 ```
+
+FLARE itself is off by default; enable it with `TRELIX_RETRIEVAL_FLARE=true`.
 
 If you set the value in code rather than via an environment variable:
 
 ```python
+from trelix.core.config import RetrievalConfig
+
 # Old
-index = TrelixIndex(flare_max_iterations=5)
+RetrievalConfig(flare_max_iterations=3)
 
 # New
-index = TrelixIndex(flare_max_retries=5)
+RetrievalConfig(flare_enabled=True, flare_max_retries=3)
 ```
 
 ### Step 3 — Re-indexing

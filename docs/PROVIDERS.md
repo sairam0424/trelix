@@ -1,4 +1,4 @@
-# trelix v2.12.0 — Providers Reference
+# trelix v3.0.0 — Providers Reference
 
 Complete guide to all embedding providers and LLM providers supported by trelix.
 
@@ -328,6 +328,49 @@ TRELIX_LLM_LITELLM_MODEL=bedrock/claude-3-5-sonnet   # any LiteLLM model string
 
 Any environment variable expected by the underlying provider (e.g. `OPENAI_API_KEY`, `AWS_*`) must still be set — LiteLLM forwards them to the target provider.
 
+### Extended thinking support
+
+Extended thinking is an Anthropic-API request parameter (`thinking={"type": "enabled", "budget_tokens": N}`), not a model name. `TRELIX_LLM_THINKING_ENABLED=true` opts the answer synthesizer into it; see [CONFIGURATION.md § Extended Thinking (Anthropic)](CONFIGURATION.md#extended-thinking-anthropic) for the full behaviour contract.
+
+| Provider | Extended thinking |
+|---|---|
+| `anthropic` | **Supported** — sends the `thinking` parameter, forces `temperature=1.0` for that call, and returns the reasoning text on `ChatResponse.thinking` |
+| `openai` | Accepted and ignored |
+| `azure` | Accepted and ignored |
+| `bedrock` | Accepted and ignored — even for `us.anthropic.*` profiles |
+| `vertex` | Accepted and ignored |
+| `litellm` | Accepted and ignored |
+
+"Accepted and ignored" is literal: every backend takes the flag in its `chat()`/`stream()` signature so the synthesizer needs no provider branch, but only the Anthropic backend acts on it. Setting the flag on another provider is a silent no-op, not an error — nothing is added to the request and `ChatResponse.thinking` stays `None`.
+
+### Model-aware context budgets
+
+Setting `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null` derives the context-assembly budget from the model's context window instead of the fixed `12000` default (see [CONFIGURATION.md § Model-Aware Context Budget](CONFIGURATION.md#model-aware-context-budget)). Two provider-specific facts matter:
+
+**1. Resolution always reads `TRELIX_LLM_MODEL`** — never the provider-specific model field that is actually sent on the wire. So with `TRELIX_LLM_PROVIDER=bedrock`, the window is resolved from `TRELIX_LLM_MODEL` (default `gpt-4o` → 128,000), *not* from `TRELIX_LLM_BEDROCK_PRIMARY_MODEL`. The same gap applies to `AZURE_CHAT_MODEL` and `TRELIX_LLM_LITELLM_MODEL`. Set `TRELIX_LLM_MODEL` to a recognised name matching the model you actually call if you want the derived budget to be meaningful.
+
+| Provider | Model actually called | Model used to resolve the window | Same? |
+|---|---|---|---|
+| `openai` | `TRELIX_LLM_MODEL` | `TRELIX_LLM_MODEL` | yes |
+| `anthropic` | `TRELIX_LLM_MODEL` | `TRELIX_LLM_MODEL` | yes |
+| `vertex` | `TRELIX_LLM_MODEL` | `TRELIX_LLM_MODEL` | yes |
+| `azure` | `AZURE_CHAT_MODEL` (deployment name) | `TRELIX_LLM_MODEL` | **may differ** |
+| `bedrock` | `TRELIX_LLM_BEDROCK_PRIMARY_MODEL` | `TRELIX_LLM_MODEL` | **may differ** |
+| `litellm` | `TRELIX_LLM_LITELLM_MODEL` (falls back to `TRELIX_LLM_MODEL`) | `TRELIX_LLM_MODEL` | **may differ** |
+
+**2. Matching is prefix-anchored, so namespaced ids do not resolve.** Lookup lower-cases both sides and walks a longest-prefix-first table, which handles version and date suffixes (`gpt-4o-2024-11-20` → `gpt-4o` → 128,000; `claude-sonnet-4-6` → 200,000). It does **not** strip a provider namespace, because the match is anchored at the start of the string:
+
+| Model string | Resolves to |
+|---|---|
+| `gpt-4o-2024-11-20` | 128,000 |
+| `claude-sonnet-4-6` | 200,000 |
+| `gemini-2.5-pro` | 1,000,000 |
+| `us.anthropic.claude-sonnet-4-6` | unrecognised |
+| `anthropic.claude-3-5-sonnet-20240620-v1:0` | unrecognised |
+| `bedrock/claude-3-5-sonnet` | unrecognised |
+
+An unrecognised model logs a WARNING and falls back to a flat `12,000`-token budget — the window fraction is not applied. Auto-derivation therefore degrades to the v2.12.0 default rather than failing, but it also means Bedrock inference-profile ids and LiteLLM-prefixed model strings get no benefit from it unless `TRELIX_LLM_MODEL` is set to a bare, recognised model name.
+
 ---
 
 ## Environment Variables Reference
@@ -392,6 +435,8 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — (required for anthropic) | Anthropic API key |
+| `TRELIX_LLM_THINKING_ENABLED` | `false` | Anthropic extended thinking on the synthesizer's calls. Other backends accept and ignore it |
+| `TRELIX_LLM_THINKING_BUDGET_TOKENS` | `4096` | `thinking.budget_tokens` sent to the Anthropic Messages API. Bills as output tokens |
 | `TRELIX_LLM_BEDROCK_PRIMARY_MODEL` | `us.anthropic.claude-sonnet-4-6` | Bedrock primary inference profile |
 | `TRELIX_LLM_BEDROCK_FALLBACK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock fallback profile |
 | `GOOGLE_CLOUD_PROJECT` | — | GCP project (Vertex AI) |
@@ -420,7 +465,9 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | Reranker: `cohere`, `cross_encoder`, `plaid` |
 | `TRELIX_RETRIEVAL_RERANK_TOP_N` | `15` | Candidates passed to reranker |
 | `TRELIX_RETRIEVAL_PLAID_MODEL` | `colbert-ir/colbertv2.0` | PLAID (ColBERT) model for late-interaction reranking |
-| `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` | `12000` | Max tokens in assembled context window |
+| `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` | `12000` | Max tokens in assembled context. An explicit int is a fixed budget; `null` (also `none`/`auto`/`~`/empty) auto-derives it from the model's context window — see [Model-aware context budgets](#model-aware-context-budgets) |
+| `TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION` | `0.5` | Fraction of the model window to spend on context when the budget is `null` (range 0.1–0.9). Ignored with an explicit int budget |
+| `TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET` | `false` | Also scale `top_k_vector`/`rerank_top_n` by `effective_budget / 12000`. Needs the budget to be `null`; raises per-query cost |
 | `TRELIX_RETRIEVAL_SYNTHESIS_MAX_TOKENS` | `12000` | Max tokens in LLM synthesis response |
 | `TRELIX_RETRIEVAL_GRAPH_IMPORT_MAX_EXTRA` | `3` | Extra symbols added via graph import expansion |
 | `TRELIX_RETRIEVAL_QUERY_CACHE_SIZE` | `256` | LRU cache for `embed_query()` (0 = disabled) |
@@ -449,6 +496,11 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 | `TRELIX_RETRIEVAL_FILE_SUMMARY_TOP_K` | `5` | Top-K file summaries to retrieve |
 | `TRELIX_RETRIEVAL_SUB_CHUNK` | `false` | Sub-chunk (block/statement) search leg (MGS3) |
 | `TRELIX_RETRIEVAL_SUB_CHUNK_TOP_K` | `10` | Top-K sub-chunk results |
+| `TRELIX_RETRIEVAL_COMPRESSION` | `false` | SeleCom query-conditioned compression of oversized bodies (provider-independent — no LLM call) |
+| `TRELIX_RETRIEVAL_COMPRESSION_PROVIDER` | `extractive` | Compression backend; `extractive` is the only accepted value |
+| `TRELIX_RETRIEVAL_COMPRESSION_RATIO` | `0.45` | Fallback keep-ratio for unknown intents only (0.1–1.0) |
+| `TRELIX_RETRIEVAL_COMPRESSION_RATIO_<INTENT>` | (per-intent defaults) | Per-intent keep-ratio override, e.g. `..._BLAST_RADIUS=0.5` |
+| `TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS` | `120` | Bodies below this token count are never compressed |
 | `TRELIX_FEDERATION_ENABLED` | `false` | Multi-repo federated search |
 | `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Parallel workers for federated search (1–16) |
 
