@@ -59,6 +59,90 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   the module-level import is now the single source. Four dead
   `import json as _json` locals went with them.
 
+- **Every code fence trelix put into an LLM prompt was hard-coded to three
+  backticks, so any payload containing ``` closed its own fence early.**
+  CommonMark ends a fenced block at the first fence at least as long as the
+  opening one, so from that point on the remainder of the payload stopped being
+  quoted code and reached the model as prose it could act on. Three sites were
+  affected: the agent loop's `get_symbol` observation (`agent/loop.py`), and both
+  the changed-diff and retrieved-context blocks in the PR reviewer
+  (`review/reviewer.py`).
+
+  **Deriving the fence length repaired the two reviewer sites but was a no-op at
+  the agent site until two further defects were fixed**, both in
+  `agent/history.py:to_text()`, which is what actually renders an observation
+  into the prompt:
+
+  - It interpolated the observation after a label on the *same line*. A
+    CommonMark fence only opens a block at the **start** of a line, so
+    `**Observation [ok]:** ```{code}` opened no block at all — the payload
+    reached the model as prose and the *closing* fence opened an empty block
+    instead. Confirmed against markdown-it-py at fence lengths 3, 4 and 11, and
+    for a payload containing no backticks whatsoever: the defect is structural,
+    so no fence length could ever have fixed it.
+  - It sliced the rendered block at a fixed 500 characters, cutting the closing
+    fence off any longer body. The block then never closed and **every later turn
+    was swallowed into it** as though it were quoted code.
+
+  Both were pre-existing rather than regressions, but together they meant the
+  agent-side half of this fix would have shipped inert. The label now occupies its
+  own line and truncation re-closes a fence it cuts.
+
+  This breaks on ordinary use, not only under attack. trelix indexes markdown —
+  `MarkdownParser` is wired into the parser registry — and **72 of the 79
+  tracked markdown files in this repository contain a three-backtick run**, so a
+  markdown symbol body pasted into a prompt truncated its own fence as a matter
+  of course. Reviewing a diff that touches a markdown file put ``` directly into
+  the diff text for the same reason.
+
+  Fixed by deriving the fence from the payload in one shared helper,
+  `trelix.llm.prompt.fenced_block()`, which returns
+  `max(3, longest_backtick_run + 1)` backticks per CommonMark. It counts every
+  backtick run rather than only line-initial ones, because the consumer is a
+  language model rather than a spec-compliant parser: over-counting costs one
+  backtick, under-counting truncates the payload. **Output is byte-identical to
+  the previous format for any payload whose longest run is under three** — which
+  is nearly all source code — and three of the new tests assert exactly that, so
+  the change is a no-op for prompts that already worked.
+
+- **The agentic loop's system prompt was defined and never sent.**
+  `agent/loop.py` declared a `_SYSTEM_PROMPT` with the ReAct strategy rules, but
+  nothing read it: `grep` found one hit in the file, the definition. Every turn
+  went to the model as a single `role="user"` message and no system content of
+  any kind, so the loop ran with zero strategy instructions and none of its own
+  stated invariants were in force — including *"never call done until you've done
+  at least one retrieval"*, which is what stops the agent answering from the
+  question alone. The wiring appears simply never to have been written; the
+  constant is present verbatim in the original v2.2 design plan.
+
+  The obvious repair does not work: `tool_call()` declares no `system=` parameter
+  on the `TrelixChatClient` ABC or on any of the five backends, unlike
+  `complete()` and `stream()` which both do. The route the providers actually
+  honour is a `role="system"` message at the head of the list, which is the idiom
+  `QueryPlanner._call_llm` already uses; the loop now does the same. The user
+  turn is unchanged byte-for-byte, so this adds the missing system message rather
+  than rewriting the prompt.
+
+  One note for operators: this is a deliberate behaviour change to what the
+  agentic loop sends. The effect on model output has not been measured, because it
+  cannot be without live LLM calls; the loop's public contract (`run()`'s return
+  type, the tool schemas, turn accounting) is untouched.
+
+- **`VertexBackend.tool_call()` silently discarded every system message.** It
+  built its `GenerateContentConfig` without `system_instruction=` while
+  `_build_contents()` filters `role == "system"` out and never re-injects it, so
+  the model received the tool declarations and the user turn with no instructions
+  at all. `complete()` and `stream()` in the same file compute an
+  `effective_system` and pass it; only `tool_call()` did not.
+
+  This was pre-existing and already degraded `QueryPlanner._call_llm`, which
+  passes its planning rules as a system message — so query planning was quietly
+  worse on Vertex than on every other provider. It would also have made the agent
+  system prompt above a no-op on Vertex alone, which is the hardest kind of gap to
+  notice: correct everywhere except one backend. Fixed by deriving
+  `effective_system` from the messages exactly as `complete()` does, since
+  `tool_call()` takes no `system=` parameter on the client ABC.
+
 ### Added
 
 - 13 regression tests (`tests/unit/test_cli_markup_safety.py`, plus two in
@@ -69,6 +153,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `extractors/rust.py` at test time rather than pasted, so the tests cannot
   drift from the code they pin. 11 of the 13 fail against the previous release;
   the other two are negative controls asserting `--json` output stays unescaped.
+
+- 26 tests for prompt construction. 16 in `tests/unit/test_llm_prompt.py` cover
+  the fence helper's edge cases: no backticks, runs of one and two (which must
+  *not* inflate the fence, since that is what preserves byte-identity), runs of
+  exactly three and longer, multiple runs, a run at the start or end of the
+  payload, and empty and whitespace-only payloads. The worst-case payload is a
+  verbatim excerpt of this repository's own `.github/SECURITY.md` rather than a
+  crafted string, so it cannot drift from what trelix would really index.
+
+  The other 10 live at the call sites in `tests/unit/test_agent_loop.py` and
+  `tests/unit/test_reviewer.py` and assert on the **rendered prompt string**, not
+  on the helper, so they pin the wiring rather than the implementation: five
+  assert a well-formed block for a payload carrying ```, two assert byte-identical
+  output for a plain payload, and one asserts the reviewer's two fences are
+  derived independently so a long run in the retrieved context cannot inflate the
+  diff's fence. The system-prompt tests capture the `tool_call()` kwargs from a
+  fake client — no live LLM call — and assert the specific rule text arrives in a
+  `role="system"` message, that no `system=` kwarg is passed (no backend accepts
+  one), and that the rules were not smuggled into the user turn.
+
+  23 of the 26 fail against the previous code. The other three are the
+  byte-identity controls, which must pass on both sides; they were run against a
+  pre-fix copy of `src/` to confirm they do.
 
 ## [3.0.1] — 2026-08-13
 

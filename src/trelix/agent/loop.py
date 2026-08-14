@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from trelix.agent.actions import ActionType, AgentAction, Observation, Turn
 from trelix.agent.history import HistoryCompressor, TurnHistory
 from trelix.agent.tools import AGENT_TOOLS
+from trelix.llm.prompt import fenced_block
 
 logger = logging.getLogger("trelix.agent.loop")
 
@@ -172,7 +173,15 @@ class AgentLoop:
             "What is your next action? Think step by step, then call the appropriate tool."
         )
 
-        messages = [ChatMessage(role="user", content=user_content)]
+        # tool_call() declares no system= parameter (unlike complete()/stream()),
+        # so a role="system" message is the only route the backends honour — the
+        # same idiom QueryPlanner._call_llm already uses. Without this the ReAct
+        # loop ran with zero strategy instructions and none of _SYSTEM_PROMPT's
+        # rules, including "never call done before at least one retrieval".
+        messages = [
+            ChatMessage(role="system", content=_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=user_content),
+        ]
         client = self._get_client()
         response = client.tool_call(
             messages=messages,
@@ -254,7 +263,16 @@ class AgentLoop:
         sym = candidates[0] if candidates else None
         if sym is None:
             return Observation(f"Symbol '{qualified_name}' not found.", "get_symbol", False)
-        return Observation(f"```\n{sym.body}\n```", "get_symbol", True)
+        # Fence length is derived from the body: a markdown symbol body carrying
+        # its own ``` would otherwise close this fence early, spilling the rest
+        # of the body into the prompt as unquoted prose.
+        #
+        # Deriving the length is necessary but was NOT sufficient on its own.
+        # This observation is rendered by TurnHistory.to_text(), which used to
+        # interpolate it after a label on the same line — and a CommonMark fence
+        # only opens a block at the START of a line, so no fence length whatsoever
+        # opened a block here. See the comment in agent/history.py:to_text().
+        return Observation(fenced_block(sym.body), "get_symbol", True)
 
     def _fallback_answer(self, query: str, history: TurnHistory) -> str:
         """When max turns is reached, summarize what was found."""

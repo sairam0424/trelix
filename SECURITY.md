@@ -67,6 +67,195 @@ is validated server-side:
 - Denial-of-service via extremely large repositories (use `--limit` flags)
 - Issues requiring physical access to the machine
 
+## Prompt Injection via Indexed Content
+
+**Status: documented, not mitigated.** trelix ships no defence against prompt
+injection. This section exists so you can decide what to index and what to scope
+a token to — not because a control was added. Everything below is a byte-level
+statement about which text reaches a model, established by reading the cited code
+paths. Nothing below is a claim about how a model responds to that text; see
+"What is unmeasured" at the end of this section.
+
+### Attacker and attacker-controlled surface
+
+- **The attacker is anyone who can land text in a file trelix indexes.** Repo
+  write access is not required — for the review path below, an unmerged pull
+  request is enough.
+- **Indexed content is re-emitted verbatim.** A symbol's body is copied into its
+  chunk text (`indexing/chunker.py:149`), and the chunk text is copied into the
+  assembled LLM context (`retrieval/assembler.py:334`). Nothing transforms it in
+  between.
+- **Prose-carrying formats are indexed by default, not just code.** Markdown,
+  HTML, YAML, TOML and JSON are all in the default `languages` list
+  (`core/config.py:30-52`). `.md`/`.mdx` map to `Language.MARKDOWN`
+  (`indexing/walker.py:47-48`) and are parsed into heading-based sections
+  (`indexing/parser/registry.py:132-136`). Free-form English in a README is
+  first-class indexed content, not an edge case.
+- **Assume attacker influence whenever the repository** accepts pull requests or
+  patches from outside your trust boundary; holds test fixtures, recorded HTTP
+  responses, or sample payloads; or vendors third-party source. `node_modules`,
+  `vendor` and `Pods` are ignored by default (`core/config.py:55-87`) — but
+  `third_party/`, `external/`, git submodules and a checked-in SDK are not.
+
+Exposure by default vs opt-in:
+
+| Path | Default | What reaches a model |
+| ---- | ------- | -------------------- |
+| `trelix index` | on | with the default `local` embedder (`core/config.py:209-219`), nothing leaves the machine; with any remote embedder, every chunk's text is sent to the embedding model (`indexing/indexer.py:959`, `:1021`) |
+| `trelix ask`, `GET /ask` | on | the assembled retrieval context (below) |
+| index-time file summaries | off — `TRELIX_FILE_SUMMARIES_ENABLED` (`core/config.py:1227-1230`) | file path, language, and top symbol signatures truncated to 80 chars (`indexing/file_summarizer.py:85-91`) |
+| agentic loop | off — `TRELIX_RETRIEVAL_AGENTIC` (`core/config.py:649-652`), or `--agentic`/`--session` (`cli/main.py:422-424`) | retrieval context plus prior-turn observations |
+| `trelix review` | opt-in command | diff hunk text plus retrieved context |
+| `trelix review --post-comments` | off (`cli/main.py:1540-1546`) | as above, and model output leaves the machine |
+| `trelix-mcp` tools and resources | on, once the server is registered with a host | verbatim symbol bodies — `search_code` 800 chars, `get_symbol` and the `trelix://…/symbol` resource the **whole** body |
+
+The `trelix-mcp` row deserves separate emphasis, because its sink is the widest
+in this table. The consumer of an MCP tool result is a host agent — Claude Code
+and its peers — which typically holds shell and file-write tools of its own, a
+strictly broader capability than the single authenticated GitHub comment write
+described below. trelix's own MCP prompt templates instruct that agent to call
+those tools.
+
+### What reaches a model, and in what form
+
+1. **Assembled retrieval context, in the same message as your question.**
+   `_USER_TEMPLATE` (`retrieval/synthesizer.py:86-93`) interpolates
+   `context_text` and `query` into a single `role="user"` message
+   (`retrieval/synthesizer.py:237-240`, `:274-277`). `context_text` is the output
+   of `ContextAssembler._format_context` (`retrieval/assembler.py:291-337`),
+   which emits each result's chunk text verbatim under a `=== <path> ===` /
+   `[Lines a-b] <qualified_name>` header. `GET /ask` runs the same two steps
+   (`api/app.py:431-449`).
+2. **Agent-loop observations, carried across turns and across processes.** The
+   `retrieve` action places up to 300 characters of each matching symbol body in
+   the observation (`agent/loop.py:238`); `get_symbol` places the whole body in
+   (`agent/loop.py:275`). `TurnHistory.to_text()` renders each observation back
+   into the next turn's prompt, truncated to 500 characters
+   (`agent/history.py:87-99`), and that string is concatenated into the user
+   message at `agent/loop.py:168-175`. Turns are persisted to SQLite
+   (`agent/loop.py:146`) and replayed into the prompt when a session is resumed
+   with `--session` (`agent/loop.py:104`, `:112`) — text read in one invocation
+   can therefore re-enter a prompt in a later one. This is about the *text* the
+   loop forwards; the loop's *action* confinement is unchanged and is described
+   under "Agentic Loop Security" in the v2.2.0 notes below.
+3. **Diff text plus retrieved context, in the review path.** Each hunk's removed
+   and added lines are formatted into a user message, followed by up to 3,000
+   characters of retrieved context (`review/reviewer.py:137`, `:147-154`), and
+   sent with a review system prompt (`review/reviewer.py:156-161`). Under `--pr`
+   the diff is the pull-request author's patch, fetched from the GitHub API
+   (`review/github.py:102`) and reassembled into a unified diff at
+   `cli/main.py:1594-1605`.
+4. **Indexed text also reaches *you* with no model in the loop.** When the agent
+   loop hits its turn cap it returns the first three successful observations as
+   the answer (`agent/loop.py:277-284`). With a `local` embedder provider,
+   `trelix ask` prints the assembled context and returns before any synthesis
+   call (`cli/main.py:461-469`). Terminal rendering is escaped for display only
+   (see the Rich-markup notes at `cli/main.py:432-437`) — escaping prevents
+   markup errors, it is not sanitization.
+
+### What trelix does not do about it
+
+Stated as plainly as any benefit in this document:
+
+- **No sanitization.** Indexed content is never filtered, neutralized, or
+  rewritten before it enters a prompt. There is no character allowlist, no
+  instruction-stripping, and no rejection of anomalous content. The size caps
+  cited above exist for token budget, not for safety.
+- **No instruction/data separation.** Retrieved content and the user's question
+  share one `role="user"` message on every retrieval, agent, and review path
+  above — repository text and the instruction to act on it are the same
+  undelimited string by the time the request is built. Where a system prompt
+  exists it carries trelix's own instructions; it does not fence the retrieved
+  text. Code fences in these prompts are a rendering guarantee, not a trust
+  boundary. Their length is derived from the payload (`llm/prompt.py`,
+  `fence_for`), so a payload containing its own ``` can no longer close the block
+  early — but a fence only marks content, it does not constrain what a model does
+  with it. That change, and the terminal-escaping change referenced above, are
+  correctness fixes to rendering. **Neither is an anti-injection control, and
+  neither was measured against a model.**
+- **No detection.** trelix does not scan indexed content, prompts, or model
+  output for injection attempts, and emits no log line, metric, or exit code when
+  content looks anomalous.
+- **No provenance tracking.** Once text is in the index, nothing records whether
+  it came from a first-party file or a contributed/vendored one, so nothing
+  downstream can treat the two differently.
+
+### Highest-severity capability chain: `trelix review --pr --post-comments`
+
+Each link read from the code:
+
+1. `--pr` requires `GITHUB_TOKEN` (`cli/main.py:1565-1570`) and fetches the PR's
+   patches (`review/github.py:102`).
+2. Those patches — authored by the PR author, who need not be trusted — are
+   placed in the LLM user message (`review/reviewer.py:154-161`).
+3. The model's returned text is parsed into `ReviewComment.comment`
+   (`review/reviewer.py:180`).
+4. With `--post-comments`, each `comment` becomes the `body` of an inline GitHub
+   review comment (`cli/main.py:1670-1678`), posted with that same token
+   (`cli/main.py:1679-1686`, `review/github.py:146-207`).
+
+So untrusted repository text sits at one end of a chain whose other end is an
+authenticated write to GitHub. Two limits bound the chain rather than break it,
+and are worth stating precisely:
+
+- trelix never passes `event=`, so the review is created as the default
+  `"COMMENT"` (`review/github.py:154`) — this path cannot approve a PR.
+- The only field derived from model output is the comment `body`; `path` and
+  `line` come from the parsed diff (`cli/main.py:1671-1673`).
+
+**No exploit was attempted.** What is asserted here is capability — that the code
+connects untrusted input to a write-scoped credential — not that any particular
+model would traverse it.
+
+### What is unmeasured
+
+The analysis behind this section made **zero LLM calls**. Consequently:
+
+- Whether any model acts on instructions embedded in indexed content is
+  **unmeasured**, for every provider and every prompt above.
+- Which path is most susceptible is **unmeasured** — do not read the ordering
+  above as a ranking of exploitability.
+- No mitigation is recommended here because none was evaluated. Any candidate
+  defence would need model-in-the-loop measurement that has not been done.
+
+### Practical guidance
+
+Before indexing a repository you do not fully trust:
+
+- Treat every prose file in it as prompt content, not just the code. A single
+  `trelix ask` sends the retrieval-selected subset that fits the assembler's
+  token budget, not the whole repository — but across enough queries any indexed
+  chunk can reach a prompt. Note that on the *default* configuration `trelix ask`
+  makes no LLM call at all (the `local` embedder returns the assembled context
+  directly); the exposure below begins once an LLM-backed path is configured.
+- Leave the agentic loop off (`TRELIX_RETRIEVAL_AGENTIC` is already `false`) — it
+  is the only path that re-feeds prior observations into a later prompt. The
+  other multi-round path, FLARE, re-retrieves with a fixed query suffix and
+  carries no prior content forward (`retrieval/flare.py:101-103`).
+- Narrow what gets indexed: drop prose formats you do not need from
+  `WalkerConfig.languages` and add vendored/fixture directories to
+  `WalkerConfig.extra_ignore_dirs` (`core/config.py:30`, `:55`; env prefix
+  `TRELIX_WALKER_`, `core/config.py:28`).
+- For retrieval-only use, run with a `local` embedder provider — `trelix ask`
+  then returns the context without making an LLM call (`cli/main.py:461-469`),
+  and indexing sends no chunk text to a remote embedding model. `local` is
+  already the default (`core/config.py:209-219`), but a `.env` or an exported
+  `TRELIX_EMBEDDER_PROVIDER` can silently change it, so check the resolved value
+  rather than assuming.
+
+Scoping a review token:
+
+- Omit `--post-comments` and the GitHub path is read-only: the only write is
+  `post_review` (`review/github.py:146`), reached solely from the
+  `--post-comments` branch (`cli/main.py:1679`).
+- When you do post, use a fine-grained token limited to the single target
+  repository, with the scopes named in the client docstring
+  (`review/github.py:54-57` — `pull_requests:write`, `contents:read`). Do not
+  reuse a classic `repo`-scope token: `repo` grants code write across every
+  repository the token can reach, which is far wider than this feature needs.
+- Prefer a short-lived CI job token over a long-lived personal token, and treat
+  posted comments as untrusted model output when reading them.
+
 ## v2.1.0 Security Notes
 
 ### Query Telemetry (`telemetry_enabled`)

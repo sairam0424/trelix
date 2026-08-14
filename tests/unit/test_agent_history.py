@@ -72,6 +72,107 @@ class TestTurnHistory:
         assert h.turns == []
 
 
+class TestObservationFencing:
+    """`to_text()` must keep a fenced observation inside its own code block.
+
+    `get_symbol` hands back an observation already wrapped by
+    `trelix.llm.prompt.fenced_block()`. Two independent defects used to unwrap it
+    again, and each is invisible to a test that only checks the payload appears
+    somewhere in the output:
+
+      1. The label and content shared a line, so the opening fence was mid-line.
+         CommonMark only opens a fenced block at the START of a line, so the
+         payload reached the model as prose and the CLOSING fence opened an empty
+         block instead. This is structural — it happened for a payload with no
+         backticks at all, which is why no amount of fence-length derivation in
+         loop.py could fix it.
+      2. The rendered block was sliced at a fixed character limit, cutting the
+         closing fence off any longer body, so the block never closed and every
+         later turn was swallowed into it.
+
+    These assert on STRUCTURE via a real CommonMark parser rather than on
+    substring presence, because the payload was always present — just not quoted.
+    """
+
+    @staticmethod
+    def _symbol_turn(body: str) -> Turn:
+        from trelix.llm.prompt import fenced_block
+
+        return Turn(
+            thought="Looking up the symbol",
+            action=AgentAction(ActionType.GET_SYMBOL, {"qualified_name": "mod.fn"}),
+            observation=Observation(fenced_block(body), "get_symbol", True),
+        )
+
+    @staticmethod
+    def _fences(text: str) -> list[str]:
+        """Fenced-block contents, per a real CommonMark parser."""
+        import pytest
+
+        md = pytest.importorskip(
+            "markdown_it", reason="markdown-it-py needed to assert CommonMark structure"
+        ).MarkdownIt()
+        return [t.content for t in md.parse(text) if t.type == "fence"]
+
+    def test_fence_opens_at_line_start(self) -> None:
+        """The opening fence must begin a line, or it opens nothing."""
+        h = TurnHistory()
+        h.add(self._symbol_turn("def f():\n    return 1"))
+        text = h.to_text()
+
+        assert "**Observation [ok]:**\n```" in text, (
+            "the label and the fence share a line, so the fence never opens a block"
+        )
+        assert any("def f():" in c for c in self._fences(text))
+
+    def test_payload_carrying_its_own_fence_stays_quoted(self) -> None:
+        """A markdown body containing ``` must not escape its block."""
+        body = "Install it:\n```bash\npip install trelix\n```\nThen run it."
+        h = TurnHistory()
+        h.add(self._symbol_turn(body))
+
+        fences = self._fences(h.to_text())
+        assert any("pip install trelix" in c for c in fences)
+        assert any("Then run it." in c for c in fences), (
+            "the payload's own fence closed the block early and the tail became prose"
+        )
+
+    def test_truncated_observation_still_closes_its_fence(self) -> None:
+        """A body past the char limit must not leave the block hanging open."""
+        h = TurnHistory()
+        h.add(self._symbol_turn("x = 1\n" * 150))  # ~900 chars, well past the limit
+        text = h.to_text()
+
+        assert text.rstrip().endswith("`"), "truncation sliced the closing fence off"
+        assert any("x = 1" in c for c in self._fences(text))
+
+    def test_long_first_turn_does_not_swallow_the_next(self) -> None:
+        """The regression that made truncation expensive rather than merely untidy."""
+        h = TurnHistory()
+        h.add(self._symbol_turn("x = 1\n" * 150))
+        h.add(self._symbol_turn("def later() -> None: ..."))
+        text = h.to_text()
+
+        fences = self._fences(text)
+        assert len(fences) == 2, f"expected one block per turn, got {len(fences)}"
+        assert any("def later()" in c for c in fences)
+        assert not any("## Turn 2" in c for c in fences), (
+            "turn 1's unclosed block swallowed turn 2's heading"
+        )
+
+    def test_plain_observation_is_untouched(self) -> None:
+        """Non-fenced observations must render exactly as before."""
+        h = TurnHistory()
+        h.add(
+            Turn(
+                thought="t",
+                action=AgentAction(ActionType.RETRIEVE, {"query": "q"}),
+                observation=Observation("3 results found", "retrieve", True),
+            )
+        )
+        assert "**Observation [ok]:**\n3 results found" in h.to_text()
+
+
 class TestHistoryCompressor:
     def test_compress_within_budget_unchanged(self) -> None:
         h = TurnHistory()

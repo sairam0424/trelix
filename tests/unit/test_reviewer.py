@@ -174,3 +174,93 @@ class TestDiffReviewer:
         result = reviewer.review(hunks=None, diff_text=diff_text)
         assert isinstance(result, list)
         assert mock_llm.complete.called
+
+
+def _capture_user_content(tmp_path: Path, hunk: DiffHunk, context_text: str) -> str:
+    """Run one hunk review against a fake client and return the user prompt."""
+    from trelix.core.config import IndexConfig
+
+    reviewer = DiffReviewer(IndexConfig(repo_path=str(tmp_path)))
+    mock_ctx = MagicMock()
+    mock_ctx.context_text = context_text
+    mock_ctx.results = []
+    reviewer._retriever = MagicMock()
+    reviewer._retriever.retrieve.return_value = mock_ctx
+
+    mock_llm = MagicMock()
+    mock_llm.complete.return_value = MagicMock(content="[]")
+    reviewer._llm_client = mock_llm
+
+    reviewer.review([hunk])
+    assert mock_llm.complete.call_count == 1
+    messages = mock_llm.complete.call_args.kwargs["messages"]
+    return str(messages[0].content)
+
+
+class TestReviewHunkFencing:
+    """Both fenced blocks in the review prompt must survive backticks in the payload."""
+
+    def test_plain_hunk_is_byte_identical_to_legacy_prompt(self, tmp_path: Path) -> None:
+        """Guarantees the fence change is a no-op for payloads without backticks."""
+        hunk = _make_hunk()
+        content = _capture_user_content(tmp_path, hunk, "def login(user, password): ...")
+        diff_text = "\n".join(
+            [f"- {line}" for line in hunk.removed] + [f"+ {line}" for line in hunk.added]
+        )
+        expected = (
+            f"File: {hunk.file_path} (lines {hunk.new_start}–"
+            f"{hunk.new_start + hunk.new_lines})\n\n"
+            f"Changed code:\n```\n{diff_text}\n```\n\n"
+            f"Related codebase context:\n```\ndef login(user, password): ...\n```\n\n"
+            "Provide review comments as a JSON array."
+        )
+        assert content == expected
+
+    def test_diff_containing_a_fence_is_still_well_formed(self, tmp_path: Path) -> None:
+        # Reviewing a change to a markdown file puts ``` straight into the diff.
+        hunk = DiffHunk(
+            file_path="README.md",
+            old_start=1,
+            new_start=1,
+            old_lines=1,
+            new_lines=3,
+            added=["```bash", "pip install trelix", "```"],
+            removed=["old text"],
+        )
+        content = _capture_user_content(tmp_path, hunk, "")
+        block = content.split("Changed code:\n", 1)[1].split("\n\nProvide review")[0]
+        lines = block.split("\n")
+        assert lines[0] == "````"
+        assert lines[-1] == "````"
+        assert block == "````\n- old text\n+ ```bash\n+ pip install trelix\n+ ```\n````"
+        # No inner line may open a fence long enough to close the block early.
+        for line in lines[1:-1]:
+            assert not line.lstrip().startswith("````")
+
+    def test_context_containing_a_fence_is_still_well_formed(self, tmp_path: Path) -> None:
+        # Retrieved context is a symbol body; markdown symbols carry fences.
+        context = "Verify a release:\n```bash\npip install pypi-attestations\n```"
+        content = _capture_user_content(tmp_path, _make_hunk(), context)
+        block = content.split("Related codebase context:\n", 1)[1].split("\n\nProvide review")[0]
+        assert block == f"````\n{context}\n````"
+        for line in context.split("\n"):
+            assert not line.lstrip().startswith("````")
+
+    def test_the_two_fences_are_derived_independently(self, tmp_path: Path) -> None:
+        """A fence in the context must not inflate the diff's fence, or vice versa."""
+        hunk = DiffHunk(
+            file_path="README.md",
+            old_start=1,
+            new_start=1,
+            old_lines=1,
+            new_lines=1,
+            added=["plain added line"],
+            removed=[],
+        )
+        content = _capture_user_content(tmp_path, hunk, "`````\nlong run\n`````")
+        diff_block = content.split("Changed code:\n", 1)[1].split("\n\n", 1)[0]
+        context_block = content.split("Related codebase context:\n", 1)[1].split(
+            "\n\nProvide review"
+        )[0]
+        assert diff_block == "```\n+ plain added line\n```"
+        assert context_block == "``````\n`````\nlong run\n`````\n``````"
