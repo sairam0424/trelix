@@ -7,6 +7,33 @@ from typing import Any
 
 from trelix.agent.actions import Turn
 
+_OBSERVATION_CHAR_LIMIT = 500
+
+
+def _truncate_preserving_fence(content: str, limit: int) -> str:
+    """Truncate `content` without orphaning a code fence it opened.
+
+    `get_symbol` returns its observation already wrapped by
+    `trelix.llm.prompt.fenced_block()`, so slicing the rendered string at a
+    fixed length cuts the CLOSING fence off any body longer than the limit. The
+    block then never closes, and every later turn in the history is swallowed
+    into it as if it were quoted code.
+
+    When truncation cuts a block that opened with a bare fence line, the fence
+    is re-appended. That overshoots `limit` by the fence's length plus a
+    newline, which is the correct trade: a handful of characters over budget
+    against a prompt whose remaining turns are all inside a code block.
+    """
+    if len(content) <= limit:
+        return content
+    truncated = content[:limit]
+    opening = content.split("\n", 1)[0]
+    # Only a bare run of backticks opens a block that we are responsible for
+    # closing; anything else (prose, an error string) needs no repair.
+    if opening and set(opening) == {"`"} and not truncated.rstrip().endswith(opening):
+        truncated = truncated.rstrip("\n") + "\n" + opening
+    return truncated
+
 
 @dataclass
 class TurnHistory:
@@ -67,7 +94,18 @@ class TurnHistory:
             lines.append(f"**Thought:** {turn.thought}")
             lines.append(f"**Action:** {turn.action.action_type} {turn.action.arguments}")
             status = "ok" if turn.observation.success else "err"
-            lines.append(f"**Observation [{status}]:** {turn.observation.content[:500]}")
+            # The label goes on its own line and the content starts the next one.
+            # A CommonMark fence only opens a block at the START of a line, so
+            # "**Observation [ok]:** ```" opened nothing: the payload reached the
+            # model as prose and the *closing* fence opened a block instead.
+            # Confirmed against markdown-it-py — the payload sat inside no fence
+            # at 3, 4 or 11 backticks, and for a payload with no backticks at all.
+            # That is why deriving a longer fence in loop.py cannot help here; the
+            # defect is structural, not payload-dependent.
+            lines.append(f"**Observation [{status}]:**")
+            lines.append(
+                _truncate_preserving_fence(turn.observation.content, _OBSERVATION_CHAR_LIMIT)
+            )
             lines.append("")
         return "\n".join(lines)
 

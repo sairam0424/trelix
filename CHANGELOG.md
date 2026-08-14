@@ -6,6 +6,266 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-08-14
+
+### Overview
+
+A correctness release for everything trelix renders — to your terminal, to a
+machine-readable pipe, and into an LLM prompt. Eight defects, all in one class:
+a dynamic value meeting a sink that reinterprets it.
+
+The common thread is that **none of them needed an attacker.** trelix's own
+`rust.py` contains a regex whose `[/!]` is an unmatched Rich closing tag, so
+`trelix ask` against any repository holding a Rust comment-stripper — trelix
+included — died instead of showing results. 72 of this repo's 79 markdown files
+contain a three-backtick run, so a markdown symbol body closed its own code fence
+on the way into a prompt. A long LLM review comment wrapped mid-string and made
+`trelix review --json` unparseable. A directory named `deep[` aborted an entire
+`trelix index` run from inside the error handler that was supposed to skip one
+file.
+
+Two were silent rather than loud, which is why they lasted: Rich swallows a
+balanced tag pair and exits 0 having dropped characters, and an ANSI spinner
+prefix makes `trelix graph --json | jq` produce garbage with exit 0. Two more
+were capability bugs — the agentic loop's system prompt had never reached a
+model, and `VertexBackend.tool_call()` silently discarded every system message,
+which had already been degrading query planning on Vertex.
+
+Also documents the prompt-injection threat model in `SECURITY.md` for the first
+time. **That section adds no mitigation** — it states plainly what indexed
+content reaches a model and that trelix does no sanitization, no instruction/data
+separation, and no detection. The escaping and fence changes in this release are
+correctness fixes to rendering; neither is an anti-injection control, and no LLM
+was called anywhere in this work.
+
+No configuration changes, no schema changes, and **no reindex required**. Output
+is byte-identical for every value that did not previously trip one of these bugs
+— pinned by the 177 existing byte-identical assembler assertions plus 51 new
+regression tests (2,394 -> 2,445), each demonstrated failing against v3.0.1.
+
+### Fixed
+
+- **A bracket in a file path or in a parser error message aborted the entire
+  `trelix index` run.** `Indexer` builds its own `Console()` with markup enabled,
+  and the earlier CLI markup audit covered `cli/main.py` only. Both error handlers
+  interpolated their values raw — `f"[red]Parse error[/red] {rel_path}: {exc}"` —
+  so an unmatched `[/…]` in **either** raised `MarkupError` from inside the
+  `except` block itself. That escaped the worker loop and killed the run,
+  discarding every other file's work and hiding the real cause, which survived
+  only in the structlog line.
+
+  This is strictly worse than the display bug it descends from: **the error
+  handler is the sink**, so a defect that should have cost one skipped file cost
+  the whole index instead. Neither value is tame — a directory named `deep[` puts
+  a literal `[/` in `rel_path`, and a parser exception routinely quotes the
+  offending source, so a bracket in `exc` needs no unusual filename at all.
+
+  Note the asymmetry that let this survive review: the `logger.error("Parse error
+  %s: %s", …)` call on the line directly above is correct, because `%s` args go to
+  the logging framework, which never interprets markup. Only the adjacent Rich
+  line was broken.
+
+- **`trelix graph --json`, `taint --json`, `review --json` and `search-all --json`
+  emitted ANSI spinner output ahead of their JSON.** Making the payload safe was
+  only half of stdout purity: the `console.status()` spinner wrapping the work
+  writes its animation frames and prose to the same stream. Rich suppresses those
+  when stdout is not a terminal, so it is invisible in a pipe during development —
+  but `FORCE_COLOR=1` is routinely set in CI, and then stdout opens with
+  `\x1b[?25l\x1b[32m⠋\x1b[0m Building knowledge graph...` and
+  `trelix graph --json | jq` yields garbage with **exit 0**, the worst failure mode
+  for a machine-readable contract because nothing signals it.
+
+  Status output now routes to stderr in `--json` mode via a `_status_console()`
+  helper. That is the fix `review --pr` already used inline; this makes it the one
+  way every command does it. Guarded by an AST test asserting no `--json` command
+  spins on the stdout console, so a new command is caught when it is added rather
+  than when someone pipes it.
+
+- **`trelix ask`, `search`, `query`, `call-graph`, `review`, `taint`,
+  `agent sessions show` and six more commands crashed or silently corrupted
+  their output when rendering ordinary indexed content.** The CLI's module-level
+  `Console()` has Rich markup enabled, so every string reaching
+  `console.print()`, `Table.add_row()`, a Table title or a Panel body was parsed
+  for `[tag]` console markup — and most of what these commands render is
+  arbitrary text: indexed file paths and symbol names, retrieved source code,
+  LLM answers and agent observations quoting that code, Semgrep findings, GitHub
+  PR filenames, and persisted queries.
+
+  Two distinct failure modes, neither requiring an attacker. An unmatched
+  closing tag raises `MarkupError`, so the command renders **nothing** and exits
+  nonzero; a balanced-looking tag pair is silently swallowed, so the command
+  exits 0 having **dropped characters from the value**. trelix's own source trips
+  the first: `src/trelix/indexing/parser/extractors/rust.py` contains
+  `re.sub(r"^//[/!]?\s?", ...)`, whose `[/!]` is an unmatched closing tag — so
+  `trelix ask` against any repository holding a Rust comment-stripping regex,
+  trelix included, died instead of showing results.
+
+  Fixed by escaping the value at every markup-interpreting sink — 73 new
+  `escape()` call sites across 22 sink groups — while leaving trelix's own
+  `[red]…[/red]` markup unescaped so colouring still works. The worst sink was
+  `agent sessions show`, which replays LLM thoughts and tool observations, and a
+  tool observation *is* retrieved repository source. `trelix audit list`'s Table
+  **title** was also still unsafe: that command's earlier fix escaped every row
+  but not the title, so `--db '/tmp/a[/x].db'` still raised.
+
+- **`trelix review --json`, `taint --json` and `graph --json` emitted
+  unparseable JSON.** These payloads went out through `console.print()`, which is
+  a markup sink like any other, so they inherited both failure modes plus a
+  third: Rich hard-wraps at the console width, and a wrap landing inside a JSON
+  *string* injects a raw newline that `json.loads` rejects as `Invalid control
+  character`. One long unbroken token in an LLM review comment was enough.
+  Whitespace *between* JSON tokens is semantically free, which is why the
+  existing `--json` contract tests — all using short, bracket-free comments —
+  never caught it.
+
+  Escaping is the wrong fix for a machine-readable payload (it would write stray
+  backslashes into consumers' parsed strings), so these seven sites now go
+  through a `_print_json()` helper that disables Rich's markup parser, syntax
+  highlighter and line wrapping instead of altering the value. Output is
+  byte-identical for payloads that already worked.
+
+- **Nine functions in `cli/main.py` carried a redundant function-local
+  `from rich.markup import escape`.** A function-local import binds the name for
+  the *entire* function scope, so any `escape()` call above the import line
+  raises `UnboundLocalError` — a live trap for exactly the kind of change made
+  above, and one `mypy` does not detect (`ruff`'s F823 does). All nine removed;
+  the module-level import is now the single source. Four dead
+  `import json as _json` locals went with them.
+
+- **Every code fence trelix put into an LLM prompt was hard-coded to three
+  backticks, so any payload containing ``` closed its own fence early.**
+  CommonMark ends a fenced block at the first fence at least as long as the
+  opening one, so from that point on the remainder of the payload stopped being
+  quoted code and reached the model as prose it could act on. Three sites were
+  affected: the agent loop's `get_symbol` observation (`agent/loop.py`), and both
+  the changed-diff and retrieved-context blocks in the PR reviewer
+  (`review/reviewer.py`).
+
+  **Deriving the fence length repaired the two reviewer sites but was a no-op at
+  the agent site until two further defects were fixed**, both in
+  `agent/history.py:to_text()`, which is what actually renders an observation
+  into the prompt:
+
+  - It interpolated the observation after a label on the *same line*. A
+    CommonMark fence only opens a block at the **start** of a line, so
+    `**Observation [ok]:** ```{code}` opened no block at all — the payload
+    reached the model as prose and the *closing* fence opened an empty block
+    instead. Confirmed against markdown-it-py at fence lengths 3, 4 and 11, and
+    for a payload containing no backticks whatsoever: the defect is structural,
+    so no fence length could ever have fixed it.
+  - It sliced the rendered block at a fixed 500 characters, cutting the closing
+    fence off any longer body. The block then never closed and **every later turn
+    was swallowed into it** as though it were quoted code.
+
+  Both were pre-existing rather than regressions, but together they meant the
+  agent-side half of this fix would have shipped inert. The label now occupies its
+  own line and truncation re-closes a fence it cuts.
+
+  This breaks on ordinary use, not only under attack. trelix indexes markdown —
+  `MarkdownParser` is wired into the parser registry — and **72 of the 79
+  tracked markdown files in this repository contain a three-backtick run**, so a
+  markdown symbol body pasted into a prompt truncated its own fence as a matter
+  of course. Reviewing a diff that touches a markdown file put ``` directly into
+  the diff text for the same reason.
+
+  Fixed by deriving the fence from the payload in one shared helper,
+  `trelix.llm.prompt.fenced_block()`, which returns
+  `max(3, longest_backtick_run + 1)` backticks per CommonMark. It counts every
+  backtick run rather than only line-initial ones, because the consumer is a
+  language model rather than a spec-compliant parser: over-counting costs one
+  backtick, under-counting truncates the payload. **Output is byte-identical to
+  the previous format for any payload whose longest run is under three** — which
+  is nearly all source code — and three of the new tests assert exactly that, so
+  the change is a no-op for prompts that already worked.
+
+- **The agentic loop's system prompt was defined and never sent.**
+  `agent/loop.py` declared a `_SYSTEM_PROMPT` with the ReAct strategy rules, but
+  nothing read it: `grep` found one hit in the file, the definition. Every turn
+  went to the model as a single `role="user"` message and no system content of
+  any kind, so the loop ran with zero strategy instructions and none of its own
+  stated invariants were in force — including *"never call done until you've done
+  at least one retrieval"*, which is what stops the agent answering from the
+  question alone. The wiring appears simply never to have been written; the
+  constant is present verbatim in the original v2.2 design plan.
+
+  The obvious repair does not work: `tool_call()` declares no `system=` parameter
+  on the `TrelixChatClient` ABC or on any of the five backends, unlike
+  `complete()` and `stream()` which both do. The route the providers actually
+  honour is a `role="system"` message at the head of the list, which is the idiom
+  `QueryPlanner._call_llm` already uses; the loop now does the same. The user
+  turn is unchanged byte-for-byte, so this adds the missing system message rather
+  than rewriting the prompt.
+
+  One note for operators: this is a deliberate behaviour change to what the
+  agentic loop sends. The effect on model output has not been measured, because it
+  cannot be without live LLM calls; the loop's public contract (`run()`'s return
+  type, the tool schemas, turn accounting) is untouched.
+
+- **`VertexBackend.tool_call()` silently discarded every system message.** It
+  built its `GenerateContentConfig` without `system_instruction=` while
+  `_build_contents()` filters `role == "system"` out and never re-injects it, so
+  the model received the tool declarations and the user turn with no instructions
+  at all. `complete()` and `stream()` in the same file compute an
+  `effective_system` and pass it; only `tool_call()` did not.
+
+  This was pre-existing and already degraded `QueryPlanner._call_llm`, which
+  passes its planning rules as a system message — so query planning was quietly
+  worse on Vertex than on every other provider. It would also have made the agent
+  system prompt above a no-op on Vertex alone, which is the hardest kind of gap to
+  notice: correct everywhere except one backend. Fixed by deriving
+  `effective_system` from the messages exactly as `complete()` does, since
+  `tool_call()` takes no `system=` parameter on the client ABC.
+
+### Internal
+
+- **A local `python -m build` produced a 928 MB sdist.** hatchling does not honour
+  *nested* `.gitignore` files, and `workspace-vscode/.gitignore` is what ignores
+  `.vscode-test/` — which `@vscode/test-electron` fills with three ~900 MB VS Code
+  app bundles. Any developer who ran the extension tests and then built got 2.6 GB
+  of Electron, plus `node_modules` from `infra/github-app` and
+  `packages/trelix-typescript`, inside the tarball.
+
+  **The published artifact was never affected**: the release workflow builds from a
+  clean checkout, which is 6.6 MB and contains none of those directories. This is
+  local-build parity only. A `[tool.hatch.build.targets.sdist] exclude` now drops
+  build artifacts by glob, taking a local sdist from 928.20 MB to 1.44 MB with
+  every source file — including `packages/trelix-typescript/package.json` — still
+  present.
+
+### Added
+
+- 13 regression tests (`tests/unit/test_cli_markup_safety.py`, plus two in
+  `tests/unit/test_review_pr_json.py`). Every test asserts the payload's
+  **literal characters** appear in the output rather than merely that no
+  exception was raised — a command that renders nothing also raises nothing, and
+  the silent-swallow mode exits 0. The trigger line is read out of
+  `extractors/rust.py` at test time rather than pasted, so the tests cannot
+  drift from the code they pin. 11 of the 13 fail against the previous release;
+  the other two are negative controls asserting `--json` output stays unescaped.
+
+- 26 tests for prompt construction. 16 in `tests/unit/test_llm_prompt.py` cover
+  the fence helper's edge cases: no backticks, runs of one and two (which must
+  *not* inflate the fence, since that is what preserves byte-identity), runs of
+  exactly three and longer, multiple runs, a run at the start or end of the
+  payload, and empty and whitespace-only payloads. The worst-case payload is a
+  verbatim excerpt of this repository's own `.github/SECURITY.md` rather than a
+  crafted string, so it cannot drift from what trelix would really index.
+
+  The other 10 live at the call sites in `tests/unit/test_agent_loop.py` and
+  `tests/unit/test_reviewer.py` and assert on the **rendered prompt string**, not
+  on the helper, so they pin the wiring rather than the implementation: five
+  assert a well-formed block for a payload carrying ```, two assert byte-identical
+  output for a plain payload, and one asserts the reviewer's two fences are
+  derived independently so a long run in the retrieved context cannot inflate the
+  diff's fence. The system-prompt tests capture the `tool_call()` kwargs from a
+  fake client — no live LLM call — and assert the specific rule text arrives in a
+  `role="system"` message, that no `system=` kwarg is passed (no backend accepts
+  one), and that the rules were not smuggled into the user turn.
+
+  23 of the 26 fail against the previous code. The other three are the
+  byte-identity controls, which must pass on both sides; they were run against a
+  pre-fix copy of `src/` to confirm they do.
+
 ## [3.0.1] — 2026-08-13
 
 ### Overview
