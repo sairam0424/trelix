@@ -8,6 +8,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ### Fixed
 
+- **A bracket in a file path or in a parser error message aborted the entire
+  `trelix index` run.** `Indexer` builds its own `Console()` with markup enabled,
+  and the earlier CLI markup audit covered `cli/main.py` only. Both error handlers
+  interpolated their values raw — `f"[red]Parse error[/red] {rel_path}: {exc}"` —
+  so an unmatched `[/…]` in **either** raised `MarkupError` from inside the
+  `except` block itself. That escaped the worker loop and killed the run,
+  discarding every other file's work and hiding the real cause, which survived
+  only in the structlog line.
+
+  This is strictly worse than the display bug it descends from: **the error
+  handler is the sink**, so a defect that should have cost one skipped file cost
+  the whole index instead. Neither value is tame — a directory named `deep[` puts
+  a literal `[/` in `rel_path`, and a parser exception routinely quotes the
+  offending source, so a bracket in `exc` needs no unusual filename at all.
+
+  Note the asymmetry that let this survive review: the `logger.error("Parse error
+  %s: %s", …)` call on the line directly above is correct, because `%s` args go to
+  the logging framework, which never interprets markup. Only the adjacent Rich
+  line was broken.
+
+- **`trelix graph --json`, `taint --json`, `review --json` and `search-all --json`
+  emitted ANSI spinner output ahead of their JSON.** Making the payload safe was
+  only half of stdout purity: the `console.status()` spinner wrapping the work
+  writes its animation frames and prose to the same stream. Rich suppresses those
+  when stdout is not a terminal, so it is invisible in a pipe during development —
+  but `FORCE_COLOR=1` is routinely set in CI, and then stdout opens with
+  `\x1b[?25l\x1b[32m⠋\x1b[0m Building knowledge graph...` and
+  `trelix graph --json | jq` yields garbage with **exit 0**, the worst failure mode
+  for a machine-readable contract because nothing signals it.
+
+  Status output now routes to stderr in `--json` mode via a `_status_console()`
+  helper. That is the fix `review --pr` already used inline; this makes it the one
+  way every command does it. Guarded by an AST test asserting no `--json` command
+  spins on the stdout console, so a new command is caught when it is added rather
+  than when someone pipes it.
+
 - **`trelix ask`, `search`, `query`, `call-graph`, `review`, `taint`,
   `agent sessions show` and six more commands crashed or silently corrupted
   their output when rendering ordinary indexed content.** The CLI's module-level

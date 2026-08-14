@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from trelix.core.config import IndexConfig
@@ -569,7 +570,20 @@ class Indexer:
                     except Exception as exc:
                         orig = future_to_file[future]
                         logger.error("Parse error %s: %s", orig.rel_path, exc)
-                        self._console.print(f"[red]Parse error[/red] {orig.rel_path}: {exc}")
+                        # escape() both values, and note the asymmetry with the
+                        # logger.error above: %s-style args go to the logging
+                        # framework, which never interprets markup, so that line was
+                        # always safe. This Console has markup ON, so an unmatched
+                        # "[/…]" in EITHER value raised MarkupError from inside the
+                        # error handler — turning one skipped file into an aborted
+                        # index run that discarded every other file's work, while
+                        # hiding the real cause. Neither value is tame: a directory
+                        # named "deep[" gives rel_path a literal "[/", and a parser
+                        # exception routinely quotes the offending source, so a
+                        # bracket in `exc` needs no hostile filename at all.
+                        self._console.print(
+                            f"[red]Parse error[/red] {escape(orig.rel_path)}: {escape(str(exc))}"
+                        )
                         stats["errors"] += 1
                     self._report_progress(1, "Parsing files…", done_count / total, stats)
 
@@ -624,7 +638,10 @@ class Indexer:
                     all_pending.extend(pending)
                 except Exception as exc:
                     logger.error("DB error %s: %s", pf.file.rel_path, exc)
-                    self._console.print(f"[red]DB error[/red] {pf.file.rel_path}: {exc}")
+                    # Same sink, same reasoning as the Phase 1 handler above.
+                    self._console.print(
+                        f"[red]DB error[/red] {escape(pf.file.rel_path)}: {escape(str(exc))}"
+                    )
                     stats["errors"] += 1
                 self._report_progress(2, "Building symbols & chunks…", done_count / total, stats)
 

@@ -513,3 +513,102 @@ class TestStreamingIndexing:
             "Producer must use try/finally to guarantee sentinel is enqueued."
         )
         assert result["out"]["errors"] >= 0  # completed with some error count
+
+
+# ---------------------------------------------------------------------------
+# Error-handler markup safety
+# ---------------------------------------------------------------------------
+
+
+class _RaisingParser(BaseParser):
+    """Parser that always fails, with a caller-chosen exception message."""
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    @property
+    def language_name(self) -> str:
+        return "python"
+
+    def parse(self, source: str, file_id: int) -> ParseResult:
+        raise RuntimeError(self._message)
+
+
+class TestParseErrorHandlerMarkupSafety:
+    """A failed file must be *skipped*, never abort the whole index run.
+
+    `Indexer._console` is a `Console()` with markup ON, and the Phase 1 handler
+    rendered `f"[red]Parse error[/red] {rel_path}: {exc}"` with both values raw.
+    An unmatched "[/…]" in either raised `MarkupError` from inside the `except`
+    block itself, so it escaped the worker loop and killed the entire run —
+    discarding every other file's work and hiding the real cause, which survived
+    only in the structlog line.
+
+    Neither value is tame. `rel_path` picks up a literal "[/" from a directory
+    named `deep[` (a `[/tag]` cannot sit in one filename, since `/` is the
+    separator — it takes a directory ending in `[` plus a child). And a parser
+    exception routinely quotes the offending source, so a bracket in `exc` needs
+    no unusual filename at all.
+
+    Note `quiet=True` does not weaken these tests: a quiet Console still parses
+    markup and still raises, it only suppresses the write.
+
+    `Indexer._insert_and_chunk_all`'s DB-error handler is the same construct on
+    the same console and was escaped in the same commit.
+    """
+
+    @staticmethod
+    def _run(
+        tmp_path: pathlib.Path,
+        rel_dir: str,
+        exc_message: str,
+        filename: str = "mod.py",
+    ) -> dict[str, Any]:
+        src_dir = tmp_path / rel_dir if rel_dir else tmp_path
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / filename).write_text("x = 1\n", encoding="utf-8")
+
+        indexer = _make_indexer(str(tmp_path))
+        with (
+            _patch_rich_progress(),
+            patch(
+                "trelix.indexing.indexer.get_parser",
+                side_effect=lambda language: _RaisingParser(exc_message),
+            ),
+        ):
+            return indexer.index()
+
+    def test_bracketed_rel_path_does_not_abort_the_run(self, tmp_path: pathlib.Path) -> None:
+        """rel_path must form a COMPLETE `[/name]`, not merely contain "[/".
+
+        A directory `deep[` plus a child `mod.py` yields `deep[/mod.py`, which has
+        the "[/" but no terminating "]" — Rich does not treat that as a tag, so
+        such a test passes against the broken code and proves nothing. The shape
+        that actually raises needs the closing bracket too, which on a filesystem
+        means the child supplies it: `deep[` + `red].py` -> `deep[/red].py`.
+        """
+        rel_path = "deep[/red].py"
+        assert "[/red]" in rel_path, "payload must be a complete closing tag, or this is vacuous"
+
+        stats = self._run(tmp_path, "deep[", "boom", filename="red].py")
+
+        assert stats["errors"] == 1, "the failing file should be counted, not fatal"
+        assert stats["files_found"] >= 1
+
+    def test_bracketed_exception_message_does_not_abort_the_run(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """The likelier trigger: a parse error quoting source that holds "[/x]".
+
+        This needs no unusual path at all — the message channel alone is enough,
+        which is why escaping only `rel_path` would have been a half fix.
+        """
+        stats = self._run(tmp_path, "", "unexpected token '[/x]' near line 3")
+
+        assert stats["errors"] == 1
+        assert stats["files_found"] >= 1
+
+    def test_both_channels_hostile(self, tmp_path: pathlib.Path) -> None:
+        stats = self._run(tmp_path, "d[", "bad '[/red]' token", filename="x].py")
+
+        assert stats["errors"] == 1

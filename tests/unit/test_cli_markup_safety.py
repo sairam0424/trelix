@@ -428,3 +428,76 @@ def test_search_json_output_is_not_escaped(tmp_path: Path) -> None:
     assert payload["results"][0]["file"] == hostile_path
     assert payload["results"][0]["symbol"] == hostile_symbol
     assert "\\[" not in result.stdout, "escape() leaked into the machine-readable payload"
+
+
+# ---------------------------------------------------------------------------
+# 6. stdout purity for --json: the payload is only half the problem
+# ---------------------------------------------------------------------------
+
+
+def test_no_json_command_spins_on_the_stdout_console() -> None:
+    """Structural invariant, checked over the whole module rather than per command.
+
+    `_print_json()` renders the payload safely, but a `console.status()` spinner
+    wrapping the work writes its animation frames and prose to the SAME stream.
+    Rich suppresses those when stdout is not a terminal, so it is invisible in a
+    pipe during development — but `FORCE_COLOR=1` is routinely set in CI, and then
+    `trelix graph --json | jq` gets
+
+        \x1b[?25l\x1b[32m⠋\x1b[0m Building knowledge graph...
+
+    ahead of the array, and fails with **exit 0**.
+
+    This is an AST check, not four per-command tests, so a NEW `--json` command
+    that spins is caught the day it is added rather than the day someone pipes it.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(
+        str(pathlib.Path(__file__).resolve().parents[2] / "src" / "trelix" / "cli" / "main.py")
+    ).read_text(encoding="utf-8")
+
+    offenders: list[str] = []
+    for fn in [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef)]:
+        if not any(a.arg == "json_output" for a in fn.args.args):
+            continue
+        for node in ast.walk(fn):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "status"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "console"
+            ):
+                offenders.append(f"{fn.name}() at line {node.lineno}")
+
+    assert not offenders, (
+        "these --json commands spin on the stdout console, so their JSON is "
+        f"preceded by ANSI spinner output under FORCE_COLOR=1: {offenders}. "
+        "Use _status_console(json_output) instead."
+    )
+
+
+def test_status_console_routes_to_stderr_in_json_mode() -> None:
+    """The routing decision itself, tested directly.
+
+    There is deliberately no in-process end-to-end companion to this. Rich only
+    animates a `status()` spinner when the console `is_interactive`, and that is
+    fixed relative to when the Console was built: `cli.main`'s console is
+    constructed at import time, so setting FORCE_COLOR afterwards — which is all
+    `CliRunner(env=...)` can do — flips `is_terminal` to True but leaves
+    `is_interactive` False. The spinner therefore never activates under
+    CliRunner, and such a test passes against the unrouted code, proving nothing.
+    Observing the real contamination needs a subprocess with FORCE_COLOR already
+    in its environment; the AST invariant above is what actually guards the
+    call sites.
+    """
+    from trelix.cli.main import _status_console, console, err_console
+
+    assert _status_console(json_output=True) is err_console, (
+        "spinner output would land on stdout and precede the JSON payload"
+    )
+    assert _status_console(json_output=False) is console, (
+        "non-JSON mode must keep its progress output on stdout as before"
+    )
