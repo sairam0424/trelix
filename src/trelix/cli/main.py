@@ -104,6 +104,27 @@ def _print_json(payload: object, *, indent: int | None = 2) -> None:
     )
 
 
+def _status_console(json_output: bool) -> Console:
+    """Console for spinners and progress messages, given the caller's `--json` flag.
+
+    `_print_json()` above makes the payload itself clean, but that is only half of
+    stdout purity: a `console.status()` spinner wrapping the work writes its
+    animation frames and prose to the SAME stream. Rich suppresses those when
+    stdout is not a terminal, so it is invisible in a pipe during development —
+    but `FORCE_COLOR=1` is routinely set in CI, and any pty-allocating wrapper has
+    the same effect. Then stdout opens with
+
+        \\x1b[?25l\\x1b[32m⠋\\x1b[0m Building knowledge graph...
+
+    and `trelix graph --json | jq` yields garbage with **exit 0** — the worst
+    failure mode for a machine-readable contract, because nothing signals it.
+
+    Routing status to stderr in `--json` mode is the fix `review --pr` already
+    used; this makes it the single way every command does it.
+    """
+    return err_console if json_output else console
+
+
 # ---------------------------------------------------------------------------
 # Rich markup safety — READ THIS BEFORE REMOVING ANY escape() BELOW
 # ---------------------------------------------------------------------------
@@ -1277,7 +1298,7 @@ def graph(
     config = IndexConfig(repo_path=str(_Path(repo_path).resolve()))
     builder = GraphBuilder(config)
 
-    with console.status("Building knowledge graph..."):
+    with _status_console(json_output).status("Building knowledge graph..."):
         result = builder.build(extract_concepts=concepts)
 
     if json_output:
@@ -1464,7 +1485,7 @@ def taint(
 
     config = IndexConfig(repo_path=str(Path(repo).resolve()))
     analyzer = TaintAnalyzer(repo_path=str(Path(repo).resolve()), tier=tier)
-    with console.status("Running Semgrep taint analysis..."):
+    with _status_console(json_output).status("Running Semgrep taint analysis..."):
         flows = analyzer.run()
 
     if not flows:
@@ -1579,7 +1600,7 @@ def review(
         # progress/status message below goes to err_console (stderr) instead,
         # since callers (e.g. the PR-review CI workflow) redirect stdout to a
         # file and parse it as JSON.
-        status_console = err_console if json_output else console
+        status_console = _status_console(json_output)
 
         status_console.print(f"[cyan]Fetching PR diff from GitHub:[/cyan] {escape(pr)}")
         gh_client = GitHubPRClient(token=token)
@@ -1699,7 +1720,7 @@ def review(
     # ------------------------------------------------------------------
     parser = DiffParser()
 
-    with console.status("Parsing diff..."):
+    with _status_console(json_output).status("Parsing diff..."):
         if diff:
             diff_text = Path(diff).read_text()
             hunks = parser.parse(diff_text)
@@ -1722,7 +1743,7 @@ def review(
     console.print(f"Reviewing {len(filtered)} hunks across {len(seen_files)} files...")
 
     reviewer = DiffReviewer(config)
-    with console.status("Retrieving context and generating review..."):
+    with _status_console(json_output).status("Retrieving context and generating review..."):
         comments = reviewer.review(filtered)
 
     if not comments:
@@ -1792,7 +1813,7 @@ def search_all(
         return
 
     fed = FederatedRetriever(registry)
-    with console.status(f"Searching {len(registry.list())} repos..."):
+    with _status_console(json_output).status(f"Searching {len(registry.list())} repos..."):
         results = fed.retrieve(query, k=k)
 
     if not results:
