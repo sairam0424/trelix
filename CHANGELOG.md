@@ -6,6 +6,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-08-14
+
+### Overview
+
+A correctness release for everything trelix renders — to your terminal, to a
+machine-readable pipe, and into an LLM prompt. Eight defects, all in one class:
+a dynamic value meeting a sink that reinterprets it.
+
+The common thread is that **none of them needed an attacker.** trelix's own
+`rust.py` contains a regex whose `[/!]` is an unmatched Rich closing tag, so
+`trelix ask` against any repository holding a Rust comment-stripper — trelix
+included — died instead of showing results. 72 of this repo's 79 markdown files
+contain a three-backtick run, so a markdown symbol body closed its own code fence
+on the way into a prompt. A long LLM review comment wrapped mid-string and made
+`trelix review --json` unparseable. A directory named `deep[` aborted an entire
+`trelix index` run from inside the error handler that was supposed to skip one
+file.
+
+Two were silent rather than loud, which is why they lasted: Rich swallows a
+balanced tag pair and exits 0 having dropped characters, and an ANSI spinner
+prefix makes `trelix graph --json | jq` produce garbage with exit 0. Two more
+were capability bugs — the agentic loop's system prompt had never reached a
+model, and `VertexBackend.tool_call()` silently discarded every system message,
+which had already been degrading query planning on Vertex.
+
+Also documents the prompt-injection threat model in `SECURITY.md` for the first
+time. **That section adds no mitigation** — it states plainly what indexed
+content reaches a model and that trelix does no sanitization, no instruction/data
+separation, and no detection. The escaping and fence changes in this release are
+correctness fixes to rendering; neither is an anti-injection control, and no LLM
+was called anywhere in this work.
+
+No configuration changes, no schema changes, and **no reindex required**. Output
+is byte-identical for every value that did not previously trip one of these bugs
+— pinned by the 177 existing byte-identical assembler assertions plus 51 new
+regression tests (2,394 -> 2,445), each demonstrated failing against v3.0.1.
+
 ### Fixed
 
 - **A bracket in a file path or in a parser error message aborted the entire
@@ -178,6 +215,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   notice: correct everywhere except one backend. Fixed by deriving
   `effective_system` from the messages exactly as `complete()` does, since
   `tool_call()` takes no `system=` parameter on the client ABC.
+
+### Internal
+
+- **A local `python -m build` produced a 928 MB sdist.** hatchling does not honour
+  *nested* `.gitignore` files, and `workspace-vscode/.gitignore` is what ignores
+  `.vscode-test/` — which `@vscode/test-electron` fills with three ~900 MB VS Code
+  app bundles. Any developer who ran the extension tests and then built got 2.6 GB
+  of Electron, plus `node_modules` from `infra/github-app` and
+  `packages/trelix-typescript`, inside the tarball.
+
+  **The published artifact was never affected**: the release workflow builds from a
+  clean checkout, which is 6.6 MB and contains none of those directories. This is
+  local-build parity only. A `[tool.hatch.build.targets.sdist] exclude` now drops
+  build artifacts by glob, taking a local sdist from 928.20 MB to 1.44 MB with
+  every source file — including `packages/trelix-typescript/package.json` — still
+  present.
 
 ### Added
 
