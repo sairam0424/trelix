@@ -6,6 +6,46 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [3.1.1] — 2026-08-15
+
+### Overview
+
+A security-documentation release. The code defect count is one; the document
+defect count is four, and the most serious of them was a **safety guarantee that
+was never true**.
+
+From v2.x through v3.1.0, `SECURITY.md` stated that trelix "does not follow
+symlinks outside the repo boundary." `FileWalker` had no symlink handling at all —
+so a symlink out of the repository was indexed, and because `rel_path` is computed
+on the unresolved path, the out-of-tree file was then reported as though it sat
+inside. A link `repo/linked_dir` to `/etc` yielded `linked_dir/passwd`.
+
+A false containment guarantee is worse than a documented gap, because a reader
+deciding what is safe to index acts on it. This release describes the real
+behaviour and adds `TRELIX_WALKER_FOLLOW_SYMLINKS=false` to make the boundary
+real for those who want it — **opt-in**, because confining by default would
+silently drop files from any repository that symlinks to shared or vendored
+directories.
+
+Three smaller document defects go with it, all found in the same audit and all
+verified by probe rather than inferred: the agentic off-switch that the MCP
+`ask_agent` tool ignores, the federation tool that returns bodies from
+repositories the caller never named, and the index that outlives the files it was
+built from.
+
+**Nothing changes at default settings.** With `follow_symlinks` at its default the
+traversal is bit-for-bit what it was and costs no extra syscall per entry, proven
+by comparing a default walk against an explicit `follow_symlinks=True` walk. No
+reindex required, and no existing configuration behaves differently. The one new
+config field is additive and default-off in effect, which is why this is a patch
+release rather than a minor one.
+
+That audit also concluded something worth recording as a **non**-finding: the
+trelix-mcp surface is the same read-only retrieval surface as the CLI and REST
+paths, reaching a wider consumer — not a new capability class. `search_code` and
+`GET /search` are byte-identical twins. trelix-mcp holds no credential, performs
+no network egress, and has no exec primitive.
+
 ### Fixed
 
 - **`SECURITY.md` claimed a symlink boundary that never existed.** Every release up
