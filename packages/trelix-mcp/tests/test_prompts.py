@@ -159,3 +159,28 @@ class TestPromptsActuallyRender:
         assert message.role == "user"
         assert "UNIQUE-QUERY-MARKER" in text
         assert "/tmp/marker-repo" in text
+
+
+class TestPromptRoleNarrowing:
+    """The role narrowing at the transport boundary.
+
+    fastmcp's ``Message`` accepts only ``Literal["user", "assistant"]`` while the
+    builders are typed ``dict[str, str]``, so the conversion has to narrow. The
+    two roles above are covered by every rendering test; this covers the branch
+    that nothing else reaches, and pins that the failure names the bad value
+    instead of surfacing from inside fastmcp's validation.
+    """
+
+    def test_both_spec_roles_pass_through(self) -> None:
+        from trelix_mcp.server import _as_prompt_role
+
+        assert _as_prompt_role("user") == "user"
+        assert _as_prompt_role("assistant") == "assistant"
+
+    def test_unsupported_role_is_rejected_by_name(self) -> None:
+        import pytest
+
+        from trelix_mcp.server import _as_prompt_role
+
+        with pytest.raises(ValueError, match="system"):
+            _as_prompt_role("system")
