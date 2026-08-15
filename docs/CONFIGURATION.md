@@ -196,6 +196,7 @@ the three list variables below.
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_WALKER_RESPECT_GITIGNORE` | `true` | Honour the **repo-root** `.gitignore` via `pathspec`. Only `<repo>/.gitignore` is read — a nested `.gitignore` in a subdirectory is ignored, so patterns must be path-qualified in the root file (`pkg/secret.py`, not `secret.py` inside `pkg/.gitignore`). Set `false` to index everything git ignores |
+| `TRELIX_WALKER_FOLLOW_SYMLINKS` | `true` | Whether the walk follows symlinks out of `repo_path`. **Default `true` is the historical behaviour**: a symlink whose target lives outside the repository is indexed, and `rel_path` is computed on the unresolved path so it is reported as though it sat inside (`linked_dir/secret.py`). Set `false` to confine the walk by resolved path. Opt-in because confining by default would silently drop files from repos that symlink to shared or vendored directories. Symlinks pointing *inside* the repo are indexed either way |
 | `TRELIX_WALKER_MAX_FILE_SIZE_BYTES` | `500000` | Files larger than this are skipped entirely |
 | `TRELIX_WALKER_LANGUAGES` | 21 languages (Python, JS, TS, TSX, Go, Rust, Java, Kotlin, Ruby, C++, C, C#, Razor, cshtml, csproj, Markdown, JSON, YAML, TOML, HTML, CSS) | JSON array of language names to parse, e.g. `'["python","go"]'` |
 | `TRELIX_WALKER_EXTRA_IGNORE_DIRS` | 30 entries (`.git`, `node_modules`, `__pycache__`, `venv`, `.venv`, `dist`, `build`, `target`, `.next`, `vendor`, `bin`, `obj`, `.trelix`, …) | JSON array of directory names to skip |

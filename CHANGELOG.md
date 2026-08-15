@@ -6,6 +6,98 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [3.1.1] — 2026-08-15
+
+### Overview
+
+A security-documentation release. The code defect count is one; the document
+defect count is four, and the most serious of them was a **safety guarantee that
+was never true**.
+
+From v2.x through v3.1.0, `SECURITY.md` stated that trelix "does not follow
+symlinks outside the repo boundary." `FileWalker` had no symlink handling at all —
+so a symlink out of the repository was indexed, and because `rel_path` is computed
+on the unresolved path, the out-of-tree file was then reported as though it sat
+inside. A link `repo/linked_dir` to an out-of-tree directory yielded
+`linked_dir/secret.py`, with its bytes read from outside the repository.
+
+A false containment guarantee is worse than a documented gap, because a reader
+deciding what is safe to index acts on it. This release describes the real
+behaviour and adds `TRELIX_WALKER_FOLLOW_SYMLINKS=false` to make the boundary
+real for those who want it — **opt-in**, because confining by default would
+silently drop files from any repository that symlinks to shared or vendored
+directories.
+
+Three smaller document defects go with it, all found in the same audit and all
+verified by probe rather than inferred: the agentic off-switch that the MCP
+`ask_agent` tool ignores, the federation tool that returns bodies from
+repositories the caller never named, and the index that outlives the files it was
+built from.
+
+**Nothing changes at default settings.** With `follow_symlinks` at its default the
+traversal is bit-for-bit what it was and costs no extra syscall per entry, proven
+by comparing a default walk against an explicit `follow_symlinks=True` walk. No
+reindex required, and no existing configuration behaves differently. The one new
+config field is additive and default-off in effect, which is why this is a patch
+release rather than a minor one.
+
+That audit also concluded something worth recording as a **non**-finding: the
+trelix-mcp surface is the same retrieval surface as the CLI and REST paths,
+reaching a wider consumer — not a new capability class. It is not, however,
+read-only: `index_codebase`, `build_knowledge_graph`, `federation_add_repo`,
+`federation_remove_repo` and `agent_clear_session` all mutate persistent state,
+as SECURITY.md already notes for the federation pair. `search_code` and
+`GET /search` are byte-identical twins. trelix-mcp holds no credential, performs
+no network egress, and has no exec primitive.
+
+### Fixed
+
+- **`SECURITY.md` claimed a symlink boundary that never existed.** Every release up
+  to and including v3.1.0 stated that trelix "does not follow symlinks outside the
+  repo boundary." `FileWalker` had no symlink handling at all: `_iter_files` used
+  `entry.is_dir()`/`entry.is_file()`, both of which follow symlinks, and `walk()`
+  computed `rel_path` with `relative_to(repo_root)` on the **unresolved** path — so a
+  file outside the repository was indexed and then reported as though it sat inside
+  it. Demonstrated: a repo containing a directory symlink to an out-of-tree folder
+  indexes that folder's files and presents them as `linked_dir/secret.py`.
+
+  A false containment guarantee is worse than a documented gap, because a reader
+  deciding what is safe to index acts on it. The doc now describes the real
+  behaviour, and `TRELIX_WALKER_FOLLOW_SYMLINKS=false` confines the walk by resolved
+  path. **Opt-in on purpose:** confining by default would silently drop files from
+  any repository that symlinks to shared or vendored directories, with no error to
+  explain the absence. Symlinks whose targets are inside the repo are still indexed
+  either way — it is a boundary, not a blanket symlink filter.
+
+  With the flag at its default the traversal is unchanged and takes no extra
+  `resolve()` syscall per entry, so existing indexes and their timings are untouched.
+
+- **`SECURITY.md` sold an agentic off-switch that the MCP `ask_agent` tool ignores.**
+  The exposure table listed the agentic loop as off by default via
+  `TRELIX_RETRIEVAL_AGENTIC`, and the practical guidance said to "leave the agentic
+  loop off." `trelix_mcp/server.py:762` sets `config.retrieval.agentic_enabled = True`
+  unconditionally, after the env var has already been resolved. The tool's behaviour
+  is intentional — it is the agent tool — so the defect is the document presenting a
+  flag as a mitigation it does not cover. Both sites now say so.
+
+### Added
+
+- **Threat-model coverage for two capabilities that were absent from it.** Neither is
+  a code change; both were verified by probe and are now documented:
+  `federation_search_all` takes no `repo_path` and returns verbatim bodies from every
+  registered repository, so a host agent that named no repo can receive content from
+  repos it never opened — the only cross-repo content egress in the product, since
+  `trelix search-all` emits no body bytes and no REST equivalent exists. And the index
+  outlives its source: a symbol body is still returned after its file is deleted from
+  disk, so "the consumer could have read that file anyway" does not hold for removed
+  content.
+
+- 6 walker tests (`tests/unit/test_walker.py::TestSymlinkContainment`) covering both
+  settings, in-tree symlinks under confinement, broken symlinks, and a symlinked
+  `repo_root` reached via `IndexConfig.model_construct` — the path
+  `federation/retriever.py` and `indexing/multi_watcher.py` actually use, which
+  bypasses the validator that would otherwise resolve `repo_path`.
+
 ## [3.1.0] — 2026-08-14
 
 ### Overview
@@ -17,7 +109,7 @@ a dynamic value meeting a sink that reinterprets it.
 The common thread is that **none of them needed an attacker.** trelix's own
 `rust.py` contains a regex whose `[/!]` is an unmatched Rich closing tag, so
 `trelix ask` against any repository holding a Rust comment-stripper — trelix
-included — died instead of showing results. 72 of this repo's 79 markdown files
+included — died instead of showing results. 73 of this repo's 79 markdown files
 contain a three-backtick run, so a markdown symbol body closed its own code fence
 on the way into a prompt. A long LLM review comment wrapped mid-string and made
 `trelix review --json` unparseable. A directory named `deep[` aborted an entire
@@ -162,7 +254,7 @@ regression tests (2,394 -> 2,445), each demonstrated failing against v3.0.1.
   own line and truncation re-closes a fence it cuts.
 
   This breaks on ordinary use, not only under attack. trelix indexes markdown —
-  `MarkdownParser` is wired into the parser registry — and **72 of the 79
+  `MarkdownParser` is wired into the parser registry — and **73 of the 79
   tracked markdown files in this repository contain a three-backtick run**, so a
   markdown symbol body pasted into a prompt truncated its own fence as a matter
   of course. Reviewing a diff that touches a markdown file put ``` directly into
@@ -215,6 +307,92 @@ regression tests (2,394 -> 2,445), each demonstrated failing against v3.0.1.
   notice: correct everywhere except one backend. Fixed by deriving
   `effective_system` from the messages exactly as `complete()` does, since
   `tool_call()` takes no `system=` parameter on the client ABC.
+
+- **`trelix audit verify` reported "Audit chain intact." for a database it never
+  read, and created one as a side effect.** `_open_audit_store`'s guard was
+  `if not store.is_open`, but `AuditStore(path)` *creates* the file and its schema
+  when the path is absent — so `is_open` was always `True`, the guard never fired,
+  and a read-only integrity command exited 0 while leaving a fresh ~28 KB SQLite
+  file behind. A CI integrity gate pointed at a typo'd or not-yet-created `--db`
+  passed **green**.
+
+  That function's own docstring states it exists to prevent exactly this ("a false
+  integrity assurance"), which makes it the same defect class as the rest of this
+  release: a documented safety guarantee the code did not deliver. The existence
+  check now runs *before* construction and exits 2 (`2` = could not check; `1`
+  stays reserved for detected tamper). A path that exists but is unusable — a
+  directory, an unreadable file — still falls through to the `is_open` check,
+  which does fire for those.
+
+  It also had a test, and the test is why it survived: it passed a **directory**,
+  which sqlite genuinely cannot open, so `is_open` was `False` and the guard fired
+  correctly. The absent-path case behaves oppositely. Covered now for `verify`,
+  `list` and `export`.
+
+- **`taint --json` and `search-all --json` printed prose to stdout on the empty
+  path**, so `| jq` failed on the most common path in CI — a no-semgrep install
+  and an unregistered federation registry are both default states. Both returned
+  before reaching their `if json_output:` branch. They now emit `[]`. This is the
+  same `--json` contract fixed earlier for `graph`, `taint`, `review` and
+  `search-all`'s populated paths; these were the two empty-path sites that scan
+  missed.
+
+- **The taint remediation hint told the user to install the package they already
+  had.** `pip install trelix[taint]` was interpolated unescaped, so Rich read
+  `[taint]` as an opening tag and swallowed it, rendering `pip install 'trelix'`.
+  Identical to the swallow `_print_error()`'s docstring documents for
+  `trelix[local]`, at a site that fix did not reach.
+
+### Documentation
+
+- **Corrections caught by the pre-release signoff, before publishing.** An
+  end-to-end verification run over this release found seven inaccuracies, four of
+  them introduced or shifted by this release itself. Fixed here rather than shipped:
+
+  - **"Re-index to drop it" was false remediation.** This release's own new bullet on
+    the index outliving its source told readers to re-index to purge a deleted
+    file's body. `trelix index` walks the filesystem and upserts what it finds; it
+    never reconciles the DB against the walk, so the row is never reaped. Verified
+    for the incremental default, `incremental=false`, and two consecutive runs — the
+    body survived all three. The remedy that does work is deleting
+    `<repo>/.trelix/index.db` and re-indexing, and only the live watchers
+    (`indexing/watcher.py:240`, `indexing/multi_watcher.py:144`) purge on delete
+    events. Wrong remediation in a security document is worse than none, because it
+    fails silently and in the unsafe direction.
+  - **The flagship symlink example could not happen.** Both `SECURITY.md` and this
+    changelog illustrated the gap with "a link `repo/linked_dir` to `/etc` yields
+    `linked_dir/passwd`". `passwd` is extensionless, so the walker classifies it
+    `Language.UNKNOWN` and drops it. Replaced with the reproducible
+    `linked_dir/secret.py` form. A reader who tried the old example would have
+    concluded the disclosure was overstated.
+  - **Five `core/config.py` citations broke because of this release.** Adding
+    `follow_symlinks` plus its comment inserted 7 lines at `core/config.py:55-61`,
+    shifting every citation below it by exactly 7 — including the one backing the
+    agentic off-switch claim, which had come to point at an unrelated field. All
+    re-anchored and each verified to resolve to its named symbol.
+  - **"trelix-mcp is read-only" was wrong.** `index_codebase`,
+    `build_knowledge_graph`, `federation_add_repo`, `federation_remove_repo` and
+    `agent_clear_session` all mutate persistent state, and `SECURITY.md` already
+    said so for the federation pair — so the changelog contradicted the document it
+    was correcting. The surrounding conclusion (same capability class, wider
+    consumer) stands; only "read-only" was false.
+  - The federation `config_path` note claimed its check was *unlike*
+    `/graph/visualize`; both use `Path.is_relative_to` (`api/app.py:494`).
+  - "trelix's MCP prompt templates instruct that agent to call those tools" read as
+    shell and file-write tools; the templates name `search_code`, `get_symbol` and
+    `blast_radius`. Reworded so the wide capability is attributed to the consumer,
+    not to anything trelix directs.
+  - The inherited markdown-fence count was 72 of 79; recounted, it is **73**.
+
+- **User-facing docs no longer send readers to v3.0.0.** `docs/MCP_GUIDE.md` pinned
+  `pip install trelix-mcp==3.0.0`, and three guides told users `trelix --version`
+  "must show 3.0.0" — so a correct install failed the documented acceptance check.
+  The pin is removed and the version assertions are now version-agnostic. Release
+  binaries and Docker tags point at `releases/latest/download/` and
+  `ghcr.io/sairam0424/trelix:latest`, which `docker-publish.yml` moves on every
+  `v*` tag, so they cannot go stale again. **Known and not addressed here:** roughly
+  40 cosmetic `v3.0.0` version stamps remain in docs titles and footers, unchanged
+  since that release; they mislead nobody into a broken command but should be swept.
 
 ### Internal
 

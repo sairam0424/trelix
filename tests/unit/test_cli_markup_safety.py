@@ -501,3 +501,69 @@ def test_status_console_routes_to_stderr_in_json_mode() -> None:
     assert _status_console(json_output=False) is console, (
         "non-JSON mode must keep its progress output on stdout as before"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. --json on the EMPTY path, and the pip hint Rich used to eat
+# ---------------------------------------------------------------------------
+
+
+def test_search_all_json_emits_an_array_when_no_repos_are_registered(tmp_path: Path) -> None:
+    """The empty path is the first thing a new consumer hits, and it broke.
+
+    `search-all` returned before reaching its `if json_output:` branch, so
+    `--json` printed the human "No repos registered..." line to stdout and
+    `json.loads` failed. An empty registry is the default state, so a consumer
+    piping to jq hit this immediately — and it exited 0 while doing it.
+    """
+    empty_registry = tmp_path / "repos.json"
+    empty_registry.write_text('{"repos": []}', encoding="utf-8")
+
+    result = runner.invoke(app, ["search-all", "q", "--json", "--config", str(empty_registry)])
+
+    assert result.exit_code == 0, _combined(result)
+    assert json.loads(result.stdout) == [], f"not parseable JSON: {result.stdout!r}"
+
+
+def test_search_all_non_json_still_prints_the_human_message(tmp_path: Path) -> None:
+    """Control: the fix must be --json-gated, not a blanket behaviour change."""
+    empty_registry = tmp_path / "repos.json"
+    empty_registry.write_text('{"repos": []}', encoding="utf-8")
+
+    result = runner.invoke(app, ["search-all", "q", "--config", str(empty_registry)])
+
+    assert result.exit_code == 0, _combined(result)
+    assert "No repos registered" in _combined(result)
+
+
+def test_taint_pip_hint_is_escaped_at_the_call_site() -> None:
+    """`pip install trelix[taint]` rendered as `pip install 'trelix'`.
+
+    Rich read the unescaped `[taint]` as an opening tag and swallowed it, so the
+    remediation instruction named the package the reader already had installed —
+    the identical swallow `_print_error()`'s docstring documents for
+    `trelix[local]`, at a site that fix did not reach.
+
+    Asserted against the SOURCE rather than by rendering, deliberately. Reaching
+    that branch through the CLI needs semgrep absent AND a real index, and a test
+    that applies escape() to its own payload and then checks Rich preserved it is
+    a tautology — it verifies Rich, not that trelix calls it. This fails if the
+    escape() is ever removed from the call site, which is the actual regression.
+    """
+    source = (Path(__file__).resolve().parents[2] / "src" / "trelix" / "cli" / "main.py").read_text(
+        encoding="utf-8"
+    )
+
+    # Scoped to the RENDERED line, not the whole file. The taint command's own
+    # docstring also reads "Requires: pip install trelix[taint]", and a docstring
+    # never reaches Rich — a whole-file assertion flags that harmless line and
+    # fails against correct code.
+    sink_lines = [ln for ln in source.splitlines() if "Ensure semgrep is installed" in ln]
+    assert len(sink_lines) == 1, f"expected one rendered hint, found {len(sink_lines)}"
+    sink = sink_lines[0]
+
+    assert "pip install trelix[taint]" not in sink, (
+        "the taint hint interpolates trelix[taint] unescaped again — Rich will "
+        "swallow [taint] and tell the user to install plain 'trelix'"
+    )
+    assert "escape(" in sink, "the taint hint no longer escapes its bracketed payload"

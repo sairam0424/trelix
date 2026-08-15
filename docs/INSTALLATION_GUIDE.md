@@ -47,7 +47,7 @@ so no API key is required.
 
 ```bash
 pip install "trelix[local]"
-trelix --version   # should print 3.0.0
+trelix --version   # prints "trelix <version>", e.g. trelix 3.1.1
 ```
 
 On first use, Trelix downloads the embedder model (~420 MB) to
@@ -197,13 +197,13 @@ and must be installed independently.
 ## 4. Standalone Binaries (no Python needed)
 
 Pre-compiled single-file binaries are published to the
-[GitHub Releases](https://github.com/sairam0424/trelix/releases/tag/v3.0.0)
+[GitHub Releases](https://github.com/sairam0424/trelix/releases/latest)
 page for each platform. No Python or pip required.
 
 ### macOS ARM64 (Apple Silicon)
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v3.0.0/trelix-macos-arm64 \
+curl -L https://github.com/sairam0424/trelix/releases/latest/download/trelix-macos-arm64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -221,7 +221,7 @@ somewhere on your `PATH`, or run it directly:
 ### Linux x64
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v3.0.0/trelix-linux-x64 \
+curl -L https://github.com/sairam0424/trelix/releases/latest/download/trelix-linux-x64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -230,7 +230,7 @@ trelix --version
 ### Linux ARM64
 
 ```bash
-curl -L https://github.com/sairam0424/trelix/releases/download/v3.0.0/trelix-linux-arm64 \
+curl -L https://github.com/sairam0424/trelix/releases/latest/download/trelix-linux-arm64 \
      -o /usr/local/bin/trelix
 chmod +x /usr/local/bin/trelix
 trelix --version
@@ -310,7 +310,7 @@ directory you mount.
 ```bash
 docker run --rm \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:3.0.0 \
+  ghcr.io/sairam0424/trelix:latest \
   index /repo
 ```
 
@@ -322,7 +322,7 @@ The index is written to `/repo/.trelix/` inside the container (which maps to
 ```bash
 docker run --rm -p 8765:8765 \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:3.0.0 \
+  ghcr.io/sairam0424/trelix:latest \
   serve /repo --host 0.0.0.0 --port 8765
 ```
 
@@ -335,7 +335,7 @@ docker run --rm \
   -e OPENAI_API_KEY="sk-..." \
   -e TRELIX_EMBEDDER_PROVIDER=openai \
   -v "$(pwd):/repo" \
-  ghcr.io/sairam0424/trelix:3.0.0 \
+  ghcr.io/sairam0424/trelix:latest \
   index /repo
 ```
 
@@ -373,7 +373,7 @@ Run these commands after any installation method to confirm everything is
 working correctly.
 
 ```bash
-# Print version (must show 3.0.0)
+# Print version (must print the version you installed, e.g. 3.1.1)
 trelix --version
 
 # Print usage summary
@@ -517,7 +517,7 @@ and then uses the default. Use the replacement instead:
 
 ```bash
 pip install --upgrade "trelix[local]"   # or whatever extras you use
-trelix --version   # confirm 3.0.0
+trelix --version   # confirm it matches the version you installed
 ```
 
 ### Step 2 — Review breaking changes

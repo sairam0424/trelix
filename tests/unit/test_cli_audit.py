@@ -120,6 +120,52 @@ def test_verify_on_unopenable_db_exits_2_and_never_claims_intact(tmp_path: Path)
     assert "Could not open audit database" in combined
 
 
+def test_verify_on_NONEXISTENT_db_exits_2_and_creates_nothing(tmp_path: Path) -> None:
+    """The gap the test above did not cover, and the reason the guard never fired.
+
+    ``tmp_path`` is a DIRECTORY, so sqlite cannot open it, ``is_open`` is False,
+    and the original guard fired correctly — that test passed. An ABSENT path
+    behaves oppositely: ``AuditStore(path)`` creates the file and its schema, so
+    ``is_open`` is True, the guard was skipped, and `audit verify` printed
+    "Audit chain intact." with exit 0 for a path it had never read, leaving a
+    fresh ~28 KB SQLite file behind.
+
+    That is a false all-clear from a read-only integrity command: a CI gate
+    pointed at a typo'd or not-yet-created --db passed green. The existence check
+    now runs BEFORE construction.
+    """
+    missing = tmp_path / "does_not_exist.db"
+    assert not missing.exists()
+
+    result = runner.invoke(app, ["audit", "verify", "--db", str(missing)])
+    combined = _combined_output(result)
+
+    assert result.exit_code == 2, "could not check must be 2, not 0"
+    assert "intact" not in combined.lower(), "claimed a clean chain it never read"
+    assert not missing.exists(), "a read-only verify created the database"
+
+
+def test_list_and_export_on_nonexistent_db_also_exit_2(tmp_path: Path) -> None:
+    """The same absent-path hole applied to every audit subcommand, not just verify."""
+    missing = tmp_path / "absent.db"
+
+    for argv in (["audit", "list"], ["audit", "export"]):
+        result = runner.invoke(app, [*argv, "--db", str(missing)])
+        assert result.exit_code == 2, f"{argv} exited {result.exit_code}"
+        assert not missing.exists(), f"{argv} created the database"
+
+
+def test_verify_on_a_real_db_still_reports_intact_and_exits_0(tmp_path: Path) -> None:
+    """Control: the existence check must not break the working path."""
+    db = tmp_path / "audit.db"
+    _seed(db, count=3)
+
+    result = runner.invoke(app, ["audit", "verify", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "intact" in _combined_output(result).lower()
+
+
 def test_list_on_unopenable_db_exits_2_not_a_silent_empty_result(tmp_path: Path) -> None:
     """An unreadable log must not look like an empty log."""
     result = runner.invoke(app, ["audit", "list", "--db", str(tmp_path)])
