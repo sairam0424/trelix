@@ -1489,10 +1489,20 @@ def taint(
         flows = analyzer.run()
 
     if not flows:
-        console.print(
-            "[yellow]No taint flows found. "
-            "Ensure semgrep is installed: pip install trelix[taint][/yellow]"
-        )
+        # Two defects lived in this one message. It printed prose to STDOUT even
+        # under --json, so `trelix taint --json | jq` failed on the empty path —
+        # the most common path in CI, and the one a no-semgrep install always
+        # takes. And "trelix[taint]" was unescaped, so Rich read "[taint]" as an
+        # opening tag and swallowed it, rendering the fix instruction as
+        # "pip install 'trelix'" — telling the reader to install the package they
+        # already have. That is the same swallow _print_error() documents.
+        if json_output:
+            _print_json([])
+        else:
+            console.print(
+                "[yellow]No taint flows found. "
+                f"Ensure semgrep is installed: pip install {escape('trelix[taint]')}[/yellow]"
+            )
         return
 
     # Persist to DB
@@ -1807,9 +1817,16 @@ def search_all(
 
     registry = RepoRegistry.load(config_file)
     if not registry.list():
-        console.print(
-            "[yellow]No repos registered. Use: trelix federation add <alias> <path>[/yellow]"
-        )
+        # Same --json contract break as taint's empty path: this returned before
+        # the `if json_output:` branch below, so `search-all --json` printed prose
+        # to stdout and failed json.loads. An empty registry is the default state,
+        # so this was the first thing a new consumer hit.
+        if json_output:
+            _print_json([])
+        else:
+            console.print(
+                "[yellow]No repos registered. Use: trelix federation add <alias> <path>[/yellow]"
+            )
         return
 
     fed = FederatedRetriever(registry)
@@ -2132,11 +2149,33 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
     intentionally non-raising, so without this guard every command silently
     operated on an unopened store — `audit verify` would print "chain intact"
     and exit 0 for a path it never read, which is a false integrity assurance.
+
+    The existence check has to come BEFORE the AuditStore() call, and an earlier
+    revision of this guard got that wrong. `AuditStore(path)` CREATES the file
+    and its schema when the path is absent, so `is_open` was always True and the
+    guard never fired: `audit verify --db /typo/path` printed "Audit chain
+    intact.", exited 0, and left a fresh 28 KB SQLite file behind — a false
+    all-clear from a read-only command, and exactly the failure the paragraph
+    above says this function exists to prevent. A CI integrity gate pointed at a
+    not-yet-created or misspelled path passed green.
     """
     from trelix.audit.store import AuditStore
     from trelix.core.config import AuditConfig
 
     path = Path(db) if db else AuditConfig().resolved_db_path
+
+    # Absent path: report and stop BEFORE constructing the store, which would
+    # otherwise create it. A path that exists but is not a usable database (a
+    # directory, an unreadable file) still falls through to the is_open check
+    # below — sqlite cannot open those, so that guard does fire for them.
+    if not path.exists():
+        err_console.print(
+            f"[red]Audit database does not exist[/red] at {escape(str(path))} — "
+            "nothing was read, and no database was created. Check the path, or "
+            "enable auditing (TRELIX_AUDIT_ENABLED=true) to start a chain."
+        )
+        raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
+
     store = AuditStore(path)
     if not store.is_open:
         err_console.print(
