@@ -33,7 +33,16 @@ trelix processes local repository contents and makes network calls to configured
 
 - **Credential handling** — API keys are read from environment variables and never logged or written to disk
 - **MCP server** (trelix-mcp) — executes as a subprocess; only binds to stdio transport (not network)
-- **File system access** — reads only files under the indexed `repo_path`; does not follow symlinks outside the repo boundary
+- **File system access** — **symlinks are followed by default, including out of the
+  repository.** A symlink under `repo_path` whose target lives elsewhere is indexed,
+  and because `rel_path` is computed on the unresolved path it is then reported as
+  though it sat inside the repo (a link `repo/linked_dir` to `/etc` yields
+  `linked_dir/passwd`). Releases up to and including v3.1.0 documented the opposite;
+  that claim was never true. Set `TRELIX_WALKER_FOLLOW_SYMLINKS=false` to confine the
+  walk to `repo_path` by resolved path. It is opt-in because enabling it by default
+  would silently drop files from any repository that symlinks to shared or vendored
+  directories. Symlinks whose targets are *inside* the repo are still indexed either
+  way — the setting is a boundary, not a blanket symlink filter.
 - **Tree-sitter parsing** — parses user code with C-extension parsers; malformed inputs are caught and logged
 
 ### REST API — /graph/visualize output path constraint
@@ -104,10 +113,11 @@ Exposure by default vs opt-in:
 | `trelix index` | on | with the default `local` embedder (`core/config.py:209-219`), nothing leaves the machine; with any remote embedder, every chunk's text is sent to the embedding model (`indexing/indexer.py:959`, `:1021`) |
 | `trelix ask`, `GET /ask` | on | the assembled retrieval context (below) |
 | index-time file summaries | off — `TRELIX_FILE_SUMMARIES_ENABLED` (`core/config.py:1227-1230`) | file path, language, and top symbol signatures truncated to 80 chars (`indexing/file_summarizer.py:85-91`) |
-| agentic loop | off — `TRELIX_RETRIEVAL_AGENTIC` (`core/config.py:649-652`), or `--agentic`/`--session` (`cli/main.py:422-424`) | retrieval context plus prior-turn observations |
+| agentic loop | off — `TRELIX_RETRIEVAL_AGENTIC` (`core/config.py:649-652`), or `--agentic`/`--session` (`cli/main.py:422-424`). **The MCP `ask_agent` tool ignores this** and forces the loop on unconditionally (`trelix_mcp/server.py:762`); it does require an LLM to be configured. | retrieval context plus prior-turn observations |
 | `trelix review` | opt-in command | diff hunk text plus retrieved context |
 | `trelix review --post-comments` | off (`cli/main.py:1540-1546`) | as above, and model output leaves the machine |
 | `trelix-mcp` tools and resources | on, once the server is registered with a host | verbatim symbol bodies — `search_code` 800 chars, `get_symbol` and the `trelix://…/symbol` resource the **whole** body |
+| `trelix-mcp` `federation_search_all` | on, once repos are registered | verbatim bodies (800 chars) from **every registered repository**. It takes no `repo_path` argument — scope comes from the registry file, not the caller — so a host agent that named no repository can receive content from repositories it never opened. `trelix search-all` emits no body bytes and no REST equivalent exists, so this is the only cross-repo content egress in the product. |
 
 The `trelix-mcp` row deserves separate emphasis, because its sink is the widest
 in this table. The consumer of an MCP tool result is a host agent — Claude Code
@@ -152,6 +162,13 @@ those tools.
    call (`cli/main.py:461-469`). Terminal rendering is escaped for display only
    (see the Rich-markup notes at `cli/main.py:432-437`) — escaping prevents
    markup errors, it is not sanitization.
+
+- **The index outlives its source.** A symbol's body is stored in SQLite, so it is
+  still returned after the file is deleted from disk — verified by indexing a file,
+  unlinking it, and getting the verbatim body back. Any reasoning of the form "the
+  consumer could have read that file itself anyway" therefore does not hold for
+  content that has since been removed, and deleting a file does not remove it from
+  the index. Re-index to drop it.
 
 ### What trelix does not do about it
 
@@ -229,13 +246,19 @@ Before indexing a repository you do not fully trust:
   makes no LLM call at all (the `local` embedder returns the assembled context
   directly); the exposure below begins once an LLM-backed path is configured.
 - Leave the agentic loop off (`TRELIX_RETRIEVAL_AGENTIC` is already `false`) — it
-  is the only path that re-feeds prior observations into a later prompt. The
-  other multi-round path, FLARE, re-retrieves with a fixed query suffix and
-  carries no prior content forward (`retrieval/flare.py:101-103`).
+  is the only path that re-feeds prior observations into a later prompt. **This
+  does not cover the MCP `ask_agent` tool**, which forces the loop on regardless
+  of the variable; if a host has trelix-mcp registered, do not rely on the flag
+  alone. The other multi-round path, FLARE, re-retrieves with a fixed query suffix
+  and carries no prior content forward (`retrieval/flare.py:101-103`).
 - Narrow what gets indexed: drop prose formats you do not need from
   `WalkerConfig.languages` and add vendored/fixture directories to
   `WalkerConfig.extra_ignore_dirs` (`core/config.py:30`, `:55`; env prefix
   `TRELIX_WALKER_`, `core/config.py:28`).
+- Confine the walk to the repository with `TRELIX_WALKER_FOLLOW_SYMLINKS=false` if
+  the tree contains symlinks you did not place there. By default a symlink out of
+  the repository is indexed and reported under an in-repo path; see "File system
+  access" under Scope above.
 - For retrieval-only use, run with a `local` embedder provider — `trelix ask`
   then returns the context without making an LLM call (`cli/main.py:461-469`),
   and indexing sends no chunk text to a remote embedding model. `local` is

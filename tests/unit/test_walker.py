@@ -391,3 +391,126 @@ class TestIndexedFileFields:
 
         assert len(results) == 1
         assert results[0].size_bytes == len(content)
+
+
+class TestSymlinkContainment:
+    """`follow_symlinks` decides whether the walk is confined to `repo_path`.
+
+    Historically the walker had NO symlink handling at all: `_iter_files` used
+    `entry.is_dir()` / `entry.is_file()` (both of which follow symlinks) and
+    `walk()` computed `rel_path` with `relative_to(repo_root)` on the UNRESOLVED
+    path. A file outside the repository was therefore indexed and then presented
+    under a path that looks like it is inside — `linked_dir/secret.py` for a file
+    that lives nowhere near the repo.
+
+    SECURITY.md asserted the opposite ("does not follow symlinks outside the repo
+    boundary") from v2.x through v3.1.0. These tests pin the real behaviour of
+    both settings so the document and the code cannot drift apart again.
+
+    The default is True — unchanged from every previous release — because
+    confining by default would silently drop files from any repository that
+    symlinks to shared or vendored directories, with no error to explain it.
+    """
+
+    @staticmethod
+    def _repo_with_escaping_symlinks(base: Path) -> Path:
+        """A repo with one dir symlink and one file symlink pointing outside it."""
+        repo = base / "repo"
+        repo.mkdir()
+        outside = base / "outside"
+        outside.mkdir()
+
+        (repo / "main.py").write_text("def entry():\n    return 0\n", encoding="utf-8")
+        (outside / "secret.py").write_text("def out_of_tree():\n    return 1\n", encoding="utf-8")
+        (repo / "linked_dir").symlink_to(outside, target_is_directory=True)
+        (repo / "linked.py").symlink_to(outside / "secret.py")
+        return repo
+
+    def _walk(self, repo: Path, *, follow: bool) -> list[str]:
+        cfg = make_config(repo)
+        cfg.walker.follow_symlinks = follow
+        return sorted(f.rel_path for f in FileWalker(cfg).walk())
+
+    def test_default_is_to_follow_symlinks(self) -> None:
+        """The default must not change: existing indexes were built with it."""
+        assert WalkerConfig().follow_symlinks is True
+
+    def test_following_reaches_outside_the_repo(self, tmp_path: Path) -> None:
+        """Documents the real default behaviour, including the misleading rel_path."""
+        repo = self._repo_with_escaping_symlinks(tmp_path)
+
+        rels = self._walk(repo, follow=True)
+
+        assert "main.py" in rels
+        # Both symlink kinds are traversed...
+        assert "linked.py" in rels
+        assert "linked_dir/secret.py" in rels
+        # ...and the out-of-tree file is presented as though it sat in the repo.
+        assert not (repo / "linked_dir" / "secret.py").resolve().is_relative_to(repo.resolve())
+
+    def test_containment_excludes_both_symlink_kinds(self, tmp_path: Path) -> None:
+        repo = self._repo_with_escaping_symlinks(tmp_path)
+
+        rels = self._walk(repo, follow=False)
+
+        assert rels == ["main.py"], f"out-of-tree content leaked: {rels}"
+
+    def test_containment_keeps_in_tree_symlinks(self, tmp_path: Path) -> None:
+        """Confinement is about the boundary, not about symlinks per se.
+
+        A symlink whose target is inside the repo resolves inside the repo, so it
+        must still be indexed — otherwise the flag would be a blunt "ignore all
+        symlinks" switch, which is not what it claims to be.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "real.py").write_text("def real():\n    return 1\n", encoding="utf-8")
+        (repo / "alias.py").symlink_to(repo / "real.py")
+
+        rels = self._walk(repo, follow=False)
+
+        assert "real.py" in rels
+        assert "alias.py" in rels, "an in-tree symlink was wrongly excluded"
+
+    def test_containment_survives_an_unresolved_symlinked_repo_root(self, tmp_path: Path) -> None:
+        """A symlinked repo_root must not cause the walker to reject its own repo.
+
+        Both sides of the containment comparison have to be resolved. Comparing a
+        resolved entry against an UNRESOLVED root resolves every file to its real
+        location, matches it against the symlink path, and excludes everything.
+
+        Reaching that state requires bypassing IndexConfig's repo_path validator,
+        which resolves the path — so this builds the config with
+        `model_construct`, exactly as `federation/retriever.py` and
+        `indexing/multi_watcher.py` do. Without model_construct the test is
+        vacuous: it passes even with the root left unresolved.
+        """
+        real = tmp_path / "real_repo"
+        real.mkdir()
+        (real / "main.py").write_text("def entry():\n    return 0\n", encoding="utf-8")
+        link_to_repo = tmp_path / "repo_via_link"
+        link_to_repo.symlink_to(real, target_is_directory=True)
+
+        # model_construct skips the validator, so repo_path stays symlinked.
+        cfg = IndexConfig.model_construct(
+            repo_path=str(link_to_repo), walker=WalkerConfig(follow_symlinks=False)
+        )
+        walker = FileWalker(cfg)
+        assert str(walker.repo_root) != str(walker._resolved_root), (
+            "precondition failed: repo_root was already resolved, so this test "
+            "cannot detect an unresolved-root comparison"
+        )
+
+        rels = sorted(f.rel_path for f in walker.walk())
+
+        assert rels == ["main.py"], "a symlinked repo_root wrongly excluded its own files"
+
+    def test_broken_symlink_is_excluded_not_fatal(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("def entry():\n    return 0\n", encoding="utf-8")
+        (repo / "dangling.py").symlink_to(tmp_path / "does_not_exist.py")
+
+        rels = self._walk(repo, follow=False)
+
+        assert rels == ["main.py"]

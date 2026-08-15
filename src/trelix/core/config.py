@@ -52,6 +52,13 @@ class WalkerConfig(BaseSettings):
     ]
     max_file_size_bytes: int = 500_000
     respect_gitignore: bool = True
+    # Default True preserves the behaviour every existing index was built with:
+    # symlinks are traversed, and a symlinked file outside repo_path is indexed
+    # under a rel_path that looks like it is inside (`relative_to` is computed on
+    # the UNRESOLVED path). Set False to confine the walk to repo_path by
+    # resolved path — opt-in because flipping it would silently drop files from
+    # any repo that symlinks to shared or vendored directories.
+    follow_symlinks: bool = True
     extra_ignore_dirs: list[str] = [
         ".git",
         ".hg",
