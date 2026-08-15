@@ -13,7 +13,7 @@ Model Context Protocol (MCP) is an open standard that lets AI assistants connect
 ## 2. Install trelix-mcp
 
 ```bash
-pip install trelix-mcp==3.0.0
+pip install trelix-mcp
 ```
 
 Verify the binary is on your PATH:
@@ -28,7 +28,7 @@ version from the package instead:
 
 ```bash
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
-# 3.0.0
+# 3.1.1
 ```
 
 > **Note:** Python 3.10+ is required. Use a virtual environment if you manage multiple projects.
