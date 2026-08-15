@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
 
@@ -178,8 +180,6 @@ class TestPromptRoleNarrowing:
         assert _as_prompt_role("assistant") == "assistant"
 
     def test_unsupported_role_is_rejected_by_name(self) -> None:
-        import pytest
-
         from trelix_mcp.server import _as_prompt_role
 
         with pytest.raises(ValueError, match="system"):
