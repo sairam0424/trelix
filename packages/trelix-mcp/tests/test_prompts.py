@@ -110,3 +110,52 @@ class TestBlastRadiusPrompt:
 
         messages = build_blast_radius_prompt(symbol_name="foo", repo_path="/x")
         assert messages[0]["role"] == "user"
+
+
+class TestPromptsActuallyRender:
+    """`prompts/get` must work, not just `prompts/list`.
+
+    Every test above this class asserts one of two things: that the three names
+    appear in ``list_prompts()``, or that the pure builders return messages when
+    called DIRECTLY. Neither goes through fastmcp's validation of the return value,
+    which is the only thing ``prompts/get`` exercises — so all three prompts
+    advertised themselves via ``prompts/list`` and then failed on use under
+    fastmcp >= 3.4 with:
+
+        TypeError: messages[0] must be Message or str, got dict.
+
+    The builders still return plain dicts on purpose (``prompts.py`` is
+    transport-agnostic and imports no fastmcp); ``server.py`` converts them to
+    ``Message`` at the boundary. These tests call ``render_prompt``, which is what
+    a real ``prompts/get`` request invokes — note ``FastMCP.get_prompt(name)`` is a
+    LOOKUP returning the Prompt object, not a render, which is easy to reach for
+    by mistake.
+    """
+
+    async def test_all_three_prompts_render(self) -> None:
+        from trelix_mcp.server import mcp
+
+        cases = [
+            ("trelix-search", {"query": "how does auth work", "repo_path": "/tmp/r"}),
+            ("trelix-explain", {"qualified_name": "mod.fn", "repo_path": "/tmp/r"}),
+            ("trelix-blast-radius", {"symbol_name": "fn", "repo_path": "/tmp/r"}),
+        ]
+        for name, arguments in cases:
+            result = await mcp.render_prompt(name, arguments)
+            assert result.messages, f"{name} rendered no messages"
+
+    async def test_rendered_message_carries_role_and_the_argument(self) -> None:
+        """Assert on CONTENT, not just that the call returned — a rendered prompt
+        that dropped its interpolated argument would still satisfy a bare
+        len(messages) >= 1 check."""
+        from trelix_mcp.server import mcp
+
+        result = await mcp.render_prompt(
+            "trelix-search", {"query": "UNIQUE-QUERY-MARKER", "repo_path": "/tmp/marker-repo"}
+        )
+        message = result.messages[0]
+        text = getattr(message.content, "text", str(message.content))
+
+        assert message.role == "user"
+        assert "UNIQUE-QUERY-MARKER" in text
+        assert "/tmp/marker-repo" in text
