@@ -6,6 +6,54 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+
+- **`SECURITY.md` claimed a symlink boundary that never existed.** Every release up
+  to and including v3.1.0 stated that trelix "does not follow symlinks outside the
+  repo boundary." `FileWalker` had no symlink handling at all: `_iter_files` used
+  `entry.is_dir()`/`entry.is_file()`, both of which follow symlinks, and `walk()`
+  computed `rel_path` with `relative_to(repo_root)` on the **unresolved** path — so a
+  file outside the repository was indexed and then reported as though it sat inside
+  it. Demonstrated: a repo containing a directory symlink to an out-of-tree folder
+  indexes that folder's files and presents them as `linked_dir/secret.py`.
+
+  A false containment guarantee is worse than a documented gap, because a reader
+  deciding what is safe to index acts on it. The doc now describes the real
+  behaviour, and `TRELIX_WALKER_FOLLOW_SYMLINKS=false` confines the walk by resolved
+  path. **Opt-in on purpose:** confining by default would silently drop files from
+  any repository that symlinks to shared or vendored directories, with no error to
+  explain the absence. Symlinks whose targets are inside the repo are still indexed
+  either way — it is a boundary, not a blanket symlink filter.
+
+  With the flag at its default the traversal is unchanged and takes no extra
+  `resolve()` syscall per entry, so existing indexes and their timings are untouched.
+
+- **`SECURITY.md` sold an agentic off-switch that the MCP `ask_agent` tool ignores.**
+  The exposure table listed the agentic loop as off by default via
+  `TRELIX_RETRIEVAL_AGENTIC`, and the practical guidance said to "leave the agentic
+  loop off." `trelix_mcp/server.py:762` sets `config.retrieval.agentic_enabled = True`
+  unconditionally, after the env var has already been resolved. The tool's behaviour
+  is intentional — it is the agent tool — so the defect is the document presenting a
+  flag as a mitigation it does not cover. Both sites now say so.
+
+### Added
+
+- **Threat-model coverage for two capabilities that were absent from it.** Neither is
+  a code change; both were verified by probe and are now documented:
+  `federation_search_all` takes no `repo_path` and returns verbatim bodies from every
+  registered repository, so a host agent that named no repo can receive content from
+  repos it never opened — the only cross-repo content egress in the product, since
+  `trelix search-all` emits no body bytes and no REST equivalent exists. And the index
+  outlives its source: a symbol body is still returned after its file is deleted from
+  disk, so "the consumer could have read that file anyway" does not hold for removed
+  content.
+
+- 6 walker tests (`tests/unit/test_walker.py::TestSymlinkContainment`) covering both
+  settings, in-tree symlinks under confinement, broken symlinks, and a symlinked
+  `repo_root` reached via `IndexConfig.model_construct` — the path
+  `federation/retriever.py` and `indexing/multi_watcher.py` actually use, which
+  bypasses the validator that would otherwise resolve `repo_path`.
+
 ## [3.1.0] — 2026-08-14
 
 ### Overview
