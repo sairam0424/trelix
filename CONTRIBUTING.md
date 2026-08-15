@@ -360,6 +360,41 @@ trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version
 - Supported: Python 3.11, 3.12, 3.13
 - Dropped versions are announced one minor release in advance
 
+### Release checklist — the five version sites
+
+Bump all five together. Missing one ships a package whose `--version` disagrees
+with its metadata:
+
+```bash
+# 1. Bump, then 2. verify all five report the SAME version:
+grep -rn '"3\.1\.2"\|= "3\.1\.2"' \
+  pyproject.toml \
+  src/trelix/__init__.py \
+  packages/trelix-mcp/pyproject.toml \
+  packages/trelix-mcp/src/trelix_mcp/__init__.py \
+  helm/trelix/Chart.yaml
+```
+
+Two things that are **not** version sites, and must not be bumped along with them:
+
+- `helm/trelix/Chart.yaml` has both `version:` (the *chart's* own version, `0.1.0`,
+  independent of trelix) and `appVersion:` (which tracks trelix). Only `appVersion`
+  moves.
+- `packages/trelix-langchain` and `packages/trelix-llama-index` version
+  independently (both at 2.4.0) and are released on their own cadence.
+
+Doc version stamps rot every release. Enumerate the stale ones with the *previous*
+version, filtering out the historical references that must stay:
+
+```bash
+grep -rn "3\.1\.1" docs/*.md *.md \
+  | grep -viE "new in|fixed in|added in|since v|what's new|removed in"
+```
+
+Read every hit before editing. A blind `sed` over `docs/` will silently rewrite
+"New in v3.0.0" and the shipped-version table in `ROADMAP.md`, turning accurate
+history into a false claim.
+
 ---
 
 ## Working on Sub-packages

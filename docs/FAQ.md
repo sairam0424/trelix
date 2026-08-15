@@ -1,6 +1,6 @@
-# trelix v3.0.0 — Frequently Asked Questions
+# trelix v3.1.2 — Frequently Asked Questions
 
-> Last updated: 2026-08-13 — covers trelix 3.1.1, trelix-mcp 3.1.1, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
+> Last updated: 2026-08-16 — covers trelix 3.1.2, trelix-mcp 3.1.2, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
 
 ---
 
@@ -215,7 +215,7 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v3.0.0 exposes **15 tools**:
+trelix-mcp v3.1.2 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|
@@ -407,7 +407,7 @@ Both the old and new environment variable names are accepted for backward compat
 
 ```bash
 TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=2   # new name (preferred)
-TRELIX_RETRIEVAL_FLARE_MAX_ITER=2      # old name (emits DeprecationWarning; removed in v3.0.0)
+TRELIX_RETRIEVAL_FLARE_MAX_ITER=2      # old name (emits DeprecationWarning; removed in v4.0.0)
 ```
 
 **Important constraint added in v2.4.0:** The field now enforces `ge=1, le=3`. If you previously set `TRELIX_RETRIEVAL_FLARE_MAX_ITER` to a value greater than 3 (for example, 5 or 10), you must lower it to 3 or below before upgrading. Otherwise pydantic raises `ValidationError` at process startup:

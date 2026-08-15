@@ -587,7 +587,7 @@ class RetrievalConfig(BaseSettings):
             warnings.warn(
                 "TRELIX_RETRIEVAL_FLARE_MAX_ITER is deprecated as of trelix v2.4.0. "
                 "Use TRELIX_RETRIEVAL_FLARE_MAX_RETRIES instead. "
-                "The old name will be removed in v3.0.0.",
+                "The old name will be removed in v4.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )

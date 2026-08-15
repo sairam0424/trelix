@@ -28,7 +28,7 @@ version from the package instead:
 
 ```bash
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
-# 3.1.1
+# 3.1.2
 ```
 
 > **Note:** Python 3.10+ is required. Use a virtual environment if you manage multiple projects.
@@ -236,7 +236,7 @@ index_codebase(repo_path, provider="local") → stats dict
   "symbols_extracted": 1847,
   "chunks_stored": 4203,
   "elapsed_seconds": 18.4,
-  "index_version": "3.0.0"
+  "index_version": "3.1.2"
 }
 ```
 
@@ -771,7 +771,7 @@ Returns aggregate statistics for all indexed repositories managed by the running
   "total_files": 654,
   "total_symbols": 3891,
   "total_chunks": 8702,
-  "server_version": "3.0.0"
+  "server_version": "3.1.2"
 }
 ```
 

@@ -6,6 +6,105 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [3.1.2] — 2026-08-16
+
+### Overview
+
+Three defects, each of which had a passing test suite over it.
+
+The theme is **tests that covered the parts that worked**. All three MCP prompts
+failed on use while their 82-test package suite was fully green; the CLI escaped
+markup brackets but passed raw terminal control bytes straight through; and the
+walker yielded one file 17 times without any assertion noticing. Two of the three
+were found only by running the real thing — a real pty, a real fastmcp — rather
+than by reading code or trusting a green run.
+
+A fourth item is a documentation correctness fix: a deprecation whose removal
+deadline had already passed.
+
+### Fixed
+
+- **Indexed content could drive the user's terminal.** `rich.markup.escape()`
+  neutralises `[` markup brackets and nothing else, so ANSI/OSC control bytes
+  stored in an indexed file reached the terminal verbatim when rendered by
+  `trelix ask`, `search`, `review` and the agent surfaces. Two payloads mattered:
+  **OSC 52**, which writes the user's clipboard on iTerm2/kitty/WezTerm, and
+  cursor-up + erase-line, which lets injected content **scrub trelix's own output
+  above it** so a reader cannot tell what was displayed. A new `_safe_text()`
+  helper strips control bytes and then escapes markup, and is applied to every
+  dynamic value rendered to the terminal.
+
+  The **order is load-bearing** and was wrong in the first version of this fix.
+  `escape()`'s regex only treats `[` as a tag opener when the next byte is in
+  `[a-z#/@]`; escaping *before* stripping therefore leaves `[` unescaped, and
+  deleting the control byte then **synthesises a live markup tag** out of text that
+  had none. Measured against a real pty, `pre[\x1blink=http://evil.example]CLICK`
+  emitted an **OSC 8 hyperlink to an attacker-controlled URL** — a capability that
+  does not exist on v3.1.1. Stripping first is what makes the escape total.
+
+  Machine-readable output is deliberately unchanged: `--json` stays byte-exact
+  (`markup=False, highlight=False, soft_wrap=True`), because escaping there would
+  write stray backslashes into consumers' parsed strings. The strip is at the
+  render boundary, not at index time — stored content stays intact, and the REST
+  and MCP surfaces still return raw bytes for machine consumers.
+
+- **A symlink cycle multiplied one file into dozens of copies.** A link pointing at
+  one of its own ancestors (`repo/loop -> repo`) made the walk re-enter a directory
+  it was already inside, yielding a single real file **17 to 33 times** depending on
+  layout, at nesting depths bounded only by the OS path limit — the same multiple of
+  the embedding cost, and that many duplicate results for one file. Some topologies
+  (a link chain resolving to an ancestor, two loop links in one directory) **did not
+  terminate at all**.
+
+  `FileWalker._iter_files` now tracks the resolved paths of the current recursion
+  chain and skips a directory whose resolved target is already an ancestor on that
+  path. Deliberately **not** a global visited-set: that would collapse
+  `repo/a -> repo/shared` and `repo/b -> repo/shared` into one and silently drop
+  `b/`'s files from a legitimate layout. Note that `TRELIX_WALKER_FOLLOW_SYMLINKS=false`
+  does *not* help here — the loop target resolves *inside* the root, so containment
+  correctly permits it. Cycle detection and containment are orthogonal.
+
+  For an index built before this, duplicate rows disappear on the next index run.
+  Strictly fewer rows, never fewer *distinct* files; no reindex is required for
+  correctness.
+
+- **All three MCP prompts failed at `prompts/get`.** fastmcp ≥ 3.4 validates a
+  prompt's return value and accepts only `Message` or `str`; the builders returned
+  plain dicts, so every `prompts/get` raised `TypeError: messages[0] must be
+  Message or str, got dict`. `prompts/list` was unaffected, so all three
+  **advertised themselves and then errored on use**. Conversion now happens at the
+  transport boundary in `server.py`, keeping `prompts.py` fastmcp-free, and the
+  role is narrowed to the two literals the MCP spec allows. The `fastmcp` pin is
+  bounded (`>=3.4.0,<4`) — an unbounded major is how this contract changed
+  silently in the first place.
+
+- **A deprecation deadline that had already passed.** `BACKWARDS_COMPATIBILITY.md`,
+  `ROADMAP.md`, `FAQ.md` and the runtime `DeprecationWarning` itself all stated
+  that `TRELIX_RETRIEVAL_FLARE_MAX_ITER` "will be removed in v3.0.0". v3.0.0
+  shipped on 2026-08-13 and the alias is still live, so a reader was told the env
+  var was gone in v3.x when it still works. Since the project's own policy permits
+  removal only on a MAJOR bump, the target is retargeted to **v4.0.0** and the slip
+  is recorded rather than quietly rewritten. Also corrected in the same document:
+  a source citation off by 143 lines (`config.py:434` → `:577`) and a relative link
+  that resolved to `docs/docs/superpowers/…`.
+
+### Changed
+
+- Documentation version stamps advanced to 3.1.2 across 14 files. Historical
+  references ("New in v3.0.0", "Fixed in v3.0.0", the shipped-version table) are
+  deliberately left alone. `CONTRIBUTING.md` now carries a release checklist naming
+  the five version sites, the two things that look like version sites but are not
+  (the Helm chart's own `version`, and the independently-versioned langchain and
+  llama-index packages), and why a blind `sed` over `docs/` corrupts history.
+- `docs/architecture.md` claimed "110+ source modules"; the real count is 140.
+
+### Closed without merging
+
+- Dependabot **#133** (`mcp` `<2.0` → `<3.0`). `fastmcp-slim==3.4.7` itself declares
+  `mcp<2.0,>=1.24.0`, so the existing pin matches upstream exactly. `mcp` 2.0.0 is
+  GA, but fastmcp does not accept it; merging would advertise support fastmcp
+  forbids. Revisit when fastmcp raises its own ceiling.
+
 ## [3.1.1] — 2026-08-15
 
 ### Overview

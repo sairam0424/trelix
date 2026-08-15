@@ -200,10 +200,17 @@ class TestRetrievalConfig:
     ) -> None:
         """Regression test: TRELIX_RETRIEVAL_FLARE_MAX_ITER emits DeprecationWarning.
 
-        This test ensures that the old environment variable name triggers
-        a deprecation warning mentioning v3.0.0 removal. The old name should
-        still work (backward compat via AliasChoices) but warn at runtime.
+        This test ensures that the old environment variable name triggers a
+        deprecation warning naming a removal target. The old name should still work
+        (backward compat via AliasChoices) but warn at runtime.
+
+        The target version is matched by SHAPE, not as a literal. This test used to
+        assert the string "v3.0.0"; v3.0.0 then shipped without the removal, the
+        message was retargeted to v4.0.0, and the test broke on a change that was
+        correcting a false statement. What matters is that the warning tells the user
+        *when* the name goes away — not which release that is this quarter.
         """
+        import re
         import warnings
 
         monkeypatch.setenv("TRELIX_RETRIEVAL_FLARE_MAX_ITER", "1")
@@ -224,8 +231,10 @@ class TestRetrievalConfig:
             f"Expected old env var name in warning: {warning_msg}"
         )
 
-        # 3. Warning message mentions v3.0.0 removal target
-        assert "v3.0.0" in warning_msg, f"Expected 'v3.0.0' in warning message: {warning_msg}"
+        # 3. Warning message names SOME removal target version
+        assert re.search(r"removed in v\d+\.\d+\.\d+", warning_msg), (
+            f"Expected the warning to name a removal target version: {warning_msg}"
+        )
 
         # 4. Backward compat worked: the value was parsed correctly
         assert cfg.flare_max_retries == 1

@@ -1,7 +1,7 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 3.0.0 (current)
+> **Version:** 3.1.2 (current)
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
@@ -62,7 +62,7 @@ This roadmap describes planned features, research directions, and long-term visi
 
 ---
 
-## 🌐 v3.0.0 — Breaking Changes & Ecosystem (H1 2027)
+## 🌐 v4.0.0 — Breaking Changes & Ecosystem (H1 2027)
 
 **Goal:** Clean API surface + first-class cloud deployment.
 
@@ -71,6 +71,9 @@ This roadmap describes planned features, research directions, and long-term visi
       `docs/superpowers/plans/v3-0-0-breaking-changes.md` for the removal
       checklist. Everything else originally scoped under v3.0.0 shipped
       additively in v2.9.0/v2.10.0 instead (see the Shipped table above).
+      **This slipped past v3.0.0**, which shipped 2026-08-13 with the alias still
+      live; since removal is only permitted on a MAJOR bump, it moves to v4.0.0.
+      See [BACKWARDS_COMPATIBILITY.md](BACKWARDS_COMPATIBILITY.md).
 - [ ] **MCP `InputRequiredResult` pattern** — adopt SEP-2322's
       `InputRequiredResult` pattern for `ask_agent`'s input-wait behavior.
       This is a real behavioral/protocol change, not a dependency-floor

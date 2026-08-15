@@ -40,7 +40,7 @@ trelix follows **Semantic Versioning** (SemVer 2.0.0): `MAJOR.MINOR.PATCH`.
 
 | Symbol | Deprecated in | Removal target | Replacement |
 |--------|--------------|----------------|-------------|
-| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | v3.0.0 | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` |
+| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | v4.0.0 | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` |
 
 ---
 
@@ -53,17 +53,23 @@ Before a MAJOR release:
 - A migration guide doc is created at `docs/migration/v{N}-to-v{N+1}.md`
 - A minimum 3-month deprecation period for any removed feature
 
-### v3.0.0 Breaking Changes (planned)
+### v4.0.0 Breaking Changes (planned)
 
-The following deprecated items will be removed in v3.0.0. All have `DeprecationWarning` or `AliasChoices` backward-compat shims active since the version listed.
+The following deprecated items will be removed in v4.0.0. All have `DeprecationWarning` or `AliasChoices` backward-compat shims active since the version listed.
+
+> **Retargeted from v3.0.0.** v3.0.0 shipped on 2026-08-13 without this
+> removal and the shim is still live, so the old deadline has already
+> passed. Per the policy above — remove only on a MAJOR bump — the next
+> opportunity is v4.0.0. The env var continues to work in all v3.x
+> releases, with a `DeprecationWarning`.
 
 | Item | Deprecated in | Old name | New name | File:line |
 |------|--------------|----------|----------|-----------|
-| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | `TRELIX_RETRIEVAL_FLARE_MAX_ITER` | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `src/trelix/core/config.py:434` |
+| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | `TRELIX_RETRIEVAL_FLARE_MAX_ITER` | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `src/trelix/core/config.py:577` |
 
-**Migration**: Set `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` instead of `TRELIX_RETRIEVAL_FLARE_MAX_ITER` in your environment or config files. The old name emits `DeprecationWarning` at `RetrievalConfig()` instantiation and will be removed in v3.0.0.
+**Migration**: Set `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` instead of `TRELIX_RETRIEVAL_FLARE_MAX_ITER` in your environment or config files. The old name emits `DeprecationWarning` at `RetrievalConfig()` instantiation and will be removed in v4.0.0.
 
-See [v3-0-0-breaking-changes.md](docs/superpowers/plans/v3-0-0-breaking-changes.md) for the complete v3.0.0 deprecation audit and removal schedule.
+See [v3-0-0-breaking-changes.md](superpowers/plans/v3-0-0-breaking-changes.md) for the complete v3.0.0 deprecation audit and removal schedule.
 
 ---
 
