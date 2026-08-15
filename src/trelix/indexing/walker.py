@@ -190,18 +190,53 @@ class FileWalker:
             # Excluding is the safe reading of a containment setting.
             return False
 
-    def _iter_files(self, root: Path) -> Iterator[Path]:
-        """Recursive directory traversal, skipping ignored dirs."""
+    def _iter_files(self, root: Path, _chain: frozenset[Path] | None = None) -> Iterator[Path]:
+        """Recursive directory traversal, skipping ignored dirs and symlink cycles.
+
+        `_chain` is the set of RESOLVED directory paths on the current recursion
+        path — the ancestors of `root`, not every directory seen so far. That
+        distinction is the whole design:
+
+        A symlink pointing at one of its own ancestors makes the walk re-enter a
+        directory it is already inside. `repo/loop -> repo` yielded the same file
+        17 times at nesting depths up to 16 (measured), one distinct content hash,
+        bounded only by the OS path limit — 17x the embedding cost and 17 duplicate
+        results for one file. Note `follow_symlinks=False` does NOT help here: the
+        loop target resolves INSIDE the root, so containment correctly permits it.
+
+        A global visited-set would also fix the loop, and would be WRONG. Given
+        `repo/a -> repo/shared` and `repo/b -> repo/shared`, it would descend into
+        the first and silently drop the second, losing `b/...` from a legitimate
+        layout. Only cycles are a defect; two aliases to the same target are not.
+        Tracking the current chain fixes the former and leaves the latter intact.
+        """
         try:
             entries = sorted(root.iterdir())
         except PermissionError:
             return
 
+        if _chain is None:
+            try:
+                _chain = frozenset({root.resolve()})
+            except OSError:
+                _chain = frozenset()
+
         for entry in entries:
             if not self._is_within_root(entry):
                 continue
             if entry.is_dir():
-                if not self._is_ignored_dir(entry):
-                    yield from self._iter_files(entry)
+                if self._is_ignored_dir(entry):
+                    continue
+                try:
+                    target = entry.resolve()
+                except OSError:
+                    # Broken link or unreadable: nothing to descend into.
+                    continue
+                if target in _chain:
+                    # Re-entering an ancestor. Skipping is silent by design — this
+                    # is a link the user created, not an error, and the walk still
+                    # yields every real file exactly once via its non-looping path.
+                    continue
+                yield from self._iter_files(entry, _chain | {target})
             elif entry.is_file():
                 yield entry
