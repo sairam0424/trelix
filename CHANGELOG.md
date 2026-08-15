@@ -308,6 +308,41 @@ regression tests (2,394 -> 2,445), each demonstrated failing against v3.0.1.
   `effective_system` from the messages exactly as `complete()` does, since
   `tool_call()` takes no `system=` parameter on the client ABC.
 
+- **`trelix audit verify` reported "Audit chain intact." for a database it never
+  read, and created one as a side effect.** `_open_audit_store`'s guard was
+  `if not store.is_open`, but `AuditStore(path)` *creates* the file and its schema
+  when the path is absent — so `is_open` was always `True`, the guard never fired,
+  and a read-only integrity command exited 0 while leaving a fresh ~28 KB SQLite
+  file behind. A CI integrity gate pointed at a typo'd or not-yet-created `--db`
+  passed **green**.
+
+  That function's own docstring states it exists to prevent exactly this ("a false
+  integrity assurance"), which makes it the same defect class as the rest of this
+  release: a documented safety guarantee the code did not deliver. The existence
+  check now runs *before* construction and exits 2 (`2` = could not check; `1`
+  stays reserved for detected tamper). A path that exists but is unusable — a
+  directory, an unreadable file — still falls through to the `is_open` check,
+  which does fire for those.
+
+  It also had a test, and the test is why it survived: it passed a **directory**,
+  which sqlite genuinely cannot open, so `is_open` was `False` and the guard fired
+  correctly. The absent-path case behaves oppositely. Covered now for `verify`,
+  `list` and `export`.
+
+- **`taint --json` and `search-all --json` printed prose to stdout on the empty
+  path**, so `| jq` failed on the most common path in CI — a no-semgrep install
+  and an unregistered federation registry are both default states. Both returned
+  before reaching their `if json_output:` branch. They now emit `[]`. This is the
+  same `--json` contract fixed earlier for `graph`, `taint`, `review` and
+  `search-all`'s populated paths; these were the two empty-path sites that scan
+  missed.
+
+- **The taint remediation hint told the user to install the package they already
+  had.** `pip install trelix[taint]` was interpolated unescaped, so Rich read
+  `[taint]` as an opening tag and swallowed it, rendering `pip install 'trelix'`.
+  Identical to the swallow `_print_error()`'s docstring documents for
+  `trelix[local]`, at a site that fix did not reach.
+
 ### Documentation
 
 - **Corrections caught by the pre-release signoff, before publishing.** An
