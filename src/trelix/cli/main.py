@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import time
 import warnings
@@ -71,7 +72,7 @@ def _print_error(label: str, detail: object) -> None:
     leaving the surrounding [red]/[/red] markup intact.
     """
 
-    err_console.print(f"[red]{label}:[/red] {escape(str(detail))}")
+    err_console.print(f"[red]{label}:[/red] {_safe_text(str(detail))}")
 
 
 def _print_json(payload: object, *, indent: int | None = 2) -> None:
@@ -102,6 +103,62 @@ def _print_json(payload: object, *, indent: int | None = 2) -> None:
         highlight=False,
         soft_wrap=True,
     )
+
+
+# C0 and C1 control characters, minus the two that legitimately structure text.
+# \n and \t are preserved because retrieved source is multi-line and indented.
+# \r is in the stripped range, but credit where due: Rich already normalises a
+# lone carriage return on its own (measured — `escape("real\rFAKE")` renders
+# "realFAKE" with no CR), so removing it here is belt-and-braces rather than the
+# thing standing between you and a cursor-return overwrite.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _safe_text(value: object) -> str:
+    """Escape Rich markup AND strip terminal control bytes. For UNTRUSTED content.
+
+    `rich.markup.escape()` neutralises "[tag]" brackets and nothing else, so a raw
+    ESC byte in an indexed file travels through `console.print()` straight to the
+    terminal, which then executes it. Verified against a live Rich console — these
+    all reached the terminal intact before this helper existed:
+
+      * `\\x1b]52;c;<base64>\\x07` — OSC 52. **Writes the user's clipboard** on
+        iTerm2, kitty and WezTerm. Content in a repository should not be able to
+        put data on your clipboard.
+      * `\\x1b[1A\\x1b[2K` — cursor-up plus erase-line. Scrubs trelix's own output
+        above it, so injected content can hide the fact it was ever displayed.
+      * `\\x1b[?25l`, BEL, and backspace-overwrite tricks.
+
+    Stripping rather than escaping is deliberate: there is no rendering of a raw
+    control byte that is useful to a human reading source code, and no tracked file
+    in this repository contains one, so the change is invisible for real code. It
+    is visible for terminal recordings and ANSI-parser fixtures — those render as
+    their printable remainder.
+
+    Apply this ONLY to indexed, LLM or third-party content. Two things must not go
+    through it: trelix's own literal markup (which has to stay interpretable), and
+    anything machine-readable — `_print_json()` keeps its payload byte-exact, and
+    that invariant is pinned by test_search_json_output_is_not_escaped.
+
+    ORDER IS LOAD-BEARING: strip FIRST, then escape. The reverse composes into a
+    worse bug than either fix prevents. `rich.markup.escape()` matches
+    ``(\\\\*)(\\[[a-z#/@][^[]*?])`` — a byte that is not in ``[a-z#/@]`` right after
+    the ``[`` means no tag is recognised and the bracket is left UNESCAPED. Strip
+    that byte afterwards and you have SYNTHESISED a live markup tag that escape()
+    never got the chance to neutralise. Demonstrated with a real pty against a real
+    `trelix search`: a symbol name of
+
+        pre[\\x1blink=http://evil.example]CLICK[\\x1b/link]post
+
+    escaped to ``pre[\\x1blink=…]`` (bracket untouched, since \\x1b is not a tag
+    start), then stripped to ``pre[link=http://evil.example]…`` — which Rich
+    rendered as a genuine OSC 8 hyperlink to the attacker's URL, with the
+    ``[link=…]`` markers invisible so the reader could not tell. Any of the 33
+    stripped codepoints works, not just ESC. Stripping first removes the byte while
+    the bracket is still bare, so escape() then sees ``[link=…]`` and neutralises
+    it.
+    """
+    return escape(_CONTROL_RE.sub("", str(value)))
 
 
 def _status_console(json_output: bool) -> Console:
@@ -276,9 +333,9 @@ def index(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
-    # escape(repo): a directory legitimately named e.g. "Project [old]" would
+    # _safe_text(repo): a directory legitimately named e.g. "Project [old]" would
     # otherwise render with "[old]" swallowed as a markup tag.
-    console.print(Panel(f"[bold cyan]Indexing[/bold cyan] {escape(repo)}", expand=False))
+    console.print(Panel(f"[bold cyan]Indexing[/bold cyan] {_safe_text(repo)}", expand=False))
 
     t0 = time.perf_counter()
     try:
@@ -378,7 +435,7 @@ def search(
     # them raised MarkupError and rendered zero rows. See the markup-safety note
     # near the top of this file. `query` is escaped too: searching for the very
     # regex that triggers this bug ("trelix search . '[/!]'") must not crash.
-    table = Table(title=f"Search: {escape(query)}", show_header=True, header_style="bold cyan")
+    table = Table(title=f"Search: {_safe_text(query)}", show_header=True, header_style="bold cyan")
     table.add_column("File", style="dim", max_width=40)
     table.add_column("Symbol", style="bold")
     table.add_column("Lines", justify="right")
@@ -386,8 +443,8 @@ def search(
 
     for r in context.results:
         table.add_row(
-            escape(r.file.rel_path),
-            escape(r.symbol.name),
+            _safe_text(r.file.rel_path),
+            _safe_text(r.symbol.name),
             f"{r.symbol.line_start}-{r.symbol.line_end}",
             f"{r.score:.4f}",
         )
@@ -456,8 +513,8 @@ def ask(
             # `re.sub(r"^//[/!]?\s?", ...)` raised MarkupError, so `trelix ask`
             # printed nothing and exited nonzero. escape() is display-only —
             # nothing here is trelix-authored markup meant to be interpreted.
-            console.print(escape(answer))
-            err_console.print(f"[dim]Session: {escape(resolved_session)}[/dim]")
+            console.print(_safe_text(answer))
+            err_console.print(f"[dim]Session: {_safe_text(resolved_session)}[/dim]")
             return
 
         retriever = Retriever(config)
@@ -472,7 +529,7 @@ def ask(
 
             loop = FLARELoop(retriever, synth, config)
             answer = loop.run(query)
-            console.print(escape(answer))
+            console.print(_safe_text(answer))
         else:
             context = retriever.retrieve(query)
             # If provider=local (no API key), print the context text directly.
@@ -481,10 +538,10 @@ def ask(
             # --provider wasn't passed.
             if config.embedder.provider == "local":
                 console.print(
-                    Panel(f"[bold cyan]Context for:[/bold cyan] {escape(query)}", expand=False)
+                    Panel(f"[bold cyan]Context for:[/bold cyan] {_safe_text(query)}", expand=False)
                 )
                 if context.context_text:
-                    console.print(escape(context.context_text))
+                    console.print(_safe_text(context.context_text))
                 else:
                     console.print("[yellow]No relevant code found.[/yellow]")
                 return
@@ -493,7 +550,7 @@ def ask(
             # form a tag, and a complete "[/!]" inside one token can no longer
             # abort the stream mid-answer.
             for token in synth.stream(context, config.retrieval):
-                console.print(escape(token), end="", highlight=False)
+                console.print(_safe_text(token), end="", highlight=False)
             console.print()  # final newline
     except Exception as exc:
         _print_error("Synthesis failed", exc)
@@ -536,7 +593,7 @@ def query(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
-    console.print(Panel(f"[bold cyan]Query:[/bold cyan] {escape(query_str)}", expand=False))
+    console.print(Panel(f"[bold cyan]Query:[/bold cyan] {_safe_text(query_str)}", expand=False))
 
     try:
         retriever = Retriever(config)
@@ -563,8 +620,8 @@ def query(
     # Indexed-repository text into markup-parsed cells — same sink as search().
     for r in context.results:
         table.add_row(
-            escape(r.file.rel_path),
-            escape(r.symbol.name),
+            _safe_text(r.file.rel_path),
+            _safe_text(r.symbol.name),
             f"{r.symbol.line_start}-{r.symbol.line_end}",
             f"{r.score:.4f}",
         )
@@ -620,7 +677,7 @@ def call_graph(
         _print_error("Failed to open index", exc)
         raise typer.Exit(1) from exc
 
-    console.print(f"\n[bold] Graph:[/bold] {escape(symbol)}\n")
+    console.print(f"\n[bold] Graph:[/bold] {_safe_text(symbol)}\n")
 
     def _render_table(title: str, results: list[_SearchResult]) -> None:
         tbl = Table(show_header=True, header_style="bold cyan", title=title)
@@ -634,8 +691,8 @@ def call_graph(
             # is left alone. The "(none)" row below is trelix's own markup.
             for r in results:
                 tbl.add_row(
-                    escape(r.file.rel_path),
-                    escape(r.symbol.qualified_name or r.symbol.name),
+                    _safe_text(r.file.rel_path),
+                    _safe_text(r.symbol.qualified_name or r.symbol.name),
                     f"{r.symbol.line_start}-{r.symbol.line_end}",
                     r.symbol.kind.value if hasattr(r.symbol.kind, "value") else str(r.symbol.kind),
                 )
@@ -646,7 +703,7 @@ def call_graph(
     valid_directions = {"callers", "callees", "importers", "all"}
     if direction not in valid_directions:
         err_console.print(
-            f"[red]Invalid direction[/red] {escape(repr(direction))}. "
+            f"[red]Invalid direction[/red] {_safe_text(repr(direction))}. "
             f"Choose from: {', '.join(sorted(valid_directions))}"
         )
         raise typer.Exit(1)
@@ -661,7 +718,7 @@ def call_graph(
 
     if direction in ("importers", "all"):
         importers = retriever.get_importers(symbol)
-        _render_table(f'Importers of "{escape(symbol)}" ({len(importers)})', importers)
+        _render_table(f'Importers of "{_safe_text(symbol)}" ({len(importers)})', importers)
 
 
 # ---------------------------------------------------------------------------
@@ -697,8 +754,8 @@ def stats(
     db_path = config.db_path_absolute
     if not db_path.exists():
         err_console.print(
-            f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {escape(repo)}` first."
+            f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
+            f" run `trelix index {_safe_text(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -715,7 +772,7 @@ def stats(
 
     db_size_kb = db_size_bytes / 1024
 
-    console.print(Panel(f"[bold cyan]Index Stats:[/bold cyan] {escape(repo)}", expand=False))
+    console.print(Panel(f"[bold cyan]Index Stats:[/bold cyan] {_safe_text(repo)}", expand=False))
 
     table = Table(show_header=True, header_style="bold cyan")
     table.add_column("Metric", style="dim")
@@ -777,8 +834,8 @@ def link_tickets(
     db_path = config.db_path_absolute
     if not db_path.exists():
         err_console.print(
-            f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {escape(repo)}` first."
+            f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
+            f" run `trelix index {_safe_text(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -847,8 +904,8 @@ def link_artifacts(
     db_path = config.db_path_absolute
     if not db_path.exists():
         err_console.print(
-            f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {escape(repo)}` first."
+            f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
+            f" run `trelix index {_safe_text(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -979,7 +1036,7 @@ def migrate_vectors(
 
     if to != "qdrant":
         err_console.print(
-            f"[red]Unsupported target backend:[/red] {escape(repr(to))}."
+            f"[red]Unsupported target backend:[/red] {_safe_text(repr(to))}."
             " Only 'qdrant' is supported."
         )
         raise typer.Exit(1)
@@ -1001,8 +1058,8 @@ def migrate_vectors(
     db_path = config.db_path_absolute
     if not db_path.exists():
         err_console.print(
-            f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {escape(repo)}` first."
+            f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
+            f" run `trelix index {_safe_text(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -1050,7 +1107,7 @@ def migrate_vectors(
     total_row = conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()
     total = total_row[0] if total_row else 0
     console.print(
-        f"[cyan]Migrating {total:,} embeddings (dim={dimension}) → Qdrant {escape(url)}[/cyan]"
+        f"[cyan]Migrating {total:,} embeddings (dim={dimension}) → Qdrant {_safe_text(url)}[/cyan]"
     )
 
     BATCH = 500
@@ -1131,7 +1188,7 @@ def watch(
         raise typer.Exit(1) from exc
 
     # Run initial full index so the watcher starts from a known-good state
-    console.print(Panel(f"[bold cyan]Initial index[/bold cyan] {escape(repo)}", expand=False))
+    console.print(Panel(f"[bold cyan]Initial index[/bold cyan] {_safe_text(repo)}", expand=False))
     try:
         indexer.index()
     except Exception as exc:
@@ -1190,7 +1247,9 @@ def watch_all(
             f"[bold cyan]watch-all[/bold cyan] — watching {len(entries)} repo(s):\n"
             # Alias/path come from the federation registry JSON on disk, not
             # from argv — bracket-shaped values there must not eat the Panel.
-            + "\n".join(f"  [green]{escape(e.alias)}[/green]  {escape(e.path)}" for e in entries),
+            + "\n".join(
+                f"  [green]{_safe_text(e.alias)}[/green]  {_safe_text(e.path)}" for e in entries
+            ),
             expand=False,
         )
     )
@@ -1327,7 +1386,7 @@ def graph(
         # "[3]" is not tag-shaped to Rich (a tag must start [a-z#/@]), so the
         # surrounding brackets are left as the literal formatting they are.
         for c in result.community_summary[:5]:
-            files = escape(", ".join(c["top_files"][:3]))
+            files = _safe_text(", ".join(c["top_files"][:3]))
             console.print(f"  [{c['community_id']}] {c['size']} nodes — {files}")
 
     if visualize:
@@ -1336,7 +1395,7 @@ def graph(
         out = output or str(_Path(repo_path) / ".trelix" / "graph.html")
         viz = GraphVisualizer()
         path = viz.export_html(result.code_graph, out)
-        console.print(f"\n[blue]Graph visualization:[/blue] {escape(str(path))}")
+        console.print(f"\n[blue]Graph visualization:[/blue] {_safe_text(str(path))}")
 
 
 # ---------------------------------------------------------------------------
@@ -1377,9 +1436,9 @@ def telemetry(
     # inserted backslash, and a truncated half-tag renders literally anyway.
     for row in rows:
         table.add_row(
-            escape(str(row["ts"])),
-            escape(row["query"][:50]),
-            escape(str(row["intent"])),
+            _safe_text(str(row["ts"])),
+            _safe_text(row["query"][:50]),
+            _safe_text(str(row["intent"])),
             f"{row['elapsed_ms']:.0f}",
             str(row["result_count"]),
         )
@@ -1407,7 +1466,7 @@ def eval(
     try:
         metrics = harness.run(golden)
     except FileNotFoundError:
-        console.print(f"[red]Golden file not found: {escape(golden)}[/red]")
+        console.print(f"[red]Golden file not found: {_safe_text(golden)}[/red]")
         console.print("Create a golden.jsonl with lines like:")
         console.print('  {"query": "how does auth work", "relevant_files": ["src/auth.py"]}')
         raise typer.Exit(1)
@@ -1438,7 +1497,7 @@ def eval_synthesis(
     try:
         metrics = harness.run(golden)
     except FileNotFoundError:
-        console.print(f"[red]Golden file not found: {escape(golden)}[/red]")
+        console.print(f"[red]Golden file not found: {_safe_text(golden)}[/red]")
         console.print("Create a golden_synthesis.jsonl with lines like:")
         console.print(
             '  {"query": "how does auth work", "relevant_files": ["src/auth.py"],'
@@ -1501,7 +1560,7 @@ def taint(
         else:
             console.print(
                 "[yellow]No taint flows found. "
-                f"Ensure semgrep is installed: pip install {escape('trelix[taint]')}[/yellow]"
+                f"Ensure semgrep is installed: pip install {_safe_text('trelix[taint]')}[/yellow]"
             )
         return
 
@@ -1536,10 +1595,10 @@ def taint(
     # scanned repository — all third-party text landing in markup-parsed cells.
     for f in filtered[:50]:
         table.add_row(
-            escape(f.severity),
-            escape(f.rule_id),
-            f"{escape(f.source_file)}:{f.source_line}",
-            f"{escape(f.sink_file)}:{f.sink_line}",
+            _safe_text(f.severity),
+            _safe_text(f.rule_id),
+            f"{_safe_text(f.source_file)}:{f.source_line}",
+            f"{_safe_text(f.sink_file)}:{f.sink_line}",
         )
     console.print(table)
 
@@ -1612,7 +1671,7 @@ def review(
         # file and parse it as JSON.
         status_console = _status_console(json_output)
 
-        status_console.print(f"[cyan]Fetching PR diff from GitHub:[/cyan] {escape(pr)}")
+        status_console.print(f"[cyan]Fetching PR diff from GitHub:[/cyan] {_safe_text(pr)}")
         gh_client = GitHubPRClient(token=token)
 
         try:
@@ -1626,7 +1685,7 @@ def review(
         for f in pr_files:
             if f.patch is None:
                 status_console.print(
-                    f"[dim]Skipping binary/oversized file: {escape(f.filename)}[/dim]"
+                    f"[dim]Skipping binary/oversized file: {_safe_text(f.filename)}[/dim]"
                 )
                 continue
             diff_lines.append(f"diff --git a/{f.filename} b/{f.filename}")
@@ -1686,10 +1745,10 @@ def review(
             for c in comments:
                 color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
                 table.add_row(
-                    escape(c.file_path),
+                    _safe_text(c.file_path),
                     f"{c.line_start}-{c.line_end}",
-                    f"[{color}]{escape(c.severity)}[/{color}]",
-                    escape(c.comment),
+                    f"[{color}]{_safe_text(c.severity)}[/{color}]",
+                    _safe_text(c.comment),
                 )
             console.print(table)
 
@@ -1720,7 +1779,7 @@ def review(
                 )
             except Exception as exc:
                 err_console.print(
-                    f"[yellow]Warning: failed to post comments: {escape(str(exc))}[/yellow]"
+                    f"[yellow]Warning: failed to post comments: {_safe_text(str(exc))}[/yellow]"
                 )
 
         raise typer.Exit(0)
@@ -1788,10 +1847,10 @@ def review(
     for c in comments:
         color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
         table.add_row(
-            escape(c.file_path),
+            _safe_text(c.file_path),
             f"{c.line_start}-{c.line_end}",
-            f"[{color}]{escape(c.severity)}[/{color}]",
-            escape(c.comment),
+            f"[{color}]{_safe_text(c.severity)}[/{color}]",
+            _safe_text(c.comment),
         )
     console.print(table)
 
@@ -1855,7 +1914,7 @@ def search_all(
 
     from rich.table import Table
 
-    table = Table(title=f"Federated Search: '{escape(query)}' ({len(results)} results)")
+    table = Table(title=f"Federated Search: '{_safe_text(query)}' ({len(results)} results)")
     table.add_column("Repo", style="dim")
     table.add_column("File")
     table.add_column("Symbol")
@@ -1867,9 +1926,9 @@ def search_all(
     for r in results[:20]:
         repo_tag = r.source.split(":")[0] if ":" in r.source else ""
         table.add_row(
-            escape(repo_tag),
-            escape(r.file.rel_path),
-            escape(r.symbol.qualified_name),
+            _safe_text(repo_tag),
+            _safe_text(r.file.rel_path),
+            _safe_text(r.symbol.qualified_name),
             f"{r.score:.4f}",
         )
     console.print(table)
@@ -1897,9 +1956,9 @@ def federation_add(
     try:
         registry.add(alias, path, weight)
         registry.save()
-        console.print(f"[green]Registered '{escape(alias)}' -> {escape(path)}[/green]")
+        console.print(f"[green]Registered '{_safe_text(alias)}' -> {_safe_text(path)}[/green]")
     except ValueError as exc:
-        console.print(f"[red]{escape(str(exc))}[/red]")
+        console.print(f"[red]{_safe_text(str(exc))}[/red]")
         raise typer.Exit(1)
 
 
@@ -1920,7 +1979,7 @@ def federation_list(
     table.add_column("Path")
     table.add_column("Weight", justify="right")
     for e in entries:
-        table.add_row(escape(e.alias), escape(e.path), str(e.weight))
+        table.add_row(_safe_text(e.alias), _safe_text(e.path), str(e.weight))
     console.print(table)
 
 
@@ -1937,9 +1996,9 @@ def federation_remove(
     registry.remove(alias)
     registry.save()
     if existed:
-        console.print(f"[green]Removed '{escape(alias)}'[/green]")
+        console.print(f"[green]Removed '{_safe_text(alias)}'[/green]")
     else:
-        console.print(f"[yellow]No repo registered with alias '{escape(alias)}'[/yellow]")
+        console.print(f"[yellow]No repo registered with alias '{_safe_text(alias)}'[/yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -1984,10 +2043,10 @@ def agent_sessions_list(
     # The recorded `query` is arbitrary text (same sink as telemetry()).
     for s in sessions:
         table.add_row(
-            escape(str(s["session_id"])),
-            escape(s["query"][:60]),
+            _safe_text(str(s["session_id"])),
+            _safe_text(s["query"][:60]),
             str(s["turn_count"]),
-            escape(str(s["last_active_at"])),
+            _safe_text(str(s["last_active_at"])),
         )
     console.print(table)
 
@@ -2009,7 +2068,7 @@ def agent_sessions_show(
         db.close()
 
     if not turns:
-        console.print(f"[yellow]No turns found for session '{escape(session_id)}'.[/yellow]")
+        console.print(f"[yellow]No turns found for session '{_safe_text(session_id)}'.[/yellow]")
         return
 
     for t in turns:
@@ -2020,11 +2079,11 @@ def agent_sessions_show(
         # [bold] labels are trelix's own markup.
         console.print(
             Panel(
-                f"[bold]Thought:[/bold] {escape(str(t['thought']))}\n"
-                f"[bold]Action:[/bold] {escape(str(t['action_type']))} "
-                f"{escape(str(t['action_arguments']))}\n"
+                f"[bold]Thought:[/bold] {_safe_text(t['thought'])}\n"
+                f"[bold]Action:[/bold] {_safe_text(str(t['action_type']))} "
+                f"{_safe_text(str(t['action_arguments']))}\n"
                 f"[bold]Observation ({'ok' if t['observation_success'] else 'err'}):[/bold] "
-                f"{escape(t['observation_content'][:500])}",
+                f"{_safe_text(t['observation_content'][:500])}",
                 title=f"Turn {t['turn_index'] + 1}",
             )
         )
@@ -2047,9 +2106,9 @@ def agent_sessions_clear(
         db.close()
 
     if existed:
-        console.print(f"[green]Cleared session '{escape(session_id)}'[/green]")
+        console.print(f"[green]Cleared session '{_safe_text(session_id)}'[/green]")
     else:
-        console.print(f"[yellow]No session found with ID '{escape(session_id)}'[/yellow]")
+        console.print(f"[yellow]No session found with ID '{_safe_text(session_id)}'[/yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -2097,8 +2156,8 @@ def connector_sync(
     db_path = config.db_path_absolute
     if not db_path.exists():
         err_console.print(
-            f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {escape(repo)}` first."
+            f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
+            f" run `trelix index {_safe_text(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -2170,7 +2229,7 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
     # below — sqlite cannot open those, so that guard does fire for them.
     if not path.exists():
         err_console.print(
-            f"[red]Audit database does not exist[/red] at {escape(str(path))} — "
+            f"[red]Audit database does not exist[/red] at {_safe_text(str(path))} — "
             "nothing was read, and no database was created. Check the path, or "
             "enable auditing (TRELIX_AUDIT_ENABLED=true) to start a chain."
         )
@@ -2179,7 +2238,7 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
     store = AuditStore(path)
     if not store.is_open:
         err_console.print(
-            f"[red]Could not open audit database[/red] at {escape(str(path))} — "
+            f"[red]Could not open audit database[/red] at {_safe_text(str(path))} — "
             "nothing was read. Check the path (it must be a file, not a directory) "
             "and that it is readable."
         )
@@ -2203,7 +2262,7 @@ def audit_list(
     # title is markup-parsed like any cell, so `--db '/tmp/a[/x].db'` still
     # raised MarkupError after every row had been made safe.
     table = Table(
-        title=f"Audit Log ({escape(str(path))})", show_header=True, header_style="bold cyan"
+        title=f"Audit Log ({_safe_text(str(path))})", show_header=True, header_style="bold cyan"
     )
     table.add_column("id", justify="right", style="dim")
     table.add_column("ts", style="dim")
@@ -2219,13 +2278,13 @@ def audit_list(
     # exactly the log a responder needs during an incident.
     for r in rows:
         table.add_row(
-            escape(str(r.get("id", ""))),
-            escape(str(r.get("ts", ""))),
-            escape(str(r.get("principal", ""))),
-            escape(str(r.get("action", ""))),
-            escape(str(r.get("resource", "") or "")),
-            escape(str(r.get("outcome", ""))),
-            escape(str(r.get("status_code", "") if r.get("status_code") is not None else "")),
+            _safe_text(str(r.get("id", ""))),
+            _safe_text(str(r.get("ts", ""))),
+            _safe_text(str(r.get("principal", ""))),
+            _safe_text(str(r.get("action", ""))),
+            _safe_text(str(r.get("resource", "") or "")),
+            _safe_text(str(r.get("outcome", ""))),
+            _safe_text(str(r.get("status_code", "") if r.get("status_code") is not None else "")),
         )
     console.print(table)
 
