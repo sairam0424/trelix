@@ -62,7 +62,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 3.0.0
+trelix --version        # trelix 3.1.1
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
