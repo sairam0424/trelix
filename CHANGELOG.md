@@ -6,6 +6,210 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Overview
+
+Six defects, found by indexing this repository with trelix and then checking whether
+each dimension of the resulting index was actually populated.
+
+The theme is **features that were on and doing nothing**. `.env` enabled file
+summaries, PageRank boosting and telemetry; the index had 0 file summaries, a PageRank
+boost that had never once fired, and `taint_flows` empty on a repository semgrep does
+find flows in. None of it was visible from the outside: each failure path logged at
+DEBUG while the CLI runs at WARNING, or was swallowed by a bare `except`, or was
+reported as a number nobody had a reason to doubt.
+
+Two were found only by running the real thing rather than reading the code — real
+semgrep output rather than a hand-written fixture, and a real sqlite-vec table rather
+than an assumption about what SQL it would accept. In both cases the *obvious* fix was
+also wrong, and only measurement showed it.
+
+### Fixed
+
+- **Nested `.gitignore` files were never read, despite the docstring saying they
+  were.** `walker.py`'s module docstring advertised "respects nested .gitignore files"
+  while `_load_gitignore_spec()` read only `repo_root/.gitignore`, so every
+  `.gitignore` in every subdirectory of every indexed repository was ignored.
+
+  Measured on this repository: `workspace-vscode/.gitignore` excludes `.vscode-test/`,
+  which `@vscode/test-electron` fills with a **2.6 GB VS Code application bundle**. The
+  walker indexed **543 of 915 files (59%) and 23,865 of 32,337 chunks (74%)** out of
+  that bundle. The symbols it extracted are minified single-letter identifiers, and
+  they competed with real code: the query *"how does the file walker filter ignored
+  directories"* returned **6 of 10 results from the bundle** and pushed `FileWalker`
+  itself down to rank 4.
+
+  Corpus pollution and retrieval damage turned out to be very different numbers. Across
+  a 10-query set, mean precision@10 was **94%** — the fusion pipeline masks the noise
+  for most queries. The damage concentrates on queries whose vocabulary overlaps the
+  junk, and there it is severe.
+
+  The fix walks the `.gitignore` chain from repo root down to a path's own directory and
+  applies git's real semantics, which a single root spec cannot express: each file's
+  patterns match **relative to its own directory** (otherwise an anchored `/rooted.py`
+  or a directory pattern `harness/` in a nested file silently matches nothing), and
+  **proximity decides**, so a deeper `!keep.log` re-includes what its parent excluded.
+  That last part needs pathspec's `check_file()`, which distinguishes *ignored* from
+  *explicitly re-included* from *unmentioned*; `match_file()` collapses the last two and
+  cannot express it. Specs are parsed once per directory and cached.
+
+  On this repo: **915 files → 422**, zero from `.vscode-test`, walk in 0.1 s.
+  `_is_ignored_file()` still works on an arbitrary path rather than requiring traversal
+  state, because `watcher.py` calls it that way for single filesystem events — so
+  `trelix watch` gets the fix too.
+
+- **The taint parser was written against an invented fixture and got all three of its
+  fields wrong.** Verified against real semgrep 1.x output for a rule matching
+  `input()` → `cur.execute()`:
+
+  `taint_sink` is a two-element tagged **list**, `["CliLoc", [location, code]]`, not a
+  mapping. `trace.get("taint_sink", {}).get("location", {})` therefore called `.get()`
+  on a list, raised `AttributeError`, and the bare `except Exception: continue` dropped
+  the finding. Since only genuine taint flows carry a `dataflow_trace`, **taint analysis
+  reported nothing, ever** — matching the 0 rows in `taint_flows`.
+
+  `severity` is under `extra`, so the top-level read always fell through to the `"INFO"`
+  default: every flow looked harmless and `--severity ERROR` could never match.
+
+  And semgrep reports a match **at the sink**, so the top-level `path`/`start` is the
+  sink's location. Using it as the source inverted the flow — for the fixture above it
+  reported line 5 (the `execute` call) as the source and never saw line 3 (the `input`
+  call).
+
+  The existing test asserted all three misreadings, using a fixture with `severity` at
+  the top level and `taint_sink` as a `{"location": ...}` dict, and passed. That is why
+  this shipped: a fabricated fixture froze a wrong contract in place. The new fixture is
+  captured verbatim from semgrep with only `path` values stubbed. The parser accepts
+  both shapes, so the old dict form still works. End-to-end: 1 flow, `ERROR`, source
+  `:3`, sink `:5`; before, 0 flows.
+
+- **nDCG@10 and Recall@10 could exceed 1.0.** Both functions document a `[0, 1]` result
+  and `docs/CLI_REFERENCE.md` shows example output in that range. `EvalHarness` ranks
+  *chunks* and maps them onto file-level IDs while golden-set ground truth is
+  file-level, and `Retriever._dedup` keys on `symbol_id`, never on file — so one file
+  routinely occupies several of the top ten slots (this index averages ~77 chunks per
+  file). Each occurrence scored again.
+
+  Measured: one relevant file appearing 5 times in the top 10 scored **recall@10 = 5.0,
+  nDCG@10 = 2.52**; all ten scored 10.0 and 4.54. Worse than the range violation,
+  padding a result list with duplicates **raised** the score, so the metric rewarded
+  redundancy.
+
+  Deduplication now happens in the metric functions, covering every caller —
+  `tests/eval/metrics.py` already implemented this first-hit-only rule locally, which is
+  why the test-suite harness reported sane numbers while the shipped CLI did not. `mrr`
+  is deduplicated too: it could not exceed 1.0, but duplicates *before* the first
+  relevant hit inflate that hit's rank and **depress** the score (`[A,A,A,B]` scored 1/4
+  instead of 1/2), so leaving it alone would have left the three metrics disagreeing
+  about what a rank is. `@k` now means k distinct files. **Scores from before this change
+  are not comparable with scores after it**, in both directions.
+
+- **Sentinel rows stole slots from the vector search top-k.** Three kinds of row share
+  the `chunk_embeddings` vec0 table: real chunks at positive ids, file summaries at
+  `-file_id`, sub-chunks at `+10_000_000`. `search()` queried all three.
+
+  That is not merely noise. `Retriever._vector_search` sets `fetch_k = k` with no
+  oversample, hydrates each returned id, and `continue`s when hydration yields `None` —
+  and `raw` holds only `k` rows, so **there is nothing left to backfill from**. Every
+  sentinel in the top-k is a real result the caller silently never sees. Reproduced on
+  an in-memory vec0: one summary and one sub-chunk vector placed nearer the query than
+  any real chunk took the **top two of five** slots.
+
+  Both obvious fixes are wrong, which is why this needed measuring rather than
+  reasoning. `WHERE embedding MATCH ? AND chunk_id > 0 ... LIMIT ?` is **rejected
+  outright** by sqlite-vec 0.1.9 — *"A LIMIT or 'k = ?' constraint is required on vec0
+  knn queries"* — because the added predicate stops its planner recognising the `LIMIT`.
+  The `k = ?` constraint form is accepted but **silently wrong**: it applies the
+  predicate after the ANN cut, so a `k=5` query returned 4 rows, trading a polluted
+  top-k for a short one.
+
+  So the filter is in Python, and when the first pass comes back short it re-asks for
+  `k` plus the exact number of sentinel rows stored — provably enough even if every
+  sentinel outranks the k-th real chunk. The count is only paid when a filter actually
+  removed something, so an index with no summaries or sub-chunks issues exactly the
+  query it always did.
+
+  Deliberately **not** applied to the Qdrant and LanceDB backends: they build
+  `search_file_summaries()` and `search_sub_chunks()` *on top of* `search()` with a `k*5`
+  oversample, so sentinels there are load-bearing and the same change would break both
+  legs. The SQLite backend's sentinel legs run their own scans, which is what makes the
+  exclusion safe here; a test pins the distinction.
+
+- **The PageRank boost had never fired, and said nothing.**
+  `get_top_central_symbols()` read `graph_metadata` without the `_ensure_table(db)` call
+  its two siblings make. That table is created on demand rather than by the base schema,
+  so on any index where `trelix graph` had not run the read raised
+  `no such table: graph_metadata` — confirmed on this repo's index, where
+  `SELECT name FROM sqlite_master WHERE name LIKE 'graph%'` returned zero rows.
+
+  `Retriever._apply_pagerank_boost` caught that and logged at **DEBUG** while the CLI
+  configures **WARNING**. With `TRELIX_RETRIEVAL_PAGERANK_BOOST=true` in `.env`, the
+  result was an enabled retrieval feature that was inert and indistinguishable from a
+  working one. The read now ensures the table, and an empty centrality set logs at
+  WARNING naming both the fix and how to silence it.
+
+- **A failed file summary permanently cost a file its vectors.** Phase 2.5's comment
+  says failures are swallowed inside `FileSummarizer.summarize()`, and they are — but
+  the `self.embedder.embed([summary])` call that follows had no boundary of its own,
+  unlike the multi-granularity phase directly below it.
+
+  The loss is permanent, not transient. The file's chunk rows **and its content hash**
+  are already committed by then, so an embedder error unwinds past
+  `all_pending.extend(pending)` — those chunks never receive vectors, and because the
+  hash is stored, every later `trelix index` skips the file as "up to date" and never
+  repairs it. The only outward sign was a generic red `DB error <path>`.
+
+  Reproduced with an embedder that fails only on the single-text summary call:
+  `files_indexed=1, symbols_extracted=1, chunks_total=0, chunks_embedded=0, errors=1` —
+  a file recorded as indexed, with committed chunks and no vectors. Live for any run
+  with `TRELIX_FILE_SUMMARIES_ENABLED=true`, where one Azure 429 past the retry budget
+  was enough.
+
+### Added
+
+- **`trelix taint --rules PATH`.** `TaintAnalyzer.run()` always accepted a
+  `rules_path`; the CLI never passed one, so every invocation ran the `p/default`
+  registry pack — network-dependent, and free to change between runs. A missing path is
+  an error rather than a silent fallback, because falling back reports registry findings
+  under the reader's assumption that their own rules produced them.
+
+- **`config/semgrep-taint.yaml`** — six auditable taint rules scoped to source/sink
+  pairs that occur in this codebase. trelix shipped no rules of its own, so there was
+  previously no offline route to a taint scan at all.
+
+- **`scripts/self-index.sh`** — reproducible clean self-index. Needed because
+  `TRELIX_WALKER_*` and `TRELIX_PARSER_*` are process-env-only, and because
+  `EXTRA_IGNORE_DIRS` *replaces* rather than extends the default, so all 30 entries must
+  be restated to drop `"packages"` — present for .NET NuGet output, but it also hides
+  this repo's own `packages/` monorepo and its three shipped sub-packages. Refuses up
+  front on an embedding-dimension mismatch, printing the one remedy that works.
+
+- **`scripts/verify-index.sh`** — asserts that populated dimensions are non-empty *and*
+  that unpopulated ones are still empty, each with its reason recorded.
+
+- **`scripts/measure_index_hygiene.py`** — measures what share of the corpus, and of
+  actual top-10 results, was never source code. Needs no golden set.
+
+- **`eval/README.md`** — the golden-set format, and the two ways to get a silently
+  wrong score from it: paths are compared by exact string equality, and an entry with
+  no `relevant_files` is skipped rather than failed.
+
+### Changed
+
+- `TRELIX_PARSER_TAINT` is documented as **inert**. `ParserConfig.taint_enabled` is
+  declared and read nowhere in `src/`; taint analysis happens only when `trelix taint`
+  runs, and that command does not consult it. It had been documented as "Enable
+  taint-flow tracking during parsing".
+- `TRELIX_PARSER_DATAFLOW` now records that it is Python-only in practice, since the
+  extractor requests the Python grammar unconditionally.
+- `TRELIX_WALKER_RESPECT_GITIGNORE`, and the ignore sections of `CONFIGURATION.md`,
+  `TROUBLESHOOTING.md` (two sites) and `MCP_GUIDE.md`, now describe nested-`.gitignore`
+  support. All four correctly documented the old single-file limitation and would
+  otherwise have been left asserting the opposite of the code.
+- The `trelix taint` reference records two behaviours it had omitted: persistence to
+  `taint_flows` is unconditional and happens *before* `--severity` filtering, and
+  `--tier intrafile`/`interfile` both require the Semgrep Pro Engine, which
+  `pip install trelix[taint]` does not provide.
+
 ## [3.1.2] — 2026-08-16
 
 ### Overview
