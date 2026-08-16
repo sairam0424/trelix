@@ -505,3 +505,87 @@ class TestTaintRulesOption:
 
         assert result.exit_code == 1
         assert "Rules not found" in result.output
+
+
+class TestGraphVisualizeWithJson:
+    """`--visualize` must not be silently ignored when `--json` is also passed.
+
+    The graph command's `if json_output:` branch printed the payload and RETURNED
+    before the `if visualize:` block that exports the pyvis HTML. So the flag was
+    accepted, no file was written, and nothing said so.
+
+    Confirmed on this repository: `trelix graph . --visualize --json` left a stale
+    31-byte graph.html from a previous run untouched, while the same command without
+    `--json` wrote 326 KB.
+
+    The pyvis export is now performed before the early return, and its path is
+    reported in the JSON payload so a machine consumer learns where the file went.
+    Adding a key is additive — the four documented keys keep their names and types,
+    and the new one appears only when the flag is passed.
+    """
+
+    @staticmethod
+    def _patched_builder():  # type: ignore[no-untyped-def]
+        from unittest.mock import MagicMock, patch
+
+        result = MagicMock(
+            node_count=10, edge_count=20, community_count=3, concept_count=0,
+            elapsed_seconds=0.5, community_summary=[], code_graph=MagicMock(),
+        )
+        builder = patch("trelix.graph.builder.GraphBuilder")
+        return builder, result
+
+    def test_html_is_written_when_json_is_also_requested(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from unittest.mock import patch
+
+        out = tmp_path / "graph.html"
+        builder_patch, result = self._patched_builder()
+
+        with builder_patch as MockBuilder, patch(
+            "trelix.graph.visualizer.GraphVisualizer"
+        ) as MockViz:
+            MockBuilder.return_value.build.return_value = result
+            MockViz.return_value.export_html.return_value = str(out)
+            res = runner.invoke(
+                app, ["graph", str(tmp_path), "--visualize", "--json", "--output", str(out)]
+            )
+
+        assert res.exit_code == 0, res.output
+        assert MockViz.return_value.export_html.called, (
+            "--visualize was ignored because --json returned first"
+        )
+
+    def test_json_payload_reports_the_written_path(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import json as _json
+        from unittest.mock import patch
+
+        out = tmp_path / "graph.html"
+        builder_patch, result = self._patched_builder()
+
+        with builder_patch as MockBuilder, patch(
+            "trelix.graph.visualizer.GraphVisualizer"
+        ) as MockViz:
+            MockBuilder.return_value.build.return_value = result
+            MockViz.return_value.export_html.return_value = str(out)
+            res = runner.invoke(
+                app, ["graph", str(tmp_path), "--visualize", "--json", "--output", str(out)]
+            )
+
+        payload = _json.loads(res.stdout)
+        assert payload.get("visualization_path") == str(out)
+
+    def test_the_four_documented_keys_are_unchanged(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The documented JSON contract must survive; the new key is additive only."""
+        import json as _json
+        from unittest.mock import patch
+
+        builder_patch, result = self._patched_builder()
+        with builder_patch as MockBuilder:
+            MockBuilder.return_value.build.return_value = result
+            res = runner.invoke(app, ["graph", str(tmp_path), "--json"])
+
+        payload = _json.loads(res.stdout)
+        assert set(payload) == {"node_count", "edge_count", "community_count", "concept_count"}, (
+            "plain --json output gained or lost a key"
+        )
+        assert payload["node_count"] == 10

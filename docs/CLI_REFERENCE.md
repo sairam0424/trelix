@@ -719,6 +719,22 @@ trelix graph . --json
 }
 ```
 
+`visualization_path` is added when `--visualize` is passed, reporting where the pyvis
+HTML was written:
+
+```json
+{
+  "node_count": 1840,
+  "edge_count": 5320,
+  "community_count": 12,
+  "concept_count": 0,
+  "visualization_path": "/repo/.trelix/graph.html"
+}
+```
+
+Before v3.1.2, `--visualize --json` accepted the flag and wrote no file: the `--json`
+branch returned before the export ran.
+
 #### Notes
 
 - `trelix graph` builds the knowledge graph. The old command for displaying

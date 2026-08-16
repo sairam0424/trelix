@@ -1307,13 +1307,29 @@ def graph(
     with _status_console(json_output).status("Building knowledge graph..."):
         result = builder.build(extract_concepts=concepts)
 
+    # Exported BEFORE the --json early return below. It used to sit after it, so
+    # `--visualize --json` accepted the flag, wrote no file, and said nothing —
+    # measured on this repo as a stale 31-byte graph.html surviving the run while the
+    # same command without --json wrote 326 KB.
+    viz_path: str | None = None
+    if visualize:
+        from trelix.graph.visualizer import GraphVisualizer
+
+        out = output or str(_Path(repo_path) / ".trelix" / "graph.html")
+        viz_path = str(GraphVisualizer().export_html(result.code_graph, out))
+
     if json_output:
-        data = {
+        data: dict[str, object] = {
             "node_count": result.node_count,
             "edge_count": result.edge_count,
             "community_count": result.community_count,
             "concept_count": result.concept_count,
         }
+        # Additive only, and only when the flag was passed: the four documented keys
+        # keep their names and types, so an existing consumer is unaffected, while one
+        # that asked for a visualization learns where it landed.
+        if viz_path is not None:
+            data["visualization_path"] = viz_path
         # indent=None keeps this payload compact, as it has always been —
         # _print_json's default would reformat a machine-readable contract.
         _print_json(data, indent=None)
@@ -1336,13 +1352,8 @@ def graph(
             files = escape(", ".join(c["top_files"][:3]))
             console.print(f"  [{c['community_id']}] {c['size']} nodes — {files}")
 
-    if visualize:
-        from trelix.graph.visualizer import GraphVisualizer
-
-        out = output or str(_Path(repo_path) / ".trelix" / "graph.html")
-        viz = GraphVisualizer()
-        path = viz.export_html(result.code_graph, out)
-        console.print(f"\n[blue]Graph visualization:[/blue] {escape(str(path))}")
+    if viz_path is not None:
+        console.print(f"\n[blue]Graph visualization:[/blue] {escape(viz_path)}")
 
 
 # ---------------------------------------------------------------------------
