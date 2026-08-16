@@ -1,0 +1,161 @@
+# Semgrep taint rules for auditing this repository.
+#
+# Why this file exists
+# --------------------
+# `TaintAnalyzer.run()` accepts a `rules_path`, but with none supplied it falls back to
+# `--config p/default` — the Semgrep registry, which needs outbound network access. That
+# makes `trelix taint` unreproducible offline and unpinnable in CI: the rules can change
+# underneath you between runs. Trelix ships no rules of its own, so there was no offline
+# route at all.
+#
+# These rules are scoped to the source/sink pairs that actually occur in this codebase:
+# it shells out to semgrep, builds SQL, reads env-var configuration, and fetches URLs for
+# connectors. They are deliberately a small, readable set rather than a broad registry
+# pack — a rule you cannot audit is a finding you cannot trust.
+#
+# Usage:
+#   trelix taint . --rules config/semgrep-taint.yaml
+#   semgrep --json --config config/semgrep-taint.yaml src/
+#
+# Note: `--pro-intrafile` and `--pro --interfile` require the Semgrep Pro Engine, which
+# is not part of `pip install trelix[taint]`. The default intraprocedural tier is what
+# these rules are written for.
+
+rules:
+  # --------------------------------------------------------------------------
+  # Command execution
+  # --------------------------------------------------------------------------
+  - id: trelix-untrusted-input-to-subprocess
+    mode: taint
+    severity: ERROR
+    languages: [python]
+    message: >-
+      Untrusted input reaches a subprocess call. With shell=True this is command
+      injection; without it, an attacker still controls argv.
+    pattern-sources:
+      - pattern: os.environ[...]
+      - pattern: os.environ.get(...)
+      - pattern: os.getenv(...)
+      - pattern: sys.argv[...]
+      - pattern: input(...)
+    pattern-sinks:
+      - pattern: subprocess.run(...)
+      - pattern: subprocess.Popen(...)
+      - pattern: subprocess.check_output(...)
+      - pattern: subprocess.call(...)
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+
+  - id: trelix-shell-true-with-dynamic-command
+    mode: taint
+    severity: ERROR
+    languages: [python]
+    message: >-
+      shell=True with a non-literal command hands the string to /bin/sh, so any
+      metacharacter in it is interpreted rather than passed through.
+    pattern-sources:
+      - pattern: os.environ[...]
+      - pattern: os.environ.get(...)
+      - pattern: os.getenv(...)
+      - pattern: input(...)
+    pattern-sinks:
+      - patterns:
+          - pattern: subprocess.$FN(..., shell=True, ...)
+
+  # --------------------------------------------------------------------------
+  # Dynamic evaluation
+  # --------------------------------------------------------------------------
+  - id: trelix-untrusted-input-to-eval
+    mode: taint
+    severity: ERROR
+    languages: [python]
+    message: >-
+      Untrusted input reaches eval/exec/compile — arbitrary code execution.
+    pattern-sources:
+      - pattern: os.environ[...]
+      - pattern: os.environ.get(...)
+      - pattern: os.getenv(...)
+      - pattern: input(...)
+      - pattern: $RESP.text
+      - pattern: $RESP.json()
+    pattern-sinks:
+      - pattern: eval(...)
+      - pattern: exec(...)
+      - pattern: compile(...)
+
+  # --------------------------------------------------------------------------
+  # SQL
+  # --------------------------------------------------------------------------
+  # Concatenation and %-formatting only. A parameterised `execute(sql, params)` is the
+  # correct pattern and is used throughout this codebase, so matching every execute()
+  # call would bury the real findings.
+  - id: trelix-string-built-sql
+    mode: taint
+    severity: WARNING
+    languages: [python]
+    message: >-
+      SQL assembled by string building reaches execute(). Use bound parameters —
+      execute("... WHERE x = ?", (value,)) — so the driver escapes the value.
+    pattern-sources:
+      - pattern: os.environ[...]
+      - pattern: os.environ.get(...)
+      - pattern: os.getenv(...)
+      - pattern: input(...)
+      - pattern: sys.argv[...]
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $CUR.execute($SQL + ...)
+              - pattern: $CUR.execute(... + $SQL)
+              - pattern: $CUR.execute($SQL % ...)
+              - pattern: $CUR.execute(f"...{$X}...")
+              - pattern: $CUR.executescript(...)
+
+  # --------------------------------------------------------------------------
+  # Filesystem
+  # --------------------------------------------------------------------------
+  - id: trelix-untrusted-path-traversal
+    mode: taint
+    severity: WARNING
+    languages: [python]
+    message: >-
+      An externally supplied value is used as a filesystem path. Resolve it and check
+      containment before opening — a `..` segment or an absolute path escapes the
+      directory you meant to confine it to.
+    pattern-sources:
+      - pattern: $REQ.query_params[...]
+      - pattern: $REQ.path_params[...]
+      - pattern: input(...)
+      - pattern: sys.argv[...]
+    pattern-sinks:
+      - pattern: open(...)
+      - pattern: Path(...).read_text(...)
+      - pattern: Path(...).read_bytes(...)
+      - pattern: Path(...).write_text(...)
+      - pattern: shutil.rmtree(...)
+      - pattern: os.remove(...)
+
+  # --------------------------------------------------------------------------
+  # Outbound requests
+  # --------------------------------------------------------------------------
+  - id: trelix-untrusted-url-fetch
+    mode: taint
+    severity: WARNING
+    languages: [python]
+    message: >-
+      A URL derived from external input is fetched (SSRF). Restrict the host to an
+      allow-list before the request; a redirect or a 169.254.169.254 target otherwise
+      reaches infrastructure the caller should not be able to address.
+    pattern-sources:
+      - pattern: os.environ[...]
+      - pattern: os.environ.get(...)
+      - pattern: os.getenv(...)
+      - pattern: $REQ.query_params[...]
+      - pattern: input(...)
+    pattern-sinks:
+      - pattern: httpx.get(...)
+      - pattern: httpx.post(...)
+      - pattern: httpx.request(...)
+      - pattern: requests.get(...)
+      - pattern: requests.post(...)
+      - pattern: urllib.request.urlopen(...)

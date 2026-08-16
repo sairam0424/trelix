@@ -41,6 +41,15 @@ htmlcov/
 # Claude Code internal data
 .claude/
 
+# Agent tooling scratch data written into the repo root by MCP servers.
+# Worth ignoring rather than leaving untracked: the file walker honours .gitignore,
+# so anything listed here is also excluded from the index instead of being embedded
+# as if it were source.
+.claude-flow/
+agentdb.rvf
+agentdb.rvf.lock
+ruvector.db
+
 # uv lockfile (not committed — project uses pip/hatchling)
 uv.lock
 

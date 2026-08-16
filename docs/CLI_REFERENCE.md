@@ -127,8 +127,8 @@ below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 |----------|---------|-------------|
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel parse workers during `trelix index` |
 | `TRELIX_CHUNKER_MULTI_GRANULARITY` | `false` | Index sub-symbol blocks and statements (MGS3) |
-| `TRELIX_PARSER_DATAFLOW` | `false` | Extract def-use chains during parsing |
-| `TRELIX_PARSER_TAINT` | `false` | Enable taint-flow tracking during parsing |
+| `TRELIX_PARSER_DATAFLOW` | `false` | Extract def-use chains during parsing. Python-only in practice — the extractor requests the Python grammar unconditionally |
+| `TRELIX_PARSER_TAINT` | `false` | **Inert.** `ParserConfig.taint_enabled` is declared but read nowhere in `src/`, so setting this has no effect. Taint analysis happens only when you run `trelix taint`, which does not consult it |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM file-level summaries at index time (RAPTOR-style) |
 | `TRELIX_TELEMETRY_ENABLED` | `false` | Record every `retrieve()` call to `query_telemetry` table |
 
@@ -913,7 +913,7 @@ adding two optional fields:
 #### Synopsis
 
 ```
-trelix taint [<repo_path>] [--tier TIER] [--severity SEVERITY] [--json]
+trelix taint [<repo_path>] [--tier TIER] [--severity SEVERITY] [--rules PATH] [--json]
 ```
 
 #### Description
@@ -921,21 +921,30 @@ trelix taint [<repo_path>] [--tier TIER] [--severity SEVERITY] [--json]
 Runs Semgrep taint analysis on the repository and displays source-to-sink data
 flows. Results are also persisted to the index database for later querying.
 
+Note the persistence is unconditional and happens *before* `--severity` filtering:
+every parsed flow is written to `taint_flows`, and the filter applies only to what is
+printed. `trelix index` never writes that table — taint analysis runs only when this
+command does.
+
 #### Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--tier` | `-t` | string | `default` | Analysis tier: `default` \| `intrafile` \| `interfile`. |
-| `--severity` | `-s` | string | `""` (all) | Filter output by severity: `ERROR` \| `WARNING` \| `INFO`. |
+| `--tier` | `-t` | string | `default` | Analysis tier: `default` \| `intrafile` \| `interfile`. `intrafile` and `interfile` both require the Semgrep **Pro** Engine, which `pip install trelix[taint]` does not include; without it semgrep exits non-zero and no flows are returned. |
+| `--severity` | `-s` | string | `""` (all) | Filter *printed* output by severity: `ERROR` \| `WARNING` \| `INFO`. |
+| `--rules` | `-r` | string | `""` | Path to a semgrep rules file or directory. When omitted, semgrep runs the `p/default` **registry** pack, which requires outbound network access and can change between runs. Pass a path for a reproducible, pinnable scan. A path that does not exist is an error rather than a silent fallback to the registry. |
 | `--json` | | flag | `false` | Output flows as JSON. |
 
 #### Examples
 
 ```bash
-# Run default taint analysis
+# Run default taint analysis (fetches the p/default registry pack — needs network)
 trelix taint .
 
-# Interfile analysis with ERROR-only output
+# Reproducible offline scan against rules committed to the repository
+trelix taint . --rules config/semgrep-taint.yaml
+
+# Interfile analysis with ERROR-only output (requires Semgrep Pro)
 trelix taint . --tier interfile --severity ERROR
 
 # JSON output

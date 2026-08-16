@@ -1472,6 +1472,15 @@ def taint(
     severity: Annotated[
         str, typer.Option("--severity", "-s", help="Filter: ERROR|WARNING|INFO")
     ] = "",
+    rules: Annotated[
+        str,
+        typer.Option(
+            "--rules",
+            "-r",
+            help="Path to a semgrep rules file or directory. "
+            "Defaults to the 'p/default' registry pack, which requires network access.",
+        ),
+    ] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON.")] = False,
 ) -> None:
     """Run Semgrep taint analysis and show source->sink flows.
@@ -1483,10 +1492,21 @@ def taint(
     from trelix.core.config import IndexConfig
     from trelix.store.db import Database
 
+    # TaintAnalyzer.run() has always taken a rules_path; the CLI just never passed one,
+    # so every invocation was pinned to the `p/default` registry pack. That needs
+    # outbound network access and can change between runs, which makes a taint result
+    # neither reproducible nor pinnable in CI. `--rules config/semgrep-taint.yaml` runs
+    # against rules that live in the repository and change only when a commit changes
+    # them.
+    rules_path = str(Path(rules).resolve()) if rules else None
+    if rules_path and not Path(rules_path).exists():
+        _print_error("Rules not found", rules_path)
+        raise typer.Exit(code=1)
+
     config = IndexConfig(repo_path=str(Path(repo).resolve()))
     analyzer = TaintAnalyzer(repo_path=str(Path(repo).resolve()), tier=tier)
     with _status_console(json_output).status("Running Semgrep taint analysis..."):
-        flows = analyzer.run()
+        flows = analyzer.run(rules_path=rules_path)
 
     if not flows:
         # Two defects lived in this one message. It printed prose to STDOUT even

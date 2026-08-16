@@ -460,3 +460,48 @@ def test_connector_sync_jira_end_to_end(tmp_path, monkeypatch):  # type: ignore[
     fetched = db.get_artifact_by_source_ref("ticket:PROJ-1")
     assert fetched is not None
     assert fetched.title == "Fix login"
+
+
+class TestTaintRulesOption:
+    """`trelix taint --rules` exposes TaintAnalyzer's existing rules_path.
+
+    Without it the CLI was pinned to `--config p/default`, the Semgrep registry pack:
+    it needs outbound network access, and its contents can change between runs, so a
+    taint result was neither reproducible offline nor pinnable in CI. The library
+    already accepted a rules path; only the CLI did not pass one.
+    """
+
+    def test_rules_path_is_forwarded_to_the_analyzer(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from unittest.mock import patch
+
+        rules = tmp_path / "rules.yaml"
+        rules.write_text("rules: []\n", encoding="utf-8")
+
+        with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]) as mock_run:
+            result = runner.invoke(app, ["taint", str(tmp_path), "--rules", str(rules)])
+
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["rules_path"] == str(rules.resolve())
+
+    def test_omitting_rules_keeps_the_registry_default(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """None must be passed through so TaintAnalyzer picks its own default."""
+        from unittest.mock import patch
+
+        with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]) as mock_run:
+            result = runner.invoke(app, ["taint", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        assert mock_run.call_args.kwargs["rules_path"] is None
+
+    def test_missing_rules_file_fails_fast(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A typo in the path must not silently fall back to the network pack.
+
+        Falling back would report registry findings under the reader's assumption that
+        their own rules produced them.
+        """
+        result = runner.invoke(
+            app, ["taint", str(tmp_path), "--rules", str(tmp_path / "nope.yaml")]
+        )
+
+        assert result.exit_code == 1
+        assert "Rules not found" in result.output
