@@ -589,3 +589,79 @@ class TestGraphVisualizeWithJson:
             "plain --json output gained or lost a key"
         )
         assert payload["node_count"] == 10
+
+
+class TestTaintCleanScanMessage:
+    """A clean scan must not be reported as a possible missing install.
+
+    `TaintAnalyzer.run()` returns `[]` both when semgrep is absent and when semgrep
+    ran fine and found nothing, so the CLI could not tell the two apart and printed
+    one message for both: "No taint flows found. Ensure semgrep is installed: pip
+    install trelix[taint]".
+
+    Verified on this repository: semgrep IS installed, it scanned all 140 source files
+    with `config/semgrep-taint.yaml` and reported 0 findings and 0 errors, and the CLI
+    still suggested installing it. A security tool that reports a clean result as a
+    possible misconfiguration teaches people to distrust its output.
+
+    The comment above that message already records two previously-fixed defects in it
+    — Rich swallowing "[taint]" as a markup tag, and prose going to stdout under
+    `--json`. This is a third, so both of those behaviours are pinned here too.
+    """
+
+    def test_clean_scan_does_not_suggest_installing_semgrep(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from unittest.mock import patch
+
+        with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]), patch(
+            "shutil.which", return_value="/usr/local/bin/semgrep"
+        ):
+            res = runner.invoke(app, ["taint", str(tmp_path)])
+
+        assert res.exit_code == 0, res.output
+        assert "pip install" not in res.output, (
+            f"a clean scan told the user to install semgrep: {res.output!r}"
+        )
+
+    def test_missing_semgrep_still_says_how_to_install_it(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The install hint must survive for the case it was written for."""
+        from unittest.mock import patch
+
+        with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]), patch(
+            "shutil.which", return_value=None
+        ):
+            res = runner.invoke(app, ["taint", str(tmp_path)])
+
+        assert res.exit_code == 0, res.output
+        assert "pip install" in res.output
+
+    def test_install_hint_is_not_swallowed_as_markup(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Regression on an already-fixed defect: Rich reads "[taint]" as a tag.
+
+        Unescaped, the hint renders as "pip install trelix" — telling the reader to
+        install the package they already have.
+        """
+        from unittest.mock import patch
+
+        with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]), patch(
+            "shutil.which", return_value=None
+        ):
+            res = runner.invoke(app, ["taint", str(tmp_path)])
+
+        assert "trelix[taint]" in res.output, (
+            f"the extras marker was swallowed by Rich markup: {res.output!r}"
+        )
+
+    def test_json_mode_stays_machine_readable_on_the_empty_path(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Regression on an already-fixed defect: prose on stdout broke `| jq`."""
+        import json as _json
+        from unittest.mock import patch
+
+        for which in ("/usr/local/bin/semgrep", None):
+            with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]), patch(
+                "shutil.which", return_value=which
+            ):
+                res = runner.invoke(app, ["taint", str(tmp_path), "--json"])
+
+            assert _json.loads(res.stdout) == [], (
+                f"--json stdout was not parseable with which={which!r}: {res.stdout!r}"
+            )

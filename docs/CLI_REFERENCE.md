@@ -951,6 +951,18 @@ command does.
 | `--rules` | `-r` | string | `""` | Path to a semgrep rules file or directory. When omitted, semgrep runs the `p/default` **registry** pack, which requires outbound network access and can change between runs. Pass a path for a reproducible, pinnable scan. A path that does not exist is an error rather than a silent fallback to the registry. |
 | `--json` | | flag | `false` | Output flows as JSON. |
 
+#### Empty result
+
+`trelix taint` distinguishes two cases that both produce zero flows:
+
+- **semgrep not installed** — reports that no analysis ran, with the install command.
+- **semgrep ran and found nothing** — reports a clean scan, and points at the ruleset
+  as the thing to check if findings were expected.
+
+Before v3.1.2 both printed the same "Ensure semgrep is installed" hint, so a clean scan
+was indistinguishable from a missing dependency. `--json` emits `[]` on both paths and
+stays byte-compatible.
+
 #### Examples
 
 ```bash

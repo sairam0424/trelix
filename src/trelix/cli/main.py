@@ -1536,10 +1536,27 @@ def taint(
         if json_output:
             _print_json([])
         else:
-            console.print(
-                "[yellow]No taint flows found. "
-                f"Ensure semgrep is installed: pip install {escape('trelix[taint]')}[/yellow]"
-            )
+            # A third defect lived here: run() returns [] both when semgrep is absent
+            # and when semgrep ran fine and found nothing, so one message covered both
+            # and a CLEAN SCAN was reported as a possible missing install. A security
+            # tool that describes a clean result as a misconfiguration teaches people to
+            # distrust it. shutil.which resolves the same binary the analyzer invokes,
+            # so it separates the two cases without changing run()'s contract.
+            import shutil
+
+            if shutil.which("semgrep") is None:
+                console.print(
+                    "[yellow]semgrep is not installed, so no taint analysis ran: "
+                    f"pip install {escape('trelix[taint]')}[/yellow]"
+                )
+            else:
+                console.print(
+                    "[green]No taint flows found.[/green] semgrep ran and reported "
+                    "nothing.\n"
+                    "[dim]If you expected findings, check the ruleset — the default "
+                    "'p/default' registry pack needs network access. Pass --rules "
+                    "<path> to scan against rules you control.[/dim]"
+                )
         return
 
     # Persist to DB
