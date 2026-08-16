@@ -896,7 +896,7 @@ Wrapped around the underlying embedder in `Retriever.__init__` when `query_cache
 ```python
 class SparseEmbedder:
     def __init__(self, model_name="naver/splade-v3-distilbert",
-                 top_k=128, batch_size=16)
+                 top_k=128, batch_size=16)   # batch_size is load-bearing, see below
     def embed(self, texts: list[str]) -> list[dict[int, float]]
     def embed_query(self, text: str) -> dict[int, float]
     # Returns sparse dict: {token_id: weight}
@@ -907,6 +907,13 @@ class SparseEmbedder:
 `_TORCH_AVAILABLE` module flag — returns empty `[{}]` gracefully when torch/transformers absent.
 An empty result is also what a failed model load produces, so `Indexer` logs a WARNING
 when the phase yields no vectors rather than finishing silently with 0 rows written.
+
+**`batch_size` bounds memory, it is not a throughput knob.** A MaskedLM emits logits of
+shape `(batch, seq_len, vocab_size)`, so an unbatched pass over a whole corpus is
+enormous: 10,700 chunks at `max_length=512` against DistilBERT's 30,522-token vocabulary
+is a **668 GB** tensor, and 200 chunks already needs 12.5 GB. Until v3.1.2 `embed()` ran
+exactly one forward pass over every text it was given and `SparseConfig.batch_size` was
+referenced nowhere in `src/`, so the phase could not complete on any real repository.
 
 **The model must be a BERT-family MaskedLM checkpoint.** `_load()` uses
 `AutoModelForMaskedLM`, so the SPLADE-Code releases (`naver/splade-code-8B`,

@@ -501,6 +501,12 @@ class Indexer:
                 sparse_emb = SparseEmbedder(
                     model_name=self.config.sparse.model,
                     top_k=self.config.sparse.top_k_tokens,
+                    # Previously not passed at all, and SparseEmbedder did not accept it:
+                    # `SparseConfig.batch_size` was referenced nowhere in src/ while
+                    # docs/architecture.md documented it as part of the signature. Every
+                    # chunk went through a single forward pass, which for this repo's
+                    # 10,700 chunks is a 668 GB logits tensor.
+                    batch_size=self.config.sparse.batch_size,
                 )
                 sparse_store = SparseStore(self.config.db_path_absolute)
                 texts = [pc.chunk_text for pc in pending]
