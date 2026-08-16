@@ -889,26 +889,41 @@ class Indexer:
         # Runs only when file_summaries_enabled=True and an LLM client is
         # available.  Failures are swallowed inside FileSummarizer.summarize()
         # so a single flaky LLM call never aborts the whole indexing pass.
+        #
+        # The EMBED call below needs its own boundary for the same reason, and it is the
+        # more dangerous of the two: the chunk rows and this file's content hash are
+        # already committed by the transaction above, so an escaping error unwinds past
+        # the caller's `all_pending.extend(pending)` and leaves the file's chunks with no
+        # vectors — permanently, because the stored hash makes every later run skip the
+        # file as up to date. A summary is optional; the file's embeddings are not.
         if self._file_summarizer is not None:
-            from trelix.indexing.file_summarizer import FileSummarizer
+            try:
+                from trelix.indexing.file_summarizer import FileSummarizer
 
-            summarizer: FileSummarizer = self._file_summarizer  # type: ignore[assignment]
-            summary = summarizer.summarize(
-                rel_path=file.rel_path,
-                symbols=all_symbols,
-                language=file.language,
-            )
-            if summary:
-                summary_row_id = self.db.upsert_file_summary(file_id, summary)
-                # Embed the summary and store in the vector index so the
-                # retriever can surface file-level context via the 4th leg.
-                summary_embedding = self.embedder.embed([summary])[0]
-                self.vector_store.upsert_file_summary_embedding(file_id, summary_embedding)
-                logger.debug(
-                    "File summary stored for %s (row_id=%d, len=%d chars)",
-                    file.rel_path,
-                    summary_row_id,
-                    len(summary),
+                summarizer: FileSummarizer = self._file_summarizer  # type: ignore[assignment]
+                summary = summarizer.summarize(
+                    rel_path=file.rel_path,
+                    symbols=all_symbols,
+                    language=file.language,
+                )
+                if summary:
+                    summary_row_id = self.db.upsert_file_summary(file_id, summary)
+                    # Embed the summary and store in the vector index so the
+                    # retriever can surface file-level context via the 4th leg.
+                    summary_embedding = self.embedder.embed([summary])[0]
+                    self.vector_store.upsert_file_summary_embedding(file_id, summary_embedding)
+                    logger.debug(
+                        "File summary stored for %s (row_id=%d, len=%d chars)",
+                        file.rel_path,
+                        summary_row_id,
+                        len(summary),
+                    )
+            except Exception as exc:
+                # WARNING, not DEBUG: the CLI runs at WARNING, and a summary silently
+                # missing from the 4th retrieval leg is exactly the kind of degradation
+                # that should not need a log-level change to notice.
+                logger.warning(
+                    "File summary skipped for %s (non-fatal): %s", file.rel_path, exc
                 )
 
         # ── Phase 2.6: multi-granularity sub-chunk extraction (MGS3) ──────────

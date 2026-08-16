@@ -612,3 +612,79 @@ class TestParseErrorHandlerMarkupSafety:
         stats = self._run(tmp_path, "d[", "bad '[/red]' token", filename="x].py")
 
         assert stats["errors"] == 1
+
+
+class TestFileSummaryEmbedFailureIsContained:
+    """A failed summary embed must cost the summary, not the file's vectors.
+
+    Phase 2.5's comment says "Failures are swallowed inside
+    FileSummarizer.summarize()", and they are — but the `self.embedder.embed([summary])`
+    call that follows it sat outside any boundary, unlike the multi-granularity phase
+    directly below which wraps the same kind of call.
+
+    The consequence is permanent rather than transient. By the time Phase 2.5 runs, the
+    file's chunk rows and its content hash are already committed. An embedder error
+    unwinds past `all_pending.extend(pending)`, so those chunks never receive vectors —
+    and because the hash is stored, every later `trelix index` skips the file as "up to
+    date" and never repairs it.
+    """
+
+    class _ExplodingEmbedder(_FakeEmbedder):
+        """Embeds chunks fine, but fails on the single-text summary call.
+
+        Distinguishing the two by batch size is what makes the test specific to Phase
+        2.5: a blanket failure would abort the file long before the summary.
+        """
+
+        def __init__(self) -> None:
+            self.summary_attempts = 0
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            if len(texts) == 1 and texts[0].startswith("SUMMARY:"):
+                self.summary_attempts += 1
+                raise RuntimeError("azure: 429 rate limit on summary embed")
+            return super().embed(texts)
+
+    @staticmethod
+    def _summarizer() -> Any:
+        stub = MagicMock()
+        stub.summarize.return_value = "SUMMARY: this module does a thing"
+        return stub
+
+    def _index_one_file(self, tmp_path: pathlib.Path) -> tuple[Any, Any]:
+        """Index a single Python file with summaries on and a failing summary embed."""
+        (tmp_path / "mod.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+        indexer = _make_indexer(str(tmp_path))
+        embedder = self._ExplodingEmbedder()
+        indexer.embedder = embedder
+        indexer._file_summarizer = self._summarizer()
+
+        with patch("trelix.indexing.indexer.get_parser", side_effect=_fake_get_parser):
+            stats = indexer.index()
+        return indexer, (embedder, stats)
+
+    def test_the_failing_summary_was_actually_attempted(self, tmp_path: pathlib.Path) -> None:
+        """Guard: if the summary embed never ran, the rest proves nothing."""
+        _, (embedder, _) = self._index_one_file(tmp_path)
+        assert embedder.summary_attempts == 1, (
+            "the summary embed did not run, so this test is not exercising Phase 2.5"
+        )
+
+    def test_chunks_still_get_their_vectors(self, tmp_path: pathlib.Path) -> None:
+        """The file's own chunk embeddings must survive a summary failure."""
+        _, (_, stats) = self._index_one_file(tmp_path)
+        assert stats["chunks_embedded"] > 0, (
+            "a failed file-summary embed swallowed the file's chunk embeddings — "
+            f"stats={stats}"
+        )
+
+    def test_the_file_is_not_counted_as_an_error(self, tmp_path: pathlib.Path) -> None:
+        """An optional phase failing is not a file-level indexing failure."""
+        _, (_, stats) = self._index_one_file(tmp_path)
+        assert stats["errors"] == 0, f"summary failure was reported as a file error: {stats}"
+
+    def test_symbols_are_still_indexed(self, tmp_path: pathlib.Path) -> None:
+        indexer, _ = self._index_one_file(tmp_path)
+        symbols = indexer.db._conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+        assert symbols > 0, "the file's symbols were lost to a summary-embed failure"
