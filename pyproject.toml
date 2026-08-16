@@ -209,8 +209,24 @@ warn_unused_ignores = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "--tb=short"
+# --strict-markers makes `@pytest.mark.<unregistered>` a collection error, so a
+# typo in the name tests/integration/conftest.py applies fails loudly instead of
+# tagging nothing. It does NOT validate `-m` expressions: a typo there still
+# deselects nothing silently, which is why the marker below must stay registered
+# and applied rather than relying on the flag alone.
+addopts = "--tb=short --strict-markers"
 pythonpath = ["src", "."]
+markers = [
+    # This marker did not exist before, and no test carried it, so
+    # CONTRIBUTING.md's documented credential-free run
+    # `pytest -m "not integration"` deselected NOTHING — collection was
+    # byte-identical to bare pytest (2,965 tests, 0 deselected when this was
+    # fixed) and it drove the live Azure/Bedrock calls it claimed to skip.
+    # It is now applied by directory in tests/integration/conftest.py rather
+    # than by hand on each item, so a new file there is credential-gated on
+    # arrival (104 deselected on the same tree).
+    "integration: hits a live service (Azure/Bedrock/network); needs credentials",
+]
 
 [tool.coverage.run]
 source = ["src/trelix"]

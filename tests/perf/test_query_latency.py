@@ -9,16 +9,22 @@ Usage:
     python tests/perf/test_query_latency.py /path/to/repo
 
 Measures cold vs warm P50/P95 for 20 queries to validate the cache impact.
+
+IMPORT MUST STAY SIDE-EFFECT-FREE. The filename matches pytest's `test_*.py`
+pattern, so pytest imports this module during collection even though it defines
+no test — `pytest tests/perf/ --collect-only` prints "no tests collected" while
+the import has already run. A module-scope `load_dotenv()` therefore published
+the developer's real .env into os.environ for the whole pytest process, and
+because pydantic-settings reads env vars BEFORE the .env file, that outlived
+every fixture: `pytest tests/perf tests/unit/test_config.py` failed
+test_default_provider_is_local with `assert 'azure' == 'local'` in 0.19s.
+The .env load now happens inside __main__, where this file is actually used.
 """
 
 from __future__ import annotations
 
 import sys
 import time
-
-from dotenv import load_dotenv
-
-load_dotenv()
 
 QUERIES = [
     "how does authentication work",
@@ -59,6 +65,13 @@ def run_queries(retriever: object, label: str) -> list[float]:
 
 if __name__ == "__main__":
     import os
+
+    from dotenv import load_dotenv
+
+    # Anchored to the repo root rather than cwd: the old bare load_dotenv()
+    # walked up from the working directory, so running this script from
+    # anywhere but the repo root silently found no credentials.
+    load_dotenv(os.path.join(os.path.dirname(__file__), "../..", ".env"))
 
     repo = sys.argv[1] if len(sys.argv) > 1 else "."
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))

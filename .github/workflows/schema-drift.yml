@@ -1,0 +1,63 @@
+name: Schema Drift
+
+# packages/trelix-typescript/src/generated/schema.ts is a checked-in artifact of
+# src/trelix/api/app.py, and nothing verified the two agreed. It drifted to 604
+# committed lines against 768 regenerated (+174/-10): the whole POST /parse route
+# with ParseRequest/ParseResponse/ParseSymbolModel (12 response fields), the
+# /search intent_hint and hyde_snippet_hint params, the /graph/communities
+# min_community_size and max_communities caps, and the auth headers on every
+# gated route. Every one of those is shipped server-side and was unreachable from
+# the typed client — a silent failure mode, because `npm run build` and `npm test`
+# pass happily against a stale schema.
+#
+# This job exists because regeneration used to require a human: scripts/codegen.mjs
+# only knew how to fetch http://127.0.0.1:8765/openapi.json from a running
+# `trelix serve`. It now defaults to an in-process `create_app().openapi()` dump
+# (~1.4 s end to end, no server, no port, no readiness race), which is what makes
+# "regenerate and diff" a viable CI gate.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  schema-drift:
+    name: Generated TypeScript schema is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # '[serve]' (fastapi) is the whole requirement, verified by regenerating in
+      # a venv with nothing else installed: byte-identical output to a full
+      # '[local,otel,sso,dev]' env. Route registration in create_app() is
+      # unconditional, so no optional extra can add or remove a path, and the
+      # only env-dependent config (audit, SSO) adds middleware, not routes.
+      - name: Install trelix + serve extra
+        run: pip install -e ".[serve]"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install SDK dependencies
+        working-directory: packages/trelix-typescript
+        run: npm ci
+      - name: Regenerate schema.ts from the working tree's OpenAPI spec
+        working-directory: packages/trelix-typescript
+        run: npm run codegen
+      # Diffs only the generated file: this job's claim is "schema.ts matches
+      # app.py", and a broader path would fail on unrelated dirt.
+      #
+      # No sort_keys in the dump on purpose — openapi-typescript emits members in
+      # input order, so the in-process and TRELIX_OPENAPI_URL paths must feed it
+      # the same FastAPI insertion order or this comparison becomes a coin flip.
+      # Two consecutive regenerations are byte-identical (verified locally).
+      - name: Fail if the committed schema is stale
+        run: |
+          if ! git diff --exit-code -- packages/trelix-typescript/src/generated/schema.ts; then
+            echo "::error::packages/trelix-typescript/src/generated/schema.ts is stale."
+            echo "Run 'npm run codegen' in packages/trelix-typescript and commit the result."
+            exit 1
+          fi

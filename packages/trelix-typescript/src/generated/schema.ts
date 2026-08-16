@@ -33,6 +33,15 @@ export interface paths {
          * @description Paginated hybrid search. Matches the MCP `search_code` tool's envelope
          *     exactly: use cursor=0 for the first page; if next_cursor is not null,
          *     pass it as cursor for the next page.
+         *
+         *     `intent_hint` (optional): one of the IntentType values
+         *     (symbol_lookup/file_overview/feature_flow/project_overview/comparison/
+         *     config_lookup/dependency_map/blast_radius). When set and valid, skips
+         *     trelix's internal LLM intent classification and routes directly using
+         *     that intent's strategy — for callers (e.g. an agent) that already
+         *     classified the query themselves. An invalid/unrecognized value is
+         *     never rejected — it silently falls through to normal classification.
+         *     `hyde_snippet_hint` is only used when `intent_hint` is also valid.
          */
         get: operations["search_search_get"];
         put?: never;
@@ -71,6 +80,33 @@ export interface paths {
         put?: never;
         /** Index Repo */
         post: operations["index_repo_index_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/parse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Parse File
+         * @description Parse a single file without persisting anything to the index — for
+         *     editor/pre-commit tooling that wants structural info on unsaved or
+         *     not-yet-indexed content. Cross-file call/type resolution is
+         *     intentionally skipped (there is no DB row for this file to resolve
+         *     against), so results only reflect what Tree-sitter can determine
+         *     from this one file in isolation. `IndexConfig(repo_path=...)` is
+         *     constructed only to reuse its `repo_must_exist` validation — no DB or
+         *     embedder is touched.
+         */
+        post: operations["parse_file_parse_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -123,7 +159,17 @@ export interface paths {
         };
         /**
          * Graph Communities
-         * @description Return community summary list.
+         * @description Return the largest communities, size-ordered.
+         *
+         *     This used to return every detected community, unsorted. On trelix's own index
+         *     that is 6,497 entries and ~1.16 MB, of which 6,437 (99.1%) are singletons
+         *     carrying no architectural signal — the five real clusters account for almost
+         *     none of the bytes.
+         *
+         *     The response is still a bare list, so only its LENGTH changes for an existing
+         *     consumer. Pass `min_community_size=1&max_communities=0` for the old uncapped
+         *     result. Counts are not returned here because the shape is a list; the MCP tool
+         *     reports singleton_count and communities_omitted alongside its payload.
          */
         get: operations["graph_communities_graph_communities_get"];
         put?: never;
@@ -261,6 +307,60 @@ export interface components {
             elapsed_seconds: number;
         };
         /**
+         * ParseRequest
+         * @description Exactly one of the two content sources must be set: `file_path` (an
+         *     already-on-disk file, read fresh — not from the index) or `content`
+         *     (inline text, for unsaved editor/pre-commit content that was never
+         *     written to disk).
+         */
+        ParseRequest: {
+            /** Repo Path */
+            repo_path: string;
+            /** File Path */
+            file_path?: string | null;
+            /** Content */
+            content?: string | null;
+            /** File Name */
+            file_name?: string | null;
+        };
+        /**
+         * ParseResponse
+         * @description Mirrors ParseResult (indexing/parser/base.py) — a single-file parse,
+         *     never persisted to the index. Cross-file call/type resolution is skipped
+         *     (there is nothing in the DB to resolve against for a file that was never
+         *     indexed), so `call_edges`/`type_edges` reflect only what Tree-sitter could
+         *     determine from this file in isolation.
+         */
+        ParseResponse: {
+            /** Symbols */
+            symbols: components["schemas"]["ParseSymbolModel"][];
+            /** Call Edge Count */
+            call_edge_count: number;
+            /** Import Edge Count */
+            import_edge_count: number;
+            /** Type Edge Count */
+            type_edge_count: number;
+            /** Parse Errors */
+            parse_errors: number;
+            /** Note */
+            note: string;
+        };
+        /** ParseSymbolModel */
+        ParseSymbolModel: {
+            /** Name */
+            name: string;
+            /** Qualified Name */
+            qualified_name: string;
+            /** Kind */
+            kind: string;
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+            /** Signature */
+            signature: string;
+        };
+        /**
          * SearchResponse
          * @description Matches the MCP `search_code` tool's pagination envelope exactly.
          */
@@ -349,8 +449,13 @@ export interface operations {
                 repo: string;
                 k?: number;
                 cursor?: number;
+                intent_hint?: string | null;
+                hyde_snippet_hint?: string | null;
             };
-            header?: never;
+            header?: {
+                "X-Trelix-Api-Key"?: string | null;
+                Authorization?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -382,7 +487,10 @@ export interface operations {
                 query: string;
                 repo: string;
             };
-            header?: never;
+            header?: {
+                "X-Trelix-Api-Key"?: string | null;
+                Authorization?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -411,7 +519,10 @@ export interface operations {
     index_repo_index_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "X-Trelix-Api-Key"?: string | null;
+                Authorization?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -443,12 +554,51 @@ export interface operations {
             };
         };
     };
+    parse_file_parse_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Trelix-Api-Key"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ParseRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     stats_stats_get: {
         parameters: {
             query: {
                 repo: string;
             };
-            header?: never;
+            header?: {
+                "X-Trelix-Api-Key"?: string | null;
+                Authorization?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -479,7 +629,10 @@ export interface operations {
             query: {
                 repo: string;
             };
-            header?: never;
+            header?: {
+                "X-Trelix-Api-Key"?: string | null;
+                Authorization?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -509,8 +662,13 @@ export interface operations {
         parameters: {
             query: {
                 repo: string;
+                min_community_size?: number;
+                max_communities?: number;
             };
-            header?: never;
+            header?: {
+                "X-Trelix-Api-Key"?: string | null;
+                Authorization?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -542,7 +700,10 @@ export interface operations {
                 repo: string;
                 output?: string;
             };
-            header?: never;
+            header?: {
+                "X-Trelix-Api-Key"?: string | null;
+                Authorization?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -575,7 +736,10 @@ export interface operations {
                 symbol_id: number;
                 depth?: number;
             };
-            header?: never;
+            header?: {
+                "X-Trelix-Api-Key"?: string | null;
+                Authorization?: string | null;
+            };
             path?: never;
             cookie?: never;
         };

@@ -804,7 +804,11 @@ def _print_drift(report: DriftReport) -> None:
 
     A truncated walk yields the same `missing` list as a set of genuinely deleted files.
     Anyone acting on that count would delete embeddings that cost money to recompute, so
-    an incomplete walk is stated before the numbers rather than after them.
+    an incomplete walk is stated before the numbers rather than after them — and, when
+    `missing_is_trustworthy` is False, the headline total (`actionable_drifted_count`) and
+    the remediation sentence are both gated on it as well. Printing a warning and then a
+    number that ignores it is worse than printing neither: it reads as a rounding
+    disagreement rather than as a limit on what was measured.
     """
     if not report.walk_was_complete:
         shown = ", ".join(report.incomplete_paths[:5])
@@ -856,20 +860,50 @@ def _print_drift(report: DriftReport) -> None:
     table.add_column("Files", justify="right")
     table.add_column("Examples")
 
+    # The row label carries the caveat too. A bare "Indexed but not found  35" beside a
+    # total of 64 reads as an arithmetic bug rather than a deliberate exclusion.
+    missing_label = (
+        "Indexed but not found"
+        if report.missing_is_trustworthy
+        else "Indexed but not found (unverified)"
+    )
     for label, paths in (
         ("Changed since indexing", report.stale),
         ("Not indexed yet", report.new),
-        ("Indexed but not found", report.missing),
+        (missing_label, report.missing),
     ):
         if paths:
             examples = ", ".join(paths[:3]) + (" …" if len(paths) > 3 else "")
             table.add_row(label, str(len(paths)), _safe_text(examples))
     table.add_row("Unchanged", str(report.unchanged_count), "")
     console.print(table)
+
+    if report.missing_is_trustworthy:
+        console.print(
+            f"[yellow]{report.drifted_count} file(s) have drifted.[/yellow] "
+            "Run `trelix index` to rebuild, or `trelix update-index <file>` per file."
+        )
+        return
+
+    # Neither the total nor the remedy may contradict the warning printed above. Measured
+    # on this repository: "99 file(s) have drifted. Run `trelix index` to rebuild" where
+    # 35 of the 99 were every file under `packages/`, all present on disk — `packages` is
+    # in the default `extra_ignore_dirs` for .NET NuGet output, so that walk could not
+    # reach them. A bare `trelix index` repeats the same walk and so restores none of
+    # them; the number was inflated and the advice was void.
     console.print(
-        f"[yellow]{report.drifted_count} file(s) have drifted.[/yellow] "
+        f"[yellow]{report.actionable_drifted_count} file(s) have drifted.[/yellow] "
         "Run `trelix index` to rebuild, or `trelix update-index <file>` per file."
     )
+    if report.missing:
+        console.print(
+            f"[yellow]The {len(report.missing)} 'not found' file(s) are excluded from "
+            "that total[/yellow] — see the warning above; they may all be present. "
+            "`trelix index` will [bold]NOT[/bold] restore them: it repeats the same walk, "
+            "which cannot reach them, so it has nothing to re-index. Fix the walk first "
+            "(same environment and ignore rules as the index), then re-run --drift to "
+            "find out whether any of them were really deleted."
+        )
 
 
 # ---------------------------------------------------------------------------

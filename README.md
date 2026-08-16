@@ -287,10 +287,18 @@ Common issues: sqlite-vec load failures on macOS, Bedrock `ValidationException`s
 ```bash
 pip install "trelix[local]"   # minimal, offline, no API key
 pip install trelix            # + OpenAI planner & synthesis
-pip install "trelix[all]"     # every optional extra (voyage, qdrant, lance, rerank, LLM providers, ...)
+pip install "trelix[all]"     # + local embedder, voyage, cohere rerank, qdrant, watch, sso
 ```
 
-For every other install path — Voyage/BGE/Bedrock/Vertex/LiteLLM extras, Qdrant/LanceDB backends, standalone binaries, Docker, uv, or upgrading from an older version — see [docs/INSTALLATION_GUIDE.md](docs/INSTALLATION_GUIDE.md).
+`[all]` is not every extra. It resolves to `local,rerank,voyage,qdrant,watch,sso` — six of the
+23 optional extras — so installing it and expecting the rest will fail at import. The other 17
+install separately, including LanceDB (`lance`), the non-OpenAI LLM providers (`anthropic`,
+`bedrock`, `vertex`, `litellm`, or `llm-all` for all four), the REST API (`serve`),
+OpenTelemetry (`otel`), SPLADE sparse retrieval (`sparse`), the alternative embedders
+(`bge-code`, `nomic-code`), PLAID (`plaid`), Semgrep taint analysis (`taint`), and the graph
+visualisers (`graph-viz`, `knowledge-graph`).
+
+For every other install path — the extras above, standalone binaries, Docker, uv, or upgrading from an older version — see [docs/INSTALLATION_GUIDE.md](docs/INSTALLATION_GUIDE.md).
 
 ---
 

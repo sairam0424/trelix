@@ -137,6 +137,77 @@ was proven red first.
   path: `results.index(r)` keyed scores by dataclass *value* equality, so value-equal
   duplicates all inherited doc 0's score — burying the true winner — at O(n²) cost.
 
+- **`def_use_edges` — the largest table in the index — had no cleanup path at all, and
+  4.0% of it was already orphaned.** `symbol_id` is `INTEGER NOT NULL` with no
+  `REFERENCES`, and the table had a CREATE, an INDEX, an INSERT, one unused SELECT and
+  **zero DELETE** anywhere in `src/`. Every symbol removal leaked its edges — both
+  re-index paths on each changed symbol, and `delete_file_by_path()` on every file removed
+  from a watched repo, since it shipped. Measured on the live 192 MB index: **4,768 of
+  117,814 rows already pointed at a `symbols.id` that no longer exists.** A new
+  `_purge_fkless_symbol_rows()` is called from all three symbol-removal paths and covers
+  the three symbol-derived tables no `ON DELETE CASCADE` reaches — `sub_chunks`,
+  `def_use_edges` and `sparse_embeddings`, the last being the same defect one level out.
+
+- **The index schema was unversioned**, so an older install silently opened a
+  newer-written index. `pragma user_version` was 0 across 30 tables and an unversioned
+  chain of `CREATE TABLE IF NOT EXISTS`/`ALTER` blocks whose comments name v2.2/v2.3/v2.4
+  with nothing queryable; `dimension_guard.py` was the only guard, while
+  `BACKWARDS_COMPATIBILITY.md` promised additive-only evolution with no test enforcing it.
+  An existing index still reads 0 and is treated as current, not corrupt.
+
+- **`FileWalker` aborted an entire index run on a symlink loop.** With
+  `TRELIX_WALKER_FOLLOW_SYMLINKS=false`, `_is_within_root` guarded `entry.resolve()` with
+  `except OSError` — but `Path.resolve(strict=False)` on 3.11/3.12 *swallows* every OSError
+  and re-raises ELOOP as `RuntimeError`. Measured on 3.11.14: broken, nonexistent and
+  chmod-000-parent paths all resolve silently, so the handler was dead code and a mutual
+  loop (`la -> lb`, `lb -> la`) killed the whole walk with an uncaught `RuntimeError`,
+  losing every legitimate sibling file. Loops and dangling links are now excluded
+  silently — nothing real sits behind an unresolvable path, matching the symlink-cycle
+  precedent — while a non-loop resolve failure calls `_record_incomplete`, so
+  `walk_was_complete` (and through it `missing_is_trustworthy`) stops claiming the index
+  mirrors the repo after real content was dropped.
+
+- **`trelix stats --drift` printed a total and a remedy it had already disclaimed.** The
+  honesty warning about `missing` was gated on `missing_is_trustworthy`; the headline count
+  and the remediation sentence were not. Measured here: *"99 file(s) have drifted. Run
+  `trelix index` to rebuild"* directly beneath *"Treat missing as unverified"* — where 35 of
+  the 99 were every file under `packages/`, all present on disk, unreachable only because
+  `packages` is in the default `extra_ignore_dirs` for .NET output, and restorable by no
+  `trelix index`. The total is now `actionable_drifted_count` (68 on the same tree), the row
+  is labelled *(unverified)*, and the excluded count is named with the reason.
+
+- **`.gitignore` contents were not fingerprinted, so an ignore-rule edit left drift falsely
+  trustworthy.** `_WALK_FIELDS` recorded `respect_gitignore` as a bool only. Reproduced in a
+  temp repo: changing `.gitignore` to `sub/` produced `missing=('sub/b.py',)` with
+  `walk_config_diff=()` and `missing_is_trustworthy=True` — which a future `--prune` would
+  act on by deleting a present file. The chain's contents are now digested into the
+  fingerprint.
+
+- **Test isolation: two module-scope `load_dotenv()` calls published the developer's real
+  `.env` into `os.environ` for the whole pytest process.** Because pydantic-settings reads
+  env vars *before* the `.env` file, either one outlived every fixture and rewrote config
+  defaults for unrelated tests. `pytest tests/perf tests/unit/test_config.py::TestEmbedderConfig::test_default_provider_is_local`
+  failed with `assert 'azure' == 'local'` in 0.19 s — and `pytest tests/perf/ --collect-only`
+  prints "no tests collected" while still *importing* the module, so collection alone
+  activated live credentials. The integration site now reads the file with `dotenv_values()`
+  and injects it per-test under `monkeypatch`; the perf script loads it inside `__main__`,
+  repo-root-anchored rather than cwd-relative (the old bare call silently found nothing when
+  run from anywhere else).
+
+- **`pytest -m "not integration"` deselected nothing.** `CONTRIBUTING.md` documents it as
+  the credential-free run, but the marker was neither registered **nor applied to any
+  test** — so it collected all 3,001 tests, byte-identical to bare pytest, and drove the
+  live Azure/Bedrock calls it claimed to skip. Registering it alone would have fixed
+  nothing. Now registered and applied by directory: **2,897 collected, 104 deselected**.
+  `--strict-markers` added so a typo in the applied mark is a collection error rather than a
+  silent no-op.
+
+- **`_isolate_beast_mode_flags` was triplicated and had drifted.** Only the `tests/unit`
+  copy carried `_CODE_DEFAULTS` and `_ENV_PREFIXES_TO_SCRUB`, so the integration and eval
+  suites let a developer's environment through — the contamination the eval conftest's own
+  docstring calls "load-bearing". Now one shared `tests/_env_isolation.py`, with the tables
+  made immutable so one suite's fixture cannot silently change what the other two observe.
+
 - **A test silently disabled the code it was testing for the rest of the session.**
   `test_multi_watcher.py` called `importlib.reload(multi_watcher)` inside
   `patch.dict(sys.modules, {"watchfiles": None})`. The reload re-runs a module-scope
@@ -501,6 +572,92 @@ was proven red first.
 - **`eval/README.md`** — the golden-set format, and the two ways to get a silently
   wrong score from it: paths are compared by exact string equality, and an entry with
   no `relevant_files` is skipped rather than failed.
+
+- **All seven version sites now agree, so the `verify-version` gate passes 7/7.** It failed
+  3 of 7 when introduced, which was the gate working. The Helm chart *deployed a different
+  trelix than it advertised* — `values.yaml`'s `image.tag` was `2.12.0` while `Chart.yaml`
+  said `appVersion: 3.1.2`, so `helm install` at defaults ran an image five releases behind;
+  `helm template` now renders `:3.1.2`. `packages/trelix-mcp/server.json` carried `2.12.0`
+  in both version fields. A `v3.2.0` control still fails all 7, so the gate is fixed at the
+  sites rather than defanged. `Chart.yaml`'s own chart `version` moves 0.1.0 → 0.2.0: it had
+  not moved across the five releases that bumped `appVersion`, so two structurally different
+  charts were both stamped 0.1.0.
+
+- **`scripts/verify-index.sh` gated 6 of 31 tables; four counters could fall to zero
+  unnoticed.** Proven by injecting all four regressions into a copy of the live index — the
+  old 22-gate script exited **0**. The new 26-gate version fails all four and still passes
+  clean on the real index. Three `EXPECTED_EMPTY` reason strings also documented bugs that
+  are fixed, and one was simply wrong: `generic_edges` is not empty for want of ticket
+  references (the linker's own `_walk_log` matches 13 strings across 9 of 871 commits) — it
+  is empty because **`trelix index` never runs the linker at all.**
+
+- **`packages/trelix-typescript/src/generated/schema.ts` had silently drifted** to 604
+  committed lines against 768 regenerated, hiding shipped server features from the typed
+  client: all of `POST /parse`, the `/search` `intent_hint` and `hyde_snippet_hint` params,
+  the `/graph/communities` caps, and the auth headers on every gated route. `npm run build`
+  and `npm test` both pass against a stale schema, so nothing failed. Regeneration required
+  a human because `codegen.mjs` could only fetch from a running `trelix serve`; it now
+  defaults to an in-process `create_app().openapi()` dump — 1.37 s for the full codegen, no
+  server, no port, no readiness race — which is what makes the new `schema-drift.yml` gate
+  possible.
+
+- **`trelix-langchain` and `trelix-llama-index` published as `License: UNSPECIFIED`.**
+  Neither declared `license`, `classifiers`, `authors` or `keywords`; only `trelix-mcp` did.
+  The LICENSE file was always *in* the wheel, but PyPI renders the field and the classifier —
+  verified live against the PyPI JSON API across all 7 releases up to 2.4.0. Both now mirror
+  `trelix-mcp` exactly. Both also floored on `trelix>=0.4.0`, **a core release that was never
+  published** (the oldest on PyPI is 0.5.0). `workspace-vscode/package.json` had no
+  `license` key at all while `vscode-extension-ci.yml` runs `vsce package`.
+
+- **CI could not see six real type errors and ran 29 tests nowhere.** The `lint` job
+  installed only `[local,sso,dev]`, so voyageai/google-genai/watchdog were absent and every
+  expression touching them degraded to `Any`. The cause was the missing extras, not
+  `--ignore-missing-imports`, which is a no-op because pyproject already sets
+  `ignore_missing_imports = true`. A new `type-check-extras` job installs them and gates the
+  errors as a recorded ceiling keyed on (file, error-code): known debt is green, anything
+  outside it fails, and a mypy *crash* can no longer parse as "zero errors" and pass. `ruff`
+  now covers `scripts/` and all three `packages/*/tests`. The 19 langchain and 10
+  llama-index tests ran nowhere and are now separate invocations — both resolve to module
+  `tests.test_retriever`, so a single combined run would silently skip one.
+
+- **Six inert config knobs were documented as working switches**, marked **Inert.** now
+  following the existing convention. `docs/GLOSSARY.md` went furthest, claiming
+  `TRELIX_FEDERATION_ENABLED=true` "activates federation at retrieval time" — in fact
+  `search-all` builds `FederatedRetriever(registry)` with no arguments, so it federates
+  whether the flag is set or not, the worker pool is permanently the constructor default of
+  4, and `max_repos` stays unbounded so `TRELIX_FEDERATION_MAX_REPOS` never applies on the
+  CLI path at all.
+
+- **`.env.example` documented 27 of ~96 `TRELIX_*` aliases** while `CONTRIBUTING.md`
+  declares it stable public API. Extended to the whole 3.x surface, grouped, with no real
+  secret values.
+
+- **Two governance docs contradicted each other on three rules, and reality matched
+  neither.** `BACKWARDS_COMPATIBILITY.md` and `CONTRIBUTING.md` disagreed on the deprecation
+  grace period (2 minor versions vs one) and on integration-package versioning (core version
+  vs "independent cadence"). Resolved to the stricter grace period — 2 minor versions **and**
+  3 months, whichever is later, since v2.4.0 → v3.0.0 was 40 days and the calendar clock is
+  the one that binds — and to lockstep versioning, because `release.yml` fires only on core
+  `v*` tags and publishes all four dists in one job, so no independent cadence exists to be
+  on. The release checklist listed five of seven version sites and told contributors to grep
+  for the *previous* version, which structurally cannot match a site stranded on 2.x.
+
+- **Docs: five broken relative links and two false claims.** `docs/README.md` linked
+  `../CONFIGURATION.md` and `../CLI_REFERENCE.md` as though both lived at the repo root, and
+  `v3-0-0-breaking-changes.md` was one `../` short on all three of its links. 73 links
+  resolved against the filesystem: 5 broken before, 0 after. `docs/README.md` also claimed
+  to be "a complete index of every documentation file" while omitting `AUDIT.md`, `SSO.md`,
+  `BACKWARDS_COMPATIBILITY.md`, `ROADMAP.md` and all of `docs/reports/` — including the
+  report this release reasons from. And `README.md` advertised `pip install "trelix[all]"`
+  as "every optional extra (voyage, qdrant, lance, rerank, LLM providers, …)" when `[all]`
+  resolves to `local,rerank,voyage,qdrant,watch,sso` — omitting exactly the two things the
+  comment named.
+
+- **A local `python -m build` produced a 928 MB sdist.** hatchling does not honour *nested*
+  `.gitignore` files, and `workspace-vscode/.gitignore` ignores `.vscode-test/`, which
+  `@vscode/test-electron` fills with three ~900 MB VS Code app bundles. CI publishes from a
+  clean checkout so the released sdist was always ~6 MB; the new `[tool.hatch.build.targets.sdist]`
+  excludes make a local build match it.
 
 - **The release path refuses a tag that disagrees with the tree.** `release.yml` fires on
   `push: tags: v*`, derived nothing from the tree, and sets `skip-existing: true` on all

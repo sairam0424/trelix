@@ -39,8 +39,9 @@ cp .env.example .env
 ## Running Tests
 
 ```bash
-make test           # full suite with coverage (1,467 unit + 41 MCP = 1,508 total tests)
-make test-fast      # unit tests only (no API calls, fast)
+make test           # unit + MCP: 2,861 unit + 102 MCP = 2,963 tests (no coverage)
+make test-fast      # unit tests only, 2,861 (no API calls, fast)
+make test-cov       # unit tests with the coverage report
 make lint           # ruff check + ruff format (auto-formats before diff-check, cross-platform safe)
 make format         # ruff format
 make typecheck      # mypy
@@ -52,13 +53,21 @@ make typecheck      # mypy
 
 ```bash
 # Unit tests only — no credentials needed
+# Collects 2,861 of 2,965 and deselects the 104 integration tests.
 pytest -m "not integration"
 
-# Live integration tests — require Azure or AWS credentials
+# Live integration tests — require Azure or AWS credentials (104 tests)
 pytest tests/integration/
 # tests/integration/test_llm_e2e.py covers Azure + Bedrock chat and embeddings;
 # individual tests skip gracefully when the relevant credentials are absent
 ```
+
+You do not apply the `integration` marker by hand: `tests/integration/conftest.py`
+applies it to every test in that directory, so a new file there is credential-gated on
+arrival. The marker is registered in `pyproject.toml` under `[tool.pytest.ini_options]
+markers`, and `addopts` carries `--strict-markers` so a typo becomes a collection error.
+Both matter — while the marker was unregistered, `-m "not integration"` matched nothing
+and quietly ran the entire suite including the live Azure/Bedrock tests.
 
 ## Branch Strategy
 
@@ -331,7 +340,18 @@ Open a [GitHub Discussion](https://github.com/sairam0424/trelix/discussions) for
 
 ## Versioning & Stability Policy
 
-trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version: **2.12.0**.
+trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Read the current
+version from the tree rather than from this sentence:
+
+```bash
+python -c "import trelix; print(trelix.__version__)"
+```
+
+This section deliberately no longer carries a copy of the number. It said "Current
+version: **2.12.0**" while v3.0.0, v3.0.1, v3.1.0, v3.1.1 and v3.1.2 shipped — five
+releases of rot inside the very section that tells you to keep versions in sync. The
+doc-stamp grep in the release checklist below would now catch it, but a prose stamp no
+release step has to touch is better deleted than monitored.
 
 ### Stable public API (guaranteed not to change without a major version bump)
 
@@ -352,44 +372,120 @@ trelix follows [Semantic Versioning 2.0.0](https://semver.org/). Current version
 ### Deprecation policy
 
 - Deprecated features are marked with `DeprecationWarning` and noted in the CHANGELOG
-- Deprecated features are maintained for at least **one minor version** before removal in a major version
+- The grace period is **minimum 2 minor versions and minimum 3 months, whichever lands
+  later**, with removal only on a major bump. [docs/BACKWARDS_COMPATIBILITY.md](docs/BACKWARDS_COMPATIBILITY.md#deprecation-policy)
+  is authoritative — go there for the reasoning and the current deprecation table
 - The CLI will print a deprecation notice on first use of deprecated flags
+
+This file previously said "at least one minor version", contradicting the policy doc's
+"2 minor versions". The stricter number won: trelix shipped eight minor releases in the
+30 days from v2.4.0 to v2.12.0, so a one-minor grace period can be over in days.
 
 ### Python version support
 
 - Supported: Python 3.11, 3.12, 3.13
 - Dropped versions are announced one minor release in advance
 
-### Release checklist — the five version sites
+### Release checklist — the seven version sites
 
-Bump all five together. Missing one ships a package whose `--version` disagrees
-with its metadata:
+**Seven files carry the release version, in eight stamps** — `server.json` carries it
+twice. Bump them together. Missing one ships a package whose `--version` disagrees with
+its metadata, or a Helm chart that advertises one version and deploys another; the
+latter is not hypothetical, `helm/trelix/values.yaml`'s `image.tag` sat on `2.12.0`
+while `Chart.yaml` advertised `appVersion: 3.1.2`.
+
+| # | Site | Key | Gated by `verify-version` |
+|---|------|-----|---------------------------|
+| 1 | `pyproject.toml` | `[project] version` | yes |
+| 2 | `src/trelix/__init__.py` | `__version__` | yes |
+| 3 | `packages/trelix-mcp/pyproject.toml` | `[project] version` | yes |
+| 4 | `packages/trelix-mcp/src/trelix_mcp/__init__.py` | `__version__` | **no** |
+| 5 | `helm/trelix/Chart.yaml` | `appVersion:` | yes |
+| 6 | `helm/trelix/values.yaml` | `image.tag` | yes |
+| 7 | `packages/trelix-mcp/server.json` | `version` **and** `packages[0].version` | yes (both) |
+
+`.github/workflows/release.yml`'s `verify-version` job now fails the release if a `v*`
+tag disagrees with any of those stamps, which is what turns a missed bump from a silent
+mis-publish into a red build. **Site 4 is the one exception it does not check** — a
+stale `trelix_mcp.__version__` still ships, so verify it by hand until that check is
+added.
+
+Two things that are **not** version sites, and must not be bumped with them:
+
+- `helm/trelix/Chart.yaml` has both `version:` (the *chart's* own version, currently
+  `0.2.0` and independent of trelix) and `appVersion:` (which tracks trelix). Only
+  `appVersion` moves.
+- `packages/trelix-langchain` and `packages/trelix-llama-index` are still stamped
+  `2.4.0` and so are not in the seven. This is drift, not policy:
+  [docs/BACKWARDS_COMPATIBILITY.md](docs/BACKWARDS_COMPATIBILITY.md#integration-package-policy)
+  puts all three integration packages on the core version, and both adapters already
+  declare `trelix>=3.0.0`. When they are bumped they become sites 8 and 9 and belong in
+  `verify-version` too. Do not resolve the mismatch by editing this list.
+
+#### Verify by printing what each site says — never by grepping for a version string
+
+Both directions of that grep fail silently, which is how `image.tag` stayed on `2.12.0`
+across five releases:
+
+- Grepping for the **new** version lists only the sites already bumped. A stale site
+  produces no line, and a missing line is not a signal you will notice. Reproduced on a
+  tree with `values.yaml` and `server.json` left at `2.12.0`: a grep for the new version
+  over the five previously-listed files printed five clean hits and exited `0`.
+- Grepping for the **previous** version cannot see a site that skipped a release. The
+  same tree, grepped for the previous version, returned *zero* hits — the stale sites
+  read `2.12.0`, not the previous version. A site stranded on 2.x is structurally
+  invisible to this check.
+
+So print the value each site actually holds and collapse them:
 
 ```bash
-# 1. Bump, then 2. verify all five report the SAME version:
-grep -rn '"3\.1\.2"\|= "3\.1\.2"' \
-  pyproject.toml \
-  src/trelix/__init__.py \
-  packages/trelix-mcp/pyproject.toml \
-  packages/trelix-mcp/src/trelix_mcp/__init__.py \
-  helm/trelix/Chart.yaml
+python - <<'PY'
+import json, re, tomllib
+from pathlib import Path
+def toml(p): return tomllib.load(open(p, "rb"))["project"]["version"]
+def rx(p, pat): return re.search(pat, Path(p).read_text(), re.M).group(1)
+sj = json.load(open("packages/trelix-mcp/server.json"))
+for label, got in [
+    ("pyproject.toml", toml("pyproject.toml")),
+    ("src/trelix/__init__.py", rx("src/trelix/__init__.py", r'__version__ = "([^"]+)"')),
+    ("trelix-mcp/pyproject.toml", toml("packages/trelix-mcp/pyproject.toml")),
+    ("trelix_mcp/__init__.py", rx("packages/trelix-mcp/src/trelix_mcp/__init__.py", r'__version__ = "([^"]+)"')),
+    ("Chart.yaml appVersion", rx("helm/trelix/Chart.yaml", r'^appVersion:\s*"?([^"\s]+)')),
+    ("values.yaml image.tag", rx("helm/trelix/values.yaml", r'^\s+tag:\s*"?([^"\s]+)')),
+    ("server.json version", sj["version"]),
+    ("server.json packages[0]", sj["packages"][0]["version"]),
+]:
+    print(f"{got:<10} {label}")
+PY
 ```
 
-Two things that are **not** version sites, and must not be bumped along with them:
+Eight lines out, all the same version. Pipe it through `| awk '{print $1}' | sort -u`
+and you should get exactly one line — more than one means a stale site, named rather
+than merely absent. This mirrors `verify-version`'s own extraction and additionally
+covers site 4, which that job does not check, so a clean local run predicts a green tag
+*and* closes the one gap in it.
 
-- `helm/trelix/Chart.yaml` has both `version:` (the *chart's* own version, `0.1.0`,
-  independent of trelix) and `appVersion:` (which tracks trelix). Only `appVersion`
-  moves.
-- `packages/trelix-langchain` and `packages/trelix-llama-index` version
-  independently (both at 2.4.0) and are released on their own cadence.
+#### Doc version stamps
 
-Doc version stamps rot every release. Enumerate the stale ones with the *previous*
-version, filtering out the historical references that must stay:
+Doc stamps rot every release, and they rot to *arbitrary* old versions — this file's own
+"Current version" line reached `2.12.0`-vs-`3.1.2`, five releases behind — so grepping
+for the previous version misses exactly the worst cases. Grep for the *assertions* that
+must name the current version, whatever number they currently hold:
 
 ```bash
-grep -rn "3\.1\.1" docs/*.md *.md \
-  | grep -viE "new in|fixed in|added in|since v|what's new|removed in"
+grep -rnE '[Cc]urrent version|trelix(-mcp|-langchain|-llama-index)?==|^\*\*Version|image: .*trelix:' \
+    docs/*.md *.md \
+  | grep -v '^CHANGELOG.md' \
+  | grep -viE "new in|fixed in|added in|since v|what's new|removed in|deprecated in"
 ```
+
+That returns 14 readable lines — a few of which are this section quoting its own
+pattern — rather than the 251 that "every semver-shaped token that isn't the current
+version" produces over the same files. It catches the stamps a previous-version grep
+cannot: `docs/CLI_REFERENCE.md`'s `**Version:**` header, the `==2.4.0` adapter pins in
+`docs/FAQ.md` and `docs/LANGCHAIN_LLAMAINDEX_GUIDE.md`, a Helm `image: …trelix:` tag.
+`CHANGELOG.md` is excluded on purpose — it is an append-only historical record, never a
+stamp to bump.
 
 Read every hit before editing. A blind `sed` over `docs/` will silently rewrite
 "New in v3.0.0" and the shipped-version table in `ROADMAP.md`, turning accurate

@@ -157,7 +157,7 @@ class FileWalker:
         """
         return not self._incomplete_paths
 
-    def _record_incomplete(self, path: Path, exc: OSError) -> None:
+    def _record_incomplete(self, path: Path, exc: OSError | RuntimeError) -> None:
         """Note a path the traversal had to skip, and say so once at WARNING."""
         try:
             rel = str(path.relative_to(self.repo_root))
@@ -327,14 +327,42 @@ class FileWalker:
         against an unresolved root would let `repo/link -> /etc` through: the
         lexical path still starts with repo/. Resolving both sides is what makes
         the boundary real.
+
+        Both failure modes exclude the entry — that is the safe reading of a
+        containment setting — but only one of them is a GAP in the index. See the
+        handlers below.
         """
         if self.config.walker.follow_symlinks:
             return True
         try:
             return entry.resolve().is_relative_to(self._resolved_root)
-        except OSError:
-            # Broken symlink, permission error, or a resolve loop the OS refused.
-            # Excluding is the safe reading of a containment setting.
+        except RuntimeError:
+            # ELOOP. On 3.11/3.12 `resolve(strict=False)` calls
+            # `os.path.realpath(strict=False)` — which never raises — then stat()s the
+            # result and SWALLOWS every OSError except ELOOP, re-raising that one as
+            # RuntimeError("Symlink loop from ..."). Measured on 3.11.14: broken,
+            # nonexistent and permission-denied paths all resolve silently. So an
+            # `except OSError` here was dead code, and a mutual loop (`la -> lb`,
+            # `lb -> la`) aborted the ENTIRE walk with an uncaught RuntimeError, losing
+            # every legitimate sibling file with it. (3.13+ raises nothing at all for a
+            # loop — resolve() returns the path unchanged and is_dir()/is_file() are both
+            # False — so this branch is 3.11/3.12-only, and both are supported.)
+            #
+            # NOT recorded as incomplete, matching the symlink-CYCLE precedent below in
+            # _iter_files: ELOOP means resolution never terminates, so no file exists
+            # behind the entry and nothing real is missed. Recording it would clear
+            # walk_was_complete — and with it missing_is_trustworthy — for the lifetime
+            # of a link the user created deliberately.
+            return False
+        except OSError as exc:
+            # A resolve failure that is NOT a loop says nothing about whether real
+            # content sits behind this path, and containment then drops it — so unlike
+            # the branch above this IS a gap, recorded exactly like the stat() and
+            # iterdir() failures elsewhere in this class. Unreachable on CPython today
+            # (see above) but not decorative: resolve() is documented as raising OSError,
+            # and 3.13+ reimplemented it on top of os.path.realpath, whose non-strict
+            # contract is the only thing standing between here and a real errno.
+            self._record_incomplete(entry, exc)
             return False
 
     def _iter_files(self, root: Path, _chain: frozenset[Path] | None = None) -> Iterator[Path]:
@@ -368,7 +396,11 @@ class FileWalker:
         if _chain is None:
             try:
                 _chain = frozenset({root.resolve()})
-            except OSError:
+            except (OSError, RuntimeError):
+                # RuntimeError is the ELOOP case on 3.11/3.12 (see _is_within_root).
+                # Nothing is dropped by starting with an empty chain — the repo root
+                # simply is not a cycle candidate, and detection resumes one level
+                # down — so this is not recorded as a gap.
                 _chain = frozenset()
 
         for entry in entries:
@@ -379,8 +411,19 @@ class FileWalker:
                     continue
                 try:
                     target = entry.resolve()
-                except OSError:
-                    # Broken link or unreadable: nothing to descend into.
+                except (OSError, RuntimeError) as exc:
+                    # `entry.is_dir()` just succeeded, which means resolution through
+                    # the entry worked a moment ago and found a directory — so this is
+                    # neither a broken link nor a loop (both make is_dir() False), but a
+                    # race or a filesystem error. The earlier comment here claimed
+                    # "broken link or unreadable" and caught OSError only, which on
+                    # 3.11/3.12 cannot fire at all (see _is_within_root).
+                    #
+                    # Unlike a dangling entry this drops an entire SUBTREE that existed,
+                    # so it is recorded: walk_was_complete must not keep asserting the
+                    # index mirrors the repository while a directory's worth of files is
+                    # missing from it.
+                    self._record_incomplete(entry, exc)
                     continue
                 if target in _chain:
                     # Re-entering an ancestor. Skipping is silent by design — this

@@ -1,80 +1,48 @@
 """
 Integration test configuration.
 
-Mirrors ``tests/unit/conftest.py``: beast-mode feature flags default to False
-in code, but a developer's ``.env`` may have them set to True for local
-testing. Override them to "false" here so integration tests see the shipped
-code defaults regardless of ``.env``.
+The env-isolation table lives in ``tests/_env_isolation.py`` and is shared with
+the unit and eval suites — see that module for why each variable is pinned the
+way it is, and for the subprocess scope limit (nothing here reaches a `trelix`
+binary spawned via ``subprocess``; ``test_cli.py`` isolates its own child).
 
 This matters especially for context-compression A/B runs: if a dev's ``.env``
-flips ``TRELIX_RETRIEVAL_COMPRESSION`` on, the "off" baseline would silently
-compress and the A/B comparison would be contaminated. Neutralizing the flag
-here guarantees the baseline is byte-identical to today's assembled context.
-
-pydantic-settings reads env vars BEFORE the .env file, so setenv("X", "false")
-overrides whatever .env contains for that key. RetrievalConfig uses
-``extra="ignore"``, so neutralizing a compression flag that hasn't landed as a
-field yet is harmless (ignored now, auto-neutralized once the field exists).
-
-SCOPE LIMIT — read this before adding isolation here
-----------------------------------------------------
-``monkeypatch`` is IN-PROCESS ONLY. Nothing in this file affects a `trelix`
-binary spawned via ``subprocess``: the child re-reads the process environment
-*and* the ``.env`` file in its own cwd from scratch. Tests that shell out
-(``tests/integration/test_cli.py``) must isolate their child explicitly — that
-file scrubs ``TRELIX_*`` out of the child env and runs it from a directory with
-no ``.env``. Adding a var here will NOT fix a subprocess test.
+flips ``TRELIX_RETRIEVAL_COMPRESSION`` on — or merely retunes
+``TRELIX_RETRIEVAL_COMPRESSION_RATIO``, which this file used to miss because it
+carried its own partial copy of the table — the "off" baseline would silently
+compress and the comparison would be contaminated.
 """
+
+from pathlib import Path
 
 import pytest
 
-_BEAST_MODE_DEFAULTS: dict[str, str] = {
-    # Context compression (A/B isolation -- the load-bearing entry here).
-    # Both plausible alias spellings are covered so the off-baseline stays
-    # byte-identical no matter which the field ultimately binds to.
-    "TRELIX_RETRIEVAL_COMPRESSION": "false",
-    "TRELIX_RETRIEVAL_COMPRESSION_ENABLED": "false",
-    # Other beast-mode retrieval flags (same set as unit's conftest).
-    "TRELIX_FILE_SUMMARIES_ENABLED": "false",
-    "TRELIX_RETRIEVAL_FILE_SUMMARY_LEG": "false",
-    "TRELIX_RETRIEVAL_HYDE_FALLBACK": "false",
-    "TRELIX_RETRIEVAL_MULTI_QUERY": "false",
-    "TRELIX_RETRIEVAL_FLARE": "false",
-    "TRELIX_RETRIEVAL_PAGERANK_BOOST": "false",
-    "TRELIX_TELEMETRY_ENABLED": "false",
-    "TRELIX_OTEL_ENABLED": "false",
-}
+from tests._env_isolation import apply_env_isolation
 
-# Non-boolean settings that must stay unset (not "false") for tests to see the
-# "unconfigured" code default. See unit/conftest.py for the full rationale:
-# delenv() alone is not enough because pydantic-settings' .env-file source
-# reads the file directly and independently of the process environment.
-_UNSET_BY_DEFAULT: tuple[str, ...] = ("TRELIX_API_AUTH_TOKEN",)
-_EMPTY_STRING_BY_DEFAULT: tuple[str, ...] = (
-    "TRELIX_LINEAR_API_KEY",
-    "TRELIX_LINEAR_TEAM_KEY",
-    "TRELIX_JIRA_BASE_URL",
-    "TRELIX_JIRA_EMAIL",
-    "TRELIX_JIRA_API_TOKEN",
-    "TRELIX_JIRA_PROJECT_KEY",
-    "TRELIX_TESTRAIL_BASE_URL",
-    "TRELIX_TESTRAIL_USERNAME",
-    "TRELIX_TESTRAIL_API_KEY",
-)
-# Int-typed connector fields can't take the "" override (pydantic can't parse
-# "" as int); "0" parses fine and is falsy, so every `if not val` check still
-# treats it as "missing" -- same effective behavior as the string fields above.
-_ZERO_INT_BY_DEFAULT: tuple[str, ...] = ("TRELIX_TESTRAIL_PROJECT_ID",)
+_INTEGRATION_DIR = Path(__file__).parent
 
 
 @pytest.fixture(autouse=True)
 def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     """Override beast-mode feature flags to false so integration tests see code defaults."""
-    for var, val in _BEAST_MODE_DEFAULTS.items():
-        monkeypatch.setenv(var, val)
-    for var in _UNSET_BY_DEFAULT:
-        monkeypatch.delenv(var, raising=False)
-    for var in _EMPTY_STRING_BY_DEFAULT:
-        monkeypatch.setenv(var, "")
-    for var in _ZERO_INT_BY_DEFAULT:
-        monkeypatch.setenv(var, "0")
+    apply_env_isolation(monkeypatch)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Tag everything under tests/integration/ with the ``integration`` marker.
+
+    CONTRIBUTING.md documents ``pytest -m "not integration"`` as the
+    credential-free run, but no test in this tree ever carried the marker, so
+    that command deselected nothing — collection was identical to bare pytest
+    (2,965 tests, 0 deselected when this was fixed) and it exercised the live
+    Azure/Bedrock paths it claimed to skip. Applying the marker by directory
+    here (rather than by hand on each of the 104 items in it) means a new file
+    added to this directory is credential-gated on arrival instead of the day
+    someone remembers to decorate it.
+
+    ``pytest_collection_modifyitems`` from a subdirectory conftest is still
+    handed the WHOLE session's items, hence the explicit path filter.
+    """
+    for item in items:
+        if _INTEGRATION_DIR in item.path.parents:
+            item.add_marker(pytest.mark.integration)

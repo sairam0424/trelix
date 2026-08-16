@@ -156,9 +156,9 @@ Regression test verifies:
 
 ## Related Documentation
 
-- [BACKWARDS_COMPATIBILITY.md](../BACKWARDS_COMPATIBILITY.md) — stability guarantees and deprecation policy
-- [CHANGELOG.md](../../CHANGELOG.md) — version history with migration guides
-- [tests/unit/test_config.py](../../tests/unit/test_config.py) — regression test for flare_max_iter deprecation
+- [BACKWARDS_COMPATIBILITY.md](../../BACKWARDS_COMPATIBILITY.md) — stability guarantees and deprecation policy
+- [CHANGELOG.md](../../../CHANGELOG.md) — version history with migration guides
+- [tests/unit/test_config.py](../../../tests/unit/test_config.py) — regression test for flare_max_iter deprecation
 
 ---
 

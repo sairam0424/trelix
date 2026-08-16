@@ -88,7 +88,7 @@ tuned via the three batching variables above, not by a worker/concurrency count.
 | `TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS` | `120` (min: `0`) | Bodies below this token count are never compressed — the elision markers and per-span headers would cost more than the shrink saves. Such a result is handled exactly as before: kept if it fits, skipped if it does not. |
 | `TRELIX_INDEXER_STREAMING` | `false` | Enable generator-based streaming indexing pipeline (bounded Queue, lazy file iteration). Default off — zero behavior change when unset. |
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | Reranker to apply after fusion. One of: `cross_encoder`, `cohere`, `plaid`, `xtr` (**experimental**). Reranking itself is gated separately by `TRELIX_RETRIEVAL_RERANK` (default `true`) |
-| `TRELIX_RETRIEVAL_XTR_TOKENS` | `100` | Candidate token count for XTR reranker (10–1000). Only applies when `TRELIX_RETRIEVAL_RERANK_PROVIDER=xtr` |
+| `TRELIX_RETRIEVAL_XTR_TOKENS` | `100` | **Inert.** `RetrievalConfig.xtr_candidate_tokens` is declared and range-validated but read nowhere in `src/`, deliberately: the `xtr` provider is degenerate (one synthetic query token, so every output score is bit-identical to its input) and a real candidate-token budget needs the ColBERT-style multi-vector token index trelix does not build. The knob is kept for that future embedder; the provider logs this on every call |
 | `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE re-retrieval. Not the paper's token-log-probability method: after a synthesis completes, the answer is scanned for a fixed list of uncertainty phrases (`"i don't know"`, `"cannot find"`, …) and, on a hit, the query is enriched and re-synthesized. There is no probability threshold setting |
 | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Maximum FLARE iterations per query (min: 1, max: 3) |
 | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Enable HyDE (Hypothetical Document Embeddings) fallback when standard retrieval returns weak results |
@@ -230,9 +230,9 @@ echo "dist/" >> .gitignore
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_FEDERATION_ENABLED` | `false` | Enable federated search across multiple indexed repositories |
-| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Maximum number of parallel workers when querying federated repos (1–16) |
-| `TRELIX_FEDERATION_MAX_REPOS` | `50` | Maximum number of registered repos actually queried per federated search call (1–500). Registered repos beyond this cap are skipped (reported via `repos_skipped` in the MCP `federation_search_all` response); prevents an unbounded `federation_add_repo` loop from making every subsequent query scale linearly |
+| `TRELIX_FEDERATION_ENABLED` | `false` | **Inert.** `RetrievalConfig.federation_enabled` is declared but read nowhere in `src/`. Federated search is reached by running `trelix search-all`, which federates whether this is set or not; setting it does not make `trelix ask`/`trelix search` federate |
+| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | **Inert.** `RetrievalConfig.federation_max_workers` is declared and range-validated (1–16) but read nowhere in `src/`. `search-all` constructs `FederatedRetriever(registry)` with no arguments, so the `ThreadPoolExecutor` size is always the constructor's own default of 4 — which happens to equal this documented default, so the only observable symptom is that raising it does nothing |
+| `TRELIX_FEDERATION_MAX_REPOS` | `50` | Maximum number of registered repos actually queried per federated search call (1–500). Registered repos beyond this cap are skipped (reported via `repos_skipped` in the MCP `federation_search_all` response); prevents an unbounded `federation_add_repo` loop from making every subsequent query scale linearly. **No effect on `trelix search-all`** — `FederatedRetriever`'s `max_repos` parameter defaults to `None` (unbounded) and the CLI passes nothing, so only the separately-distributed `trelix-mcp` server applies this |
 
 There is no environment variable for the federation registry file path. The registry JSON file location defaults to `~/.config/trelix/repos.json` and can be overridden per-call via the `--config` CLI option (`trelix search-all --config`, `trelix federation add/list/remove --config`) or the `config_path` argument on the corresponding MCP tools. For security, MCP callers may only point `config_path` at `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/` — paths outside those roots are rejected.
 
@@ -438,8 +438,14 @@ TRELIX_STORE_BACKEND=sqlite
 # Federation
 # ---------------------------------------------------------------------------
 
-TRELIX_FEDERATION_ENABLED=false
-TRELIX_FEDERATION_MAX_WORKERS=4
+# INERT: both are declared in RetrievalConfig but read nowhere in src/. Run
+# `trelix search-all` to federate; the pool size is always FederatedRetriever's
+# own constructor default of 4. Listed only so the names are not mistaken for
+# typos when you see them in config dumps.
+# TRELIX_FEDERATION_ENABLED=false
+# TRELIX_FEDERATION_MAX_WORKERS=4
+# Applied only by the out-of-tree trelix-mcp server — the CLI leaves
+# FederatedRetriever(max_repos=None), i.e. unbounded.
 # TRELIX_FEDERATION_MAX_REPOS=50
 
 # Federation registry file path has no env var override — use --config (CLI)

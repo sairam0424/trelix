@@ -26,6 +26,7 @@ would invent files that were never indexable in the first place.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import subprocess
 from dataclasses import dataclass
@@ -64,9 +65,11 @@ class IndexProvenance:
     trelix_version: str | None = None
     embedder_provider: str | None = None
     embedder_model: str | None = None
-    # Canonical JSON of the walker settings that decide WHICH files get indexed. Stored
-    # in full rather than as a hash so a mismatch can name the offending setting instead
-    # of only announcing that one exists.
+    # Canonical JSON of everything that decides WHICH files get indexed: the walker
+    # settings from `_WALK_FIELDS` plus a digest of the `.gitignore` chain. Stored as
+    # named fields rather than one hash so a mismatch can name the offending setting
+    # instead of only announcing that one exists — only the gitignore chain is reduced to
+    # a digest, because its contents are unbounded.
     walk_config: str | None = None
 
     _FIELDS = (
@@ -98,9 +101,13 @@ class DriftReport:
       files under it read as missing while being present.
     * `walk_config_changed` is True — the walk was run with different ignore rules than
       the index was built with, so files it no longer reaches read as deleted. Measured
-      at 35 phantom deletions on this repository from `extra_ignore_dirs` alone.
+      at 35 phantom deletions on this repository from `extra_ignore_dirs` alone. Since
+      `_gitignore_digest` this also covers edits to the `.gitignore` chain's *contents*,
+      not merely to the config that switches it on.
 
-    Acting on `missing` in either case deletes embeddings that cost money to recompute.
+    Acting on `missing` in either case deletes embeddings that cost money to recompute,
+    so `actionable_drifted_count` — not `drifted_count` — is what a renderer should lead
+    with.
     """
 
     stale: tuple[str, ...] = ()
@@ -133,6 +140,23 @@ class DriftReport:
     @property
     def drifted_count(self) -> int:
         return len(self.stale) + len(self.new) + len(self.missing)
+
+    @property
+    def actionable_drifted_count(self) -> int:
+        """`drifted_count` minus the part of it nothing has verified.
+
+        This is the number a human can act on. `drifted_count` folds in `missing`
+        unconditionally, and a renderer that leads with it contradicts the trustworthiness
+        warning printed directly above: measured on this repository, `trelix stats --drift`
+        announced "99 file(s) have drifted" where 35 were every file under `packages/`,
+        all present on disk and simply unreachable by that walk.
+
+        `stale` and `new` need no such gate — both come from files the walk actually
+        yielded and hashed, so an incomplete or differently-configured walk can only make
+        them *undercount*, never invent entries.
+        """
+        actionable = len(self.stale) + len(self.new)
+        return actionable + len(self.missing) if self.missing_is_trustworthy else actionable
 
 
 def _git(repo_path: Path, *args: str) -> str | None:
@@ -183,6 +207,8 @@ _WALK_FIELDS = (
     "extra_ignore_extensions",
     "extra_ignore_filenames",
     "max_file_size_bytes",
+    # The bool alone is not enough — it says the chain was consulted, not what it said.
+    # `_gitignore_digest` fingerprints the contents under the `gitignore_chain` key.
     "respect_gitignore",
     # Omitting this was a false-TRUE in `missing_is_trustworthy`: index with
     # follow_symlinks=True, then run a drift check with it False, and every file reachable
@@ -192,6 +218,76 @@ _WALK_FIELDS = (
     # without being recorded.
     "follow_symlinks",
 )
+
+
+# Key under which the `.gitignore` chain digest is recorded. Deliberately NOT in
+# `_WALK_FIELDS`: that tuple is pinned in both directions against
+# `WalkerConfig.model_fields` (`test_recorded_fields_all_exist_on_the_config`), and this
+# is derived from the worktree rather than from a config field.
+_GITIGNORE_KEY = "gitignore_chain"
+
+
+def _gitignore_digest(config: IndexConfig) -> str | None:
+    """Fingerprint the WHOLE `.gitignore` chain — which files exist and what is in them.
+
+    `_WALK_FIELDS` records `respect_gitignore` as a bool, which says nothing about what
+    was actually ignored. Editing ignore rules alone therefore left
+    `missing_is_trustworthy` at True while files legitimately dropped out of the walk, and
+    a future `--prune` reading that would delete embeddings for files still on disk. The
+    scale is not hypothetical: one line in `workspace-vscode/.gitignore` excludes a 2.6 GB
+    `.vscode-test/` bundle that was 74% of this project's own index until v3.1.2 read
+    nested chains (walker.py:9-13). The ignore chain is the largest single lever on which
+    files are indexable, and it was the one thing the fingerprint did not look at.
+
+    Discovery and parsing are both borrowed from `FileWalker` rather than re-globbing.
+    `_iter_files` already prunes ignored directories, enforces `follow_symlinks`
+    containment and breaks symlink cycles, so this sees exactly the `.gitignore` files
+    that `_gitignore_chain` can give authority to — a `rglob(".gitignore")` would descend
+    into `node_modules` and fingerprint files the walk never consults. `_spec_for_dir`
+    supplies the parse (and its cache).
+
+    Stability matters as much as sensitivity: a digest that varies between runs reports
+    every drift check as untrustworthy, which disables the feature as effectively as the
+    false TRUE it replaces. Hence entries are sorted, anchored on repo-RELATIVE directory
+    paths (so a checkout and its copy agree), and built from pathspec's parsed patterns
+    rather than raw bytes, which drops blank lines and normalises line endings.
+    """
+    walker_config = getattr(config, "walker", None)
+    if walker_config is None or not getattr(walker_config, "respect_gitignore", False):
+        # With the chain switched off its contents cannot change the walk, so digesting
+        # them would raise an untrustworthy verdict with no consequence behind it — and a
+        # warning that cries wolf trains users past the one that matters.
+        return None
+
+    from trelix.indexing.walker import FileWalker
+
+    root = Path(config.repo_path)
+    entries: list[str] = []
+    try:
+        walker = FileWalker(config)
+        for path in walker._iter_files(root):
+            if path.name != ".gitignore":
+                continue
+            spec = walker._spec_for_dir(path.parent)
+            if spec is None:
+                # No spec means unreadable (`_spec_for_dir` swallows OSError), and the
+                # walk treats it as absent, so the digest must too or the two disagree.
+                continue
+            anchor = path.parent.relative_to(root).as_posix()
+            patterns = "\n".join(str(getattr(p, "pattern", p)) for p in spec.patterns)
+            entries.append(f"{anchor}\n{patterns}")
+    except Exception as exc:
+        # Runs inside `capture_provenance`, which must never fail an index — the
+        # embeddings are the expensive artefact. Returning None costs one stats line and
+        # errs toward "cannot verify", never toward false confidence.
+        logger.debug("Could not digest the .gitignore chain under %s: %s", root, exc)
+        return None
+
+    entries.sort()
+    digest = hashlib.sha256("\0".join(entries).encode("utf-8")).hexdigest()
+    # Count is carried in the value, not just the hash, so `trelix stats --drift`'s diff
+    # table shows a mismatch a human can interpret instead of two opaque hex strings.
+    return f"{len(entries)} file(s), sha256:{digest[:16]}"
 
 
 def _walk_config_json(config: IndexConfig) -> str | None:
@@ -215,6 +311,8 @@ def _walk_config_json(config: IndexConfig) -> str | None:
         payload[name] = (
             sorted(str(v) for v in value) if isinstance(value, list | set | tuple) else value
         )
+
+    payload[_GITIGNORE_KEY] = _gitignore_digest(config)
 
     try:
         return json.dumps(payload, sort_keys=True)

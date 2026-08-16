@@ -2,7 +2,17 @@ apiVersion: v2
 name: trelix
 description: Helm chart for trelix serve — fast, reliable code indexing and retrieval REST API
 type: application
-version: 0.1.0
+# The chart's OWN version, independent of trelix's (appVersion, below). Helm
+# requires it to move whenever the chart's contents change: `helm upgrade` and
+# any chart index identify a chart release by it, so two structurally different
+# charts both stamped 0.1.0 are indistinguishable. It did not move across the five
+# releases that bumped appVersion; bumped here because this commit changes the
+# image.tag default. Deliberately NOT lockstep with appVersion, and still 0.x:
+# nothing in CI runs `helm package` (helm-lint.yml only lints and templates),
+# so the chart ships from the git tree and no one has pinned 0.1.0 from an
+# index. verify-version does not check this line — appVersion is the site that
+# has to match the tag.
+version: 0.2.0
 appVersion: "3.1.2"
 home: https://github.com/sairam0424/trelix
 sources:

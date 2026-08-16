@@ -136,8 +136,8 @@ below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TRELIX_FEDERATION_ENABLED` | `false` | Enable multi-repo federated retrieval |
-| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Max parallel workers for federated search (range: 1–16) |
+| `TRELIX_FEDERATION_ENABLED` | `false` | **Inert.** `RetrievalConfig.federation_enabled` is declared but read nowhere in `src/`. Federation is reached only by running `trelix search-all`, which federates whether this is set or not; no other retrieval path federates because it is set |
+| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | **Inert.** `RetrievalConfig.federation_max_workers` is declared but read nowhere in `src/`. `search-all` builds `FederatedRetriever(registry)` with no arguments, so the pool size is always the constructor's own default of 4 — raising this to 16 changes nothing |
 | `TRELIX_FEDERATION_MAX_REPOS` | `50` | Max repos actually queried per `federation_search_all` MCP call, and max repos `federation_add_repo` will accept (range: 1–500) |
 
 **MCP security note:** The four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) confine any caller-supplied `config_path` argument to `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`, rejecting paths outside both roots. Prevents prompt-injected or adversarial clients from pointing registry I/O at arbitrary filesystem locations.

@@ -469,7 +469,7 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 | `TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION` | `0.5` | Fraction of the model window to spend on context when the budget is `null` (range 0.1–0.9). Ignored with an explicit int budget |
 | `TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET` | `false` | Also scale `top_k_vector`/`rerank_top_n` by `effective_budget / 12000`. Needs the budget to be `null`; raises per-query cost |
 | `TRELIX_RETRIEVAL_SYNTHESIS_MAX_TOKENS` | `12000` | Max tokens in LLM synthesis response |
-| `TRELIX_RETRIEVAL_GRAPH_IMPORT_MAX_EXTRA` | `3` | Extra symbols added via graph import expansion |
+| `TRELIX_RETRIEVAL_GRAPH_IMPORT_MAX_EXTRA` | `3` | **Inert.** `RetrievalConfig.graph_import_max_extra` is declared but read nowhere in `src/`. Import expansion takes its cap from the per-intent `RetrievalStrategy.import_max_extra` in `retrieval/planner/models.py` (0 for intents that skip import expansion, up to 30 for `blast_radius`) — that table is, per its own comment, "the ONLY place that controls retrieval behaviour per intent" |
 | `TRELIX_RETRIEVAL_QUERY_CACHE_SIZE` | `256` | LRU cache for `embed_query()` (0 = disabled) |
 | `TRELIX_RETRIEVAL_PLAN_CACHE_SIZE` | `128` | LRU cache for `QueryPlan` LLM calls (0 = disabled) |
 
@@ -501,8 +501,8 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 | `TRELIX_RETRIEVAL_COMPRESSION_RATIO` | `0.45` | Fallback keep-ratio for unknown intents only (0.1–1.0) |
 | `TRELIX_RETRIEVAL_COMPRESSION_RATIO_<INTENT>` | (per-intent defaults) | Per-intent keep-ratio override, e.g. `..._BLAST_RADIUS=0.5` |
 | `TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS` | `120` | Bodies below this token count are never compressed |
-| `TRELIX_FEDERATION_ENABLED` | `false` | Multi-repo federated search |
-| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Parallel workers for federated search (1–16) |
+| `TRELIX_FEDERATION_ENABLED` | `false` | **Inert.** Declared but read nowhere in `src/` — run `trelix search-all` to federate; it does not consult this |
+| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | **Inert.** Declared but read nowhere in `src/` — `search-all` calls `FederatedRetriever(registry)`, so the pool is always the constructor default of 4 |
 
 ### Retrieval — File-type Weighting
 
@@ -550,7 +550,7 @@ All-`1.0` (the default) is a no-op — byte-for-byte identical to unweighted fus
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_PARSER_DATAFLOW` | `false` | Enable def-use chain data-flow analysis |
-| `TRELIX_PARSER_TAINT` | `false` | Enable taint analysis (requires `pip install trelix[taint]`) |
+| `TRELIX_PARSER_TAINT` | `false` | **Inert.** `ParserConfig.taint_enabled` is declared but read nowhere in `src/`. Taint analysis runs only when you invoke `trelix taint`, which does not consult it — so this switch neither enables nor disables anything (`pip install trelix[taint]` is still required for the command itself) |
 
 ### Sparse Embeddings (SPLADE-Code)
 
