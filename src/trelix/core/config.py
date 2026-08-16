@@ -195,6 +195,15 @@ class SparseConfig(BaseSettings):
     # NL-trained rather than code-specialised, which is the trade-off — a working NL
     # sparse leg is worth more than a code-specialised one that cannot be loaded at all.
     # Using a SPLADE-Code model needs causal-LM support in sparse.py first.
+    #
+    # LICENCE — read before enabling this in a commercial product. The SPLADE weights
+    # are published under CC BY-NC-SA-4.0 (NON-COMMERCIAL, share-alike), verified via
+    # the HuggingFace API: cardData.license == "cc-by-nc-sa-4.0". trelix itself is MIT
+    # and does not redistribute them — they are downloaded at runtime, and only if you
+    # opt into the sparse leg, which is off by default. But the obligations attach to
+    # whoever downloads and uses them, so a commercial deployment should either pick a
+    # permissively-licensed model via TRELIX_SPARSE_MODEL or leave the leg disabled.
+    # Every naver/splade* checkpoint checked carries the same licence.
     model: str = Field(
         default="naver/splade-v3-distilbert",
         alias="TRELIX_SPARSE_MODEL",
@@ -1055,24 +1064,43 @@ _TICKET_NOISE_PREFIXES: tuple[str, ...] = (
     "UTF", "SHA", "MD", "HTTP", "HTTPS", "BASE", "ISO", "RFC", "AES", "RSA",
     "SSL", "TLS", "IPV", "CRC", "HMAC", "PBKDF", "ARGON", "SIMD", "X", "EC",
     "GB", "KB", "MB", "TB", "PY",
+    # Identifier schemes with the same PREFIX-digits shape as a ticket key. CVE matters
+    # most: its PREFIX-digits-digits form ("CVE-2021-44228") is truncated to "CVE-2021"
+    # by the deliberate trailing-hyphen allowance, so a security advisory in a commit
+    # message became a ticket reference — in a tool that ships taint analysis.
+    "CVE", "PEP", "RFE", "ADR",
 )
 
 # Built from the list above rather than written out, so adding a prefix is a one-word
 # edit. Three deliberate choices in the surrounding anchors:
 #
-#   (?<![A-Za-z0-9-])   the key must start at a boundary, so "xPROJ-123" is not a ticket.
+#   (?<![A-Za-z0-9])    the key must start at a boundary, so "xPROJ-123" is not a ticket.
+#                       A preceding HYPHEN is allowed on purpose: branch and tag names
+#                       routinely put a key after one ("feature-PROJ-123",
+#                       "release-2024-ENG-45"), and excluding it silently dropped every
+#                       such reference. Technical constants are excluded by the
+#                       vocabulary below, not by this anchor.
 #   [A-Z][A-Z0-9]{1,9}  2-10 characters, upper-case first. Rules out single letters
 #                       ("B-1") and lower-case prose while allowing real keys like AB-9.
-#   (?![A-Za-z0-9])     rejects a trailing letter or digit — which stops "PROJ-1234567"
-#                       from matching a truncated prefix of itself — but deliberately
-#                       ALLOWS a trailing hyphen. That last part is load-bearing: branch
-#                       names are the main place ticket keys appear in merge subjects
-#                       ("Merge pull request #12 from feature/PROJ-456-thing"), and a
-#                       stricter guard silently dropped every one of them.
+#   -\d+                greedy, NOT \d{1,6}. A bounded run plus the trailing guard below
+#                       made a 7-digit ticket match NOTHING AT ALL: every truncation the
+#                       regex tried was followed by another digit, so the lookahead
+#                       rejected each one in turn. Greedy consumes the whole number and
+#                       the guard then only has a non-digit to inspect.
+#   (?![A-Za-z0-9])     rejects a trailing letter, so "PROJ-123x" is not a ticket, but
+#                       deliberately ALLOWS a trailing hyphen. That is load-bearing:
+#                       branch names are the main place ticket keys appear in merge
+#                       subjects ("Merge pull request #12 from feature/PROJ-456-thing"),
+#                       and a stricter guard silently dropped every one of them.
 TICKET_PATTERN_DEFAULT: str = (
-    r"(?<![A-Za-z0-9-])"
-    r"(?!(?:" + "|".join(_TICKET_NOISE_PREFIXES) + r")-\d)"
-    r"[A-Z][A-Z0-9]{1,9}-\d{1,6}"
+    r"(?<![A-Za-z0-9])"
+    # [0-9]* after the alternation, because the key prefix below admits digits
+    # ([A-Z][A-Z0-9]{1,9}) while this vocabulary lists only the digit-free spellings.
+    # Without it, SHA3-256, X86-64, IPV6-1, UTF8-1 and MD5-1 all read as ticket keys —
+    # the same constants the vocabulary exists to exclude, merely spelled with a version
+    # number.
+    r"(?!(?:" + "|".join(_TICKET_NOISE_PREFIXES) + r")[0-9]*-\d)"
+    r"[A-Z][A-Z0-9]{1,9}-\d+"
     r"(?![A-Za-z0-9])"
 )
 

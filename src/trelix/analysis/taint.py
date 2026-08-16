@@ -172,14 +172,45 @@ class TaintAnalyzer:
                 detail=(completed.stderr or str(exc))[:400].strip(),
             )
 
-        errors = payload.get("errors") or []
-        scanned = (payload.get("paths") or {}).get("scanned") or []
+        # Every accessor below is shape-guarded. `run()` documents that it never raises,
+        # and a payload that parses to `null`, a list, or a dict whose "paths" is a
+        # string made these `.get()` calls throw straight out through `run()` — three
+        # shapes the pre-fix code returned [] for.
+        if not isinstance(payload, dict):
+            logger.warning(
+                "Taint scan output was valid JSON but not an object (%s) — treating as a "
+                "failed scan",
+                type(payload).__name__,
+            )
+            return ScanResult(
+                outcome=ScanOutcome.SEMGREP_FAILED,
+                detail=f"unexpected JSON payload of type {type(payload).__name__}",
+            )
+
+        raw_errors = payload.get("errors")
+        errors = raw_errors if isinstance(raw_errors, list) else []
+        raw_paths = payload.get("paths")
+        raw_scanned = raw_paths.get("scanned") if isinstance(raw_paths, dict) else None
+        scanned = raw_scanned if isinstance(raw_scanned, list) else []
         flows = self._parse_semgrep_output(stdout) if stdout.strip() else []
 
-        # A non-zero code with no usable payload, or any error semgrep reported itself.
-        if errors or (completed.returncode != 0 and not payload):
+        # Only errors semgrep itself considers errors. It uses `level` to distinguish a
+        # genuine failure from a note — a rule skipped by min-version reports
+        # {"code": 0, "level": "info"} on an otherwise successful exit-0 scan, and
+        # treating that as a hard failure made the command cry wolf on a healthy run.
+        # An entry with no `level` is treated as an error, because that is what semgrep
+        # emitted before the field existed.
+        fatal_errors = [
+            e
+            for e in errors
+            if not isinstance(e, dict) or str(e.get("level", "error")).lower() != "info"
+        ]
+
+        # A non-zero code with no usable payload, or any error semgrep called an error.
+        if fatal_errors or (completed.returncode != 0 and not payload):
             detail = (completed.stderr or "").strip() or "; ".join(
-                str(e.get("message", e))[:200] for e in errors[:3]
+                str(e.get("message", e) if isinstance(e, dict) else e)[:200]
+                for e in fatal_errors[:3]
             )
             logger.warning(
                 "Taint scan FAILED (exit %s) — results are not a clean bill of health: %s",

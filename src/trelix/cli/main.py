@@ -28,7 +28,6 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
-from trelix.core.config import TICKET_PATTERN_DEFAULT
 from trelix.federation.registry import RepoRegistry
 
 if TYPE_CHECKING:
@@ -58,6 +57,8 @@ app = typer.Typer(
 
 console = Console()
 err_console = Console(stderr=True)
+
+logger = logging.getLogger("trelix.cli")
 
 
 def _print_error(label: str, detail: object) -> None:
@@ -736,19 +737,24 @@ def stats(
 @app.command("link-tickets")
 def link_tickets(
     repo: str = typer.Argument(..., help="Path to the indexed repository (must be a git repo)"),
-    max_commits: int = typer.Option(5_000, help="Max commits to walk (bounds cost on large repos)"),
+    # All three default to None so an omitted flag can be told apart from an explicit
+    # one. Passing a typer default unconditionally into GitLinkerConfig() made the
+    # kwarg win over pydantic-settings, so TRELIX_GIT_LINKER_TICKET_PATTERN,
+    # _MAX_COMMITS and _SINCE were inert on the only path that invokes this — while
+    # docs/CONFIGURATION.md documents all three as working. `_build_embedder_config`
+    # above already solves this exact bug class the same way: omit the kwarg and let
+    # the settings loader fall through to the environment.
+    max_commits: int | None = typer.Option(
+        None, help="Max commits to walk (bounds cost on large repos) [default: 5000]"
+    ),
     since: str | None = typer.Option(
         None,
         help='Only walk commits after this date, e.g. "90 days ago" (passed to git log --since)',
     ),
-    ticket_pattern: str = typer.Option(
-        # Sourced from the config module rather than restated here. This default is
-        # passed unconditionally, so it overrides GitLinkerConfig's — duplicating the
-        # literal is what let the two drift apart, leaving the CLI on a permissive
-        # pattern that matched UTF-8 and SHA-256 as ticket ids.
-        TICKET_PATTERN_DEFAULT,
+    ticket_pattern: str | None = typer.Option(
+        None,
         help='Regex for ticket IDs in commit messages (default: Jira-style "PROJ-123", '
-        "excluding technical constants like UTF-8)",
+        "excluding technical constants like UTF-8 and CVE-2021-44228)",
     ),
 ) -> None:
     """
@@ -788,12 +794,16 @@ def link_tickets(
         )
         raise typer.Exit(1)
 
-    linker_config = GitLinkerConfig(
-        enabled=True,
-        max_commits=max_commits,
-        since=since,
-        ticket_pattern=ticket_pattern,
-    )
+    # Only what the user actually passed, so an unset flag leaves the field to the
+    # settings loader (env var, .env, then the field default).
+    linker_overrides: dict[str, object] = {"enabled": True}
+    if max_commits is not None:
+        linker_overrides["max_commits"] = max_commits
+    if since is not None:
+        linker_overrides["since"] = since
+    if ticket_pattern is not None:
+        linker_overrides["ticket_pattern"] = ticket_pattern
+    linker_config = GitLinkerConfig(**linker_overrides)  # type: ignore[arg-type]
 
     try:
         with Database(db_path) as db:
@@ -1380,11 +1390,21 @@ def graph(
     # measured on this repo as a stale 31-byte graph.html surviving the run while the
     # same command without --json wrote 326 KB.
     viz_path: str | None = None
+    viz_error: str | None = None
     if visualize:
         from trelix.graph.visualizer import GraphVisualizer
 
         out = output or str(_Path(repo_path) / ".trelix" / "graph.html")
-        viz_path = str(GraphVisualizer().export_html(result.code_graph, out))
+        try:
+            viz_path = str(GraphVisualizer().export_html(result.code_graph, out))
+        except Exception as exc:
+            # Guarded because moving the export BEFORE the --json return also moved it
+            # in front of the payload. Unguarded, a pyvis failure or an unwritable
+            # output path would take the graph statistics down with it — the command's
+            # primary result, which was already computed successfully. The visualization
+            # is the optional half, so it fails on its own.
+            viz_error = str(exc)
+            logger.warning("Graph visualization failed: %s", exc)
 
     if json_output:
         data: dict[str, object] = {
@@ -1398,6 +1418,10 @@ def graph(
         # that asked for a visualization learns where it landed.
         if viz_path is not None:
             data["visualization_path"] = viz_path
+        elif viz_error is not None:
+            # Reported in-band rather than dropped: a consumer that asked for a
+            # visualization needs to learn it did not get one.
+            data["visualization_error"] = viz_error
         # indent=None keeps this payload compact, as it has always been —
         # _print_json's default would reformat a machine-readable contract.
         _print_json(data, indent=None)
@@ -1422,6 +1446,11 @@ def graph(
 
     if viz_path is not None:
         console.print(f"\n[blue]Graph visualization:[/blue] {escape(viz_path)}")
+    elif viz_error is not None:
+        err_console.print(
+            f"\n[yellow]Graph visualization failed (statistics above are "
+            f"unaffected):[/yellow] {escape(viz_error)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1615,7 +1644,20 @@ def taint(
         # intrafile without the Semgrep Pro Engine, which exits 2 with empty stdout)
         # then printed a confident "semgrep ran and reported nothing" at exit 0.
         if json_output:
+            # The payload stays `[]` so `| jq` keeps working, but the EXIT CODE must
+            # still distinguish a clean scan from one that never ran. Printing [] and
+            # exiting 0 here left the very defect this branch exists to fix in place on
+            # the JSON path — which is the path CI uses, and therefore the one where a
+            # false all-clear does the most damage. Diagnostics go to stderr so stdout
+            # remains byte-compatible.
             _print_json([])
+            if scan_result.outcome is not ScanOutcome.OK:
+                err_console.print(
+                    f"[red]Taint analysis did not complete ({scan_result.outcome}):[/red] "
+                    f"{escape(scan_result.detail or 'no detail')}"
+                )
+                if scan_result.outcome is not ScanOutcome.SEMGREP_MISSING:
+                    raise typer.Exit(1)
         elif scan_result.outcome is ScanOutcome.SEMGREP_MISSING:
             console.print(
                 "[yellow]semgrep is not installed, so no taint analysis ran: "

@@ -85,6 +85,16 @@ class SparseEmbedder:
                 self._model = AutoModelForMaskedLM.from_pretrained(self._model_name)
                 self._model.eval()
                 logger.info("SparseEmbedder loaded: %s", self._model_name)
+                if self._model_name.startswith("naver/splade"):
+                    # Stated once, on load, because the obligation attaches to whoever
+                    # downloads the weights and nothing else in the pipeline would
+                    # mention it. trelix is MIT and does not redistribute them.
+                    logger.warning(
+                        "%s is published under CC BY-NC-SA-4.0 (non-commercial). "
+                        "Set TRELIX_SPARSE_MODEL to a permissively-licensed model, or "
+                        "leave TRELIX_RETRIEVAL_SPARSE off, for commercial use.",
+                        self._model_name,
+                    )
                 return True
             except Exception as exc:
                 logger.warning("SparseEmbedder failed to load %s: %s", self._model_name, exc)

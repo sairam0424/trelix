@@ -1478,3 +1478,22 @@ class TestSubChunkCleanup:
         vs.delete_sub_chunk_embeddings([5])
 
         assert vs.search_sub_chunks([1.0, 0.0, 0.0, 0.0], k=5) == []
+
+    def test_delete_file_by_path_also_purges_sub_chunks(self, tmp_path: Path) -> None:
+        """The watcher's path was missed when sub-chunk cleanup was first added.
+
+        `symbols` cascades from `files`, so deleting the file row removed the symbols —
+        but `sub_chunks` has no foreign key to `symbols`, so their sub-chunks and vectors
+        stayed. This runs every time a file is deleted from a watched repository, which
+        makes it the highest-frequency leak of the three paths.
+        """
+        from unittest.mock import MagicMock
+
+        db, _, _ = self._seed(tmp_path)
+        assert self._count(db) == 2, "precondition: two sub-chunk rows exist"
+        store = MagicMock()
+
+        assert db.delete_file_by_path("/repo/a.py", "a.py", store) is True
+
+        assert self._count(db) == 0, "sub_chunks survived delete_file_by_path"
+        store.delete_sub_chunk_embeddings.assert_called_once()

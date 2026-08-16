@@ -410,6 +410,19 @@ class Indexer:
 
         producer_thread.join()
 
+        # Assigned here, after the producer has finished walking. Declaring the key in
+        # the results dict without ever setting it made this path report 0 unconditionally
+        # — a silent "the walk was complete" for the pipeline that is hardest to observe,
+        # since it streams rather than materialising a file list.
+        results["files_unreadable"] = len(self.walker.incomplete_paths)
+        if not self.walker.walk_was_complete:
+            skipped = self.walker.incomplete_paths
+            self._console.print(
+                f"[yellow]  {len(skipped)} path(s) could not be read and are missing "
+                f"from this index: {escape(', '.join(skipped[:5]))}"
+                f"{' …' if len(skipped) > 5 else ''}[/yellow]"
+            )
+
         # Cross-file resolution — single pass after all files are processed
         try:
             self.db.resolve_cross_file_calls()
@@ -430,6 +443,7 @@ class Indexer:
         t_start = time.perf_counter()
         stats: dict[str, Any] = {
             "files_found": 0,
+            "files_unreadable": 0,
             "files_indexed": 0,
             "files_skipped": 0,
             "symbols_extracted": 0,

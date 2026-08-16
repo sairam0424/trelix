@@ -404,7 +404,15 @@ class TestDefaultTicketPattern:
         "text",
         ["PROJ-123", "ENG-45", "SCRUM-1", "AB-9", "TRELIX-9999",
          "Merge pull request #12 from feature/PROJ-456-thing",
-         "fix/NS-3-cleanup"],
+         "fix/NS-3-cleanup",
+         # A bounded digit run (\d{1,6}) plus the trailing guard made these match
+         # NOTHING: every truncation the regex tried was followed by another digit, so
+         # the lookahead rejected each one in turn. A false negative is the worse
+         # failure here, because linking is the entire point.
+         "PROJ-1234567", "ENG-1234567 fix",
+         # A HYPHEN before the key is normal in branch and tag names, and the leading
+         # lookbehind used to reject it.
+         "feature-PROJ-123", "release-2024-ENG-45"],
     )
     def test_real_ticket_shapes_are_matched(self, text: str) -> None:
         assert self._re().search(text), f"{text!r} contains a ticket key and was missed"
@@ -412,7 +420,15 @@ class TestDefaultTicketPattern:
     @pytest.mark.parametrize(
         "text",
         ["encoded as UTF-8", "SHA-256 digest", "returns HTTP-400", "BASE-64 payload",
-         "ISO-8601 timestamp", "see RFC-2616", "MD-5 hash", "AES-256-GCM"],
+         "ISO-8601 timestamp", "see RFC-2616", "MD-5 hash", "AES-256-GCM",
+         # Digit-bearing spellings of the same constants. The key prefix admits digits
+         # ([A-Z][A-Z0-9]{1,9}) while the vocabulary lists only digit-free spellings, so
+         # these all read as ticket keys until the lookahead allowed a version number.
+         "SHA3-256 digest", "built for X86-64", "an IPV6-1 address", "SHA256-1 hash",
+         "UTF8-1 encoding", "MD5-1 checksum",
+         # Identifier schemes with the same shape. CVE matters most: the deliberate
+         # trailing-hyphen allowance truncated "CVE-2021-44228" to a "CVE-2021" ticket.
+         "fixes CVE-2021-44228", "per PEP-484"],
     )
     def test_technical_constants_are_not_tickets(self, text: str) -> None:
         match = self._re().search(text)
@@ -422,9 +438,20 @@ class TestDefaultTicketPattern:
     def test_malformed_keys_are_rejected(self, text: str) -> None:
         assert self._re().search(f" {text} ") is None, f"{text!r} should not be a ticket"
 
-    def test_an_over_long_number_does_not_match_a_prefix_of_itself(self) -> None:
-        """PROJ-1234567 must not silently become PROJ-123456."""
-        assert self._re().search(" PROJ-1234567 ") is None
+    def test_a_long_number_matches_in_full_not_a_truncated_prefix(self) -> None:
+        """PROJ-1234567 must match WHOLE — neither truncated nor dropped.
+
+        This test previously asserted it matched nothing at all, which encoded the bug
+        rather than the requirement: a bounded `\d{1,6}` plus the trailing guard made
+        every truncation the regex tried fail on the following digit, so a 7-digit
+        ticket silently linked to nothing. "Do not match a prefix" is the real
+        requirement, and matching the full number satisfies it.
+        """
+        match = self._re().search(" PROJ-1234567 ")
+        assert match is not None, "a 7-digit ticket number matched nothing at all"
+        assert match.group(0) == "PROJ-1234567", (
+            f"matched a truncated prefix instead of the whole key: {match.group(0)!r}"
+        )
 
     def test_the_pattern_compiles_and_is_not_the_old_one(self) -> None:
         from trelix.core.config import GitLinkerConfig
@@ -438,3 +465,67 @@ class TestDefaultTicketPattern:
 
         assert "UTF" in _TICKET_NOISE_PREFIXES
         assert "UTF" in TICKET_PATTERN_DEFAULT
+
+
+class TestLinkTicketsHonoursEnvironmentConfig:
+    """`TRELIX_GIT_LINKER_*` must apply when the matching flag is omitted.
+
+    `link_tickets` built `GitLinkerConfig(max_commits=..., since=..., ticket_pattern=...)`
+    unconditionally from typer's defaults. An explicit constructor kwarg beats
+    pydantic-settings, so all three environment variables were inert on the only path
+    that invokes this — while docs/CONFIGURATION.md documents them as working.
+
+    `_build_embedder_config` in the same module already documents and solves this exact
+    bug class: omit the kwarg when the flag was not passed, and let the settings loader
+    fall through to the environment.
+    """
+
+    class _FakeLinker:
+        seen: dict = {}
+
+        def __init__(self, db, config):  # type: ignore[no-untyped-def]
+            type(self).seen = {
+                "pattern": config.ticket_pattern,
+                "max_commits": config.max_commits,
+                "since": config.since,
+            }
+
+        def link(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return {"edges_created": 0, "commits_walked": 0, "tickets_found": 0}
+
+    def _run(self, env: dict, args: list[str]) -> dict:
+        import os
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from trelix.cli.main import app
+
+        self._FakeLinker.seen = {}
+        with patch.dict(os.environ, env, clear=False), patch(
+            "trelix.indexing.git_linker.GitLinker", self._FakeLinker
+        ):
+            CliRunner().invoke(app, ["link-tickets", "."] + args)
+        return self._FakeLinker.seen
+
+    def test_env_var_applies_when_the_flag_is_omitted(self) -> None:
+        seen = self._run(
+            {"TRELIX_GIT_LINKER_TICKET_PATTERN": r"#\d+", "TRELIX_GIT_LINKER_MAX_COMMITS": "99"},
+            [],
+        )
+        assert seen.get("pattern") == r"#\d+", (
+            "TRELIX_GIT_LINKER_TICKET_PATTERN was overridden by the typer default"
+        )
+        assert seen.get("max_commits") == 99
+
+    def test_an_explicit_flag_still_wins_over_the_env_var(self) -> None:
+        """Precedence must not invert: a flag the user typed beats the environment."""
+        seen = self._run({"TRELIX_GIT_LINKER_MAX_COMMITS": "99"}, ["--max-commits", "7"])
+        assert seen.get("max_commits") == 7
+
+    def test_the_field_default_applies_with_neither(self) -> None:
+        from trelix.core.config import TICKET_PATTERN_DEFAULT
+
+        seen = self._run({}, [])
+        assert seen.get("pattern") == TICKET_PATTERN_DEFAULT
+        assert seen.get("max_commits") == 5_000

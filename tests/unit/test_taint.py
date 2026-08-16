@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from trelix.analysis.taint import TaintAnalyzer, TaintFlow
 
 
@@ -29,10 +31,16 @@ class TestTaintAnalyzer:
         assert analyzer is not None
 
     def test_run_returns_empty_when_semgrep_not_installed(self, tmp_path: Path) -> None:
-        with patch.dict("sys.modules", {"semgrep": None}):
-            analyzer = TaintAnalyzer(str(tmp_path))
-            result = analyzer.run()
-        assert isinstance(result, list)
+        """"Not installed" means not on PATH — semgrep is invoked via subprocess.
+
+        This patched `sys.modules` with {"semgrep": None}, which the analyzer never
+        consults because it never imports semgrep. The mock was inert, so the test
+        actually shelled out to the real binary against the p/default network registry
+        and passed because that returned no flows either.
+        """
+        with patch("shutil.which", return_value=None):
+            result = TaintAnalyzer(str(tmp_path)).run()
+        assert result == []
 
     def test_run_parses_semgrep_json_output(self, tmp_path: Path) -> None:
         semgrep_output = {
@@ -58,7 +66,13 @@ class TestTaintAnalyzer:
 
     def test_run_never_raises(self, tmp_path: Path) -> None:
         analyzer = TaintAnalyzer(str(tmp_path))
-        with patch.object(analyzer, "_run_semgrep", side_effect=RuntimeError("semgrep not found")):
+        # _invoke_semgrep, not _run_semgrep: scan() calls the former, so patching the
+        # latter leaves the mock INERT and the test shells out to real semgrep against
+        # the p/default network registry — slow, offline-fragile, and passing for the
+        # wrong reason.
+        with patch.object(
+            analyzer, "_invoke_semgrep", side_effect=RuntimeError("semgrep not found")
+        ), patch("shutil.which", return_value="/usr/bin/semgrep"):
             result = analyzer.run()
         assert isinstance(result, list)
 
@@ -432,7 +446,9 @@ class TestScanOutcome:
         """run()'s documented contract must survive scan() being introduced."""
         from unittest.mock import patch
 
-        with patch.object(TaintAnalyzer, "_run_semgrep", side_effect=RuntimeError("boom")):
+        with patch.object(
+            TaintAnalyzer, "_invoke_semgrep", side_effect=RuntimeError("boom")
+        ), patch("shutil.which", return_value="/usr/bin/semgrep"):
             assert TaintAnalyzer(str(tmp_path)).run() == []
 
     def test_failed_scan_is_logged_at_warning(self, tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
@@ -450,3 +466,88 @@ class TestScanOutcome:
         assert any("Pro" in r.message or "Pro" in str(r.args) for r in caplog.records), (
             f"semgrep's stderr was not surfaced at WARNING: {caplog.records}"
         )
+
+
+class TestScanOutcomeRobustness:
+    """Two ways the outcome classifier was wrong, both found by auditing the fix.
+
+    Nothing here needs semgrep installed or a network: `_invoke_semgrep` is patched,
+    which is the method `scan()` actually calls. Three earlier tests patched
+    `_run_semgrep` or `sys.modules` instead — mocks the code path never consults — so
+    they shelled out to the real binary against the p/default registry and took ~6s
+    each while proving nothing. This file went from 19.17s to 0.34s once that was fixed.
+    """
+
+    @staticmethod
+    def _scan(payload: str, rc: int = 0, stderr: str = ""):  # type: ignore[no-untyped-def]
+        from unittest.mock import MagicMock, patch
+
+        completed = MagicMock(returncode=rc, stdout=payload, stderr=stderr)
+        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
+            "subprocess.run", return_value=completed
+        ):
+            return TaintAnalyzer("/tmp").scan()
+
+    def test_an_info_level_error_is_not_a_failure(self) -> None:
+        """semgrep uses `level` to separate a note from a failure.
+
+        A rule skipped by `min-version` reports {"code": 0, "level": "info"} on an
+        otherwise successful exit-0 scan. Treating any errors[] entry as fatal made the
+        command report FAILED on a healthy run — a security tool that cries wolf gets
+        ignored, which is the same harm as one that reports a false all-clear.
+        """
+        from trelix.analysis.taint import ScanOutcome
+
+        payload = json.dumps({
+            "results": [],
+            "errors": [{"code": 0, "level": "info", "message": "rule skipped"}],
+            "paths": {"scanned": ["a.py"]},
+        })
+        assert self._scan(payload).outcome is ScanOutcome.OK
+
+    def test_an_error_level_entry_is_still_a_failure(self) -> None:
+        from trelix.analysis.taint import ScanOutcome
+
+        payload = json.dumps({
+            "results": [], "errors": [{"level": "error", "message": "bad rule"}],
+            "paths": {"scanned": ["a.py"]},
+        })
+        assert self._scan(payload).outcome is ScanOutcome.SEMGREP_FAILED
+
+    def test_an_entry_with_no_level_is_treated_as_an_error(self) -> None:
+        """Backward compatibility: semgrep omitted `level` before it had the field."""
+        from trelix.analysis.taint import ScanOutcome
+
+        payload = json.dumps({
+            "results": [], "errors": [{"message": "bad rule"}], "paths": {"scanned": ["a.py"]},
+        })
+        assert self._scan(payload).outcome is ScanOutcome.SEMGREP_FAILED
+
+    @pytest.mark.parametrize("payload", ["null", "[]", '"a string"', "42"])
+    def test_a_non_object_payload_does_not_raise(self, payload: str) -> None:
+        """`run()` promises never to raise, and these three shapes broke that.
+
+        `json.loads("null")` is None, `"[]"` is a list — `.get()` on either threw
+        AttributeError straight out through run(), which the pre-fix code returned []
+        for.
+        """
+        from trelix.analysis.taint import ScanOutcome
+
+        result = self._scan(payload)
+        assert result.outcome is ScanOutcome.SEMGREP_FAILED
+        assert result.flows == []
+
+    def test_a_malformed_paths_field_does_not_raise(self) -> None:
+        payload = json.dumps({"results": [], "errors": [], "paths": "not-a-dict"})
+        assert self._scan(payload).flows == []
+
+    def test_run_still_returns_a_list_for_every_malformed_shape(self) -> None:
+        """The contract callers actually depend on."""
+        from unittest.mock import MagicMock, patch
+
+        for payload in ("null", "[]", '{"paths": "x"}', "not json at all"):
+            completed = MagicMock(returncode=0, stdout=payload, stderr="")
+            with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
+                "subprocess.run", return_value=completed
+            ):
+                assert TaintAnalyzer("/tmp").run() == [], f"raised or non-list for {payload!r}"

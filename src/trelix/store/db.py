@@ -805,6 +805,19 @@ class Database:
             if chunk_ids:
                 vector_store.delete_batch(chunk_ids)  # type: ignore[attr-defined]
 
+        # Sub-chunks too. This path was missed when sub_chunk cleanup was added to the
+        # two symbol-deletion methods: `symbols` cascades from `files`, but `sub_chunks`
+        # has no foreign key to `symbols`, so deleting the file row here removed the
+        # symbols and left their sub-chunks — and their vectors — behind. This is the
+        # WATCHER's path, so it ran every time a file was deleted from a watched repo.
+        symbol_ids = [
+            int(r[0])
+            for r in self._conn.execute(
+                "SELECT id FROM symbols WHERE file_id = ?", (file_id,)
+            ).fetchall()
+        ]
+        self._purge_sub_chunks(symbol_ids, vector_store)
+
         # ON DELETE CASCADE on symbols handles chunks / calls / type_edges
         # Explicit import delete handles the file_id FK
         self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))

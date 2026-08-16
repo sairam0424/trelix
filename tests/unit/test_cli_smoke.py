@@ -713,3 +713,105 @@ class TestTaintCleanScanMessage:
             assert _json.loads(res.stdout) == [], (
                 f"--json stdout was not parseable for {outcome}: {res.stdout!r}"
             )
+
+
+class TestTaintJsonReportsFailureViaExitCode:
+    """`--json` must not report a failed scan as clean either.
+
+    The first version of the outcome fix put `if json_output: _print_json([]); return`
+    at the head of the empty-result chain, ahead of the branches that exit non-zero. So
+    `trelix taint --json` printed `[]` and exited 0 for a FAILED scan — the exact defect
+    the fix exists to remove, left in place on the path CI uses, which is where a false
+    all-clear does the most damage.
+
+    Verified end-to-end: `trelix taint . --tier intrafile --json` printed [] at exit 0
+    before, and now prints [] at exit 1. The payload is deliberately unchanged so `| jq`
+    keeps working — the exit code carries the signal, and the diagnostic goes to stderr.
+    """
+
+    @staticmethod
+    def _invoke(outcome, tier="default"):  # type: ignore[no-untyped-def]
+        from unittest.mock import patch
+
+        from trelix.analysis.taint import ScanResult
+
+        result = ScanResult(outcome=outcome, detail="detail", files_scanned=0)
+        with patch("trelix.analysis.taint.TaintAnalyzer.scan", return_value=result):
+            return runner.invoke(app, ["taint", ".", "--json", "--tier", tier])
+
+    def test_failed_scan_exits_nonzero_under_json(self) -> None:
+        from trelix.analysis.taint import ScanOutcome
+
+        res = self._invoke(ScanOutcome.SEMGREP_FAILED, tier="intrafile")
+        assert res.exit_code == 1, f"a failed scan exited {res.exit_code} under --json"
+
+    def test_vacuous_scan_exits_nonzero_under_json(self) -> None:
+        from trelix.analysis.taint import ScanOutcome
+
+        assert self._invoke(ScanOutcome.SCANNED_NOTHING).exit_code == 1
+
+    def test_clean_scan_exits_zero_under_json(self) -> None:
+        from trelix.analysis.taint import ScanOutcome
+
+        assert self._invoke(ScanOutcome.OK).exit_code == 0
+
+    def test_missing_semgrep_does_not_fail_the_build(self) -> None:
+        """An optional dependency being absent is not a scan failure."""
+        from trelix.analysis.taint import ScanOutcome
+
+        assert self._invoke(ScanOutcome.SEMGREP_MISSING).exit_code == 0
+
+    def test_stdout_stays_parseable_on_every_outcome(self) -> None:
+        """The whole point of --json: the payload must not change shape."""
+        import json as _json
+
+        from trelix.analysis.taint import ScanOutcome
+
+        for outcome in ScanOutcome:
+            res = self._invoke(outcome)
+            assert _json.loads(res.stdout) == [], (
+                f"stdout was not parseable for {outcome}: {res.stdout!r}"
+            )
+
+
+class TestGraphVisualizationFailureIsContained:
+    """A visualization failure must not destroy the statistics.
+
+    Hoisting the pyvis export ahead of the `--json` return also put it ahead of the
+    payload, so an unguarded failure there would take down the command's primary
+    result — statistics that had already been computed successfully.
+    """
+
+    @staticmethod
+    def _run(json_mode: bool, tmp_path):  # type: ignore[no-untyped-def]
+        from unittest.mock import MagicMock, patch
+
+        result = MagicMock(
+            node_count=7, edge_count=9, community_count=2, concept_count=0,
+            elapsed_seconds=0.1, community_summary=[], code_graph=MagicMock(),
+        )
+        args = ["graph", str(tmp_path), "--visualize"] + (["--json"] if json_mode else [])
+        with patch("trelix.graph.builder.GraphBuilder") as MockBuilder, patch(
+            "trelix.graph.visualizer.GraphVisualizer"
+        ) as MockViz:
+            MockBuilder.return_value.build.return_value = result
+            MockViz.return_value.export_html.side_effect = OSError("disk full")
+            return runner.invoke(app, args)
+
+    def test_json_payload_survives_a_visualization_failure(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import json as _json
+
+        res = self._run(True, tmp_path)
+
+        assert res.exit_code == 0, res.output
+        payload = _json.loads(res.stdout)
+        assert payload["node_count"] == 7, "the statistics were lost with the visualization"
+        assert "visualization_error" in payload, "the failure was not reported at all"
+        assert "visualization_path" not in payload
+
+    def test_human_output_survives_a_visualization_failure(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        res = self._run(False, tmp_path)
+
+        assert res.exit_code == 0, res.output
+        assert "7" in res.output, "the node count was lost"
+        assert "visualization failed" in res.output.lower()
