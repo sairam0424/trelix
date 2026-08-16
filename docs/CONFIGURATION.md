@@ -187,15 +187,15 @@ The agentic loop (`trelix ask --agentic` / `TRELIX_RETRIEVAL_AGENTIC=true`) pers
 ### File walker (which files get indexed)
 
 This is the only mechanism trelix has for including/excluding paths. There is **no
-`.trelixignore` and no ignore section in any config file** — exclusion is `.gitignore` plus
-the three list variables below.
+`.trelixignore` and no ignore section in any config file** — exclusion is `.gitignore`
+(repo-root *and* nested, as of v3.1.2) plus the three list variables below.
 
 > **These variables are read from the process environment only.** `WalkerConfig` does not
 > declare `env_file`, so a `TRELIX_WALKER_*` entry in `.env` is silently ignored.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_WALKER_RESPECT_GITIGNORE` | `true` | Honour the **repo-root** `.gitignore` via `pathspec`. Only `<repo>/.gitignore` is read — a nested `.gitignore` in a subdirectory is ignored, so patterns must be path-qualified in the root file (`pkg/secret.py`, not `secret.py` inside `pkg/.gitignore`). Set `false` to index everything git ignores |
+| `TRELIX_WALKER_RESPECT_GITIGNORE` | `true` | Honour `.gitignore` via `pathspec`. **Since v3.1.2 nested `.gitignore` files are read too**, with git's own semantics: each file's patterns are matched relative to its own directory, and the `.gitignore` closest to a path wins (so a deeper `!keep.log` re-includes what its parent excluded). Before v3.1.2 only `<repo>/.gitignore` was read, which is why patterns previously had to be path-qualified in the root file. Set `false` to index everything git ignores |
 | `TRELIX_WALKER_FOLLOW_SYMLINKS` | `true` | Whether the walk follows symlinks out of `repo_path`. **Default `true` is the historical behaviour**: a symlink whose target lives outside the repository is indexed, and `rel_path` is computed on the unresolved path so it is reported as though it sat inside (`linked_dir/secret.py`). Set `false` to confine the walk by resolved path. Opt-in because confining by default would silently drop files from repos that symlink to shared or vendored directories. Symlinks pointing *inside* the repo are indexed either way |
 | `TRELIX_WALKER_MAX_FILE_SIZE_BYTES` | `500000` | Files larger than this are skipped entirely |
 | `TRELIX_WALKER_LANGUAGES` | 21 languages (Python, JS, TS, TSX, Go, Rust, Java, Kotlin, Ruby, C++, C, C#, Razor, cshtml, csproj, Markdown, JSON, YAML, TOML, HTML, CSS) | JSON array of language names to parse, e.g. `'["python","go"]'` |

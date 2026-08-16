@@ -514,3 +514,169 @@ class TestSymlinkContainment:
         rels = self._walk(repo, follow=False)
 
         assert rels == ["main.py"]
+
+
+class TestNestedGitignore:
+    """A `.gitignore` in a subdirectory must apply to that subdirectory.
+
+    `_load_gitignore_spec` read only `repo_root/.gitignore`, while the module
+    docstring advertised "respects nested .gitignore files". Every nested
+    `.gitignore` in every indexed repository was therefore ignored.
+
+    The cost of that gap was measured on trelix's own repository:
+    `workspace-vscode/.gitignore` excludes `.vscode-test/`, which
+    `@vscode/test-electron` fills with a 2.6 GB VS Code application bundle. The
+    walker descended into it and indexed 543 of 915 files (59%) and 23,865 of
+    32,337 chunks (74%) from that bundle — minified single-letter symbols that
+    then competed with real code in search results.
+
+    These tests pin nested-`.gitignore` semantics as git defines them, so the
+    docstring and the code cannot drift apart again.
+    """
+
+    @staticmethod
+    def _repo(base: Path) -> Path:
+        """A repo whose nested .gitignore excludes a build directory.
+
+        Mirrors the shape that caused the bug:
+
+            repo/
+              .gitignore        <- "root_only.py"
+              main.py
+              root_only.py      <- excluded by the ROOT .gitignore
+              sub/
+                .gitignore      <- "harness/" and "local.py"
+                keep.py         <- must survive
+                local.py        <- excluded by the NESTED .gitignore
+                harness/
+                  bundle.js     <- excluded because its DIR is nested-ignored
+        """
+        repo = base / "repo"
+        repo.mkdir()
+        (repo / ".gitignore").write_text("root_only.py\n", encoding="utf-8")
+        (repo / "main.py").write_text("def entry():\n    return 0\n", encoding="utf-8")
+        (repo / "root_only.py").write_text("ROOT = 1\n", encoding="utf-8")
+
+        sub = repo / "sub"
+        sub.mkdir()
+        (sub / ".gitignore").write_text("harness/\nlocal.py\n", encoding="utf-8")
+        (sub / "keep.py").write_text("KEEP = 1\n", encoding="utf-8")
+        (sub / "local.py").write_text("LOCAL = 1\n", encoding="utf-8")
+
+        harness = sub / "harness"
+        harness.mkdir()
+        (harness / "bundle.js").write_text("var a=1;\n", encoding="utf-8")
+        return repo
+
+    def _walk(self, repo: Path, *, respect: bool = True) -> list[str]:
+        return sorted(
+            f.rel_path for f in FileWalker(make_config(repo, respect_gitignore=respect)).walk()
+        )
+
+    def test_nested_gitignore_excludes_directory(self, tmp_path: Path) -> None:
+        """`sub/.gitignore` saying `build/` must exclude `sub/harness/bundle.js`.
+
+        This is the .vscode-test case reduced to its essentials.
+        """
+        rels = self._walk(self._repo(tmp_path))
+        assert "sub/harness/bundle.js" not in rels, (
+            "sub/.gitignore excludes harness/ — the walker descended into it anyway"
+        )
+
+    def test_nested_gitignore_excludes_file(self, tmp_path: Path) -> None:
+        """A plain filename in a nested .gitignore must exclude that file."""
+        rels = self._walk(self._repo(tmp_path))
+        assert "sub/local.py" not in rels, "sub/.gitignore lists local.py — it must be skipped"
+
+    def test_non_ignored_siblings_survive(self, tmp_path: Path) -> None:
+        """Honouring nested files must not over-exclude their siblings."""
+        rels = self._walk(self._repo(tmp_path))
+        assert "sub/keep.py" in rels, "keep.py is not ignored anywhere — it must be indexed"
+        assert "main.py" in rels, "main.py is not ignored anywhere — it must be indexed"
+
+    def test_root_gitignore_still_applies(self, tmp_path: Path) -> None:
+        """Regression: adding nested support must not break root-level patterns."""
+        rels = self._walk(self._repo(tmp_path))
+        assert "root_only.py" not in rels, "the root .gitignore stopped being honoured"
+
+    def test_nested_patterns_are_relative_to_their_own_directory(self, tmp_path: Path) -> None:
+        """A nested pattern must not match the same name at the repo root.
+
+        git anchors each .gitignore's patterns to the directory containing it. A
+        naive implementation that concatenates all pattern files into one spec
+        would wrongly exclude `local.py` at the root too.
+        """
+        repo = self._repo(tmp_path)
+        (repo / "local.py").write_text("ROOT_LOCAL = 1\n", encoding="utf-8")
+
+        rels = self._walk(repo)
+
+        assert "local.py" in rels, (
+            "sub/.gitignore's `local.py` leaked upward and excluded the root local.py"
+        )
+        assert "sub/local.py" not in rels, "sub/local.py must still be excluded"
+
+    def test_nested_patterns_do_not_leak_into_sibling_directories(self, tmp_path: Path) -> None:
+        """`sub/.gitignore` must have no effect on `other/`."""
+        repo = self._repo(tmp_path)
+        other = repo / "other"
+        other.mkdir()
+        (other / "local.py").write_text("OTHER = 1\n", encoding="utf-8")
+        (other / "harness").mkdir()
+        (other / "harness" / "keep.js").write_text("var b=2;\n", encoding="utf-8")
+
+        rels = self._walk(repo)
+
+        assert "other/local.py" in rels, "sub/.gitignore wrongly excluded other/local.py"
+        assert "other/harness/keep.js" in rels, "sub/.gitignore wrongly excluded other/harness/"
+
+    def test_deeper_gitignore_negation_re_includes_a_file(self, tmp_path: Path) -> None:
+        """A deeper .gitignore's `!` rule must override a shallower exclusion.
+
+        git resolves conflicts by proximity: the .gitignore closest to the file
+        wins. Here `sub/.gitignore` excludes `local.py`, and
+        `sub/deep/.gitignore` re-includes it.
+        """
+        repo = self._repo(tmp_path)
+        deep = repo / "sub" / "deep"
+        deep.mkdir()
+        (deep / ".gitignore").write_text("!local.py\n", encoding="utf-8")
+        (deep / "local.py").write_text("DEEP = 1\n", encoding="utf-8")
+
+        rels = self._walk(repo)
+
+        assert "sub/deep/local.py" in rels, (
+            "sub/deep/.gitignore re-includes local.py — the deeper file must win"
+        )
+
+    def test_respect_gitignore_false_disables_nested_files_too(self, tmp_path: Path) -> None:
+        """Opting out of .gitignore must opt out of nested ones as well."""
+        rels = self._walk(self._repo(tmp_path), respect=False)
+
+        for expected in ("root_only.py", "sub/local.py", "sub/harness/bundle.js"):
+            assert expected in rels, (
+                f"{expected} was excluded even though respect_gitignore=False"
+            )
+
+    def test_gitignore_in_an_unindexed_directory_still_counts(self, tmp_path: Path) -> None:
+        """A .gitignore need not sit beside indexable files to apply.
+
+        workspace-vscode/ contains almost nothing trelix indexes directly, yet
+        its .gitignore is what excludes the 2.6 GB bundle underneath.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("def entry():\n    return 0\n", encoding="utf-8")
+
+        holder = repo / "holder"
+        holder.mkdir()
+        (holder / ".gitignore").write_text(".vscode-test/\n", encoding="utf-8")
+        bundle = holder / ".vscode-test" / "app" / "resources"
+        bundle.mkdir(parents=True)
+        (bundle / "minified.js").write_text("var J=1,j=2;\n", encoding="utf-8")
+
+        rels = self._walk(repo)
+
+        assert rels == ["main.py"], (
+            f"the nested .gitignore's .vscode-test/ exclusion was not honoured: {rels}"
+        )

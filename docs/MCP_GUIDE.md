@@ -1074,7 +1074,7 @@ Restart Claude Code after re-registering.
 ### `index_codebase` fails or returns 0 files
 
 - Confirm `repo_path` is an **absolute** path (not `~/...` — expand the tilde).
-- Trelix skips files matched by the **repo-root** `.gitignore` only — a nested `.gitignore` in a subdirectory is not read. There is no `.trelixignore`. If expected sources are missing, check the root `.gitignore`, or set `TRELIX_WALKER_RESPECT_GITIGNORE=false` to index them anyway.
+- Trelix skips files matched by `.gitignore` — the repo-root file *and*, as of v3.1.2, nested `.gitignore` files in subdirectories (the one closest to a path wins). There is no `.trelixignore`. If expected sources are missing, check both the root `.gitignore` and any `.gitignore` in the directories above them, or set `TRELIX_WALKER_RESPECT_GITIGNORE=false` to index them anyway. Note that variable is read from the **process environment only** — putting it in `.env` has no effect (see `docs/CONFIGURATION.md`).
 - Large repos may hit memory limits. There is no worker/parallelism env var; the levers are the walker's file-size ceiling and the embedder batch size:
 
 ```bash
