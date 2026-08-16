@@ -7,9 +7,9 @@ since the custom-delimited git log format parsing needs proving against real
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 from trelix.core.config import GitLinkerConfig
 from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
