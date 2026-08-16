@@ -6,6 +6,7 @@ since the custom-delimited git log format parsing needs proving against real
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -33,6 +34,25 @@ def _commit_file(repo_dir: Path, rel_path: str, content: str, message: str) -> N
     file_path.write_text(content)
     subprocess.run(["git", "add", rel_path], cwd=repo_dir, check=True)
     subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo_dir, check=True)
+
+
+def _walk_log_for(
+    repo_dir: Path, config: GitLinkerConfig | None = None
+) -> list[tuple[list[str], list[str]]]:
+    """Build a GitLinker the way production does and walk `repo_dir`'s history.
+
+    `GitLinker(db, config=None)` takes the Database FIRST. Four tests here passed a
+    GitLinkerConfig as `db`, so `self._db` became the config and `self._config` silently
+    fell back to the default — the `enabled=True` they meant to set was discarded. They
+    passed anyway because `_walk_log` never touches `self._db`, and CI type-checks only
+    `src/`, so nothing caught it. Going through one helper makes the mistake
+    unrepeatable.
+    """
+    db = Database(repo_dir / ".trelix" / "index.db")
+    try:
+        return GitLinker(db, config or GitLinkerConfig(enabled=True))._walk_log(str(repo_dir))
+    finally:
+        db.close()
 
 
 def _make_file(db: Database, rel_path: str) -> int:
@@ -311,8 +331,7 @@ class TestMergeCommitsAreNotSkipped:
         repo.mkdir()
         self._repo_with_a_merge(repo)
 
-        linker = GitLinker(GitLinkerConfig(enabled=True))
-        records = linker._walk_log(str(repo))
+        records = _walk_log_for(repo)
 
         merges = [(tickets, files) for tickets, files in records if "PROJ-742" in tickets]
         assert merges, f"the merge commit was not found at all in {records}"
@@ -322,24 +341,58 @@ class TestMergeCommitsAreNotSkipped:
             f"nothing; got {merge_files}"
         )
 
+    @staticmethod
+    def _repo_with_a_resolved_conflict(repo_dir: Path) -> None:
+        """A merge whose result differs from BOTH parents.
+
+        This shape is what makes the `-m` assertion below load-bearing, and the previous
+        fixture could not produce it. Under `-m` git emits one diff section per parent,
+        but a file appears in BOTH sections only when it differs from both — which needs
+        a genuine conflict resolution. In a fast-forwardable merge the changed file
+        matches parent 2 exactly, so `-m` lists it once and an "exactly 1" assertion
+        passes whichever flag is in use.
+        """
+        _init_git_repo(repo_dir)
+        _commit_file(repo_dir, "shared.py", "VALUE = 0\n", "PROJ-1 initial commit")
+
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo_dir, check=True)
+        _commit_file(repo_dir, "shared.py", "VALUE = 1\n", "feature changes the value")
+
+        subprocess.run(["git", "checkout", "-q", "-"], cwd=repo_dir, check=True)
+        _commit_file(repo_dir, "shared.py", "VALUE = 2\n", "main changes it differently")
+
+        # Conflicts by construction; check=False because git exits non-zero on a conflict.
+        subprocess.run(["git", "merge", "--no-commit", "feature"], cwd=repo_dir, check=False)
+        # Resolved to a third value, so the result differs from main AND from feature.
+        (repo_dir / "shared.py").write_text("VALUE = 3\n", encoding="utf-8")
+        subprocess.run(["git", "add", "shared.py"], cwd=repo_dir, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "PROJ-742 resolve the conflict"],
+            cwd=repo_dir,
+            check=True,
+        )
+
     def test_files_are_not_double_counted(self, tmp_path: Path) -> None:
         """Rules out `-m`, which emits one diff section per parent.
 
-        With `-m` a two-parent merge lists every changed file twice, inflating every
-        symbol-ticket edge weight derived from it.
+        With `-m`, a file differing from both parents is listed twice, inflating any
+        per-file weighting derived from the record. The fixture resolves a real conflict
+        so the merge result differs from both parents — the only shape in which the two
+        flags disagree, and therefore the only one where this assertion means anything.
         """
         repo = tmp_path / "repo"
         repo.mkdir()
-        self._repo_with_a_merge(repo)
+        self._repo_with_a_resolved_conflict(repo)
 
-        linker = GitLinker(GitLinkerConfig(enabled=True))
-        records = linker._walk_log(str(repo))
+        records = _walk_log_for(repo)
 
-        for tickets, files in records:
-            if "PROJ-742" in tickets:
-                assert files.count("feature.py") == 1, (
-                    f"feature.py appears {files.count('feature.py')} times in one merge record"
-                )
+        merges = [(t, f) for t, f in records if "PROJ-742" in t]
+        assert merges, f"the merge commit was not found at all in {records}"
+        _, files = merges[0]
+        assert files.count("shared.py") == 1, (
+            f"shared.py appears {files.count('shared.py')} times in one merge record — "
+            "that is the -m shape, which double-counts a conflict resolution"
+        )
 
     def test_ordinary_commits_are_unaffected(self, tmp_path: Path) -> None:
         """Non-merge commits must behave exactly as before."""
@@ -347,8 +400,7 @@ class TestMergeCommitsAreNotSkipped:
         repo.mkdir()
         self._repo_with_a_merge(repo)
 
-        linker = GitLinker(GitLinkerConfig(enabled=True))
-        records = linker._walk_log(str(repo))
+        records = _walk_log_for(repo)
 
         initial = [(t, f) for t, f in records if "PROJ-1" in t]
         assert initial, "the initial non-merge commit went missing"
@@ -364,8 +416,7 @@ class TestMergeCommitsAreNotSkipped:
         repo.mkdir()
         self._repo_with_a_merge(repo)
 
-        linker = GitLinker(GitLinkerConfig(enabled=True))
-        records = linker._walk_log(str(repo))
+        records = _walk_log_for(repo)
 
         all_files = [f for _, files in records for f in files]
         assert all_files.count("feature.py") >= 1
@@ -392,7 +443,7 @@ class TestDefaultTicketPattern:
     """
 
     @staticmethod
-    def _re():  # type: ignore[no-untyped-def]
+    def _re() -> re.Pattern[str]:
         import re
 
         from trelix.core.config import GitLinkerConfig
@@ -501,7 +552,7 @@ class TestLinkTicketsHonoursEnvironmentConfig:
     """
 
     class _FakeLinker:
-        seen: dict = {}
+        seen: dict[str, object] = {}
 
         def __init__(self, db, config):  # type: ignore[no-untyped-def]
             type(self).seen = {
@@ -513,7 +564,7 @@ class TestLinkTicketsHonoursEnvironmentConfig:
         def link(self, *args, **kwargs):  # type: ignore[no-untyped-def]
             return {"edges_created": 0, "commits_walked": 0, "tickets_found": 0}
 
-    def _run(self, env: dict, args: list[str]) -> dict:
+    def _run(self, env: dict[str, str], args: list[str]) -> dict[str, object]:
         import os
         from unittest.mock import patch
 

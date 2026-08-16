@@ -335,3 +335,87 @@ class TestHarnessConstructsSynthesizerCorrectly:
         assert metrics["completeness"] > 0.0, (
             f"expected the 'alpha' fragment to be found in the answer; metrics={metrics}"
         )
+
+
+class TestUnscoreableEntriesAreReported:
+    """An entry that could not be scored must not read as a hallucinating model.
+
+    The outer handler was a bare `except Exception:` with no logging that appended
+    hallucination=1.0, completeness=0.0, faithfulness=0.0. So a retrieval outage, a DB
+    error, or a broken index produced exactly the numbers a model that invented
+    everything would — a false diagnosis of the wrong component, silently, and counted
+    in n_queries as though it had been measured.
+
+    The placeholders are kept so a partial run still returns comparable aggregates, but
+    the cause is now logged and the count is reported separately, so a reader can tell
+    how much of the result was measured at all.
+    """
+
+    @staticmethod
+    def _harness_with_failing_retrieval(tmp_path):  # type: ignore[no-untyped-def]
+        import json
+        from unittest.mock import MagicMock
+
+        from trelix.core.config import IndexConfig
+        from trelix.eval.synthesis import SynthesisEvalHarness
+
+        golden = tmp_path / "golden.jsonl"
+        golden.write_text(
+            json.dumps(
+                {
+                    "query": "how does indexing work",
+                    "relevant_files": ["src/x.py"],
+                    "expected_answer_fragments": ["alpha"],
+                    "expected_symbols": ["Thing.method"],
+                }
+            )
+            + "\n"
+        )
+
+        harness = SynthesisEvalHarness.__new__(SynthesisEvalHarness)
+        harness._config = IndexConfig(repo_path=str(tmp_path))
+        retriever = MagicMock()
+        retriever.retrieve.side_effect = RuntimeError("index is unreadable")
+        harness._retriever = retriever
+        return harness, str(golden)
+
+    def test_the_failure_is_counted(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        harness, golden = self._harness_with_failing_retrieval(tmp_path)
+        metrics = harness.run(golden)
+        assert metrics["unscoreable"] == 1.0, (
+            f"a retrieval failure was not reported as unscoreable: {metrics}"
+        )
+
+    def test_the_failure_is_logged(self, tmp_path, caplog) -> None:  # type: ignore[no-untyped-def]
+        """Silence here means a broken index reads as a hallucinating model."""
+        import logging
+
+        harness, golden = self._harness_with_failing_retrieval(tmp_path)
+        with caplog.at_level(logging.WARNING, logger="trelix.eval.synthesis"):
+            harness.run(golden)
+
+        assert any(
+            "unreadable" in str(r.args) or "unreadable" in r.message for r in caplog.records
+        ), f"the underlying exception was never surfaced: {caplog.records}"
+
+    def test_a_healthy_run_reports_zero_unscoreable(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from unittest.mock import patch
+
+        harness = TestHarnessConstructsSynthesizerCorrectly._harness(tmp_path)
+        golden = TestHarnessConstructsSynthesizerCorrectly._golden(tmp_path)
+        with patch("trelix.eval.synthesis.Synthesizer") as MockSynth:
+            MockSynth.return_value.synthesize.return_value = "alpha is returned"
+            metrics = harness.run(golden)
+
+        assert metrics["unscoreable"] == 0.0
+
+    def test_the_key_is_present_on_the_empty_paths_too(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A shifting key set is its own problem for a machine consumer."""
+        from trelix.core.config import IndexConfig
+        from trelix.eval.synthesis import SynthesisEvalHarness
+
+        harness = SynthesisEvalHarness.__new__(SynthesisEvalHarness)
+        harness._config = IndexConfig(repo_path=str(tmp_path))
+
+        metrics = harness.run(str(tmp_path / "does-not-exist.jsonl"))
+        assert "unscoreable" in metrics

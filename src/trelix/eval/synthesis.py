@@ -232,6 +232,7 @@ class SynthesisEvalHarness:
                 "faithfulness": 0.0,
                 "overall": 0.0,
                 "n_queries": 0.0,
+                "unscoreable": 0.0,
             }
 
         entries = []
@@ -251,6 +252,7 @@ class SynthesisEvalHarness:
                 "faithfulness": 0.0,
                 "overall": 0.0,
                 "n_queries": 0.0,
+                "unscoreable": 0.0,
             }
 
         # Built once, outside the loop. Constructing it per entry re-initialised an LLM
@@ -268,6 +270,9 @@ class SynthesisEvalHarness:
             llm_config=self._config.llm,
         )
 
+        # Counted rather than inferred: a caller cannot otherwise tell a genuinely bad
+        # answer from an entry that could not be scored at all.
+        unscoreable = 0
         hallucination_scores: list[float] = []
         completeness_scores: list[float] = []
         faithfulness_scores: list[float] = []
@@ -312,7 +317,22 @@ class SynthesisEvalHarness:
                 completeness_scores.append(result.scores["completeness"])
                 faithfulness_scores.append(result.scores["faithfulness"])
                 overall_scores.append(result.scores["overall"])
-            except Exception:
+            except Exception as exc:
+                # Reached when retrieval or scoring fails, not when the MODEL does — and
+                # the scores below are fabricated, not measured. hallucination=1.0 makes
+                # a broken index or a DB error read as "the model hallucinated
+                # everything", which is a false diagnosis of the wrong component. They
+                # are kept so a partial run still returns comparable aggregates, but the
+                # cause is now logged and the count is reported separately so the reader
+                # can tell how much of the result was measured at all.
+                logger.warning(
+                    "Could not score query %r (%s) — recording it as unscoreable; the "
+                    "hallucination/completeness/faithfulness figures for it are "
+                    "placeholders, not measurements",
+                    query[:80],
+                    exc,
+                )
+                unscoreable += 1
                 hallucination_scores.append(1.0)
                 completeness_scores.append(0.0)
                 faithfulness_scores.append(0.0)
@@ -325,4 +345,7 @@ class SynthesisEvalHarness:
             "faithfulness": sum(faithfulness_scores) / n,
             "overall": sum(overall_scores) / n,
             "n_queries": float(n),
+            # Additive: the four figures above keep their names and meaning. A non-zero
+            # value here means that many of them are placeholders.
+            "unscoreable": float(unscoreable),
         }

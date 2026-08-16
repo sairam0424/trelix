@@ -46,6 +46,7 @@ htmlcov/
 # so anything listed here is also excluded from the index instead of being embedded
 # as if it were source.
 .claude-flow/
+.swarm/
 agentdb.rvf
 agentdb.rvf.lock
 ruvector.db
