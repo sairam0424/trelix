@@ -1435,22 +1435,39 @@ def watch_all(
     import asyncio
     import signal
 
-    stop_event = asyncio.Event()
+    async def _watch_until_signalled() -> None:
+        # Handlers MUST be installed from in here, on the loop asyncio.run
+        # built. Registering them against asyncio.get_event_loop() out in the
+        # sync body put them on a different loop object that never runs an
+        # iteration (measured: differing id(), and _signal_handlers[SIGTERM]
+        # is None inside this coroutine), so a `docker stop` / `kubectl
+        # delete` SIGTERM was swallowed for the whole grace period and the
+        # process got hard-killed before the stats block below ever printed.
+        # add_signal_handler also repoints process-level SIGINT at asyncio's
+        # no-op handler, so the old KeyboardInterrupt fallback was dead too —
+        # Ctrl+C did literally nothing.
+        loop = asyncio.get_running_loop()
+        stop_event = asyncio.Event()
 
-    def _on_signal(*_: object) -> None:
-        stop_event.set()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop_event.set)
+            except (NotImplementedError, RuntimeError) as exc:
+                # Windows has no add_signal_handler. Say so instead of
+                # pretending shutdown is graceful: on this platform Ctrl+C
+                # unwinds via KeyboardInterrupt and SIGTERM just kills us,
+                # losing the summary.
+                console.print(
+                    f"[yellow]Warning:[/yellow] cannot install a {sig.name} handler "
+                    f"({_safe_text(str(exc))}) — shutdown on {sig.name} will not be graceful."
+                )
 
-    try:
-        asyncio.get_event_loop().add_signal_handler(signal.SIGINT, _on_signal)
-        asyncio.get_event_loop().add_signal_handler(signal.SIGTERM, _on_signal)
-    except (NotImplementedError, RuntimeError):
-        # Windows / no event loop yet — fall through to KeyboardInterrupt
-        pass
+        await watcher.run(stop_event)
 
     console.print("[green]Watching for changes. Press Ctrl+C to stop.[/green]")
 
     try:
-        asyncio.run(watcher.run(stop_event))
+        asyncio.run(_watch_until_signalled())
     except KeyboardInterrupt:
         pass
 

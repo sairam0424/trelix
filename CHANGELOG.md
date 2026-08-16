@@ -36,6 +36,119 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
 
 ### Fixed
 
+Eight of the entries below share one shape — **switched on and doing nothing, or failing
+and saying nothing** — and were found by re-auditing the tree after the first pass. Each
+was reproduced by running code before being fixed, and each carries a regression test that
+was proven red first.
+
+- **`watch-all` indexed everything, including `node_modules/`.** `MultiRepoWatcher` handed
+  every path watchfiles reported straight to `Indexer.index_file()`, which checks only
+  language and content hash — so one `npm install`, `uv sync` or build under a registered
+  repo pushed vendored trees into the embedder, work that both `trelix index` and
+  single-repo `trelix watch` refuse. Measured on this repository: the pre-fix gate accepted
+  **90,385** files where `FileWalker.walk()` accepts **444** — 99.5% of a full-tree event
+  burst would have been `.venv/` and `node_modules/`. Events now route through the owning
+  repo's own `FileWalker`, so the ignore chain, filenames, extensions, language allow-list
+  and size cap are the same objects a batch index uses rather than a restatement that can
+  drift. Filtering runs before the hash guard, so a 40 MB bundle is no longer read just to
+  be rejected. Deletions stay unfiltered, so rows written before an ignore rule existed
+  remain removable. `stats()` reports `files_skipped_ignored` separately from
+  `files_skipped_unchanged`.
+
+- **`watch-all` ignored SIGTERM, and Ctrl+C with it.** The SIGINT/SIGTERM handlers were
+  registered against `asyncio.get_event_loop()` *before* `asyncio.run()`, which builds its
+  own loop — measured, the two have different `id()`s and `_signal_handlers[SIGTERM]` is
+  `None` inside the coroutine. So `docker stop`, `kubectl delete` and systemd were swallowed
+  for the whole grace period and the process was hard-killed before printing its summary
+  (reproduced: 4 s elapsed, stop event never set). Worse than SIGTERM alone:
+  `add_signal_handler` repoints process-level SIGINT at asyncio's no-op handler, which stops
+  `asyncio.Runner` installing its own, so the `except KeyboardInterrupt` fallback was dead
+  too and Ctrl+C did nothing. Handlers are now installed from inside the coroutine via
+  `asyncio.get_running_loop()`, per-signal so one failure cannot skip the other, and a
+  platform that cannot install one now warns naming the signal and the lost guarantee.
+
+- **`LanceVectorStore.upsert_batch` turned every upsert into an append.** It swallowed its
+  delete with `except Exception: pass` and then called `add()` regardless. LanceDB enforces
+  no uniqueness on `chunk_id`, so a single failing delete left duplicates no later upsert
+  could repair: against real lancedb 0.33.0 one `chunk_id` grew 1 → 2 → 3 → 4 rows across
+  three failed-delete upserts, with **zero log output at any level**. Vector search then
+  returned that chunk four times, spending four of the k result slots on it, and `count()`
+  over-reported by 3 against the SQLite `chunks` table. It now logs at ERROR and re-raises
+  *before* adding, so the table keeps its prior single row and the caller learns the batch
+  did not land. Deliberately louder than the sibling `delete_batch` seven lines below,
+  whose swallowed failures only leave rows a later upsert can still replace.
+
+- **A malformed retrieval weight killed every command without naming itself.** Two
+  unguarded `float(val)` calls in `RetrievalConfig.model_post_init` meant a typo in any
+  `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_*` or `..._LEG_WEIGHT_*` aborted `trelix stats` — or
+  anything else — with `could not convert string to float: 'abc'`, naming neither the
+  variable nor which of ~96 `TRELIX_*` aliases to look at. This is the one knob the notes
+  invite users to experiment with. Both sites now route through one parser that reports the
+  variable, its value and a corrected example. The same parser rejects `nan`/`inf`, which
+  `float()` accepted silently — and with a NaN weight every fused score becomes NaN,
+  `nan * 0.5 > 0.9` is `False`, and results come back in insertion order with nothing raised
+  or logged. Bad weights fail fast rather than being warned about and dropped, because a
+  silently ignored weight leaves you measuring the default while believing otherwise.
+
+- **PR review hid that retrieval had died under it.** `DiffReviewer._review_hunk` wrapped
+  context retrieval in `except Exception: pass`, so a missing or broken vector store
+  produced a page of confident review comments written against `context_text=""` —
+  measured, an ERROR-severity comment returned with zero log records at any level including
+  DEBUG, and nothing distinguishing it from a grounded review. The failure now logs at
+  WARNING with the exception and file bound (matching the sibling handler ten lines above;
+  DEBUG would have been as silent as the `pass`, since the CLI runs at WARNING), and every
+  comment from a context-free hunk carries a `[trelix: no codebase context — retrieval
+  failed for this hunk]` label in its text — the one field the CLI table, `--json` and
+  posted GitHub comments all render. Scoped per hunk, so one broken file does not discredit
+  the rest of the PR.
+
+- **Connector syncs reported a failure count and nothing else.** `ArtifactSource.sync()`
+  caught per-artefact write and auto-link failures with a bare `except Exception:` — no
+  exception bound, no log call — so a run reporting `errors: 340` gave the operator no
+  type, no message and no failing `source_ref`, and exited 1 with nothing to diagnose.
+  Measured on a 340-artefact sync: zero log records at any level. Failures are now bound
+  and logged — the first 5 in full with a traceback, the rest at DEBUG, plus one WARNING
+  tallied by type (`failed to write 340 of 340 artefact(s) — ValueError x339,
+  TimeoutError x1`), turning 340 identical lines into 6 that name the single outlier.
+
+- **The vector leg silently returned fewer than `k` results.** `_vector_search` fetches
+  exactly `k` (the oversample applies only under a `path_filter`), so every
+  `_hydrate_chunk` returning None — an ANN entry whose chunk row is gone — permanently
+  consumed a result slot with no diagnostic anywhere: measured 3 results for `k=5` with 2
+  dead chunk_ids and zero log records. It now reports the shortfall at WARNING with the
+  miss count and offending ids, rather than over-fetching to hide store drift behind a
+  full-looking result set. Prefix rejects and small indexes stay silent, so the warning
+  means exactly one thing.
+
+- **The PageRank empty-centrality warning fired on every query** despite the comment above
+  it promising it is said once — two queries against an index with empty `graph_metadata`
+  produced two identical records, drowning the one actionable line (`run trelix graph`).
+
+- **`rerank_provider="xtr"` reranked nothing.** The XTR path built a query-token dict
+  containing a single synthetic token, so `xtr_score_documents` computed `sum([s])/1 == s`
+  and every "reranked" score came back bit-identical to its input — measured on a 3-result
+  fixture the output was exactly a descending sort of the incoming fused scores, and the
+  `query` argument was never read. The only signal was a UserWarning calling XTR
+  "unbenchmarked", which understates an identity function, and its
+  `xtr_candidate_tokens` knob has zero reads anywhere in `src/`. Real token-level XTR needs
+  a ColBERT-style multi-vector index trelix does not build, so rather than fake it the
+  provider now warns on every call that it reranks nothing and that the knob has no effect,
+  and the module docstring marks it DEGENERATE and points at `plaid`. Fixed in the same
+  path: `results.index(r)` keyed scores by dataclass *value* equality, so value-equal
+  duplicates all inherited doc 0's score — burying the true winner — at O(n²) cost.
+
+- **A test silently disabled the code it was testing for the rest of the session.**
+  `test_multi_watcher.py` called `importlib.reload(multi_watcher)` inside
+  `patch.dict(sys.modules, {"watchfiles": None})`. The reload re-runs a module-scope
+  `try: from watchfiles import Change`, so both `Change` and `awatch` became `None`, and
+  `patch.dict` restores `sys.modules` without restoring the module object it poisoned.
+  `MultiRepoWatcher.run`'s deletion branch is guarded by `if Change is not None and
+  change_type == Change.deleted`, so from that point on every delete event fell through to
+  the ignore filter. Nothing caught it while no test depended on deletions; the first one
+  that did failed only in a full-suite run and passed in isolation. Now restored in a
+  `finally`, with an assertion pinning it. Verified directly: `Change is None` after the
+  poisoning reload, `<enum 'Change'>` after the restoring one.
+
 - **Nested `.gitignore` files were never read, despite the docstring saying they
   were.** `walker.py`'s module docstring advertised "respects nested .gitignore files"
   while `_load_gitignore_spec()` read only `repo_root/.gitignore`, so every

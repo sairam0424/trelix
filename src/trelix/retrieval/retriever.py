@@ -242,6 +242,11 @@ class Retriever:
         self._sparse_embedder: object | None = None
         self._sparse_embedder_lock = threading.Lock()
 
+        # Latch for the "graph_metadata is empty" warning in _apply_pagerank_boost:
+        # the condition is a property of the index, not of the query, so it is worth
+        # exactly one line per Retriever instead of one per query.
+        self._pagerank_empty_warned = False
+
         # Resolve effective context budget at startup (memoized for the session)
         self._effective_budget = self._resolve_effective_budget()
         # Scale retrieval ceilings if requested
@@ -1122,22 +1127,51 @@ class Retriever:
         by `path_filter_oversample`x and post-filters by prefix after
         hydration, then truncates back to `k` — protects recall against the
         filter discarding some of the raw ANN results.
+
+        Without a `path_filter` the fetch is exactly `k`, so every hydration
+        miss is a permanently lost result slot: nothing is left to backfill
+        from. A miss means the ANN index still points at a `chunk_id` whose row
+        is gone from the DB — the two stores have drifted — and the honest
+        response is to name it, not to quietly re-fetch more vectors until the
+        count looks right. Over-fetching would return `k` results from a stale
+        index and leave the drift undiagnosable; the WARNING below is what
+        turns "retrieval feels thin" into "run `trelix index <repo>`".
         """
         fetch_k = k
         if path_filter:
             fetch_k = k * self.config.retrieval.path_filter_oversample
         raw = self.vector_store.search(query_embedding, k=fetch_k)
         results: list[SearchResult] = []
+        dead_chunk_ids: list[int] = []
+        examined = 0
         for rank, (chunk_id, distance) in enumerate(raw, start=1):
+            examined += 1
             score = max(0.0, 1.0 - distance)
             result = self._hydrate_chunk(chunk_id, score=score, rank=rank, source="vector")
             if result is None:
+                dead_chunk_ids.append(chunk_id)
                 continue
             if path_filter and not result.file.rel_path.startswith(path_filter):
                 continue
             results.append(result)
             if len(results) >= k:
                 break
+
+        # Only hydration misses are reported. A prefix reject is expected (it is the
+        # reason path_filter oversamples) and an ANN index smaller than k is not a
+        # defect — neither says anything about store consistency, so neither warns.
+        if dead_chunk_ids:
+            logger.warning(
+                "Vector leg returned %d result(s) for k=%d: %d of %d ANN hit(s) had no "
+                "chunk row in the index DB (chunk_ids %s%s) — the vector store and the "
+                "index DB have drifted; re-run `trelix index <repo>`",
+                len(results),
+                k,
+                len(dead_chunk_ids),
+                examined,
+                ", ".join(str(cid) for cid in dead_chunk_ids[:5]),
+                ", …" if len(dead_chunk_ids) > 5 else "",
+            )
         return results
 
     # ------------------------------------------------------------------
@@ -1312,11 +1346,20 @@ class Retriever:
                 # WARNING is the difference between "this feature is on" and "this
                 # feature is on and working" — the previous DEBUG-only failure path made
                 # an inert setting indistinguishable from an active one.
-                logger.warning(
-                    "PageRank boost is enabled but graph_metadata is empty — "
-                    "run `trelix graph <repo>` to populate centrality, "
-                    "or set TRELIX_RETRIEVAL_PAGERANK_BOOST=false"
-                )
+                #
+                # "Once" has to be enforced by a flag: centrality does not change
+                # mid-session, so repeating the line on every query turns the one
+                # actionable warning in the log into the kind of per-query noise
+                # operators filter out — which is the original silence again, wearing
+                # a different hat. Per-instance rather than module-global, so a fresh
+                # Retriever (new process, new index) still reports the state.
+                if not self._pagerank_empty_warned:
+                    self._pagerank_empty_warned = True
+                    logger.warning(
+                        "PageRank boost is enabled but graph_metadata is empty — "
+                        "run `trelix graph <repo>` to populate centrality, "
+                        "or set TRELIX_RETRIEVAL_PAGERANK_BOOST=false"
+                    )
                 return results
             boosted: list[SearchResult] = []
             for r in results:

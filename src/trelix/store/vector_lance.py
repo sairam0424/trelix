@@ -92,12 +92,32 @@ class LanceVectorStore(BaseVectorStore):
                 "vector": pa.array(vecs, type=pa.list_(pa.float32(), self._dimension)),
             }
         )
-        # Delete existing rows for these chunk_ids then add fresh
+        # Delete existing rows for these chunk_ids then add fresh.
+        #
+        # The delete failing is NOT recoverable by adding anyway: LanceDB has no
+        # chunk_id uniqueness constraint, so the add turns "replace" into "append"
+        # and one chunk_id gains a row per reindex (measured 1 -> 2 -> 3 -> 4 rows
+        # for a single chunk across three failed-delete upserts). Every later
+        # search() then returns that chunk_id N times, spending N of the k result
+        # slots on one chunk, and count() drifts above the SQLite chunks table —
+        # damage no subsequent upsert can undo, only a full reindex.
+        #
+        # So abort instead of adding: the table keeps the previous single row for
+        # these ids (stale vector, still searchable) and the caller learns the
+        # batch did not land rather than shipping a corrupted index. This is
+        # deliberately louder than delete_batch below, where a swallowed failure
+        # only leaves rows behind that a later upsert can still replace.
         id_list = ", ".join(str(i) for i in ids)
         try:
             self._table.delete(f"chunk_id IN ({id_list})")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(
+                "LanceDB upsert_batch aborted: delete of %d chunk_id(s) failed (%s) — "
+                "adding anyway would create duplicate rows for those ids",
+                len(ids),
+                exc,
+            )
+            raise
         self._table.add(data)
 
     def search(self, query: list[float], k: int) -> list[tuple[int, float]]:

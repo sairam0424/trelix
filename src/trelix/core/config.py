@@ -916,7 +916,42 @@ class RetrievalConfig(BaseSettings):
 
     def model_post_init(self, __context: Any) -> None:
         import json
+        import math
         import os
+
+        def _parse_weight(env_var: str, raw: str) -> float:
+            """
+            Parse one per-language/per-leg weight, naming the variable when it is bad.
+
+            A bare float(raw) at the two call sites below aborted EVERY trelix command
+            with "could not convert string to float: 'abc'" and no variable name — the
+            user had to bisect ~96 TRELIX_* aliases to find their own typo. Weights are
+            the one knob the changelog invites people to experiment with, so a typo here
+            is the likely case, not the exotic one.
+
+            Non-finite values are refused for the same reason even though float() accepts
+            them: "nan" parses fine, then every fused score becomes NaN, every score
+            comparison returns False, and results come back in insertion order with
+            nothing logged anywhere — a silently wrong ranking is worse than a crash.
+
+            We refuse rather than warn-and-ignore. A weight exists so two rankings can be
+            compared; dropping a bad one would leave the user measuring the DEFAULT while
+            believing they measured their override, and drawing a conclusion from it.
+            """
+            try:
+                weight = float(raw)
+            except ValueError:
+                raise ValueError(
+                    f"{env_var}={raw!r} is not a valid retrieval weight. Expected a "
+                    f"decimal number, e.g. {env_var}=0.5. Fix or unset the variable."
+                ) from None
+            if not math.isfinite(weight):
+                raise ValueError(
+                    f"{env_var}={raw!r} is not a usable retrieval weight: nan/inf make "
+                    f"every fused score non-comparable and silently destroy result "
+                    f"ranking. Use a finite number, e.g. {env_var}=0.5."
+                )
+            return weight
 
         # Build the canonical defaults (same dict as default_factory).
         # When pydantic-settings reads TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTS from the
@@ -968,7 +1003,7 @@ class RetrievalConfig(BaseSettings):
         for key, val in os.environ.items():
             if key.startswith(prefix):
                 lang = key[len(prefix) :].lower()
-                self.file_type_weights[lang] = float(val)
+                self.file_type_weights[lang] = _parse_weight(key, val)
 
         # Per-leg RRF weighting — same defaults-then-env-merge pattern as
         # file_type_weights above.
@@ -986,7 +1021,7 @@ class RetrievalConfig(BaseSettings):
         for key, val in os.environ.items():
             if key.startswith(leg_prefix):
                 leg = key[len(leg_prefix) :].lower()
-                self.leg_weights[leg] = float(val)
+                self.leg_weights[leg] = _parse_weight(key, val)
 
 
 class LLMConfig(BaseSettings):
