@@ -62,7 +62,11 @@ class EvalHarness:
                 mrr_scores.append(0.0)
                 continue
 
-            # Use file rel_path as the ID for matching
+            # Use file rel_path as the ID for matching. Retrieval ranks CHUNKS, so the
+            # same file legitimately appears several times here. Ground truth is
+            # file-level, so each file must score once: the metric functions collapse
+            # repeats to their best rank (see `_dedupe` in eval/ndcg.py), which is what
+            # makes `@10` mean ten distinct files rather than ten chunks.
             ranked_files = [r.file.rel_path for r in ctx.results]
             # Convert to integer IDs for metric functions (hash-based)
             file_to_id = {f: i for i, f in enumerate(set(ranked_files) | relevant_files)}
