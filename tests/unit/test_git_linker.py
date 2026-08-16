@@ -264,3 +264,110 @@ class TestGitLinkerFailureModes:
         linker = GitLinker(db)
         count = linker.link(str(repo_dir))
         assert count == 0
+
+
+class TestMergeCommitsAreNotSkipped:
+    """A ticket reference in a merge commit must still link to the merged files.
+
+    `git log --name-only` prints NO file list for a merge commit — git shows a diff for
+    a merge only when told which parent to diff against. GitLinker passed neither
+    `-m` nor `--diff-merges`, so every merge contributed a subject with an empty file
+    list and linked to nothing.
+
+    That is the common case on any repository that integrates through pull requests,
+    because "Merge pull request #123 from feature/PROJ-456-thing" is exactly where the
+    ticket reference lives. Verified on trelix's own history: commit 3dea90a is a merge,
+    and `git log -1 --name-only` prints its subject and zero files, while
+    `--diff-merges=first-parent` prints the subject and four files.
+
+    `--diff-merges=first-parent` is used rather than `-m`: `-m` emits one diff section
+    per parent, so every file in a two-parent merge would be counted twice, and
+    `--first-parent` is a different thing again — it changes which commits are traversed
+    at all, hiding the individual commits on the merged branch.
+    """
+
+    @staticmethod
+    def _repo_with_a_merge(repo_dir: Path) -> None:
+        """main and a feature branch, merged with --no-ff so a real merge commit exists."""
+        _init_git_repo(repo_dir)
+        _commit_file(repo_dir, "base.py", "def base(): pass\n", "PROJ-1 initial commit")
+
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo_dir, check=True)
+        _commit_file(repo_dir, "feature.py", "def shipped(): pass\n", "work in progress")
+
+        subprocess.run(["git", "checkout", "-q", "-"], cwd=repo_dir, check=True)
+        # --no-ff forces a merge commit even though the branch could fast-forward.
+        subprocess.run(
+            ["git", "merge", "-q", "--no-ff", "-m", "PROJ-742 merge the feature", "feature"],
+            cwd=repo_dir,
+            check=True,
+        )
+
+    def test_merge_commit_reports_its_changed_files(self, tmp_path: Path) -> None:
+        """The headline regression: the merge's file list must not be empty."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._repo_with_a_merge(repo)
+
+        linker = GitLinker(GitLinkerConfig(enabled=True))
+        records = linker._walk_log(str(repo))
+
+        merges = [(tickets, files) for tickets, files in records if "PROJ-742" in tickets]
+        assert merges, f"the merge commit was not found at all in {records}"
+        _, merge_files = merges[0]
+        assert "feature.py" in merge_files, (
+            "the merge commit yielded no file list, so its ticket reference links to "
+            f"nothing; got {merge_files}"
+        )
+
+    def test_files_are_not_double_counted(self, tmp_path: Path) -> None:
+        """Rules out `-m`, which emits one diff section per parent.
+
+        With `-m` a two-parent merge lists every changed file twice, inflating every
+        symbol-ticket edge weight derived from it.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._repo_with_a_merge(repo)
+
+        linker = GitLinker(GitLinkerConfig(enabled=True))
+        records = linker._walk_log(str(repo))
+
+        for tickets, files in records:
+            if "PROJ-742" in tickets:
+                assert files.count("feature.py") == 1, (
+                    f"feature.py appears {files.count('feature.py')} times in one "
+                    "merge record"
+                )
+
+    def test_ordinary_commits_are_unaffected(self, tmp_path: Path) -> None:
+        """Non-merge commits must behave exactly as before."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._repo_with_a_merge(repo)
+
+        linker = GitLinker(GitLinkerConfig(enabled=True))
+        records = linker._walk_log(str(repo))
+
+        initial = [(t, f) for t, f in records if "PROJ-1" in t]
+        assert initial, "the initial non-merge commit went missing"
+        assert "base.py" in initial[0][1]
+
+    def test_commits_on_the_merged_branch_are_still_traversed(self, tmp_path: Path) -> None:
+        """Rules out `--first-parent`, which would hide the branch's own commits.
+
+        The feature branch's commit carries no ticket, but it must still appear as a
+        record — dropping it would silently shrink the corpus the linker walks.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._repo_with_a_merge(repo)
+
+        linker = GitLinker(GitLinkerConfig(enabled=True))
+        records = linker._walk_log(str(repo))
+
+        all_files = [f for _, files in records for f in files]
+        assert all_files.count("feature.py") >= 1
+        assert len(records) >= 3, (
+            f"expected the initial, branch and merge commits; got {len(records)} records"
+        )
