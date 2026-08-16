@@ -8,20 +8,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ### Overview
 
-Six defects, found by indexing this repository with trelix and then checking whether
+Seven defects, found by indexing this repository with trelix and then checking whether
 each dimension of the resulting index was actually populated.
 
 The theme is **features that were on and doing nothing**. `.env` enabled file
-summaries, PageRank boosting and telemetry; the index had 0 file summaries, a PageRank
-boost that had never once fired, and `taint_flows` empty on a repository semgrep does
-find flows in. None of it was visible from the outside: each failure path logged at
-DEBUG while the CLI runs at WARNING, or was swallowed by a bare `except`, or was
-reported as a number nobody had a reason to doubt.
+summaries, PageRank boosting, adaptive query planning and telemetry. The index had 0
+file summaries; the PageRank boost had never once fired; `taint_flows` was empty on a
+repository semgrep does find flows in; and the query planner was classifying every
+single query as the same one of its eight intents. None of it was visible from the
+outside: each failure path logged at DEBUG while the CLI runs at WARNING, or was
+swallowed by a bare `except`, or was reported as a number nobody had a reason to doubt.
 
-Two were found only by running the real thing rather than reading the code — real
-semgrep output rather than a hand-written fixture, and a real sqlite-vec table rather
-than an assumption about what SQL it would accept. In both cases the *obvious* fix was
-also wrong, and only measurement showed it.
+Three were found only by running the real thing rather than reading the code — real
+semgrep output rather than a hand-written fixture, a real sqlite-vec table rather than
+an assumption about what SQL it would accept, and real telemetry rows showing 219
+queries with one intent between them. In the first two the *obvious* fix was also wrong,
+and only measurement showed it.
+
+A recurring pattern in the test suite is worth naming, because it is why several of
+these survived: **the tests exercised the paths that worked**. The taint parser was
+verified against a fixture invented to match its own misreading. Every planner test
+supplies no credentials, so none could notice credentials being dropped. The eval metric
+tests used unique IDs only, so none could notice a repeated ID scoring twice.
 
 ### Fixed
 
