@@ -35,8 +35,10 @@ the value byte-for-byte.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -554,39 +556,229 @@ def test_taint_pip_hint_is_escaped_at_the_call_site() -> None:
         encoding="utf-8"
     )
 
-    # Scoped to the RENDERED lines, not the whole file. The taint command's own
-    # docstring also reads "Requires: pip install trelix[taint]", and a docstring
-    # never reaches Rich — a whole-file assertion flags that harmless line and
-    # fails against correct code. Comments naming the extra are excluded for the
-    # same reason.
+    # Scoped to RENDERED lines, not the whole file. The taint command's own docstring
+    # reads "Requires: pip install trelix[taint]" and a comment nearby quotes the bug,
+    # and neither reaches Rich — a whole-file assertion flags those harmless lines and
+    # fails against correct code. An f-string prefix is the discriminator: only an
+    # f-string interpolates into console output.
     #
-    # There are now TWO rendered sites, both introduced when the empty-result branch
-    # learned to distinguish a missing semgrep from a failed scan: the install hint
-    # itself, and the note that a non-default --tier needs the Pro Engine. Both
-    # interpolate the extras marker, so both must escape it. Anchoring on
-    # "pip install" rather than on a specific sentence keeps this test alive across
-    # rewordings — its previous anchor, "Ensure semgrep is installed", was a sentence
-    # that a later fix deleted, which silently turned the test into a no-op assertion
-    # against zero lines.
-    # An f-string is the discriminator: only an interpolated line can reach Rich with a
-    # dynamic payload. The command's docstring ("Requires: pip install trelix[taint]")
-    # and the explanatory comments above the branch both mention the extra and neither
-    # is rendered, so a plain substring match flags them and fails against correct code.
-    sink_lines = [
+    # Keyed on the f-string shape rather than on a phrase. This test previously anchored
+    # on the literal "Ensure semgrep is installed", which was the wording of a single
+    # combined message; the ScanOutcome refactor split it into two — semgrep-absent
+    # versus semgrep-failed-under-a-Pro-tier — and the phrase-anchored assertion then
+    # failed against code that was strictly more correct. Every rendered site is now
+    # checked, however many there are.
+    render_sites = [
         ln
         for ln in source.splitlines()
-        if "pip install" in ln
-        and ("trelix[taint]" in ln or "escape(" in ln)
-        and ('f"' in ln or "f'" in ln)
-        and not ln.lstrip().startswith("#")
+        if "trelix[taint]" in ln and ln.lstrip().startswith(('f"', "f'"))
     ]
-    assert len(sink_lines) >= 1, "the taint install hint is no longer rendered anywhere"
+    assert render_sites, (
+        "no rendered string interpolates the trelix[taint] hint any more — if the "
+        "remediation advice was removed, delete this test deliberately rather than "
+        "letting it pass vacuously"
+    )
 
-    for sink in sink_lines:
+    for sink in render_sites:
         assert "pip install trelix[taint]" not in sink, (
-            f"a taint hint interpolates trelix[taint] unescaped again — Rich will "
-            f"swallow [taint] and tell the user to install plain 'trelix': {sink.strip()!r}"
+            f"this hint interpolates trelix[taint] unescaped again — Rich will swallow "
+            f"[taint] and tell the user to install plain 'trelix': {sink.strip()}"
         )
-        assert "escape(" in sink, (
-            f"a taint hint no longer escapes its bracketed payload: {sink.strip()!r}"
+        # Either helper satisfies the invariant: _safe_text() calls escape() and also
+        # strips control bytes, so it is strictly stronger than escape() alone.
+        assert "escape(" in sink or "_safe_text(" in sink, (
+            f"this hint no longer escapes its bracketed payload: {sink.strip()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Terminal control bytes: escape() does not touch them, so _safe_text must
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalControlBytes:
+    """Indexed content must not be able to drive the reader's terminal.
+
+    `rich.markup.escape()` neutralises "[tag]" brackets and NOTHING else, so a raw
+    ESC byte in an indexed file travelled through `console.print()` to the terminal,
+    which executed it. Two of those sequences are not cosmetic:
+
+      * OSC 52 (`\\x1b]52;c;<base64>\\x07`) **writes the user's clipboard** on
+        iTerm2, kitty and WezTerm. Repository content should not be able to put
+        data on your clipboard.
+      * cursor-up plus erase-line (`\\x1b[1A\\x1b[2K`) scrubs trelix's own output
+        above it, letting injected content hide that it was ever displayed. A lone
+        `\\r` does the same on one line.
+
+    `_safe_text()` escapes markup AND strips C0/C1 controls, keeping only `\\n` and
+    `\\t` — the two that legitimately structure retrieved source.
+    """
+
+    @staticmethod
+    def _rendered(payload: str) -> str:
+        from rich.console import Console
+
+        from trelix.cli.main import _safe_text
+
+        buf = io.StringIO()
+        Console(file=buf, width=300).print(_safe_text(payload))
+        return buf.getvalue()
+
+    def test_osc52_clipboard_write_is_stripped(self) -> None:
+        out = self._rendered("before \x1b]52;c;cHduZWQ=\x07 after")
+
+        assert "\x1b" not in out, "an ESC byte reached the terminal"
+        assert "\x07" not in out, "BEL reached the terminal"
+        # The payload's printable remainder still shows, so nothing is hidden
+        # from the reader — the sequence is defanged, not silently swallowed.
+        assert "before" in out and "after" in out
+
+    def test_cursor_up_and_erase_line_is_stripped(self) -> None:
+        out = self._rendered("visible \x1b[1A\x1b[2K hidden")
+
+        assert "\x1b" not in out
+        assert "visible" in out and "hidden" in out
+
+    def test_lone_carriage_return_cannot_overwrite(self) -> None:
+        """Characterisation, not a regression guard — Rich already handles this one.
+
+        `real\\rFAKE` would render as "FAKE" on a terminal, hiding "real". Measured:
+        `escape("real\\rFAKE")` alone already renders "realFAKE" with no CR, so Rich
+        normalises it without help. `_safe_text` strips it too; this test pins the
+        end state so a future change to either layer cannot quietly reintroduce it.
+        """
+        out = self._rendered("real\rFAKE")
+
+        assert "\r" not in out
+        assert "real" in out and "FAKE" in out
+
+    def test_newline_and_tab_survive(self) -> None:
+        """Retrieved source is multi-line and indented — those must not be stripped."""
+        out = self._rendered("line1\n\tindented")
+
+        assert "line1" in out
+        assert "indented" in out
+        assert "\n" in out
+
+    def test_a_literal_backslash_x1b_in_source_is_untouched(self) -> None:
+        """Source code *describing* an escape is text, not an escape.
+
+        A file containing the four characters backslash-x-1-b must render
+        unchanged; only real 0x1B bytes are stripped. Without this, the fix would
+        corrupt any file that documents ANSI codes.
+        """
+        payload = r"colour = '\x1b[31m'"
+        out = self._rendered(payload)
+
+        assert r"\x1b[31m" in out
+
+    def test_markup_escaping_still_works(self) -> None:
+        """_safe_text must not regress the escape() behaviour it wraps."""
+        out = self._rendered("sym[/red]name")
+
+        assert "[/red]" in out, "an unmatched closing tag was swallowed or raised"
+
+    def test_untrusted_sinks_use_safe_text_not_bare_escape(self) -> None:
+        """Structural guard: no dynamic value may reach a sink through bare escape().
+
+        The invariant is that `escape()` appears exactly once in the module — inside
+        `_safe_text()` itself. Anything else means a sink was added, or reverted, to
+        the markup-only helper, which leaves control bytes live. Checked as source
+        because the alternative is re-testing 60+ call sites individually.
+        """
+        source = (
+            Path(__file__).resolve().parents[2] / "src" / "trelix" / "cli" / "main.py"
+        ).read_text(encoding="utf-8")
+
+        # Comment and docstring lines are excluded: this module's prose discusses
+        # escape() by name repeatedly, and an earlier version of this guard flagged
+        # its own explanatory comment. Only executable lines count.
+        calls = [
+            ln
+            for ln in source.splitlines()
+            if re.search(r"\bescape\(['\"a-zA-Z_(]", ln)
+            and "_safe_text" not in ln
+            and not ln.lstrip().startswith(("#", "*", '"', "'"))
+        ]
+        assert calls == ['    return escape(_CONTROL_RE.sub("", str(value)))'], (
+            f"bare escape() calls outside _safe_text: {calls}"
+        )
+
+
+class TestStripOrderCannotSynthesiseMarkup:
+    """Strip must run BEFORE escape, or the two composed create a worse bug.
+
+    `rich.markup.escape()` matches ``(\\\\*)(\\[[a-z#/@][^[]*?])``. A byte that is not
+    in ``[a-z#/@]`` immediately after the ``[`` means no tag is recognised and the
+    bracket is left UNESCAPED. Stripping that byte *afterwards* SYNTHESISES a live
+    markup tag that escape() never had a chance to neutralise.
+
+    Found by adversarial verification of the original fix, which had the order
+    backwards. Demonstrated then with a real pty against a real `trelix search`: a
+    symbol name of ``pre[\\x1blink=http://evil.example]CLICK[\\x1b/link]post`` escaped
+    to ``pre[\\x1blink=…]``, stripped to ``pre[link=…]``, and Rich rendered a genuine
+    OSC 8 hyperlink to the attacker's URL with the markers invisible.
+
+    Any of the 33 stripped codepoints triggers it, so these cases are not exotic.
+    """
+
+    @staticmethod
+    def _rendered(payload: str) -> str:
+        from rich.console import Console
+
+        from trelix.cli.main import _safe_text
+
+        buf = io.StringIO()
+        # force_terminal so Rich emits real control codes; color_system=None keeps
+        # trelix's own styling out of the way, so any ESC here is attacker-derived.
+        Console(file=buf, force_terminal=True, color_system=None, highlight=False, width=300).print(
+            _safe_text(payload)
+        )
+        return buf.getvalue()
+
+    def test_control_byte_inside_a_bracket_cannot_become_a_live_tag(self) -> None:
+        payload = "pre[\x1blink=http://evil.example]CLICK[\x1b/link]post"
+
+        out = self._rendered(payload)
+
+        # The bracketed text must survive as LITERAL text, not be consumed as markup.
+        assert "[link=http://evil.example]" in out, (
+            "the tag was interpreted, not escaped — strip ran before escape "
+            f"could neutralise it: {out!r}"
+        )
+        assert "\x1b]8" not in out, "an OSC 8 hyperlink reached the terminal"
+        assert "CLICK" in out and "pre" in out and "post" in out
+
+    def test_the_same_hole_with_a_non_esc_control_byte(self) -> None:
+        """\\x01 is not ESC and is equally not a tag-start character."""
+        out = self._rendered("a[\x01bold]b[\x01/bold]c")
+
+        assert "[bold]" in out, f"synthesised a bold tag: {out!r}"
+        assert "a" in out and "b" in out and "c" in out
+
+    def test_a_plain_markup_tag_is_still_escaped(self) -> None:
+        """Control: no control byte involved, ordinary escaping must still apply."""
+        out = self._rendered("x[bold]y[/bold]z")
+
+        assert "[bold]" in out and "[/bold]" in out
+
+    def test_the_wrong_order_also_re_introduced_markup_errors(self) -> None:
+        """The second consequence of strip-after-escape: the original crash returns.
+
+        A control byte right after ``[/`` hides the closing tag from escape(), which
+        leaves the bracket bare; stripping afterwards reveals ``[/red]`` as an
+        unmatched closing tag and Rich raises MarkupError — the precise failure this
+        whole module exists to prevent, re-introduced by the fix meant to harden it.
+
+        Verified for \\x1b, \\x01 and \\x7f: all three raised under escape-then-strip
+        and render cleanly under strip-then-escape.
+        """
+        from rich.errors import MarkupError
+
+        for payload in ("name[\x1b/red]tail", "x[\x01/bold]y", "a[\x7f/dim]b"):
+            try:
+                out = self._rendered(payload)
+            except MarkupError as exc:  # pragma: no cover - the regression itself
+                raise AssertionError(f"MarkupError re-introduced for {payload!r}: {exc}") from exc
+            # The closing tag must survive as literal text, not be interpreted.
+            assert "/" in out, f"payload vanished: {out!r}"
