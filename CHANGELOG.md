@@ -164,6 +164,38 @@ also wrong, and only measurement showed it.
   with `TRELIX_FILE_SUMMARIES_ENABLED=true`, where one Azure 429 past the retry budget
   was enough.
 
+- **The query planner discarded its credentials, collapsing eight intents into one.**
+  `QueryPlanner.__init__` builds its `LLMConfig` with `_env_file=None`, disabling dotenv
+  loading, and then used it as-is. Credentials supplied via `.env` — the documented
+  route — never reached the client, so `_plan_direct` fell back to `default_plan()` on
+  every call and all eight `IntentType` values became the hard-coded `FEATURE_FLOW`.
+
+  Measured with credentials in `.env` and nothing exported: eight textbook queries, one
+  per intent, produced **one** distinct intent. Two are near-verbatim copies of the
+  enum's own examples — *"what does this project do"* is exactly the `PROJECT_OVERVIEW`
+  comment — and both classified as `feature_flow`. After the fix, with the Azure
+  variables explicitly removed from the environment so credentials can only come from
+  `.env`: **8 of 8**.
+
+  `INTENT_STRATEGIES` keys off intent to choose which retrieval legs run and how far
+  call-graph expansion goes, so an inert classifier gives every query an identical plan.
+  On a 50-query golden set for this repository, activating it moved **nDCG@10 by +0.027
+  and MRR by +0.040 while costing 0.040 recall** — a real precision-for-recall trade,
+  every delta 5–8× the ±0.005 run-to-run noise floor measured on the same set. The
+  direction is not the point. The point is that the number depended on whether
+  credentials happened to be *exported* rather than read from `.env`, with nothing at
+  the CLI's default log level to distinguish the two.
+
+  The fix is the step its siblings already take: `Synthesizer` and `graph_rag` use the
+  same shim and both follow it with `model_copy(update={…})` to carry credentials off
+  the `EmbedderConfig` — `graph_rag` labels the block `# Carry over credentials`. The
+  planner was the one site that skipped it. That asymmetry is also why synthesis was
+  never affected: `trelix ask` worked throughout, because `Synthesizer` accepts an
+  explicit `llm_config` *and* copies credentials in its fallback.
+
+  Every pre-existing planner test supplies no credentials, so all of them passed either
+  way. That is the gap that let this ship.
+
 ### Added
 
 - **`trelix taint --rules PATH`.** `TaintAnalyzer.run()` always accepted a
