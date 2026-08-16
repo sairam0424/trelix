@@ -564,40 +564,64 @@ class TestLinkTicketsHonoursEnvironmentConfig:
         def link(self, *args, **kwargs):  # type: ignore[no-untyped-def]
             return {"edges_created": 0, "commits_walked": 0, "tickets_found": 0}
 
-    def _run(self, env: dict[str, str], args: list[str]) -> dict[str, object]:
+    def _run(self, env: dict[str, str], args: list[str], repo: Path) -> dict[str, object]:
+        """Invoke `link-tickets` against a throwaway repo and return what the linker saw.
+
+        `repo` must be a tmp_path, not ".". `link_tickets` checks `db_path.exists()` and
+        exits 1 BEFORE it builds GitLinkerConfig, so pointing this at the checkout made
+        the test pass only on a machine that happened to have `.trelix/index.db` — which
+        is every developer box and no CI runner. It failed on CI while passing locally,
+        and the assertion message then blamed the typer default for a command that had
+        never run.
+
+        The exit code is asserted for the same reason: `CliRunner.invoke` swallows it, so
+        without this an unrelated failure shows up as an empty `seen` dict and gets
+        misattributed to whatever the caller was actually testing.
+        """
         import os
         from unittest.mock import patch
 
         from typer.testing import CliRunner
 
         from trelix.cli.main import app
+        from trelix.store.db import Database
+
+        db_path = repo / ".trelix" / "index.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        Database(db_path).close()  # schema only; the linker is faked out below
 
         self._FakeLinker.seen = {}
         with (
             patch.dict(os.environ, env, clear=False),
             patch("trelix.indexing.git_linker.GitLinker", self._FakeLinker),
         ):
-            CliRunner().invoke(app, ["link-tickets", "."] + args)
+            result = CliRunner().invoke(app, ["link-tickets", str(repo)] + args)
+
+        assert result.exit_code == 0, (
+            f"link-tickets exited {result.exit_code}; the config assertions below would "
+            f"misreport this as a default-override bug.\n{result.output}"
+        )
         return self._FakeLinker.seen
 
-    def test_env_var_applies_when_the_flag_is_omitted(self) -> None:
+    def test_env_var_applies_when_the_flag_is_omitted(self, tmp_path: Path) -> None:
         seen = self._run(
             {"TRELIX_GIT_LINKER_TICKET_PATTERN": r"#\d+", "TRELIX_GIT_LINKER_MAX_COMMITS": "99"},
             [],
+            tmp_path,
         )
         assert seen.get("pattern") == r"#\d+", (
             "TRELIX_GIT_LINKER_TICKET_PATTERN was overridden by the typer default"
         )
         assert seen.get("max_commits") == 99
 
-    def test_an_explicit_flag_still_wins_over_the_env_var(self) -> None:
+    def test_an_explicit_flag_still_wins_over_the_env_var(self, tmp_path: Path) -> None:
         """Precedence must not invert: a flag the user typed beats the environment."""
-        seen = self._run({"TRELIX_GIT_LINKER_MAX_COMMITS": "99"}, ["--max-commits", "7"])
+        seen = self._run({"TRELIX_GIT_LINKER_MAX_COMMITS": "99"}, ["--max-commits", "7"], tmp_path)
         assert seen.get("max_commits") == 7
 
-    def test_the_field_default_applies_with_neither(self) -> None:
+    def test_the_field_default_applies_with_neither(self, tmp_path: Path) -> None:
         from trelix.core.config import TICKET_PATTERN_DEFAULT
 
-        seen = self._run({}, [])
+        seen = self._run({}, [], tmp_path)
         assert seen.get("pattern") == TICKET_PATTERN_DEFAULT
         assert seen.get("max_commits") == 5_000
