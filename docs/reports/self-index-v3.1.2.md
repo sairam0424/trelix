@@ -284,7 +284,11 @@ covering lines 1-184, and zero-symbol files dropped 12 → 11.
 
 **Not fixed by this, and load-bearing:** the other 11 zero-symbol files stay unreachable
 until their stored hashes are invalidated. Both `trelix index` and `trelix update-index`
-skip them on the hash check — verified, not assumed. They need a from-scratch re-index.
+skip them on the content-hash check — verified, not assumed. They need a forced re-parse,
+which is `TRELIX_INCREMENTAL=false trelix index .` and is nearly free: the `else` at
+`indexer.py:514` re-parses everything, but symbols are diffed by qualified-name + hash and
+Phase 2.5 short-circuits on `if not chunks`, so unchanged files re-buy no embeddings.
+Deleting the index is **not** required and would discard 192 MB and ~2M tokens for nothing.
 
 ### What could not be measured
 

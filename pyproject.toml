@@ -122,6 +122,13 @@ lance = [
 ]
 watch = [
     "watchdog>=4.0.0",               # Filesystem event monitoring for `trelix watch`
+    # `trelix watch-all` uses watchfiles.awatch(), not watchdog — a different library for
+    # the multi-repo path. Without it this extra could not satisfy the very command whose
+    # ImportError tells the user to install `trelix[watch]`
+    # (indexing/multi_watcher.py:30-38), so following the error message did not help.
+    # It went unnoticed locally because uvicorn[standard], via the `serve` extra, pulls
+    # watchfiles in transitively.
+    "watchfiles>=0.21.0",
 ]
 serve = [
     "fastapi>=0.111.0",

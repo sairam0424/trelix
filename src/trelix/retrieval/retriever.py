@@ -63,6 +63,82 @@ _trace_local = threading.local()
 
 logger = logging.getLogger("trelix.retrieval")
 
+# Suffixes that mark a file as configuration or infrastructure.
+_CONFIG_SUFFIXES = frozenset(
+    {
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".js",
+        ".ts",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".properties",
+        ".env",
+        ".tf",
+        ".tfvars",
+        ".hcl",
+        ".gradle",
+        ".mk",
+    }
+)
+
+# Config files that carry NO extension at all, which is the entire bug: a suffix test can
+# never match one, because `Path("Dockerfile").suffix` is `""`. Every ecosystem's most
+# important config file is in this shape by convention.
+_CONFIG_FILENAMES = frozenset(
+    {
+        "dockerfile",
+        "containerfile",
+        "makefile",
+        "gnumakefile",
+        "procfile",
+        "jenkinsfile",
+        "vagrantfile",
+        "rakefile",
+        "gemfile",
+        "brewfile",
+        "justfile",
+        "cmakelists.txt",
+        ".gitignore",
+        ".dockerignore",
+        ".editorconfig",
+        ".gitattributes",
+        ".npmrc",
+        ".nvmrc",
+    }
+)
+
+
+def _looks_like_config(hint: str) -> bool:
+    """Does this planner hint name a configuration or infrastructure file?
+
+    The gate cannot simply be removed. `file_hints` is concatenated with `grep_hints`,
+    which `planner/models.py:63` documents as "exact symbol names", so unfiltered hints
+    like `EXPOSE` or `ports:` would be fed to `find_file_by_path_fragment` and match
+    arbitrary files.
+
+    What it got wrong was testing only six suffixes. `Path("Dockerfile").suffix` is `""`,
+    so the check silently dropped Dockerfile, Makefile, Procfile, setup.cfg, nginx.conf
+    and every `*.tf` — for every repository, not just this one. `eval/golden.jsonl`
+    records the consequence: "what port does the container expose and what is its
+    entrypoint" resolved exactly one file (`docker-compose.yml`) and answered
+    confidently without ever consulting the Dockerfile, whose symbols were indexed and
+    retrievable the whole time.
+    """
+    name = Path(hint).name.lower()
+    if name in _CONFIG_FILENAMES:
+        return True
+    if Path(name).suffix in _CONFIG_SUFFIXES:
+        return True
+    # "Dockerfile.prod", "Makefile.local" — a base config name with a variant suffix.
+    stem = name.split(".", 1)[0]
+    if stem in _CONFIG_FILENAMES:
+        return True
+    return "config" in name
+
 
 class Retriever:
     """
@@ -765,19 +841,19 @@ class Retriever:
     # ------------------------------------------------------------------
     # Config lookup (config_lookup intent)
     # ------------------------------------------------------------------
+    # See _looks_like_config below for why this gate exists and what it used to miss.
 
     def _retrieve_config(self, plan: QueryPlan) -> RetrievedContext:
         """
         Try file_direct for known config filenames; fall back to standard retrieval.
         """
         file_hints = [h for sq in plan.sub_queries for h in sq.file_hints + sq.grep_hints]
-        config_extensions = {".json", ".yaml", ".yml", ".toml", ".js", ".ts"}
 
         results: list[SearchResult] = []
         visited: set[int] = set()
 
         for hint in file_hints:
-            if any(hint.endswith(ext) for ext in config_extensions) or "config" in hint.lower():
+            if _looks_like_config(hint):
                 for file_id in self.db.find_file_by_path_fragment(hint)[:2]:
                     if file_id in visited:
                         continue

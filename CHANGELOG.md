@@ -296,6 +296,21 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
   via `trelix taint`.
 - **SPLADE-Code models cannot be used** as the sparse model until `sparse.py` grows a
   causal-LM path; the default is a general SPLADE v3 checkpoint instead.
+- **A thin `config_lookup` match still suppresses every other retrieval leg.**
+  `retriever.py`'s `if not results:` only falls back to standard retrieval when the config
+  path found *nothing*. One matched file yielding a handful of symbols therefore returns
+  exclusively those symbols, with no breadth floor and no signal to the synthesizer. Fixing
+  the filename gate above removed today's instance (the Dockerfile query) without touching
+  the mechanism, and is the most likely explanation for the 50-query drift recorded there.
+  A breadth floor needs its own measurement and is deliberately not bundled.
+- **`test_watcher.py` gained a positive case.** The import-guard test previously deleted
+  `watchdog*` from `sys.modules`, which only clears the cache — an installed package
+  re-imports and no `ImportError` is raised. It was therefore the sole failing test
+  wherever `[watch]` was installed, and passed for the wrong reason wherever it was not:
+  against an absent dependency rather than against the guard. Now uses
+  `patch.dict("sys.modules", {"watchdog": None})`, the idiom already used for `trelix_mcp`
+  in the same file, plus a case asserting the guard is silent when watchdog *is* importable
+  — without which an unconditionally-raising guard would still pass.
 - **Provenance is refreshed only by a full `trelix index`.** `trelix update-index` and
   `trelix watch` go through `index_file()`, which does not touch it, so the recorded commit
   can name an older tree than the index actually contains. Deliberate rather than
@@ -312,9 +327,17 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
   which means chunk-level near-ties decide it rather than the weight. Needs a ~20-query ops
   golden set before a value can be chosen honestly; overridable meanwhile with
   `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_SHELL` and friends.
-- **The 11 remaining zero-symbol files stay unreachable** until their stored hashes are
-  invalidated. Both `trelix index` and `trelix update-index` skip them on the hash check,
-  so the line-window fallback cannot reach them without a from-scratch re-index.
+- **The 11 remaining zero-symbol files stay unreachable** until they are re-parsed. Both
+  `trelix index` and `trelix update-index` skip them on the content-hash check
+  (`indexer.py:512`), which the line-window fallback cannot get past.
+
+  The remedy is `TRELIX_INCREMENTAL=false trelix index .` — **not** deleting the index.
+  The `else` branch at `indexer.py:514` sets `to_parse = files`, forcing a re-parse of
+  everything, and it costs almost nothing extra: `_insert_one` diffs symbols by
+  qualified-name + content hash, and Phase 2.5 short-circuits on `if not chunks`
+  (`indexer.py:984`), so unchanged files regenerate no chunks and re-buy no embeddings.
+  An earlier revision of this entry implied a from-scratch rebuild was required, which
+  would have meant discarding a 192 MB index and re-paying for ~2M tokens for nothing.
 - **One ops query still fails for an unrelated reason.** "what port does the container
   expose and what is its entrypoint" returns only a *single* distinct file regardless of
   language weighting, so `Dockerfile` cannot place. That is retrieval breadth, not
@@ -365,6 +388,39 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
 - **`eval/README.md`** — the golden-set format, and the two ways to get a silently
   wrong score from it: paths are compared by exact string equality, and an entry with
   no `relevant_files` is skipped rather than failed.
+
+- **`config_lookup` no longer drops extensionless config files.** `_retrieve_config`
+  gated every planner hint on six suffixes or the substring `"config"`, and
+  `Path("Dockerfile").suffix` is `""` — so `Dockerfile`, `Makefile`, `Procfile`,
+  `setup.cfg`, `nginx.conf` and every `*.tf` were silently unresolvable, for **every**
+  repository. `find_file_by_path_fragment("Dockerfile")` worked the whole time and was
+  simply never called.
+
+  The gate could not just be deleted: `file_hints` is concatenated with `grep_hints`,
+  documented at `planner/models.py:63` as "exact symbol names", so unfiltered hints would
+  feed path lookups terms like `EXPOSE` and `ports:`. It now tests the filename, not only
+  the suffix — `_looks_like_config` checks a config-filename set, a broadened suffix set,
+  and the `Dockerfile.prod` variant shape.
+
+  Measured on the golden set: the four ops queries went from an **unstable 0.00 / 0.50 /
+  0.75 Recall@10 across identical configs to a stable 1.0000 nDCG@10 / Recall@10 / MRR**,
+  and "what port does the container expose and what is its entrypoint" — which returned a
+  single distinct file and answered confidently without the Dockerfile — now ranks
+  `Dockerfile` first with HyDE disabled for determinism.
+
+  **Caveat, disclosed rather than buried:** the 50-query set reads 0.6039 / 0.5791 against
+  0.6105 / 0.6063 before. The within-config spread is 0.0248, *larger* than that
+  difference, so two runs cannot separate the effect from noise. The plausible mechanism is
+  that `config_lookup` now succeeds more often and `retriever.py`'s `if not results:`
+  returns only the matched file's symbols, suppressing the vector, BM25 and grep legs
+  entirely. That short-circuit is a pre-existing design issue, unchanged here and recorded
+  under Known limitations.
+
+- **`trelix[watch]` can now satisfy `watch-all`.** The extra installed only `watchdog`,
+  while `indexing/multi_watcher.py` uses `watchfiles.awatch()` — so the ImportError at
+  `multi_watcher.py:30-38`, which tells the user to run `pip install 'trelix[watch]'`, did
+  not fix the problem it diagnosed. Masked locally because `uvicorn[standard]`, via the
+  `serve` extra, pulls `watchfiles` in transitively.
 
 - **Index provenance, reported by `trelix stats`.** `index_metadata` held exactly one row
   — `embedding_dimension` — so nothing recorded *what* an index was a snapshot of. A
