@@ -754,3 +754,92 @@ class TestWalkCompleteness:
         list(walker.walk())
 
         assert walker.incomplete_paths == [], "gaps from a previous walk leaked forward"
+
+
+class TestSymlinkCycles:
+    """A symlink pointing at one of its own ancestors must not re-walk the tree.
+
+    `repo/loop -> repo` made the walk re-enter a directory it was already inside.
+    Measured on v3.1.1: one real file yielded **17 times** at nesting depths up to
+    16, one distinct content hash, bounded only by the OS path limit — 17x the
+    embedding cost and 17 duplicate results for a single file.
+
+    `follow_symlinks=False` does NOT address it: the loop target resolves *inside*
+    the root, so containment correctly permits it. The two features are orthogonal.
+
+    The fix tracks the RESOLVED paths of the current recursion chain, not a global
+    visited-set. That distinction has a test of its own below — a visited-set would
+    also collapse two sibling aliases to the same target, silently dropping one from
+    a legitimate layout.
+    """
+
+    def _walk(self, repo: Path, *, follow: bool = True) -> list[str]:
+        cfg = make_config(repo)
+        cfg.walker.follow_symlinks = follow
+        return sorted(f.rel_path for f in FileWalker(cfg).walk())
+
+    def test_self_referential_symlink_yields_each_file_once(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "loop").symlink_to(repo, target_is_directory=True)
+
+        rels = self._walk(repo)
+
+        assert rels == ["a.py"], f"expected one copy, got {len(rels)}: {rels[:5]}"
+
+    def test_cycle_through_a_subdirectory_is_also_broken(self, tmp_path: Path) -> None:
+        """The loop need not be at the root — `repo/x/back -> repo` is the same defect."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "top.py").write_text("t = 0\n", encoding="utf-8")
+        sub = repo / "x"
+        sub.mkdir()
+        (sub / "deep.py").write_text("z = 3\n", encoding="utf-8")
+        (sub / "back").symlink_to(repo, target_is_directory=True)
+
+        rels = self._walk(repo)
+
+        assert rels == ["top.py", "x/deep.py"]
+
+    def test_two_aliases_to_the_same_target_are_BOTH_walked(self, tmp_path: Path) -> None:
+        """The case a global visited-set would silently break.
+
+        `repo/a` and `repo/b` both point at `repo/shared`. Neither is a cycle —
+        neither is an ancestor of itself — so both must still be indexed. A
+        visited-set keyed on the resolved target would descend into whichever came
+        first and drop the other, losing `b/lib.py` with no error to explain it.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        shared = repo / "shared"
+        shared.mkdir()
+        (shared / "lib.py").write_text("y = 2\n", encoding="utf-8")
+        (repo / "a").symlink_to(shared, target_is_directory=True)
+        (repo / "b").symlink_to(shared, target_is_directory=True)
+
+        rels = self._walk(repo)
+
+        assert "a/lib.py" in rels, "first alias missing"
+        assert "b/lib.py" in rels, "second alias dropped — this is the visited-set bug"
+        assert "shared/lib.py" in rels
+
+    def test_repo_without_symlinks_is_unaffected(self, tmp_path: Path) -> None:
+        """Cycle detection must cost nothing for the ordinary case."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "m.py").write_text("m = 1\n", encoding="utf-8")
+        sub = repo / "sub"
+        sub.mkdir()
+        (sub / "n.py").write_text("n = 1\n", encoding="utf-8")
+
+        assert self._walk(repo) == ["m.py", "sub/n.py"]
+
+    def test_cycle_detection_holds_with_containment_enabled(self, tmp_path: Path) -> None:
+        """Both features on at once: the loop is still broken, in-tree links kept."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "loop").symlink_to(repo, target_is_directory=True)
+
+        assert self._walk(repo, follow=False) == ["a.py"]
