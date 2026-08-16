@@ -8,8 +8,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ### Overview
 
-Seven defects, found by indexing this repository with trelix and then checking whether
-each dimension of the resulting index was actually populated.
+Sixteen defects, found by indexing this repository with trelix and then checking whether
+each dimension of the resulting index was actually populated. Seven were fixed in the
+first pass; the nine that pass documented as "found, not fixed" were then worked through
+in a second pass, each one researched, adversarially reviewed before implementation, and
+audited after.
 
 The theme is **features that were on and doing nothing**. `.env` enabled file
 summaries, PageRank boosting, adaptive query planning and telemetry. The index had 0
@@ -203,6 +206,96 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
 
   Every pre-existing planner test supplies no credentials, so all of them passed either
   way. That is the gap that let this ship.
+
+- **`trelix eval-synthesis` could never produce a non-empty answer.**
+  `SynthesisEvalHarness.run()` passed the CLI's `IndexConfig` to `Synthesizer`, which
+  takes an `EmbedderConfig` first and, with `llm_config=None`, falls into a shim reading
+  `config.provider`. Every call raised `AttributeError` into a bare `except`, becoming
+  `answer = ""`. Measured on the sample golden file: hallucination/completeness/
+  faithfulness all 0.0000 and overall a **constant 0.4000** before, **0.8733** after.
+  The `__init__` annotation was `Any`, which is what stopped mypy --strict from catching
+  it, and the existing test patched `Synthesizer` wholesale — a MagicMock accepts any
+  arguments, so the wrong type never raised under test.
+
+- **`GitLinker` dropped every merge commit's file list.** `git log --name-only` prints no
+  diff for a merge unless told which parent to diff against. On this repo, merge `3dea90a`
+  yielded 0 files; with `--diff-merges=first-parent` it yields 4. That is the common case
+  for PR-based work, where the ticket key lives in "Merge pull request … from
+  feature/PROJ-456". Not `-m` (double-counts every file) and not `--first-parent` (hides
+  the branch's own commits); for non-merge history the output is byte-identical.
+
+- **The default ticket pattern read `UTF-8` and `SHA-256` as ticket ids.** `r"[A-Z]+-\d+"`
+  matched 12 strings across 830 commits, **all** false positives. Anchoring alone fixes
+  almost nothing — adding `\b` and a two-letter minimum removed exactly one — because a
+  ticket key and a technical constant are structurally identical. The default now carries
+  a noise-prefix vocabulary. The trailing guard allows a trailing hyphen deliberately: a
+  stricter one dropped `feature/PROJ-456-thing`, gutting the merge fix above. The CLI
+  restated the old literal as its own default and overrode the config, so both now
+  reference one constant.
+
+- **`trelix graph --visualize --json` wrote no HTML.** The `--json` branch returned before
+  the export ran, so the flag was accepted and ignored — a stale 31-byte file survived
+  where the same command without `--json` wrote 326 KB. The path is now reported as
+  `visualization_path`; the four documented keys are unchanged.
+
+- **`trelix taint` reported a FAILED scan as clean.** `run()` returns `[]` for four
+  different situations, so the CLI could not distinguish them. The first attempt at this
+  branched on `shutil.which` alone and made it worse: `--tier intrafile` without the
+  Semgrep Pro Engine exits 2 with empty stdout, and that began printing "semgrep ran and
+  reported nothing" at exit 0 — a confident all-clear for a scan that never ran. `scan()`
+  now classifies the outcome from the exit code, semgrep's own `errors[]`, and
+  `paths.scanned`, because no one of those covers every case. A failed or vacuous scan
+  exits 1 and makes no clean claim.
+
+- **Sparse indexing could not work, at two levels.** The default model
+  `naver-splab/splade-code-distil` does not exist on the Hub. Correcting the id alone
+  would not have helped: both real SPLADE-Code releases are `model_type=qwen3`, absent
+  from transformers' MaskedLM auto-mapping, so `AutoModelForMaskedLM` cannot load them.
+  And `embed()` ran ONE forward pass over every text — for this repo's 10,700 chunks that
+  is a **668 GB** logits tensor — while `SparseConfig.batch_size` was referenced nowhere
+  in `src/` and the constructor did not even accept it. Now a real BERT-family SPLADE,
+  batched, verified at 60 snippets / 0.87 GB peak RSS.
+
+- **`migrate-vectors --reset` did nothing while reporting success.**
+  `clear_all_embeddings()` ran `DELETE FROM chunk_embeddings` on a connection with no
+  sqlite-vec extension, raising `no such module: vec0` into `except: pass` — a guaranteed
+  no-op on every install, with one caller and zero tests. A working delete would not have
+  helped either: a vec0 table's width is fixed by its CREATE statement. And the hashes
+  survived at both levels, so the re-index the message prescribed either reported
+  "Nothing to index" or re-parsed everything and embedded nothing. Now: drop and rebuild
+  at the new dimension (transactionally), invalidate file AND symbol hashes, clear the
+  dimension record last, refuse on backends this cannot rebuild, and a new `--provider`
+  to say which width to rebuild for.
+
+- **A symbol's sub-chunks and their vectors outlived it.**
+  `sub_chunks.parent_symbol_id` has no foreign key — `PRAGMA foreign_key_list(sub_chunks)`
+  returns `[]`, unlike `chunks` — and no `DELETE FROM sub_chunks` existed anywhere, so
+  rows accumulated on every re-index. `architecture.md` described the column as
+  `FK→symbols CASCADE`, which was never true. Vectors are deleted before rows, because
+  the row id is the only handle on its vector; a cascade could not have covered that half
+  regardless, since the vectors live in a virtual table.
+
+- **An unreadable directory vanished from the index in silence.** `_iter_files` caught
+  `PermissionError` and bare-`return`ed, dropping the entire subtree with no trace, so
+  `files_found` was reported as though it were the repository's contents. `FileWalker`
+  now records what it could not read and `Indexer` reports it as `files_unreadable`. This
+  is also the prerequisite for the reconciliation pass `trelix index` still lacks — see
+  Known limitations.
+
+### Known limitations
+
+- **`trelix index` still does not remove files deleted from the repository.**
+  `delete_file_by_path` is called only by the watchers, so a deleted file stays indexed
+  and searchable. The reconciliation pass was deliberately NOT added: a prune keyed on
+  "files the walk did not yield" would read a truncated walk as deletions and delete
+  embeddings that cost money to compute, and a percentage-threshold guard cannot defend
+  against it because one unreadable directory falls far below any sane threshold. The
+  walk-completeness signal above is the missing prerequisite. Until then, clear removed
+  files by deleting `.trelix/index.db` and re-indexing.
+- **`TRELIX_PARSER_TAINT` is inert** — declared and read nowhere; taint analysis runs only
+  via `trelix taint`.
+- **SPLADE-Code models cannot be used** as the sparse model until `sparse.py` grows a
+  causal-LM path; the default is a general SPLADE v3 checkpoint instead.
 
 ### Added
 
