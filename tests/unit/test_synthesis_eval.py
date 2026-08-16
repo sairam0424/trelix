@@ -218,12 +218,17 @@ class TestHarnessConstructsSynthesizerCorrectly:
         path = tmp_path / "golden.jsonl"
         with open(path, "w") as f:
             for i in range(n):
-                f.write(json.dumps({
-                    "query": f"query number {i}",
-                    "relevant_files": ["src/x.py"],
-                    "expected_answer_fragments": ["alpha"],
-                    "expected_symbols": ["Thing.method"],
-                }) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "query": f"query number {i}",
+                            "relevant_files": ["src/x.py"],
+                            "expected_answer_fragments": ["alpha"],
+                            "expected_symbols": ["Thing.method"],
+                        }
+                    )
+                    + "\n"
+                )
         return str(path)
 
     @staticmethod

@@ -675,8 +675,7 @@ class TestFileSummaryEmbedFailureIsContained:
         """The file's own chunk embeddings must survive a summary failure."""
         _, (_, stats) = self._index_one_file(tmp_path)
         assert stats["chunks_embedded"] > 0, (
-            "a failed file-summary embed swallowed the file's chunk embeddings — "
-            f"stats={stats}"
+            f"a failed file-summary embed swallowed the file's chunk embeddings — stats={stats}"
         )
 
     def test_the_file_is_not_counted_as_an_error(self, tmp_path: pathlib.Path) -> None:

@@ -154,9 +154,7 @@ class FileWalker:
         self._spec_cache[directory] = spec
         return spec
 
-    def _gitignore_chain(
-        self, path: Path
-    ) -> list[tuple[Path, pathspec.PathSpec]]:  # type: ignore[type-arg]
+    def _gitignore_chain(self, path: Path) -> list[tuple[Path, pathspec.PathSpec]]:  # type: ignore[type-arg]
         """`(anchor_dir, spec)` pairs governing `path`, ordered shallowest → deepest.
 
         Every `.gitignore` from the repo root down to `path`'s own directory, skipping

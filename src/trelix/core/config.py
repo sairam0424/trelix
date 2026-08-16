@@ -1061,14 +1061,39 @@ class IndexerConfig(BaseSettings):
 # thing that can. Measured on this repository: the previous r"[A-Z]+-\d+" matched 12
 # strings across 830 commits and every one was a false positive of this kind.
 _TICKET_NOISE_PREFIXES: tuple[str, ...] = (
-    "UTF", "SHA", "MD", "HTTP", "HTTPS", "BASE", "ISO", "RFC", "AES", "RSA",
-    "SSL", "TLS", "IPV", "CRC", "HMAC", "PBKDF", "ARGON", "SIMD", "X", "EC",
-    "GB", "KB", "MB", "TB", "PY",
+    "UTF",
+    "SHA",
+    "MD",
+    "HTTP",
+    "HTTPS",
+    "BASE",
+    "ISO",
+    "RFC",
+    "AES",
+    "RSA",
+    "SSL",
+    "TLS",
+    "IPV",
+    "CRC",
+    "HMAC",
+    "PBKDF",
+    "ARGON",
+    "SIMD",
+    "X",
+    "EC",
+    "GB",
+    "KB",
+    "MB",
+    "TB",
+    "PY",
     # Identifier schemes with the same PREFIX-digits shape as a ticket key. CVE matters
     # most: its PREFIX-digits-digits form ("CVE-2021-44228") is truncated to "CVE-2021"
     # by the deliberate trailing-hyphen allowance, so a security advisory in a commit
     # message became a ticket reference — in a tool that ships taint analysis.
-    "CVE", "PEP", "RFE", "ADR",
+    "CVE",
+    "PEP",
+    "RFE",
+    "ADR",
 )
 
 # Built from the list above rather than written out, so adding a prefix is a one-word

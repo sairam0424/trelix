@@ -656,9 +656,7 @@ class TestNestedGitignore:
         rels = self._walk(self._repo(tmp_path), respect=False)
 
         for expected in ("root_only.py", "sub/local.py", "sub/harness/bundle.js"):
-            assert expected in rels, (
-                f"{expected} was excluded even though respect_gitignore=False"
-            )
+            assert expected in rels, f"{expected} was excluded even though respect_gitignore=False"
 
     def test_gitignore_in_an_unindexed_directory_still_counts(self, tmp_path: Path) -> None:
         """A .gitignore need not sit beside indexable files to apply.

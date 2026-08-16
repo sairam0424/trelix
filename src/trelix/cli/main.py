@@ -1664,8 +1664,10 @@ def taint(
                 f"pip install {escape('trelix[taint]')}[/yellow]"
             )
         elif scan_result.outcome is ScanOutcome.SEMGREP_FAILED:
-            _print_error("Taint analysis failed — this is NOT a clean result",
-                         scan_result.detail or "semgrep exited with an error")
+            _print_error(
+                "Taint analysis failed — this is NOT a clean result",
+                scan_result.detail or "semgrep exited with an error",
+            )
             if tier != "default":
                 err_console.print(
                     f"[dim]--tier {escape(tier)} requires the Semgrep Pro Engine, which "

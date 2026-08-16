@@ -206,14 +206,27 @@ class TestMigrateVectorsReset:
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         db = Database(db_path)
-        file_id = db.upsert_file(IndexedFile(
-            path=str(tmp_path / "a.py"), rel_path="a.py", language=Language.PYTHON,
-            hash="originalhash", size_bytes=10,
-        ))
-        db.insert_symbol(Symbol(
-            file_id=file_id, name="f", qualified_name="f", kind=SymbolKind.FUNCTION,
-            line_start=1, line_end=2, signature="def f():", body="def f(): pass",
-        ))
+        file_id = db.upsert_file(
+            IndexedFile(
+                path=str(tmp_path / "a.py"),
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="originalhash",
+                size_bytes=10,
+            )
+        )
+        db.insert_symbol(
+            Symbol(
+                file_id=file_id,
+                name="f",
+                qualified_name="f",
+                kind=SymbolKind.FUNCTION,
+                line_start=1,
+                line_end=2,
+                signature="def f():",
+                body="def f(): pass",
+            )
+        )
         db._conn.commit()
         db.set_embedding_dimension(4)
         # A real vec0 table at the OLD dimension, which is the thing a row delete
@@ -268,8 +281,7 @@ class TestMigrateVectorsReset:
             assert db.get_file_hash("a.py") == "", "file hash survived the reset"
             symbol_hash = db._conn.execute("SELECT content_hash FROM symbols").fetchone()[0]
             assert symbol_hash == "", (
-                "symbol content hash survived, so a re-index would re-parse and still "
-                "embed nothing"
+                "symbol content hash survived, so a re-index would re-parse and still embed nothing"
             )
         finally:
             db.close()

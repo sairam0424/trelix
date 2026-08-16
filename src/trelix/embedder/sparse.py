@@ -139,9 +139,7 @@ class SparseEmbedder:
 
                 for i in range(len(batch)):
                     scores = agg[i]  # (vocab_size,)
-                    topk_vals, topk_ids = torch.topk(
-                        scores, k=min(self._top_k, scores.shape[0])
-                    )
+                    topk_vals, topk_ids = torch.topk(scores, k=min(self._top_k, scores.shape[0]))
                     vec: dict[int, float] = {}
                     for tok_id, weight in zip(topk_ids.tolist(), topk_vals.tolist()):
                         if weight > 0.0:

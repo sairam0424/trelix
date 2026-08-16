@@ -671,8 +671,7 @@ class Database:
         symbol_ids = [
             int(r[0])
             for r in self._conn.execute(
-                f"SELECT id FROM symbols WHERE file_id = ? "
-                f"AND qualified_name IN ({placeholders})",
+                f"SELECT id FROM symbols WHERE file_id = ? AND qualified_name IN ({placeholders})",
                 (file_id, *qualified_names),
             ).fetchall()
         ]

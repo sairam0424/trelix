@@ -31,7 +31,7 @@ class TestTaintAnalyzer:
         assert analyzer is not None
 
     def test_run_returns_empty_when_semgrep_not_installed(self, tmp_path: Path) -> None:
-        """"Not installed" means not on PATH — semgrep is invoked via subprocess.
+        """ "Not installed" means not on PATH — semgrep is invoked via subprocess.
 
         This patched `sys.modules` with {"semgrep": None}, which the analyzer never
         consults because it never imports semgrep. The mock was inert, so the test
@@ -70,9 +70,12 @@ class TestTaintAnalyzer:
         # latter leaves the mock INERT and the test shells out to real semgrep against
         # the p/default network registry — slow, offline-fragile, and passing for the
         # wrong reason.
-        with patch.object(
-            analyzer, "_invoke_semgrep", side_effect=RuntimeError("semgrep not found")
-        ), patch("shutil.which", return_value="/usr/bin/semgrep"):
+        with (
+            patch.object(
+                analyzer, "_invoke_semgrep", side_effect=RuntimeError("semgrep not found")
+            ),
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+        ):
             result = analyzer.run()
         assert isinstance(result, list)
 
@@ -127,79 +130,47 @@ REAL_SEMGREP_TAINT_OUTPUT = {
     "results": [
         {
             "check_id": "trelix-test-sql-injection",
-            "end": {
-                "col": 60,
-                "line": 5,
-                "offset": 144
-            },
+            "end": {"col": 60, "line": 5, "offset": 144},
             "extra": {
                 "dataflow_trace": {
                     "intermediate_vars": [
                         {
                             "content": "user",
                             "location": {
-                                "end": {
-                                    "col": 9,
-                                    "line": 3,
-                                    "offset": 42
-                                },
+                                "end": {"col": 9, "line": 3, "offset": 42},
                                 "path": "src/vuln.py",
-                                "start": {
-                                    "col": 5,
-                                    "line": 3,
-                                    "offset": 38
-                                }
-                            }
+                                "start": {"col": 5, "line": 3, "offset": 38},
+                            },
                         }
                     ],
                     "taint_sink": [
                         "CliLoc",
                         [
                             {
-                                "end": {
-                                    "col": 60,
-                                    "line": 5,
-                                    "offset": 144
-                                },
+                                "end": {"col": 60, "line": 5, "offset": 144},
                                 "path": "src/vuln.py",
-                                "start": {
-                                    "col": 5,
-                                    "line": 5,
-                                    "offset": 89
-                                }
+                                "start": {"col": 5, "line": 5, "offset": 89},
                             },
-                            "cur.execute(\"SELECT * FROM t WHERE n = '\" + user + \"'\")"
-                        ]
+                            'cur.execute("SELECT * FROM t WHERE n = \'" + user + "\'")',
+                        ],
                     ],
                     "taint_source": [
                         "CliLoc",
                         [
                             {
-                                "end": {
-                                    "col": 27,
-                                    "line": 3,
-                                    "offset": 60
-                                },
+                                "end": {"col": 27, "line": 3, "offset": 60},
                                 "path": "src/vuln.py",
-                                "start": {
-                                    "col": 12,
-                                    "line": 3,
-                                    "offset": 45
-                                }
+                                "start": {"col": 12, "line": 3, "offset": 45},
                             },
-                            "input(\"name: \")"
-                        ]
-                    ]
+                            'input("name: ")',
+                        ],
+                    ],
                 },
                 "message": "Untrusted input reaches a SQL execute call",
-                "severity": "ERROR"
+                "severity": "ERROR",
             },
             "path": "src/vuln.py",
-            "start": {
-                "col": 5,
-                "line": 5,
-                "offset": 89
-            }
+            "start": {"col": 5, "line": 5, "offset": 89},
         }
     ]
 }
@@ -276,24 +247,41 @@ class TestParserRobustness:
 
     def test_result_without_dataflow_trace_still_parses(self, tmp_path: Path) -> None:
         """Non-taint rules have no trace; the match location is the only location."""
-        flows = self._parse(tmp_path, {"results": [{
-            "check_id": "no-trace-rule",
-            "path": "src/x.py",
-            "start": {"line": 7},
-            "extra": {"severity": "WARNING"},
-        }]})
+        flows = self._parse(
+            tmp_path,
+            {
+                "results": [
+                    {
+                        "check_id": "no-trace-rule",
+                        "path": "src/x.py",
+                        "start": {"line": 7},
+                        "extra": {"severity": "WARNING"},
+                    }
+                ]
+            },
+        )
         assert len(flows) == 1
         assert flows[0].source_line == 7 and flows[0].sink_line == 7
         assert flows[0].severity == "WARNING"
 
     def test_truncated_cliloc_does_not_crash(self, tmp_path: Path) -> None:
         """A ["CliLoc"] with no payload must fall back, not raise."""
-        flows = self._parse(tmp_path, {"results": [{
-            "check_id": "truncated",
-            "path": "src/y.py",
-            "start": {"line": 2},
-            "extra": {"severity": "ERROR", "dataflow_trace": {"taint_sink": ["CliLoc"]}},
-        }]})
+        flows = self._parse(
+            tmp_path,
+            {
+                "results": [
+                    {
+                        "check_id": "truncated",
+                        "path": "src/y.py",
+                        "start": {"line": 2},
+                        "extra": {
+                            "severity": "ERROR",
+                            "dataflow_trace": {"taint_sink": ["CliLoc"]},
+                        },
+                    }
+                ]
+            },
+        )
         assert len(flows) == 1
         assert flows[0].sink_line == 2
 
@@ -303,14 +291,26 @@ class TestParserRobustness:
         Accepting both shapes means the fix cannot regress an environment whose
         semgrep emits the dict form.
         """
-        flows = self._parse(tmp_path, {"results": [{
-            "check_id": "legacy",
-            "path": "src/a.py",
-            "start": {"line": 10},
-            "extra": {"severity": "ERROR", "dataflow_trace": {
-                "taint_sink": {"location": {"path": "src/b.py", "start": {"line": 25}}}
-            }},
-        }]})
+        flows = self._parse(
+            tmp_path,
+            {
+                "results": [
+                    {
+                        "check_id": "legacy",
+                        "path": "src/a.py",
+                        "start": {"line": 10},
+                        "extra": {
+                            "severity": "ERROR",
+                            "dataflow_trace": {
+                                "taint_sink": {
+                                    "location": {"path": "src/b.py", "start": {"line": 25}}
+                                }
+                            },
+                        },
+                    }
+                ]
+            },
+        )
         assert len(flows) == 1
         assert flows[0].sink_file == "src/b.py" and flows[0].sink_line == 25
 
@@ -360,8 +360,9 @@ class TestScanOutcome:
         from trelix.analysis.taint import ScanOutcome
 
         completed = MagicMock(returncode=2, stdout="", stderr="Semgrep Pro is uninstalled")
-        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
-            "subprocess.run", return_value=completed
+        with (
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+            patch("subprocess.run", return_value=completed),
         ):
             result = self._analyzer(tmp_path).scan()
 
@@ -375,14 +376,17 @@ class TestScanOutcome:
 
         from trelix.analysis.taint import ScanOutcome
 
-        payload = _json.dumps({
-            "results": [],
-            "errors": [{"message": "rule parse error"}],
-            "paths": {"scanned": []},
-        })
+        payload = _json.dumps(
+            {
+                "results": [],
+                "errors": [{"message": "rule parse error"}],
+                "paths": {"scanned": []},
+            }
+        )
         completed = MagicMock(returncode=8, stdout=payload, stderr="")
-        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
-            "subprocess.run", return_value=completed
+        with (
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+            patch("subprocess.run", return_value=completed),
         ):
             result = self._analyzer(tmp_path).scan()
 
@@ -397,8 +401,9 @@ class TestScanOutcome:
 
         payload = _json.dumps({"results": [], "errors": [], "paths": {"scanned": []}})
         completed = MagicMock(returncode=0, stdout=payload, stderr="")
-        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
-            "subprocess.run", return_value=completed
+        with (
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+            patch("subprocess.run", return_value=completed),
         ):
             result = self._analyzer(tmp_path).scan()
 
@@ -410,12 +415,17 @@ class TestScanOutcome:
 
         from trelix.analysis.taint import ScanOutcome
 
-        payload = _json.dumps({
-            "results": [], "errors": [], "paths": {"scanned": ["a.py", "b.py"]},
-        })
+        payload = _json.dumps(
+            {
+                "results": [],
+                "errors": [],
+                "paths": {"scanned": ["a.py", "b.py"]},
+            }
+        )
         completed = MagicMock(returncode=0, stdout=payload, stderr="")
-        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
-            "subprocess.run", return_value=completed
+        with (
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+            patch("subprocess.run", return_value=completed),
         ):
             result = self._analyzer(tmp_path).scan()
 
@@ -432,8 +442,9 @@ class TestScanOutcome:
         payload["errors"] = []
         payload["paths"] = {"scanned": ["src/vuln.py"]}
         completed = MagicMock(returncode=1, stdout=_json.dumps(payload), stderr="")
-        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
-            "subprocess.run", return_value=completed
+        with (
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+            patch("subprocess.run", return_value=completed),
         ):
             result = self._analyzer(tmp_path).scan()
 
@@ -446,9 +457,10 @@ class TestScanOutcome:
         """run()'s documented contract must survive scan() being introduced."""
         from unittest.mock import patch
 
-        with patch.object(
-            TaintAnalyzer, "_invoke_semgrep", side_effect=RuntimeError("boom")
-        ), patch("shutil.which", return_value="/usr/bin/semgrep"):
+        with (
+            patch.object(TaintAnalyzer, "_invoke_semgrep", side_effect=RuntimeError("boom")),
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+        ):
             assert TaintAnalyzer(str(tmp_path)).run() == []
 
     def test_failed_scan_is_logged_at_warning(self, tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
@@ -458,8 +470,9 @@ class TestScanOutcome:
 
         completed = MagicMock(returncode=2, stdout="", stderr="Semgrep Pro is uninstalled")
         with caplog.at_level(logging.WARNING, logger="trelix.analysis.taint"):
-            with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
-                "subprocess.run", return_value=completed
+            with (
+                patch("shutil.which", return_value="/usr/bin/semgrep"),
+                patch("subprocess.run", return_value=completed),
             ):
                 TaintAnalyzer(str(tmp_path)).scan()
 
@@ -483,8 +496,9 @@ class TestScanOutcomeRobustness:
         from unittest.mock import MagicMock, patch
 
         completed = MagicMock(returncode=rc, stdout=payload, stderr=stderr)
-        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
-            "subprocess.run", return_value=completed
+        with (
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+            patch("subprocess.run", return_value=completed),
         ):
             return TaintAnalyzer("/tmp").scan()
 
@@ -498,29 +512,38 @@ class TestScanOutcomeRobustness:
         """
         from trelix.analysis.taint import ScanOutcome
 
-        payload = json.dumps({
-            "results": [],
-            "errors": [{"code": 0, "level": "info", "message": "rule skipped"}],
-            "paths": {"scanned": ["a.py"]},
-        })
+        payload = json.dumps(
+            {
+                "results": [],
+                "errors": [{"code": 0, "level": "info", "message": "rule skipped"}],
+                "paths": {"scanned": ["a.py"]},
+            }
+        )
         assert self._scan(payload).outcome is ScanOutcome.OK
 
     def test_an_error_level_entry_is_still_a_failure(self) -> None:
         from trelix.analysis.taint import ScanOutcome
 
-        payload = json.dumps({
-            "results": [], "errors": [{"level": "error", "message": "bad rule"}],
-            "paths": {"scanned": ["a.py"]},
-        })
+        payload = json.dumps(
+            {
+                "results": [],
+                "errors": [{"level": "error", "message": "bad rule"}],
+                "paths": {"scanned": ["a.py"]},
+            }
+        )
         assert self._scan(payload).outcome is ScanOutcome.SEMGREP_FAILED
 
     def test_an_entry_with_no_level_is_treated_as_an_error(self) -> None:
         """Backward compatibility: semgrep omitted `level` before it had the field."""
         from trelix.analysis.taint import ScanOutcome
 
-        payload = json.dumps({
-            "results": [], "errors": [{"message": "bad rule"}], "paths": {"scanned": ["a.py"]},
-        })
+        payload = json.dumps(
+            {
+                "results": [],
+                "errors": [{"message": "bad rule"}],
+                "paths": {"scanned": ["a.py"]},
+            }
+        )
         assert self._scan(payload).outcome is ScanOutcome.SEMGREP_FAILED
 
     @pytest.mark.parametrize("payload", ["null", "[]", '"a string"', "42"])
@@ -547,7 +570,8 @@ class TestScanOutcomeRobustness:
 
         for payload in ("null", "[]", '{"paths": "x"}', "not json at all"):
             completed = MagicMock(returncode=0, stdout=payload, stderr="")
-            with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
-                "subprocess.run", return_value=completed
+            with (
+                patch("shutil.which", return_value="/usr/bin/semgrep"),
+                patch("subprocess.run", return_value=completed),
             ):
                 assert TaintAnalyzer("/tmp").run() == [], f"raised or non-list for {payload!r}"

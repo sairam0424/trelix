@@ -164,8 +164,10 @@ class TestSparseEmbedderBatches:
         def tokenizer(texts, **kwargs):  # type: ignore[no-untyped-def]
             n = len(texts)
             calls.append(n)
-            return {"input_ids": torch.ones((n, 6), dtype=torch.long),
-                    "attention_mask": torch.ones((n, 6), dtype=torch.long)}
+            return {
+                "input_ids": torch.ones((n, 6), dtype=torch.long),
+                "attention_mask": torch.ones((n, 6), dtype=torch.long),
+            }
 
         def model(**inputs):  # type: ignore[no-untyped-def]
             n = inputs["input_ids"].shape[0]

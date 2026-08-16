@@ -978,9 +978,7 @@ class Indexer:
                 # WARNING, not DEBUG: the CLI runs at WARNING, and a summary silently
                 # missing from the 4th retrieval leg is exactly the kind of degradation
                 # that should not need a log-level change to notice.
-                logger.warning(
-                    "File summary skipped for %s (non-fatal): %s", file.rel_path, exc
-                )
+                logger.warning("File summary skipped for %s (non-fatal): %s", file.rel_path, exc)
 
         # ── Phase 2.6: multi-granularity sub-chunk extraction (MGS3) ──────────
         # Runs only when multi_granularity_enabled=True. Failures are non-fatal —
@@ -1321,9 +1319,7 @@ class Indexer:
                     old_chunk_ids = self.db.get_chunk_ids_for_file(existing_file_id)
                     if old_chunk_ids:
                         self.vector_store.delete_batch(old_chunk_ids)
-                    self.db.delete_file_symbols(
-                        existing_file_id, vector_store=self.vector_store
-                    )
+                    self.db.delete_file_symbols(existing_file_id, vector_store=self.vector_store)
                 return {
                     "status": "ok",
                     "symbols_updated": 0,

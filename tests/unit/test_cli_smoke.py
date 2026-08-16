@@ -535,8 +535,13 @@ class TestGraphVisualizeWithJson:
         from unittest.mock import MagicMock, patch
 
         result = MagicMock(
-            node_count=10, edge_count=20, community_count=3, concept_count=0,
-            elapsed_seconds=0.5, community_summary=[], code_graph=MagicMock(),
+            node_count=10,
+            edge_count=20,
+            community_count=3,
+            concept_count=0,
+            elapsed_seconds=0.5,
+            community_summary=[],
+            code_graph=MagicMock(),
         )
         builder = patch("trelix.graph.builder.GraphBuilder")
         return builder, result
@@ -547,9 +552,10 @@ class TestGraphVisualizeWithJson:
         out = tmp_path / "graph.html"
         builder_patch, result = self._patched_builder()
 
-        with builder_patch as MockBuilder, patch(
-            "trelix.graph.visualizer.GraphVisualizer"
-        ) as MockViz:
+        with (
+            builder_patch as MockBuilder,
+            patch("trelix.graph.visualizer.GraphVisualizer") as MockViz,
+        ):
             MockBuilder.return_value.build.return_value = result
             MockViz.return_value.export_html.return_value = str(out)
             res = runner.invoke(
@@ -568,9 +574,10 @@ class TestGraphVisualizeWithJson:
         out = tmp_path / "graph.html"
         builder_patch, result = self._patched_builder()
 
-        with builder_patch as MockBuilder, patch(
-            "trelix.graph.visualizer.GraphVisualizer"
-        ) as MockViz:
+        with (
+            builder_patch as MockBuilder,
+            patch("trelix.graph.visualizer.GraphVisualizer") as MockViz,
+        ):
             MockBuilder.return_value.build.return_value = result
             MockViz.return_value.export_html.return_value = str(out)
             res = runner.invoke(
@@ -787,13 +794,19 @@ class TestGraphVisualizationFailureIsContained:
         from unittest.mock import MagicMock, patch
 
         result = MagicMock(
-            node_count=7, edge_count=9, community_count=2, concept_count=0,
-            elapsed_seconds=0.1, community_summary=[], code_graph=MagicMock(),
+            node_count=7,
+            edge_count=9,
+            community_count=2,
+            concept_count=0,
+            elapsed_seconds=0.1,
+            community_summary=[],
+            code_graph=MagicMock(),
         )
         args = ["graph", str(tmp_path), "--visualize"] + (["--json"] if json_mode else [])
-        with patch("trelix.graph.builder.GraphBuilder") as MockBuilder, patch(
-            "trelix.graph.visualizer.GraphVisualizer"
-        ) as MockViz:
+        with (
+            patch("trelix.graph.builder.GraphBuilder") as MockBuilder,
+            patch("trelix.graph.visualizer.GraphVisualizer") as MockViz,
+        ):
             MockBuilder.return_value.build.return_value = result
             MockViz.return_value.export_html.side_effect = OSError("disk full")
             return runner.invoke(app, args)

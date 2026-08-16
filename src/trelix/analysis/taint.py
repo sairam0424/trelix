@@ -225,9 +225,7 @@ class TaintAnalyzer:
             )
 
         if not scanned:
-            logger.warning(
-                "Taint scan examined 0 files — check the target path and rule languages"
-            )
+            logger.warning("Taint scan examined 0 files — check the target path and rule languages")
             return ScanResult(
                 flows=flows,
                 outcome=ScanOutcome.SCANNED_NOTHING,

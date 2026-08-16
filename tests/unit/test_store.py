@@ -1187,9 +1187,7 @@ class TestVectorSearchExcludesSentinelRows:
             "the sub-chunk sentinel at chunk_id=10000003 was returned as a search result"
         )
 
-    def test_top_k_stays_full_when_sentinels_outrank_real_chunks(
-        self, vs: VectorStore
-    ) -> None:
+    def test_top_k_stays_full_when_sentinels_outrank_real_chunks(self, vs: VectorStore) -> None:
         """The headline regression: sentinels must not consume result slots.
 
         Five real chunks and three sentinels, with the sentinels placed nearer the
@@ -1387,17 +1385,29 @@ class TestSubChunkCleanup:
         from trelix.store.db import Database
 
         db = Database(tmp_path / "index.db")
-        file_id = db.upsert_file(IndexedFile(
-            path="/repo/a.py", rel_path="a.py", language=Language.PYTHON,
-            hash="h", size_bytes=10,
-        ))
+        file_id = db.upsert_file(
+            IndexedFile(
+                path="/repo/a.py",
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="h",
+                size_bytes=10,
+            )
+        )
         ids = {}
         for name in ("alpha", "beta"):
-            sym_id = db.insert_symbol(Symbol(
-                file_id=file_id, name=name, qualified_name=name,
-                kind=SymbolKind.FUNCTION, line_start=1, line_end=2,
-                signature=f"def {name}():", body=f"def {name}(): pass",
-            ))
+            sym_id = db.insert_symbol(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=name,
+                    kind=SymbolKind.FUNCTION,
+                    line_start=1,
+                    line_end=2,
+                    signature=f"def {name}():",
+                    body=f"def {name}(): pass",
+                )
+            )
             ids[name] = sym_id
             db._conn.execute(
                 "INSERT INTO sub_chunks (parent_symbol_id, granularity, chunk_text, "
@@ -1419,17 +1429,13 @@ class TestSubChunkCleanup:
 
         assert self._count(db) == 0, "sub_chunks rows survived the symbol delete"
 
-    def test_deleting_named_symbols_removes_only_their_sub_chunks(
-        self, tmp_path: Path
-    ) -> None:
+    def test_deleting_named_symbols_removes_only_their_sub_chunks(self, tmp_path: Path) -> None:
         """The partial path must not take the surviving symbol's sub-chunks with it."""
         db, file_id, _ = self._seed(tmp_path)
 
         db.delete_symbols_by_qualified_names(file_id, ["alpha"])
 
-        remaining = db._conn.execute(
-            "SELECT chunk_text FROM sub_chunks"
-        ).fetchall()
+        remaining = db._conn.execute("SELECT chunk_text FROM sub_chunks").fetchall()
         assert [r[0] for r in remaining] == ["body of beta"], (
             f"wrong sub-chunks removed: {remaining}"
         )
@@ -1458,10 +1464,15 @@ class TestSubChunkCleanup:
         from trelix.store.db import Database
 
         db = Database(tmp_path / "index.db")
-        file_id = db.upsert_file(IndexedFile(
-            path="/repo/a.py", rel_path="a.py", language=Language.PYTHON,
-            hash="h", size_bytes=10,
-        ))
+        file_id = db.upsert_file(
+            IndexedFile(
+                path="/repo/a.py",
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="h",
+                size_bytes=10,
+            )
+        )
         db._conn.commit()
         store = MagicMock()
 

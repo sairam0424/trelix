@@ -365,9 +365,7 @@ class TestQueryPlannerCarriesCredentialsFromEmbedderConfig:
             "plan() call will silently fall back to default_plan()"
         )
 
-    def test_credentials_are_not_read_from_the_process_environment(
-        self, monkeypatch
-    ) -> None:  # type: ignore[no-untyped-def]
+    def test_credentials_are_not_read_from_the_process_environment(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         """The fix must work with the environment explicitly cleared.
 
         Otherwise the test would pass on a developer machine that happens to export

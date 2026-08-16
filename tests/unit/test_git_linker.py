@@ -338,8 +338,7 @@ class TestMergeCommitsAreNotSkipped:
         for tickets, files in records:
             if "PROJ-742" in tickets:
                 assert files.count("feature.py") == 1, (
-                    f"feature.py appears {files.count('feature.py')} times in one "
-                    "merge record"
+                    f"feature.py appears {files.count('feature.py')} times in one merge record"
                 )
 
     def test_ordinary_commits_are_unaffected(self, tmp_path: Path) -> None:
@@ -402,33 +401,54 @@ class TestDefaultTicketPattern:
 
     @pytest.mark.parametrize(
         "text",
-        ["PROJ-123", "ENG-45", "SCRUM-1", "AB-9", "TRELIX-9999",
-         "Merge pull request #12 from feature/PROJ-456-thing",
-         "fix/NS-3-cleanup",
-         # A bounded digit run (\d{1,6}) plus the trailing guard made these match
-         # NOTHING: every truncation the regex tried was followed by another digit, so
-         # the lookahead rejected each one in turn. A false negative is the worse
-         # failure here, because linking is the entire point.
-         "PROJ-1234567", "ENG-1234567 fix",
-         # A HYPHEN before the key is normal in branch and tag names, and the leading
-         # lookbehind used to reject it.
-         "feature-PROJ-123", "release-2024-ENG-45"],
+        [
+            "PROJ-123",
+            "ENG-45",
+            "SCRUM-1",
+            "AB-9",
+            "TRELIX-9999",
+            "Merge pull request #12 from feature/PROJ-456-thing",
+            "fix/NS-3-cleanup",
+            # A bounded digit run (\d{1,6}) plus the trailing guard made these match
+            # NOTHING: every truncation the regex tried was followed by another digit, so
+            # the lookahead rejected each one in turn. A false negative is the worse
+            # failure here, because linking is the entire point.
+            "PROJ-1234567",
+            "ENG-1234567 fix",
+            # A HYPHEN before the key is normal in branch and tag names, and the leading
+            # lookbehind used to reject it.
+            "feature-PROJ-123",
+            "release-2024-ENG-45",
+        ],
     )
     def test_real_ticket_shapes_are_matched(self, text: str) -> None:
         assert self._re().search(text), f"{text!r} contains a ticket key and was missed"
 
     @pytest.mark.parametrize(
         "text",
-        ["encoded as UTF-8", "SHA-256 digest", "returns HTTP-400", "BASE-64 payload",
-         "ISO-8601 timestamp", "see RFC-2616", "MD-5 hash", "AES-256-GCM",
-         # Digit-bearing spellings of the same constants. The key prefix admits digits
-         # ([A-Z][A-Z0-9]{1,9}) while the vocabulary lists only digit-free spellings, so
-         # these all read as ticket keys until the lookahead allowed a version number.
-         "SHA3-256 digest", "built for X86-64", "an IPV6-1 address", "SHA256-1 hash",
-         "UTF8-1 encoding", "MD5-1 checksum",
-         # Identifier schemes with the same shape. CVE matters most: the deliberate
-         # trailing-hyphen allowance truncated "CVE-2021-44228" to a "CVE-2021" ticket.
-         "fixes CVE-2021-44228", "per PEP-484"],
+        [
+            "encoded as UTF-8",
+            "SHA-256 digest",
+            "returns HTTP-400",
+            "BASE-64 payload",
+            "ISO-8601 timestamp",
+            "see RFC-2616",
+            "MD-5 hash",
+            "AES-256-GCM",
+            # Digit-bearing spellings of the same constants. The key prefix admits digits
+            # ([A-Z][A-Z0-9]{1,9}) while the vocabulary lists only digit-free spellings, so
+            # these all read as ticket keys until the lookahead allowed a version number.
+            "SHA3-256 digest",
+            "built for X86-64",
+            "an IPV6-1 address",
+            "SHA256-1 hash",
+            "UTF8-1 encoding",
+            "MD5-1 checksum",
+            # Identifier schemes with the same shape. CVE matters most: the deliberate
+            # trailing-hyphen allowance truncated "CVE-2021-44228" to a "CVE-2021" ticket.
+            "fixes CVE-2021-44228",
+            "per PEP-484",
+        ],
     )
     def test_technical_constants_are_not_tickets(self, text: str) -> None:
         match = self._re().search(text)
@@ -502,8 +522,9 @@ class TestLinkTicketsHonoursEnvironmentConfig:
         from trelix.cli.main import app
 
         self._FakeLinker.seen = {}
-        with patch.dict(os.environ, env, clear=False), patch(
-            "trelix.indexing.git_linker.GitLinker", self._FakeLinker
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("trelix.indexing.git_linker.GitLinker", self._FakeLinker),
         ):
             CliRunner().invoke(app, ["link-tickets", "."] + args)
         return self._FakeLinker.seen

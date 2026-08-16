@@ -260,8 +260,9 @@ class TestResetActuallyResets:
         store = MagicMock()
         db.clear_all_embeddings(vector_store=store)
 
-        store.recreate.assert_called_once(), (
-            "clearing must go through the store, which owns the virtual table"
+        (
+            store.recreate.assert_called_once(),
+            ("clearing must go through the store, which owns the virtual table"),
         )
 
     def test_invalidate_file_hashes_reports_what_it_changed(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -270,10 +271,15 @@ class TestResetActuallyResets:
 
         db = Database(tmp_path / "index.db")
         for name in ("a.py", "b.py"):
-            db.upsert_file(IndexedFile(
-                path=f"/repo/{name}", rel_path=name, language=Language.PYTHON,
-                hash="deadbeef", size_bytes=10,
-            ))
+            db.upsert_file(
+                IndexedFile(
+                    path=f"/repo/{name}",
+                    rel_path=name,
+                    language=Language.PYTHON,
+                    hash="deadbeef",
+                    size_bytes=10,
+                )
+            )
         db._conn.commit()
 
         assert db.invalidate_all_file_hashes() == 2
@@ -285,14 +291,27 @@ class TestResetActuallyResets:
         from trelix.store.db import Database
 
         db = Database(tmp_path / "index.db")
-        file_id = db.upsert_file(IndexedFile(
-            path="/repo/a.py", rel_path="a.py", language=Language.PYTHON,
-            hash="deadbeef", size_bytes=10,
-        ))
-        db.insert_symbol(Symbol(
-            file_id=file_id, name="f", qualified_name="f", kind=SymbolKind.FUNCTION,
-            line_start=1, line_end=2, signature="def f():", body="def f(): pass",
-        ))
+        file_id = db.upsert_file(
+            IndexedFile(
+                path="/repo/a.py",
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="deadbeef",
+                size_bytes=10,
+            )
+        )
+        db.insert_symbol(
+            Symbol(
+                file_id=file_id,
+                name="f",
+                qualified_name="f",
+                kind=SymbolKind.FUNCTION,
+                line_start=1,
+                line_end=2,
+                signature="def f():",
+                body="def f(): pass",
+            )
+        )
         db._conn.commit()
 
         assert db.invalidate_all_symbol_hashes() == 1
