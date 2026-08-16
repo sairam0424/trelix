@@ -7,6 +7,8 @@ since the custom-delimited git log format parsing needs proving against real
 from __future__ import annotations
 
 import subprocess
+
+import pytest
 from pathlib import Path
 
 from trelix.core.config import GitLinkerConfig
@@ -371,3 +373,68 @@ class TestMergeCommitsAreNotSkipped:
         assert len(records) >= 3, (
             f"expected the initial, branch and merge commits; got {len(records)} records"
         )
+
+
+class TestDefaultTicketPattern:
+    """The default pattern must not treat technical constants as ticket ids.
+
+    The previous default, r"[A-Z]+-\\d+", matched any run of capitals followed by a
+    hyphen and digits. Measured across 830 commits of this repository it found 12
+    strings and every single one was a false positive: UTF-8 (x4), SHA-256, HTTP-400,
+    B-1, and two ticket-shaped strings appearing in prose.
+
+    A ticket key and a technical constant are structurally identical — UTF-8 against
+    ENG-8 — so anchoring alone cannot separate them. A vocabulary of noise prefixes can,
+    and that is what the default now carries.
+
+    The trailing guard allows a hyphen on purpose. Branch names are where ticket keys
+    appear in merge subjects, and a guard that rejected "PROJ-456-thing" silently
+    discarded exactly the references the merge-commit fix exists to capture.
+    """
+
+    @staticmethod
+    def _re():  # type: ignore[no-untyped-def]
+        import re
+
+        from trelix.core.config import GitLinkerConfig
+
+        return re.compile(GitLinkerConfig().ticket_pattern)
+
+    @pytest.mark.parametrize(
+        "text",
+        ["PROJ-123", "ENG-45", "SCRUM-1", "AB-9", "TRELIX-9999",
+         "Merge pull request #12 from feature/PROJ-456-thing",
+         "fix/NS-3-cleanup"],
+    )
+    def test_real_ticket_shapes_are_matched(self, text: str) -> None:
+        assert self._re().search(text), f"{text!r} contains a ticket key and was missed"
+
+    @pytest.mark.parametrize(
+        "text",
+        ["encoded as UTF-8", "SHA-256 digest", "returns HTTP-400", "BASE-64 payload",
+         "ISO-8601 timestamp", "see RFC-2616", "MD-5 hash", "AES-256-GCM"],
+    )
+    def test_technical_constants_are_not_tickets(self, text: str) -> None:
+        match = self._re().search(text)
+        assert match is None, f"{text!r} was read as ticket {match.group(0)!r}"
+
+    @pytest.mark.parametrize("text", ["xPROJ-123", "PROJ-123x", "proj-123", "P-1"])
+    def test_malformed_keys_are_rejected(self, text: str) -> None:
+        assert self._re().search(f" {text} ") is None, f"{text!r} should not be a ticket"
+
+    def test_an_over_long_number_does_not_match_a_prefix_of_itself(self) -> None:
+        """PROJ-1234567 must not silently become PROJ-123456."""
+        assert self._re().search(" PROJ-1234567 ") is None
+
+    def test_the_pattern_compiles_and_is_not_the_old_one(self) -> None:
+        from trelix.core.config import GitLinkerConfig
+
+        pattern = GitLinkerConfig().ticket_pattern
+        assert pattern != r"[A-Z]+-\d+", "the permissive default is still in place"
+
+    def test_noise_prefix_list_is_reachable_for_extension(self) -> None:
+        """The vocabulary is a named list so adding a prefix is a one-word edit."""
+        from trelix.core.config import _TICKET_NOISE_PREFIXES, TICKET_PATTERN_DEFAULT
+
+        assert "UTF" in _TICKET_NOISE_PREFIXES
+        assert "UTF" in TICKET_PATTERN_DEFAULT

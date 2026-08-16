@@ -28,6 +28,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
+from trelix.core.config import TICKET_PATTERN_DEFAULT
 from trelix.federation.registry import RepoRegistry
 
 if TYPE_CHECKING:
@@ -741,8 +742,13 @@ def link_tickets(
         help='Only walk commits after this date, e.g. "90 days ago" (passed to git log --since)',
     ),
     ticket_pattern: str = typer.Option(
-        r"[A-Z]+-\d+",
-        help='Regex for ticket IDs in commit messages (default: Jira-style "PROJ-123")',
+        # Sourced from the config module rather than restated here. This default is
+        # passed unconditionally, so it overrides GitLinkerConfig's — duplicating the
+        # literal is what let the two drift apart, leaving the CLI on a permissive
+        # pattern that matched UTF-8 and SHA-256 as ticket ids.
+        TICKET_PATTERN_DEFAULT,
+        help='Regex for ticket IDs in commit messages (default: Jira-style "PROJ-123", '
+        "excluding technical constants like UTF-8)",
     ),
 ) -> None:
     """

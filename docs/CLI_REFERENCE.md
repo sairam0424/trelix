@@ -1078,7 +1078,7 @@ index prevents duplicate edges from being created.
 |--------|------|---------|-------------|
 | `--max-commits` | integer | `5000` | Maximum number of commits to walk. Bounds cost on large repos with long histories. |
 | `--since` | string | _(none)_ | Only walk commits after this date, e.g. `"90 days ago"`. Passed straight through to `git log --since`. |
-| `--ticket-pattern` | string (regex) | `[A-Z]+-\d+` | Regex for matching ticket IDs in commit messages. The default matches Jira-style tickets (`PROJ-123`); override for other conventions, e.g. GitHub-issue style (`#\d+`). |
+| `--ticket-pattern` | string (regex) | see `TICKET_PATTERN_DEFAULT` | Regex for matching ticket IDs in commit messages. Matches Jira/Linear-style keys (`PROJ-123`, `ENG-45`), including inside branch names in merge subjects (`feature/PROJ-456-thing`), while excluding technical constants that share the same shape (`UTF-8`, `SHA-256`, `HTTP-400`). Override for other conventions, e.g. GitHub-issue style (`#\d+`). |
 
 #### Examples
 

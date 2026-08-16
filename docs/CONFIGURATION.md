@@ -243,7 +243,7 @@ Configuration for [`trelix link-tickets`](CLI_REFERENCE.md#trelix-link-tickets),
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_GIT_LINKER_ENABLED` | `false` | Enable git-history ticket linking. Set to `true` automatically by `trelix link-tickets`; not something you typically set directly. |
-| `TRELIX_GIT_LINKER_TICKET_PATTERN` | `[A-Z]+-\d+` | Regex for matching ticket IDs in commit messages. The default matches Jira-style tickets (`PROJ-123`); override for other conventions (GitHub `#123`, Linear `ENG-123`). |
+| `TRELIX_GIT_LINKER_TICKET_PATTERN` | see `TICKET_PATTERN_DEFAULT` in `core/config.py` | Regex for matching ticket IDs in commit messages. Matches Jira/Linear-style keys (`PROJ-123`, `ENG-45`), including inside branch names in merge subjects (`feature/PROJ-456-thing`), while excluding technical constants that share the same shape (`UTF-8`, `SHA-256`, `HTTP-400`). Override for other conventions, e.g. GitHub-issue style (`#\d+`). |
 | `TRELIX_GIT_LINKER_MAX_COMMITS` | `5000` (min: `1`) | Maximum number of commits to walk. Bounds cost on repos with 100k+ commit histories. |
 | `TRELIX_GIT_LINKER_SINCE` | _(none)_ | Only walk commits after this date, e.g. `"90 days ago"`. Passed straight through to `git log --since`. |
 
@@ -450,7 +450,7 @@ TRELIX_FEDERATION_MAX_WORKERS=4
 # ---------------------------------------------------------------------------
 
 # TRELIX_GIT_LINKER_ENABLED=false
-# TRELIX_GIT_LINKER_TICKET_PATTERN=[A-Z]+-\d+
+# TRELIX_GIT_LINKER_TICKET_PATTERN=   # default excludes UTF-8/SHA-256-style noise
 # TRELIX_GIT_LINKER_MAX_COMMITS=5000
 # TRELIX_GIT_LINKER_SINCE=90 days ago
 

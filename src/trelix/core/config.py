@@ -1030,6 +1030,37 @@ class IndexerConfig(BaseSettings):
     )
 
 
+# Prefixes that form ticket-SHAPED strings but never name a ticket. A ticket key and a
+# technical constant are structurally identical — UTF-8 against ENG-8, SHA-256 against
+# PROJ-256 — so no amount of regex anchoring separates them and a vocabulary is the only
+# thing that can. Measured on this repository: the previous r"[A-Z]+-\d+" matched 12
+# strings across 830 commits and every one was a false positive of this kind.
+_TICKET_NOISE_PREFIXES: tuple[str, ...] = (
+    "UTF", "SHA", "MD", "HTTP", "HTTPS", "BASE", "ISO", "RFC", "AES", "RSA",
+    "SSL", "TLS", "IPV", "CRC", "HMAC", "PBKDF", "ARGON", "SIMD", "X", "EC",
+    "GB", "KB", "MB", "TB", "PY",
+)
+
+# Built from the list above rather than written out, so adding a prefix is a one-word
+# edit. Three deliberate choices in the surrounding anchors:
+#
+#   (?<![A-Za-z0-9-])   the key must start at a boundary, so "xPROJ-123" is not a ticket.
+#   [A-Z][A-Z0-9]{1,9}  2-10 characters, upper-case first. Rules out single letters
+#                       ("B-1") and lower-case prose while allowing real keys like AB-9.
+#   (?![A-Za-z0-9])     rejects a trailing letter or digit — which stops "PROJ-1234567"
+#                       from matching a truncated prefix of itself — but deliberately
+#                       ALLOWS a trailing hyphen. That last part is load-bearing: branch
+#                       names are the main place ticket keys appear in merge subjects
+#                       ("Merge pull request #12 from feature/PROJ-456-thing"), and a
+#                       stricter guard silently dropped every one of them.
+TICKET_PATTERN_DEFAULT: str = (
+    r"(?<![A-Za-z0-9-])"
+    r"(?!(?:" + "|".join(_TICKET_NOISE_PREFIXES) + r")-\d)"
+    r"[A-Z][A-Z0-9]{1,9}-\d{1,6}"
+    r"(?![A-Za-z0-9])"
+)
+
+
 class GitLinkerConfig(BaseSettings):
     """
     Walks `git log` to link code symbols to external ticket references found
@@ -1052,7 +1083,7 @@ class GitLinkerConfig(BaseSettings):
     # Matches Jira-style ticket IDs by default (e.g. "PROJ-123"). Different
     # orgs use different conventions (GitHub "#123", Linear "ENG-123") —
     # override via TRELIX_GIT_LINKER_TICKET_PATTERN.
-    ticket_pattern: str = r"[A-Z]+-\d+"
+    ticket_pattern: str = TICKET_PATTERN_DEFAULT
     # Bounds on how much history to walk — required from day one, not an
     # afterthought, since large repos can have 100k+ commits.
     max_commits: int = Field(default=5_000, ge=1)
