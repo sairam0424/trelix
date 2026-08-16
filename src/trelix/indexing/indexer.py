@@ -433,9 +433,44 @@ class Indexer:
             logger.debug("Streaming index: resolution pass failed (non-fatal): %s", exc)
 
         results["elapsed_seconds"] = round(time.perf_counter() - t_start, 2)
+        self._record_provenance()
         return results
 
+    def _capture_provenance(self) -> None:
+        """Snapshot git and embedder state BEFORE any file is walked.
+
+        Deliberately not captured at the end. File hashes are computed during the walk,
+        so if a caller commits mid-run, end-of-run capture would pair the *new* commit
+        with content from the old one — recording an index as more current than it is,
+        which is the direction that causes silent wrong answers. Start-of-run capture
+        errs the safe way: the index may be attributed to an older commit than the tree
+        now at HEAD, which `trelix stats` reports as drift rather than hiding.
+        """
+        from trelix.store.provenance import capture_provenance
+
+        self._provenance = capture_provenance(self.config)
+
+    def _record_provenance(self) -> None:
+        """Persist the provenance captured at the start of this run.
+
+        Written at the end so a run that crashed partway through does not leave a record
+        claiming a complete index. Read back by `trelix stats`, which previously had no
+        way to answer "does this index reflect my worktree" — `index_metadata` held only
+        the embedding dimension.
+        """
+        from trelix.store.provenance import write_provenance
+
+        provenance = getattr(self, "_provenance", None)
+        if provenance is None:
+            logger.debug("No provenance captured for this run; nothing to record")
+            return
+        write_provenance(self.db, provenance)
+
     def index(self) -> dict[str, Any]:
+        # Captured before the routing below so both pipelines record it, and before any
+        # file is walked so the commit matches the content that gets hashed.
+        self._capture_provenance()
+
         # Route to streaming pipeline when enabled
         if getattr(self.config, "indexer", None) and self.config.indexer.streaming_enabled:
             return self._index_streaming(self.config.repo_path)
@@ -588,6 +623,7 @@ class Indexer:
             stats["errors"],
             stats["elapsed_seconds"],
         )
+        self._record_provenance()
         self._console.print(f"\n[green]Done.[/green] {stats}")
         return stats
 

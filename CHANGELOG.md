@@ -296,6 +296,12 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
   via `trelix taint`.
 - **SPLADE-Code models cannot be used** as the sparse model until `sparse.py` grows a
   causal-LM path; the default is a general SPLADE v3 checkpoint instead.
+- **Provenance is refreshed only by a full `trelix index`.** `trelix update-index` and
+  `trelix watch` go through `index_file()`, which does not touch it, so the recorded commit
+  can name an older tree than the index actually contains. Deliberate rather than
+  overlooked: a per-file update has no single commit to attribute the index to, and
+  stamping the current `HEAD` after touching one file would assert the whole index is
+  current when it is not. `trelix stats --drift` is unaffected — it compares file hashes.
 - **Ops-language ranking weight is an open question, not a tuned value.** The five
   line-window languages have no `file_type_weights` entry, so `fusion.py` gives them its
   1.0 fallback — the same weight as parsed Python, despite carrying less structural
@@ -360,6 +366,46 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
   wrong score from it: paths are compared by exact string equality, and an entry with
   no `relevant_files` is skipped rather than failed.
 
+- **Index provenance, reported by `trelix stats`.** `index_metadata` held exactly one row
+  — `embedding_dimension` — so nothing recorded *what* an index was a snapshot of. A
+  stale index does not fail loudly; it returns confident, well-ranked answers about code
+  that has since changed. `trelix stats` now reports the commit, branch, worktree
+  cleanliness, timestamp, trelix version and embedder the index was built from, plus how
+  many commits `HEAD` has moved since.
+
+  Captured at the **start** of an index run, not the end. Hashes are computed during the
+  walk, so end-of-run capture would pair a newer commit with older content — recording an
+  index as more current than it is, which is the direction that produces silent wrong
+  answers. Written at the end, so a run that crashed partway leaves no record claiming
+  completeness.
+
+  A pre-v3.1.2 index says provenance was not recorded rather than guessing, and every
+  field degrades independently — a non-git directory or absent `git` binary still records
+  version and embedder rather than failing the index.
+
+- **`trelix stats --drift`** — compares every indexable file on disk against its stored
+  hash, reporting changed / not-yet-indexed / indexed-but-not-found counts. Opt-in
+  because it costs a full walk plus a SHA-256 per file, where the rest of `stats` is a
+  few SQL counts. It reuses `FileWalker` rather than reimplementing discovery: the
+  indexer's own staleness rule is `db.get_file_hash(rel_path) != file.hash`, and a
+  divergent hash would report every file stale on a freshly built index.
+
+  `Indexed but not found` is deliberately **not** presented as a list of deletions. It is
+  "indexed paths this walk did not yield", which has two innocent explanations, and both
+  are surfaced above the counts because acting on the number deletes embeddings that cost
+  money to recompute:
+
+  - an incomplete walk (a directory that could not be read), using the walk-completeness
+    signal added earlier in this release;
+  - **a changed walk config**, which is now detectable because the walk-determining
+    settings are recorded at index time and any difference is named in the output.
+    Measured while building this: a drift check run without `scripts/self-index.sh`'s
+    environment reported **35 present files** under `packages/` as deleted, because
+    `TRELIX_WALKER_*` is process-env-only and `EXTRA_IGNORE_DIRS` replaces the default
+    30-entry list (which contains `packages` for .NET NuGet output) rather than extending
+    it. An index predating the recording reports `missing` as unverified rather than
+    trustworthy.
+
 - **Ops artifacts are indexed: shell, Dockerfile, Makefile, SQL and protobuf** (21 → 26
   languages). Two independent gaps had to close for this to work, and either alone would
   have left the files unreachable:
@@ -390,6 +436,14 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
 
 ### Changed
 
+- `Database` gained generic `get_index_metadata` / `set_index_metadata` /
+  `delete_index_metadata` / `get_index_metadata_with_prefix`, and the three
+  `embedding_dimension` helpers now delegate to them instead of carrying their own copy
+  of the upsert. The prefix query escapes `LIKE` wildcards: `_` is a single-character
+  wildcard in SQL, so an unescaped prefix of `a_` also matches `abx`.
+- `docs/GETTING_STARTED.md` no longer claims `trelix stats` prints a language breakdown.
+  It never did — the row also promised "embedder, timestamp", which only became true with
+  provenance above.
 - `TRELIX_PARSER_TAINT` is documented as **inert**. `ParserConfig.taint_enabled` is
   declared and read nowhere in `src/`; taint analysis happens only when `trelix taint`
   runs, and that command does not consult it. It had been documented as "Enable

@@ -422,7 +422,7 @@ trelix call-graph . "trelix.retrieval.retriever" --direction importers
 #### Synopsis
 
 ```
-trelix stats <repo_path>
+trelix stats <repo_path> [--drift]
 ```
 
 #### Description
@@ -431,20 +431,52 @@ Reads the SQLite index at `<repo_path>/.trelix/index.db` and prints a summary
 table showing the number of indexed files, symbols, chunks, and database size
 on disk.
 
+Also prints **provenance** — the commit, branch, worktree cleanliness, timestamp,
+trelix version and embedder the index was built from — and how many commits `HEAD`
+has moved since. Provenance is recorded at the *start* of an index run, so a caller
+who commits mid-index gets the commit whose content was actually hashed rather than
+a newer one, which would make a stale index read as current.
+
+An index created before v3.1.2 has no provenance and says so rather than guessing.
+
 #### Options
 
-None.
+| Option | Default | Description |
+|---|---|---|
+| `--drift` | off | Also compare every indexable file on disk against its stored hash, reporting counts of changed / not-yet-indexed / indexed-but-not-found files |
+
+`--drift` is opt-in because it costs a full walk plus a SHA-256 of every file, which
+is proportional to repository size — the rest of `stats` is a handful of SQL counts.
 
 #### Examples
 
 ```bash
 trelix stats .
+trelix stats . --drift
 trelix stats /path/to/large-repo
 ```
 
 #### Notes
 
 - Exits with code 1 if no index exists. Run `trelix index <repo_path>` first.
+- **`Indexed but not found` is not a list of deletions.** It is "indexed paths this
+  walk did not yield", which also covers files under a directory the walk could not
+  read, and files the current ignore rules exclude. Both are reported explicitly
+  above the counts; do not prune on this output.
+- **Provenance describes the last full `trelix index`, not the last change.**
+  `trelix update-index` and `trelix watch` update individual files without refreshing it,
+  so the recorded commit can name an older tree than the index now contains. `--drift` is
+  the authoritative answer in that situation, since it compares actual file hashes and is
+  unaffected.
+- **Run `--drift` with the same environment that built the index.** `TRELIX_WALKER_*`
+  is read from the process environment only, never from `.env`, and
+  `TRELIX_WALKER_EXTRA_IGNORE_DIRS` *replaces* the default list rather than extending
+  it — so the config a later command reconstructs is routinely not the one that built
+  the index. Measured on this repository: a drift check run without
+  `scripts/self-index.sh`'s environment reported 35 present files under `packages/` as
+  deleted, because the default ignore list contains `packages` for .NET NuGet output.
+  The walk settings are recorded at index time and any difference is named in the
+  output, so this is now detectable rather than silent.
 
 ---
 

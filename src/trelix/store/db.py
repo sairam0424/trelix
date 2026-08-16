@@ -2293,28 +2293,67 @@ class Database:
     # index_metadata helpers (v2.3 Plan E: embedding dimension guard)
     # ------------------------------------------------------------------
 
-    def get_embedding_dimension(self) -> int | None:
-        """Return stored embedding dimension, or None if not yet recorded."""
+    def get_index_metadata(self, key: str) -> str | None:
+        """Return a raw `index_metadata` value, or None if the key is absent."""
         row = self._conn.execute(
-            "SELECT value FROM index_metadata WHERE key = 'embedding_dimension'"
+            "SELECT value FROM index_metadata WHERE key = ?", (key,)
         ).fetchone()
-        if row is None:
-            return None
-        return int(row[0])
+        return None if row is None else str(row[0])
 
-    def set_embedding_dimension(self, dimension: int) -> None:
-        """Store the embedding dimension used for this index."""
+    def set_index_metadata(self, key: str, value: str) -> None:
+        """Upsert a raw `index_metadata` value."""
         self._conn.execute(
-            "INSERT INTO index_metadata (key, value) VALUES ('embedding_dimension', ?) "
+            "INSERT INTO index_metadata (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (str(dimension),),
+            (key, value),
         )
         self._conn.commit()
 
+    def delete_index_metadata(self, key: str) -> None:
+        """Remove a key from `index_metadata`. A missing key is not an error."""
+        self._conn.execute("DELETE FROM index_metadata WHERE key = ?", (key,))
+        self._conn.commit()
+
+    def get_index_metadata_with_prefix(self, prefix: str) -> dict[str, str]:
+        """Return every key starting with `prefix`, with the prefix stripped.
+
+        LIKE with an explicit ESCAPE, because a prefix containing `_` — and the
+        provenance keys do — would otherwise have it treated as a single-character
+        wildcard and match keys it should not.
+        """
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        rows = self._conn.execute(
+            "SELECT key, value FROM index_metadata WHERE key LIKE ? ESCAPE '\\'",
+            (escaped + "%",),
+        ).fetchall()
+        return {str(k)[len(prefix) :]: str(v) for k, v in rows}
+
+    # The three below predate the generic helpers and are kept as the named API the
+    # dimension guard and its tests already call. They delegate rather than duplicate
+    # the SQL: the guard's whole job is to be trustworthy about a mismatch, and two
+    # copies of an upsert are two places for it to drift.
+
+    def get_embedding_dimension(self) -> int | None:
+        """Return stored embedding dimension, or None if not yet recorded."""
+        value = self.get_index_metadata("embedding_dimension")
+        return None if value is None else int(value)
+
+    def set_embedding_dimension(self, dimension: int) -> None:
+        """Store the embedding dimension used for this index."""
+        self.set_index_metadata("embedding_dimension", str(dimension))
+
     def delete_embedding_dimension_key(self) -> None:
         """Delete the stored embedding_dimension key from index_metadata."""
-        self._conn.execute("DELETE FROM index_metadata WHERE key = 'embedding_dimension'")
-        self._conn.commit()
+        self.delete_index_metadata("embedding_dimension")
+
+    def get_all_file_rel_paths(self) -> list[str]:
+        """Every indexed file's repo-relative path.
+
+        Used to find indexed files the walk no longer yields. Returned as a list rather
+        than a generator because the caller diffs it against a set — streaming would buy
+        nothing and invites the connection being reused mid-iteration.
+        """
+        return [str(r[0]) for r in self._conn.execute("SELECT rel_path FROM files")]
 
     def clear_all_embeddings(self, vector_store: object | None = None) -> None:
         """

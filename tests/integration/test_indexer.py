@@ -203,3 +203,73 @@ def test_index_file_single_update(mini_repo: Path) -> None:
     assert result["symbols_updated"] > 0, (
         f"Expected symbols_updated > 0 after file modification, got {result}"
     )
+
+
+def test_a_real_index_run_records_provenance(mini_repo: Path) -> None:
+    """`index()` must persist what it was built from, not just the embeddings.
+
+    Wiring test rather than a unit test: capture happens at the top of `index()` before
+    it routes to the streaming pipeline, and the write happens at the tail of whichever
+    pipeline ran. Both halves can be individually correct while the pair is never
+    invoked, which is exactly the failure a unit test on the module would miss.
+    """
+    from trelix.store.db import Database
+    from trelix.store.provenance import read_provenance
+
+    config = _make_config(mini_repo)
+    Indexer(config, quiet=True).index()
+
+    with Database(config.db_path_absolute) as db:
+        provenance = read_provenance(db)
+
+    assert not provenance.is_empty, "index() completed without recording any provenance"
+    assert provenance.trelix_version is not None
+    assert provenance.indexed_at is not None
+    assert provenance.embedder_provider == "local"
+    # The walk config is what makes a later drift check trustworthy; an index that omits
+    # it silently downgrades `trelix stats --drift` to unverifiable.
+    assert provenance.walk_config is not None
+
+
+def test_drift_is_clean_immediately_after_indexing(mini_repo: Path) -> None:
+    """The strongest available check that drift and the indexer agree on 'unchanged'.
+
+    They must share both the hash function and the ignore filters. If either diverged,
+    every file would read as stale (or as new) the instant an index finished — a report
+    that is permanently wrong in a way no aggregate would reveal.
+    """
+    from trelix.store.db import Database
+    from trelix.store.provenance import compute_drift
+
+    config = _make_config(mini_repo)
+    Indexer(config, quiet=True).index()
+
+    with Database(config.db_path_absolute) as db:
+        report = compute_drift(config, db)
+
+    assert report.is_clean, (
+        f"fresh index already reports drift — stale={report.stale} new={report.new} "
+        f"missing={report.missing}"
+    )
+    assert report.unchanged_count > 0
+    assert report.missing_is_trustworthy, (
+        "an index written by this run must record a comparable walk config"
+    )
+
+
+def test_editing_a_file_after_indexing_shows_up_as_drift(mini_repo: Path) -> None:
+    """The end-to-end path the feature exists for: index, edit, detect."""
+    from trelix.store.db import Database
+    from trelix.store.provenance import compute_drift
+
+    config = _make_config(mini_repo)
+    Indexer(config, quiet=True).index()
+
+    py_file = mini_repo / "calc.py"
+    py_file.write_text(py_file.read_text() + "\n\ndef divide(a, b):\n    return a / b\n")
+
+    with Database(config.db_path_absolute) as db:
+        report = compute_drift(config, db)
+
+    assert "calc.py" in report.stale, f"edited file not detected as stale: {report.stale}"
+    assert report.missing == (), "editing a file must not make anything look deleted"

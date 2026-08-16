@@ -32,6 +32,7 @@ from trelix.federation.registry import RepoRegistry
 
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig
+    from trelix.store.provenance import DriftReport, IndexProvenance
 
 # Windows' legacy console codepage (cp1252 etc.) can't encode the Unicode
 # braille glyphs Rich's default spinner renders (e.g. U+280B), crashing with
@@ -674,6 +675,14 @@ def call_graph(
 @app.command()
 def stats(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
+    drift: bool = typer.Option(
+        False,
+        "--drift",
+        help=(
+            "Also compare every indexable file on disk against its stored hash. "
+            "Costs a full walk plus a SHA-256 per file, so it is off by default."
+        ),
+    ),
 ) -> None:
     """Show index statistics (files, symbols, chunks, DB size)"""
     _setup_logging(False)
@@ -704,6 +713,8 @@ def stats(
         )
         raise typer.Exit(1)
 
+    from trelix.store.provenance import commits_since, compute_drift, read_provenance
+
     try:
         with Database(db_path) as db:
             conn = db._conn
@@ -711,6 +722,10 @@ def stats(
             symbol_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
             chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             db_size_bytes = db_path.stat().st_size
+            provenance = read_provenance(db)
+            # Computed inside the `with` because it reads per-file hashes back out of
+            # this same connection.
+            drift_report = compute_drift(config, db) if drift else None
     except Exception as exc:
         _print_error("Failed to read index", exc)
         raise typer.Exit(1) from exc
@@ -727,6 +742,124 @@ def stats(
     table.add_row("Chunks", str(chunk_count))
     table.add_row("DB size", f"{db_size_kb:.1f} KB")
     console.print(table)
+
+    _print_provenance(provenance, commits_since(config, provenance.git_commit))
+    if drift_report is not None:
+        _print_drift(drift_report)
+
+
+def _print_provenance(provenance: IndexProvenance, behind: int | None) -> None:
+    """Render what the index was built from, or say plainly that it is unknown."""
+    if provenance.is_empty:
+        console.print(
+            "\n[yellow]Provenance:[/yellow] not recorded — this index predates "
+            "provenance tracking. Re-index to capture it."
+        )
+        return
+
+    table = Table(show_header=True, header_style="bold cyan", title="Built from")
+    table.add_column("Field", style="dim")
+    table.add_column("Value", justify="right")
+
+    if provenance.git_commit:
+        commit = provenance.git_commit[:12]
+        # "unknown" rather than "up to date" when the count could not be computed: the
+        # recorded commit may have been rebased away or garbage collected, and rendering
+        # that as 0 would assert the index is current when nothing checked.
+        if behind is None:
+            suffix = " [dim](distance from HEAD unknown)[/dim]"
+        elif behind == 0:
+            suffix = " [green](= HEAD)[/green]"
+        else:
+            suffix = f" [yellow](HEAD is {behind} commit(s) ahead)[/yellow]"
+        table.add_row("Commit", escape(commit) + suffix)
+    if provenance.git_branch:
+        table.add_row("Branch", escape(provenance.git_branch))
+    if provenance.git_dirty is not None:
+        table.add_row(
+            "Worktree at index time",
+            "[yellow]had uncommitted changes[/yellow]" if provenance.git_dirty else "clean",
+        )
+    if provenance.indexed_at:
+        table.add_row("Indexed at", escape(provenance.indexed_at))
+    if provenance.trelix_version:
+        table.add_row("trelix version", escape(provenance.trelix_version))
+    if provenance.embedder_provider:
+        model = f" / {provenance.embedder_model}" if provenance.embedder_model else ""
+        table.add_row("Embedder", escape(provenance.embedder_provider + model))
+
+    console.print(table)
+
+
+def _print_drift(report: DriftReport) -> None:
+    """Render file-level drift, and refuse to present `missing` as actionable.
+
+    A truncated walk yields the same `missing` list as a set of genuinely deleted files.
+    Anyone acting on that count would delete embeddings that cost money to recompute, so
+    an incomplete walk is stated before the numbers rather than after them.
+    """
+    if not report.walk_was_complete:
+        shown = ", ".join(report.incomplete_paths[:5])
+        console.print(
+            f"\n[yellow]Warning:[/yellow] {len(report.incomplete_paths)} path(s) could not "
+            f"be read during this walk ({escape(shown)}"
+            f"{' …' if len(report.incomplete_paths) > 5 else ''}). Files under them are "
+            "counted as [bold]missing[/bold] below even though they may be present — do "
+            "not prune on this result."
+        )
+
+    if report.walk_config_changed:
+        console.print(
+            "\n[yellow]Warning:[/yellow] this walk used different settings than the index "
+            "was built with, so [bold]missing[/bold] below includes files the walk simply "
+            "no longer reaches — not deletions."
+        )
+        diff_table = Table(show_header=True, header_style="bold yellow")
+        diff_table.add_column("Setting", style="dim")
+        diff_table.add_column("At index time")
+        diff_table.add_column("Now")
+        for name, recorded, current in report.walk_config_diff:
+            diff_table.add_row(escape(name), escape(recorded[:60]), escape(current[:60]))
+        console.print(diff_table)
+        console.print(
+            "[dim]TRELIX_WALKER_* is read from the process environment only, never from "
+            ".env, and EXTRA_IGNORE_DIRS replaces the default list rather than extending "
+            "it. Re-run with the same environment that built the index — "
+            "`scripts/self-index.sh` is the reference.[/dim]"
+        )
+    elif not report.walk_config_comparable:
+        console.print(
+            "\n[dim]This index predates walk-config recording, so whether the walk used "
+            "the same ignore rules could not be checked. Treat [bold]missing[/bold] as "
+            "unverified.[/dim]"
+        )
+
+    if report.is_clean:
+        console.print(
+            f"\n[green]No drift:[/green] all {report.unchanged_count} indexable files "
+            "match their stored hashes."
+        )
+        return
+
+    table = Table(show_header=True, header_style="bold cyan", title="Worktree drift")
+    table.add_column("State", style="dim")
+    table.add_column("Files", justify="right")
+    table.add_column("Examples")
+
+    for label, paths in (
+        ("Changed since indexing", report.stale),
+        ("Not indexed yet", report.new),
+        ("Indexed but not found", report.missing),
+    ):
+        if paths:
+            examples = ", ".join(paths[:3]) + (" …" if len(paths) > 3 else "")
+            table.add_row(label, str(len(paths)), escape(examples))
+    table.add_row("Unchanged", str(report.unchanged_count), "")
+    console.print(table)
+    console.print(
+        f"[yellow]{report.drifted_count} file(s) have drifted.[/yellow] "
+        "Run `trelix index` to rebuild, or `trelix update-index <file>` per file."
+    )
 
 
 # ---------------------------------------------------------------------------

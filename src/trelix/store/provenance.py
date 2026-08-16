@@ -1,0 +1,394 @@
+"""Index provenance and worktree drift.
+
+An index is a snapshot, but nothing recorded *of what*. `index_metadata` held exactly one
+row — `embedding_dimension` — so a user querying an index had no way to answer the first
+question they should ask: does this reflect the code in front of me? A stale index does
+not fail loudly. It returns confident, well-ranked answers about code that has since
+changed, which is worse than returning nothing.
+
+Two separate things are recorded here, and the distinction matters:
+
+* **Provenance** — which commit the index was built from, when, and with which embedder.
+  This is context for reproducibility. It is cheap to read (a few key-value rows) and is
+  never authoritative about staleness: a commit can match while the worktree is dirty,
+  and a commit can differ while every indexed file is byte-identical.
+
+* **Drift** — how many indexed files no longer match what is on disk. This is measured
+  from content hashes and *is* authoritative, but it costs a walk plus a hash of every
+  file, so it is opt-in rather than part of every `trelix stats`.
+
+Drift deliberately reuses `FileWalker` rather than reimplementing discovery. The indexer's
+own staleness rule is `db.get_file_hash(rel_path) != file.hash`, where the hash comes
+from `FileWalker._compute_hash`. Reimplementing either would make the two disagree — a
+different hash function would report every file stale, and a different ignore-filter
+would invent files that were never indexable in the first place.
+"""
+
+from __future__ import annotations
+
+import logging
+import subprocess
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
+
+logger = logging.getLogger("trelix.store.provenance")
+
+# Namespaced so provenance keys can never collide with `embedding_dimension`, which
+# predates them and is read by the dimension guard on a fixed key name.
+_PREFIX = "provenance."
+
+# Long enough for a cold-cache `git status` on a large worktree, short enough that a
+# hung git cannot wedge an index run. Matches the 60s used in git_linker.
+_GIT_TIMEOUT_SECONDS = 60
+
+
+@dataclass(frozen=True)
+class IndexProvenance:
+    """What the index was built from. Every field is optional by design.
+
+    A non-git directory, a missing `git` binary and a shallow checkout are all normal,
+    and none of them should stop an index from being written — so each field degrades to
+    None independently rather than the whole record being absent.
+    """
+
+    git_commit: str | None = None
+    git_branch: str | None = None
+    git_dirty: bool | None = None
+    indexed_at: str | None = None
+    trelix_version: str | None = None
+    embedder_provider: str | None = None
+    embedder_model: str | None = None
+    # Canonical JSON of the walker settings that decide WHICH files get indexed. Stored
+    # in full rather than as a hash so a mismatch can name the offending setting instead
+    # of only announcing that one exists.
+    walk_config: str | None = None
+
+    _FIELDS = (
+        "git_commit",
+        "git_branch",
+        "git_dirty",
+        "indexed_at",
+        "trelix_version",
+        "embedder_provider",
+        "embedder_model",
+        "walk_config",
+    )
+
+    @property
+    def is_empty(self) -> bool:
+        """True when nothing was recorded — i.e. an index predating provenance."""
+        return all(getattr(self, f) is None for f in self._FIELDS)
+
+
+@dataclass(frozen=True)
+class DriftReport:
+    """How far the index has diverged from the worktree.
+
+    `missing` is derived from "indexed paths the walk did not yield", which has exactly
+    two innocent explanations besides deletion, and both are carried here so no caller
+    can render the count without them:
+
+    * `walk_was_complete` is False — the walk skipped a directory it could not read, so
+      files under it read as missing while being present.
+    * `walk_config_changed` is True — the walk was run with different ignore rules than
+      the index was built with, so files it no longer reaches read as deleted. Measured
+      at 35 phantom deletions on this repository from `extra_ignore_dirs` alone.
+
+    Acting on `missing` in either case deletes embeddings that cost money to recompute.
+    """
+
+    stale: tuple[str, ...] = ()
+    new: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
+    unchanged_count: int = 0
+    walk_was_complete: bool = True
+    incomplete_paths: tuple[str, ...] = ()
+    # {setting: (recorded_at_index_time, current)} — empty when identical OR when the
+    # index predates walk-config recording. `walk_config_comparable` separates those.
+    walk_config_diff: tuple[tuple[str, str, str], ...] = ()
+    walk_config_comparable: bool = True
+
+    @property
+    def walk_config_changed(self) -> bool:
+        return bool(self.walk_config_diff)
+
+    @property
+    def missing_is_trustworthy(self) -> bool:
+        """False when `missing` has an innocent explanation that was not ruled out."""
+        return (
+            self.walk_was_complete and self.walk_config_comparable and not self.walk_config_changed
+        )
+
+    @property
+    def is_clean(self) -> bool:
+        """True when every indexed file matches disk and nothing indexable is absent."""
+        return not self.stale and not self.new and not self.missing
+
+    @property
+    def drifted_count(self) -> int:
+        return len(self.stale) + len(self.new) + len(self.missing)
+
+
+def _git(repo_path: Path, *args: str) -> str | None:
+    """Run a read-only git command, returning stripped stdout or None on any failure.
+
+    Never raises. A non-git directory, an absent `git`, a timeout and a non-zero exit
+    all mean the same thing to the caller — this field is unknown — and provenance is
+    strictly additive context, so none of them warrants failing an index.
+    """
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            cwd=str(repo_path),
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("git %s failed in %s: %s", " ".join(args), repo_path, exc)
+        return None
+
+    if result.returncode != 0:
+        logger.debug(
+            "git %s exited %d in %s: %s",
+            " ".join(args),
+            result.returncode,
+            repo_path,
+            result.stderr.strip()[:200],
+        )
+        return None
+    return result.stdout.strip()
+
+
+# The walker settings that decide WHICH files are yielded. Anything here differing
+# between an index run and a later drift check makes `new` and `missing` meaningless:
+# files the walk no longer reaches are indistinguishable from files that were deleted.
+#
+# This is not hypothetical. `extra_ignore_dirs` REPLACES the default 30-entry list rather
+# than extending it, and `TRELIX_WALKER_*` is process-env-only (no `.env`), so the config
+# that built an index is routinely not the config a later command reconstructs. Measured
+# on this repository: a drift check run without `scripts/self-index.sh`'s environment
+# reported 35 files under `packages/` as deleted when every one was present — the default
+# ignore list contains "packages" for .NET NuGet output and hides this repo's own
+# monorepo packages.
+_WALK_FIELDS = (
+    "languages",
+    "extra_ignore_dirs",
+    "extra_ignore_extensions",
+    "extra_ignore_filenames",
+    "max_file_size_bytes",
+    "respect_gitignore",
+)
+
+
+def _walk_config_json(config: IndexConfig) -> str | None:
+    """Serialise the walk-determining settings, order-insensitively.
+
+    Collections are sorted because the walker turns each into a set — two configs that
+    list the same ignores in a different order produce identical walks and must not be
+    reported as a mismatch.
+    """
+    import json
+
+    walker = getattr(config, "walker", None)
+    if walker is None:
+        return None
+
+    payload: dict[str, object] = {}
+    for name in _WALK_FIELDS:
+        if not hasattr(walker, name):
+            continue
+        value = getattr(walker, name)
+        payload[name] = (
+            sorted(str(v) for v in value) if isinstance(value, list | set | tuple) else value
+        )
+
+    try:
+        return json.dumps(payload, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        logger.debug("Could not serialise walk config: %s", exc)
+        return None
+
+
+def walk_config_differences(
+    provenance: IndexProvenance, config: IndexConfig
+) -> dict[str, tuple[object, object]]:
+    """Settings that differ between index time and now, as {name: (recorded, current)}.
+
+    An empty dict means either "identical" or "cannot tell" — the caller distinguishes
+    those via `provenance.walk_config is None`, because an index predating this field
+    cannot be compared and must not be reported as matching.
+    """
+    import json
+
+    if not provenance.walk_config:
+        return {}
+
+    current_raw = _walk_config_json(config)
+    if current_raw is None:
+        return {}
+
+    try:
+        recorded = json.loads(provenance.walk_config)
+        current = json.loads(current_raw)
+    except (TypeError, ValueError) as exc:
+        logger.debug("Could not compare walk configs: %s", exc)
+        return {}
+
+    return {
+        key: (recorded.get(key), current.get(key))
+        for key in set(recorded) | set(current)
+        if recorded.get(key) != current.get(key)
+    }
+
+
+def capture_provenance(config: IndexConfig) -> IndexProvenance:
+    """Read the current git and embedder state. Never raises."""
+    from trelix import __version__
+
+    repo_path = Path(config.repo_path)
+
+    commit = _git(repo_path, "rev-parse", "HEAD")
+    branch = _git(repo_path, "rev-parse", "--abbrev-ref", "HEAD")
+
+    # `git status --porcelain` already honours .gitignore, so an ignored build directory
+    # does not read as a dirty worktree. Distinguished from "unknown": an empty string is
+    # a clean tree, None is a failed or non-git call.
+    status = _git(repo_path, "status", "--porcelain")
+    dirty = None if status is None else bool(status)
+
+    return IndexProvenance(
+        git_commit=commit,
+        git_branch=branch,
+        git_dirty=dirty,
+        indexed_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        trelix_version=__version__,
+        embedder_provider=str(getattr(config.embedder, "provider", "") or "") or None,
+        embedder_model=str(getattr(config.embedder, "model", "") or "") or None,
+        walk_config=_walk_config_json(config),
+    )
+
+
+def write_provenance(db: Database, provenance: IndexProvenance) -> None:
+    """Persist provenance to `index_metadata`. Never raises.
+
+    Called at the end of an index run. A failure here must not fail an index that has
+    otherwise succeeded — the embeddings are the expensive artefact and they are already
+    committed by this point; losing the provenance row costs a `trelix stats` line.
+    """
+    fields = {
+        "git_commit": provenance.git_commit,
+        "git_branch": provenance.git_branch,
+        "git_dirty": None if provenance.git_dirty is None else str(provenance.git_dirty).lower(),
+        "indexed_at": provenance.indexed_at,
+        "trelix_version": provenance.trelix_version,
+        "embedder_provider": provenance.embedder_provider,
+        "embedder_model": provenance.embedder_model,
+        "walk_config": provenance.walk_config,
+    }
+    try:
+        for name, value in fields.items():
+            if value is None:
+                # Deleted rather than stored as "None": a re-index from a directory that
+                # is no longer a git repo must not leave the previous run's commit behind
+                # to be read as current.
+                db.delete_index_metadata(_PREFIX + name)
+            else:
+                db.set_index_metadata(_PREFIX + name, value)
+    except Exception as exc:
+        logger.warning(
+            "Could not record index provenance (the index itself is unaffected): %s", exc
+        )
+
+
+def read_provenance(db: Database) -> IndexProvenance:
+    """Load provenance. Returns an all-None record for an index that predates it."""
+    try:
+        stored = db.get_index_metadata_with_prefix(_PREFIX)
+    except Exception as exc:
+        logger.warning("Could not read index provenance: %s", exc)
+        return IndexProvenance()
+
+    dirty_raw = stored.get("git_dirty")
+    return IndexProvenance(
+        git_commit=stored.get("git_commit"),
+        git_branch=stored.get("git_branch"),
+        git_dirty=None if dirty_raw is None else dirty_raw == "true",
+        indexed_at=stored.get("indexed_at"),
+        trelix_version=stored.get("trelix_version"),
+        embedder_provider=stored.get("embedder_provider"),
+        embedder_model=stored.get("embedder_model"),
+        walk_config=stored.get("walk_config"),
+    )
+
+
+def commits_since(config: IndexConfig, indexed_commit: str | None) -> int | None:
+    """How many commits HEAD is ahead of `indexed_commit`.
+
+    None when it cannot be determined, which is not the same as 0 and must not be
+    rendered as such: the recorded commit may have been rebased away or garbage
+    collected, or the directory may no longer be a git repo.
+    """
+    if not indexed_commit:
+        return None
+    count = _git(Path(config.repo_path), "rev-list", "--count", f"{indexed_commit}..HEAD")
+    if count is None:
+        return None
+    try:
+        return int(count)
+    except ValueError:
+        return None
+
+
+def compute_drift(config: IndexConfig, db: Database) -> DriftReport:
+    """Compare every indexable file on disk against its stored hash.
+
+    Costs a full walk plus a SHA-256 of every file — on this repository ~470 files, well
+    under a second, but it is proportional to repo size and so is opt-in at the CLI.
+    """
+    from trelix.indexing.walker import FileWalker
+
+    walker = FileWalker(config)
+
+    stale: list[str] = []
+    new: list[str] = []
+    seen: set[str] = set()
+    unchanged = 0
+
+    for file in walker.walk():
+        seen.add(file.rel_path)
+        stored_hash = db.get_file_hash(file.rel_path)
+        if stored_hash is None:
+            new.append(file.rel_path)
+        elif stored_hash != file.hash:
+            stale.append(file.rel_path)
+        else:
+            unchanged += 1
+
+    # Indexed paths the walk did not yield. Genuinely deleted files land here, but so do
+    # files inside a directory the walk could not read, and files a changed ignore rule
+    # now excludes. The two flags below are what let a caller tell those apart.
+    missing = sorted(set(db.get_all_file_rel_paths()) - seen)
+
+    provenance = read_provenance(db)
+    diff = walk_config_differences(provenance, config)
+
+    return DriftReport(
+        walk_config_comparable=provenance.walk_config is not None,
+        walk_config_diff=tuple(
+            (name, repr(recorded), repr(current))
+            for name, (recorded, current) in sorted(diff.items())
+        ),
+        stale=tuple(sorted(stale)),
+        new=tuple(sorted(new)),
+        missing=tuple(missing),
+        unchanged_count=unchanged,
+        walk_was_complete=walker.walk_was_complete,
+        incomplete_paths=tuple(walker.incomplete_paths),
+    )
