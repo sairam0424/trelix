@@ -389,6 +389,57 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
   wrong score from it: paths are compared by exact string equality, and an entry with
   no `relevant_files` is skipped rather than failed.
 
+- **The release path refuses a tag that disagrees with the tree.** `release.yml` fires on
+  `push: tags: v*`, derived nothing from the tree, and sets `skip-existing: true` on all
+  four PyPI publish steps — so tagging `v3.2.0` on a tree stamped `3.1.2` built
+  `trelix-3.1.2`, PyPI skipped it as already present, and the run went **green** with a
+  GitHub Release full of binaries and **zero new packages**. Nothing in the logs said
+  "published nothing". `skip-existing` is kept deliberately (it is what makes a re-run
+  after a partial failure safe), so the guard is a separate `verify-version` job that every
+  build and publish job now depends on.
+
+  It checks **seven** version sites, not the five in `CONTRIBUTING.md`'s checklist. The two
+  extra ones are precisely those the documented procedure cannot find, because it greps for
+  the *previous* version and both were still on `2.x`: `helm/trelix/values.yaml`'s
+  `image.tag` — the chart advertised `appVersion: 3.1.2` while deploying **2.12.0**, having
+  been skipped by all five release commits that did bump `Chart.yaml` — and
+  `packages/trelix-mcp/server.json`, which carries the version twice. Running the gate
+  against the current tree fails 3 of 7, which is the point.
+
+- **The release path runs the test suite.** `ci.yml` triggers on push/PR to
+  `[main, develop]` and never on tags, so the entire gate on four PyPI packages and two
+  container images was `python -m build`, `twine check`, and a `--help` smoke test.
+
+- **`docker-publish.yml` had the same hole and now has the same guard.** It derived the
+  image tag from `${GITHUB_REF_NAME#v}` with nothing comparing it to the tree, so a
+  `v3.2.0` tag published `ghcr.io/…/trelix:3.2.0` containing a binary reporting `3.1.2`.
+  Skipped for `workflow_dispatch`, whose whole purpose is backfilling an older release
+  where the tree legitimately differs. Its `${{ github.event.inputs.version }}` also moved
+  out of the script body into `env:` — a dispatch input interpolated into `run:` is a
+  shell-injection sink.
+
+- **`gitleaks` pre-commit hook.** There was no secret scanning anywhere — not in
+  `.pre-commit-config.yaml`, not in CI — for a project publishing four PyPI packages and
+  two container images. Prefix matching alone would not have sufficed either: the AWS
+  credential pair in a local `.env` is base64-wrapped, so `AKIA…` never appears and every
+  prefix scanner, GitHub push protection included, reads it as clean.
+
+- **`trelix serve` warns when it is reachable off-box with no credential.**
+  `api/app.py`'s `authenticate()` is open by design when neither a static token nor OIDC is
+  configured, which is reasonable for the documented local use where `--host` defaults to
+  `127.0.0.1`. The shipped container overrides exactly that: `Dockerfile` runs
+  `serve /repo --host 0.0.0.0`, which a published port requires, and `docker-compose.yml`
+  published `8765` on every host interface while bind-mounting the user's repository — so
+  `docker compose up` served open, unauthenticated code search over it. Compose now
+  publishes to `127.0.0.1:8765` and lists `TRELIX_API_AUTH_TOKEN` so it is discoverable.
+
+  The warning lives at the bind boundary rather than in compose alone because it also
+  catches `trelix serve --host 0.0.0.0` run directly, which no compose change can reach. It
+  asks `_build_oidc_verifier` rather than reading an env var, so an SSO config that is
+  enabled but unusable still warns — the case where a reader would most wrongly assume they
+  were covered. `.github/SECURITY.md` claimed serve binds to `127.0.0.1`, true of the CLI
+  and inverted by the image; corrected.
+
 - **`config_lookup` no longer drops extensionless config files.** `_retrieve_config`
   gated every planner hint on six suffixes or the substring `"config"`, and
   `Path("Dockerfile").suffix` is `""` — so `Dockerfile`, `Makefile`, `Procfile`,

@@ -1487,8 +1487,68 @@ def serve(
     setup_json_logging()
 
     api_app = create_app()
+
+    _warn_if_exposed_without_auth(host)
+
     typer.echo(f"trelix API serving {repo_path} at http://{host}:{port}")
     uvicorn.run(api_app, host=host, port=port, log_config=uvicorn_log_config())
+
+
+# Loopback forms. Anything else is reachable from another machine.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+def _warn_if_exposed_without_auth(host: str) -> None:
+    """Say so, loudly, when the API is reachable off-box with no credential required.
+
+    `api/app.py`'s `authenticate()` is open by design when neither a static token nor
+    OIDC is configured — see the "3./4." branch there. That is a reasonable default for
+    the documented local use (`--host` defaults to `127.0.0.1`), and this does NOT change
+    it: failing closed would break that UX and is a bigger decision than a warning.
+
+    What makes it dangerous is that the shipped container overrides the host.
+    `Dockerfile:56` and `docker-compose.yml` both run `serve /repo --host 0.0.0.0`, and
+    compose publishes `8765` while bind-mounting the user's repository — so
+    `docker compose up` served open, unauthenticated code search over the mounted repo.
+    `.github/SECURITY.md` told readers serve binds to 127.0.0.1, which is true of the CLI
+    and inverted by the image.
+
+    Warning at the bind boundary rather than in compose alone because it also catches
+    `trelix serve --host 0.0.0.0` run directly, which no compose fix can reach. This
+    release exists largely because things were switched on and saying nothing; an open
+    port is the last place to keep that habit.
+    """
+    if host in _LOOPBACK_HOSTS:
+        return
+
+    # Reuses the exact objects `create_app()` gates on, so this cannot drift from the
+    # real decision. `_ApiAuthSettings` lives in api/app.py rather than core/config
+    # because auth is process-wide while IndexConfig is per-repo.
+    #
+    # OIDC alone is sufficient protection: once a verifier exists, `authenticate()`
+    # raises 401 for a missing credential, so an SSO-only deployment is not open. Asking
+    # `_build_oidc_verifier` rather than reading an env var means an SSO config that is
+    # enabled but unusable (bad issuer, unreachable JWKS) still triggers the warning —
+    # which is the case where a reader would most wrongly assume they were covered.
+    from trelix.api.app import _ApiAuthSettings, _build_oidc_verifier
+    from trelix.core.config import SSOConfig
+
+    try:
+        if _ApiAuthSettings().api_auth_token is not None:
+            return
+        if _build_oidc_verifier(SSOConfig()) is not None:
+            return
+    except Exception as exc:  # pragma: no cover - config shape is validated elsewhere
+        logger.debug("Could not read auth settings for the exposure check: %s", exc)
+        return
+
+    err_console.print(
+        f"[bold yellow]WARNING:[/bold yellow] serving on [bold]{_safe_text(host)}[/bold] "
+        "with no authentication configured — every endpoint is open to anyone who can "
+        "reach this port.\n"
+        "[dim]Set TRELIX_API_AUTH_TOKEN=<secret> to require an X-Trelix-Api-Key header, "
+        "or bind to 127.0.0.1 instead. See docs/SSO.md for the OIDC path.[/dim]"
+    )
 
 
 # ---------------------------------------------------------------------------

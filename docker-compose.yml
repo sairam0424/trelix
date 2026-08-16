@@ -7,11 +7,22 @@
 services:
   trelix:
     image: ghcr.io/sairam0424/trelix:latest
+    # --host 0.0.0.0 is required INSIDE the container for published ports to reach the
+    # process; it is not the exposure decision. The `ports` mapping below is.
     command: ["serve", "/repo", "--host", "0.0.0.0", "--port", "8765"]
     ports:
-      - "8765:8765"
+      # Bound to loopback deliberately. `"8765:8765"` publishes on every host interface,
+      # and the API is open by design when no token is set (see api/app.py's authenticate
+      # "3./4." branch) — so the previous mapping served unauthenticated code search over
+      # the bind-mounted repository below to anything that could reach the host.
+      # Change to "8765:8765" only together with TRELIX_API_AUTH_TOKEN.
+      - "127.0.0.1:8765:8765"
     volumes:
       - "${REPO_PATH:-.}:/repo"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - TRELIX_EMBEDDER_PROVIDER=${TRELIX_EMBEDDER_PROVIDER:-openai}
+      # Unset by default, which leaves every route open — matching the CLI. Listed here
+      # so it is discoverable rather than something you have to know exists: set it before
+      # widening the port mapping above.
+      - TRELIX_API_AUTH_TOKEN=${TRELIX_API_AUTH_TOKEN:-}

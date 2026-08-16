@@ -36,7 +36,16 @@ To report a security vulnerability privately:
 
 ## Security Considerations for Self-Hosted Deployments
 
-- **`trelix serve`** binds to `127.0.0.1` by default — do NOT expose to public internet without authentication
+- **`trelix serve`** binds to `127.0.0.1` by default, and the API is **open when no
+  credential is configured** — `TRELIX_API_AUTH_TOKEN` unset with SSO off means every
+  route answers without authentication. That is safe on loopback and not otherwise. Set
+  `TRELIX_API_AUTH_TOKEN=<secret>` (sent as `X-Trelix-Api-Key`) or configure OIDC before
+  binding anywhere reachable; `serve` now prints a warning if you do the latter without
+  the former.
+- **The published container overrides that default.** `Dockerfile` runs
+  `serve /repo --host 0.0.0.0`, which is required for a published port to reach the
+  process. `docker-compose.yml` therefore publishes to `127.0.0.1:8765` rather than all
+  interfaces — widen it only together with `TRELIX_API_AUTH_TOKEN`.
 - **`GITHUB_TOKEN`** for `trelix review --pr` should use fine-grained PATs with minimum scope (`pull_requests:write` + `contents:read`)
 - **Index files** (`.trelix/index.db`) contain your source code — treat with same sensitivity as source
 - **Query telemetry** (`TRELIX_TELEMETRY_ENABLED=true`) stores query text locally — do not enable on sensitive codebases without reviewing the storage implications
