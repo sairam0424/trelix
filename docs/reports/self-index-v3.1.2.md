@@ -201,22 +201,33 @@ copy is there or not. That is the gap that let it ship, and the new tests close 
 asserting a client is built from credentials on the config with the process environment
 explicitly cleared.
 
-### Found, not fixed
+### Found and fixed in a second pass
 
-Reported rather than changed, because each is outside the scope agreed for this work.
-All were reproduced.
+All nine were reproduced, researched with mitigation alternatives, adversarially reviewed
+*before* implementation, and audited after. Two of the nine fixes had to fix a regression
+introduced by an earlier fix in the same batch — recorded here because that is the honest
+shape of the work, not a footnote.
 
-| Severity | Defect | Location |
-|---|---|---|
-| **Critical** | `trelix eval-synthesis` cannot ever produce a non-empty answer. `SynthesisEvalHarness` passes an `IndexConfig` where `Synthesizer` expects an `EmbedderConfig`; the resulting `AttributeError` is swallowed into `answer = ""`, and every query then scores a constant | `eval/synthesis.py` |
-| **Critical** | `migrate-vectors --reset` cannot fix a dimension change, which is the one thing the tool recommends it for. It deletes rows and the recorded dimension but leaves the `FLOAT[n]` declaration; because the recorded dimension is now gone, `DimensionGuard` has nothing to compare against, so the next run **pays for a full embedding pass** before failing on the first insert | `cli/main.py`, `store/dimension_guard.py` |
-| High | `trelix index` never prunes files that have vanished from the walk. `delete_file_by_path` is called only by the watchers, so deleted files stay indexed and searchable forever, and a polluted index cannot be cleaned by re-indexing — only by deleting it | `indexing/indexer.py` |
-| High | `SparseConfig.model` defaults to `naver-splab/splade-code-distil`, which is not a resolvable HuggingFace id. `SparseEmbedder` returns empty dicts, so `sparse_embeddings` stays at 0 rows whether the flag is set or not | `core/config.py` |
-| Medium | `trelix graph --visualize --json` silently writes no HTML. The `--json` branch returns before the `if visualize:` block, so the flag is accepted and ignored | `cli/main.py` |
-| Medium | `GitLinker` drops every merge commit — `git log --name-only` with no `-m`/`--diff-merges` yields no file list for a merge | `indexing/git_linker.py` |
-| Medium | The default ticket pattern `[A-Z]+-\d+` has no word boundary, so it matches `UTF-8`, `SHA-256` and `HTTP-400` as ticket references | `core/config.py` |
-| Low | `trelix taint` reports a **clean scan** as `"No taint flows found. Ensure semgrep is installed"`, conflating "your code is clean" with "the tool is missing". The comment above that message already records two previously-fixed defects in it | `cli/main.py` |
-| Low | `sub_chunks` has no foreign key and no delete path anywhere in `src/`, so rows orphan on every re-index | `store/db.py` |
+| Sev | Defect | Location | Evidence |
+|---|---|---|---|
+| **Critical** | `trelix eval-synthesis` could never produce a non-empty answer — `IndexConfig` passed where `EmbedderConfig` was expected, `AttributeError` swallowed into `answer = ""` | `eval/synthesis.py` | overall was a constant **0.4000**, now **0.8733** |
+| **Critical** | `migrate-vectors --reset` did nothing while reporting success — `DELETE FROM chunk_embeddings` on a connection with no sqlite-vec, into `except: pass` | `cli/main.py`, `store/db.py` | index at 4 dims → reset for 8 → re-index now restores 3/3 vectors; before, step 2 changed nothing |
+| High | `trelix index` never pruned vanished files — **still true**, see Known limitations. The prerequisite walk-completeness signal landed instead | `indexing/walker.py` | chmod-000 dir: `files_found=1, files_unreadable=1`, previously silence |
+| High | `SparseConfig.model` named a HuggingFace repo that does not exist; and `embed()` ran one forward pass over the whole corpus | `core/config.py`, `embedder/sparse.py` | 10,700 chunks = **668 GB** logits; now batched, 60 snippets at 0.87 GB peak RSS |
+| Medium | `graph --visualize --json` silently wrote no HTML | `cli/main.py` | stale 31-byte file survived; now 326 KB + `visualization_path` |
+| Medium | `GitLinker` dropped every merge commit's file list | `indexing/git_linker.py` | merge `3dea90a`: 0 files → 4 files |
+| Medium | Ticket pattern matched `UTF-8`, `SHA-256`, `HTTP-400` | `core/config.py`, `cli/main.py` | 12 matches across 830 commits, all false positives → 5, all ticket-shaped |
+| Low | `trelix taint` reported a **failed** scan as clean | `analysis/taint.py`, `cli/main.py` | `--tier intrafile` exits 2 with empty stdout; now exits 1 with no clean claim |
+| Low | `sub_chunks` and their vectors outlived the symbol they belonged to | `store/db.py`, `store/vector.py` | `PRAGMA foreign_key_list(sub_chunks)` → `[]`; orphan row survived the old delete |
+
+Two fixes corrected regressions from earlier fixes in the same batch, both caught by
+adversarial review rather than by the test suite, which was green in both cases:
+
+- The first taint-message fix branched on `shutil.which` alone, which turned a **failed**
+  scan into a confident "semgrep ran and reported nothing" at exit 0. Strictly worse than
+  the message it replaced.
+- The first sparse fix made the model loadable and was verified on **two texts** — 0.1 GB
+  of logits. At real scale the phase still could not run, because `embed()` was unbatched.
 
 ### Not defects
 
@@ -239,7 +250,7 @@ wrong, unmeasurable, or bought nothing, so they were left alone and recorded ins
 | Dimension | Why not |
 |---|---|
 | `sub_chunks` | Phase 2.6 embeds once **per symbol**, bypassing token batching and the TPM limiter — thousands of serial un-throttled round-trips. The table has no FK and no delete path, so rows orphan on every re-index. Python-only. And it is retro-blind (it iterates changed-or-new symbols), so it cannot be added later without a full re-index. To measure it, use a throwaway DB: `TRELIX_STORE_DB_PATH=/tmp/x.db TRELIX_CHUNKER_MULTI_GRANULARITY=true trelix index .` |
-| `sparse_embeddings` | The default SPLADE model id does not resolve. Setting the flag writes 0 rows either way |
+| `sparse_embeddings` | Fixed in the second pass but still not enabled for this index: it needs a from-scratch re-index, and the leg is off by default. The default model id now resolves and `embed()` batches, so it *can* work — see the sparse entry above |
 | `taint_flows` | **Genuinely clean.** semgrep scanned all 140 source files with `config/semgrep-taint.yaml`: 0 findings, 0 errors. Verified as a true negative, not broken rules — the same rules fire twice on a planted `os.environ` → `subprocess.run(shell=True)` flow |
 | `artifacts` | Requires a live Jira/Linear connector sync. There is no offline route |
 | `generic_edges` | This repository's git history contains **no real ticket references** — across 825 commits the default pattern matches 8 strings, all false positives (`UTF-8`, `SHA-256`, `HTTP-400`, …). Running `link-tickets` would be a no-op reported as a step |
