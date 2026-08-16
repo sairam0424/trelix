@@ -554,16 +554,39 @@ def test_taint_pip_hint_is_escaped_at_the_call_site() -> None:
         encoding="utf-8"
     )
 
-    # Scoped to the RENDERED line, not the whole file. The taint command's own
+    # Scoped to the RENDERED lines, not the whole file. The taint command's own
     # docstring also reads "Requires: pip install trelix[taint]", and a docstring
     # never reaches Rich — a whole-file assertion flags that harmless line and
-    # fails against correct code.
-    sink_lines = [ln for ln in source.splitlines() if "Ensure semgrep is installed" in ln]
-    assert len(sink_lines) == 1, f"expected one rendered hint, found {len(sink_lines)}"
-    sink = sink_lines[0]
+    # fails against correct code. Comments naming the extra are excluded for the
+    # same reason.
+    #
+    # There are now TWO rendered sites, both introduced when the empty-result branch
+    # learned to distinguish a missing semgrep from a failed scan: the install hint
+    # itself, and the note that a non-default --tier needs the Pro Engine. Both
+    # interpolate the extras marker, so both must escape it. Anchoring on
+    # "pip install" rather than on a specific sentence keeps this test alive across
+    # rewordings — its previous anchor, "Ensure semgrep is installed", was a sentence
+    # that a later fix deleted, which silently turned the test into a no-op assertion
+    # against zero lines.
+    # An f-string is the discriminator: only an interpolated line can reach Rich with a
+    # dynamic payload. The command's docstring ("Requires: pip install trelix[taint]")
+    # and the explanatory comments above the branch both mention the extra and neither
+    # is rendered, so a plain substring match flags them and fails against correct code.
+    sink_lines = [
+        ln
+        for ln in source.splitlines()
+        if "pip install" in ln
+        and ("trelix[taint]" in ln or "escape(" in ln)
+        and ('f"' in ln or "f'" in ln)
+        and not ln.lstrip().startswith("#")
+    ]
+    assert len(sink_lines) >= 1, "the taint install hint is no longer rendered anywhere"
 
-    assert "pip install trelix[taint]" not in sink, (
-        "the taint hint interpolates trelix[taint] unescaped again — Rich will "
-        "swallow [taint] and tell the user to install plain 'trelix'"
-    )
-    assert "escape(" in sink, "the taint hint no longer escapes its bracketed payload"
+    for sink in sink_lines:
+        assert "pip install trelix[taint]" not in sink, (
+            f"a taint hint interpolates trelix[taint] unescaped again — Rich will "
+            f"swallow [taint] and tell the user to install plain 'trelix': {sink.strip()!r}"
+        )
+        assert "escape(" in sink, (
+            f"a taint hint no longer escapes its bracketed payload: {sink.strip()!r}"
+        )

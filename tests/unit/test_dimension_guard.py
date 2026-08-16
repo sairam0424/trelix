@@ -177,29 +177,112 @@ class TestIndexerDimensionGuard:
 
 
 class TestMigrateVectorsReset:
-    def test_migrate_vectors_reset_clears_dimension(self, tmp_path: Path) -> None:
-        from typer.testing import CliRunner
+    """`--reset` must leave an index a re-index can actually repair.
 
-        from trelix.cli.main import app
-        from trelix.core.config import IndexConfig
+    The previous version of this test recorded a dimension, created NO vec0 table, and
+    asserted only that the command exited 0 and printed the word "cleared" with the
+    dimension record gone afterwards. Every one of those held while the command was a
+    complete no-op: `db.clear_all_embeddings()` ran `DELETE FROM chunk_embeddings` on a
+    connection with no sqlite-vec extension loaded, raising
+    `OperationalError: no such module: vec0` into a bare `except: pass`. So the test
+    passed against a command that deleted nothing, and would have kept passing through a
+    naive fix.
+
+    These assertions are on the resulting STATE instead: the vector table exists at the
+    requested dimension, the hashes that gate re-parsing and re-embedding are blanked,
+    and the recorded dimension is gone.
+    """
+
+    @staticmethod
+    def _seed_index(tmp_path: Path):  # type: ignore[no-untyped-def]
+        """An index with one file, one symbol, and a 4-dim vector table."""
+        from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
         from trelix.store.db import Database
+        from trelix.store.vector import SQLiteVectorStore
 
-        # Resolve the DB path the same way the CLI does
+        from trelix.core.config import IndexConfig
+
         cfg = IndexConfig(repo_path=str(tmp_path))
         db_path = cfg.db_path_absolute
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create a DB with a stored dimension at the expected location
         db = Database(db_path)
-        db.set_embedding_dimension(3072)
-        assert db.get_embedding_dimension() == 3072
+        file_id = db.upsert_file(IndexedFile(
+            path=str(tmp_path / "a.py"), rel_path="a.py", language=Language.PYTHON,
+            hash="originalhash", size_bytes=10,
+        ))
+        db.insert_symbol(Symbol(
+            file_id=file_id, name="f", qualified_name="f", kind=SymbolKind.FUNCTION,
+            line_start=1, line_end=2, signature="def f():", body="def f(): pass",
+        ))
+        db._conn.commit()
+        db.set_embedding_dimension(4)
+        # A real vec0 table at the OLD dimension, which is the thing a row delete
+        # cannot change and the absence of which made the old test vacuous.
+        SQLiteVectorStore(db_path, dimension=4).upsert(chunk_id=1, embedding=[1.0, 0, 0, 0])
         db.close()
+        return db_path
 
-        runner = CliRunner()
-        result = runner.invoke(app, ["migrate-vectors", str(tmp_path), "--reset"])
-        assert result.exit_code == 0, f"exit_code={result.exit_code}, output={result.output!r}"
-        assert "cleared" in result.output.lower()
+    def _run_reset(self, tmp_path: Path, provider: str = "local"):  # type: ignore[no-untyped-def]
+        from typer.testing import CliRunner
 
-        # After reset, dimension is gone
-        db2 = Database(db_path)
-        assert db2.get_embedding_dimension() is None
+        from trelix.cli.main import app
+
+        return CliRunner().invoke(
+            app, ["migrate-vectors", str(tmp_path), "--reset", "--provider", provider]
+        )
+
+    def test_reset_succeeds_and_says_what_it_did(self, tmp_path: Path) -> None:
+        self._seed_index(tmp_path)
+        result = self._run_reset(tmp_path)
+        assert result.exit_code == 0, f"exit={result.exit_code} output={result.output!r}"
+        assert "rebuilt" in result.output.lower()
+
+    def test_the_vector_table_is_rebuilt_at_the_new_dimension(self, tmp_path: Path) -> None:
+        """The assertion the old test could not make, because it built no table."""
+        import sqlite3
+
+        db_path = self._seed_index(tmp_path)
+        self._run_reset(tmp_path)
+
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            ddl = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'chunk_embeddings'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        # The local provider is 384-dim; the seeded table was 4-dim.
+        assert "FLOAT[384]" in ddl, f"table was not rebuilt: {ddl}"
+        assert "FLOAT[4]" not in ddl
+
+    def test_hashes_are_invalidated_so_a_reindex_re_embeds(self, tmp_path: Path) -> None:
+        """Both levels: file hashes gate re-parsing, symbol hashes gate re-embedding."""
+        from trelix.store.db import Database
+
+        db_path = self._seed_index(tmp_path)
+        self._run_reset(tmp_path)
+
+        db = Database(db_path)
+        try:
+            assert db.get_file_hash("a.py") == "", "file hash survived the reset"
+            symbol_hash = db._conn.execute("SELECT content_hash FROM symbols").fetchone()[0]
+            assert symbol_hash == "", (
+                "symbol content hash survived, so a re-index would re-parse and still "
+                "embed nothing"
+            )
+        finally:
+            db.close()
+
+    def test_the_recorded_dimension_is_cleared(self, tmp_path: Path) -> None:
+        from trelix.store.db import Database
+
+        db_path = self._seed_index(tmp_path)
+        self._run_reset(tmp_path)
+
+        db = Database(db_path)
+        try:
+            assert db.get_embedding_dimension() is None
+        finally:
+            db.close()
