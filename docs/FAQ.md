@@ -158,7 +158,7 @@ After RRF produces an initial candidate set, trelix expands it through the code 
 
 This ensures that if you search for `verify_jwt_token`, the decorator `require_auth` that calls it also appears — even if it was not in the original top-k.
 
-Call-graph expansion is always active for the `symbol_lookup`, `feature_flow`, and `blast_radius` retrieval intents. Enable the full knowledge graph for deeper graph traversal: `pip install "trelix[knowledge-graph]"` then `trelix graph ./my-repo`.
+Call-graph expansion is active for the `symbol_lookup` and `feature_flow` retrieval intents. It is **not** active for the `blast_radius` intent, whose strategy sets `expand_depth=0` (`retrieval/planner/models.py`) and runs grep/vector/bm25 only — impact analysis is served instead by the `blast_radius` MCP tool, which reads the call and import edges directly rather than going through retrieval. Enable the full knowledge graph for deeper graph traversal: `pip install "trelix[knowledge-graph]"` then `trelix graph ./my-repo`.
 
 ---
 

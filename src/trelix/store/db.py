@@ -572,6 +572,16 @@ class Database:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def get_symbol_ids_for_file_id(self, file_id: int) -> list[int]:
+        """Return all symbol IDs belonging to the given file id.
+
+        The file_id-keyed counterpart to `get_symbol_ids_for_file`. Callers that already
+        hold a file_id — the import graph in particular, whose edges are file_id-based —
+        should not have to round-trip through rel_path to use it.
+        """
+        rows = self._conn.execute("SELECT id FROM symbols WHERE file_id = ?", (file_id,)).fetchall()
+        return [r[0] for r in rows]
+
     def upsert_file(self, file: IndexedFile) -> int:
         """Insert or update file record. Returns file id."""
         cursor = self._conn.execute(

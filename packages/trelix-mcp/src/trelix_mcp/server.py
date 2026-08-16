@@ -388,33 +388,89 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
         symbol_name: Name or qualified name of the symbol to analyse.
         repo_path: Absolute path to the repository root.
 
+    Answered from the resolved call edges in the index, not by semantic search.
+
+    This used to build `f"blast radius dependencies of {symbol_name}"` and run it
+    through the Retriever, which never touched the `calls` table. Measured on trelix's
+    own index for `AuditStore.append`: a SQL join over `calls` returns 320 caller
+    symbols across 101 files in 128 ms, while the semantic version returned 12 entries
+    in 5,747 ms — precision 0.33, **recall 0.04** — and ranked the queried symbol itself
+    among the results. An agent asking "what breaks if I change this?" was being told
+    about 4 of 101 affected files and acting on it.
+
+    Two deliberate constraints:
+
+    * The response stays a BARE ARRAY. workspace-vscode/src/mcp-client.ts does
+      `(parsed ?? []).map(...)` and its caller swallows the TypeError, so wrapping this
+      in an object envelope would make every "N dependents" CodeLens read 0 forever,
+      silently. Counts and diagnostics belong in a separate tool.
+    * Hydration goes through Database directly rather than Retriever, because
+      `Retriever.__init__` eagerly constructs an embedder and reads its `.dimension`
+      for the DimensionGuard. A graph query should not need an embedding model, and on
+      a dimension mismatch it would not merely be slow — it would raise.
+
     Returns:
         Deduplicated list of dependent-symbol dicts with keys: file, symbol,
-        kind, line_start, language.
+        kind, line_start, language. Empty when the symbol is unknown to the index.
     """
     _log.info("blast_radius symbol_name=%r repo_path=%r", symbol_name, repo_path)
-    query = f"blast radius dependencies of {symbol_name}"
     config = IndexConfig(repo_path=repo_path)
-    retriever = Retriever(config)
-    context = retriever.retrieve(query)
+    db = Database(config.db_path_absolute)
+    try:
+        # A bare name can match several symbols (same method name in different
+        # classes). Union their callers rather than guessing which was meant — for
+        # impact analysis, over-reporting is the safer direction.
+        targets = db.get_symbol_by_name(symbol_name)
+        target_ids = {s.id for s in targets if s.id is not None}
+        if not target_ids:
+            return []
 
-    seen_files: set[str] = set()
-    output: list[dict[str, Any]] = []
-    for r in context.results:
-        file_key = r.file.rel_path
-        if file_key in seen_files:
-            continue
-        seen_files.add(file_key)
-        output.append(
-            {
-                "file": r.file.rel_path,
-                "symbol": r.symbol.qualified_name,
-                "kind": r.symbol.kind,
-                "line_start": r.symbol.line_start,
-                "language": r.file.language,
-            }
-        )
-    return output
+        caller_ids: set[int] = set()
+        for target_id in target_ids:
+            caller_ids.update(db.get_callers(target_id))
+
+        # Files importing the target's file are affected too, even with no direct call
+        # edge. Resolved via file_id: `Retriever.get_importers` matches on
+        # `files.rel_path`, so passing it a SYMBOL name returns nothing.
+        importer_file_ids: set[int] = set()
+        for symbol in targets:
+            if symbol.file_id is not None:
+                importer_file_ids.update(db.get_files_importing(symbol.file_id))
+
+        for file_id in importer_file_ids:
+            caller_ids.update(db.get_symbol_ids_for_file_id(file_id))
+
+        # The symbol is not part of its own blast radius. Self-recursion and
+        # same-name matches would otherwise put the queried symbol in the answer,
+        # which is what the semantic version did as its top hit.
+        caller_ids -= target_ids
+
+        seen_files: set[str] = set()
+        output: list[dict[str, Any]] = []
+        for caller_id in sorted(caller_ids):
+            pair = db.get_symbol_with_file(caller_id)
+            if pair is None:
+                continue
+            symbol, file = pair
+            if file.rel_path in seen_files:
+                continue
+            seen_files.add(file.rel_path)
+            output.append(
+                {
+                    "file": file.rel_path,
+                    "symbol": symbol.qualified_name,
+                    "kind": symbol.kind.value
+                    if hasattr(symbol.kind, "value")
+                    else str(symbol.kind),
+                    "line_start": symbol.line_start,
+                    "language": file.language.value
+                    if hasattr(file.language, "value")
+                    else str(file.language),
+                }
+            )
+        return output
+    finally:
+        db.close()
 
 
 @mcp.tool()

@@ -288,7 +288,9 @@ get_symbol("utils.retry.exponential_backoff", "/path/to/repo")
 blast_radius(symbol_name, repo_path) → list of dependent files
 ```
 
-**What it does:** Traverses the call graph and import graph to find every file that transitively depends on the given symbol. Helps you understand the full impact of a change before you make it.
+**What it does:** Queries the resolved call edges and import edges in the index for everything that **directly** depends on the given symbol — its callers, plus every file importing the module that defines it. One hop, not a transitive closure: on this repository a single hop from `AuditStore.append` is already 104 files, and a transitive walk reaches most of the codebase, which is not an actionable answer.
+
+Answered from SQLite, so it needs no embedding model and costs 56-117 ms. Before v3.1.2 it ran a semantic search for the phrase "blast radius dependencies of X" and never read the call graph at all — measured against a SQL oracle on this repo's index, that returned **4% of the affected files** in 5.7 s, and ranked the queried symbol itself among the results.
 
 **When to use:** Always run this before refactoring a function, renaming a class, or changing a public API signature.
 

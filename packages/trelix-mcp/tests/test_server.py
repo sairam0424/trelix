@@ -189,27 +189,147 @@ def test_index_codebase_returns_dict() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_blast_radius_deduplicates_files() -> None:
-    """Two results sharing the same file should produce only one output entry."""
-    import trelix_mcp.server as srv
+def _seed_call_graph(tmp_path):  # type: ignore[no-untyped-def]
+    """A real index with a known call graph: two callers of `target.run`, one unrelated.
 
-    r1 = _make_mock_result(file="src/auth.py", symbol="auth.login")
-    r2 = _make_mock_result(file="src/auth.py", symbol="auth.logout")  # same file
-    r3 = _make_mock_result(file="src/db.py", symbol="db.connect")
+    A real Database rather than mocks, because the whole point of the change under test
+    is that the answer comes from the `calls` table. Mocking the data source would make
+    the test pass against either implementation.
+    """
+    from trelix.core.models import CallEdge, IndexedFile, Language, Symbol, SymbolKind
+    from trelix.store.db import Database
 
-    mock_ctx = _make_mock_context([r1, r2, r3])
+    db_path = tmp_path / ".trelix" / "index.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = Database(db_path)
 
-    with (
-        patch("trelix_mcp.server.IndexConfig"),
-        patch("trelix_mcp.server.Retriever") as MockRetriever,
-    ):
-        MockRetriever.return_value.retrieve.return_value = mock_ctx
-        results = srv.blast_radius("auth", "/fake/repo")
+    def add(rel_path: str, name: str) -> int:
+        file_id = db.upsert_file(
+            IndexedFile(
+                path=f"/repo/{rel_path}",
+                rel_path=rel_path,
+                language=Language.PYTHON,
+                hash=f"h-{rel_path}-{name}",
+                size_bytes=100,
+            )
+        )
+        return db.insert_symbol(
+            Symbol(
+                file_id=file_id,
+                name=name.split(".")[-1],
+                qualified_name=name,
+                kind=SymbolKind.FUNCTION,
+                line_start=10,
+                line_end=20,
+                signature=f"def {name.split('.')[-1]}():",
+                body="pass",
+            )
+        )
 
-    files = [r["file"] for r in results]
-    assert len(files) == 2, f"Expected 2 unique files, got {files}"
-    assert "src/auth.py" in files
-    assert "src/db.py" in files
+    target = add("src/target.py", "target.run")
+    caller_a = add("src/alpha.py", "alpha.uses_target")
+    caller_b = add("src/beta.py", "beta.also_uses_target")
+    add("src/unrelated.py", "unrelated.nothing_to_do_with_it")
+
+    db.insert_call_edges(
+        [
+            CallEdge(caller_id=caller_a, callee_id=target, callee_name="run", line=11),
+            CallEdge(caller_id=caller_b, callee_id=target, callee_name="run", line=12),
+        ]
+    )
+    db._conn.commit()
+    db.close()
+    return db_path
+
+
+class TestBlastRadiusUsesTheCallGraph:
+    """`blast_radius` must answer from `calls`, not from semantic search.
+
+    It used to build `query = f"blast radius dependencies of {symbol_name}"` and run a
+    Retriever, never touching the resolved call edges sitting in the same SQLite file.
+    Measured on this repository's own index for `AuditStore.append`: the SQL oracle
+    returns 320 caller symbols across 101 files in 128 ms, while the tool returned 12
+    entries in 5,747 ms with precision 0.33 and **recall 0.04** — and listed the queried
+    symbol itself among the hits.
+
+    Recall 0.04 is the number that matters. An agent asking "what breaks if I change
+    this?" was told about 4 of 101 affected files, and acted on it.
+
+    Three shipped surfaces consume this answer: the MCP tool, the VS Code
+    "N dependents" CodeLens, and `@trelix /impact`.
+    """
+
+    def test_returns_the_actual_callers(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import trelix_mcp.server as srv
+
+        _seed_call_graph(tmp_path)
+        results = srv.blast_radius("target.run", str(tmp_path))
+
+        symbols = {r["symbol"] for r in results}
+        assert symbols == {"alpha.uses_target", "beta.also_uses_target"}, (
+            f"expected exactly the two real callers, got {symbols}"
+        )
+
+    def test_does_not_return_the_queried_symbol_itself(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The old implementation ranked the symbol itself first — it is not its own
+        blast radius, and an agent that edits it because it appeared in the list is
+        being misled."""
+        import trelix_mcp.server as srv
+
+        _seed_call_graph(tmp_path)
+        results = srv.blast_radius("target.run", str(tmp_path))
+
+        assert "target.run" not in {r["symbol"] for r in results}
+
+    def test_excludes_unrelated_symbols(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Precision: a semantically similar but uncalled symbol must not appear."""
+        import trelix_mcp.server as srv
+
+        _seed_call_graph(tmp_path)
+        results = srv.blast_radius("target.run", str(tmp_path))
+
+        assert not any("unrelated" in r["symbol"] for r in results)
+
+    def test_response_is_a_bare_array_of_the_documented_keys(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The response SHAPE is load-bearing and must not become an object envelope.
+
+        workspace-vscode/src/mcp-client.ts does `(parsed ?? []).map(...)`, and its
+        caller's bare catch swallows the resulting TypeError — so wrapping the array
+        would make every "N dependents" CodeLens in the editor read 0 forever, silently.
+        """
+        import trelix_mcp.server as srv
+
+        _seed_call_graph(tmp_path)
+        results = srv.blast_radius("target.run", str(tmp_path))
+
+        assert isinstance(results, list)
+        for entry in results:
+            assert set(entry) >= {"file", "symbol", "kind", "line_start", "language"}
+
+    def test_needs_no_embedding_model(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A graph query must not pay for an embedder.
+
+        `Retriever.__init__` builds one eagerly and reads `.dimension` for the
+        DimensionGuard, which is why the old path cost 5.7 s and could fail outright on
+        a dimension mismatch. Making the factory raise proves the new path never calls
+        it.
+        """
+        import trelix_mcp.server as srv
+
+        _seed_call_graph(tmp_path)
+        with patch(
+            "trelix.embedder.base.make_embedder",
+            side_effect=AssertionError("blast_radius must not build an embedder"),
+        ):
+            results = srv.blast_radius("target.run", str(tmp_path))
+
+        assert len(results) == 2
+
+    def test_an_unknown_symbol_returns_an_empty_list(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import trelix_mcp.server as srv
+
+        _seed_call_graph(tmp_path)
+        assert srv.blast_radius("does.not.exist", str(tmp_path)) == []
 
 
 # ---------------------------------------------------------------------------
@@ -710,3 +830,82 @@ def test_server_import_produces_no_stdout(capsys: pytest.CaptureFixture[str]) ->
     assert captured.out == "", (
         f"server.py wrote {len(captured.out)} bytes to stdout on import: {captured.out!r}"
     )
+
+
+class TestBlastRadiusIncludesImporters:
+    """A symbol's blast radius includes files that import it, not only its callers.
+
+    Changing a dataclass's shape affects every file that imports it even with no call
+    edge, so restricting the answer to `calls` would under-report the case impact
+    analysis exists for. Measured against a calls-only oracle the tool looks imprecise
+    on widely-imported types (0.41 for IndexConfig, 0.48 for Symbol); against a
+    calls-UNION-imports oracle — what it actually answers — precision and recall are
+    both 1.00 for all five symbols tested on this repository's own index.
+
+    Importers resolve via file_id. `Retriever.get_importers` matches on
+    `files.rel_path`, so handing it a symbol name silently returns nothing.
+    """
+
+    @staticmethod
+    def _seed_importer(tmp_path):  # type: ignore[no-untyped-def]
+        """`consumer.py` imports `types.py` but calls nothing in it."""
+        from trelix.core.models import (
+            ImportEdge,
+            IndexedFile,
+            Language,
+            Symbol,
+            SymbolKind,
+        )
+        from trelix.store.db import Database
+
+        db_path = tmp_path / ".trelix" / "index.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = Database(db_path)
+
+        def add(rel_path: str, name: str) -> tuple[int, int]:
+            file_id = db.upsert_file(
+                IndexedFile(
+                    path=f"/repo/{rel_path}",
+                    rel_path=rel_path,
+                    language=Language.PYTHON,
+                    hash=f"h-{rel_path}",
+                    size_bytes=50,
+                )
+            )
+            symbol_id = db.insert_symbol(
+                Symbol(
+                    file_id=file_id,
+                    name=name.split(".")[-1],
+                    qualified_name=name,
+                    kind=SymbolKind.CLASS,
+                    line_start=1,
+                    line_end=5,
+                    signature=f"class {name}:",
+                    body="pass",
+                )
+            )
+            return file_id, symbol_id
+
+        types_file, _ = add("src/types.py", "Payload")
+        consumer_file, _ = add("src/consumer.py", "consumer.handler")
+
+        db.insert_imports(
+            [ImportEdge(file_id=consumer_file, imported_from="src.types", imported_names="Payload")]
+        )
+        db._conn.execute(
+            "UPDATE imports SET imported_file_id = ? WHERE file_id = ?",
+            (types_file, consumer_file),
+        )
+        db._conn.commit()
+        db.close()
+
+    def test_an_importer_with_no_call_edge_is_included(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import trelix_mcp.server as srv
+
+        self._seed_importer(tmp_path)
+        files = {r["file"] for r in srv.blast_radius("Payload", str(tmp_path))}
+
+        assert "src/consumer.py" in files, (
+            f"a file importing the symbol's module was not reported: {files}"
+        )
+        assert "src/types.py" not in files, "the defining file is not its own blast radius"
