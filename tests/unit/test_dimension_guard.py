@@ -196,11 +196,10 @@ class TestMigrateVectorsReset:
     @staticmethod
     def _seed_index(tmp_path: Path):  # type: ignore[no-untyped-def]
         """An index with one file, one symbol, and a 4-dim vector table."""
+        from trelix.core.config import IndexConfig
         from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
         from trelix.store.db import Database
         from trelix.store.vector import SQLiteVectorStore
-
-        from trelix.core.config import IndexConfig
 
         cfg = IndexConfig(repo_path=str(tmp_path))
         db_path = cfg.db_path_absolute
