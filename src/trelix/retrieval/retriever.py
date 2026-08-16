@@ -1201,6 +1201,17 @@ class Retriever:
             from trelix.graph.persistence import get_top_central_symbols
 
             top_ids = set(get_top_central_symbols(self.db, top_n=200))
+            if not top_ids:
+                # The boost is enabled but has nothing to boost with. Saying so once at
+                # WARNING is the difference between "this feature is on" and "this
+                # feature is on and working" — the previous DEBUG-only failure path made
+                # an inert setting indistinguishable from an active one.
+                logger.warning(
+                    "PageRank boost is enabled but graph_metadata is empty — "
+                    "run `trelix graph <repo>` to populate centrality, "
+                    "or set TRELIX_RETRIEVAL_PAGERANK_BOOST=false"
+                )
+                return results
             boosted: list[SearchResult] = []
             for r in results:
                 if r.symbol.id is not None and r.symbol.id in top_ids:
