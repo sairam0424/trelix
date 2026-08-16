@@ -299,3 +299,154 @@ class TestParserRobustness:
         }]})
         assert len(flows) == 1
         assert flows[0].sink_file == "src/b.py" and flows[0].sink_line == 25
+
+
+class TestScanOutcome:
+    """A failed scan must never be reportable as a clean scan.
+
+    `run()` returns `[]` for every one of: semgrep not installed, semgrep exited
+    non-zero, semgrep reported errors, and semgrep genuinely found nothing. The CLI
+    therefore could not distinguish them, and an earlier attempt at fixing the message
+    made this worse rather than better: branching on `shutil.which("semgrep")` alone
+    turned a FAILED scan into a confident green "semgrep ran and reported nothing" at
+    exit 0.
+
+    Reproduced: `trelix taint . --tier intrafile` needs the Semgrep Pro Engine, which
+    `pip install trelix[taint]` does not provide. semgrep exits 2 with zero bytes on
+    stdout, `_run_semgrep` returns that empty string without checking `returncode`, and
+    the parse yields []. A security tool claiming "no findings" for a scan that never
+    ran is the worst failure mode available to it.
+
+    `scan()` classifies the outcome from three independent signals, because no single
+    one covers every case: the exit code, the `errors[]` array in semgrep's own JSON,
+    and `paths.scanned`. An rc-only guard misses the case where semgrep exits non-zero
+    but still emits valid JSON, and an errors-only guard misses a hard crash with no
+    JSON at all.
+    """
+
+    @staticmethod
+    def _analyzer(tmp_path):  # type: ignore[no-untyped-def]
+        return TaintAnalyzer(str(tmp_path))
+
+    def test_semgrep_missing_is_its_own_outcome(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from trelix.analysis.taint import ScanOutcome
+
+        with patch("shutil.which", return_value=None):
+            result = self._analyzer(tmp_path).scan()
+
+        assert result.outcome is ScanOutcome.SEMGREP_MISSING
+        assert result.flows == []
+
+    def test_nonzero_exit_with_empty_stdout_is_a_failed_scan(self, tmp_path: Path) -> None:
+        """The reproduced case: --tier intrafile without the Pro engine."""
+        from unittest.mock import MagicMock, patch
+
+        from trelix.analysis.taint import ScanOutcome
+
+        completed = MagicMock(returncode=2, stdout="", stderr="Semgrep Pro is uninstalled")
+        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
+            "subprocess.run", return_value=completed
+        ):
+            result = self._analyzer(tmp_path).scan()
+
+        assert result.outcome is ScanOutcome.SEMGREP_FAILED
+        assert "Pro" in result.detail
+
+    def test_json_errors_array_marks_the_scan_failed(self, tmp_path: Path) -> None:
+        """Non-zero exit WITH valid JSON — an rc-plus-empty-stdout guard misses this."""
+        import json as _json
+        from unittest.mock import MagicMock, patch
+
+        from trelix.analysis.taint import ScanOutcome
+
+        payload = _json.dumps({
+            "results": [],
+            "errors": [{"message": "rule parse error"}],
+            "paths": {"scanned": []},
+        })
+        completed = MagicMock(returncode=8, stdout=payload, stderr="")
+        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
+            "subprocess.run", return_value=completed
+        ):
+            result = self._analyzer(tmp_path).scan()
+
+        assert result.outcome is ScanOutcome.SEMGREP_FAILED
+
+    def test_zero_files_scanned_is_not_a_clean_scan(self, tmp_path: Path) -> None:
+        """Exit 0 and no errors, but nothing was actually examined."""
+        import json as _json
+        from unittest.mock import MagicMock, patch
+
+        from trelix.analysis.taint import ScanOutcome
+
+        payload = _json.dumps({"results": [], "errors": [], "paths": {"scanned": []}})
+        completed = MagicMock(returncode=0, stdout=payload, stderr="")
+        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
+            "subprocess.run", return_value=completed
+        ):
+            result = self._analyzer(tmp_path).scan()
+
+        assert result.outcome is ScanOutcome.SCANNED_NOTHING
+
+    def test_a_genuine_clean_scan_is_reported_as_clean(self, tmp_path: Path) -> None:
+        import json as _json
+        from unittest.mock import MagicMock, patch
+
+        from trelix.analysis.taint import ScanOutcome
+
+        payload = _json.dumps({
+            "results": [], "errors": [], "paths": {"scanned": ["a.py", "b.py"]},
+        })
+        completed = MagicMock(returncode=0, stdout=payload, stderr="")
+        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
+            "subprocess.run", return_value=completed
+        ):
+            result = self._analyzer(tmp_path).scan()
+
+        assert result.outcome is ScanOutcome.OK
+        assert result.files_scanned == 2
+
+    def test_findings_are_returned_with_an_ok_outcome(self, tmp_path: Path) -> None:
+        import json as _json
+        from unittest.mock import MagicMock, patch
+
+        from trelix.analysis.taint import ScanOutcome
+
+        payload = dict(REAL_SEMGREP_TAINT_OUTPUT)
+        payload["errors"] = []
+        payload["paths"] = {"scanned": ["src/vuln.py"]}
+        completed = MagicMock(returncode=1, stdout=_json.dumps(payload), stderr="")
+        with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
+            "subprocess.run", return_value=completed
+        ):
+            result = self._analyzer(tmp_path).scan()
+
+        # semgrep exits 1 when it HAS findings, which must not read as a failure.
+        assert result.outcome is ScanOutcome.OK
+        assert len(result.flows) == 1
+        assert result.flows[0].severity == "ERROR"
+
+    def test_run_still_returns_a_list_and_never_raises(self, tmp_path: Path) -> None:
+        """run()'s documented contract must survive scan() being introduced."""
+        from unittest.mock import patch
+
+        with patch.object(TaintAnalyzer, "_run_semgrep", side_effect=RuntimeError("boom")):
+            assert TaintAnalyzer(str(tmp_path)).run() == []
+
+    def test_failed_scan_is_logged_at_warning(self, tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
+        """A DEBUG-level record is invisible: the CLI configures WARNING."""
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        completed = MagicMock(returncode=2, stdout="", stderr="Semgrep Pro is uninstalled")
+        with caplog.at_level(logging.WARNING, logger="trelix.analysis.taint"):
+            with patch("shutil.which", return_value="/usr/bin/semgrep"), patch(
+                "subprocess.run", return_value=completed
+            ):
+                TaintAnalyzer(str(tmp_path)).scan()
+
+        assert any("Pro" in r.message or "Pro" in str(r.args) for r in caplog.records), (
+            f"semgrep's stderr was not surfaced at WARNING: {caplog.records}"
+        )

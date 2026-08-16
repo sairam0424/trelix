@@ -477,21 +477,27 @@ class TestTaintRulesOption:
         rules = tmp_path / "rules.yaml"
         rules.write_text("rules: []\n", encoding="utf-8")
 
-        with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]) as mock_run:
+        from trelix.analysis.taint import ScanOutcome, ScanResult
+
+        ok = ScanResult(outcome=ScanOutcome.OK, files_scanned=1)
+        with patch("trelix.analysis.taint.TaintAnalyzer.scan", return_value=ok) as mock_scan:
             result = runner.invoke(app, ["taint", str(tmp_path), "--rules", str(rules)])
 
         assert result.exit_code == 0, result.output
-        assert mock_run.call_args.kwargs["rules_path"] == str(rules.resolve())
+        assert mock_scan.call_args.kwargs["rules_path"] == str(rules.resolve())
 
     def test_omitting_rules_keeps_the_registry_default(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         """None must be passed through so TaintAnalyzer picks its own default."""
         from unittest.mock import patch
 
-        with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]) as mock_run:
+        from trelix.analysis.taint import ScanOutcome, ScanResult
+
+        ok = ScanResult(outcome=ScanOutcome.OK, files_scanned=1)
+        with patch("trelix.analysis.taint.TaintAnalyzer.scan", return_value=ok) as mock_scan:
             result = runner.invoke(app, ["taint", str(tmp_path)])
 
         assert result.exit_code == 0, result.output
-        assert mock_run.call_args.kwargs["rules_path"] is None
+        assert mock_scan.call_args.kwargs["rules_path"] is None
 
     def test_missing_rules_file_fails_fast(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         """A typo in the path must not silently fall back to the network pack.
@@ -609,25 +615,66 @@ class TestTaintCleanScanMessage:
     """
 
     def test_clean_scan_does_not_suggest_installing_semgrep(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A GENUINELY clean scan — outcome OK with files actually examined.
+
+        An earlier version of this test asserted exit 0 for an empty `run()` with
+        semgrep present, which pinned the false green: it passed just as happily when a
+        FAILED scan was being reported as clean.
+        """
         from unittest.mock import patch
 
-        with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]), patch(
-            "shutil.which", return_value="/usr/local/bin/semgrep"
-        ):
+        from trelix.analysis.taint import ScanOutcome, ScanResult
+
+        clean = ScanResult(outcome=ScanOutcome.OK, files_scanned=140)
+        with patch("trelix.analysis.taint.TaintAnalyzer.scan", return_value=clean):
             res = runner.invoke(app, ["taint", str(tmp_path)])
 
         assert res.exit_code == 0, res.output
         assert "pip install" not in res.output, (
             f"a clean scan told the user to install semgrep: {res.output!r}"
         )
+        assert "140" in res.output, "the clean claim should say how much was examined"
+
+    def test_a_failed_scan_is_not_reported_as_clean(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The regression this whole outcome type exists to prevent.
+
+        `--tier intrafile` without the Semgrep Pro Engine exits 2 with empty stdout.
+        Branching on `shutil.which` alone printed "semgrep ran and reported nothing" at
+        exit 0 for exactly that case — a confident all-clear for a scan that never ran.
+        """
+        from unittest.mock import patch
+
+        from trelix.analysis.taint import ScanOutcome, ScanResult
+
+        failed = ScanResult(outcome=ScanOutcome.SEMGREP_FAILED, detail="Semgrep Pro is uninstalled")
+        with patch("trelix.analysis.taint.TaintAnalyzer.scan", return_value=failed):
+            res = runner.invoke(app, ["taint", str(tmp_path), "--tier", "intrafile"])
+
+        assert res.exit_code == 1, "a failed scan must not exit 0"
+        assert "NOT a clean result" in res.output
+        assert "No taint flows found" not in res.output
+
+    def test_scanning_zero_files_is_not_reported_as_clean(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Exit 0 with nothing examined reads identically to a clean scan otherwise."""
+        from unittest.mock import patch
+
+        from trelix.analysis.taint import ScanOutcome, ScanResult
+
+        vacuous = ScanResult(outcome=ScanOutcome.SCANNED_NOTHING, detail="examined no files")
+        with patch("trelix.analysis.taint.TaintAnalyzer.scan", return_value=vacuous):
+            res = runner.invoke(app, ["taint", str(tmp_path)])
+
+        assert res.exit_code == 1
+        assert "NOT a clean result" in res.output
 
     def test_missing_semgrep_still_says_how_to_install_it(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         """The install hint must survive for the case it was written for."""
         from unittest.mock import patch
 
-        with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]), patch(
-            "shutil.which", return_value=None
-        ):
+        from trelix.analysis.taint import ScanOutcome, ScanResult
+
+        missing = ScanResult(outcome=ScanOutcome.SEMGREP_MISSING, detail="not on PATH")
+        with patch("trelix.analysis.taint.TaintAnalyzer.scan", return_value=missing):
             res = runner.invoke(app, ["taint", str(tmp_path)])
 
         assert res.exit_code == 0, res.output
@@ -641,9 +688,10 @@ class TestTaintCleanScanMessage:
         """
         from unittest.mock import patch
 
-        with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]), patch(
-            "shutil.which", return_value=None
-        ):
+        from trelix.analysis.taint import ScanOutcome, ScanResult
+
+        missing = ScanResult(outcome=ScanOutcome.SEMGREP_MISSING, detail="not on PATH")
+        with patch("trelix.analysis.taint.TaintAnalyzer.scan", return_value=missing):
             res = runner.invoke(app, ["taint", str(tmp_path)])
 
         assert "trelix[taint]" in res.output, (
@@ -655,12 +703,13 @@ class TestTaintCleanScanMessage:
         import json as _json
         from unittest.mock import patch
 
-        for which in ("/usr/local/bin/semgrep", None):
-            with patch("trelix.analysis.taint.TaintAnalyzer.run", return_value=[]), patch(
-                "shutil.which", return_value=which
-            ):
+        from trelix.analysis.taint import ScanOutcome, ScanResult
+
+        for outcome in (ScanOutcome.OK, ScanOutcome.SEMGREP_MISSING, ScanOutcome.SEMGREP_FAILED):
+            result = ScanResult(outcome=outcome, detail="d")
+            with patch("trelix.analysis.taint.TaintAnalyzer.scan", return_value=result):
                 res = runner.invoke(app, ["taint", str(tmp_path), "--json"])
 
             assert _json.loads(res.stdout) == [], (
-                f"--json stdout was not parseable with which={which!r}: {res.stdout!r}"
+                f"--json stdout was not parseable for {outcome}: {res.stdout!r}"
             )

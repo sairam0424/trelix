@@ -943,11 +943,23 @@ def migrate_vectors(
         typer.Option(
             "--reset",
             help=(
-                "Clear all stored embeddings and dimension metadata so trelix index starts fresh. "
+                "Rebuild the vector store at the current embedder's dimension and "
+                "invalidate every file hash, so `trelix index` re-embeds from scratch. "
                 "Use after switching embedding providers."
             ),
         ),
     ] = False,
+    provider: Annotated[
+        str,
+        typer.Option(
+            "--provider",
+            help=(
+                "With --reset: the embedding provider to rebuild FOR. The vector store's "
+                "width is fixed at creation, so this decides it. Defaults to "
+                "TRELIX_EMBEDDER_PROVIDER."
+            ),
+        ),
+    ] = "",
 ) -> None:
     """Migrate embeddings from SQLite to Qdrant (or another backend).
 
@@ -970,15 +982,58 @@ def migrate_vectors(
 
     if reset:
         from trelix.core.config import IndexConfig as _IndexConfig
+        from trelix.embedder import make_embedder
         from trelix.store.db import Database as _Database
         from trelix.store.dimension_guard import DimensionGuard as _DimensionGuard
+        from trelix.store.vector import make_vector_store
 
         cfg = _IndexConfig(repo_path=str(Path(repo).resolve()))
+        if provider:
+            cfg.embedder = _build_embedder_config(provider)
+
         db = _Database(cfg.db_path_absolute)
+
+        # Three things have to happen for a re-index to actually work afterwards, and
+        # the previous implementation did none of them.
+        #
+        # 1. The vec0 table must be REBUILT, not emptied. Its vector width is fixed by
+        #    its CREATE statement, so a row delete leaves a table that still rejects
+        #    vectors of the new dimension. Worse, the delete never happened: it ran on
+        #    Database's connection, which does not load the sqlite-vec extension, so it
+        #    raised "no such module: vec0" into a bare `except: pass`.
+        # 2. Every file hash must be invalidated. `index()` skips files whose hash is
+        #    unchanged and does not check whether their vectors still exist, so
+        #    otherwise the next run prints "Nothing to index — all files up to date"
+        #    over an index with no vectors at all.
+        # 3. The recorded dimension is cleared LAST. Clearing it first — as this did —
+        #    leaves DimensionGuard with nothing to compare against, so a mismatch is no
+        #    longer caught up front and the next run pays for a full embedding pass
+        #    before failing on its first insert.
+        try:
+            dimension = make_embedder(cfg.embedder).dimension
+        except Exception as exc:
+            _print_error("Cannot determine the embedder's dimension", exc)
+            raise typer.Exit(1) from exc
+
+        vector_store = make_vector_store(cfg, dimension=dimension)
+        try:
+            db.clear_all_embeddings(vector_store=vector_store)
+        except Exception as exc:
+            _print_error("Could not rebuild the vector store", exc)
+            raise typer.Exit(1) from exc
+
+        # Both levels, because they gate different stages. File hashes gate re-PARSING;
+        # symbol content hashes gate re-EMBEDDING, and `_insert_one` leaves a symbol
+        # whose hash still matches completely untouched. Invalidating only the file
+        # hashes re-parsed every file and still embedded nothing.
+        files_invalidated = db.invalidate_all_file_hashes()
+        symbols_invalidated = db.invalidate_all_symbol_hashes()
         _DimensionGuard.reset(db)
-        db.clear_all_embeddings()
+
         console.print(
-            "[green]Embeddings and dimension metadata cleared.[/green]\n"
+            f"[green]Vector store rebuilt at {dimension} dimensions.[/green]\n"
+            f"Invalidated {files_invalidated} file and {symbols_invalidated} symbol "
+            "hashes so every chunk is re-embedded.\n"
             "Run [bold]trelix index .[/bold] to re-embed with the new provider."
         )
         return
@@ -1523,7 +1578,12 @@ def taint(
     config = IndexConfig(repo_path=str(Path(repo).resolve()))
     analyzer = TaintAnalyzer(repo_path=str(Path(repo).resolve()), tier=tier)
     with _status_console(json_output).status("Running Semgrep taint analysis..."):
-        flows = analyzer.run(rules_path=rules_path)
+        # scan() rather than run(): run() returns [] for a clean scan, a missing binary
+        # AND a failed one, so it cannot distinguish "no vulnerabilities" from "no
+        # analysis". Reporting the former when the latter happened is the worst thing
+        # this command can do.
+        scan_result = analyzer.scan(rules_path=rules_path)
+    flows = scan_result.flows
 
     if not flows:
         # Two defects lived in this one message. It printed prose to STDOUT even
@@ -1533,30 +1593,44 @@ def taint(
         # opening tag and swallowed it, rendering the fix instruction as
         # "pip install 'trelix'" — telling the reader to install the package they
         # already have. That is the same swallow _print_error() documents.
+        from trelix.analysis.taint import ScanOutcome
+
+        # A third defect lived in this one message: it reported a CLEAN SCAN as a
+        # possible missing install, because run() collapses four different outcomes into
+        # an empty list. An earlier attempt at fixing it branched on `shutil.which`
+        # alone, which made one case worse — a scan that FAILED (for example --tier
+        # intrafile without the Semgrep Pro Engine, which exits 2 with empty stdout)
+        # then printed a confident "semgrep ran and reported nothing" at exit 0.
         if json_output:
             _print_json([])
+        elif scan_result.outcome is ScanOutcome.SEMGREP_MISSING:
+            console.print(
+                "[yellow]semgrep is not installed, so no taint analysis ran: "
+                f"pip install {escape('trelix[taint]')}[/yellow]"
+            )
+        elif scan_result.outcome is ScanOutcome.SEMGREP_FAILED:
+            _print_error("Taint analysis failed — this is NOT a clean result",
+                         scan_result.detail or "semgrep exited with an error")
+            if tier != "default":
+                err_console.print(
+                    f"[dim]--tier {escape(tier)} requires the Semgrep Pro Engine, which "
+                    f"pip install {escape('trelix[taint]')} does not include.[/dim]"
+                )
+            raise typer.Exit(1)
+        elif scan_result.outcome is ScanOutcome.SCANNED_NOTHING:
+            _print_error(
+                "Taint analysis examined 0 files — this is NOT a clean result",
+                scan_result.detail or "check the target path and the rules' languages",
+            )
+            raise typer.Exit(1)
         else:
-            # A third defect lived here: run() returns [] both when semgrep is absent
-            # and when semgrep ran fine and found nothing, so one message covered both
-            # and a CLEAN SCAN was reported as a possible missing install. A security
-            # tool that describes a clean result as a misconfiguration teaches people to
-            # distrust it. shutil.which resolves the same binary the analyzer invokes,
-            # so it separates the two cases without changing run()'s contract.
-            import shutil
-
-            if shutil.which("semgrep") is None:
-                console.print(
-                    "[yellow]semgrep is not installed, so no taint analysis ran: "
-                    f"pip install {escape('trelix[taint]')}[/yellow]"
-                )
-            else:
-                console.print(
-                    "[green]No taint flows found.[/green] semgrep ran and reported "
-                    "nothing.\n"
-                    "[dim]If you expected findings, check the ruleset — the default "
-                    "'p/default' registry pack needs network access. Pass --rules "
-                    "<path> to scan against rules you control.[/dim]"
-                )
+            console.print(
+                f"[green]No taint flows found.[/green] semgrep examined "
+                f"{scan_result.files_scanned} file(s) and reported nothing.\n"
+                "[dim]If you expected findings, check the ruleset — the default "
+                "'p/default' registry pack needs network access. Pass --rules "
+                "<path> to scan against rules you control.[/dim]"
+            )
         return
 
     # Persist to DB

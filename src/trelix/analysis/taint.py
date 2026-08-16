@@ -17,11 +17,42 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 logger = logging.getLogger("trelix.analysis.taint")
+
+
+class ScanOutcome(StrEnum):
+    """Why a scan produced the flows it did — or produced none.
+
+    `run()` collapses all four of these into an empty list, which is why callers could
+    not tell "your code is clean" from "the tool never ran". For a security check those
+    are opposite conclusions.
+    """
+
+    OK = "ok"  # semgrep examined files and reported whatever it found
+    SEMGREP_MISSING = "semgrep-missing"  # the binary is not on PATH
+    SEMGREP_FAILED = "semgrep-failed"  # it ran and errored
+    SCANNED_NOTHING = "scanned-nothing"  # it succeeded but examined zero files
+
+
+@dataclass
+class ScanResult:
+    """Flows plus enough context to describe them honestly."""
+
+    flows: list[TaintFlow] = field(default_factory=list)
+    outcome: ScanOutcome = ScanOutcome.OK
+    detail: str = ""
+    files_scanned: int = 0
+
+    @property
+    def is_trustworthy(self) -> bool:
+        """True only when an empty `flows` genuinely means "nothing found"."""
+        return self.outcome is ScanOutcome.OK
 
 
 def _extract_location(node: object) -> dict[str, Any] | None:
@@ -92,19 +123,99 @@ class TaintAnalyzer:
         """
         Run semgrep taint analysis. Returns [] on any failure.
 
-        Args:
-            rules_path: path to custom semgrep rules directory/file.
-                       If None, uses the built-in taint rules registry.
+        Kept as a thin wrapper over `scan()` so its documented never-raises,
+        always-a-list contract is unchanged for existing callers. Anything that needs to
+        distinguish "clean" from "did not run" must use `scan()` — this signature cannot
+        express the difference, which is exactly how a failed scan came to be reportable
+        as a clean one.
         """
+        return self.scan(rules_path).flows
+
+    def scan(self, rules_path: str | None = None) -> ScanResult:
+        """Run semgrep and report both the flows and WHY there were that many.
+
+        Three independent signals are needed, because no one of them covers every case:
+
+          - the exit code catches a hard failure, but semgrep exits 1 when it HAS
+            findings, so a non-zero code is not itself an error;
+          - the `errors[]` array in semgrep's own JSON catches a rule or target problem
+            that still produced parseable output — invisible to an exit-code check that
+            also requires empty stdout;
+          - `paths.scanned` catches the vacuous success where semgrep exits 0 having
+            examined nothing at all, which reports identically to a clean scan.
+
+        Never raises, matching `run()`.
+        """
+        if shutil.which("semgrep") is None:
+            return ScanResult(
+                outcome=ScanOutcome.SEMGREP_MISSING,
+                detail="the semgrep binary is not on PATH",
+            )
+
         try:
-            output = self._run_semgrep(rules_path)
-            return self._parse_semgrep_output(output)
+            completed = self._invoke_semgrep(rules_path)
         except Exception as exc:
-            logger.debug("TaintAnalyzer.run() failed (non-fatal): %s", exc)
-            return []
+            logger.warning("Taint scan could not start: %s", exc)
+            return ScanResult(outcome=ScanOutcome.SEMGREP_FAILED, detail=str(exc))
+
+        stdout = completed.stdout or ""
+        try:
+            payload = json.loads(stdout) if stdout.strip() else {}
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "Taint scan produced unparseable output (exit %s): %s",
+                completed.returncode,
+                (completed.stderr or str(exc))[:400].strip(),
+            )
+            return ScanResult(
+                outcome=ScanOutcome.SEMGREP_FAILED,
+                detail=(completed.stderr or str(exc))[:400].strip(),
+            )
+
+        errors = payload.get("errors") or []
+        scanned = (payload.get("paths") or {}).get("scanned") or []
+        flows = self._parse_semgrep_output(stdout) if stdout.strip() else []
+
+        # A non-zero code with no usable payload, or any error semgrep reported itself.
+        if errors or (completed.returncode != 0 and not payload):
+            detail = (completed.stderr or "").strip() or "; ".join(
+                str(e.get("message", e))[:200] for e in errors[:3]
+            )
+            logger.warning(
+                "Taint scan FAILED (exit %s) — results are not a clean bill of health: %s",
+                completed.returncode,
+                detail[:400],
+            )
+            return ScanResult(
+                flows=flows,
+                outcome=ScanOutcome.SEMGREP_FAILED,
+                detail=detail[:400],
+                files_scanned=len(scanned),
+            )
+
+        if not scanned:
+            logger.warning(
+                "Taint scan examined 0 files — check the target path and rule languages"
+            )
+            return ScanResult(
+                flows=flows,
+                outcome=ScanOutcome.SCANNED_NOTHING,
+                detail="semgrep succeeded but examined no files",
+            )
+
+        return ScanResult(flows=flows, outcome=ScanOutcome.OK, files_scanned=len(scanned))
 
     def _run_semgrep(self, rules_path: str | None) -> str:
-        """Invoke semgrep CLI and return JSON output string."""
+        """Invoke semgrep and return its stdout.
+
+        Retained for callers that patch it. It discards the exit code and stderr, which
+        is why `scan()` uses `_invoke_semgrep` instead: a failed run returns "" here and
+        is indistinguishable from a clean one.
+        """
+        return self._invoke_semgrep(rules_path).stdout
+
+    def _invoke_semgrep(self, rules_path: str | None) -> subprocess.CompletedProcess[str]:
+        """Invoke the semgrep CLI and return the whole CompletedProcess."""
         cmd = ["semgrep", "--json", "--no-rewrite-rule-ids"]
 
         if self._tier == "intrafile":
@@ -120,13 +231,12 @@ class TaintAnalyzer:
 
         cmd.append(self._repo_path)
 
-        result = subprocess.run(
+        return subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        return result.stdout
 
     def _parse_semgrep_output(self, output: str) -> list[TaintFlow]:
         """Parse semgrep JSON output into TaintFlow objects."""
