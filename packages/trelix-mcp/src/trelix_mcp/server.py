@@ -14,6 +14,7 @@ from pathlib import Path  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
 from fastmcp import Context, FastMCP  # noqa: E402
+from fastmcp.prompts import Message  # noqa: E402
 from mcp.server.lowlevel.server import NotificationOptions  # noqa: E402
 from mcp.types import ServerCapabilities  # noqa: E402
 
@@ -187,8 +188,48 @@ def resource_symbol_source(repo_path: str, qualified_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _as_prompt_role(role: str) -> Literal["user", "assistant"]:
+    """Narrow a builder's ``role`` string to the two roles the MCP spec allows.
+
+    The builders are typed ``list[dict[str, str]]``, so their ``role`` is an
+    arbitrary ``str`` to a type checker, while fastmcp's ``Message`` accepts only
+    ``Literal["user", "assistant"]``. Branching rather than casting keeps the
+    narrowing honest instead of asserted, and an unexpected role then fails here
+    naming the offending value, rather than surfacing from inside fastmcp's own
+    validation with no indication of which message was wrong.
+
+    All three builders currently emit ``"user"``, so the raise is defensive.
+    """
+    if role == "user":
+        return "user"
+    if role == "assistant":
+        return "assistant"
+    raise ValueError(f"unsupported MCP prompt role {role!r}: expected 'user' or 'assistant'")
+
+
+def _as_prompt_messages(messages: list[dict[str, str]]) -> list[Message]:
+    """Convert the pure builders' message dicts into fastmcp ``Message`` objects.
+
+    This conversion exists at the transport boundary on purpose. ``prompts.py``
+    documents its builders as returning plain dicts and stays free of any fastmcp
+    import, matching how the tool bodies are transport-agnostic pure functions —
+    so the fastmcp-specific type is applied here, not there. Its existing tests
+    call the builders directly and are unaffected.
+
+    Without this, every ``prompts/get`` failed under fastmcp >= 3.4, which
+    validates the return value and accepts only ``Message`` or ``str``:
+
+        TypeError: messages[0] must be Message or str, got dict.
+
+    ``prompts/list`` was unaffected, so all three prompts advertised themselves
+    and then errored on use. The package pins ``fastmcp>=3.4.0``; the pin is now
+    bounded below 4 so the next major cannot silently change this contract again.
+    """
+    return [Message(m["content"], role=_as_prompt_role(m.get("role", "user"))) for m in messages]
+
+
 @mcp.prompt("trelix-search")
-def prompt_search(query: str, repo_path: str) -> list[dict[str, str]]:
+def prompt_search(query: str, repo_path: str) -> list[Message]:
     """Structured prompt for semantic code search using trelix.
 
     Args:
@@ -197,11 +238,11 @@ def prompt_search(query: str, repo_path: str) -> list[dict[str, str]]:
     """
     from trelix_mcp.prompts import build_search_prompt
 
-    return build_search_prompt(query=query, repo_path=repo_path)
+    return _as_prompt_messages(build_search_prompt(query=query, repo_path=repo_path))
 
 
 @mcp.prompt("trelix-explain")
-def prompt_explain(qualified_name: str, repo_path: str) -> list[dict[str, str]]:
+def prompt_explain(qualified_name: str, repo_path: str) -> list[Message]:
     """Structured prompt for explaining a specific code symbol.
 
     Args:
@@ -210,11 +251,13 @@ def prompt_explain(qualified_name: str, repo_path: str) -> list[dict[str, str]]:
     """
     from trelix_mcp.prompts import build_explain_prompt
 
-    return build_explain_prompt(qualified_name=qualified_name, repo_path=repo_path)
+    return _as_prompt_messages(
+        build_explain_prompt(qualified_name=qualified_name, repo_path=repo_path)
+    )
 
 
 @mcp.prompt("trelix-blast-radius")
-def prompt_blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, str]]:
+def prompt_blast_radius(symbol_name: str, repo_path: str) -> list[Message]:
     """Structured prompt for impact analysis before refactoring a symbol.
 
     Args:
@@ -223,7 +266,9 @@ def prompt_blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, str]
     """
     from trelix_mcp.prompts import build_blast_radius_prompt
 
-    return build_blast_radius_prompt(symbol_name=symbol_name, repo_path=repo_path)
+    return _as_prompt_messages(
+        build_blast_radius_prompt(symbol_name=symbol_name, repo_path=repo_path)
+    )
 
 
 @mcp.tool()
