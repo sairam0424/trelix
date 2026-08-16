@@ -16,6 +16,7 @@ otherwise, which is how a 2.6 GB `.vscode-test/` bundle — excluded by
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -23,6 +24,8 @@ import pathspec
 
 from trelix.core.config import IndexConfig
 from trelix.core.models import IndexedFile, Language
+
+logger = logging.getLogger("trelix.indexing.walker")
 
 # Map file extension → Language
 EXTENSION_MAP: dict[str, Language] = {
@@ -96,6 +99,40 @@ class FileWalker:
         # Populated lazily: a repo's .gitignore files are only read if the walk (or a
         # watcher event) actually reaches the directory holding them.
         self._spec_cache: dict[Path, pathspec.PathSpec | None] = {}  # type: ignore[type-arg]
+        # Paths the traversal could not read. An unreadable directory drops its whole
+        # subtree, and an unreadable file drops itself; both used to happen in total
+        # silence, so the walk simply returned fewer files and every caller treated the
+        # result as the complete contents of the repository.
+        self._incomplete_paths: list[str] = []
+
+    @property
+    def incomplete_paths(self) -> list[str]:
+        """Paths the most recent walk could not read, as repo-relative strings."""
+        return list(self._incomplete_paths)
+
+    @property
+    def walk_was_complete(self) -> bool:
+        """False when the last walk skipped anything it could not read.
+
+        Anything that DELETES index rows for files the walk did not yield must check
+        this first: a truncated walk is indistinguishable from a repository whose files
+        were removed, and acting on it destroys embeddings that cost money to compute.
+        """
+        return not self._incomplete_paths
+
+    def _record_incomplete(self, path: Path, exc: OSError) -> None:
+        """Note a path the traversal had to skip, and say so once at WARNING."""
+        try:
+            rel = str(path.relative_to(self.repo_root))
+        except ValueError:
+            rel = str(path)
+        self._incomplete_paths.append(rel)
+        logger.warning(
+            "Skipped %s while walking the repository (%s) — the index will be "
+            "incomplete for this path",
+            rel,
+            exc.__class__.__name__,
+        )
 
     def _spec_for_dir(self, directory: Path) -> pathspec.PathSpec | None:  # type: ignore[type-arg]
         """Parse and cache the `.gitignore` sitting directly inside `directory`."""
@@ -193,6 +230,9 @@ class FileWalker:
 
     def walk(self) -> Iterator[IndexedFile]:
         """Yield IndexedFile for every indexable file in the repo."""
+        # Reset per walk, so a second walk does not inherit the first one's gaps.
+        self._incomplete_paths = []
+
         allowed_languages = set(self.config.walker.languages)
         ignore_extensions = set(self.config.walker.extra_ignore_extensions)
         ignore_filenames = set(self.config.walker.extra_ignore_filenames)
@@ -216,10 +256,13 @@ class FileWalker:
             if language not in allowed_languages:
                 continue
 
-            # Size filter
+            # Size filter. A stat() failure means we cannot judge the file at all, so
+            # it is recorded rather than quietly dropped — unlike the size check below
+            # it, which is a deliberate exclusion and not a gap.
             try:
                 size = path.stat().st_size
-            except OSError:
+            except OSError as exc:
+                self._record_incomplete(path, exc)
                 continue
             if size > max_size:
                 continue
@@ -227,7 +270,8 @@ class FileWalker:
             # Compute hash
             try:
                 file_hash = self._compute_hash(path)
-            except OSError:
+            except OSError as exc:
+                self._record_incomplete(path, exc)
                 continue
 
             yield IndexedFile(
@@ -264,7 +308,10 @@ class FileWalker:
         """Recursive directory traversal, skipping ignored dirs."""
         try:
             entries = sorted(root.iterdir())
-        except PermissionError:
+        except OSError as exc:
+            # Returning here drops the ENTIRE subtree below `root`, which is why it is
+            # recorded rather than merely tolerated.
+            self._record_incomplete(root, exc)
             return
 
         for entry in entries:

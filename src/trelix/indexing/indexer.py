@@ -345,6 +345,7 @@ class Indexer:
         QUEUE_SIZE = 64
         results: dict[str, Any] = {
             "files_found": 0,
+            "files_unreadable": 0,
             "files_indexed": 0,
             "files_skipped": 0,
             "symbols_extracted": 0,
@@ -442,6 +443,19 @@ class Indexer:
         self._report_progress(0, "Discovering files…", 0.0, stats)
         files = list(self.walker.walk())
         stats["files_found"] = len(files)
+        # Surfaced as a stat, not only as a log line: an unreadable directory drops its
+        # whole subtree, so "files_found" alone cannot be read as the contents of the
+        # repository. Anything that later DELETES rows for files the walk did not yield
+        # must consult this first — a truncated walk is indistinguishable from files
+        # having been removed, and acting on it destroys paid-for embeddings.
+        stats["files_unreadable"] = len(self.walker.incomplete_paths)
+        if not self.walker.walk_was_complete:
+            skipped = self.walker.incomplete_paths
+            self._console.print(
+                f"[yellow]  {len(skipped)} path(s) could not be read and are missing "
+                f"from this index: {escape(', '.join(skipped[:5]))}"
+                f"{' …' if len(skipped) > 5 else ''}[/yellow]"
+            )
         self._report_progress(0, "Discovering files…", 1.0, stats)
 
         # Pre-filter: skip files whose hash hasn't changed (sequential, read-only DB)

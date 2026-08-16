@@ -1383,6 +1383,16 @@ python -c "import sqlite_vec; print('sqlite-vec loaded successfully')"
 trelix index ./my-repo  # re-index
 ```
 
+Note this catches **added and modified** files only. `trelix index` walks the repository
+and inserts what it finds; it has no reconciliation pass, so a file you DELETED stays
+indexed and keeps appearing in results. Only `trelix watch` removes deleted files, via
+filesystem events. To clear removed files from an existing index, delete
+`.trelix/index.db` and index again.
+
+If a `path(s) could not be read` warning appeared during indexing, some files are missing
+for a different reason — an unreadable directory drops its whole subtree — and re-indexing
+will not help until the permissions are fixed.
+
 *Provider mismatch* — you indexed with one provider and are querying with another:
 ```bash
 # Check which provider was used at index time

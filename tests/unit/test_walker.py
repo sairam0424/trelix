@@ -15,6 +15,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from trelix.core.config import IndexConfig, WalkerConfig
 from trelix.core.models import Language
 from trelix.indexing.walker import EXTENSION_MAP, FileWalker
@@ -680,3 +682,77 @@ class TestNestedGitignore:
         assert rels == ["main.py"], (
             f"the nested .gitignore's .vscode-test/ exclusion was not honoured: {rels}"
         )
+
+
+class TestWalkCompleteness:
+    """An unreadable directory must not vanish from the index in silence.
+
+    `_iter_files` catches `PermissionError` from `root.iterdir()` and bare-`return`s,
+    which drops the ENTIRE subtree below it, and catches `OSError` per file with a
+    `continue`. Neither left any trace: the walk simply yielded fewer files and the
+    index reported success over a corpus with a hole in it.
+
+    That matters beyond the missing files. Any future reconciliation pass — deleting
+    index rows for files the walk no longer yields — would read a truncated walk as
+    "these files were deleted" and remove embeddings the user paid to compute. A
+    percentage threshold cannot defend against it either: one unreadable directory is
+    almost always far below any sane threshold, so the guard passes and the data goes.
+
+    `FileWalker.incomplete_paths` records what was skipped, so a caller can refuse to
+    act on a walk that is not trustworthy.
+    """
+
+    @staticmethod
+    def _repo(base: Path) -> Path:
+        repo = base / "repo"
+        repo.mkdir()
+        (repo / "visible.py").write_text("def visible(): pass\n", encoding="utf-8")
+        locked = repo / "locked"
+        locked.mkdir()
+        (locked / "hidden.py").write_text("def hidden(): pass\n", encoding="utf-8")
+        return repo
+
+    def test_a_complete_walk_reports_no_gaps(self, tmp_path: Path) -> None:
+        repo = self._repo(tmp_path)
+        walker = FileWalker(make_config(repo))
+
+        rels = sorted(f.rel_path for f in walker.walk())
+
+        assert rels == ["locked/hidden.py", "visible.py"]
+        assert walker.incomplete_paths == []
+        assert walker.walk_was_complete is True
+
+    def test_an_unreadable_directory_is_recorded(self, tmp_path: Path) -> None:
+        """The headline case: a whole subtree disappears, and now says so."""
+        import os
+        import stat
+
+        repo = self._repo(tmp_path)
+        locked = repo / "locked"
+        os.chmod(locked, 0o000)
+        try:
+            walker = FileWalker(make_config(repo))
+            rels = sorted(f.rel_path for f in walker.walk())
+        finally:
+            os.chmod(locked, stat.S_IRWXU)
+
+        if rels == ["locked/hidden.py", "visible.py"]:
+            pytest.skip("this filesystem/user ignores chmod 000 (root, or a permissive FS)")
+
+        assert rels == ["visible.py"], f"expected the locked subtree to be skipped: {rels}"
+        assert walker.walk_was_complete is False, (
+            "the walk silently dropped a subtree and still claimed to be complete"
+        )
+        assert any("locked" in p for p in walker.incomplete_paths), (
+            f"the skipped path was not recorded: {walker.incomplete_paths}"
+        )
+
+    def test_the_record_resets_between_walks(self, tmp_path: Path) -> None:
+        """A second walk must not inherit the first one's gaps."""
+        repo = self._repo(tmp_path)
+        walker = FileWalker(make_config(repo))
+        walker._incomplete_paths.append("stale/entry")
+
+        list(walker.walk())
+
+        assert walker.incomplete_paths == [], "gaps from a previous walk leaked forward"
