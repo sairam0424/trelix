@@ -86,3 +86,216 @@ class TestTaintDB:
         errors = db.get_taint_flows(severity="ERROR")
         assert len(errors) == 1
         assert errors[0].severity == "ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Real semgrep output
+# ---------------------------------------------------------------------------
+
+# Captured verbatim from `semgrep --json --config <taint-rule> ` (semgrep 1.x) against:
+#
+#     1  import sqlite3
+#     2  def handler(conn):
+#     3      user = input("name: ")          <- taint SOURCE
+#     4      cur = conn.cursor()
+#     5      cur.execute("SELECT ... " + user)  <- taint SINK
+#
+# Only `path` values were rewritten to a repo-relative stub. Nothing else is
+# reshaped, because the point of this fixture is that the shapes are semgrep's
+# and not ours: `severity` lives under `extra`, and `taint_source` / `taint_sink`
+# are two-element ["CliLoc", [location, code]] LISTS rather than dicts.
+#
+# The previous version of this file hand-wrote a fixture with `severity` at the
+# top level and `taint_sink` as a {"location": ...} dict. Both are wrong, so the
+# parser was verified against its own misreading and shipped unable to parse a
+# single real taint flow.
+REAL_SEMGREP_TAINT_OUTPUT = {
+    "results": [
+        {
+            "check_id": "trelix-test-sql-injection",
+            "end": {
+                "col": 60,
+                "line": 5,
+                "offset": 144
+            },
+            "extra": {
+                "dataflow_trace": {
+                    "intermediate_vars": [
+                        {
+                            "content": "user",
+                            "location": {
+                                "end": {
+                                    "col": 9,
+                                    "line": 3,
+                                    "offset": 42
+                                },
+                                "path": "src/vuln.py",
+                                "start": {
+                                    "col": 5,
+                                    "line": 3,
+                                    "offset": 38
+                                }
+                            }
+                        }
+                    ],
+                    "taint_sink": [
+                        "CliLoc",
+                        [
+                            {
+                                "end": {
+                                    "col": 60,
+                                    "line": 5,
+                                    "offset": 144
+                                },
+                                "path": "src/vuln.py",
+                                "start": {
+                                    "col": 5,
+                                    "line": 5,
+                                    "offset": 89
+                                }
+                            },
+                            "cur.execute(\"SELECT * FROM t WHERE n = '\" + user + \"'\")"
+                        ]
+                    ],
+                    "taint_source": [
+                        "CliLoc",
+                        [
+                            {
+                                "end": {
+                                    "col": 27,
+                                    "line": 3,
+                                    "offset": 60
+                                },
+                                "path": "src/vuln.py",
+                                "start": {
+                                    "col": 12,
+                                    "line": 3,
+                                    "offset": 45
+                                }
+                            },
+                            "input(\"name: \")"
+                        ]
+                    ]
+                },
+                "message": "Untrusted input reaches a SQL execute call",
+                "severity": "ERROR"
+            },
+            "path": "src/vuln.py",
+            "start": {
+                "col": 5,
+                "line": 5,
+                "offset": 89
+            }
+        }
+    ]
+}
+
+
+class TestParseRealSemgrepOutput:
+    """The parser must handle the JSON semgrep actually emits.
+
+    Each test below fails against the pre-v3.1.2 parser, and each failure is a
+    different consequence of the same root cause: the fixture it was written
+    against was invented rather than captured.
+    """
+
+    def _flows(self, tmp_path: Path) -> list[TaintFlow]:
+        analyzer = TaintAnalyzer(str(tmp_path))
+        return analyzer._parse_semgrep_output(json.dumps(REAL_SEMGREP_TAINT_OUTPUT))
+
+    def test_a_real_taint_flow_is_not_discarded(self, tmp_path: Path) -> None:
+        """`taint_sink` is a list, so `.get("location")` raised AttributeError.
+
+        The bare `except Exception: continue` swallowed it and dropped the whole
+        finding. Because only genuine taint flows carry a `dataflow_trace`, that
+        meant taint analysis reported nothing, ever.
+        """
+        assert len(self._flows(tmp_path)) == 1, (
+            "a real semgrep taint result was dropped by the parser"
+        )
+
+    def test_source_is_the_taint_source_not_the_match_location(self, tmp_path: Path) -> None:
+        """semgrep reports the match AT THE SINK; the source comes from the trace.
+
+        Reading the top-level `path`/`start` as the source inverted the flow —
+        it reported the sink line as both source and sink.
+        """
+        flow = self._flows(tmp_path)[0]
+        assert flow.source_line == 3, (
+            f"source should be the input() call on line 3, got {flow.source_line}"
+        )
+
+    def test_sink_is_read_from_the_taint_sink_entry(self, tmp_path: Path) -> None:
+        flow = self._flows(tmp_path)[0]
+        assert flow.sink_line == 5, (
+            f"sink should be the execute() call on line 5, got {flow.sink_line}"
+        )
+
+    def test_severity_comes_from_extra(self, tmp_path: Path) -> None:
+        """semgrep puts severity under `extra`, so a top-level read always
+        fell through to the "INFO" default and every flow looked harmless."""
+        flow = self._flows(tmp_path)[0]
+        assert flow.severity == "ERROR", (
+            f"severity should be ERROR from extra.severity, got {flow.severity!r}"
+        )
+
+    def test_paths_are_populated(self, tmp_path: Path) -> None:
+        flow = self._flows(tmp_path)[0]
+        assert flow.source_file == "src/vuln.py"
+        assert flow.sink_file == "src/vuln.py"
+
+    def test_rule_id_is_preserved(self, tmp_path: Path) -> None:
+        assert self._flows(tmp_path)[0].rule_id == "trelix-test-sql-injection"
+
+
+class TestParserRobustness:
+    """Malformed or unfamiliar shapes must degrade, never crash or fabricate."""
+
+    def _parse(self, tmp_path: Path, payload: object) -> list[TaintFlow]:
+        return TaintAnalyzer(str(tmp_path))._parse_semgrep_output(json.dumps(payload))
+
+    def test_empty_output_returns_empty(self, tmp_path: Path) -> None:
+        assert TaintAnalyzer(str(tmp_path))._parse_semgrep_output("") == []
+
+    def test_invalid_json_returns_empty(self, tmp_path: Path) -> None:
+        assert TaintAnalyzer(str(tmp_path))._parse_semgrep_output("{not json") == []
+
+    def test_result_without_dataflow_trace_still_parses(self, tmp_path: Path) -> None:
+        """Non-taint rules have no trace; the match location is the only location."""
+        flows = self._parse(tmp_path, {"results": [{
+            "check_id": "no-trace-rule",
+            "path": "src/x.py",
+            "start": {"line": 7},
+            "extra": {"severity": "WARNING"},
+        }]})
+        assert len(flows) == 1
+        assert flows[0].source_line == 7 and flows[0].sink_line == 7
+        assert flows[0].severity == "WARNING"
+
+    def test_truncated_cliloc_does_not_crash(self, tmp_path: Path) -> None:
+        """A ["CliLoc"] with no payload must fall back, not raise."""
+        flows = self._parse(tmp_path, {"results": [{
+            "check_id": "truncated",
+            "path": "src/y.py",
+            "start": {"line": 2},
+            "extra": {"severity": "ERROR", "dataflow_trace": {"taint_sink": ["CliLoc"]}},
+        }]})
+        assert len(flows) == 1
+        assert flows[0].sink_line == 2
+
+    def test_legacy_dict_shaped_sink_is_still_understood(self, tmp_path: Path) -> None:
+        """Older semgrep builds (and the previous fixture) used a location dict.
+
+        Accepting both shapes means the fix cannot regress an environment whose
+        semgrep emits the dict form.
+        """
+        flows = self._parse(tmp_path, {"results": [{
+            "check_id": "legacy",
+            "path": "src/a.py",
+            "start": {"line": 10},
+            "extra": {"severity": "ERROR", "dataflow_trace": {
+                "taint_sink": {"location": {"path": "src/b.py", "start": {"line": 25}}}
+            }},
+        }]})
+        assert len(flows) == 1
+        assert flows[0].sink_file == "src/b.py" and flows[0].sink_line == 25

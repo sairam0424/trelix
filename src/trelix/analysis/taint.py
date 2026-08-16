@@ -19,8 +19,39 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger("trelix.analysis.taint")
+
+
+def _extract_location(node: object) -> dict[str, Any] | None:
+    """Return the `{path, start: {line}}` location out of a dataflow-trace entry.
+
+    semgrep encodes `taint_source` / `taint_sink` as a two-element tagged LIST —
+    `["CliLoc", [<location>, "<matched code>"]]` — not as a mapping. Calling `.get()`
+    on that list is what previously raised `AttributeError` and, via a bare `except`,
+    discarded every genuine taint flow.
+
+    Both shapes are accepted so the parser does not depend on one semgrep version:
+    the tagged list above, and the `{"location": {...}}` (or bare location) mapping
+    that older builds emit. Anything else yields None so the caller can fall back to
+    the match location rather than invent one.
+    """
+    if isinstance(node, list):
+        # ["CliLoc", [location, code]] — the payload is itself a list.
+        if len(node) < 2 or not isinstance(node[1], list) or not node[1]:
+            return None
+        location = node[1][0]
+        return location if isinstance(location, dict) else None
+
+    if isinstance(node, dict):
+        nested = node.get("location")
+        if isinstance(nested, dict):
+            return nested
+        # A bare location mapping, already at the right level.
+        return node or None
+
+    return None
 
 
 @dataclass
@@ -109,28 +140,41 @@ class TaintAnalyzer:
         flows: list[TaintFlow] = []
         for item in data.get("results", []):
             try:
-                source_file = item.get("path", "")
-                source_line = item.get("start", {}).get("line", 0)
                 rule_id = item.get("check_id", "unknown")
-                severity = item.get("severity", "INFO")
 
-                # Try to extract sink from dataflow_trace
-                trace = item.get("extra", {}).get("dataflow_trace", {})
-                sink_loc = trace.get("taint_sink", {}).get("location", {})
-                sink_file = sink_loc.get("path", source_file)
-                sink_line = sink_loc.get("start", {}).get("line", source_line)
+                # semgrep reports the match AT THE SINK, so the top-level location is
+                # the sink's — not the source's. It is the right fallback for both ends
+                # when a rule carries no dataflow trace at all.
+                match_file = item.get("path", "")
+                match_line = item.get("start", {}).get("line", 0)
+
+                extra = item.get("extra") or {}
+                # Severity lives under `extra`. The top-level read is kept as a fallback
+                # for the dict-shaped payloads older semgrep builds produced.
+                severity = extra.get("severity") or item.get("severity") or "INFO"
+
+                trace = extra.get("dataflow_trace") or {}
+                source_loc = _extract_location(trace.get("taint_source")) or {}
+                sink_loc = _extract_location(trace.get("taint_sink")) or {}
 
                 flows.append(
                     TaintFlow(
-                        source_file=source_file,
-                        source_line=int(source_line),
-                        sink_file=sink_file,
-                        sink_line=int(sink_line),
+                        source_file=source_loc.get("path") or match_file,
+                        source_line=int(source_loc.get("start", {}).get("line", match_line)),
+                        sink_file=sink_loc.get("path") or match_file,
+                        sink_line=int(sink_loc.get("start", {}).get("line", match_line)),
                         rule_id=rule_id,
                         severity=severity,
                     )
                 )
-            except Exception:
+            except Exception as exc:
+                # Skipping one malformed result is right; doing it silently is what let a
+                # parser that could not read a single real taint flow ship unnoticed.
+                logger.warning(
+                    "Skipping unparseable semgrep result %r: %s",
+                    item.get("check_id", "<unknown>"),
+                    exc,
+                )
                 continue
 
         return flows
