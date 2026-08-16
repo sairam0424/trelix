@@ -172,7 +172,7 @@ commands on the same repository.
 | `bedrock-cohere` | `cohere.embed-english-v3` (1024-dim) | AWS credentials |
 
 **Important:** Switching provider after indexing changes the embedding dimension.
-Run `trelix migrate-vectors <repo> --reset` and then re-index.
+Run `trelix migrate-vectors <repo> --reset --provider <new-provider>` and then re-index.
 
 ---
 
@@ -491,14 +491,23 @@ trelix update-index /my/repo src/core/db.go --provider openai
 #### Synopsis
 
 ```
-trelix migrate-vectors <repo_path> [--to TARGET] [--url URL] [--collection NAME] [--api-key KEY] [--reset]
+trelix migrate-vectors <repo_path> [--to TARGET] [--url URL] [--collection NAME]
+                       [--api-key KEY] [--reset] [--provider PROVIDER]
 ```
 
 #### Description
 
 Either migrates all embeddings from the local SQLite store to Qdrant
-(`--to qdrant`), or clears the local embedding store and dimension metadata
-so the next `trelix index` run starts fresh (`--reset`).
+(`--to qdrant`), or rebuilds the local embedding store so the next `trelix index` run
+re-embeds from scratch (`--reset`).
+
+`--reset` **rebuilds** the vec0 table rather than emptying it. A vec0 table's vector
+width is fixed by its CREATE statement, so deleting rows leaves a table that still
+rejects vectors of a different dimension — which is the situation `--reset` exists to
+recover from. It also invalidates every file and symbol content hash, because
+`trelix index` skips unchanged files by hash and leaves unchanged symbols un-embedded,
+so without that the follow-up index run reports "Nothing to index" over an index with
+no vectors.
 
 #### Options
 
@@ -508,7 +517,8 @@ so the next `trelix index` run starts fresh (`--reset`).
 | `--url` | string | `http://localhost:6333` | Qdrant server URL. |
 | `--collection` | string | `trelix` | Qdrant collection name. |
 | `--api-key` | string | `""` | Qdrant API key (for Qdrant Cloud). |
-| `--reset` | flag | `false` | Clear all stored embeddings and dimension metadata from the SQLite index. Use this when switching embedding providers. Does NOT migrate to Qdrant — it resets the local store only. |
+| `--reset` | flag | `false` | Rebuild the vector store at the current embedder's dimension and invalidate every file and symbol hash, so `trelix index` re-embeds the whole repository. Use when switching embedding providers. Does NOT migrate to Qdrant — it resets the local store only. |
+| `--provider` | string | `""` | With `--reset`: the embedding provider to rebuild **for**. This decides the rebuilt table's vector width, so pass the provider you are switching TO. Defaults to `TRELIX_EMBEDDER_PROVIDER`. |
 
 #### Examples
 
@@ -523,8 +533,9 @@ trelix migrate-vectors . \
   --api-key $QDRANT_API_KEY \
   --collection myproject
 
-# Reset after switching from openai to local provider
-trelix migrate-vectors . --reset
+# Reset after switching from openai to local provider.
+# --provider decides the rebuilt vector width, so name the provider you are moving TO.
+trelix migrate-vectors . --reset --provider local
 trelix index . --provider local
 ```
 

@@ -1135,7 +1135,7 @@ If the failure is specifically an embedding-dimension mismatch, clear just the s
 vectors instead of the whole DB:
 
 ```bash
-trelix migrate-vectors ./my-repo --reset
+trelix migrate-vectors ./my-repo --reset --provider <new-provider>
 trelix index ./my-repo
 ```
 

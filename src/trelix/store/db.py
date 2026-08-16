@@ -521,6 +521,38 @@ class Database:
     # Files
     # ------------------------------------------------------------------
 
+    def invalidate_all_symbol_hashes(self) -> int:
+        """Blank every stored symbol content hash so the next index re-embeds.
+
+        Invalidating file hashes alone only forces a re-PARSE. `Indexer._insert_one`
+        then diffs each parsed symbol against the stored one by
+        `qualified_name + content_hash` and leaves matches completely untouched — "no
+        delete, no re-insert, no re-embed" — so a re-index after clearing embeddings
+        produced `chunks_embedded=0` and the vectors never came back.
+
+        Both levels have to be invalidated for a reset to mean anything. Returns the
+        number of rows affected.
+        """
+        cursor = self._conn.execute("UPDATE symbols SET content_hash = ''")
+        self._conn.commit()
+        return int(cursor.rowcount or 0)
+
+    def invalidate_all_file_hashes(self) -> int:
+        """Blank every stored file hash so the next index re-parses and re-embeds.
+
+        `Indexer.index()` skips any file whose stored hash still matches the one on
+        disk, and that check knows nothing about whether the file's VECTORS still exist.
+        So after embeddings are discarded, an index run finds every hash unchanged and
+        prints "Nothing to index — all files up to date" over an index that has chunks
+        and no vectors.
+
+        Returns the number of rows invalidated, so a caller can report it rather than
+        assert it.
+        """
+        cursor = self._conn.execute("UPDATE files SET hash = ''")
+        self._conn.commit()
+        return int(cursor.rowcount or 0)
+
     def get_file_hash(self, rel_path: str) -> str | None:
         """Return stored hash for a file, or None if not indexed yet."""
         row = self._conn.execute(
@@ -2201,19 +2233,33 @@ class Database:
         self._conn.execute("DELETE FROM index_metadata WHERE key = 'embedding_dimension'")
         self._conn.commit()
 
-    def clear_all_embeddings(self) -> None:
+    def clear_all_embeddings(self, vector_store: object | None = None) -> None:
         """
-        Delete all rows from chunk_embeddings (sqlite-vec virtual table).
+        Discard every stored embedding.
 
-        Best-effort: the table may not exist yet on a fresh install.
-        Any error is silently swallowed so callers don't need to guard
-        against a missing virtual table.
+        Pass the `vector_store`: `chunk_embeddings` is a sqlite-vec VIRTUAL table, and
+        this class never loads the sqlite-vec extension on its own connection. Without
+        it, `DELETE FROM chunk_embeddings` raises `OperationalError: no such module:
+        vec0` — which the previous implementation caught and discarded, making the
+        method a guaranteed no-op on every install. `trelix migrate-vectors --reset`
+        printed "Embeddings and dimension metadata cleared" while clearing none of them.
+
+        The `vector_store` parameter follows `delete_file_by_path`, which takes one for
+        the same reason: only the store's own connection can reach its virtual table.
+
+        Called with no vector_store, this raises rather than pretending — a caller that
+        cannot clear embeddings needs to know.
         """
-        try:
-            self._conn.execute("DELETE FROM chunk_embeddings")
-            self._conn.commit()
-        except Exception:
-            pass  # chunk_embeddings is a sqlite-vec virtual table; may not exist yet
+        if vector_store is None:
+            raise ValueError(
+                "clear_all_embeddings() requires the vector_store: chunk_embeddings is "
+                "a sqlite-vec virtual table and Database's connection cannot reach it"
+            )
+        # recreate() rather than a row delete, because a vec0 table's vector width is
+        # fixed by its CREATE statement — deleting rows leaves a table that still
+        # rejects vectors of a new dimension, which is the situation this is called to
+        # recover from.
+        vector_store.recreate()  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     # Hydration queries  (chunk_id / symbol_id → full objects)

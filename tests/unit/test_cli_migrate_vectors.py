@@ -214,3 +214,115 @@ class TestMigrateVectorsCoversAllEmbeddingSources:
         assert result.exit_code == 0, f"output={result.output!r}"
         assert "Migrating 7 embeddings" in result.output
         assert "7 embeddings written to Qdrant" in result.output
+
+
+class TestResetActuallyResets:
+    """`--reset` must leave the index in a state a re-index can repair.
+
+    It previously did none of the three things that requires, and reported success
+    anyway — printing "Embeddings and dimension metadata cleared" while clearing no
+    embeddings at all:
+
+    1. `db.clear_all_embeddings()` ran `DELETE FROM chunk_embeddings` on Database's own
+       connection, which never loads the sqlite-vec extension. That raises
+       `OperationalError: no such module: vec0`, and the method caught it with
+       `except Exception: pass` — a guaranteed no-op on every install.
+    2. Even a successful delete could not help: a vec0 table's vector width is fixed by
+       its CREATE statement, and both creation paths use IF NOT EXISTS, so the table
+       keeps rejecting vectors of the new dimension. Verified: after deleting every row
+       and re-issuing the CREATE at FLOAT[8], the schema still said FLOAT[4].
+    3. File and symbol hashes survived, so the re-index the message told you to run
+       either reported "Nothing to index — all files up to date" or re-parsed
+       everything and still embedded nothing, because `_insert_one` leaves symbols with
+       a matching content_hash completely untouched.
+
+    Measured end-to-end after the fix: index at 4 dims (3 vectors / 3 chunks) ->
+    --reset for 8 dims (table FLOAT[8], 0 vectors) -> re-index (chunks_embedded=3,
+    3 vectors / 3 chunks).
+    """
+
+    def test_clear_all_embeddings_refuses_without_a_vector_store(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The silent no-op is now impossible: no store means an explicit error."""
+        import pytest
+
+        from trelix.store.db import Database
+
+        db = Database(tmp_path / "index.db")
+        with pytest.raises(ValueError, match="requires the vector_store"):
+            db.clear_all_embeddings()
+
+    def test_clear_all_embeddings_rebuilds_through_the_store(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from unittest.mock import MagicMock
+
+        from trelix.store.db import Database
+
+        db = Database(tmp_path / "index.db")
+        store = MagicMock()
+        db.clear_all_embeddings(vector_store=store)
+
+        store.recreate.assert_called_once(), (
+            "clearing must go through the store, which owns the virtual table"
+        )
+
+    def test_invalidate_file_hashes_reports_what_it_changed(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from trelix.core.models import IndexedFile, Language
+        from trelix.store.db import Database
+
+        db = Database(tmp_path / "index.db")
+        for name in ("a.py", "b.py"):
+            db.upsert_file(IndexedFile(
+                path=f"/repo/{name}", rel_path=name, language=Language.PYTHON,
+                hash="deadbeef", size_bytes=10,
+            ))
+        db._conn.commit()
+
+        assert db.invalidate_all_file_hashes() == 2
+        assert db.get_file_hash("a.py") == "", "the hash was not actually blanked"
+
+    def test_invalidate_symbol_hashes_reports_what_it_changed(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Without this, a re-index re-parses every file and embeds nothing."""
+        from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
+        from trelix.store.db import Database
+
+        db = Database(tmp_path / "index.db")
+        file_id = db.upsert_file(IndexedFile(
+            path="/repo/a.py", rel_path="a.py", language=Language.PYTHON,
+            hash="deadbeef", size_bytes=10,
+        ))
+        db.insert_symbol(Symbol(
+            file_id=file_id, name="f", qualified_name="f", kind=SymbolKind.FUNCTION,
+            line_start=1, line_end=2, signature="def f():", body="def f(): pass",
+        ))
+        db._conn.commit()
+
+        assert db.invalidate_all_symbol_hashes() == 1
+        stored = db._conn.execute("SELECT content_hash FROM symbols").fetchone()[0]
+        assert stored == "", "the symbol content hash was not blanked"
+
+    def test_the_error_message_names_the_provider_flag(self) -> None:
+        """The remedy the guard prints must be the one that works.
+
+        --provider is what decides the rebuilt table's width, so a message omitting it
+        sends the reader to rebuild at the dimension they are trying to leave.
+        """
+        from trelix.store.dimension_guard import DimensionMismatchError
+
+        message = str(DimensionMismatchError(stored=384, current=3072, provider="azure"))
+        assert "--reset" in message
+        assert "--provider azure" in message
+
+    def test_reset_refuses_a_backend_it_cannot_rebuild(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Qdrant and LanceDB pin their dimension at creation too, and --reset has no
+        per-backend dispatch — so without this check it would report success having
+        touched nothing at all for those users."""
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from trelix.cli.main import app
+
+        with patch.dict("os.environ", {"TRELIX_STORE_BACKEND": "qdrant"}):
+            res = CliRunner().invoke(app, ["migrate-vectors", str(tmp_path), "--reset"])
+
+        assert res.exit_code == 1, res.output
+        assert "does not support" in res.output and "qdrant" in res.output

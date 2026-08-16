@@ -1270,3 +1270,93 @@ class TestVectorSearchExcludesSentinelRows:
 
         assert [sc_id for sc_id, _ in sub_chunks] == [3]
         assert [cid for cid, _ in vs.search(query, k=5)] == [1]
+
+
+class TestVectorStoreRecreate:
+    """`recreate()` must produce a table usable at the CURRENT dimension.
+
+    This is what makes recovery from an embedding-provider change possible. The vec0
+    table's dimension is fixed by its CREATE statement, and both creation paths use
+    `CREATE VIRTUAL TABLE IF NOT EXISTS`, so re-issuing the DDL at a new dimension is a
+    no-op while the old table exists. Verified directly: after DELETEing every row and
+    re-issuing the CREATE at FLOAT[8], the schema still declared FLOAT[4] and an 8-dim
+    insert failed with "Expected 4 dimensions but received 8".
+
+    Dropping the virtual table is what actually works, and it is safe: it removes all
+    six shadow objects (chunk_embeddings_auxiliary/_chunks/_info/_rowids/
+    _vector_chunks00) leaving none behind, and it is transactional — a ROLLBACK restores
+    the table.
+    """
+
+    def test_recreate_empties_the_table(self, tmp_path: Path) -> None:
+        vs = VectorStore(tmp_path / "v.db", dimension=4)
+        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+        vs.upsert_file_summary_embedding(file_id=3, embedding=[0.0, 1.0, 0.0, 0.0])
+        assert vs.search([1.0, 0.0, 0.0, 0.0], k=5), "precondition: the table has rows"
+
+        vs.recreate()
+
+        assert vs.search([1.0, 0.0, 0.0, 0.0], k=5) == []
+        assert vs.search_file_summaries([0.0, 1.0, 0.0, 0.0], k=5) == [], (
+            "sentinel rows survived the recreate"
+        )
+
+    def test_recreate_leaves_the_table_writable(self, tmp_path: Path) -> None:
+        """A recreate that produced an unusable table would be worse than none."""
+        vs = VectorStore(tmp_path / "v.db", dimension=4)
+        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+
+        vs.recreate()
+        vs.upsert(chunk_id=2, embedding=[0.0, 0.0, 1.0, 0.0])
+
+        assert [cid for cid, _ in vs.search([0.0, 0.0, 1.0, 0.0], k=5)] == [2]
+
+    def test_recreate_adopts_a_new_dimension(self, tmp_path: Path) -> None:
+        """The point of the whole exercise: switching embedding providers.
+
+        A store opened at a different dimension over the same file must be able to
+        recreate the table and accept vectors of the new width.
+        """
+        path = tmp_path / "v.db"
+        small = VectorStore(path, dimension=4)
+        small.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+
+        large = VectorStore(path, dimension=8)
+        large.recreate()
+        large.upsert(chunk_id=1, embedding=[1.0] * 8)
+
+        assert [cid for cid, _ in large.search([1.0] * 8, k=5)] == [1]
+
+    def test_declared_dimension_actually_changes(self, tmp_path: Path) -> None:
+        """Assert on the DDL, not just on a successful insert."""
+        path = tmp_path / "v.db"
+        VectorStore(path, dimension=4).upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+
+        large = VectorStore(path, dimension=8)
+        large.recreate()
+
+        ddl = large._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'chunk_embeddings'"
+        ).fetchone()[0]
+        assert "FLOAT[8]" in ddl, f"table still declares the old width: {ddl}"
+
+    def test_no_shadow_tables_are_orphaned(self, tmp_path: Path) -> None:
+        """A vec0 table owns several shadow tables; a leak would break the recreate."""
+        path = tmp_path / "v.db"
+        vs = VectorStore(path, dimension=4)
+        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+
+        before = {
+            r[0]
+            for r in vs._conn.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'chunk_embeddings%'"
+            )
+        }
+        vs.recreate()
+        after = {
+            r[0]
+            for r in vs._conn.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'chunk_embeddings%'"
+            )
+        }
+        assert after == before, f"shadow objects changed: {before ^ after}"

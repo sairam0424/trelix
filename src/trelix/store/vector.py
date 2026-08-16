@@ -60,6 +60,22 @@ class BaseVectorStore(ABC):
     def count(self) -> int:
         """Return the total number of stored embeddings."""
 
+    def recreate(self) -> None:
+        """Discard every stored vector and rebuild the store at this store's dimension.
+
+        Needed to recover from an embedding-provider change. Deleting rows is not
+        sufficient for backends whose vector width is fixed at creation time, which is
+        why this is a distinct operation rather than a `clear()`.
+
+        Default implementation raises, so a backend that cannot support it says so
+        instead of silently appearing to succeed — the failure mode this exists to
+        remove.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot recreate its vector store; "
+            "delete the index and re-index instead"
+        )
+
     @abstractmethod
     def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
         """Insert or replace a file-level summary embedding."""
@@ -173,6 +189,32 @@ class SQLiteVectorStore(BaseVectorStore):
         )
         self._conn.commit()
         return False
+
+    def recreate(self) -> None:
+        """Drop the vec0 table and rebuild it at `self._dim`.
+
+        Deleting rows cannot change the width: both creation paths use
+        `CREATE VIRTUAL TABLE IF NOT EXISTS`, so re-issuing the DDL at a new dimension
+        is a no-op while the old table exists. Verified — after DELETEing every row and
+        re-issuing the CREATE at FLOAT[8], the schema still declared FLOAT[4] and an
+        8-dim insert failed with "Expected 4 dimensions but received 8".
+
+        Dropping is safe on a vec0 table: it removes all of its shadow tables
+        (`_auxiliary`, `_chunks`, `_info`, `_rowids`, `_vector_chunks00`) with none left
+        behind, and it is transactional, so a failure part-way leaves the old table in
+        place rather than no table at all.
+        """
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                self._conn.execute("DROP TABLE IF EXISTS chunk_embeddings")
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        # Rebuilt through the normal path, so HNSW is re-applied exactly as it would be
+        # on a fresh index rather than being reimplemented here.
+        self._hnsw_active = self._setup_table()
 
     def _try_create_hnsw_table(self) -> bool:
         """

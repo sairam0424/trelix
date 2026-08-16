@@ -991,6 +991,19 @@ def migrate_vectors(
         if provider:
             cfg.embedder = _build_embedder_config(provider)
 
+        # Refuse early on a backend this cannot rebuild. Qdrant and LanceDB pin their
+        # dimension at collection/table creation exactly as vec0 does, and --reset has
+        # no per-backend dispatch, so it would otherwise print success having touched
+        # nothing. A loud refusal naming the backend beats both a false success and the
+        # generic NotImplementedError the base store would raise a few lines later.
+        if cfg.store.backend != "sqlite":
+            _print_error(
+                f"--reset does not support the '{cfg.store.backend}' backend",
+                "only the sqlite backend can be rebuilt in place; delete the collection "
+                "or table and re-index instead",
+            )
+            raise typer.Exit(1)
+
         db = _Database(cfg.db_path_absolute)
 
         # Three things have to happen for a re-index to actually work afterwards, and
