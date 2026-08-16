@@ -179,8 +179,24 @@ class SparseConfig(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="TRELIX_SPARSE_")
 
+    # The previous default, "naver-splab/splade-code-distil", does not exist on the
+    # HuggingFace Hub (model_info raises RepositoryNotFoundError), so SparseEmbedder
+    # never loaded and sparse_embeddings stayed at 0 rows however the flag was set.
+    #
+    # Correcting the id alone would not have been enough. Both real SPLADE-Code
+    # releases — naver/splade-code-8B and naver/splade-code-06B — are
+    # `model_type=qwen3`, and qwen3 is absent from transformers'
+    # MODEL_FOR_MASKED_LM_MAPPING_NAMES, so the AutoModelForMaskedLM call in
+    # embedder/sparse.py cannot load them. SPLADE-Code is causal-LM based while this
+    # loader assumes the BERT-family MaskedLM shape.
+    #
+    # So the default is a real BERT-family SPLADE the existing loader can actually
+    # load: 269 MB, verified to return non-empty token weights for code snippets. It is
+    # NL-trained rather than code-specialised, which is the trade-off — a working NL
+    # sparse leg is worth more than a code-specialised one that cannot be loaded at all.
+    # Using a SPLADE-Code model needs causal-LM support in sparse.py first.
     model: str = Field(
-        default="naver-splab/splade-code-distil",
+        default="naver/splade-v3-distilbert",
         alias="TRELIX_SPARSE_MODEL",
     )
     top_k_tokens: int = Field(

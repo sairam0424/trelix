@@ -556,7 +556,7 @@ All-`1.0` (the default) is a no-op — byte-for-byte identical to unweighted fus
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_SPARSE_MODEL` | `naver-splab/splade-code-distil` | SPLADE model |
+| `TRELIX_SPARSE_MODEL` | `naver/splade-v3-distilbert` | SPLADE model. Must be a **BERT-family MaskedLM** checkpoint: `embedder/sparse.py` loads it with `AutoModelForMaskedLM`, so the SPLADE-Code releases (`naver/splade-code-8B`, `naver/splade-code-06B`) will **not** load — they are `model_type=qwen3`, which is causal-LM. The previous default `naver-splab/splade-code-distil` did not exist on the Hub at all |
 | `TRELIX_SPARSE_TOP_K_TOKENS` | `128` | Number of top tokens in sparse vector (16–512) |
 | `TRELIX_SPARSE_BATCH_SIZE` | `16` | Batch size for sparse encoding |
 

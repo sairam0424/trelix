@@ -577,7 +577,6 @@ class TestGraphVisualizeWithJson:
     def test_the_four_documented_keys_are_unchanged(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         """The documented JSON contract must survive; the new key is additive only."""
         import json as _json
-        from unittest.mock import patch
 
         builder_patch, result = self._patched_builder()
         with builder_patch as MockBuilder:

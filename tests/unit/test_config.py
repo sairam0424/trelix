@@ -782,3 +782,65 @@ class TestPerIntentCompressionRatio:
         """TRELIX_RETRIEVAL_COMPRESSION_RATIO must not leak into any intent."""
         monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO", "0.99")
         assert compression_ratio_for_intent(IntentType.FEATURE_FLOW) == 0.45
+
+
+class TestSparseModelDefaultIsResolvable:
+    """The default sparse model must be a model that exists and that the loader can load.
+
+    Two independent defects sat behind `sparse_embeddings` staying at 0 rows even with
+    TRELIX_RETRIEVAL_SPARSE=true:
+
+    1. The default id was `naver-splab/splade-code-distil`, which does not exist —
+       HfApi().model_info() raises RepositoryNotFoundError. The org is `naver`, and the
+       name looks like a blend of the real `splade-code-*` family with the `distil`
+       suffix from the v2/v3 line.
+
+    2. Fixing the id alone would not have helped. Both real code-SPLADE releases
+       (`naver/splade-code-8B`, `naver/splade-code-06B`) are `model_type=qwen3`, and
+       qwen3 is not in transformers' MODEL_FOR_MASKED_LM_MAPPING_NAMES, so
+       `AutoModelForMaskedLM.from_pretrained()` in embedder/sparse.py cannot load them.
+       SPLADE-Code is causal-LM based; the loader assumes BERT-family MaskedLM.
+
+    The default is therefore a real BERT-family SPLADE that the existing loader can
+    load. Verified end-to-end: 269 MB, and `SparseEmbedder.embed()` returns 128 and 23
+    non-zero token weights for two code snippets. It is NL-trained rather than
+    code-specialised, which is a documented trade-off — a working NL sparse leg beats a
+    code-specialised one that cannot load.
+
+    The existing default test only asserted `"splade" in model.lower()`, which the
+    nonexistent id also satisfied. That is why this shipped.
+    """
+
+    def test_default_is_not_the_nonexistent_id(self, tmp_path: Path) -> None:
+        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        assert cfg.sparse.model != "naver-splab/splade-code-distil", (
+            "the default still points at a HuggingFace repo that does not exist"
+        )
+
+    def test_default_org_is_spelled_correctly(self, tmp_path: Path) -> None:
+        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        org = cfg.sparse.model.split("/")[0]
+        assert org == "naver", f"unexpected org {org!r}; the SPLADE releases are under 'naver'"
+
+    def test_default_is_loadable_by_the_masked_lm_path(self, tmp_path: Path) -> None:
+        """The architecture must match the loader, which is the second half of the bug.
+
+        Checked against transformers' auto-mapping rather than by downloading weights,
+        so the test stays fast and offline-friendly once the config is cached.
+        """
+        from transformers.models.auto.modeling_auto import MODEL_FOR_MASKED_LM_MAPPING_NAMES
+
+        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        model_id = cfg.sparse.model
+
+        try:
+            from transformers import AutoConfig
+
+            model_type = AutoConfig.from_pretrained(model_id).model_type
+        except Exception as exc:  # pragma: no cover - network/cache dependent
+            pytest.skip(f"cannot resolve {model_id} offline: {exc}")
+
+        assert model_type in MODEL_FOR_MASKED_LM_MAPPING_NAMES, (
+            f"{model_id} is model_type={model_type!r}, which AutoModelForMaskedLM in "
+            "embedder/sparse.py cannot load"
+        )

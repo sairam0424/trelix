@@ -895,7 +895,7 @@ Wrapped around the underlying embedder in `Retriever.__init__` when `query_cache
 
 ```python
 class SparseEmbedder:
-    def __init__(self, model_name="naver-splab/splade-code-distil",
+    def __init__(self, model_name="naver/splade-v3-distilbert",
                  top_k=128, batch_size=16)
     def embed(self, texts: list[str]) -> list[dict[int, float]]
     def embed_query(self, text: str) -> dict[int, float]
@@ -905,8 +905,19 @@ class SparseEmbedder:
 ```
 
 `_TORCH_AVAILABLE` module flag — returns empty `[{}]` gracefully when torch/transformers absent.
+An empty result is also what a failed model load produces, so `Indexer` logs a WARNING
+when the phase yields no vectors rather than finishing silently with 0 rows written.
 
-Research basis: SPLADE-Code (naver-splab) — learned sparse retrieval via transformer vocabulary space, trained specifically on code data.
+**The model must be a BERT-family MaskedLM checkpoint.** `_load()` uses
+`AutoModelForMaskedLM`, so the SPLADE-Code releases (`naver/splade-code-8B`,
+`naver/splade-code-06B`) cannot be used as-is: they are `model_type=qwen3`, which is
+causal-LM and absent from transformers' MaskedLM auto-mapping. Supporting them requires
+a causal-LM path in `sparse.py`.
+
+Research basis: SPLADE (naver) — learned sparse retrieval via transformer vocabulary
+space. The original design targeted the code-specialised SPLADE-Code variant, but the
+default is a general SPLADE v3 checkpoint because that is what this loader can load; the
+earlier default `naver-splab/splade-code-distil` did not exist on the Hub.
 
 ---
 

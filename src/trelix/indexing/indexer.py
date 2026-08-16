@@ -509,8 +509,24 @@ class Indexer:
                 if pairs:
                     sparse_store.upsert_batch(pairs)
                     logger.info("Sparse embedding: indexed %d chunks", len(pairs))
+                else:
+                    # SparseEmbedder.embed() returns a dict per text and an EMPTY dict
+                    # for every one of them when the model fails to load, so `pairs`
+                    # filters to nothing and the phase used to finish silently. That is
+                    # how sparse_embeddings stayed at 0 rows with the flag switched on
+                    # and no indication anywhere that the leg was dead.
+                    logger.warning(
+                        "Sparse embedding produced no vectors for %d chunks — "
+                        "sparse_embeddings will be empty and the sparse retrieval leg "
+                        "inert. Check that TRELIX_SPARSE_MODEL (%s) is a loadable "
+                        "BERT-family SPLADE model and that trelix[sparse] is installed.",
+                        len(pending),
+                        self.config.sparse.model,
+                    )
             except Exception as exc:
-                logger.debug("Sparse embedding phase failed (non-fatal): %s", exc)
+                # WARNING, not DEBUG: this is an explicitly enabled feature producing
+                # nothing, and the CLI runs at WARNING.
+                logger.warning("Sparse embedding phase failed (non-fatal): %s", exc)
 
         # ── Phase 4: cross-file resolution ──────────────────────────────────
         self._report_progress(4, "Resolving cross-file references…", 0.0, stats)
