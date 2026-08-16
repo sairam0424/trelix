@@ -184,6 +184,13 @@ _WALK_FIELDS = (
     "extra_ignore_filenames",
     "max_file_size_bytes",
     "respect_gitignore",
+    # Omitting this was a false-TRUE in `missing_is_trustworthy`: index with
+    # follow_symlinks=True, then run a drift check with it False, and every file reachable
+    # only through a symlink reports as `missing` while the report still claims the count
+    # is trustworthy. A future `--prune` reading that would delete present files.
+    # `test_walk_fields_covers_every_walker_setting` fails if a new field is added here
+    # without being recorded.
+    "follow_symlinks",
 )
 
 

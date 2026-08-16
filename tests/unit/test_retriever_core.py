@@ -2277,7 +2277,12 @@ class TestConfigHintRecognition:
             "setup.cfg",
             "nginx.conf",
             "main.tf",
-            "terraform.tfvars",
+            # NOT terraform.tfvars — that is where Terraform credentials conventionally
+            # live, so it belongs to the deny-list. See
+            # TestConfigHintDeniesCredentialFiles. `main.tf` stays: it is the
+            # infrastructure definition, not the variable values.
+            "my.cnf",
+            "Caddyfile",
             "gradle.properties",
             "rules.mk",
             ".gitignore",
@@ -2330,3 +2335,79 @@ class TestConfigHintRecognition:
 
         assert all(n == n.lower() for n in _CONFIG_FILENAMES)
         assert all(s == s.lower() and s.startswith(".") for s in _CONFIG_SUFFIXES)
+
+
+class TestConfigHintDeniesCredentialFiles:
+    """Credential files must never reach `find_file_by_path_fragment`.
+
+    `_retrieve_config` resolves a hint straight to a file's symbols, which then go into
+    an LLM prompt verbatim. There is no redaction seam anywhere in retrieval
+    (`grep -rn 'redact|scrub_secret|mask_secret' src/trelix/` finds nothing), so the
+    allow-list is the control.
+
+    Reaching one requires the file to be in `files`, which today it is not because
+    `walker.detect_language` returns UNKNOWN for all of these. That is a coupling, not a
+    decision — and this release added ops artifacts to `EXTENSION_MAP`, which is exactly
+    the precedent that would break it.
+    """
+
+    @pytest.mark.parametrize(
+        "hint",
+        [
+            ".env",
+            ".env.example",
+            ".env.local",
+            "prod.env",
+            "staging.env",
+            "config/.env",
+            "terraform.tfvars",
+            "secrets.tfvars",
+            ".npmrc",
+            ".netrc",
+            ".pgpass",
+            "kubeconfig",
+            "server.pem",
+            "id_rsa.key",
+        ],
+    )
+    def test_secret_shaped_names_are_denied(self, hint: str) -> None:
+        from trelix.retrieval.retriever import _looks_like_config
+
+        assert not _looks_like_config(hint), f"{hint} would be resolved into an LLM prompt"
+
+    def test_the_deny_list_beats_the_config_substring_fallback(self) -> None:
+        """`kubeconfig` passed on `"config" in name` alone, matching no allow-list entry.
+
+        So denial cannot be expressed as absence — it has to be checked first.
+        """
+        from trelix.retrieval.retriever import _CONFIG_FILENAMES, _looks_like_config
+
+        assert "kubeconfig" not in _CONFIG_FILENAMES
+        assert "config" in "kubeconfig"
+        assert not _looks_like_config("kubeconfig")
+
+    def test_dotfiles_are_covered_at_all(self) -> None:
+        """The original parametrisations contained no leading-dot name.
+
+        Which is how `.env` sat in `_CONFIG_SUFFIXES` as a dead entry — `Path(".env")
+        .suffix` is `""`, since a leading dot makes the whole name a stem. That is the
+        same defect `_looks_like_config` exists to fix, reproduced while fixing it.
+        """
+        from trelix.retrieval.retriever import _looks_like_config
+
+        assert Path(".env").suffix == "", "premise changed; revisit the deny-list shape"
+        assert _looks_like_config(".gitignore") is True
+        assert _looks_like_config(".editorconfig") is True
+        assert _looks_like_config(".env") is False
+
+    def test_no_secret_suffix_is_also_an_allowed_suffix(self) -> None:
+        """A name in both sets would depend on check order. Keep them disjoint."""
+        from trelix.retrieval.retriever import (
+            _CONFIG_FILENAMES,
+            _CONFIG_SUFFIXES,
+            _SECRET_FILENAMES,
+            _SECRET_SUFFIXES,
+        )
+
+        assert not (_CONFIG_SUFFIXES & _SECRET_SUFFIXES)
+        assert not (_CONFIG_FILENAMES & _SECRET_FILENAMES)

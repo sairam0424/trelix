@@ -308,3 +308,57 @@ class TestMissingIsNotPresentedAsTrustworthy:
     def test_drifted_count_sums_all_three_states(self) -> None:
         report = DriftReport(stale=("a",), new=("b", "c"), missing=("d",))
         assert report.drifted_count == 4
+
+
+class TestWalkFieldsIsComplete:
+    """Every `WalkerConfig` setting that changes WHICH files are walked must be recorded.
+
+    An unrecorded field is a silent false-TRUE in `missing_is_trustworthy`: the drift
+    check compares against a different walk than the one that built the index, so present
+    files report as `missing` while the report says the count can be trusted. A future
+    `--prune` reading that deletes embeddings that cost money to recompute.
+
+    `follow_symlinks` was exactly that — 7 fields on the config, 6 recorded.
+    """
+
+    def test_walk_fields_covers_every_walker_setting(self) -> None:
+        from trelix.core.config import WalkerConfig
+        from trelix.store.provenance import _WALK_FIELDS
+
+        # Nothing in WalkerConfig is walk-irrelevant today. If that changes, add the
+        # exemption here WITH a reason rather than quietly shrinking the fingerprint.
+        walk_irrelevant: set[str] = set()
+
+        missing = set(WalkerConfig.model_fields) - set(_WALK_FIELDS) - walk_irrelevant
+        assert not missing, (
+            f"{sorted(missing)} affect which files are walked but are not recorded in "
+            "provenance, so a drift check cannot tell that the walk differed. Either add "
+            "them to _WALK_FIELDS or list them in walk_irrelevant with a justification."
+        )
+
+    def test_recorded_fields_all_exist_on_the_config(self) -> None:
+        """A renamed field would silently stop being fingerprinted."""
+        from trelix.core.config import WalkerConfig
+        from trelix.store.provenance import _WALK_FIELDS
+
+        unknown = set(_WALK_FIELDS) - set(WalkerConfig.model_fields)
+        assert not unknown, f"{sorted(unknown)} are recorded but no longer exist"
+
+    def test_a_follow_symlinks_difference_is_now_detected(self) -> None:
+        """The concrete false-TRUE this closed."""
+        from trelix.store.provenance import (
+            IndexProvenance,
+            _walk_config_json,
+            walk_config_differences,
+        )
+
+        indexed_with = _config(".", follow_symlinks=True)
+        checked_with = _config(".", follow_symlinks=False)
+
+        recorded = IndexProvenance(walk_config=_walk_config_json(indexed_with))
+        diff = walk_config_differences(recorded, checked_with)
+
+        assert "follow_symlinks" in diff, (
+            "a follow_symlinks change no longer registers, so missing_is_trustworthy "
+            "would wrongly return True"
+        )

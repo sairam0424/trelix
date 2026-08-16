@@ -541,7 +541,23 @@ deadline had already passed.
   cursor-up + erase-line, which lets injected content **scrub trelix's own output
   above it** so a reader cannot tell what was displayed. A new `_safe_text()`
   helper strips control bytes and then escapes markup, and is applied to every
-  dynamic value rendered to the terminal.
+  dynamic value rendered to the terminal by `cli/main.py` and `indexing/indexer.py`
+  — the only two modules in `src/` that construct a markup-enabled `Console`.
+
+  The indexer half landed later than the CLI half, and for a period this entry
+  over-claimed. It is worth recording why that was worse than the original gap: the
+  four indexer sites rendered `walker.incomplete_paths`, `orig.rel_path`,
+  `pf.file.rel_path` and exception text — repo-controlled filenames, and a POSIX
+  filename may contain any byte except `/` and NUL. Their only protection was
+  accidental: with Rich's default `highlight=True` the reprhighlighter inserts SGR
+  codes between the ESC and its payload, so multi-token sequences like OSC 52 fail
+  to form. That is not a control — adding `highlight=False` anywhere removes it, and
+  measured through a default-highlighting console `\x1bc` (RIS, full terminal
+  reset), `\x1b#8` (DECALN screen fill) and `\x1b=` survive intact regardless. The
+  helper now lives in `trelix.core.console_safety` so both modules share one copy,
+  and the structural test that pins "exactly one `escape()` call in the repo" runs
+  over all of `src/` rather than over `cli/main.py` alone, which is what let the gap
+  exist while the guard reported green.
 
   The **order is load-bearing** and was wrong in the first version of this fix.
   `escape()`'s regex only treats `[` as a tag opener when the next byte is in

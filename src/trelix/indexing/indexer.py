@@ -46,10 +46,10 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
-from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from trelix.core.config import IndexConfig
+from trelix.core.console_safety import safe_text as _safe_text
 from trelix.core.models import IndexedFile, Symbol
 from trelix.embedder.base import BaseEmbedder, make_embedder
 from trelix.indexing.chunker import Chunker, ContextualChunker
@@ -419,7 +419,7 @@ class Indexer:
             skipped = self.walker.incomplete_paths
             self._console.print(
                 f"[yellow]  {len(skipped)} path(s) could not be read and are missing "
-                f"from this index: {escape(', '.join(skipped[:5]))}"
+                f"from this index: {_safe_text(', '.join(skipped[:5]))}"
                 f"{' …' if len(skipped) > 5 else ''}[/yellow]"
             )
 
@@ -502,7 +502,7 @@ class Indexer:
             skipped = self.walker.incomplete_paths
             self._console.print(
                 f"[yellow]  {len(skipped)} path(s) could not be read and are missing "
-                f"from this index: {escape(', '.join(skipped[:5]))}"
+                f"from this index: {_safe_text(', '.join(skipped[:5]))}"
                 f"{' …' if len(skipped) > 5 else ''}[/yellow]"
             )
         self._report_progress(0, "Discovering files…", 1.0, stats)
@@ -668,7 +668,8 @@ class Indexer:
                         # exception routinely quotes the offending source, so a
                         # bracket in `exc` needs no hostile filename at all.
                         self._console.print(
-                            f"[red]Parse error[/red] {escape(orig.rel_path)}: {escape(str(exc))}"
+                            f"[red]Parse error[/red] {_safe_text(orig.rel_path)}: "
+                            f"{_safe_text(str(exc))}"
                         )
                         stats["errors"] += 1
                     self._report_progress(1, "Parsing files…", done_count / total, stats)
@@ -746,7 +747,8 @@ class Indexer:
                     logger.error("DB error %s: %s", pf.file.rel_path, exc)
                     # Same sink, same reasoning as the Phase 1 handler above.
                     self._console.print(
-                        f"[red]DB error[/red] {escape(pf.file.rel_path)}: {escape(str(exc))}"
+                        f"[red]DB error[/red] {_safe_text(pf.file.rel_path)}: "
+                        f"{_safe_text(str(exc))}"
                     )
                     stats["errors"] += 1
                 self._report_progress(2, "Building symbols & chunks…", done_count / total, stats)

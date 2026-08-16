@@ -74,11 +74,10 @@ _CONFIG_SUFFIXES = frozenset(
         ".ts",
         ".ini",
         ".cfg",
+        ".cnf",
         ".conf",
         ".properties",
-        ".env",
         ".tf",
-        ".tfvars",
         ".hcl",
         ".gradle",
         ".mk",
@@ -101,15 +100,31 @@ _CONFIG_FILENAMES = frozenset(
         "gemfile",
         "brewfile",
         "justfile",
+        "caddyfile",
         "cmakelists.txt",
         ".gitignore",
         ".dockerignore",
         ".editorconfig",
         ".gitattributes",
-        ".npmrc",
         ".nvmrc",
     }
 )
+
+# Checked BEFORE anything else, and deliberately not just "absent from the sets above".
+#
+# These are the conventional homes for credentials, and `_retrieve_config` resolves a hint
+# straight to a file's symbols, which then go into an LLM prompt verbatim — there is no
+# redaction seam anywhere in retrieval (`grep -rn 'redact|scrub_secret|mask_secret'
+# src/trelix/` finds nothing). Reaching them requires the file to be in `files`, which
+# today it is not because `walker.detect_language` returns UNKNOWN for all of these. That
+# is the only thing standing in the way, it is a coupling rather than a decision, and
+# adding ops artifacts to `EXTENSION_MAP` is exactly what this release just did.
+#
+# A deny-list rather than omission because the `"config" in name` fallback at the end of
+# `_looks_like_config` admits things no allow-list mentions — `kubeconfig` passed on that
+# fallback alone.
+_SECRET_FILENAMES = frozenset({".env", ".envrc", ".npmrc", ".netrc", ".pgpass", "kubeconfig"})
+_SECRET_SUFFIXES = frozenset({".env", ".tfvars", ".pem", ".key", ".p12", ".pfx", ".keystore"})
 
 
 def _looks_like_config(hint: str) -> bool:
@@ -127,8 +142,23 @@ def _looks_like_config(hint: str) -> bool:
     entrypoint" resolved exactly one file (`docker-compose.yml`) and answered
     confidently without ever consulting the Dockerfile, whose symbols were indexed and
     retrievable the whole time.
+
+    Note the trap this function itself fell into on the first pass: `.env` was listed in
+    `_CONFIG_SUFFIXES`, where it could never match, because `Path(".env").suffix` is `""`
+    — a leading dot makes the whole thing a stem. That is the same "a suffix test cannot
+    match this" defect described above, reproduced while fixing it. `.env` now belongs to
+    the deny-list instead, which is where it wanted to be regardless.
     """
     name = Path(hint).name.lower()
+
+    # Deny first, so neither the allow-lists nor the `"config" in name` fallback can
+    # route a credential file into a prompt.
+    if name in _SECRET_FILENAMES or Path(name).suffix in _SECRET_SUFFIXES:
+        return False
+    # "prod.env", "staging.env" — a variant name on a secret suffix.
+    if name.rsplit(".", 1)[-1] in {s.lstrip(".") for s in _SECRET_SUFFIXES}:
+        return False
+
     if name in _CONFIG_FILENAMES:
         return True
     if Path(name).suffix in _CONFIG_SUFFIXES:

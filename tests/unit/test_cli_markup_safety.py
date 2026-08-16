@@ -678,31 +678,75 @@ class TestTerminalControlBytes:
 
         assert "[/red]" in out, "an unmatched closing tag was swallowed or raised"
 
-    def test_untrusted_sinks_use_safe_text_not_bare_escape(self) -> None:
-        """Structural guard: no dynamic value may reach a sink through bare escape().
+    @staticmethod
+    def _bare_escape_calls(source: str) -> list[str]:
+        """Executable `escape(...)` calls, ignoring prose.
 
-        The invariant is that `escape()` appears exactly once in the module — inside
-        `_safe_text()` itself. Anything else means a sink was added, or reverted, to
-        the markup-only helper, which leaves control bytes live. Checked as source
-        because the alternative is re-testing 60+ call sites individually.
+        Comment and docstring lines are excluded: these modules discuss escape() by
+        name repeatedly, and an earlier version of this guard flagged its own
+        explanatory comment.
         """
-        source = (
-            Path(__file__).resolve().parents[2] / "src" / "trelix" / "cli" / "main.py"
-        ).read_text(encoding="utf-8")
-
-        # Comment and docstring lines are excluded: this module's prose discusses
-        # escape() by name repeatedly, and an earlier version of this guard flagged
-        # its own explanatory comment. Only executable lines count.
-        calls = [
+        # The lookbehind rejects any attribute access, which matters once this runs
+        # repo-wide rather than over cli/main.py alone: `re.escape()` is regex
+        # metacharacter quoting, an unrelated function, and it appears legitimately in
+        # retrieval/context_compression.py and the markdown extractor. `\bescape\(`
+        # matches inside `re.escape(` and flagged all four.
+        return [
             ln
             for ln in source.splitlines()
-            if re.search(r"\bescape\(['\"a-zA-Z_(]", ln)
-            and "_safe_text" not in ln
+            if re.search(r"(?<![\w.])escape\(['\"a-zA-Z_(]", ln)
+            and "safe_text" not in ln
             and not ln.lstrip().startswith(("#", "*", '"', "'"))
         ]
-        assert calls == ['    return escape(_CONTROL_RE.sub("", str(value)))'], (
-            f"bare escape() calls outside _safe_text: {calls}"
+
+    def test_the_sanitiser_is_the_only_place_escape_is_called(self) -> None:
+        """`escape()` must appear exactly once in the repo — inside `safe_text()`."""
+        src_root = Path(__file__).resolve().parents[2] / "src" / "trelix"
+        offenders = {
+            str(path.relative_to(src_root)): calls
+            for path in src_root.rglob("*.py")
+            if path.name != "console_safety.py"
+            and (calls := self._bare_escape_calls(path.read_text(encoding="utf-8")))
+        }
+        assert not offenders, (
+            f"bare escape() outside safe_text(): {offenders}. escape() neutralises markup "
+            "only — control bytes stay live. Use trelix.core.console_safety.safe_text."
         )
+
+    def test_every_module_with_a_markup_console_is_covered(self) -> None:
+        """Guards the test above against passing vacuously, and widens with the code.
+
+        This was originally scoped to `cli/main.py` alone while its docstring claimed a
+        repo-wide invariant — and `indexing/indexer.py`, the only OTHER module that
+        builds a markup Console, rendered repo-controlled filenames through bare
+        escape() at four sites the guard could not see. The release notes meanwhile
+        stated the sanitiser was applied to every dynamic value rendered to the
+        terminal, so the claim was false rather than merely incomplete.
+
+        Discovering the console-constructing modules rather than listing them means a
+        third one fails here instead of shipping the same hole again.
+        """
+        src_root = Path(__file__).resolve().parents[2] / "src" / "trelix"
+        console_modules = sorted(
+            str(path.relative_to(src_root))
+            for path in src_root.rglob("*.py")
+            if re.search(r"\bConsole\(", path.read_text(encoding="utf-8"))
+        )
+        assert console_modules, "no Console( construction found — has the CLI moved?"
+        assert "cli/main.py" in console_modules
+        assert "indexing/indexer.py" in console_modules, (
+            "the indexer no longer builds a Console — if that is deliberate, drop this "
+            "assertion; if it was renamed, the guard above must still reach it"
+        )
+
+    def test_the_sanitiser_itself_still_calls_escape(self) -> None:
+        """The exclusion above must not be able to hide a sanitiser that stopped escaping."""
+        source = (
+            Path(__file__).resolve().parents[2] / "src" / "trelix" / "core" / "console_safety.py"
+        ).read_text(encoding="utf-8")
+        assert self._bare_escape_calls(source) == [
+            '    return escape(_CONTROL_RE.sub("", str(value)))'
+        ], "safe_text() no longer strips-then-escapes; see its docstring on ordering"
 
 
 class TestStripOrderCannotSynthesiseMarkup:
