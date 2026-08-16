@@ -487,7 +487,7 @@ This is a simplified map of the default path — trelix actually runs up to 7 re
 flowchart TD
     subgraph INDEXING["INDEXING — trelix index"]
         A[Repository] --> B[FileWalker]
-        B --> C[Tree-sitter Parser: 21 languages]
+        B --> C[Parser: 26 languages]
         C --> D[Chunker: context header + optional LLM summary]
         D --> E[Embedder: voyage / local-code / openai / azure / bedrock / local]
         E --> F[(sqlite-vec HNSW / Qdrant / LanceDB)]

@@ -56,6 +56,16 @@ class Language(StrEnum):
     TOML = "toml"
     HTML = "html"
     CSS = "css"
+    # Operations and contract artifacts. Shell entrypoints, container definitions,
+    # build files, migrations and protobuf schemas are among the things people search a
+    # codebase for most often, and none of them were reachable: EXTENSION_MAP had no
+    # entry, and `Path("Dockerfile").suffix` is "" so no extension entry could ever have
+    # matched one.
+    SHELL = "shell"
+    DOCKERFILE = "dockerfile"
+    MAKE = "make"
+    SQL = "sql"
+    PROTO = "proto"
     UNKNOWN = "unknown"
 
 

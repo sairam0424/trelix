@@ -265,17 +265,21 @@ class TestIndexStatsResourceIsNotAStub:
     def test_a_repo_scoped_stats_resource_serves_real_numbers(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         import json
 
+        import trelix_mcp.server as srv
+
         from trelix.core.models import IndexedFile, Language
         from trelix.store.db import Database
-        import trelix_mcp.server as srv
 
         db_path = tmp_path / ".trelix" / "index.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         db = Database(db_path)
         db.upsert_file(
             IndexedFile(
-                path="/repo/a.py", rel_path="a.py", language=Language.PYTHON,
-                hash="h", size_bytes=10,
+                path="/repo/a.py",
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="h",
+                size_bytes=10,
             )
         )
         db._conn.commit()

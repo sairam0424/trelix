@@ -296,6 +296,40 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
   via `trelix taint`.
 - **SPLADE-Code models cannot be used** as the sparse model until `sparse.py` grows a
   causal-LM path; the default is a general SPLADE v3 checkpoint instead.
+- **Ops-language ranking weight is an open question, not a tuned value.** The five
+  line-window languages have no `file_type_weights` entry, so `fusion.py` gives them its
+  1.0 fallback — the same weight as parsed Python, despite carrying less structural
+  evidence. The 50-query golden set does read ~0.017 nDCG@10 lower with them present, but
+  that is only ~1.4× measured same-config noise (0.012), and every attempt to tune it made
+  ops files unreachable for queries specifically about them. Target rank moved
+  **non-monotonically** with the multiplier (rank 9 at 1.0, absent at 0.8, rank 2 at 0.4),
+  which means chunk-level near-ties decide it rather than the weight. Needs a ~20-query ops
+  golden set before a value can be chosen honestly; overridable meanwhile with
+  `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_SHELL` and friends.
+- **The 11 remaining zero-symbol files stay unreachable** until their stored hashes are
+  invalidated. Both `trelix index` and `trelix update-index` skip them on the hash check,
+  so the line-window fallback cannot reach them without a from-scratch re-index.
+- **One ops query still fails for an unrelated reason.** "what port does the container
+  expose and what is its entrypoint" returns only a *single* distinct file regardless of
+  language weighting, so `Dockerfile` cannot place. That is retrieval breadth, not
+  detection or parsing, and is untouched here.
+- **The suite has a pre-existing test-isolation defect.** `test_config`,
+  `test_llm_client`, `test_llm_bedrock_backend` and `test_git_linker` assertions about
+  default providers and env precedence pass in isolation and when `tests/unit` runs alone,
+  but fail once `tests/integration` runs in the same session. Minimal reproducer:
+  `pytest tests/integration tests/unit/test_config.py::TestEmbedderConfig::test_default_provider_is_local`.
+
+  `tests/integration/conftest.py::_isolate_beast_mode_flags` neither scrubs
+  `_ENV_PREFIXES_TO_SCRUB` nor applies `_CODE_DEFAULTS`, both of which its `tests/unit`
+  namesake does — so a `.env` present in the working tree reaches tests that assert code
+  defaults.
+
+  Measured rather than assumed: `tests/unit tests/integration` fails **10** at
+  `c79f7c2` (checked in a clean `git worktree` at that commit) and **7** with these
+  changes applied, and the 7 are a strict subset of the 10. Which tests get hit depends on
+  collection order, so adding a test file shuffles the set — the count is not a quality
+  signal in either direction. CI does not surface any of it: `pytest tests/unit/` and
+  `tests/integration/` run as separate jobs.
 
 ### Added
 
@@ -325,6 +359,34 @@ tests used unique IDs only, so none could notice a repeated ID scoring twice.
 - **`eval/README.md`** — the golden-set format, and the two ways to get a silently
   wrong score from it: paths are compared by exact string equality, and an entry with
   no `relevant_files` is skipped rather than failed.
+
+- **Ops artifacts are indexed: shell, Dockerfile, Makefile, SQL and protobuf** (21 → 26
+  languages). Two independent gaps had to close for this to work, and either alone would
+  have left the files unreachable:
+
+  - `Path("Dockerfile").suffix` is `""`, so no `EXTENSION_MAP` entry could ever match an
+    extensionless artifact. Detection is now filename-aware via `FILENAME_MAP`, behind a
+    shared `detect_language()` — previously each of five call sites (walker, watcher ×2,
+    `api/app.py`, `indexer.py`) did its own `EXTENSION_MAP` lookup and would have needed
+    the same fix five times.
+  - Chunks hang off `symbol_id`, so a file yielding no symbols yields no chunks and is
+    invisible to *every* retrieval leg — vector, BM25, grep, summary and sub-chunk alike.
+    Shell, Dockerfile and Make have tree-sitter grammars but no structural extractor, so
+    being detected was not sufficient.
+
+- **`LineWindowParser`** — makes a file retrievable when nothing can parse its structure,
+  emitting fixed line windows as `SECTION` symbols with honest 1-indexed line numbers. It
+  extracts no calls, names or imports and reports `language_name == "line-window"` so a
+  caller can tell the symbols came from a line split rather than a parse. Windows rather
+  than one symbol per file because `Chunker` **truncates** an over-budget chunk instead of
+  splitting it, so a single 200-line symbol would silently lose its tail.
+
+  Also applied as a fallback in `_parse_one` when a real extractor returns zero symbols
+  from non-empty source: a Go-templated helm manifest the YAML extractor cannot parse went
+  0 → 5 `SECTION` symbols covering lines 1-184.
+
+  Measured: walk 459 → 465 discovered, index 467 files, zero-symbol files 12 → 11.
+  `Makefile` and `scripts/verify-index.sh` now rank 1 for queries about them.
 
 ### Changed
 

@@ -66,7 +66,44 @@ EXTENSION_MAP: dict[str, Language] = {
     ".scss": Language.CSS,
     ".sass": Language.CSS,
     ".less": Language.CSS,
+    # Ops and contract artifacts
+    ".sh": Language.SHELL,
+    ".bash": Language.SHELL,
+    ".zsh": Language.SHELL,
+    ".sql": Language.SQL,
+    ".proto": Language.PROTO,
+    ".mk": Language.MAKE,
 }
+
+# Artifacts identified by FILENAME, not extension. `Path("Dockerfile").suffix` is "", so
+# no EXTENSION_MAP entry can ever reach one — which is why a Dockerfile, a Makefile and
+# every shell entrypoint were absent from the index entirely rather than merely ranked
+# badly. Matched case-insensitively on the full name first, then on the stem, so
+# `Dockerfile.prod` and `Makefile.local` resolve too.
+FILENAME_MAP: dict[str, Language] = {
+    "dockerfile": Language.DOCKERFILE,
+    "containerfile": Language.DOCKERFILE,
+    "makefile": Language.MAKE,
+    "gnumakefile": Language.MAKE,
+}
+
+
+def detect_language(path: Path) -> Language:
+    """Resolve a path to a Language, filename first and extension second.
+
+    The single detector for every call site. There were four independent copies of
+    `EXTENSION_MAP.get(suffix)` — in the walker, the watcher (twice), the REST /parse
+    route and the indexer's single-file path — so a new artifact type had to be added in
+    five places or the surfaces would silently disagree about what is indexable.
+    """
+    name = path.name.lower()
+    if name in FILENAME_MAP:
+        return FILENAME_MAP[name]
+    # "Dockerfile.prod" -> stem "Dockerfile"; also catches "Makefile.local".
+    stem = name.split(".", 1)[0]
+    if stem in FILENAME_MAP:
+        return FILENAME_MAP[stem]
+    return EXTENSION_MAP.get(path.suffix.lower(), Language.UNKNOWN)
 
 
 class FileWalker:
@@ -217,9 +254,7 @@ class FileWalker:
         return self._is_gitignored(file_path, is_dir=False)
 
     def _detect_language(self, path: Path) -> Language:
-        # Special case: .tsx must be checked before .ts
-        suffix = path.suffix.lower()
-        return EXTENSION_MAP.get(suffix, Language.UNKNOWN)
+        return detect_language(path)
 
     def _compute_hash(self, path: Path) -> str:
         h = hashlib.sha256()

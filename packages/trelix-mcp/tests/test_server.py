@@ -417,9 +417,7 @@ def test_federation_add_repo_rejects_unconfined_config_path() -> None:
     import trelix_mcp.server as srv
 
     with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
-        response = srv.federation_add_repo(
-            alias="myrepo", path="/repo", config_path="/etc/passwd"
-        )
+        response = srv.federation_add_repo(alias="myrepo", path="/repo", config_path="/etc/passwd")
 
     assert response["added"] is False
     assert response["error"] is not None
@@ -931,18 +929,29 @@ class TestKnowledgeGraphPayloadIsCapped:
     def _mock_result(singletons: int = 6437, real: int = 60):  # type: ignore[no-untyped-def]
         """A community_summary shaped like the real one: mostly singletons."""
         summary = [
-            {"community_id": i, "size": 514 - i, "top_files": [f"src/f{i}.py"],
-             "top_symbols": [f"sym{i}"]}
+            {
+                "community_id": i,
+                "size": 514 - i,
+                "top_files": [f"src/f{i}.py"],
+                "top_symbols": [f"sym{i}"],
+            }
             for i in range(real)
         ] + [
-            {"community_id": 1000 + i, "size": 1, "top_files": [f"src/single{i}.py"],
-             "top_symbols": [f"lone{i}"]}
+            {
+                "community_id": 1000 + i,
+                "size": 1,
+                "top_files": [f"src/single{i}.py"],
+                "top_symbols": [f"lone{i}"],
+            }
             for i in range(singletons)
         ]
         return MagicMock(
-            node_count=10700, edge_count=11150,
-            community_count=len(summary), concept_count=0,
-            elapsed_seconds=1.5, community_summary=summary,
+            node_count=10700,
+            edge_count=11150,
+            community_count=len(summary),
+            concept_count=0,
+            elapsed_seconds=1.5,
+            community_summary=summary,
         )
 
     def _call(self, **kwargs):  # type: ignore[no-untyped-def]
@@ -987,8 +996,14 @@ class TestKnowledgeGraphPayloadIsCapped:
 
     def test_the_documented_keys_are_unchanged(self) -> None:
         payload = self._call()
-        for key in ("node_count", "edge_count", "community_count", "concept_count",
-                    "elapsed_seconds", "community_summary"):
+        for key in (
+            "node_count",
+            "edge_count",
+            "community_count",
+            "concept_count",
+            "elapsed_seconds",
+            "community_summary",
+        ):
             assert key in payload, f"documented key {key!r} disappeared"
 
     def test_the_old_uncapped_shape_is_still_reachable(self) -> None:

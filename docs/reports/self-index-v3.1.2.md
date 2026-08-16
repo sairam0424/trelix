@@ -256,12 +256,74 @@ wrong, unmeasurable, or bought nothing, so they were left alone and recorded ins
 | `generic_edges` | This repository's git history contains **no real ticket references** — across 825 commits the default pattern matches 8 strings, all false positives (`UTF-8`, `SHA-256`, `HTTP-400`, …). Running `link-tickets` would be a no-op reported as a step |
 | `graph_concepts` | `--concepts` samples `symbols[0:200]` from a query with no `ORDER BY`, so the sample is arbitrary. The LLM spend buys nothing interpretable |
 
-## A coverage limitation, not a defect
+## A coverage limitation, since fixed
 
-`EXTENSION_MAP` has no entry for `.sh`, `.bash`, `.sql`, `.proto` or `Dockerfile`. So
-`scripts/self-index.sh`, `e2e_test.sh` and the `Dockerfile` are invisible to the indexer.
-The 21 supported languages are documented and shell is not among them — but for a
-code-intelligence tool, CI glue and entrypoints are exactly what people search for.
+`EXTENSION_MAP` had no entry for `.sh`, `.bash`, `.sql`, `.proto` or `Dockerfile`, so
+`scripts/self-index.sh`, `e2e_test.sh` and the `Dockerfile` were invisible to the
+indexer. The 21 supported languages were documented and shell was not among them — but
+for a code-intelligence tool, CI glue and entrypoints are exactly what people search for.
+
+Two mechanisms were missing, and each alone would have been insufficient:
+
+1. **`Path("Dockerfile").suffix` is `""`.** No extension entry could ever match an
+   extensionless artifact, so detection had to become filename-aware (`FILENAME_MAP` +
+   a shared `detect_language()` now used at all five call sites — walker, watcher ×2,
+   `api/app.py`, `indexer.py`; previously each did its own `EXTENSION_MAP` lookup).
+2. **Chunks hang off `symbol_id`.** A file that yields no symbols yields no chunks and is
+   unreachable by *every* leg — vector, BM25, grep, summary, sub-chunk. Shell, Dockerfile
+   and Make have tree-sitter grammars but no structural extractor, so being detected was
+   not enough. `LineWindowParser` emits fixed line windows as `SECTION` symbols instead.
+   Windows rather than one symbol per file because `Chunker` **truncates** an over-budget
+   chunk rather than splitting it, so a single 200-line symbol would lose its tail.
+
+Measured on this repository: walk 459 → 465 discovered, index 467 files. `Dockerfile` 2
+symbols, `Makefile` 4, `e2e_test.sh` 6, `scripts/self-index.sh` 5, `scripts/verify-index.sh`
+4. The same fallback also rescues files whose extractor legitimately finds nothing — a
+Go-templated helm manifest the YAML extractor cannot parse went 0 → 5 `SECTION` symbols
+covering lines 1-184, and zero-symbol files dropped 12 → 11.
+
+**Not fixed by this, and load-bearing:** the other 11 zero-symbol files stay unreachable
+until their stored hashes are invalidated. Both `trelix index` and `trelix update-index`
+skip them on the hash check — verified, not assumed. They need a from-scratch re-index.
+
+### What could not be measured
+
+The four ops queries added to `eval/golden.jsonl` are **not** a usable subset. A 4-query
+Recall@10 moves in 0.25 steps, and the same set returned 0.7500, then 0.0000, then 0.5000
+across runs with no code change between them. Nothing can be concluded from it, in either
+direction. Two further traps showed up while trying:
+
+- **In-process repetition measures nothing here.** `query_cache_size` (256) memoises
+  `embed_query()`, so repeats 2 and 3 of a 3-run loop are cache hits. Three identical
+  ranks looked like stability but were one sample echoed twice; the same code in separate
+  processes put `scripts/self-index.sh` at rank 2, 8 and 13. HyDE's LLM rewrite is the
+  underlying source — it has to be disabled, not averaged over.
+- **Rank responded non-monotonically to the weight.** With HyDE off, down-weighting the
+  five new languages in `file_type_weights` put `self-index.sh` at rank 9 (weight 1.0),
+  absent (0.8), and rank 2 (0.4). A monotonic parameter producing a non-monotonic
+  response means rank-among-distinct-files is decided by chunk-level near-ties, not the
+  multiplier — so no value could be chosen without fitting noise. Left at the 1.0
+  fallback with the reasoning recorded in `RetrievalConfig.file_type_weights`.
+
+The 50-query set is the only powered instrument, and there the result is a **possible
+small cost that cannot be called real**: 0.6105 / 0.6063 nDCG@10 after, against a
+0.6189 / 0.6312 baseline. The ~0.017 gap is about 1.4× the measured same-config
+run-to-run noise (0.012). Recall@10 0.7800 / 0.7300 vs 0.8000 / 0.7800; MRR 0.5976 /
+0.5992 vs 0.5919 / 0.6142 — both flat. The stated ship criterion was that nDCG@10 stay
+unchanged; it is marginally outside that, and shipping anyway is a judgment call, not a
+pass.
+
+The claim this change actually rests on is **reachability**, which needs no aggregate
+metric: files that were entirely absent from the index are now present, carry symbols,
+and retrieve — `Makefile` and `scripts/verify-index.sh` both rank 1 for queries about
+them. One target, `Dockerfile`, does **not** surface: that query returns only a single
+distinct file regardless of weighting, which is a retrieval-breadth problem unrelated to
+this work and still open.
+
+An earlier attempt at this comparison was **contaminated and thrown away**: the four
+queries were appended to `eval/golden.jsonl` while an eval was mid-flight, so the run
+scored 54 queries against a 50-query baseline. The numbers above come from
+`/tmp/golden-orig50.jsonl` and `/tmp/golden-new4.jsonl` measured separately.
 
 ---
 

@@ -55,7 +55,7 @@ from trelix.embedder.base import BaseEmbedder, make_embedder
 from trelix.indexing.chunker import Chunker, ContextualChunker
 from trelix.indexing.parser.base import ParseResult
 from trelix.indexing.parser.registry import get_parser
-from trelix.indexing.walker import FileWalker
+from trelix.indexing.walker import FileWalker, detect_language
 from trelix.store.db import Database
 from trelix.store.vector import BaseVectorStore, make_vector_store
 
@@ -651,6 +651,26 @@ class Indexer:
         source = Path(file.path).read_text(encoding="utf-8", errors="replace")
         # file_id=0 is a placeholder; the real DB id is set in _insert_one (Phase 2)
         parse_result = parser.parse(source, file_id=0)
+
+        # A file whose extractor found nothing is unreachable, not merely sparse: chunks
+        # hang off symbol_id, so no symbols means no chunks and every retrieval leg is
+        # blind to it. On this repository that was 12 non-empty files totalling 17 KB —
+        # Go-templated helm manifests the YAML extractor cannot parse, .mjs build configs,
+        # and a few test files.
+        #
+        # Falling back here rather than in _insert_one because _ParsedFile carries no
+        # source text: the serial main thread would have to re-read the file from disk,
+        # while this worker already has `source` in hand.
+        if not parse_result.symbols and source.strip():
+            from trelix.indexing.parser.extractors.line_window import LineWindowParser
+
+            logger.debug(
+                "No symbols extracted from %s (%s) — falling back to line windows",
+                file.rel_path,
+                file.language,
+            )
+            parse_result = LineWindowParser().parse(source, file_id=0)
+
         return _ParsedFile(file=file, parse_result=parse_result)
 
     # ──────────────────────────────────────────────────────────────────────
@@ -1265,8 +1285,6 @@ class Indexer:
             {"status": "ok", "symbols_updated": N, "chunks_updated": N, "ms": N}
             {"status": "error", "error": "<message>"}
         """
-        from trelix.core.models import Language
-        from trelix.indexing.walker import EXTENSION_MAP
 
         t0 = time.perf_counter()
 
@@ -1279,7 +1297,7 @@ class Indexer:
             repo_root = Path(self.config.repo_path).resolve()
             rel_path = str(abs_path.relative_to(repo_root))
 
-            language = EXTENSION_MAP.get(abs_path.suffix.lower(), Language.UNKNOWN)
+            language = detect_language(abs_path)
             file_hash = hashlib.sha256(abs_path.read_bytes()).hexdigest()
             size_bytes = abs_path.stat().st_size
 

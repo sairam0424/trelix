@@ -372,6 +372,9 @@ class RetrievalConfig(BaseSettings):
     # File-type RRF weights
     file_type_weighting_enabled: bool = True
     # Defaults: source code=1.0, HTML/CSS=0.4, JSON/YAML/TOML=0.5, Markdown=0.3, Unknown=0.8
+    # A language with no entry falls back to 1.0. The five line-window languages (shell,
+    # dockerfile, make, sql, proto) have no entry, so they rank level with parsed source —
+    # a documented open question, not a tuned value. See the NOTE in the field itself.
     # Override per-language: TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_PYTHON=1.2
 ```
 

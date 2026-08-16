@@ -185,7 +185,7 @@
       "difficulty": "obvious"
     },
     {
-      "query": "I switched from a 3072-dimension cloud embedding model to a 384-dimension local one and search started returning garbage — how does trelix catch that?",
+      "query": "I switched from a 3072-dimension cloud embedding model to a 384-dimension local one and search started returning garbage \u2014 how does trelix catch that?",
       "relevant_files": [
         "src/trelix/store/dimension_guard.py"
       ],
@@ -218,7 +218,7 @@
       "difficulty": "moderate"
     },
     {
-      "query": "Several threads run keyword searches at once but they seem to serialize — can FTS5 reads be made to run in parallel?",
+      "query": "Several threads run keyword searches at once but they seem to serialize \u2014 can FTS5 reads be made to run in parallel?",
       "relevant_files": [
         "src/trelix/store/read_pool.py",
         "src/trelix/store/db.py"
@@ -227,7 +227,7 @@
       "difficulty": "moderate"
     },
     {
-      "query": "What happens if the installed sqlite-vec version is too old to support an HNSW index — does indexing fail?",
+      "query": "What happens if the installed sqlite-vec version is too old to support an HNSW index \u2014 does indexing fail?",
       "relevant_files": [
         "src/trelix/store/vector.py"
       ],
@@ -235,7 +235,7 @@
       "difficulty": "moderate"
     },
     {
-      "query": "File-summary and sub-symbol vectors sit in the same table as normal chunk vectors — how do they avoid stealing slots from the top-k of an ordinary search?",
+      "query": "File-summary and sub-symbol vectors sit in the same table as normal chunk vectors \u2014 how do they avoid stealing slots from the top-k of an ordinary search?",
       "relevant_files": [
         "src/trelix/store/vector.py"
       ],
@@ -414,6 +414,38 @@
       ],
       "area": "cli-config-graph",
       "difficulty": "subtle"
+    },
+    {
+      "query": "how do I reproduce a clean self-index of this repository",
+      "relevant_files": [
+        "scripts/self-index.sh"
+      ],
+      "area": "ops",
+      "difficulty": "easy"
+    },
+    {
+      "query": "what make target runs the retrieval evaluation",
+      "relevant_files": [
+        "Makefile"
+      ],
+      "area": "ops",
+      "difficulty": "easy"
+    },
+    {
+      "query": "what port does the container expose and what is its entrypoint",
+      "relevant_files": [
+        "Dockerfile"
+      ],
+      "area": "ops",
+      "difficulty": "easy"
+    },
+    {
+      "query": "which assertions does the index verification script check",
+      "relevant_files": [
+        "scripts/verify-index.sh"
+      ],
+      "area": "ops",
+      "difficulty": "easy"
     }
   ],
   "area_counts": {
@@ -421,7 +453,9 @@
     "retrieval": 10,
     "storage": 10,
     "llm-embed": 10,
-    "cli-config-graph": 10
+    "cli-config-graph": 10,
+    "ops": 4
   },
-  "generated_for": "trelix v3.1.2 self-index"
+  "generated_for": "trelix v3.1.2 self-index",
+  "notes": "The 'ops' queries target files that were absent from the index entirely before filename-aware language detection and the line-window fallback landed. They are too few (4) to score as a subset on their own -- a 4-query Recall@10 moves in 0.25 steps and swung 0.00/0.50/0.75 across identical configs in measurement. Track the full 54-query aggregate, and grow this area to ~20 before tuning anything against it."
 }

@@ -69,7 +69,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Neither module requires fastapi, so this file stays importable without trelix[serve].
 from trelix import __version__
 from trelix.core.config import IndexConfig, RetrievalConfig
-from trelix.core.models import Language
 from trelix.retrieval.otel_tracing import pipeline_stage_span
 from trelix.retrieval.retriever import Retriever
 
@@ -471,7 +470,7 @@ def create_app() -> Any:  # noqa: ANN201
         from fastapi import HTTPException
 
         from trelix.indexing.parser.registry import get_parser
-        from trelix.indexing.walker import EXTENSION_MAP
+        from trelix.indexing.walker import detect_language
 
         # Validates repo_path exists; deliberately not otherwise used below —
         # this endpoint never touches the index DB or an embedder.
@@ -504,7 +503,7 @@ def create_app() -> Any:  # noqa: ANN201
                 file_name = body.file_name or ""
                 source = body.content or ""
 
-            language = EXTENSION_MAP.get(Path(file_name).suffix.lower(), Language.UNKNOWN)
+            language = detect_language(Path(file_name))
             parser = get_parser(language)
             if parser is None:
                 return ParseResponse(

@@ -48,3 +48,7 @@
 {"query": "why does a code symbol that references a ticket end up with an edge in each direction in the code graph?", "relevant_files": ["src/trelix/graph/code_graph.py"]}
 {"query": "when I pipe trelix graph --json into jq, what stops the progress spinner from corrupting the JSON on stdout?", "relevant_files": ["src/trelix/cli/main.py"]}
 {"query": "after a single file changes, does community detection re-run across the whole graph or only over part of it?", "relevant_files": ["src/trelix/graph/updater.py", "src/trelix/graph/community.py"]}
+{"query": "how do I reproduce a clean self-index of this repository", "relevant_files": ["scripts/self-index.sh"]}
+{"query": "what make target runs the retrieval evaluation", "relevant_files": ["Makefile"]}
+{"query": "what port does the container expose and what is its entrypoint", "relevant_files": ["Dockerfile"]}
+{"query": "which assertions does the index verification script check", "relevant_files": ["scripts/verify-index.sh"]}

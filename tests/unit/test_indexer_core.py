@@ -687,3 +687,77 @@ class TestFileSummaryEmbedFailureIsContained:
         indexer, _ = self._index_one_file(tmp_path)
         symbols = indexer.db._conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
         assert symbols > 0, "the file's symbols were lost to a summary-embed failure"
+
+
+class TestZeroSymbolFilesBecomeReachable:
+    """A file whose extractor finds nothing must still be retrievable.
+
+    Chunks hang off `symbol_id`, so no symbols means no chunks and every retrieval leg is
+    blind to the file — it is in `files` but not in the index in any useful sense. On this
+    repository that was 12 non-empty files totalling 17 KB: Go-templated helm manifests
+    the YAML extractor cannot parse, `.mjs` build configs, and a few test files.
+
+    The fallback runs in `_parse_one`, inside the worker pool, because `_ParsedFile`
+    carries no source text — hooking it in `_insert_one` would make the serial main
+    thread re-read every such file from disk.
+    """
+
+    @staticmethod
+    def _empty_parser():  # type: ignore[no-untyped-def]
+        """A parser that succeeds and extracts nothing, like the YAML one on a template."""
+        from trelix.indexing.parser.base import ParseResult
+
+        parser = MagicMock()
+        parser.parse.return_value = ParseResult(
+            symbols=[], call_edges=[], import_edges=[], parse_errors=0
+        )
+        return parser
+
+    def test_a_file_with_no_extracted_symbols_still_gets_chunks(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        (tmp_path / "template.py").write_text(
+            "\n".join(f"unparseable line {i}" for i in range(1, 25)), encoding="utf-8"
+        )
+        indexer = _make_indexer(str(tmp_path))
+
+        with patch("trelix.indexing.indexer.get_parser", return_value=self._empty_parser()):
+            stats = indexer.index()
+
+        assert stats["symbols_extracted"] > 0, (
+            f"the file stayed unreachable — no symbols, so no chunks: {stats}"
+        )
+        assert stats["chunks_embedded"] > 0
+
+    def test_the_fallback_symbols_are_sections(self, tmp_path: pathlib.Path) -> None:
+        (tmp_path / "template.py").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+        indexer = _make_indexer(str(tmp_path))
+
+        with patch("trelix.indexing.indexer.get_parser", return_value=self._empty_parser()):
+            indexer.index()
+
+        kinds = {row[0] for row in indexer.db._conn.execute("SELECT DISTINCT kind FROM symbols")}
+        assert kinds == {"section"}, f"expected section symbols only, got {kinds}"
+
+    def test_a_whitespace_only_file_is_left_alone(self, tmp_path: pathlib.Path) -> None:
+        """There is nothing to retrieve, so a chunk and an embedding would be waste."""
+        (tmp_path / "blank.py").write_text("\n\n   \n", encoding="utf-8")
+        indexer = _make_indexer(str(tmp_path))
+
+        with patch("trelix.indexing.indexer.get_parser", return_value=self._empty_parser()):
+            stats = indexer.index()
+
+        assert stats["symbols_extracted"] == 0
+
+    def test_a_file_with_real_symbols_is_untouched(self, tmp_path: pathlib.Path) -> None:
+        """The fallback must not add sections alongside a successful parse."""
+        (tmp_path / "mod.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+        indexer = _make_indexer(str(tmp_path))
+
+        with patch("trelix.indexing.indexer.get_parser", side_effect=_fake_get_parser):
+            indexer.index()
+
+        kinds = {row[0] for row in indexer.db._conn.execute("SELECT DISTINCT kind FROM symbols")}
+        assert "section" not in kinds, (
+            f"the fallback fired on a file that parsed successfully: {kinds}"
+        )

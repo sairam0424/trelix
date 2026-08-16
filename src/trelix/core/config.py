@@ -49,6 +49,14 @@ class WalkerConfig(BaseSettings):
         Language.TOML,
         Language.HTML,
         Language.CSS,
+        # Ops and contract artifacts. `languages` is an ALLOW-LIST the walker filters
+        # against, so adding an extension to EXTENSION_MAP is not enough on its own —
+        # the language has to appear here too or the file is discovered and then dropped.
+        Language.SHELL,
+        Language.DOCKERFILE,
+        Language.MAKE,
+        Language.SQL,
+        Language.PROTO,
     ]
     max_file_size_bytes: int = 500_000
     respect_gitignore: bool = True
@@ -834,6 +842,24 @@ class RetrievalConfig(BaseSettings):
             "json": 0.5,
             "yaml": 0.5,
             "toml": 0.5,
+            # NOTE — shell, dockerfile, make, sql and proto are deliberately ABSENT here,
+            # which means `fusion.py` gives them its 1.0 fallback: the same weight as
+            # parsed source. That is arguably too generous, since LineWindowParser
+            # retrieves them as fixed line windows rather than parsed symbols, and the
+            # 50-query golden set does read ~0.017 nDCG@10 lower with them present than
+            # without. It is left alone anyway because that gap is only ~1.4x the
+            # measured same-config run-to-run noise (0.012), and every attempt to tune it
+            # made things worse in a way that could not be measured honestly:
+            # down-weighting to 0.4-0.6 or to 0.8 both dropped ops files out of the top 10
+            # for queries specifically about them, and target rank responded
+            # NON-monotonically to the weight (rank 9 at 1.0, absent at 0.8, rank 2 at
+            # 0.4) — a sign that rank here is decided by chunk-level near-ties, not by the
+            # multiplier. Four ops queries cannot support fitting a scalar.
+            #
+            # To revisit: grow the ops half of eval/golden.jsonl to ~20 queries first,
+            # then sweep. Until then this is an open question, not a tuned value. The
+            # weight is overridable without a code change:
+            #   TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_SHELL=0.5
             # Documentation
             "markdown": 0.3,
             # Unknown — conservative default, do not penalise unknown files
