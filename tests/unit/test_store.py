@@ -1134,3 +1134,139 @@ class TestSymbolContentHash:
         hashes = db.get_symbol_hashes_for_file(file_id)
         assert "foo" in hashes
         assert len(hashes["foo"]) == 64
+
+
+class TestVectorSearchExcludesSentinelRows:
+    """`search()` must return only real chunk vectors.
+
+    Three kinds of row share the `chunk_embeddings` vec0 table:
+
+        0 < chunk_id < _SUB_CHUNK_OFFSET   real chunk vectors
+        chunk_id = -file_id                file-summary vectors
+        chunk_id = sub_chunk_id + 10^7     sub-chunk vectors
+
+    `search()` used to query all three. A sentinel returned in the ANN top-k is not
+    merely noise: `Retriever._vector_search` fetches exactly `k` rows, hydrates each
+    one, and `continue`s when hydration yields None — so a sentinel in the top-k is a
+    real result that is silently never seen, and the loop has nothing left to backfill
+    from. With file summaries enabled that is ~430 sentinels competing on every query.
+
+    Filtering in SQL is not an option: sqlite-vec rejects `WHERE embedding MATCH ? AND
+    chunk_id > 0 ... LIMIT ?` outright ("A LIMIT or 'k = ?' constraint is required on
+    vec0 knn queries"), and the `k = ?` form silently returns FEWER than k rows because
+    it post-filters after the ANN cut. So the exclusion happens in Python, over-fetching
+    by the exact sentinel count so the top-k stays full.
+    """
+
+    DIM = 4
+
+    @pytest.fixture()
+    def vs(self, tmp_path: Path) -> VectorStore:
+        return VectorStore(tmp_path / "vectors.db", dimension=self.DIM)
+
+    def test_file_summary_sentinel_is_not_returned(self, vs: VectorStore) -> None:
+        """A summary vector identical to the query must not win the top slot."""
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert(chunk_id=1, embedding=[0.6, 0.6, 0.0, 0.0])
+        vs.upsert_file_summary_embedding(file_id=7, embedding=query)  # stored at -7
+
+        results = vs.search(query, k=5)
+
+        assert [cid for cid, _ in results] == [1], (
+            "the file-summary sentinel at chunk_id=-7 was returned as a search result"
+        )
+
+    def test_sub_chunk_sentinel_is_not_returned(self, vs: VectorStore) -> None:
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert(chunk_id=1, embedding=[0.6, 0.6, 0.0, 0.0])
+        vs.upsert_sub_chunk_embedding(sub_chunk_id=3, embedding=query)
+
+        results = vs.search(query, k=5)
+
+        assert [cid for cid, _ in results] == [1], (
+            "the sub-chunk sentinel at chunk_id=10000003 was returned as a search result"
+        )
+
+    def test_top_k_stays_full_when_sentinels_outrank_real_chunks(
+        self, vs: VectorStore
+    ) -> None:
+        """The headline regression: sentinels must not consume result slots.
+
+        Five real chunks and three sentinels, with the sentinels placed nearer the
+        query than any of them. Asking for k=5 must still yield five real chunks.
+        """
+        query = [1.0, 0.0, 0.0, 0.0]
+        for i in range(1, 6):
+            vs.upsert(chunk_id=i, embedding=[0.5, 0.5 + i * 0.02, 0.0, 0.0])
+        for file_id in (11, 12):
+            vs.upsert_file_summary_embedding(file_id=file_id, embedding=query)
+        vs.upsert_sub_chunk_embedding(sub_chunk_id=9, embedding=query)
+
+        results = vs.search(query, k=5)
+
+        assert len(results) == 5, (
+            f"expected a full top-5 of real chunks, got {len(results)}: {results}"
+        )
+        assert all(0 < cid < 10_000_000 for cid, _ in results)
+
+    def test_ordering_is_preserved_after_filtering(self, vs: VectorStore) -> None:
+        """Removing sentinels must not disturb the distance ordering."""
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert(chunk_id=1, embedding=[0.99, 0.14, 0.0, 0.0])  # closest
+        vs.upsert(chunk_id=2, embedding=[0.7, 0.7, 0.0, 0.0])
+        vs.upsert(chunk_id=3, embedding=[0.0, 1.0, 0.0, 0.0])  # furthest
+        vs.upsert_file_summary_embedding(file_id=1, embedding=query)
+
+        results = vs.search(query, k=3)
+
+        assert [cid for cid, _ in results] == [1, 2, 3]
+
+    def test_search_with_no_sentinels_is_unchanged(self, vs: VectorStore) -> None:
+        """The common case must not pay for the fix, nor change behaviour."""
+        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+        vs.upsert(chunk_id=2, embedding=[0.0, 1.0, 0.0, 0.0])
+
+        results = vs.search([1.0, 0.0, 0.0, 0.0], k=5)
+
+        assert [cid for cid, _ in results] == [1, 2]
+
+    def test_all_sentinels_yields_no_results(self, vs: VectorStore) -> None:
+        """A table holding only sentinels must return nothing, not sentinels."""
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert_file_summary_embedding(file_id=1, embedding=query)
+        vs.upsert_sub_chunk_embedding(sub_chunk_id=1, embedding=query)
+
+        assert vs.search(query, k=5) == []
+
+    def test_summary_search_still_sees_summaries(self, vs: VectorStore) -> None:
+        """Excluding sentinels from `search()` must not break the summary leg.
+
+        `search_file_summaries` deliberately reads the negative-id rows, so the two
+        methods must disagree about what they return.
+        """
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert_file_summary_embedding(file_id=7, embedding=query)
+
+        summaries = vs.search_file_summaries(query, k=5)
+
+        assert [file_id for file_id, _ in summaries] == [7]
+
+    def test_sub_chunk_search_still_sees_sub_chunks(self, tmp_path: Path) -> None:
+        """The sub-chunk leg must keep working alongside the exclusion.
+
+        Both sentinel legs on this backend run their own scans rather than going
+        through `search()`, which is what makes excluding sentinels from `search()`
+        safe here. The Qdrant and LanceDB backends build `search_file_summaries` /
+        `search_sub_chunks` ON TOP of `search()` with a k*5 oversample, so the same
+        exclusion must NOT be copied there — this test documents which side of that
+        line the SQLite backend sits on.
+        """
+        vs = VectorStore(tmp_path / "vectors.db", dimension=self.DIM)
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert(chunk_id=1, embedding=[0.6, 0.6, 0.0, 0.0])
+        vs.upsert_sub_chunk_embedding(sub_chunk_id=3, embedding=query)
+
+        sub_chunks = vs.search_sub_chunks(query, k=5)
+
+        assert [sc_id for sc_id, _ in sub_chunks] == [3]
+        assert [cid for cid, _ in vs.search(query, k=5)] == [1]

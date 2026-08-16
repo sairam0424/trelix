@@ -253,6 +253,34 @@ class SQLiteVectorStore(BaseVectorStore):
         through the HNSW index for O(log n) approximate nearest-neighbour search.
         """
         packed = self._pack(query_embedding)
+        rows = self._knn(packed, k)
+        real = [(cid, dist) for cid, dist in rows if self._is_chunk_id(cid)]
+
+        # Sentinel rows (file summaries at -file_id, sub-chunks at +_SUB_CHUNK_OFFSET)
+        # live in this same table and compete for the ANN top-k. Anything they take is a
+        # real result the caller never sees — Retriever._vector_search fetches exactly k
+        # rows and has nothing to backfill from — so re-ask for k plus the exact number
+        # of sentinels stored, which is provably enough even if every one of them
+        # outranks the k-th real chunk.
+        #
+        # Filtering in SQL is not available: sqlite-vec rejects a `chunk_id > 0`
+        # predicate alongside `embedding MATCH ? ... LIMIT ?`, and its `k = ?` form
+        # applies the predicate after the ANN cut, silently returning fewer than k.
+        if len(real) < k:
+            sentinels = self._count_sentinels()
+            if sentinels:
+                rows = self._knn(packed, k + sentinels)
+                real = [(cid, dist) for cid, dist in rows if self._is_chunk_id(cid)]
+
+        return real[:k]
+
+    @classmethod
+    def _is_chunk_id(cls, chunk_id: int) -> bool:
+        """True for a real chunk vector, false for a summary or sub-chunk sentinel."""
+        return 0 < chunk_id < cls._SUB_CHUNK_OFFSET
+
+    def _knn(self, packed: bytes, k: int) -> list[tuple[int, float]]:
+        """Raw ANN query — returns sentinel rows as well as real chunks."""
         with self._lock:
             rows = self._conn.execute(
                 """
@@ -264,7 +292,16 @@ class SQLiteVectorStore(BaseVectorStore):
                 """,
                 (packed, k),
             ).fetchall()
-        return [(r[0], r[1]) for r in rows]
+        return [(int(r[0]), float(r[1])) for r in rows]
+
+    def _count_sentinels(self) -> int:
+        """How many non-chunk rows share the table. 0 on any of the usual indexes."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM chunk_embeddings WHERE chunk_id <= 0 OR chunk_id >= ?",
+                (self._SUB_CHUNK_OFFSET,),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def delete(self, chunk_id: int) -> None:
         self._conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,))
