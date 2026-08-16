@@ -749,7 +749,13 @@ class Indexer:
             old_chunk_ids = self.db.get_chunk_ids_for_symbols(file_id, qualified_names_to_delete)
             if old_chunk_ids:
                 self.vector_store.delete_batch(old_chunk_ids)
-            self.db.delete_symbols_by_qualified_names(file_id, qualified_names_to_delete)
+            # vector_store passed explicitly: sub_chunks has no FK to symbols, and a
+            # cascade could not reach a vector store anyway. Omitting it would delete
+            # the rows while orphaning their vectors permanently — the row id is the
+            # only handle on its vector.
+            self.db.delete_symbols_by_qualified_names(
+                file_id, qualified_names_to_delete, vector_store=self.vector_store
+            )
 
         # Import edges are file-scoped (not per-symbol), so they are always
         # fully replaced on re-index — same as the pre-existing behavior of
@@ -1287,7 +1293,9 @@ class Indexer:
                     old_chunk_ids = self.db.get_chunk_ids_for_file(existing_file_id)
                     if old_chunk_ids:
                         self.vector_store.delete_batch(old_chunk_ids)
-                    self.db.delete_file_symbols(existing_file_id)
+                    self.db.delete_file_symbols(
+                        existing_file_id, vector_store=self.vector_store
+                    )
                 return {
                     "status": "ok",
                     "symbols_updated": 0,

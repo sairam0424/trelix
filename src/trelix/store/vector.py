@@ -60,6 +60,18 @@ class BaseVectorStore(ABC):
     def count(self) -> int:
         """Return the total number of stored embeddings."""
 
+    # Sub-chunk vectors are stored at `sub_chunk_id + _SUB_CHUNK_OFFSET` by every
+    # backend. Deleting them is defined here, concretely, so callers never have to know
+    # the offset — `Database` in particular has no business doing that arithmetic, and
+    # a foreign key cannot reach a vector store at all.
+    _SUB_CHUNK_OFFSET = 10_000_000
+
+    def delete_sub_chunk_embeddings(self, sub_chunk_ids: list[int]) -> None:
+        """Delete the vectors belonging to the given sub_chunk row ids."""
+        if not sub_chunk_ids:
+            return
+        self.delete_batch([sid + self._SUB_CHUNK_OFFSET for sid in sub_chunk_ids])
+
     def recreate(self) -> None:
         """Discard every stored vector and rebuild the store at this store's dimension.
 

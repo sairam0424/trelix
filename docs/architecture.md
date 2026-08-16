@@ -443,7 +443,7 @@ symbols_fts (name, qualified_name, docstring, body, context_summary)
   -- Maintained by 3 triggers: AFTER INSERT/DELETE/UPDATE on symbols
 
 -- Extension tables (all added via idempotent migrations)
-sub_chunks (id PK, parent_symbol_id FK→symbols CASCADE,
+sub_chunks (id PK, parent_symbol_id → symbols.id but NO FK/CASCADE — see note below,
             granularity CHECK('function','block','statement'),
             chunk_text, line_start, line_end, token_count)
 
@@ -492,6 +492,17 @@ idx_def_use_symbol, idx_taint_severity, idx_sparse_token
 2. `decorators`, `is_public`, `context_summary` on symbols
 3. `callee_type_hint` on calls (type-hint-guided resolution)
 4. `file_summaries` table
+> **`sub_chunks.parent_symbol_id` has no foreign key.** Unlike `chunks.symbol_id`, which
+> carries `ON DELETE CASCADE`, deleting a symbol does not remove its sub-chunks — verified
+> with `PRAGMA foreign_key_list(sub_chunks)`, which returns `[]`. `Database` therefore
+> purges them explicitly in `delete_file_symbols` and
+> `delete_symbols_by_qualified_names`, deleting the VECTORS first (via
+> `BaseVectorStore.delete_sub_chunk_embeddings`) because the row id is the only handle on
+> its vector. A cascade could not have done that half in any case: the vectors live in a
+> virtual table a foreign key cannot reach. The constraint is not added retroactively
+> because SQLite cannot `ALTER TABLE` one in, and rebuilding a table that may already
+> hold rows is the larger risk.
+
 5. `sub_chunks` table (MGS3)
 6. `query_telemetry` table (v2.3 observability)
 7. `expansion_used`, `expansion_variants`, `expansion_elapsed_ms` on `query_telemetry` (v2.4.0)

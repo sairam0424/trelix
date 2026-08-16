@@ -591,8 +591,53 @@ class Database:
         self._conn.commit()
         return row[0]  # type: ignore[no-any-return]
 
-    def delete_file_symbols(self, file_id: int) -> None:
+    def _sub_chunk_ids_for_symbols(self, symbol_ids: list[int]) -> list[int]:
+        """Row ids of the sub_chunks belonging to the given symbols."""
+        if not symbol_ids:
+            return []
+        placeholders = ",".join("?" for _ in symbol_ids)
+        rows = self._conn.execute(
+            f"SELECT id FROM sub_chunks WHERE parent_symbol_id IN ({placeholders})",
+            tuple(symbol_ids),
+        ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def _purge_sub_chunks(self, symbol_ids: list[int], vector_store: object | None) -> None:
+        """Delete sub_chunks rows for `symbol_ids`, and their vectors first.
+
+        `sub_chunks.parent_symbol_id` carries NO foreign key — unlike `chunks.symbol_id`,
+        which has ON DELETE CASCADE — so deleting a symbol left its sub-chunks behind
+        forever. `PRAGMA foreign_key_list(sub_chunks)` returns []; there was also no
+        `DELETE FROM sub_chunks` anywhere in src/, so rows accumulated on every re-index.
+
+        The FK is not added retroactively because SQLite cannot ALTER TABLE a constraint
+        in, and rebuilding a table that may already hold a user's rows is a bigger risk
+        than doing the cleanup here.
+
+        Vectors are deleted BEFORE the rows, because the row id is the only handle on its
+        vector: losing the row first would leave a vector nothing can ever find. A
+        foreign key could not have done this half regardless — cascade cannot reach a
+        virtual table.
+        """
+        sub_chunk_ids = self._sub_chunk_ids_for_symbols(symbol_ids)
+        if not sub_chunk_ids:
+            return
+        if vector_store is not None:
+            vector_store.delete_sub_chunk_embeddings(sub_chunk_ids)  # type: ignore[attr-defined]
+        placeholders = ",".join("?" for _ in sub_chunk_ids)
+        self._conn.execute(
+            f"DELETE FROM sub_chunks WHERE id IN ({placeholders})", tuple(sub_chunk_ids)
+        )
+
+    def delete_file_symbols(self, file_id: int, vector_store: object | None = None) -> None:
         """Remove all symbols (and cascaded data) for a file before re-indexing."""
+        symbol_ids = [
+            int(r[0])
+            for r in self._conn.execute(
+                "SELECT id FROM symbols WHERE file_id = ?", (file_id,)
+            ).fetchall()
+        ]
+        self._purge_sub_chunks(symbol_ids, vector_store)
         self._conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
         self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
         self._conn.commit()
@@ -608,7 +653,12 @@ class Database:
         ).fetchall()
         return {row[0]: row[1] for row in rows}
 
-    def delete_symbols_by_qualified_names(self, file_id: int, qualified_names: list[str]) -> None:
+    def delete_symbols_by_qualified_names(
+        self,
+        file_id: int,
+        qualified_names: list[str],
+        vector_store: object | None = None,
+    ) -> None:
         """Remove only the named symbols (and cascaded data) for a file —
         a partial version of delete_file_symbols(), used when some symbols
         in the file are unchanged and must be preserved.
@@ -616,6 +666,17 @@ class Database:
         if not qualified_names:
             return
         placeholders = ",".join("?" for _ in qualified_names)
+        # Resolved before the delete: sub_chunks has no FK to symbols, so once the
+        # symbol rows are gone nothing links its sub-chunks to anything.
+        symbol_ids = [
+            int(r[0])
+            for r in self._conn.execute(
+                f"SELECT id FROM symbols WHERE file_id = ? "
+                f"AND qualified_name IN ({placeholders})",
+                (file_id, *qualified_names),
+            ).fetchall()
+        ]
+        self._purge_sub_chunks(symbol_ids, vector_store)
         self._conn.execute(
             f"DELETE FROM symbols WHERE file_id = ? AND qualified_name IN ({placeholders})",
             (file_id, *qualified_names),

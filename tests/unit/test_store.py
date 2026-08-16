@@ -1360,3 +1360,121 @@ class TestVectorStoreRecreate:
             )
         }
         assert after == before, f"shadow objects changed: {before ^ after}"
+
+
+class TestSubChunkCleanup:
+    """Deleting a symbol must take its sub-chunks and their vectors with it.
+
+    `sub_chunks.parent_symbol_id` carries NO foreign key, unlike `chunks.symbol_id`
+    which has ON DELETE CASCADE. Verified directly: `PRAGMA foreign_key_list(sub_chunks)`
+    returns `[]` while the same query on `chunks` returns a row. There was also no
+    `DELETE FROM sub_chunks` anywhere in `src/`, so every re-index of a changed symbol
+    left its old sub-chunks behind permanently.
+
+    docs/architecture.md described the column as `parent_symbol_id FK→symbols CASCADE`,
+    which was simply not true.
+
+    The FK is not added retroactively: SQLite cannot ALTER a constraint in, and
+    rebuilding a table that may already hold a user's rows is a larger risk than doing
+    the cleanup in application code. A cascade could not have handled the vectors
+    anyway — they live in a virtual table a foreign key cannot reach.
+    """
+
+    @staticmethod
+    def _seed(tmp_path: Path):  # type: ignore[no-untyped-def]
+        """A file with two symbols, each carrying one sub-chunk row."""
+        from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
+        from trelix.store.db import Database
+
+        db = Database(tmp_path / "index.db")
+        file_id = db.upsert_file(IndexedFile(
+            path="/repo/a.py", rel_path="a.py", language=Language.PYTHON,
+            hash="h", size_bytes=10,
+        ))
+        ids = {}
+        for name in ("alpha", "beta"):
+            sym_id = db.insert_symbol(Symbol(
+                file_id=file_id, name=name, qualified_name=name,
+                kind=SymbolKind.FUNCTION, line_start=1, line_end=2,
+                signature=f"def {name}():", body=f"def {name}(): pass",
+            ))
+            ids[name] = sym_id
+            db._conn.execute(
+                "INSERT INTO sub_chunks (parent_symbol_id, granularity, chunk_text, "
+                "token_count, line_start, line_end) VALUES (?, 'block', ?, 3, 1, 2)",
+                (sym_id, f"body of {name}"),
+            )
+        db._conn.commit()
+        return db, file_id, ids
+
+    @staticmethod
+    def _count(db) -> int:  # type: ignore[no-untyped-def]
+        return int(db._conn.execute("SELECT COUNT(*) FROM sub_chunks").fetchone()[0])
+
+    def test_deleting_a_file_removes_its_sub_chunks(self, tmp_path: Path) -> None:
+        db, file_id, _ = self._seed(tmp_path)
+        assert self._count(db) == 2, "precondition: two sub-chunk rows exist"
+
+        db.delete_file_symbols(file_id)
+
+        assert self._count(db) == 0, "sub_chunks rows survived the symbol delete"
+
+    def test_deleting_named_symbols_removes_only_their_sub_chunks(
+        self, tmp_path: Path
+    ) -> None:
+        """The partial path must not take the surviving symbol's sub-chunks with it."""
+        db, file_id, _ = self._seed(tmp_path)
+
+        db.delete_symbols_by_qualified_names(file_id, ["alpha"])
+
+        remaining = db._conn.execute(
+            "SELECT chunk_text FROM sub_chunks"
+        ).fetchall()
+        assert [r[0] for r in remaining] == ["body of beta"], (
+            f"wrong sub-chunks removed: {remaining}"
+        )
+
+    def test_vectors_are_deleted_before_the_rows(self, tmp_path: Path) -> None:
+        """The row id is the only handle on its vector, so order is load-bearing."""
+        from unittest.mock import MagicMock
+
+        db, file_id, _ = self._seed(tmp_path)
+        sub_chunk_ids = [
+            int(r[0]) for r in db._conn.execute("SELECT id FROM sub_chunks").fetchall()
+        ]
+        store = MagicMock()
+
+        db.delete_file_symbols(file_id, vector_store=store)
+
+        store.delete_sub_chunk_embeddings.assert_called_once()
+        passed = sorted(store.delete_sub_chunk_embeddings.call_args.args[0])
+        assert passed == sorted(sub_chunk_ids)
+
+    def test_no_sub_chunks_means_no_vector_call(self, tmp_path: Path) -> None:
+        """A repo with multi-granularity off must not pay for an empty delete."""
+        from unittest.mock import MagicMock
+
+        from trelix.core.models import IndexedFile, Language
+        from trelix.store.db import Database
+
+        db = Database(tmp_path / "index.db")
+        file_id = db.upsert_file(IndexedFile(
+            path="/repo/a.py", rel_path="a.py", language=Language.PYTHON,
+            hash="h", size_bytes=10,
+        ))
+        db._conn.commit()
+        store = MagicMock()
+
+        db.delete_file_symbols(file_id, vector_store=store)
+
+        store.delete_sub_chunk_embeddings.assert_not_called()
+
+    def test_offset_arithmetic_lives_in_the_vector_store(self, tmp_path: Path) -> None:
+        """`Database` must not need to know the sentinel offset."""
+        vs = VectorStore(tmp_path / "v.db", dimension=4)
+        vs.upsert_sub_chunk_embedding(sub_chunk_id=5, embedding=[1.0, 0.0, 0.0, 0.0])
+        assert vs.search_sub_chunks([1.0, 0.0, 0.0, 0.0], k=5)
+
+        vs.delete_sub_chunk_embeddings([5])
+
+        assert vs.search_sub_chunks([1.0, 0.0, 0.0, 0.0], k=5) == []
