@@ -91,10 +91,18 @@ def get_repo_manifest(repo_path: str) -> str:
             LIMIT 500
             """
         ).fetchall()
+        # The page is 500 rows, so len(rows) is NOT the repository's file count. It was
+        # reported as `file_count`, which told an agent that any repo over 500 files had
+        # exactly 500 — wrong, suspiciously round, and undetectable from the response
+        # because nothing said a limit had been applied. `file_count` keeps its old
+        # meaning for existing consumers; the truth arrives alongside it.
+        total_file_count = int(db._conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
         return json.dumps(
             {
                 "repo_path": repo_path,
                 "file_count": len(rows),
+                "total_file_count": total_file_count,
+                "files_truncated": total_file_count > len(rows),
                 "files": [
                     {
                         "path": row[0],

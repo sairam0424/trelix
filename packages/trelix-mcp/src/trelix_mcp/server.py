@@ -130,10 +130,32 @@ def unsubscribe_resource(subscription_id: str) -> dict[str, Any]:
 def resource_index_stats() -> str:
     """Aggregate statistics for the active trelix index.
 
-    Returns JSON with a usage hint — use the manifest template for repo-specific
-    stats since direct resources cannot receive parameters.
+    A parameterless resource cannot know which repository is meant, so this points at
+    the repo-scoped template below rather than guessing. That template is new: this
+    resource previously returned only this hint while `resources.get_index_stats` — a
+    complete implementation with symbol/file/chunk counts and error handling — was
+    reachable from nothing but its own tests.
     """
-    return json.dumps({"hint": "Use trelix://repo/{repo_path}/manifest for repo-specific stats"})
+    return json.dumps(
+        {
+            "hint": "Use trelix://repo/{repo_path}/stats for index statistics, "
+            "or trelix://repo/{repo_path}/manifest for the file listing"
+        }
+    )
+
+
+@mcp.resource("trelix://repo/{repo_path}/stats")
+def resource_repo_index_stats(repo_path: str) -> str:
+    """Symbol, file and chunk counts for the index at `repo_path`.
+
+    Serves `resources.get_index_stats`, which was fully written and wired to nothing.
+    Cheap by design — three COUNT(*) queries, no embedder and no graph build — so an
+    agent can check whether a repo is indexed at all before committing to a search.
+    """
+    from trelix_mcp.resources import get_index_stats
+
+    _log.info("resource_repo_index_stats repo_path=%r", repo_path)
+    return get_index_stats(repo_path=repo_path)
 
 
 @mcp.resource("trelix://repo/{repo_path}/manifest")
@@ -474,7 +496,12 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dict[str, Any]:
+def build_knowledge_graph(
+    repo_path: str,
+    extract_concepts: bool = False,
+    min_community_size: int = 2,
+    max_communities: int = 50,
+) -> dict[str, Any]:
     """
     Build a knowledge graph for an indexed codebase.
 
@@ -489,7 +516,25 @@ def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dic
     - node_count: number of symbols in the graph
     - edge_count: number of structural relationships
     - community_count: detected architectural clusters
-    - community_summary: top files + symbols per cluster
+    - community_summary: the largest clusters, size-ordered (see the caps below)
+
+    community_summary used to ship every detected community, unsorted. Measured on
+    trelix's own index that was **1,160,415 bytes — roughly 290,000 tokens** from a
+    single tool call, larger than most context windows. 6,437 of the 6,497 entries
+    (99.1%) were singleton communities carrying no architectural signal, while the five
+    real clusters (514, 477, 393, 279, 277 nodes) accounted for almost none of the bytes.
+
+    min_community_size=2 and max_communities=50 cut that to under 32 KB while keeping
+    every significant cluster. Pass min_community_size=1 and max_communities=0 to
+    restore the old uncapped array.
+
+    singleton_count and communities_omitted are always reported: 6,437 singletons is a
+    community-detection tuning problem, and capping the payload without saying so would
+    hide it.
+
+    NOTE this does not reduce the endpoint's real COST. Both this tool and
+    GET /graph/communities call GraphBuilder(config).build() on every request — a full
+    Louvain pass, a PageRank rebuild and two metadata saves — and that is untouched here.
     """
     from trelix.core.config import IndexConfig
     from trelix.graph.builder import GraphBuilder
@@ -497,13 +542,26 @@ def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dic
     _log.info("build_knowledge_graph repo=%s concepts=%s", repo_path, extract_concepts)
     config = IndexConfig(repo_path=repo_path)
     result = GraphBuilder(config).build(extract_concepts=extract_concepts)
+
+    summary = list(result.community_summary or [])
+    singleton_count = sum(1 for c in summary if int(c.get("size", 0)) <= 1)
+
+    trimmed = [c for c in summary if int(c.get("size", 0)) >= max(1, min_community_size)]
+    trimmed.sort(key=lambda c: int(c.get("size", 0)), reverse=True)
+    if max_communities > 0:
+        trimmed = trimmed[:max_communities]
+
     return {
         "node_count": result.node_count,
         "edge_count": result.edge_count,
+        # The TRUE total, not the number returned — an agent deciding whether to look
+        # closer needs to know how much it is not seeing.
         "community_count": result.community_count,
         "concept_count": result.concept_count,
         "elapsed_seconds": round(result.elapsed_seconds, 3),
-        "community_summary": result.community_summary,
+        "community_summary": trimmed,
+        "singleton_count": singleton_count,
+        "communities_omitted": len(summary) - len(trimmed),
     }
 
 

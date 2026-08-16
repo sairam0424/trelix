@@ -572,14 +572,37 @@ def create_app() -> Any:  # noqa: ANN201
             )
 
     @app.get("/graph/communities", dependencies=auth)
-    def graph_communities(repo: str) -> list[CommunitySummaryModel]:
-        """Return community summary list."""
+    def graph_communities(
+        repo: str,
+        min_community_size: int = 2,
+        max_communities: int = 50,
+    ) -> list[CommunitySummaryModel]:
+        """Return the largest communities, size-ordered.
+
+        This used to return every detected community, unsorted. On trelix's own index
+        that is 6,497 entries and ~1.16 MB, of which 6,437 (99.1%) are singletons
+        carrying no architectural signal — the five real clusters account for almost
+        none of the bytes.
+
+        The response is still a bare list, so only its LENGTH changes for an existing
+        consumer. Pass `min_community_size=1&max_communities=0` for the old uncapped
+        result. Counts are not returned here because the shape is a list; the MCP tool
+        reports singleton_count and communities_omitted alongside its payload.
+        """
         from trelix.graph.builder import GraphBuilder
 
         config = IndexConfig(repo_path=repo)
         with pipeline_stage_span(config.retrieval, "http_graph_communities"):
             result = GraphBuilder(config).build(extract_concepts=False)
-            return [CommunitySummaryModel(**c) for c in result.community_summary]
+            summary = [
+                c
+                for c in (result.community_summary or [])
+                if int(c.get("size", 0)) >= max(1, min_community_size)
+            ]
+            summary.sort(key=lambda c: int(c.get("size", 0)), reverse=True)
+            if max_communities > 0:
+                summary = summary[:max_communities]
+            return [CommunitySummaryModel(**c) for c in summary]
 
     @app.get("/graph/visualize", dependencies=auth)
     def graph_visualize(repo: str, output: str = "") -> GraphVisualizeResponse:

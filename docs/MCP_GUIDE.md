@@ -396,17 +396,36 @@ build_knowledge_graph(repo_path) → graph stats
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `repo_path` | str | required | Absolute path to the indexed repository |
+| `extract_concepts` | bool | `false` | Run LLM semantic-concept extraction (costs API calls) |
+| `min_community_size` | int | `2` | Drop communities smaller than this. `1` returns singletons too |
+| `max_communities` | int | `50` | Cap on returned communities, largest first. `0` disables the cap |
 
-**Response shape:**
+**Response shape** (verified against the live tool — the key names previously documented
+here, `nodes`/`edges`/`connected_components`/`max_depth`/`build_seconds`, do not exist):
+
 ```json
 {
-  "nodes": 1847,
-  "edges": 5312,
-  "connected_components": 3,
-  "max_depth": 12,
-  "build_seconds": 4.2
+  "node_count": 10700,
+  "edge_count": 11150,
+  "community_count": 6497,
+  "concept_count": 0,
+  "elapsed_seconds": 1.52,
+  "community_summary": [{"community_id": 12, "size": 514, "top_files": ["..."], "top_symbols": ["..."]}],
+  "singleton_count": 6437,
+  "communities_omitted": 6447
 }
 ```
+
+**Why the caps exist.** `community_summary` used to ship every detected community,
+unsorted. On trelix's own index that is **1,160,517 bytes — roughly 290,000 tokens from
+one tool call**, larger than most context windows, and 6,437 of the 6,497 entries (99.1%)
+are singletons carrying no architectural signal. The defaults return 23,788 bytes (~5,900
+tokens) while keeping every significant cluster. `community_count` still reports the true
+total, and `singleton_count` / `communities_omitted` say exactly what was left out.
+
+**What the caps do NOT fix:** every call still runs a full `GraphBuilder.build()` — a
+Louvain pass, a PageRank rebuild and two metadata saves. The payload is smaller; the
+server-side cost is unchanged.
 
 ---
 
@@ -765,21 +784,29 @@ MCP resources are read-only data endpoints that the AI can fetch without executi
 
 ### `trelix://index/stats`
 
-Returns aggregate statistics for all indexed repositories managed by the running trelix-mcp server.
+A parameterless resource cannot know which repository is meant, so this returns a pointer
+to the repo-scoped resources below. The aggregate payload previously documented here
+(`repos_indexed`, `total_files`, `total_symbols`, `total_chunks`, `server_version`) was
+never produced by any code — the resource returned only a hint string.
 
 ```json
-{
-  "repos_indexed": 2,
-  "total_files": 654,
-  "total_symbols": 3891,
-  "total_chunks": 8702,
-  "server_version": "3.1.2"
-}
+{"hint": "Use trelix://repo/{repo_path}/stats for index statistics, or trelix://repo/{repo_path}/manifest for the file listing"}
+```
+
+### `trelix://repo/{repo_path}/stats`
+
+Symbol, file and chunk counts for one indexed repository. Three `COUNT(*)` queries — no
+embedder, no graph build — so an agent can cheaply check whether a repo is indexed at all
+before committing to a search.
+
+```json
+{"symbol_count": 10700, "file_count": 459, "chunk_count": 10700, "repo_path": "/path/to/repo"}
 ```
 
 ### `trelix://repo/{repo_path}/manifest`
 
-Returns the full list of indexed files for a specific repository, including file size, language, and symbol count.
+Returns indexed files for a specific repository with language and symbol count — the
+**first 500 by path**, not "the full list" as previously documented.
 
 ```
 trelix://repo//Users/you/projects/myapp/manifest
@@ -788,12 +815,21 @@ trelix://repo//Users/you/projects/myapp/manifest
 ```json
 {
   "repo_path": "/Users/you/projects/myapp",
+  "file_count": 500,
+  "total_file_count": 620,
+  "files_truncated": true,
   "files": [
     {"path": "src/auth/service.py", "language": "python", "symbols": 12, "size_bytes": 4210},
     {"path": "src/db/pool.py", "language": "python", "symbols": 8, "size_bytes": 2108}
   ]
 }
 ```
+
+`file_count` is the size of the returned PAGE and keeps that meaning for existing
+consumers. It was previously the only count in the response, so a repository with more
+than 500 indexed files reported exactly 500 as its file count, with nothing to indicate a
+limit had been applied. `total_file_count` is the real number and `files_truncated` says
+whether you are looking at a page.
 
 ### `trelix://repo/{repo_path}/symbols/{qualified_name}`
 

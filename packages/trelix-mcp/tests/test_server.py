@@ -909,3 +909,90 @@ class TestBlastRadiusIncludesImporters:
             f"a file importing the symbol's module was not reported: {files}"
         )
         assert "src/types.py" not in files, "the defining file is not its own blast radius"
+
+
+class TestKnowledgeGraphPayloadIsCapped:
+    """One tool call must not consume an agent's whole context window.
+
+    `build_knowledge_graph` shipped `result.community_summary` raw. Measured on this
+    repository's own index: **1,160,415 bytes**, roughly 290,000 tokens — larger than
+    most context windows, from a single call. 6,437 of the 6,497 entries (99.1%) are
+    singleton "communities" carrying no architectural signal at all, while the five real
+    clusters (514, 477, 393, 279, 277 nodes) account for almost none of the bytes.
+    Filtering to size>1 leaves 60 clusters in 25,554 bytes — a 45x reduction that keeps
+    every top cluster.
+
+    The counts are reported rather than dropped. Capping silently would hide the fact
+    that community detection is producing 6,437 singletons, which is a tuning problem
+    somebody should see.
+    """
+
+    @staticmethod
+    def _mock_result(singletons: int = 6437, real: int = 60):  # type: ignore[no-untyped-def]
+        """A community_summary shaped like the real one: mostly singletons."""
+        summary = [
+            {"community_id": i, "size": 514 - i, "top_files": [f"src/f{i}.py"],
+             "top_symbols": [f"sym{i}"]}
+            for i in range(real)
+        ] + [
+            {"community_id": 1000 + i, "size": 1, "top_files": [f"src/single{i}.py"],
+             "top_symbols": [f"lone{i}"]}
+            for i in range(singletons)
+        ]
+        return MagicMock(
+            node_count=10700, edge_count=11150,
+            community_count=len(summary), concept_count=0,
+            elapsed_seconds=1.5, community_summary=summary,
+        )
+
+    def _call(self, **kwargs):  # type: ignore[no-untyped-def]
+        import trelix_mcp.server as srv
+
+        with (
+            patch("trelix.core.config.IndexConfig"),
+            patch("trelix.graph.builder.GraphBuilder") as MockBuilder,
+        ):
+            MockBuilder.return_value.build.return_value = self._mock_result()
+            return srv.build_knowledge_graph("/fake/repo", **kwargs)
+
+    def test_the_payload_fits_in_a_sane_budget(self) -> None:
+        import json as _json
+
+        payload = self._call()
+        size = len(_json.dumps(payload))
+        assert size < 32_000, (
+            f"payload is {size:,} bytes; the uncapped version measured 1,160,415 "
+            "(~290k tokens) on this repo"
+        )
+
+    def test_the_largest_clusters_survive(self) -> None:
+        """A cap that drops the signal along with the noise is not a fix."""
+        payload = self._call()
+        sizes = [c["size"] for c in payload["community_summary"]]
+        assert sizes == sorted(sizes, reverse=True), "clusters are not size-ordered"
+        assert sizes[0] == 514, f"the largest cluster was dropped; got {sizes[:3]}"
+
+    def test_singletons_are_excluded_by_default(self) -> None:
+        payload = self._call()
+        assert all(c["size"] > 1 for c in payload["community_summary"])
+
+    def test_the_omission_is_reported_not_hidden(self) -> None:
+        """6,437 singletons is a tuning signal, not something to quietly discard."""
+        payload = self._call()
+        assert payload["singleton_count"] == 6437
+        assert payload["communities_omitted"] > 6000
+        assert payload["community_count"] == 6497, (
+            "community_count must still report the true total"
+        )
+
+    def test_the_documented_keys_are_unchanged(self) -> None:
+        payload = self._call()
+        for key in ("node_count", "edge_count", "community_count", "concept_count",
+                    "elapsed_seconds", "community_summary"):
+            assert key in payload, f"documented key {key!r} disappeared"
+
+    def test_the_old_uncapped_shape_is_still_reachable(self) -> None:
+        """An existing consumer parsing every community must have a way back."""
+        payload = self._call(min_community_size=1, max_communities=0)
+        assert len(payload["community_summary"]) == 6497
+        assert payload["communities_omitted"] == 0

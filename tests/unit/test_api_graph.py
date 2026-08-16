@@ -62,14 +62,44 @@ class TestGraphApiEndpoints:
         assert data["node_count"] == 1  # fixture inserts exactly 1 symbol
 
     def test_graph_communities(self, tmp_path: Path) -> None:
+        """The fixture's single symbol forms a SINGLETON community.
+
+        `min_community_size=1` is explicit here because the endpoint now defaults to 2:
+        on a real repo 99.1% of detected communities are singletons and they were the
+        bulk of a ~1.16 MB response. A one-symbol fixture produces nothing but that
+        case, so the endpoint's plumbing has to be tested with the filter opened up.
+        """
         repo = _make_indexed_repo(tmp_path)
         app = create_app()
         client = TestClient(app)
-        response = client.get(f"/graph/communities?repo={repo}")
+        response = client.get(f"/graph/communities?repo={repo}&min_community_size=1")
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, list)
         assert len(data) >= 1  # at least one community from 1 symbol
+
+    def test_graph_communities_excludes_singletons_by_default(self, tmp_path: Path) -> None:
+        """The default filters the noise that dominated the payload."""
+        repo = _make_indexed_repo(tmp_path)
+        client = TestClient(create_app())
+
+        default = client.get(f"/graph/communities?repo={repo}")
+        opened = client.get(f"/graph/communities?repo={repo}&min_community_size=1")
+
+        assert default.status_code == 200
+        assert default.json() == [], (
+            "a singleton-only graph should return nothing under the default filter"
+        )
+        assert len(opened.json()) >= 1, "the opt-out must still return the singleton"
+
+    def test_graph_communities_response_is_still_a_bare_list(self, tmp_path: Path) -> None:
+        """Only the LENGTH changes for an existing consumer, never the shape."""
+        repo = _make_indexed_repo(tmp_path)
+        client = TestClient(create_app())
+        body = client.get(f"/graph/communities?repo={repo}&min_community_size=1").json()
+
+        assert isinstance(body, list)
+        assert all(isinstance(entry, dict) for entry in body)
 
     def test_graph_search_endpoint(self, tmp_path: Path) -> None:
         repo = _make_indexed_repo(tmp_path)
