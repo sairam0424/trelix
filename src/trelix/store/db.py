@@ -297,20 +297,13 @@ class Database:
         migration would have added will fail, loudly, which is the right outcome.
         """
         self._read_only = read_only
-        if read_only:
-            self._db_path = db_path
-            self._conn = sqlite3.connect(
-                f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
-            )
-            self._conn.row_factory = sqlite3.Row
-            self._bm25_read_pool = None
-            self._conn_lock = threading.Lock()
-            return
-
-        db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+
+        # Declared once, above the branch, because there are now two constructor paths.
+        # Annotating inside either is not enough — mypy reads a branch-local annotation as
+        # narrowing rather than as the attribute's declaration, so the other path becomes a
+        # [no-redef] and enable_bm25_read_pool's assignment becomes an [assignment] error.
+        # CI caught both: the read-only path was added without re-running mypy.
         self._bm25_read_pool: ReadOnlyConnectionPool | None = None
         # Guards concurrent access to the single shared writer connection
         # (self._conn) from hydration calls that bm25_search()'s retrieval-layer
@@ -318,6 +311,17 @@ class Database:
         # pool — sqlite3.Connection is not safe for concurrent statement
         # execution from multiple threads even with check_same_thread=False.
         self._conn_lock = threading.Lock()
+
+        if read_only:
+            self._conn = sqlite3.connect(
+                f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
+            )
+            self._conn.row_factory = sqlite3.Row
+            return
+
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
         self.init_schema()
 
     def enable_bm25_read_pool(self, pool_size: int) -> None:
