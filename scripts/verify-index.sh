@@ -113,6 +113,35 @@ orphans = scalar("""
 """)
 gate("chunks with no embedding", orphans, orphans == 0, "0")
 
+# Standing detector for the orphan leak that has already happened once. sub_chunks,
+# def_use_edges and sparse_embeddings hold symbol/chunk-derived rows with no foreign key
+# (db.py:21-23), so no ON DELETE CASCADE reaches them; the only thing that removes their
+# rows is _purge_fkless_symbol_rows(), called from three symbol-removal sites
+# (db.py:869, 908, 1050). Miss it on a fourth and the rows leak, exactly as they did
+# before that helper existed.
+#
+# Nothing else here would notice. The "def_use edges >= 1,000" floor above is a FLOOR,
+# and orphans only inflate the count — the leak makes that gate *more* likely to pass.
+# And the one sweep that reclaimed the last leak cannot run again:
+# _reclaim_orphaned_def_use_edges() is reached only from _upgrade_to_current(), which is
+# gated on `on_disk < SCHEMA_VERSION` (db.py:348), and the live index is already stamped
+# `user_version = 1` == SCHEMA_VERSION. A second leak would sit there permanently.
+#
+# All three read 0 today: def_use_edges holds 113,046 rows, which is the 117,814 the
+# sweep found minus the 4,768 it deleted; sub_chunks and sparse_embeddings are empty for
+# the reasons recorded in EXPECTED_EMPTY below, so they are gated here in advance of
+# being populated rather than after.
+for label, child, fk, parent in (
+    ("def_use_edges", "def_use_edges", "symbol_id", "symbols"),
+    ("sub_chunks", "sub_chunks", "parent_symbol_id", "symbols"),
+    ("sparse_embeddings", "sparse_embeddings", "chunk_id", "chunks"),
+):
+    n = scalar(
+        f"SELECT COUNT(*) FROM {child} x "
+        f"WHERE NOT EXISTS (SELECT 1 FROM {parent} p WHERE p.id = x.{fk})"
+    )
+    gate(f"orphaned {label} ({fk} -> {parent})", n, n == 0, "0")
+
 # Positive ids are real chunk vectors; negatives are file summaries.
 real_vecs = scalar("SELECT COUNT(*) FROM chunk_embeddings WHERE chunk_id > 0")
 chunks = scalar("SELECT COUNT(*) FROM chunks")

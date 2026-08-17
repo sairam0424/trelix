@@ -1,3 +1,27 @@
+# Dependabot coverage for everything this repository builds.
+#
+# This file covered 3 of the 9 dependency manifests in the tree — pip at the root, pip in
+# packages/trelix-mcp, and github-actions — while release.yml publishes FOUR PyPI
+# distributions, docker-publish.yml publishes two GHCR images from ./Dockerfile, and three
+# npm projects with committed package-lock.json files are built by CI (github-app-ci.yml,
+# vscode-extension-ci.yml, and ci.yml's `typescript-sdk` job). The six manifests nothing
+# watched are added below, in the order they appear in the tree.
+#
+# The inventory, so a future reader can check this is still complete:
+#   pip             /                                (trelix, published)
+#   pip             /packages/trelix-mcp             (trelix-mcp, published)
+#   pip             /packages/trelix-langchain       (trelix-langchain, published)
+#   pip             /packages/trelix-llama-index     (trelix-llama-index, published)
+#   npm             /workspace-vscode                (trelix-vscode extension)
+#   npm             /packages/trelix-typescript      (@trelix/sdk, published)
+#   npm             /infra/github-app                (@trelix/github-app)
+#   docker          /                                (ghcr.io/sairam0424/trelix[-local])
+#   github-actions  /
+#
+# Dependabot only reports advisories it can fix by moving a version constraint it can see.
+# The advisory sweep over the whole installed closure — including the transitive packages
+# no manifest here names — is the `deps` job in security-scan.yml, and the published
+# image's OS layer is the `image` job there. The three are complementary, not redundant.
 version: 2
 updates:
   # Python dependencies
@@ -32,6 +56,110 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 3
+
+  # trelix-langchain — published to PyPI by release.yml. Two dependencies
+  # (trelix, langchain-core), hence the low limit.
+  - package-ecosystem: "pip"
+    directory: "/packages/trelix-langchain"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    ignore:
+      # `trelix>=3.0.0` is bumped by the release process, not by dependabot: release.yml
+      # asserts every version in the tree agrees, so a dependabot PR moving this floor on
+      # its own would be reverted.
+      - dependency-name: "trelix"
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # trelix-llama-index — published to PyPI by release.yml.
+  - package-ecosystem: "pip"
+    directory: "/packages/trelix-llama-index"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    ignore:
+      # Same reason as trelix-langchain above.
+      - dependency-name: "trelix"
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # VS Code extension. One runtime dependency (@modelcontextprotocol/sdk); the rest is
+  # build/test tooling, grouped so nine dev bumps arrive as one PR.
+  - package-ecosystem: "npm"
+    directory: "/workspace-vscode"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    groups:
+      vscode-dev-dependencies:
+        patterns:
+          - "*"
+        dependency-type: "development"
+        exclude-patterns:
+          - "@types/vscode"
+    ignore:
+      # @types/vscode must not exceed engines.vscode (both ^1.90.0 today) — `vsce package`
+      # refuses to build when it does, so this pair moves together in a deliberate commit
+      # that raises the supported VS Code floor, never in an automated bump.
+      - dependency-name: "@types/vscode"
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # @trelix/sdk — published to npm, and it has zero runtime dependencies, so every
+  # update here is build/test tooling.
+  - package-ecosystem: "npm"
+    directory: "/packages/trelix-typescript"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    groups:
+      sdk-dev-dependencies:
+        dependency-type: "development"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # GitHub App. The highest-value npm entry of the three: it is the only one with
+  # network-facing runtime dependencies (express, @octokit/*), so those are deliberately
+  # NOT grouped — an express advisory should arrive as its own reviewable PR.
+  - package-ecosystem: "npm"
+    directory: "/infra/github-app"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 4
+    groups:
+      github-app-dev-dependencies:
+        dependency-type: "development"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ./Dockerfile — the base image for both published GHCR tags.
+  #
+  # Read the PRs from this entry as decisions, not chores. `FROM python:3.11-slim` is a
+  # floating minor tag, so there is no patch stream for dependabot to follow: the only
+  # updates it can offer are 3.12/3.13/3.14-slim, and taking one moves the shipped runtime
+  # off the 3.11 that ci.yml's lint job, release.yml (4 jobs) and build-binaries.yml all
+  # pin via setup-python. Two of those three are the publish path. ci.yml's test matrix
+  # does already run 3.11/3.12/3.13, and requires-python is ">=3.11", so a bump to
+  # 3.12-slim is tested — but 3.14-slim is not tested anywhere. Limit 2 so a bump that is
+  # declined for that reason does not accumulate.
+  #
+  # Base-image CVEs are NOT what this entry reports — a Debian security update inside
+  # python:3.11-slim republishes the same tag and changes no line in the Dockerfile. That
+  # signal comes from the `image` job in security-scan.yml, which scans the built image.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
 
   # GitHub Actions
   - package-ecosystem: "github-actions"

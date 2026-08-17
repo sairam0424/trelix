@@ -88,20 +88,61 @@ def _seed(db_path: Path, count: int = 3, **overrides: object) -> None:
     store.close()
 
 
+#: stdlib ``logging.Handler.handleError`` writes this to ``sys.stderr`` when a
+#: handler's own ``emit()`` raises. See ``_combined_output``.
+_LOGGING_ERROR_MARKER = "--- Logging error ---"
+
+
 def _combined_output(result: object) -> str:
-    """stdout plus stderr, across click versions.
+    """stdout plus stderr, across click versions — and a guard on the contents.
 
     click 8.1's CliRunner mixes stderr into ``.output`` and raises ValueError
     on ``.stderr``; 8.2+ captures them separately. The audit commands print
     failures to ``err_console`` (stderr) and successes to stdout, so both
     streams matter here.
+
+    The guard exists because this module's assertions are substring checks over
+    that captured text, and a leaked log handler contaminates it with a Python
+    traceback. Unlike every other command in cli/main.py, none of the ``audit``
+    subcommands call ``_setup_logging()``, so they run against whatever root
+    handler the session happens to have. ``_setup_logging()`` builds a bare
+    ``logging.StreamHandler()`` bound to the ``sys.stderr`` of its moment — under
+    CliRunner, a buffer that is closed when that invocation ends — and leaves it
+    on the root logger. The next invocation that logs anything (``audit verify``
+    on an unopenable path logs a WARNING from audit/store.py) hits the closed
+    buffer, and ``handleError`` dumps a full traceback into THIS invocation's
+    captured output.
+
+    That traceback carries the pytest frame stack, i.e. the running test's own
+    name — which is how ``test_verify_on_unopenable_db_exits_2_and_never_claims_intact``
+    failed its own ``"intact" not in combined`` check by matching the tail of its
+    own function name, with the actual cause 128 truncated lines away. The other
+    two unopenable-path tests were worse: their assertions happened to still hold
+    over the contaminated text, so they passed while asserting over a traceback.
+
+    Nine modules leak the handler, each measured by running it before this one
+    (``pytest tests/unit/test_cli_audit.py tests/unit/<mod>.py`` with collection
+    reversed → 3 failures here): test_cli_migrate_vectors, test_cli_smoke,
+    test_cli_watch_all_signals, test_dimension_guard, test_dry_run,
+    test_git_linker, test_graph_api, test_prune, test_review_pr_json.
+    test_cli_markup_safety is the only CLI-invoking module that snapshots and
+    restores ``root.handlers`` (its ``_no_leaked_log_handler`` fixture), and it
+    measures 0. Asserting here turns the contamination into one line naming the
+    leak; it does not prevent the leak, which belongs in a shared fixture.
     """
     output = result.output  # type: ignore[attr-defined]
     try:
         stderr = result.stderr  # type: ignore[attr-defined]
     except ValueError:
         stderr = ""
-    return f"{output}{stderr}"
+    combined = f"{output}{stderr}"
+    assert _LOGGING_ERROR_MARKER not in combined, (
+        "an earlier test leaked a logging.StreamHandler bound to a now-closed CliRunner "
+        "buffer onto the root logger, so this invocation's log records dumped a traceback "
+        "into its own captured output. The audit assertions below are substring checks "
+        f"over that text and cannot be trusted. Captured:\n{combined}"
+    )
+    return combined
 
 
 # --- exit code 2: could not check -----------------------------------------

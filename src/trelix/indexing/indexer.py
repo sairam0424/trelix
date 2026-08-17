@@ -28,6 +28,9 @@ Three-phase design for large-repo performance:
     _AsyncTpmRateLimiter uses asyncio.sleep (non-blocking) to stay within
     the configured Azure TPM ceiling — we never exceed the quota.
     vector_store.upsert_batch() is sync → called in a thread executor.
+    A batch that cannot be embedded or stored aborts the run with
+    `PartialIndexError` rather than letting a store-level exception escape the
+    gather: see that class and `Indexer._partial_index_error`.
 
   Phase 4 — cross-file resolution
     Call-edge targets and import file_ids are resolved after every file
@@ -75,6 +78,30 @@ from trelix.store.db import Database
 from trelix.store.vector import BaseVectorStore, make_vector_store
 
 logger = logging.getLogger("trelix.indexing")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 abort
+# ---------------------------------------------------------------------------
+
+
+class PartialIndexError(RuntimeError):
+    """Phase 3 could not write every embedding batch, so the index is incomplete.
+
+    Exists because the vector stores now REFUSE to paper over a failed write
+    rather than adding anyway (see `LanceVectorStore.upsert_batch`: a failed
+    delete makes the following add an append, so one chunk_id gains a row per
+    re-index). That was the right call, but it gave Phase 3 an exception nobody
+    handled: it escaped `asyncio.gather` as a bare store-level message
+    ("LanceDB upsert_batch aborted: refresh/delete of 1 chunk_id(s) failed"),
+    which `cli/main.py` prints as its single line of output. True, and useless —
+    it names neither the scope of the damage nor the way out.
+
+    Aborting is still the right behaviour; it just has to be a deliberate one.
+    `str(self)` therefore carries the whole report, because that one CLI line
+    and `index_file()`'s `{"status": "error", "error": ...}` are the only places
+    it surfaces.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -1429,6 +1456,77 @@ class Indexer:
     # Phase 3: token-aware batch embed + store
     # ──────────────────────────────────────────────────────────────────────
 
+    def _partial_index_error(
+        self,
+        *,
+        failures: list[tuple[int, BaseException]],
+        skipped_batches: int,
+        total_batches: int,
+        chunks_landed: int,
+        chunks_total: int,
+    ) -> PartialIndexError:
+        """Build the abort both Phase 3 paths raise, with every fact needed to act on it.
+
+        Written as one self-contained block because of where it lands: `cli/main.py`
+        prints `str(exc)` and exits 1, and `index_file()` returns it as
+        `{"status": "error", "error": str(exc)}`. There is no second, more detailed
+        channel.
+
+        Two claims in the text are load-bearing and both are properties of this file:
+
+          * "does not heal on the next run" — `_insert_one` commits `upsert_file`
+            (which writes files.hash) and the chunk rows in Phase 2, BEFORE this
+            phase. On a re-run the incremental pre-filter in `index()` skips the file
+            on a matching hash; and with `incremental=False` the file is re-parsed but
+            `_insert_one` only chunks `changed_or_new_symbols`, i.e. symbols whose
+            signature+body hash differs. Neither route re-embeds a chunk whose symbol
+            is byte-identical, so the missing vectors stay missing.
+          * "counted as indexed" — `trelix stats` reads `SELECT COUNT(*) FROM chunks`;
+            the chunk rows exist. Nothing compares that count against the vector store.
+        """
+        failed_batches = len(failures)
+        written_batches = total_batches - failed_batches - skipped_batches
+        first_index, first_exc = failures[0]
+
+        backend = str(getattr(self.config.store, "backend", "unknown"))
+        locations = [f"the index database ({self.config.db_path_absolute})"]
+        if backend == "lance":
+            locations.append(f"the LanceDB directory ({self.config.store.lance_uri})")
+        elif backend == "qdrant":
+            locations.append(
+                f"the Qdrant collection {self.config.store.qdrant_collection} "
+                f"at {self.config.store.qdrant_url}"
+            )
+
+        # Only claimed when it happened: with a handful of batches the first failure
+        # can surface after the last one has already been sent.
+        skip_note = (
+            f"The {skipped_batches} skipped batch(es) were not embedded at all: a store "
+            f"that refuses one write is rarely done refusing, and every batch is a paid "
+            f"embedding call.\n"
+            if skipped_batches
+            else ""
+        )
+
+        return PartialIndexError(
+            f"Indexing aborted — Phase 3 could not embed and store every batch "
+            f"(vector store backend: {backend}).\n"
+            f"  batches: {failed_batches} failed, {skipped_batches} batch(es) were "
+            f"skipped un-embedded, {written_batches} written, {total_batches} total\n"
+            f"  chunks:  {chunks_landed} of {chunks_total} chunk(s) from this run have "
+            f"vectors\n"
+            f"  first failure (batch {first_index + 1}): "
+            f"{type(first_exc).__name__}: {first_exc}\n"
+            f"{skip_note}"
+            f"This index is PARTIAL and does not heal on the next run — the chunk rows "
+            f"and the files' content hashes were committed before this phase, and a "
+            f"re-index only re-embeds a symbol whose own content hash changed "
+            f"(incremental or not). Those chunks stay unsearchable while `trelix stats` "
+            f"keeps counting them as indexed.\n"
+            f"To recover, delete {' and '.join(locations)} and index again, or edit the "
+            f"affected files so their symbols hash differently."
+        )
+
     def _batch_embed_and_store(self, pending: list[_PendingChunk], stats: dict[str, int]) -> None:
         """
         Embed all pending chunks in token-aware batches, then write vectors.
@@ -1438,12 +1536,20 @@ class Indexer:
             embed_max_tokens_per_batch (prevents API request-size errors).
           - _TpmRateLimiter sleeps before a batch if sending it would push
             the rolling 60-second token total above tpm_limit.
+
+        A batch that fails to embed or to store stops the loop and raises
+        `PartialIndexError` — see `_partial_index_error`. This is the path
+        `index_file()` takes, and its blanket `except` turns the abort into
+        `{"status": "error", "error": <the message>}` plus one ERROR log line for
+        that one file, so watch mode and the streaming pipeline keep going with the
+        rest of the repo rather than dying on one file.
         """
         cfg = self.config.embedder
         limiter = _TpmRateLimiter(cfg.tpm_limit, console=self._console)
         batches = _make_token_batches(pending, cfg.embed_max_tokens_per_batch)
         total_chunks = len(pending)
         embedded_so_far = 0
+        failures: list[tuple[int, BaseException]] = []
 
         with Progress(
             SpinnerColumn(),
@@ -1454,14 +1560,18 @@ class Indexer:
         ) as progress:
             task = progress.add_task("Embedding…", total=len(pending))
 
-            for batch in batches:
+            for batch_index, batch in enumerate(batches):
                 batch_tokens = sum(p.token_count for p in batch)
                 limiter.acquire(batch_tokens)  # may sleep to respect TPM limit
 
-                embeddings = self.embedder.embed([p.chunk_text for p in batch])
-                self.vector_store.upsert_batch(
-                    [(p.chunk_id, emb) for p, emb in zip(batch, embeddings)]
-                )
+                try:
+                    embeddings = self.embedder.embed([p.chunk_text for p in batch])
+                    self.vector_store.upsert_batch(
+                        [(p.chunk_id, emb) for p, emb in zip(batch, embeddings)]
+                    )
+                except Exception as exc:
+                    failures.append((batch_index, exc))
+                    break
                 stats["chunks_embedded"] += len(batch)
                 embedded_so_far += len(batch)
                 progress.advance(task, advance=len(batch))
@@ -1471,6 +1581,16 @@ class Indexer:
                     embedded_so_far / total_chunks if total_chunks else 1.0,
                     stats,
                 )
+
+        if failures:
+            stats["errors"] = stats.get("errors", 0) + len(failures)
+            raise self._partial_index_error(
+                failures=failures,
+                skipped_batches=len(batches) - failures[0][0] - 1,
+                total_batches=len(batches),
+                chunks_landed=embedded_so_far,
+                chunks_total=total_chunks,
+            )
 
     async def _batch_embed_and_store_async(
         self, pending: list[_PendingChunk], stats: dict[str, int]
@@ -1489,6 +1609,23 @@ class Indexer:
 
         Progress tracking uses a lock-protected shared counter so concurrent
         coroutines can safely increment stats["chunks_embedded"].
+
+        Failure handling, which the concurrency makes non-obvious:
+          - Each batch catches its own embed/store exception instead of letting it
+            escape the gather. A bare `gather` (no return_exceptions) re-raises the
+            first exception while its siblings keep running unwatched: measured with
+            8 batches and a store that always raises, all 8 upserts still ran, the
+            caller saw only the store's own one-line message, and
+            `upsert_executor.shutdown()` — which used to sit after this block — never
+            ran, leaking both trelix-upsert threads.
+          - The first failure sets `abort`, and batches that have not started
+            embedding yet return without calling the API. A store rejecting one
+            write is rarely done rejecting, and each skipped batch is a paid
+            embedding call not spent. Batches already past `embed_async` still
+            attempt their upsert: the embedding is bought either way, and landing it
+            is strictly better.
+          - The abort itself is raised after the executor is shut down, as a
+            `PartialIndexError` naming the damage and the recovery.
         """
         cfg = self.config.embedder
         limiter = _AsyncTpmRateLimiter(cfg.tpm_limit, console=self._console)
@@ -1503,6 +1640,9 @@ class Indexer:
         # Shared mutable counter guarded by a lock
         counter_lock = asyncio.Lock()
         embedded_so_far = 0
+        failures: list[tuple[int, BaseException]] = []
+        skipped_batches = 0
+        abort = False
 
         with Progress(
             SpinnerColumn(),
@@ -1513,17 +1653,33 @@ class Indexer:
         ) as progress:
             task = progress.add_task("Embedding…", total=total_chunks)
 
-            async def embed_one_batch(batch: list[_PendingChunk]) -> None:
-                nonlocal embedded_so_far
+            async def embed_one_batch(batch_index: int, batch: list[_PendingChunk]) -> None:
+                nonlocal embedded_so_far, skipped_batches, abort
+                if abort:
+                    skipped_batches += 1
+                    return
                 batch_tokens = sum(p.token_count for p in batch)
                 # Respect TPM before acquiring semaphore to avoid holding it
                 # during a potentially long sleep.
                 await limiter.acquire(batch_tokens)
-                async with semaphore:
-                    embeddings = await self.embedder.embed_async([p.chunk_text for p in batch])
-                # upsert_batch is sync — run in executor to not block event loop
-                pairs = [(p.chunk_id, emb) for p, emb in zip(batch, embeddings)]
-                await loop.run_in_executor(upsert_executor, self.vector_store.upsert_batch, pairs)
+                try:
+                    async with semaphore:
+                        # Re-checked here, not only on entry: with 4 permits a batch can
+                        # wait out an earlier batch's whole embed+store before it gets
+                        # this far, and the point of the flag is to not pay for it.
+                        if abort:
+                            skipped_batches += 1
+                            return
+                        embeddings = await self.embedder.embed_async([p.chunk_text for p in batch])
+                    # upsert_batch is sync — run in executor to not block event loop
+                    pairs = [(p.chunk_id, emb) for p, emb in zip(batch, embeddings)]
+                    await loop.run_in_executor(
+                        upsert_executor, self.vector_store.upsert_batch, pairs
+                    )
+                except Exception as exc:
+                    abort = True
+                    failures.append((batch_index, exc))
+                    return
                 # Update shared counters safely
                 async with counter_lock:
                     embedded_so_far += len(batch)
@@ -1536,9 +1692,34 @@ class Indexer:
                         stats,
                     )
 
-            await asyncio.gather(*[embed_one_batch(b) for b in batches])
+            try:
+                await asyncio.gather(*[embed_one_batch(i, b) for i, b in enumerate(batches)])
+            finally:
+                # In the finally so a KeyboardInterrupt or a CancelledError mid-gather
+                # cannot leak the pool either.
+                upsert_executor.shutdown(wait=True)
 
-        upsert_executor.shutdown(wait=True)
+        if failures:
+            stats["errors"] = stats.get("errors", 0) + len(failures)
+            # Logged as well as raised: a library caller embedding Indexer can swallow
+            # the exception, and this line is what remains in the log if it does.
+            logger.error(
+                "Phase 3 aborted: %d of %d embedding batch(es) failed to embed or store, "
+                "%d skipped; %d of %d chunk(s) have vectors. First failure: %s",
+                len(failures),
+                len(batches),
+                skipped_batches,
+                embedded_so_far,
+                total_chunks,
+                failures[0][1],
+            )
+            raise self._partial_index_error(
+                failures=failures,
+                skipped_batches=skipped_batches,
+                total_batches=len(batches),
+                chunks_landed=embedded_so_far,
+                chunks_total=total_chunks,
+            )
 
     # ──────────────────────────────────────────────────────────────────────
     # Helpers

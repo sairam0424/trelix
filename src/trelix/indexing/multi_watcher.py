@@ -6,7 +6,7 @@ Debounce is handled by watchfiles' Rust layer (default 1600ms).
 Hash guard prevents re-index loops when indexer writes to source tree.
 
 Every event is routed through the owning repo's FileWalker before it reaches the
-indexer (see `_should_index`). Until v3.1.3 it was not: `index_file()` only checks
+indexer (see `_should_index`). Until v3.1.2 it was not: `index_file()` only checks
 language and content hash, so one `npm install` under a registered repo pushed the
 whole of `node_modules/` — plus `.venv/`, `dist/` and `.git/` — into the embedder,
 while `trelix index` and the single-repo `watch` path both refused those same paths.

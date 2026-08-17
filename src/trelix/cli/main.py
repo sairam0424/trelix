@@ -2772,6 +2772,7 @@ def search_all(
 ) -> None:
     """Search across all registered repos (federated search)."""
 
+    from trelix.core.config import RetrievalConfig
     from trelix.federation.registry import RepoRegistry
     from trelix.federation.retriever import FederatedRetriever
 
@@ -2789,8 +2790,32 @@ def search_all(
             )
         return
 
-    fed = FederatedRetriever(registry)
-    with _status_console(json_output).status(f"Searching {len(registry.list())} repos..."):
+    # federation_max_repos (TRELIX_FEDERATION_MAX_REPOS, default 50) was declared in
+    # RetrievalConfig, documented in docs/CONFIGURATION.md and enforced by
+    # packages/trelix-mcp — while this line read `FederatedRetriever(registry)`, so the
+    # constructor default of max_repos=None applied and search-all fanned out to every
+    # registered repo. The cap's stated purpose is to stop a runaway federation_add_repo
+    # loop from making every later query scale linearly with the repo count — and both
+    # sides read the same RepoRegistry (default ~/.config/trelix/repos.json), so a
+    # registry the MCP tools grew was uncapped the moment it was queried from the CLI.
+    max_repos = RetrievalConfig().federation_max_repos
+    fed = FederatedRetriever(registry, max_repos=max_repos)
+
+    total_registered = len(registry.list())
+    # Mirrors the truncation the retriever actually performs — `entries[:max_repos]` in
+    # FederatedRetriever._query_repos, i.e. the first N in registry order.
+    repos_queried = min(total_registered, max_repos)
+    if repos_queried < total_registered:
+        # Truncating the fan-out in silence would report a partial search as a complete
+        # one: the table looks identical, exits 0, and omits whatever the skipped repos
+        # held. Named on stderr — the same stream _status_console() routes to under
+        # --json — so `search-all --json | jq` keeps a clean stdout.
+        err_console.print(
+            f"[yellow]Querying {repos_queried} of {total_registered} registered repos: "
+            f"{total_registered - repos_queried} skipped by "
+            f"TRELIX_FEDERATION_MAX_REPOS={max_repos}.[/yellow]"
+        )
+    with _status_console(json_output).status(f"Searching {repos_queried} repos..."):
         results = fed.retrieve(query, k=k)
 
     if not results:

@@ -9,9 +9,19 @@ Two populations end up there:
 * Artifacts with no extractor. Shell scripts, Dockerfiles and Makefiles have tree-sitter
   grammars available but no structural extractor, and writing five of those is 200-500
   lines each — while one fallback makes all of them reachable at once.
-* Files whose extractor legitimately finds nothing. On this repository that is 12
-  non-empty files totalling 17 KB: Go-templated helm manifests the YAML extractor cannot
-  parse, `.mjs` build configs, and a few test files.
+* Files whose extractor legitimately finds nothing: Go-templated helm manifests the YAML
+  extractor cannot parse, `.mjs` build configs, and a few test files. This population is
+  a point-in-time count that moves with the tree, not a constant — when the fallback was
+  written it was 12 non-empty files on this repository totalling 17 KB; re-run against
+  the v3.1.2 self-index it is 11 files / 10 KB. Measure it, do not quote it:
+
+      sqlite3 .trelix/index.db "SELECT count(*), sum(size_bytes) FROM files
+        WHERE id NOT IN (SELECT file_id FROM symbols) AND size_bytes > 0"
+
+  A nonzero result after this fallback shipped is expected rather than a regression:
+  both `trelix index` and `trelix update-index` skip an unchanged file on its content
+  hash, so a file indexed before the fallback existed keeps its zero-symbol row until a
+  forced re-parse (`TRELIX_INCREMENTAL=false`).
 
 The fallback emits fixed line windows as SECTION symbols. Windows rather than one symbol
 per file because `Chunker` TRUNCATES a chunk that exceeds its token budget rather than

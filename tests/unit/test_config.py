@@ -145,7 +145,22 @@ class TestWalkerConfig:
 
 
 class TestEmbedderConfig:
-    def test_default_provider_is_local(self) -> None:
+    def test_default_provider_is_local(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Both halves are needed, for the reason spelled out at
+        # TestContextTokenBudgetCoercion.test_unset_var_keeps_the_12000_default:
+        # _env_file=None silences the ./.env FILE source only, and the process
+        # environment is a SEPARATE, higher-precedence source. This test asserted
+        # a code default while reading whatever the ambient environment said, so
+        # `export TRELIX_EMBEDDER_PROVIDER=azure` in a developer's shell failed it.
+        #
+        # It also failed mid-session with a clean shell: importing `litellm`
+        # anywhere (tests/unit/test_retry.py does, for its error-class checks)
+        # runs load_dotenv() at import time and publishes this repo's root .env
+        # into os.environ for the rest of the process — measured at 32 vars,
+        # among them TRELIX_EMBEDDER_PROVIDER=azure. Under forward collection
+        # order that import lands after this file; reversed, it lands before,
+        # and this assertion saw "azure".
+        monkeypatch.delenv("TRELIX_EMBEDDER_PROVIDER", raising=False)
         cfg = EmbedderConfig(_env_file=None)  # type: ignore[call-arg]
         assert cfg.provider == "local"
 
@@ -352,7 +367,12 @@ class TestIndexConfig:
         assert gitignore.exists()
         assert gitignore.read_text() == "*\n"
 
-    def test_default_provider_is_local(self, tmp_path: Path) -> None:
+    def test_default_provider_is_local(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # See TestEmbedderConfig.test_default_provider_is_local: the nested
+        # embedder's _env_file=None silences ./.env, not os.environ.
+        monkeypatch.delenv("TRELIX_EMBEDDER_PROVIDER", raising=False)
         cfg = IndexConfig(repo_path=str(tmp_path), embedder={"_env_file": None})  # type: ignore[arg-type]
         assert cfg.embedder.provider == "local"
 

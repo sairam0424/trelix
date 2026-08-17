@@ -1,31 +1,19 @@
 # Security Policy
 
-## Supported Versions
+This file is the **threat model**: what trelix exposes, what reaches an LLM, and what it
+does not defend against.
 
-| Version | Supported |
-| ------- | --------- |
-| 1.x.x   | ✅ Yes |
-| 0.7.x   | ✅ Yes (security fixes only) |
-| < 0.7   | ❌ No |
+**Do NOT open a public GitHub issue for a security vulnerability.** The reporting
+policy — contact address, supported versions, response timeline, release-artifact
+verification — is stated in [`.github/SECURITY.md`](.github/SECURITY.md) and only there.
+That is the file GitHub resolves for the Security tab, because it takes `.github/` ahead
+of the repository root, so it is where a reporter actually lands.
 
-## Reporting a Vulnerability
-
-**Do NOT open a public GitHub issue for security vulnerabilities.**
-
-Please report security vulnerabilities by emailing:
-**uggesairam0000@gmail.com**
-
-Include in your report:
-- A description of the vulnerability
-- Steps to reproduce
-- Potential impact
-- Any suggested fix (optional)
-
-We will:
-- Acknowledge receipt within **48 hours**
-- Provide a status update within **7 days**
-- Work with you on a **coordinated disclosure timeline** (typically 90 days)
-- Credit you in the release notes (unless you prefer anonymity)
+Keeping a second copy here is how the two files came to contradict each other. Through
+v3.1.1 this file listed `1.x`/`0.7.x` as supported while `.github/SECURITY.md` listed
+`2.7.x`/`2.6.x` — the shipping version was in neither — and the two promised different
+acknowledgement windows (48 hours here, 2 business days there). Each fact below has one
+home; the reporting facts live in the other file.
 
 ## Scope
 

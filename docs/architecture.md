@@ -272,8 +272,10 @@ class ParserConfig(BaseSettings):
     extract_imports: bool = True
     max_symbol_lines: int = 500        # symbols longer than this are truncated
     dataflow_enabled: bool = False     # TRELIX_PARSER_DATAFLOW — def-use extraction
-    taint_enabled: bool = False        # TRELIX_PARSER_TAINT — requires trelix[taint]
+    taint_enabled: bool = False        # TRELIX_PARSER_TAINT — INERT, see below
 ```
+
+`taint_enabled` is **Inert.** The field is declared here and nowhere else: `rg 'taint_enabled' src/` matches only its own declaration in `core/config.py`, so setting `TRELIX_PARSER_TAINT` neither enables nor disables anything. Taint analysis runs only when you invoke `trelix taint`, which does not consult it. Contrast `dataflow_enabled`, which is read at `indexing/indexer.py:1149` and does gate a phase. Same marking as `docs/CLI_REFERENCE.md` and `docs/PROVIDERS.md`.
 
 ### `ChunkerConfig`
 
@@ -1559,8 +1561,11 @@ class RepoRegistry:
     def add(self, alias, path, weight=1.0, max_repos: int | None = None) -> None
     # ValueError on duplicate alias
     # ValueError if max_repos is set and registry is at capacity
-    # max_repos=None (default) is unbounded — CLI path
-    # MCP path passes config.retrieval.federation_max_repos (default 50)
+    # max_repos=None (default) is unbounded, and `trelix federation add`
+    # (cli/main.py) passes nothing — so the registry itself is uncapped there.
+    # MCP's federation_add_repo passes config.retrieval.federation_max_repos
+    # (default 50). Query time is capped on both paths — see FederatedRetriever
+    # below — so an oversized registry costs storage, not fan-out.
     
     def remove(self, alias) -> None                  # no-op if not found
     def list(self) -> list[RepoEntry]
@@ -1578,8 +1583,11 @@ class FederatedRetriever:
                  cache_ttl: float = 120.0,
                  max_repos: int | None = None) -> None
     # max_repos caps how many registered repos are actually queried per call
-    # (the first N in registry order). None (default) is unbounded — CLI path.
-    # MCP path passes config.retrieval.federation_max_repos (default 50).
+    # (the first N in registry order). None (default) is unbounded.
+    # BOTH callers pass config.retrieval.federation_max_repos (default 50):
+    # `trelix search-all` in cli/main.py and federation_search_all in
+    # packages/trelix-mcp. The CLI names the skipped count on stderr, because a
+    # truncated fan-out otherwise renders identically to a complete one.
     
     def retrieve(self, query: str, k: int = 10) -> list[SearchResult]
     def _query_repos(self, query, k) -> list[SearchResult]  # fan-out, no cache

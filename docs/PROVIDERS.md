@@ -373,6 +373,32 @@ An unrecognised model logs a WARNING and falls back to a flat `12,000`-token bud
 
 ---
 
+## Vector Store Backends
+
+Selected with `TRELIX_STORE_BACKEND` (`sqlite` default, `qdrant`, `lance`). They differ in how a *write* can fail, which is what the rest of this section is about — retrieval quality is identical, since all three store the same vectors.
+
+| Backend | Upsert primitive | On a failed write |
+|---|---|---|
+| `sqlite` | `DELETE` + `INSERT` per chunk_id inside one transaction (sqlite-vec virtual tables reject `INSERT OR REPLACE`) | rolled back, then raised — nothing half-written |
+| `qdrant` | server-side `upsert` by point id | raised by the client; with no delete step there is nothing to half-apply |
+| `lance` | `checkout_latest` + `DELETE` + `add` — **two separate commits, no uniqueness constraint on chunk_id** | see below |
+
+### LanceDB failure modes
+
+Everything here is a consequence of one fact: LanceDB has no uniqueness constraint on `chunk_id`, so "replace" is a delete followed by an add, and an add whose delete did not happen is an **append**.
+
+**A failed delete aborts the batch — and the index run.** `upsert_batch` logs at ERROR and re-raises instead of adding anyway. Adding anyway was measured to grow one chunk_id from 1 → 2 → 3 → 4 rows across three failed-delete upserts; every later `search()` then returns that chunk_id repeatedly, spending several of the `k` result slots on one chunk, and `count()` drifts above the SQLite `chunks` table. No subsequent upsert undoes that. Aborting instead leaves the previous single row in place (stale vector, still searchable).
+
+The indexer treats that abort as a deliberate one rather than letting it escape as a bare traceback (this applies to any backend whose upsert raises, LanceDB is just the one that raises by design): the embedding phase stops, batches that had not started embedding are **not** embedded — a store rejecting one write is rarely done rejecting, and each batch is a paid API call — and the run fails with a `PartialIndexError` reporting how many batches failed, how many chunks got vectors, and the recovery path below. With a 50 ms embedding round trip and a store failing every write, a 40-batch run pays for 8 batches and skips 32 (3 runs, identical).
+
+**A partial index does not repair itself.** The chunk rows and the files' content hashes are committed in Phase 2, *before* embedding. On the next run the incremental pre-filter skips those files on a matching hash, and even with `TRELIX_INCREMENTAL=false` the indexer only re-chunks symbols whose own signature+body hash changed — so the chunks that missed their vectors stay unsearchable while `trelix stats` keeps counting them (it reads `COUNT(*) FROM chunks`, which is unaffected). To recover, delete both `.trelix/index.db` and the `LANCE_URI` directory and index again, or edit the affected files.
+
+**Duplicate rows are reported, not hidden.** Writes are serialised by a per-table in-process lock, and each write refreshes the handle first (a LanceDB table handle pins the version it opened at: measured on lancedb 0.33.0, a handle that has not refreshed sees `count() == 0` against a true 1, and its `DELETE` commits a new version while removing nothing). Neither mechanism reaches a **second OS process** on the same URI — the "multi-repo deployments sharing a vector store" case — so `upsert_batch` counts the rows it wrote and logs at ERROR when a chunk_id ends up with more than one. Those duplicates clear only on a later clean upsert of the same chunk_id, and the indexer embeds each chunk once per run, so in practice they survive the run. `Table.merge_insert`, LanceDB's own upsert primitive, is not a way out: 4 threads over 50 chunk_ids left 53–62 rows via `merge_insert` against 50–53 via delete+add, equally silently.
+
+**Cost of the safety.** The refresh costs 0.21 ms on a 200k-row table (against 9.2 ms for one k=10 search) and the duplicate check one filtered `count_rows` (2.3 ms for 32 ids over 200k rows). The write lock reduces two concurrent writers to one — median 135 → 87 batches of 32 per second over 9 runs — which is below the embedder's ceiling unless the embedder is local and very fast.
+
+---
+
 ## Environment Variables Reference
 
 All variables trelix reads, with their defaults. Variables marked `(required)` have no default and must be set for the feature to work.
@@ -445,6 +471,8 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 | `TRELIX_LLM_LITELLM_MODEL` | — | LiteLLM model string (e.g. `bedrock/claude-3-5-sonnet`) |
 
 ### Store / Vector DB
+
+Write-failure behaviour differs per backend — see [Vector Store Backends](#vector-store-backends) before choosing `lance`.
 
 | Variable | Default | Description |
 |---|---|---|

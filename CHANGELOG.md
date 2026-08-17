@@ -45,7 +45,53 @@ package suite was fully green. The walker yielded one file 34 times with no asse
 noticing. And one test reloaded the module under test inside a `sys.modules` patch, silently
 disabling its deletion path for every later test in the session.
 
+### Security
+
+- **The advertised security-disclosure path reached nobody.** GitHub resolves
+  `.github/SECURITY.md` ahead of the repository root, so that file was the published policy —
+  and **both** channels it listed were dead. The email was the literal string
+  `trelix-security@[maintainer-domain]`, shipped with its own "replace with actual contact"
+  note. The route it called *preferred* was equally unusable: private vulnerability reporting
+  is disabled on this repository — `gh api repos/sairam0424/trelix/private-vulnerability-reporting`
+  returns `{"enabled":false}` — and with it off, only users with write access can open a draft
+  advisory, so `/security/advisories/new` gives an outside reporter nothing. Reporting now
+  names the maintainer address the root `SECURITY.md` has carried since v1.0.0, and states the
+  PVR gap outright, with the command that measures it and the one that enables it.
+
+- **Both supported-version tables were wrong, in different directions, and both promised a
+  practice that never existed.** Root claimed `1.x`/`0.7.x`; `.github/` claimed `2.7.x` active
+  with `2.6.x` security-only. Neither listed any 3.x release, so the shipping version appeared
+  in neither. Across all 34 releases from 0.1.0 to 3.1.2 no patch has ever landed on an older
+  line after a newer minor shipped — `2.7.3` preceded `2.8.0`, `2.11.1` preceded `2.12.0`,
+  `3.0.1` preceded `3.1.0` — and there are no maintenance branches. The policy now says what
+  is true: latest release only, fixes ship as a new version from `main`, with PyPI rather than
+  a hand-maintained table as the authority. The two files now own disjoint content — `.github/`
+  the reporting policy, root the threat model — because deleting either would break links that
+  other files, including two in `src/` and `tests/`, point at.
+
+- **The release-verification example could never have run.** It documented
+  `python -m pypi_attestations verify trelix==2.12.0`, which is invalid at any version:
+  `verify` takes an `attestation`/`pypi` subcommand and no form accepts a `name==version`
+  requirement string. The *claim* it illustrated is real, and was checked rather than assumed —
+  `curl https://pypi.org/integrity/trelix/3.1.1/…/provenance` returns a populated
+  `attestation_bundles` naming publisher `sairam0424/trelix`, workflow `release.yml`, an
+  identity bound to `refs/tags/v3.1.1`, and a Rekor entry with an inclusion proof. Only the
+  command was wrong, so only the command changed.
+
+- **Supply-chain scanning existed nowhere** — no dependency audit, container scan, SBOM or
+  SAST anywhere in `.github/`, `.pre-commit-config.yaml` or the `Makefile`, for a project that
+  publishes four PyPI packages and two GHCR images. And `config/semgrep-taint.yaml` — 6.2 KB
+  of real rules, with the `taint` extra pulling semgrep — shipped with **nothing invoking it.**
+  Added `security-scan.yml`, and Dependabot went from 3 covered ecosystems to the 8 actually
+  built (three npm projects, the Dockerfile, and the two adapter packages `release.yml`
+  publishes were all uncovered).
+
+- **`ruff` gained the `S` (bandit) and `B` (bugbear) rule sets**, which were absent from a
+  project shipping a security policy.
+
 ### Added
+
+
 
 - **`trelix index --prune`** — remove index rows for files deleted from the repository.
   Deliberately unbuilt until now: a prune keyed on "files the walk did not yield" reads a
@@ -351,6 +397,63 @@ disabling its deletion path for every later test in the session.
   `Makefile` and `scripts/verify-index.sh` now rank 1 for queries about them.
 
 ### Fixed
+
+- **The unit suite was order-dependent in 13 places, and it hid real bugs three times.**
+  `tests/unit` passed forward and failed under reverse collection order — with no integration
+  suite involved, contradicting a claim made earlier in this release. The causes were all the
+  same shape: a test mutating process-global state and restoring it incompletely.
+
+  Two were fixed here beyond the batch. `test_cli_audit.py`'s three failures were a **leaked
+  `logging.StreamHandler`**: `_setup_logging()` builds a bare handler bound to whatever
+  `sys.stderr` is at construction time, which under `CliRunner` is a capture buffer that
+  closes when the invocation ends — while the handler survives on the root logger, so the next
+  test to log anything dumps a `--- Logging error ---` traceback into *its* captured output.
+  Those three tests are canaries, not casualties: they assert on a marker and fail with "an
+  earlier test leaked a logging.StreamHandler bound to a now-closed CliRunner buffer", which is
+  a correct diagnosis of someone else's mess. A guard existed but only inside
+  `test_cli_markup_safety.py`; it is now an autouse fixture in `tests/unit/conftest.py`, since
+  the victim is whichever test logs next rather than anything specific to one module.
+
+  The last one was a **cumulative OpenTelemetry counter**. OTel's global `MeterProvider` can be
+  set only once per process, so the in-memory reader is shared and every counter accumulates
+  for the whole session. `_counter_total`'s own docstring says each test keeps its series
+  disjoint via a distinct provider label — but two tests legitimately need the real `"openai"`
+  label, so `test_openai_embed_counts_one_request_per_api_call` failed `assert 3 == 2` purely
+  on ordering. Now asserts a delta. Fixing that surfaced a second latent hazard in the same
+  helper: `get_metrics_data()` returns `None`, not an empty container, on a reader that has
+  collected nothing — so taking a baseline before any recording raised `AttributeError`.
+
+  **Reverse-order result: 3068 passed, 0 failed.** The suite is now order-independent.
+
+- **The eval harness could report a better score than reality.** It skipped a golden entry
+  whose `relevant_files` was empty, which shrinks the denominator — so a malformed golden file
+  scored *higher*, not lower. `eval/README.md` already listed this as one of "two ways to get a
+  silently wrong score". There is now a third documented, previously recorded only in the
+  self-index report: `query_cache_size` (default 256) memoises `embed_query`, so a repeat loop
+  in one process measures once and echoes.
+
+- **`TRELIX_FEDERATION_MAX_REPOS` was inert on the CLI.** Declared, documented, and enforced by
+  `packages/trelix-mcp` — while `cli/main.py` built `FederatedRetriever(registry)` with no
+  arguments, so `max_repos` stayed `None` and `trelix search-all` fanned out to every
+  registered repo. Both sides read the same registry file, so a registry grown by a runaway
+  `federation_add_repo` loop was uncapped the moment it was queried from the CLI, which is the
+  exact scaling the cap exists to prevent. It now passes the cap and **names the skipped
+  count** on stderr rather than truncating silently.
+
+- **A fresh contributor's first `pytest tests/unit` was a collection error.**
+  `.devcontainer/devcontainer.json` installed `.[local,dev]`, but two unit tests import `jwt`
+  at module scope and pyjwt ships only in `[sso]`. pytest does not degrade to skipping those
+  files — it reports "2 errors during collection / Interrupted", so all ~3000 tests vanish.
+  `ci.yml` documents this exact hazard in a comment and installs `[sso]` to avoid it.
+
+- **`scripts/measure_index_hygiene.py` accepted an invalid `--provider` and exited 0**, and was
+  the single file blocking a repo-wide `ruff format` scope widening.
+
+- **A standing detector for re-introduced orphan rows.** The sweep that reclaimed 4,768
+  `def_use_edges` rows is one-shot — gated on `on_disk < SCHEMA_VERSION`, and the live index is
+  now stamped — and the existing gate is a row-count *floor*, which orphans only inflate.
+  `verify-index.sh` now anti-joins `def_use_edges`, `sub_chunks` and `sparse_embeddings`
+  against their parents, proven to fail against an orphan injected into a copy of the index.
 
 - **A malformed retrieval-weight variable printed API-key material.** The weights were parsed
   inside `RetrievalConfig.model_post_init`, so pydantic caught the `ValueError` and re-raised
@@ -938,6 +1041,33 @@ was proven red first.
   that resolved to `docs/docs/superpowers/…`.
 
 ### Changed
+
+- **`scikit-learn` removed from the core dependencies.** It was unconditional with **zero
+  importers** — nothing under `src/`, `packages/`, `tests/`, `scripts/` or `eval/` imports
+  sklearn or scipy, and all 142 modules import cleanly with sklearn, scipy, joblib and
+  threadpoolctl blocked at `__import__`. Measured cost: **120 MB** on every `pip install
+  trelix` (scipy 82, sklearn 36, joblib 2). `trelix.spec` already excluded all three from the
+  shipped binary, which was the tell. Users on the local provider still get them transitively,
+  because sentence-transformers requires them.
+
+- **`httpx2` kept, and its comment corrected.** The audit flagged it as a third-party httpx
+  fork duplicating a core dependency. It is not: `httpx2` is by the httpx author, Starlette's
+  `testclient.py` does `import httpx2 as httpx` and falls back to `httpx` only with a
+  `StarletteDeprecationWarning`, and its own fallback branch is marked `# pragma: no cover`. So
+  it is the supported path, not redundancy, and removing it would have moved 45 `TestClient`
+  constructions onto a deprecated branch. The old comment ("httpx2 replaces httpx") was wrong
+  and the `>=0.27` floor was fiction — there is no 0.x line at all.
+
+- **`fail_under` raised** from 75 against ~82.7% actual coverage, which `ci.yml`'s own comment
+  had asked for.
+
+- **The LanceDB backend's new hard-abort is documented** in `docs/PROVIDERS.md`. Making
+  `upsert_batch` re-raise on a failed delete was right — it replaced silent row duplication —
+  but no caller handled it, so a single failure could abort a whole index run that previously
+  always completed.
+
+- **`e2e_test.sh` deleted.** Stamped "trelix v0.4.0 beast mode", referenced by nothing in the
+  `Makefile`, `.github/` or `CONTRIBUTING.md`, and covering nothing the suite does not.
 
 - **Phase 2.5 (LLM file summaries) runs concurrently.** It was 89.6% of an index run — 428
   summaries over 1034.2 s of 1153.7 s — and fully sequential, while Phase 3 did 10,423 chunks

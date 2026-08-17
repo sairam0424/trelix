@@ -163,6 +163,43 @@ class TestBedrockBackend:
 class TestBedrockDefaultModels:
     """Default model resolution and fallback behaviour."""
 
+    @pytest.fixture(autouse=True)
+    def _unconfigured_bedrock_model_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Scrub the three vars that decide which models "the default" resolves to.
+
+        Every test in this class asserts on the SHIPPED default pair
+        (sonnet-4-6 primary, haiku-4-5 fallback) — three of them by name, and
+        the fallback tests by matching `modelId` inside `converse()`. But
+        `LLMConfig(..., _env_file=None)` only silences the ./.env FILE source;
+        the process environment is a separate, higher-precedence
+        pydantic-settings source, and all three of
+        TRELIX_LLM_BEDROCK_{PRIMARY,FALLBACK}_MODEL and TRELIX_LLM_MODEL live in
+        it. TRELIX_LLM_MODEL matters because `_resolve_bedrock_model()` treats any
+        `config.model` other than the literal "gpt-4o" as an explicit override
+        that becomes the primary — so `TRELIX_LLM_MODEL=claude-3-opus` in a
+        developer's .env takes over the primary for this whole class, including
+        `test_config_fields_override_defaults`.
+
+        Importing `litellm` (tests/unit/test_retry.py does, for its
+        error-classification checks) runs load_dotenv() at import time and
+        publishes this repo's root .env into os.environ for the rest of the
+        process. That .env pins the primary to claude-opus-4-8, so once that
+        import had happened, `_primary_model` was opus, the ValidationException
+        side-effects keyed on "us.anthropic.claude-sonnet-4-6" never fired, and
+        exactly three tests here failed. Reproduce without litellm by exporting
+        the same value the .env carries:
+            TRELIX_LLM_BEDROCK_PRIMARY_MODEL=us.anthropic.claude-opus-4-8 \
+              pytest tests/unit/test_llm_bedrock_backend.py
+        The .env fallback happens to equal the shipped fallback, so
+        test_default_fallback_is_haiku_4_5 passed by coincidence, not by testing.
+
+        test_explicit_model_overrides_primary passes `model=` as a kwarg, which
+        outranks env, so it still exercises the override path.
+        """
+        monkeypatch.delenv("TRELIX_LLM_BEDROCK_PRIMARY_MODEL", raising=False)
+        monkeypatch.delenv("TRELIX_LLM_BEDROCK_FALLBACK_MODEL", raising=False)
+        monkeypatch.delenv("TRELIX_LLM_MODEL", raising=False)
+
     def _make_backend_with_mock_client(self, model: str | None = None):
         """Build a BedrockBackend with a mock boto3 client. model=None uses config default."""
         from trelix.llm.providers.bedrock_backend import BedrockBackend

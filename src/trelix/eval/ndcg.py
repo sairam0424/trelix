@@ -36,6 +36,10 @@ def ndcg_at_k(ranked_ids: list[int], relevant_ids: set[int], k: int = 10) -> flo
     Repeated IDs are collapsed to their best rank first (see `_dedupe`), so `k` counts
     distinct documents.
 
+    An empty `relevant_ids` returns 0.0 as a convenience for direct callers; nDCG is
+    undefined there, so `EvalHarness` never reaches it — it refuses a golden entry with
+    no ground truth rather than let a 0.0 stand in for a retrieval failure.
+
     Args:
         ranked_ids: list of retrieved IDs in rank order (best first)
         relevant_ids: set of relevant (ground-truth) IDs
@@ -60,7 +64,10 @@ def ndcg_at_k(ranked_ids: list[int], relevant_ids: set[int], k: int = 10) -> flo
 
 
 def recall_at_k(ranked_ids: list[int], relevant_ids: set[int], k: int = 10) -> float:
-    """Fraction of relevant documents found in the top-k distinct results."""
+    """Fraction of relevant documents found in the top-k distinct results.
+
+    Returns 0.0 for an empty `relevant_ids` for the same reason as `ndcg_at_k`.
+    """
     if not relevant_ids:
         return 0.0
     hits = len(set(_dedupe(ranked_ids)[:k]) & relevant_ids)

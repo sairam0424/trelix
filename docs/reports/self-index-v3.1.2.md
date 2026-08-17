@@ -51,29 +51,47 @@ serious: most queries are fine, and the ones that are not are badly broken.
 
 ---
 
-## What the index looks like now
+## What the index looked like after the re-index
 
 `trelix index` via `scripts/self-index.sh`, azure `text-embedding-3-large`,
 1154 s wall clock, exit 0, **zero errors or warnings**.
 
-| Dimension | Before | After |
-|---|---|---|
-| vec0 declared dimension | `FLOAT[384]` | **`FLOAT[3072]`** |
-| Files | 915 (543 junk) | **454 (0 junk)** |
-| `packages/` sub-packages | 0 | **35** |
-| Symbols / chunks | 32,337 | 10,423 |
-| Chunk vectors | 32,337 | **10,423 (1:1, no orphans)** |
-| `file_summaries` | **0** | **428** |
-| `calls` | 19,107 | 19,558 |
-| `imports` | 2,345 | 2,714 |
-| `def_use_edges` | **0** | **109,902** |
-| `graph_metadata` | table absent | **10,423 rows** |
-| Corpus noise | 59.3% files / 73.8% chunks | **0% / 0%** |
-| Mean precision@10 | 95.0% | **100.0%** |
+Two of the three columns below are **recordings, not the current state.** *Before* and
+*After* are what `scripts/measure_index_hygiene.py` captured into
+`docs/reports/index-hygiene-before.json` / `-after.json` at the time of that run, and
+they are frozen there. *Now* is `.trelix/index.db` re-counted while writing this section,
+after the later fixes in this release landed and the tree kept moving — the `.sh` /
+`Dockerfile` / `Makefile` coverage work further down is most of the delta. Regenerating
+the JSON needs another full re-index and another ~2M tokens of embedding spend, so the
+recorded columns are left as recorded rather than quietly overwritten.
+
+| Dimension | Before (recorded) | After (recorded) | Now (live DB) |
+|---|---|---|---|
+| vec0 declared dimension | `FLOAT[384]` | **`FLOAT[3072]`** | `FLOAT[3072]` |
+| Files | 915 (543 junk) | **454 (0 junk)** | 467 |
+| `packages/` sub-packages | 0 | **35** | 35 |
+| Symbols / chunks | 32,337 | 10,423 | 10,991 |
+| Chunk vectors | 32,337 | **10,423 (1:1, no orphans)** | 10,991 (1:1, no orphans) |
+| `file_summaries` | **0** | **428** | 442 |
+| `calls` | 19,107 | 19,558 | 20,313 |
+| `imports` | 2,345 | 2,714 | 2,888 |
+| `def_use_edges` | **0** | **109,902** | 113,046 |
+| `graph_metadata` | table absent | **10,423 rows** | 11,160 rows |
+| Corpus noise | 59.3% files / 73.8% chunks | **0% / 0%** | not re-measured |
+| Mean precision@10 | 95.0% | **100.0%** | not re-measured |
+
+The two bottom rows are blank on purpose: both come from `measure_index_hygiene.py`,
+which embeds its query set, so re-running them costs money and is the lead's call, not a
+documentation edit's. Every other *Now* figure is a plain `COUNT(*)` and reproducible
+offline — `sqlite3 .trelix/index.db`, except the vector counts, which need
+`sqlite_vec.load()` first because `chunk_embeddings` is a `vec0` virtual table.
 
 All 22 gates in `scripts/verify-index.sh` pass, including the two integrity gates that
 matter most: **0 chunks without an embedding**, and chunk-vector count exactly equal to
-chunk count.
+chunk count. Both still hold on the live DB: 0 chunks lack a vector, and the 11,433 rows
+in `chunk_embeddings` are 10,991 chunk vectors plus 442 file-summary vectors, which
+`VectorStore` stores in the same table under the `chunk_id = -(file_id)` sentinel — so
+the raw table count is expected to exceed the chunk count by exactly the summary count.
 
 **Caveat on precision@10.** That 95% → 100% figure conflates three changes: junk
 removal, the 384 → 3072 embedder upgrade, and the sentinel-exclusion fix. It is not a
@@ -212,13 +230,18 @@ shape of the work, not a footnote.
 |---|---|---|---|
 | **Critical** | `trelix eval-synthesis` could never produce a non-empty answer — `IndexConfig` passed where `EmbedderConfig` was expected, `AttributeError` swallowed into `answer = ""` | `eval/synthesis.py` | overall was a constant **0.4000**, now **0.8733** |
 | **Critical** | `migrate-vectors --reset` did nothing while reporting success — `DELETE FROM chunk_embeddings` on a connection with no sqlite-vec, into `except: pass` | `cli/main.py`, `store/db.py` | index at 4 dims → reset for 8 → re-index now restores 3/3 vectors; before, step 2 changed nothing |
-| High | `trelix index` never pruned vanished files — **still true**, see Known limitations. The prerequisite walk-completeness signal landed instead | `indexing/walker.py` | chmod-000 dir: `files_found=1, files_unreadable=1`, previously silence |
+| High | `trelix index` never pruned vanished files. Fixed in two steps: the walk-completeness signal landed here, and `--prune` was built on top of it later in the same release | `indexing/walker.py`, `cli/main.py`, `store/provenance.py` | chmod-000 dir: `files_found=1, files_unreadable=1`, previously silence. `--prune` against the live index then **refused** over 35 candidates, all present on disk — no walk config recorded, no version recorded |
 | High | `SparseConfig.model` named a HuggingFace repo that does not exist; and `embed()` ran one forward pass over the whole corpus | `core/config.py`, `embedder/sparse.py` | 10,700 chunks = **668 GB** logits; now batched, 60 snippets at 0.87 GB peak RSS |
 | Medium | `graph --visualize --json` silently wrote no HTML | `cli/main.py` | stale 31-byte file survived; now 326 KB + `visualization_path` |
 | Medium | `GitLinker` dropped every merge commit's file list | `indexing/git_linker.py` | merge `3dea90a`: 0 files → 4 files |
 | Medium | Ticket pattern matched `UTF-8`, `SHA-256`, `HTTP-400` | `core/config.py`, `cli/main.py` | 12 matches across 830 commits, all false positives → 5, all ticket-shaped |
 | Low | `trelix taint` reported a **failed** scan as clean | `analysis/taint.py`, `cli/main.py` | `--tier intrafile` exits 2 with empty stdout; now exits 1 with no clean claim |
 | Low | `sub_chunks` and their vectors outlived the symbol they belonged to | `store/db.py`, `store/vector.py` | `PRAGMA foreign_key_list(sub_chunks)` → `[]`; orphan row survived the old delete |
+
+The prune row read *"still true, see Known limitations"* in the draft written mid-release,
+and pointed at a section this report does not contain. `--prune` shipped before 3.1.2
+closed, so the pointer was stale in both directions — a dangling cross-reference is worse
+than no cross-reference, because a reader assumes the section exists and stops looking.
 
 Two fixes corrected regressions from earlier fixes in the same batch, both caught by
 adversarial review rather than by the test suite, which was green in both cases:
@@ -345,7 +368,11 @@ python scripts/measure_index_hygiene.py . --json    # corpus + retrieval noise
 ```
 
 Raw measurements: `docs/reports/index-hygiene-before.json`,
-`docs/reports/index-hygiene-after.json`.
+`docs/reports/index-hygiene-after.json`. Both are **recordings of that one run** and are
+not refreshed by later work — `-after.json` still reads `files_total: 454`,
+`chunks_total: 10423` against a live index of 467 / 10,991. Re-running
+`measure_index_hygiene.py` embeds its query set, so treat those files as dated evidence
+and re-count the DB directly for anything present-tense.
 
 The pre-existing 384-dim index was preserved rather than deleted, at
 `.trelix/index.db.pre-v3.1.2-384dim.bak` (103 MB, gitignored). Delete it when the

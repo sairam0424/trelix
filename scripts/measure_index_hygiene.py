@@ -21,6 +21,7 @@ Exit codes
 ----------
     0  measurement completed
     1  index missing, unreadable, or contains no files
+    2  bad arguments, including a --provider outside EmbedderConfig's provider Literal
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ import sqlite3
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast, get_args
 
 # Path fragments that should never appear in a healthy index of this repo. Each is a
 # directory a nested .gitignore (or an ignore-list gap) was supposed to exclude.
@@ -169,6 +170,19 @@ def measure_corpus(db_path: Path) -> CorpusStats:
         conn.close()
 
 
+def valid_providers() -> tuple[str, ...]:
+    """The embedder providers `--provider` accepts, read off `EmbedderConfig` itself.
+
+    Derived via `get_args` rather than restated here so the two can never drift: this is
+    the same `Literal` that `create_embedder` (embedder/base.py:647) switches on. Only
+    `trelix.core.config` is imported, whose deps (pydantic, pydantic-settings) are core,
+    so calling this does not undo `--corpus-only`'s freedom from the retrieval extras.
+    """
+    from trelix.core.config import EmbedderConfig
+
+    return cast(tuple[str, ...], get_args(EmbedderConfig.model_fields["provider"].annotation))
+
+
 def measure_queries(
     repo: Path, queries: tuple[str, ...], provider: str, k: int
 ) -> list[QueryResult]:
@@ -181,7 +195,13 @@ def measure_queries(
     from trelix.retrieval.retriever import Retriever
 
     config = IndexConfig(repo_path=str(repo))
-    config.embedder.provider = provider
+    # `EmbedderConfig.provider` is a Literal, but EmbedderConfig sets no
+    # validate_assignment, so pydantic does not re-validate on assignment — verified:
+    # `c.embedder.provider = 'totally-bogus'` is accepted and reads back verbatim. The
+    # only gate is main()'s argparse `choices=valid_providers()`, which rejects the
+    # value before this function is ever entered; hence the cast rather than a check
+    # here, which main()'s `except Exception` would swallow into a warning anyway.
+    config.embedder.provider = cast(Any, provider)
     retriever = Retriever(config)
 
     results: list[QueryResult] = []
@@ -212,10 +232,14 @@ def _render(corpus: CorpusStats, queries: list[QueryResult], k: int) -> None:
     print("=" * 72)
     print("CORPUS HYGIENE")
     print("=" * 72)
-    print(f"  files   {corpus.files_noise:>7,} / {corpus.files_total:>7,} noise "
-          f"({corpus.file_noise_pct:5.1f}%)")
-    print(f"  chunks  {corpus.chunks_noise:>7,} / {corpus.chunks_total:>7,} noise "
-          f"({corpus.chunk_noise_pct:5.1f}%)")
+    print(
+        f"  files   {corpus.files_noise:>7,} / {corpus.files_total:>7,} noise "
+        f"({corpus.file_noise_pct:5.1f}%)"
+    )
+    print(
+        f"  chunks  {corpus.chunks_noise:>7,} / {corpus.chunks_total:>7,} noise "
+        f"({corpus.chunk_noise_pct:5.1f}%)"
+    )
     print(f"  tokens  {corpus.tokens_noise:>7,} / {corpus.tokens_total:>7,} noise")
 
     if not queries:
@@ -240,7 +264,16 @@ def _render(corpus: CorpusStats, queries: list[QueryResult], k: int) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("repo", help="Path to the indexed repository")
-    ap.add_argument("--provider", default="local", help="Embedding provider for queries")
+    # Not `choices=valid_providers()`: that resolves at parser-construction time and so
+    # would import trelix on every invocation, including `--corpus-only`, which is pure
+    # sqlite3 and documented to run where trelix is not installed at all (verified: under
+    # a trelix-free interpreter the choices version died with ModuleNotFoundError before
+    # parsing). Validation happens in the --corpus-only-guarded block below instead.
+    ap.add_argument(
+        "--provider",
+        default="local",
+        help="Embedding provider for queries; must be one of EmbedderConfig's providers",
+    )
     ap.add_argument("--k", type=int, default=10, help="Top-k window to score")
     ap.add_argument("--json", action="store_true", help="Emit JSON instead of a table")
     ap.add_argument(
@@ -264,11 +297,24 @@ def main(argv: list[str] | None = None) -> int:
 
     queries: list[QueryResult] = []
     if not args.corpus_only:
+        # Deliberately OUTSIDE the try below. A typo'd provider used to reach
+        # create_embedder, raise ValueError, get caught as a "warning" and leave the run
+        # exiting 0 with `"queries": []` and the bad provider echoed back as fact —
+        # a before/after diff would show the retrieval half simply missing, with no
+        # failure to attribute it to. Checking here makes it exit 2 instead.
+        allowed = valid_providers()
+        if args.provider not in allowed:
+            print(
+                f"error: --provider {args.provider!r} is not one of: {', '.join(allowed)}",
+                file=sys.stderr,
+            )
+            return 2
         try:
             queries = measure_queries(repo, DEFAULT_QUERIES, args.provider, args.k)
         except Exception as exc:  # noqa: BLE001 - surface any retrieval failure verbatim
-            print(f"warning: query measurement failed ({exc}); reporting corpus only",
-                  file=sys.stderr)
+            print(
+                f"warning: query measurement failed ({exc}); reporting corpus only", file=sys.stderr
+            )
 
     if args.json:
         payload: dict[str, Any] = {
