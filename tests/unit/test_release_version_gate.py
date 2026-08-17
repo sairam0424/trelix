@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 import re
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -30,8 +32,28 @@ _RELEASE = _ROOT / ".github" / "workflows" / "release.yml"
 _DOCKER = _ROOT / ".github" / "workflows" / "docker-publish.yml"
 
 
-def _workflow(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+def _workflow(path: Path) -> dict[str, Any]:
+    loaded: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return loaded
+
+
+def _dunder_version(*parts: str) -> str:
+    """Read a `__version__ = "..."` stamp the same way the gate's inline python does.
+
+    Four of the eleven readers below are this exact shape, so going through one helper keeps
+    the test honest: a stamp that stops matching fails here loudly instead of raising
+    `AttributeError` on `None.group` and reading as an unrelated crash.
+    """
+    text = _ROOT.joinpath(*parts).read_text(encoding="utf-8")
+    match = re.search(r'__version__ = "([^"]+)"', text)
+    assert match is not None, f"no __version__ stamp in {'/'.join(parts)}"
+    return match.group(1)
+
+
+def _pyproject_version(*parts: str) -> str:
+    with _ROOT.joinpath(*parts).open("rb") as handle:
+        version: str = tomllib.load(handle)["project"]["version"]
+    return version
 
 
 class TestReleaseIsGatedOnVersionAgreement:
@@ -63,6 +85,10 @@ class TestReleaseIsGatedOnVersionAgreement:
         steps = " ".join(str(s.get("run", "")) for s in jobs["test"]["steps"])
         assert "pytest tests/unit/" in steps
         assert "pytest packages/trelix-mcp/tests/" in steps
+        # The publish job uploads four distributions; the release path must test all four.
+        # These two suites ran only in ci.yml, which never fires on a tag.
+        assert "pytest packages/trelix-langchain/tests/" in steps
+        assert "pytest packages/trelix-llama-index/tests/" in steps
 
     def test_skip_existing_is_still_set(self) -> None:
         """The gate replaces the need to remove it; removing it breaks safe re-runs."""
@@ -72,32 +98,49 @@ class TestReleaseIsGatedOnVersionAgreement:
 class TestEveryVersionSiteIsChecked:
     """The gate must cover the sites the release checklist misses.
 
-    `CONTRIBUTING.md` enumerates five, and its procedure greps for the PREVIOUS version —
-    which cannot find a site still stamped `2.x`. Two were exactly that: helm
-    `values.yaml`'s `image.tag` (the chart advertised `appVersion: 3.1.2` while deploying
-    `2.12.0`) and `packages/trelix-mcp/server.json` (two entries, both `2.12.0`).
+    `CONTRIBUTING.md` enumerated five, and its procedure greps for the PREVIOUS version —
+    which by construction cannot find a site already stranded on an older line. Every site
+    that had actually drifted was of that class: helm `values.yaml`'s `image.tag` (the chart
+    advertised `appVersion: 3.1.2` while deploying `2.12.0`), `packages/trelix-mcp/server.json`
+    (two entries, both `2.12.0`), and both adapters, frozen at `2.4.0`.
+
+    The adapters are the worst case, because the gate's own purpose failed on them: the
+    `publish` job builds and uploads all four distributions, every step sets
+    `skip-existing: true`, and nothing compared the adapter stamps to anything — so a core
+    tag published two packages, skipped two, and reported success.
     """
 
-    # (label fragment in the workflow, callable reading the real value)
-    SITES = {
-        "pyproject.toml": lambda: tomllib.load((_ROOT / "pyproject.toml").open("rb"))["project"][
-            "version"
-        ],
-        "src/trelix/__init__.py": lambda: re.search(
-            r'__version__ = "([^"]+)"', (_ROOT / "src" / "trelix" / "__init__.py").read_text()
-        ).group(1),
-        "helm/trelix/Chart.yaml": lambda: yaml.safe_load(
-            (_ROOT / "helm" / "trelix" / "Chart.yaml").read_text()
-        )["appVersion"],
-        "helm/trelix/values.yaml": lambda: yaml.safe_load(
-            (_ROOT / "helm" / "trelix" / "values.yaml").read_text()
-        )["image"]["tag"],
-        "packages/trelix-mcp/pyproject.toml": lambda: tomllib.load(
-            (_ROOT / "packages" / "trelix-mcp" / "pyproject.toml").open("rb")
-        )["project"]["version"],
-        "packages/trelix-mcp/server.json": lambda: json.loads(
-            (_ROOT / "packages" / "trelix-mcp" / "server.json").read_text()
-        )["version"],
+    # path as it appears in the workflow -> callable reading the real value off disk
+    SITES: dict[str, Callable[[], str]] = {
+        "pyproject.toml": lambda: _pyproject_version("pyproject.toml"),
+        "src/trelix/__init__.py": lambda: _dunder_version("src", "trelix", "__init__.py"),
+        "helm/trelix/Chart.yaml": lambda: str(
+            yaml.safe_load((_ROOT / "helm" / "trelix" / "Chart.yaml").read_text())["appVersion"]
+        ),
+        "helm/trelix/values.yaml": lambda: str(
+            yaml.safe_load((_ROOT / "helm" / "trelix" / "values.yaml").read_text())["image"]["tag"]
+        ),
+        "packages/trelix-mcp/pyproject.toml": lambda: _pyproject_version(
+            "packages", "trelix-mcp", "pyproject.toml"
+        ),
+        "packages/trelix-mcp/src/trelix_mcp/__init__.py": lambda: _dunder_version(
+            "packages", "trelix-mcp", "src", "trelix_mcp", "__init__.py"
+        ),
+        "packages/trelix-mcp/server.json": lambda: str(
+            json.loads((_ROOT / "packages" / "trelix-mcp" / "server.json").read_text())["version"]
+        ),
+        "packages/trelix-langchain/pyproject.toml": lambda: _pyproject_version(
+            "packages", "trelix-langchain", "pyproject.toml"
+        ),
+        "packages/trelix-langchain/src/trelix_langchain/__init__.py": lambda: _dunder_version(
+            "packages", "trelix-langchain", "src", "trelix_langchain", "__init__.py"
+        ),
+        "packages/trelix-llama-index/pyproject.toml": lambda: _pyproject_version(
+            "packages", "trelix-llama-index", "pyproject.toml"
+        ),
+        "packages/trelix-llama-index/src/trelix_llama_index/__init__.py": lambda: _dunder_version(
+            "packages", "trelix-llama-index", "src", "trelix_llama_index", "__init__.py"
+        ),
     }
 
     @pytest.mark.parametrize("site", sorted(SITES))
@@ -114,6 +157,28 @@ class TestEveryVersionSiteIsChecked:
         value = self.SITES[site]()
         assert isinstance(value, str) and value, f"{site} yielded {value!r}"
         assert re.fullmatch(r"\d+\.\d+\.\d+.*", value), f"{site} is not a version: {value!r}"
+
+    @pytest.mark.parametrize("site", sorted(set(SITES) - {"pyproject.toml"}))
+    def test_the_site_agrees_with_the_canonical_stamp(self, site: str) -> None:
+        """Every site must already agree BEFORE a tag exists.
+
+        `verify-version` compares each site against the tag, so it can only fail once
+        someone has cut one — by which point the wrong thing may already be public. Sites
+        disagreeing with each other is the same defect, is detectable now, and is what
+        actually happened: both adapters sat on 2.4.0 across the seventeen releases that
+        shipped after it, while core moved to 3.1.2, and no test in the tree said otherwise.
+
+        Root `pyproject.toml` is the authority rather than a mutual-equality check so that a
+        failure names which file is wrong instead of only reporting that two disagree.
+        """
+        canonical = self.SITES["pyproject.toml"]()
+        assert self.SITES[site]() == canonical, (
+            f"{site} is stamped {self.SITES[site]()!r} but pyproject.toml says "
+            f"{canonical!r}. Every distribution this repo publishes is released by one "
+            "core `v*` tag (see docs/BACKWARDS_COMPATIBILITY.md, 'Why lockstep'), so all "
+            "stamps move together. If you intend to break lockstep, change that policy "
+            "first — this test encodes it deliberately."
+        )
 
 
 class TestDockerPublishIsGatedToo:

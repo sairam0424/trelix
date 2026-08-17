@@ -71,18 +71,25 @@ Before a MAJOR release:
 - A standalone guide at `docs/migration/v{N}-to-v{N+1}.md` **only when that major
   actually removes or changes something** — see immediately below
 
-**`docs/migration/` does not exist, and v3.0.0 has no v2-to-v3 guide.** That is not an
-omission to be patched with a stub. v3.0.0 (2026-08-13) shipped no breaking changes at
-all; its CHANGELOG entry says so outright — "Everything here is additive and OFF by
-default. No breaking changes: upgrading from v2.12.0 needs no reindex and no migration"
-— because the one queued removal (`TRELIX_RETRIEVAL_FLARE_MAX_ITER`, retargeted to
-v4.0.0 in the section below) was deferred, so the major bump bought a feature surface
-rather than an incompatibility. A
-guide whose only honest content is "nothing to do" costs a reader their trust in the
-directory, which is precisely the trust v4.0.0 will need when it puts something real
-there. The unchecked "Create migration guide at `docs/migration/v2-to-v3.md`" box in
-[v3-0-0-breaking-changes.md](superpowers/plans/v3-0-0-breaking-changes.md) is unchecked
-for the same reason, and should stay unchecked.
+**`docs/migration/v2-to-v3.md` exists, and v3.0.0 is not what earned it.** v3.0.0
+(2026-08-13) shipped no breaking changes at all; its CHANGELOG entry says so outright —
+"Everything here is additive and OFF by default. No breaking changes: upgrading from
+v2.12.0 needs no reindex and no migration" — because the one queued removal
+(`TRELIX_RETRIEVAL_FLARE_MAX_ITER`, retargeted to v4.0.0 in the section below) was
+deferred, so the major bump bought a feature surface rather than an incompatibility. A
+guide written on that basis would have had "nothing to do" as its only honest content,
+and would have cost a reader their trust in the directory — precisely the trust v4.0.0
+will need when it puts something real there. What earned the guide was v3.0.1 retracting
+the "no reindex" claim: the Python extractor's off-by-one made 8,815 of 8,815 index
+references wrong, and the obvious remediation is a silent no-op — a plain `trelix index`
+selects zero files, prints "Nothing to index — all files up to date.", and exits 0. So
+the guide's scope line reads "v2.12.0 → v3.1.2", its one mandatory step is
+`TRELIX_INCREMENTAL=false trelix index .` (which no CLI flag exposes), and for the
+adapter stamps it links back to the Integration Package Policy below rather than
+restating it. The "Create migration guide at `docs/migration/v2-to-v3.md`" box in
+[v3-0-0-breaking-changes.md](superpowers/plans/v3-0-0-breaking-changes.md) is still
+unchecked and now lags the tree: the file it names was written for v3.0.1's reason, not
+v3.0.0's.
 
 The earlier wording promised the file unconditionally, which made this document false
 the moment v3.0.0 tagged.
@@ -133,48 +140,78 @@ upstream frameworks (LangChain, LlamaIndex) release breaking changes, we:
 
 CONTRIBUTING.md used to claim the opposite — that `trelix-langchain` and
 `trelix-llama-index` "version independently … on their own cadence" — and reality
-matched neither document: `trelix-mcp` tracks the core version, while the other two are
-frozen at 2.4.0. Lockstep wins on mechanism, not on preference:
+matched neither document: `trelix-mcp` tracked the core version, while the other two sat
+frozen at 2.4.0. Both adapters now carry 3.1.2 with the core, and the record of what
+closed that gap is below. Lockstep wins on mechanism, not on preference:
 
 - **There is no independent cadence to be on.** `.github/workflows/release.yml` triggers
-  on `push: tags: v*` — a core tag — and its `publish` job builds and uploads all four
-  distributions in one go. No workflow, and no `workflow_dispatch`, can release an
-  adapter by itself. "Own cadence" described machinery that does not exist.
+  on `push: tags: v*` — a core tag — and a single run builds all four distributions in its
+  `build-distributions` job and uploads all four in its `publish` job. No workflow, and no
+  `workflow_dispatch`, can release an adapter by itself. "Own cadence" described machinery
+  that does not exist.
 - **A frozen version number cannot ship a fix.** Every publish step passes
   `skip-existing: true` (deliberately, so re-running a partially failed release is
   safe), so rebuilding an already-published version uploads nothing and still goes
-  green. The tree's `trelix-langchain` 2.4.0 now declares `trelix>=3.0.0` and adds the
+  green. `trelix-langchain` sat at 2.4.0 while declaring `trelix>=3.0.0` and carrying the
   `license`/classifier metadata that left PyPI showing "License: UNSPECIFIED" for seven
-  releases — and none of it can reach users while the stamp stays 2.4.0. This has
+  releases — none of which could reach users while the stamp stayed there. This has
   already happened once at this exact seam: `docs/v2.4.0-world-release-report.md`
   records both adapters stranded at 2.0.0 while the docs advertised 2.4.0, making
   `pip install trelix-langchain==2.4.0` a 404.
-- **The number misinforms.** A package stamped 2.4.0 that requires `trelix>=3.0.0` tells
-  a reader the opposite of the truth about which core it pairs with.
+- **The number misinformed.** A package stamped 2.4.0 that required `trelix>=3.0.0` told
+  a reader the opposite of the truth about which core it pairs with. 3.1.2 against that
+  same, unchanged `trelix>=3.0.0` floor reads as what it is: an adapter on the core's
+  version line that works with core 3.0.0 and up.
 - **One contract cannot have two version lines.** `TrelixRetriever` and
   `TrelixIndexRetriever` are already listed in the Guarantees table above and in
   CONTRIBUTING.md's stable-API list, i.e. under *core's* SemVer promise. If the adapter
   versions independently, "not without a major version bump" has no referent — whose
   major?
 
-### What reality has to change to comply
+### What had to change to comply, and what closed it
 
-Compliant today: `trelix-mcp`, whose `pyproject.toml` and `server.json` stamps are
-gated against the release tag by `release.yml`'s `verify-version` job.
+All four distributions are now gated against the release tag. `release.yml`'s
+`verify-version` job checks **twelve** stamps: root `pyproject.toml`,
+`src/trelix/__init__.py`, `helm/trelix/Chart.yaml` `appVersion`, `helm/trelix/values.yaml`
+`image.tag`, `trelix-mcp`'s `pyproject.toml` and both of its `server.json` stamps, and —
+new here — `trelix_mcp.__version__` plus each adapter's `pyproject.toml` version and its
+runtime `__version__`. That is one check per stamp, with no exceptions: `trelix_mcp`'s
+runtime stamp had been documented as the one the gate skipped, to be verified by hand.
+Before this change only `trelix-mcp`'s dist and `server.json` stamps were compliant. The
+three items below are the audit trail of what was wrong; each is now closed.
 
-Outstanding, and not fixable in this document:
+1. **Bump `packages/trelix-langchain/pyproject.toml` and
+   `packages/trelix-llama-index/pyproject.toml` from `2.4.0` to the core version.**
+   Closed: both read `3.1.2`, as do both `__version__` constants and both adapters'
+   `tests/test_retriever.py` assertions. That releases the `trelix>=3.0.0` floor and the
+   license metadata, neither of which any publish could carry while the stamp was frozen.
+2. **Add both to `verify-version` in `.github/workflows/release.yml`, which checked
+   neither** — that omission is what let the drift persist silently. Closed: five
+   `check()` calls added — four adapter stamps plus `trelix_mcp.__version__` — taking the
+   job from seven stamps to twelve. Run with `GITHUB_REF_NAME=v3.1.2`, all twelve print
+   "ok" and it exits 0; with `v3.2.0`, all twelve emit an `::error file=` annotation and it
+   exits 1 — the gate reports the whole set, not the first mismatch.
+3. **Re-stamp the `==2.4.0` install pins in `docs/FAQ.md` and
+   `docs/LANGCHAIN_LLAMAINDEX_GUIDE.md`, and retire `docs/FAQ.md`'s "independent release
+   cadence" claim.** Closed in this same change: `docs/FAQ.md` now pins `==3.1.2` and
+   states outright that the two are **not** on an independent cadence, and the guide's two
+   install lines dropped the pin entirely, so they cannot go stale at the next tag.
 
-1. Bump `packages/trelix-langchain/pyproject.toml` and
-   `packages/trelix-llama-index/pyproject.toml` from `2.4.0` to the core version. Until
-   then their raised `trelix>=3.0.0` floor and their license metadata are unpublishable.
-2. Add both to `verify-version` in `.github/workflows/release.yml`, which currently
-   checks neither — that omission is what let the drift persist silently.
-3. Re-stamp the `==2.4.0` install pins in `docs/FAQ.md` and
-   `docs/LANGCHAIN_LLAMAINDEX_GUIDE.md`; `docs/FAQ.md` also still asserts the
-   "independent release cadence" retired here.
+The same workflow's `test` job now installs both adapters and runs all four suites, as
+separate `pytest` invocations — both adapter `tests/` directories hold an `__init__.py`
+and a `test_retriever.py`, so one collection over both aborts on "import file mismatch".
+Before this the adapter suites ran only in `ci.yml`, which never fires on a tag, so the
+release path could gate a stamp it had never executed a test against.
 
-Until (1) and (2) land, the adapters are out of policy. That is a statement about the
-tree, not a licence to keep the docs disagreeing.
+Two things this deliberately did not change. The dependency floor stays `trelix>=3.0.0`
+in both adapters, because 3.0.0 is the lowest published core verified to expose every
+name they import (`packages/trelix-langchain/pyproject.toml:35`). Lockstep governs the
+version stamp, which is identity; the floor is a compatibility contract, and raising one
+for a release-cadence reason is exactly the mistake CHANGELOG's v2.7.1 entry reverted
+("Unjustified dependency-floor bumps reverted", after re-checking every import). And the
+stamp encodes no behaviour change: `git diff v2.4.0..HEAD -- packages/trelix-*/src` is 13
+insertions and 3 deletions, all type annotations. 2.4.0 → 3.1.2 is a re-alignment onto
+the core's version line, not eight minors of adapter change.
 
 ---
 

@@ -10,9 +10,26 @@ code-aware RAG pipelines over any repository.
 ### Install
 
 ```bash
-pip install trelix-langchain==2.4.0
+pip install trelix-langchain
 pip install "trelix[local]"
 ```
+
+Both installs are unpinned on purpose. `trelix-langchain` and `trelix-llama-index` carry
+the core version stamp and are published only by a core `v*` tag —
+`.github/workflows/release.yml` fires on `push: tags: v*`, its `build-distributions` job
+builds all four distributions and its `publish` job uploads them in the same run, so the
+newest adapter is always the one built alongside the newest core. Each declares
+`trelix>=3.0.0` (`packages/trelix-*/pyproject.toml:36`), the lowest published core verified
+to expose every name the adapters use, so pip resolves a working pair without a pin. This
+guide previously pinned `==2.4.0`; `docs/MCP_GUIDE.md` made the same mistake with
+`pip install trelix-mcp==3.0.0`, and CHANGELOG's v3.1.0 entry records removing it after a
+correct install failed the documented acceptance check.
+
+Pinning in *your own* `requirements.txt` is a different matter and is a good idea — pin all
+four distributions to the same version, since they ship on one tag. See
+[docs/FAQ.md](FAQ.md#is-trelix-suitable-for-production-use) for the four-line block. What rots is a
+version hardcoded into a doc's install command, not a pin in a project that controls when it
+moves.
 
 ### TrelixRetriever
 
@@ -117,7 +134,7 @@ class TrelixRetriever(BaseRetriever):
 ### Install
 
 ```bash
-pip install trelix-llama-index==2.4.0
+pip install trelix-llama-index
 ```
 
 ### TrelixIndexRetriever

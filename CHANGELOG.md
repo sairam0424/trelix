@@ -158,15 +158,16 @@ disabling its deletion path for every later test in the session.
   wrong score from it: paths are compared by exact string equality, and an entry with
   no `relevant_files` is skipped rather than failed.
 
-- **All seven version sites now agree, so the `verify-version` gate passes 7/7.** It failed
+- **All twelve version stamps now agree, so the `verify-version` gate passes 12/12.** It failed
   3 of 7 when introduced, which was the gate working. The Helm chart *deployed a different
   trelix than it advertised* — `values.yaml`'s `image.tag` was `2.12.0` while `Chart.yaml`
   said `appVersion: 3.1.2`, so `helm install` at defaults ran an image five releases behind;
   `helm template` now renders `:3.1.2`. `packages/trelix-mcp/server.json` carried `2.12.0`
-  in both version fields. A `v3.2.0` control still fails all 7, so the gate is fixed at the
-  sites rather than defanged. `Chart.yaml`'s own chart `version` moves 0.1.0 → 0.2.0: it had
-  not moved across the five releases that bumped `appVersion`, so two structurally different
-  charts were both stamped 0.1.0.
+  in both version fields. A `v3.2.0` control still fails all 12, so the gate is fixed at the
+  sites rather than defanged; those 7 checks became 12 when both adapters' stamps and
+  `trelix_mcp.__version__` joined it (below). `Chart.yaml`'s own chart `version` moves 0.1.0 → 0.2.0: it had not moved across
+  the five releases that bumped `appVersion`, so two structurally different charts were both
+  stamped 0.1.0.
 
 - **`scripts/verify-index.sh` gated 6 of 31 tables; four counters could fall to zero
   unnoticed.** Proven by injecting all four regressions into a copy of the live index — the
@@ -224,8 +225,9 @@ disabling its deletion path for every later test in the session.
   3 months, whichever is later, since v2.4.0 → v3.0.0 was 40 days and the calendar clock is
   the one that binds — and to lockstep versioning, because `release.yml` fires only on core
   `v*` tags and publishes all four dists in one job, so no independent cadence exists to be
-  on. The release checklist listed five of seven version sites and told contributors to grep
-  for the *previous* version, which structurally cannot match a site stranded on 2.x.
+  on. The release checklist listed five of the seven sites the gate then checked, and told
+  contributors to grep for the *previous* version, which structurally cannot match a site
+  stranded on 2.x — as both adapters were, on 2.4.0.
 
 - **Docs: five broken relative links and two false claims.** `docs/README.md` linked
   `../CONFIGURATION.md` and `../CLI_REFERENCE.md` as though both lived at the repo root, and
@@ -253,17 +255,61 @@ disabling its deletion path for every later test in the session.
   after a partial failure safe), so the guard is a separate `verify-version` job that every
   build and publish job now depends on.
 
-  It checks **seven** version sites, not the five in `CONTRIBUTING.md`'s checklist. The two
-  extra ones are precisely those the documented procedure cannot find, because it greps for
-  the *previous* version and both were still on `2.x`: `helm/trelix/values.yaml`'s
-  `image.tag` — the chart advertised `appVersion: 3.1.2` while deploying **2.12.0**, having
-  been skipped by all five release commits that did bump `Chart.yaml` — and
-  `packages/trelix-mcp/server.json`, which carries the version twice. Running the gate
-  against the current tree fails 3 of 7, which is the point.
+  It checks **twelve** version stamps, not the five `CONTRIBUTING.md`'s checklist named. Two
+  of the sites it added beyond that five are precisely those the documented procedure cannot
+  find, because it greps for the *previous* version and both were still on `2.x`:
+  `helm/trelix/values.yaml`'s `image.tag` — the chart advertised `appVersion: 3.1.2` while
+  deploying **2.12.0**, having been skipped by all five release commits that did bump
+  `Chart.yaml` — and `packages/trelix-mcp/server.json`, which carries the version twice.
+  Run against the tree as it then stood, the gate failed 3 of 7 — which was the point; those
+  three sites are fixed above, and the tree now passes 12/12.
 
 - **The release path runs the test suite.** `ci.yml` triggers on push/PR to
   `[main, develop]` and never on tags, so the entire gate on four PyPI packages and two
   container images was `python -m build`, `twine check`, and a `--help` smoke test.
+
+- **Both adapters were published by `release.yml` and gated by nothing.** `trelix-langchain`
+  and `trelix-llama-index` sat on `2.4.0` while core reached `3.1.2`, and `verify-version`
+  checked neither — so a `v3.1.2` tag would have built `trelix-langchain-2.4.0`, found it
+  already on PyPI, skipped it under `skip-existing: true`, and reported success having
+  published **2 of the 4 dists it advertises**. That is the exact failure the gate above
+  exists to prevent, and the gate had that hole for half the distributions. Both are now
+  stamped `3.1.2` in three places each — the dist version, the runtime `__version__` an
+  installed package reports, and the assertion in each suite that pins it — and all four
+  dist and runtime stamps joined the gate. `trelix_mcp.__version__` joined at the same time:
+  it was the one stamp the checklist had marked ungated, with the instruction to "verify it
+  by hand until that check is added", which is the same silent-mis-publish risk in a smaller
+  package. That takes the gate from 7 checks to **12** — one per stamp, no exceptions left.
+  Measured by running the job's shell body directly: `GITHUB_REF_NAME=v3.1.2` prints `ok`
+  twelve times and exits 0; a `v3.2.0` control emits twelve `::error file=` annotations and
+  exits 1.
+
+  `tests/unit/test_release_version_gate.py` additionally asserts that every stamp agrees
+  with root `pyproject.toml` *before* any tag exists. `verify-version` compares each stamp to
+  the tag, so it can only fail once someone has cut one — by which point a wrong artifact may
+  already be public. Stamps disagreeing with each other is the same defect, needs no tag to
+  detect, and is what actually happened: nothing in the tree contradicted `2.4.0` across the
+  seventeen releases that shipped after it.
+
+  `release.yml`'s `test` job now runs all four suites. Wiring the adapter suites into
+  `ci.yml` (above) did not reach the release path, because `ci.yml` fires on push/PR to
+  `[main, develop]` and never on a tag — so the job that builds and publishes both dists had
+  never executed their tests, including each suite's assertion that the *installed* package
+  reports `3.1.2` — which the gate's grep over the source file cannot establish. Both run as
+  separate `pytest` invocations, for the `tests.test_retriever` collision noted above.
+
+  The `trelix>=3.0.0` dependency floor is deliberately **unchanged**, because lockstep
+  governs the version stamp — identity — and not the floor, which is a compatibility
+  contract. v2.7.1 reverted precisely this move: v2.7.0 had raised these two floors (and
+  `trelix-mcp`'s) "based on an unverified assumption about API usage", and the remedy was to
+  re-check every import and floor on what that supported. `3.0.0` remains the lowest
+  published core verified to expose every name the adapters use, so `3.1.2` declaring
+  `trelix>=3.0.0` says the honest thing: this is 3.1.2, and it works with core 3.0.0 and up.
+  The stamp jump encodes nothing else either: the whole of
+  `git diff v2.4.0..HEAD -- packages/trelix-*/src` is **13 insertions, 3 deletions**, every
+  one of them a type annotation (a `TYPE_CHECKING` import, a `-> "Retriever"` return type,
+  `__init__` parameter types). It is a re-alignment onto the core version line, not a record
+  of adapter change.
 
 - **`docker-publish.yml` had the same hole and now has the same guard.** It derived the
   image tag from `${GITHUB_REF_NAME#v}` with nothing comparing it to the tree, so a
@@ -1118,10 +1164,14 @@ was proven red first.
 
 - Documentation version stamps advanced to 3.1.2 across 14 files. Historical
   references ("New in v3.0.0", "Fixed in v3.0.0", the shipped-version table) are
-  deliberately left alone. `CONTRIBUTING.md` now carries a release checklist naming
-  the five version sites, the two things that look like version sites but are not
-  (the Helm chart's own `version`, and the independently-versioned langchain and
-  llama-index packages), and why a blind `sed` over `docs/` corrupts history.
+  deliberately left alone. `CONTRIBUTING.md` now carries a release checklist naming all
+  twelve stamps `verify-version` checks, the two things that look like version sites but are
+  not — the Helm chart's own `version`, which tracks the chart's structure rather than the
+  app, and the adapters' dependency floor, which is a compatibility contract rather than an
+  identity — and why a blind `sed` over `docs/` corrupts history. An earlier revision of that
+  checklist named five sites and filed the langchain and llama-index packages under
+  "independently versioned" — both retired by the lockstep resolution above and by the four
+  adapter stamps the gate now checks.
 - `docs/architecture.md` claimed "110+ source modules"; the real count is 140.
 
 ### Known limitations

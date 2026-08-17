@@ -386,41 +386,68 @@ This file previously said "at least one minor version", contradicting the policy
 - Supported: Python 3.11, 3.12, 3.13
 - Dropped versions are announced one minor release in advance
 
-### Release checklist — the seven version sites
+### Release checklist — the twelve version stamps
 
-**Seven files carry the release version, in eight stamps** — `server.json` carries it
-twice. Bump them together. Missing one ships a package whose `--version` disagrees with
-its metadata, or a Helm chart that advertises one version and deploys another; the
-latter is not hypothetical, `helm/trelix/values.yaml`'s `image.tag` sat on `2.12.0`
-while `Chart.yaml` advertised `appVersion: 3.1.2`.
+**Eleven files carry the release version, in twelve stamps** — `server.json` carries it
+twice. All twelve are gated. Bump them together. Missing one ships a package whose `--version` disagrees with
+its metadata, or a Helm chart that advertises one version and deploys another; neither is
+hypothetical. `helm/trelix/values.yaml`'s `image.tag` sat on `2.12.0` while `Chart.yaml`
+advertised `appVersion: 3.1.2`, and both adapters sat at `2.4.0` while core reached
+`3.1.2` — which `skip-existing: true` turned into a silent 2-of-4 publish on every tag.
 
 | # | Site | Key | Gated by `verify-version` |
 |---|------|-----|---------------------------|
 | 1 | `pyproject.toml` | `[project] version` | yes |
 | 2 | `src/trelix/__init__.py` | `__version__` | yes |
 | 3 | `packages/trelix-mcp/pyproject.toml` | `[project] version` | yes |
-| 4 | `packages/trelix-mcp/src/trelix_mcp/__init__.py` | `__version__` | **no** |
+| 4 | `packages/trelix-mcp/src/trelix_mcp/__init__.py` | `__version__` | yes |
 | 5 | `helm/trelix/Chart.yaml` | `appVersion:` | yes |
 | 6 | `helm/trelix/values.yaml` | `image.tag` | yes |
 | 7 | `packages/trelix-mcp/server.json` | `version` **and** `packages[0].version` | yes (both) |
+| 8 | `packages/trelix-langchain/pyproject.toml` | `[project] version` | yes |
+| 9 | `packages/trelix-langchain/src/trelix_langchain/__init__.py` | `__version__` | yes |
+| 10 | `packages/trelix-llama-index/pyproject.toml` | `[project] version` | yes |
+| 11 | `packages/trelix-llama-index/src/trelix_llama_index/__init__.py` | `__version__` | yes |
 
 `.github/workflows/release.yml`'s `verify-version` job now fails the release if a `v*`
 tag disagrees with any of those stamps, which is what turns a missed bump from a silent
-mis-publish into a red build. **Site 4 is the one exception it does not check** — a
-stale `trelix_mcp.__version__` still ships, so verify it by hand until that check is
-added.
+mis-publish into a red build. It runs twelve `check` calls — one per stamp above, with no
+exceptions. Site 4 used to be one: it was documented as "verify it by hand until that check
+is added", which is the same silent-mis-publish risk as the adapters had, so it is now
+checked like the rest.
+
+Sites 4 and 8–11 are newly gated.
+[docs/BACKWARDS_COMPATIBILITY.md](docs/BACKWARDS_COMPATIBILITY.md#integration-package-policy)
+has always put all three integration packages on the core version; both adapters sat at
+`2.4.0` anyway, across the seventeen releases that shipped after it, and nothing in CI
+noticed. Read the jump as a
+re-alignment to that line rather than as adapter change:
+`git diff v2.4.0..HEAD -- packages/trelix-*/src` is 13 insertions and 3 deletions, all
+type annotations, so `3.1.2` adds no feature and breaks nothing the adapters exposed at
+`2.4.0`.
+
+Two more files hold the number without being sites of their own:
+`packages/trelix-langchain/tests/test_retriever.py` and
+`packages/trelix-llama-index/tests/test_retriever.py` each assert their own package's
+`__version__`. Bump those literals too — but they are assertions *on* sites 9 and 11, not
+independent stamps, so they stay out of the table and out of the count. Skipping them
+turns a suite red rather than shipping anything wrong, and `release.yml`'s `test` job now
+runs both adapter suites, so that red arrives on the tag and not only in `ci.yml` (which
+never fires on one).
 
 Two things that are **not** version sites, and must not be bumped with them:
 
 - `helm/trelix/Chart.yaml` has both `version:` (the *chart's* own version, currently
   `0.2.0` and independent of trelix) and `appVersion:` (which tracks trelix). Only
   `appVersion` moves.
-- `packages/trelix-langchain` and `packages/trelix-llama-index` are still stamped
-  `2.4.0` and so are not in the seven. This is drift, not policy:
-  [docs/BACKWARDS_COMPATIBILITY.md](docs/BACKWARDS_COMPATIBILITY.md#integration-package-policy)
-  puts all three integration packages on the core version, and both adapters already
-  declare `trelix>=3.0.0`. When they are bumped they become sites 8 and 9 and belong in
-  `verify-version` too. Do not resolve the mismatch by editing this list.
+- Both adapters' `dependencies = ["trelix>=3.0.0", ...]`. Lockstep governs the version
+  *stamp* — identity — not the dependency *floor*, which is a compatibility contract that
+  moves only when an import demands it. Each `pyproject.toml:35` records why it reads
+  `3.0.0`: "the lowest published core verified to expose every name used here." An
+  adapter stamped `3.1.2` that declares `trelix>=3.0.0` is saying something true. Raising
+  the floor to match a release is the mistake CHANGELOG v2.7.1 already reverted
+  ("Unjustified dependency-floor bumps reverted") on these same two packages, where it had
+  been raised on an unverified assumption about API usage.
 
 #### Verify by printing what each site says — never by grepping for a version string
 
@@ -434,7 +461,9 @@ across five releases:
 - Grepping for the **previous** version cannot see a site that skipped a release. The
   same tree, grepped for the previous version, returned *zero* hits — the stale sites
   read `2.12.0`, not the previous version. A site stranded on 2.x is structurally
-  invisible to this check.
+  invisible to this check — which is why `verify-version`, not any grep in this
+  checklist, is the actual gate. Every site that had really drifted was of that class:
+  `image.tag`, both of `server.json`'s fields, and both adapters at `2.4.0`.
 
 So print the value each site actually holds and collapse them:
 
@@ -454,16 +483,21 @@ for label, got in [
     ("values.yaml image.tag", rx("helm/trelix/values.yaml", r'^\s+tag:\s*"?([^"\s]+)')),
     ("server.json version", sj["version"]),
     ("server.json packages[0]", sj["packages"][0]["version"]),
+    ("trelix-langchain/pyproject.toml", toml("packages/trelix-langchain/pyproject.toml")),
+    ("trelix_langchain/__init__.py", rx("packages/trelix-langchain/src/trelix_langchain/__init__.py", r'__version__ = "([^"]+)"')),
+    ("trelix-llama-index/pyproject.toml", toml("packages/trelix-llama-index/pyproject.toml")),
+    ("trelix_llama_index/__init__.py", rx("packages/trelix-llama-index/src/trelix_llama_index/__init__.py", r'__version__ = "([^"]+)"')),
 ]:
     print(f"{got:<10} {label}")
 PY
 ```
 
-Eight lines out, all the same version. Pipe it through `| awk '{print $1}' | sort -u`
+Twelve lines out, all the same version. Pipe it through `| awk '{print $1}' | sort -u`
 and you should get exactly one line — more than one means a stale site, named rather
-than merely absent. This mirrors `verify-version`'s own extraction and additionally
-covers site 4, which that job does not check, so a clean local run predicts a green tag
-*and* closes the one gap in it.
+than merely absent. This mirrors `verify-version`'s own extraction site for site, so a
+clean local run predicts a green tag. `tests/unit/test_release_version_gate.py` asserts the
+same agreement in CI, which is the part that catches drift *before* a tag exists at all —
+the gate itself can only fail once someone has cut one.
 
 #### Doc version stamps
 
@@ -482,8 +516,12 @@ grep -rnE '[Cc]urrent version|trelix(-mcp|-langchain|-llama-index)?==|^\*\*Versi
 That returns 14 readable lines — a few of which are this section quoting its own
 pattern — rather than the 251 that "every semver-shaped token that isn't the current
 version" produces over the same files. It catches the stamps a previous-version grep
-cannot: `docs/CLI_REFERENCE.md`'s `**Version:**` header, the `==2.4.0` adapter pins in
-`docs/FAQ.md` and `docs/LANGCHAIN_LLAMAINDEX_GUIDE.md`, a Helm `image: …trelix:` tag.
+cannot: `docs/CLI_REFERENCE.md`'s `**Version:**` header, the adapter `==` install pins in
+`docs/FAQ.md`'s pin-your-requirements answer, a Helm `image: …trelix:` tag. The pattern
+finds those pins by package name, not by number, so it keeps working across bumps — naming
+the number here would only rot this sentence. `docs/LANGCHAIN_LLAMAINDEX_GUIDE.md` no
+longer has any: its install lines are deliberately unpinned, since a version hardcoded into
+a doc's own install command is what rotted them last time.
 `CHANGELOG.md` is excluded on purpose — it is an append-only historical record, never a
 stamp to bump.
 

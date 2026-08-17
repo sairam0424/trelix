@@ -1,6 +1,6 @@
 # trelix v3.1.2 — Frequently Asked Questions
 
-> Last updated: 2026-08-16 — covers trelix 3.1.2, trelix-mcp 3.1.2, trelix-langchain 2.4.0, and trelix-llama-index 2.4.0.
+> Last updated: 2026-08-17 — covers trelix 3.1.2, trelix-mcp 3.1.2, trelix-langchain 3.1.2, and trelix-llama-index 3.1.2.
 
 ---
 
@@ -505,7 +505,18 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 - Parameterized SQL throughout (no injection risk).
 - MCP pagination following the spec-approved cursor pattern.
 
-`trelix-langchain` and `trelix-llama-index` are on an independent release cadence from core trelix — both are currently at v2.4.0 on PyPI. Pin `trelix-langchain==2.4.0` and `trelix-llama-index==2.4.0` in your `requirements.txt` if you need a specific version.
+`trelix-langchain` and `trelix-llama-index` are **not** on an independent release cadence — all four distributions carry the core version and ship on the same tag. `.github/workflows/release.yml` triggers only on `push: tags: v*` (a core tag); its `build-distributions` job builds core, `trelix-mcp`, and both adapters, and its `publish` job uploads all four. No workflow, and no `workflow_dispatch`, can release an adapter by itself. The `verify-version` job fails the release unless all twelve version stamps in the tree equal the tag — five of them newly gated here: the two adapters' `pyproject.toml` versions, their runtime `__version__` values, and `trelix_mcp.__version__`. For why lockstep, and not "independent cadence", is the policy, see [docs/BACKWARDS_COMPATIBILITY.md](BACKWARDS_COMPATIBILITY.md#why-lockstep-and-not-independent-cadence).
+
+So pin all four to the same version in your `requirements.txt`:
+
+```
+trelix==3.1.2
+trelix-mcp==3.1.2
+trelix-langchain==3.1.2
+trelix-llama-index==3.1.2
+```
+
+The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.1.2 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.1.2 resolving against core 3.0.0 is supported and intended — the four-way 3.1.2 pin above is the combination CI installs and tests, not the only one that works.
 
 ---
 

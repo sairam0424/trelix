@@ -29,7 +29,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blue)](https://github.com/sairam0424/trelix)
 [![trelix-mcp](https://img.shields.io/pypi/v/trelix-mcp?label=trelix-mcp)](https://pypi.org/project/trelix-mcp/)
-[![LangChain](https://img.shields.io/badge/LangChain-retriever-green)](https://pypi.org/project/trelix-langchain/)
+[![trelix-langchain](https://img.shields.io/pypi/v/trelix-langchain?label=trelix-langchain)](https://pypi.org/project/trelix-langchain/)
 [![trelix-llama-index](https://img.shields.io/pypi/v/trelix-llama-index?label=trelix-llama-index)](https://pypi.org/project/trelix-llama-index/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
 ```

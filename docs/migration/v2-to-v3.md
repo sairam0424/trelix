@@ -6,9 +6,10 @@ older than v2.12.0, read the earlier
 first — this guide does not repeat them.
 
 **What this costs you:** one forced re-index, which is mandatory. Nothing else is required
-to keep working — but two things are worth five minutes each: an env var rename that is
-still optional until v4.0.0, and one `IndexConfig` kwarg that stopped being silently
-ignored. Both are below.
+to keep working — but three things are worth five minutes each: moving any pinned
+`trelix-langchain` / `trelix-llama-index` to `==3.1.2` (the published `==2.4.0` will accept
+a 2.x core without complaining), an env var rename that is still optional until v4.0.0, and
+one `IndexConfig` kwarg that stopped being silently ignored. All three are below.
 
 ---
 
@@ -101,6 +102,7 @@ that did not happen is worse than no guide.
 | `complete()` / `stream()` gained a `thinking` argument | **No** | Added as `thinking: bool = False`, so every existing call site is unaffected. `tool_call()` did not get it |
 | `declaration_boost_enabled` FTS5 reweighting | **No** | Default weight `1.0` is a verified no-op — byte-identical to the old unweighted ranking |
 | Audit trail / OIDC SSO tables | **No** | They live in a separate `audit.db`, created only when auditing or SSO is switched on. The index schema is untouched |
+| `trelix-langchain` / `trelix-llama-index` re-stamped 2.4.0 → 3.1.2 | **No** | `git diff v2.4.0..HEAD -- packages/trelix-*/src` is 13 insertions and 3 deletions, all of them type annotations (a `TYPE_CHECKING` import, a `-> "Retriever"` return type, `__init__` parameter types). The declared floor stays `trelix>=3.0.0`, so the jump re-aligns the stamp with the core version line rather than recording eight minors of retriever change |
 | Index/DB schema | **No** | Additive and idempotent; no `ALTER` that drops or retypes a column. This is why the required action above is a *re-parse*, not a *migration* |
 
 Also non-breaking, and off by default, so they cannot change your behaviour until you
@@ -156,6 +158,8 @@ it was renamed to `flare_max_retries` in v2.4.0. Only the env-var alias survives
 ## Upgrade checklist
 
 - [ ] `pip install --upgrade trelix` (extras are unchanged; `sso` is new and optional)
+- [ ] If you pin `trelix-langchain` / `trelix-llama-index`, move both to `==3.1.2` — the
+      published `==2.4.0` accepts a 2.x core without complaining
 - [ ] `TRELIX_INCREMENTAL=false trelix index .` — **not** a plain `trelix index`
 - [ ] Rename `TRELIX_RETRIEVAL_FLARE_MAX_ITER` → `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES`
 - [ ] If you build `IndexConfig` in Python, confirm `file_summaries_enabled` /
@@ -183,10 +187,20 @@ it was renamed to `flare_max_retries` in v2.4.0. Only the env-var alias survives
   `indexing/indexer.py` both moved by 70+ lines while this guide was being written; every
   reference here names a symbol or a greppable string instead. Two docs in this repo already
   carry `config.py` cites that now point at unrelated fields.
-- **`packages/trelix-langchain` and `packages/trelix-llama-index` are still stamped
-  2.4.0** while declaring `trelix>=3.0.0`. If you install a pinned adapter version, see
+- **The adapter pin trap here was read out of package metadata, not reproduced by running
+  pip.** `packages/trelix-langchain` and `packages/trelix-llama-index` are stamped 3.1.2 in
+  this release, so a `requirements.txt` carried over from v2 that still says
+  `trelix-langchain==2.4.0` holds you on the last adapter published before it — and that
+  artifact declares `trelix>=0.4.0`
+  (`git show v2.4.0:packages/trelix-langchain/pyproject.toml`). 0.4.0 was never published,
+  so the real floor there is the oldest core on PyPI, 0.5.0: the pin imposes no v3
+  requirement at all, a leftover `trelix==2.12.0` beside it resolves clean, and
+  `pip install -r requirements.txt` can put you back on the v2 core this guide exists to
+  move you off while exiting 0 and saying nothing about the mismatch. Re-pin both to
+  `==3.1.2`, whose `trelix>=3.0.0` turns that same leftover core pin into a resolver
+  conflict you can actually see. That floor stays at 3.0.0 on purpose —
   [Integration Package Policy](../BACKWARDS_COMPATIBILITY.md#integration-package-policy)
-  in BACKWARDS_COMPATIBILITY.md — the fix is not in this guide's scope.
+  in BACKWARDS_COMPATIBILITY.md has the reasoning.
 
 ---
 
