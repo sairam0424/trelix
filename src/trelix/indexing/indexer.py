@@ -11,6 +11,16 @@ Three-phase design for large-repo performance:
     Symbols and chunks are inserted in the main thread to keep parent_id
     remapping consistent (local parse indices → real DB row ids).
 
+  Phase 2.5 — concurrent LLM file summaries  (opt-in)
+    Runs between Phase 2 and Phase 3, not inside Phase 2's serial loop where it
+    used to sit: measured at 428 summaries spanning 1034.2 s of an 1153.7 s run
+    (89.6% of it), median inter-file gap 2.386 s. `_summarize_files()` fans the
+    chat calls out over `_summary_workers` threads (all five chat backends are
+    sync `complete()` + `@with_retry`, so threads, not asyncio) behind a
+    `_RpmRateLimiter` — the only chat-side rate limit in trelix; `tpm_limit` is
+    embedder-only. DB writes and summary embeds stay on the main thread because
+    `Database.upsert_file_summary` does not hold `_conn_lock`.
+
   Phase 3 — async concurrent batch embed  (U5)
     Up to 4 API calls run concurrently via asyncio.gather + Semaphore(4).
     _make_token_batches() groups chunks so each batch stays under
@@ -35,13 +45,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from trelix.indexing.file_summarizer import FileSummarizer
+
 import asyncio
 import hashlib
 import logging
+import os
+import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +65,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 
 from trelix.core.config import IndexConfig
 from trelix.core.console_safety import safe_text as _safe_text
-from trelix.core.models import IndexedFile, Symbol
+from trelix.core.models import IndexedFile, Language, Symbol
 from trelix.embedder.base import BaseEmbedder, make_embedder
 from trelix.indexing.chunker import Chunker, ContextualChunker
 from trelix.indexing.parser.base import ParseResult
@@ -84,6 +99,135 @@ class _PendingChunk:
     chunk_id: int
     chunk_text: str
     token_count: int
+
+
+@dataclass
+class _PendingSummary:
+    """One file's Phase 2.5 summary request, deferred out of the serial Phase 2.
+
+    Carries the parsed symbols rather than a file path so the worker thread needs no
+    disk or DB access — the chat call is the only thing that leaves the main thread.
+    """
+
+    file_id: int
+    rel_path: str
+    symbols: list[Symbol] = field(default_factory=list)
+    language: Language = Language.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.5 concurrency defaults
+#
+# NOT config fields: IndexConfig has no chat-side concurrency or rate-limit
+# knobs (`tpm_limit` exists once, on EmbedderConfig, and is consumed only by the
+# Phase 3 embed path). Read from the environment here so this file can carry the
+# fix on its own; the lead should promote both to IndexConfig fields
+# (TRELIX_FILE_SUMMARY_WORKERS / TRELIX_FILE_SUMMARY_RPM) so they appear in
+# `trelix config` alongside every other tunable.
+#
+# Why 4 and 60, and not the 8 the measurement suggests:
+#   - Measured sequential rate was 428 summaries / 1034.2 s = 24.8 requests/min,
+#     median inter-file gap 2.386 s.
+#   - 4 workers at that latency would issue ~100 requests/min if nothing capped
+#     them. Capping at 60 keeps the LIMITER the binding constraint rather than the
+#     pool size, so raising workers cannot silently raise the request rate.
+#   - 60/min is 2.4x the measured rate: ~19 min of Phase 2.5 becomes ~8 min. Less
+#     than the ~4 min an 8-way fan-out would give, and deliberately so — trelix
+#     supports five chat backends and knows none of their per-model RPM ceilings,
+#     so the only honest default is one that stays under the lowest plausible one.
+#     Anyone who knows their own quota raises it.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SUMMARY_WORKERS = 4
+_DEFAULT_SUMMARY_RPM = 60
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read a non-negative int from the environment, falling back on anything unparseable.
+
+    Falls back loudly rather than raising: a typo in a performance knob must not stop
+    an index run, but it must not silently read as 0 (= unlimited) either.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("%s=%r is not an integer — using default %d", name, raw, default)
+        return default
+    if value < 0:
+        logger.warning("%s=%d is negative — using default %d", name, value, default)
+        return default
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Rate limiters
+# ---------------------------------------------------------------------------
+
+
+class _RpmRateLimiter:
+    """
+    Sliding 60-second requests-per-minute guard (sync, thread-safe).
+
+    Exists because trelix had NO chat-side rate limiter of any kind. Without one,
+    fanning Phase 2.5's chat calls out across threads leans entirely on
+    `core/retry.py`'s backoff, which converts a rate-limit into latency and billed
+    retry attempts instead of preventing it.
+
+    Requests, not tokens: a chat completion's output length is unknown until it
+    returns, so there is nothing to reserve up front the way _TpmRateLimiter can for
+    an embed batch whose token count is already computed.
+
+    A true sliding window (deque of the last `limit` admission times), not the fixed
+    window _TpmRateLimiter uses. A fixed window lets 2x the limit through across a
+    boundary, which under an 8-way fan-out is exactly the burst that trips a 429.
+
+    rpm_limit <= 0  →  unlimited (no waiting).
+
+    `sleep`/`monotonic` are injectable together so tests can assert the wait without
+    spending 60 seconds of wall clock on it.
+    """
+
+    def __init__(
+        self,
+        rpm_limit: int,
+        console: Console | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._limit = rpm_limit
+        self._console = console or Console()
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._admitted: deque[float] = deque()
+        self._waits = 0
+
+    @property
+    def waits(self) -> int:
+        """How many acquisitions had to wait — reported so throttling is visible."""
+        return self._waits
+
+    def acquire(self) -> None:
+        """Block until one more request fits inside the trailing 60-second window."""
+        if self._limit <= 0:
+            return
+        # The sleep happens INSIDE the lock on purpose: the whole point is to stop the
+        # other workers issuing requests during the wait. Holding it costs nothing but
+        # the wait itself, which every worker would otherwise have to take anyway.
+        with self._lock:
+            while True:
+                now = self._monotonic()
+                while self._admitted and now - self._admitted[0] >= 60.0:
+                    self._admitted.popleft()
+                if len(self._admitted) < self._limit:
+                    self._admitted.append(now)
+                    return
+                wait = 60.0 - (now - self._admitted[0]) + 0.05
+                self._waits += 1
+                self._sleep(max(0.0, wait))
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +363,20 @@ class Indexer:
         self.chunker = self._build_chunker(config)
         self.walker = FileWalker(config)
         self._file_summarizer = self._build_file_summarizer(config)
+
+        # Phase 2.5 fan-out. See _DEFAULT_SUMMARY_WORKERS for why these numbers.
+        self._summary_workers = max(
+            1, _env_int("TRELIX_FILE_SUMMARY_WORKERS", _DEFAULT_SUMMARY_WORKERS)
+        )
+        self._summary_rpm = _env_int("TRELIX_FILE_SUMMARY_RPM", _DEFAULT_SUMMARY_RPM)
+
+        # Shared limiter for the embed calls OUTSIDE Phase 3: the file-summary embeds
+        # and the multi-granularity sub-chunk embeds, both of which called
+        # self.embedder.embed() directly and so spent the same Azure TPM quota the rest
+        # of the indexer carefully rations. Separate instance from Phase 3's limiter
+        # because Phase 3's is async; safe only because these phases never overlap in
+        # time (2.5 and 2.6 both complete before Phase 3 starts).
+        self._side_embed_limiter = _TpmRateLimiter(config.embedder.tpm_limit, console=self._console)
 
         # Dimension guard: detect provider switch mismatches at startup
         try:
@@ -484,6 +642,13 @@ class Indexer:
             "symbols_extracted": 0,
             "chunks_total": 0,
             "chunks_embedded": 0,
+            # Phase 2.5 outcome, split three ways so "no summaries" cannot masquerade as
+            # "all summaries". Always present, including when file_summaries_enabled is
+            # False — three zeros beside a disabled flag is unambiguous, a missing key
+            # is not.
+            "file_summaries_generated": 0,
+            "file_summaries_failed": 0,
+            "file_summaries_embedded": 0,
             "errors": 0,
             "elapsed_seconds": 0.0,
         }
@@ -529,7 +694,14 @@ class Indexer:
         # ── Phase 2: sequential DB write + chunk ────────────────────────────
         self._console.print("[dim]  Phase 2/3: inserting symbols & building chunks…[/dim]")
         self._report_progress(2, "Building symbols & chunks…", 0.0, stats)
-        pending = self._insert_and_chunk_all(parsed, stats)
+        pending, summary_requests = self._insert_and_chunk_all(parsed, stats)
+
+        # ── Phase 2.5: concurrent file-level summaries ──────────────────────
+        # Between Phase 2 and Phase 3 rather than inside Phase 2's serial loop. Kept
+        # ahead of Phase 3 so the two never share a TPM window (see
+        # self._side_embed_limiter) and so a summary failure still cannot cost a file
+        # its chunk vectors.
+        self._summarize_files(summary_requests, stats)
 
         # ── Phase 3: async concurrent batch embed ───────────────────────────
         stats["chunks_total"] = len(pending)
@@ -615,11 +787,14 @@ class Indexer:
         stats["elapsed_seconds"] = round(time.perf_counter() - t_start, 2)
         logger.info(
             "Indexing complete: files_indexed=%d files_skipped=%d symbols=%d "
-            "chunks=%d errors=%d elapsed=%.2fs",
+            "chunks=%d summaries=%d/%d embedded=%d errors=%d elapsed=%.2fs",
             stats["files_indexed"],
             stats["files_skipped"],
             stats["symbols_extracted"],
             stats["chunks_embedded"],
+            stats["file_summaries_generated"],
+            stats["file_summaries_generated"] + stats["file_summaries_failed"],
+            stats["file_summaries_embedded"],
             stats["errors"],
             stats["elapsed_seconds"],
         )
@@ -716,9 +891,17 @@ class Indexer:
 
     def _insert_and_chunk_all(
         self, parsed: list[_ParsedFile], stats: dict[str, int]
-    ) -> list[_PendingChunk]:
-        """Insert symbols + chunks for every parsed file; collect embed queue."""
+    ) -> tuple[list[_PendingChunk], list[_PendingSummary]]:
+        """Insert symbols + chunks for every parsed file; collect embed + summary queues.
+
+        Returns the Phase 2.5 summary requests instead of servicing them inline. This
+        loop is single-threaded by design (parent_id remapping depends on it), and the
+        summary call it used to make is a network round trip: measured at 428 summaries
+        spanning 1034.2 s of an 1153.7 s run, 89.6% of the whole index, with nothing
+        else logging in the 2.386 s median gaps between files.
+        """
         all_pending: list[_PendingChunk] = []
+        all_summaries: list[_PendingSummary] = []
         total = len(parsed)
         done_count = 0
 
@@ -741,8 +924,10 @@ class Indexer:
                     )
                     continue
                 try:
-                    pending = self._insert_one(pf, stats)
+                    pending, summary_request = self._insert_one(pf, stats)
                     all_pending.extend(pending)
+                    if summary_request is not None:
+                        all_summaries.append(summary_request)
                 except Exception as exc:
                     logger.error("DB error %s: %s", pf.file.rel_path, exc)
                     # Same sink, same reasoning as the Phase 1 handler above.
@@ -753,12 +938,16 @@ class Indexer:
                     stats["errors"] += 1
                 self._report_progress(2, "Building symbols & chunks…", done_count / total, stats)
 
-        return all_pending
+        return all_pending, all_summaries
 
-    def _insert_one(self, pf: _ParsedFile, stats: dict[str, int]) -> list[_PendingChunk]:
+    def _insert_one(
+        self, pf: _ParsedFile, stats: dict[str, int]
+    ) -> tuple[list[_PendingChunk], _PendingSummary | None]:
         """
         Insert file + symbols + chunks for one parsed file.
-        Returns _PendingChunk list (chunk_id known, embedding still missing).
+        Returns (_PendingChunk list, Phase 2.5 summary request or None) — the chunk_ids
+        are known and their embeddings still missing; the summary has not been requested
+        yet, so the LLM round trip can be fanned out by _summarize_files().
 
         Symbols whose qualified_name + content_hash exactly match what's
         already stored are left untouched (no delete, no re-insert, no
@@ -851,7 +1040,7 @@ class Indexer:
 
         if not all_symbols:
             stats["files_indexed"] += 1
-            return []
+            return [], None
 
         # ── Insert changed/new symbols with parent_id remapping ──────────
         # Unchanged symbols are NOT re-inserted — they keep their existing
@@ -953,7 +1142,7 @@ class Indexer:
             # or embed, but the file's total symbol count is still reported.
             stats["files_indexed"] += 1
             stats["symbols_extracted"] += len(all_symbols)
-            return []
+            return [], None
 
         # ── Chunk ────────────────────────────────────────────────────────
         # Only changed/new symbols get new chunks; unchanged symbols keep
@@ -984,7 +1173,7 @@ class Indexer:
                     )
 
         if not chunks:
-            return []
+            return [], None
 
         # Insert chunks into DB to get chunk_ids; embedding deferred to Phase 3
         pending: list[_PendingChunk] = []
@@ -999,44 +1188,26 @@ class Indexer:
                     )
                 )
 
-        # ── Phase 2.5: generate file-level summary (RAPTOR-style) ────────────
-        # Runs only when file_summaries_enabled=True and an LLM client is
-        # available.  Failures are swallowed inside FileSummarizer.summarize()
-        # so a single flaky LLM call never aborts the whole indexing pass.
+        # ── Phase 2.5 request (serviced later, concurrently) ─────────────────
+        # The LLM round trip used to happen right here, inside the strictly serial
+        # Phase 2 loop, and it dominated the run: 428 summaries over 1034.2 s of an
+        # 1153.7 s index. Deferred to _summarize_files() so the calls can overlap.
         #
-        # The EMBED call below needs its own boundary for the same reason, and it is the
-        # more dangerous of the two: the chunk rows and this file's content hash are
-        # already committed by the transaction above, so an escaping error unwinds past
-        # the caller's `all_pending.extend(pending)` and leaves the file's chunks with no
-        # vectors — permanently, because the stored hash makes every later run skip the
-        # file as up to date. A summary is optional; the file's embeddings are not.
-        if self._file_summarizer is not None:
-            try:
-                from trelix.indexing.file_summarizer import FileSummarizer
-
-                summarizer: FileSummarizer = self._file_summarizer  # type: ignore[assignment]
-                summary = summarizer.summarize(
-                    rel_path=file.rel_path,
-                    symbols=all_symbols,
-                    language=file.language,
-                )
-                if summary:
-                    summary_row_id = self.db.upsert_file_summary(file_id, summary)
-                    # Embed the summary and store in the vector index so the
-                    # retriever can surface file-level context via the 4th leg.
-                    summary_embedding = self.embedder.embed([summary])[0]
-                    self.vector_store.upsert_file_summary_embedding(file_id, summary_embedding)
-                    logger.debug(
-                        "File summary stored for %s (row_id=%d, len=%d chars)",
-                        file.rel_path,
-                        summary_row_id,
-                        len(summary),
-                    )
-            except Exception as exc:
-                # WARNING, not DEBUG: the CLI runs at WARNING, and a summary silently
-                # missing from the 4th retrieval leg is exactly the kind of degradation
-                # that should not need a log-level change to notice.
-                logger.warning("File summary skipped for %s (non-fatal): %s", file.rel_path, exc)
+        # The DB write and the summary embed stay OFF the worker threads there for a
+        # reason that outlives this change: `Database.upsert_file_summary` writes the
+        # single shared sqlite3.Connection without taking `_conn_lock`, and db.py's own
+        # comment records that the connection "is not safe for concurrent statement
+        # execution from multiple threads even with check_same_thread=False".
+        summary_request = (
+            _PendingSummary(
+                file_id=file_id,
+                rel_path=file.rel_path,
+                symbols=all_symbols,
+                language=file.language,
+            )
+            if self._file_summarizer is not None
+            else None
+        )
 
         # ── Phase 2.6: multi-granularity sub-chunk extraction (MGS3) ──────────
         # Runs only when multi_granularity_enabled=True. Failures are non-fatal —
@@ -1058,6 +1229,12 @@ class Indexer:
                         continue
                     ids = self.db.insert_sub_chunks(sub_chunks)
                     texts = [sc.chunk_text for sc in sub_chunks]
+                    # One un-throttled embed call per symbol used to go straight out,
+                    # spending the same Azure TPM quota Phase 3 rations batch by batch —
+                    # so with multi_granularity_enabled the indexer could 429 itself.
+                    self._side_embed_limiter.acquire(
+                        sum(self.chunker.count_tokens(t) for t in texts)
+                    )
                     embeddings = self.embedder.embed(texts)
                     for sc_id, emb in zip(ids, embeddings):
                         if emb:
@@ -1065,7 +1242,188 @@ class Indexer:
             except Exception as exc:
                 logger.debug("Multi-granularity indexing failed (non-fatal): %s", exc)
 
-        return pending
+        return pending, summary_request
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Phase 2.5: concurrent file summaries
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _summarize_files(self, work: list[_PendingSummary], stats: dict[str, Any]) -> None:
+        """
+        Generate, store and embed file-level summaries for `work`.
+
+        Shape: the chat calls fan out across `self._summary_workers` threads, gated by a
+        `_RpmRateLimiter`; the DB writes and the summary embeds happen on this thread.
+        Threads rather than asyncio because all five chat backends expose a sync
+        `complete()` wrapped in `@with_retry` — there is no async path to await.
+
+        Three counters land in `stats`, and they are the point of this method as much as
+        the concurrency is:
+
+            file_summaries_generated  — the LLM returned text
+            file_summaries_failed     — it did not (429, bad credentials, blank reply)
+            file_summaries_embedded   — the text also reached the vector index
+
+        Before them, `if summary:` had no `else` and no counter, so 0 of 467 summaries
+        read exactly like 467 of 467. The live index was at 442/467 and nobody knew.
+        `generated` without `embedded` matters too: a `file_summaries` row with no vector
+        is invisible to the retriever's 4th leg, which is the only consumer.
+        """
+        if not work:
+            return
+
+        if self._file_summarizer is None:  # pragma: no cover — callers gate on this already
+            return
+        # _build_file_summarizer is annotated `object | None` (it returns None on any
+        # build failure), so the concrete type has to be reasserted here.
+        summarizer: FileSummarizer = self._file_summarizer  # type: ignore[assignment]
+
+        limiter = _RpmRateLimiter(self._summary_rpm, console=self._console)
+        total = len(work)
+        generated: list[tuple[_PendingSummary, str]] = []
+
+        self._console.print(
+            f"[dim]  Phase 2.5: summarizing {total} files "
+            f"({self._summary_workers} workers, "
+            f"{'unlimited' if self._summary_rpm <= 0 else f'≤{self._summary_rpm}'} req/min)…[/dim]"
+        )
+        self._report_progress(2, "Summarizing files…", 0.0, stats)
+
+        def request(item: _PendingSummary) -> str:
+            limiter.acquire()
+            return summarizer.summarize(
+                rel_path=item.rel_path,
+                symbols=item.symbols,
+                language=item.language,
+            )
+
+        done = 0
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=self._console,
+        ) as progress:
+            task = progress.add_task("Summarizing…", total=total)
+            with ThreadPoolExecutor(
+                max_workers=self._summary_workers, thread_name_prefix="trelix-summary"
+            ) as pool:
+                future_to_item = {pool.submit(request, item): item for item in work}
+                for future in as_completed(future_to_item):
+                    item = future_to_item[future]
+                    progress.advance(task)
+                    done += 1
+                    try:
+                        summary = future.result()
+                    except Exception as exc:
+                        # summarize() swallows LLM errors itself, so reaching here means
+                        # something structural (a bad summarizer, a MemoryError). Still
+                        # per-file and still counted — never fatal to the run.
+                        summary = ""
+                        # No _safe_text: %s-style args go to the logging framework, which
+                        # never interprets markup — escaping here would mangle the path.
+                        # The Console prints below carry no untrusted values at all.
+                        logger.warning("File summary raised for %s: %s", item.rel_path, exc)
+                    if summary:
+                        generated.append((item, summary))
+                        stats["file_summaries_generated"] = (
+                            stats.get("file_summaries_generated", 0) + 1
+                        )
+                    else:
+                        stats["file_summaries_failed"] = stats.get("file_summaries_failed", 0) + 1
+                        # WARNING and named: the reason (if there is one) was logged by
+                        # FileSummarizer; this line is what makes the missing file
+                        # visible at the indexer level without a log-level change.
+                        logger.warning(
+                            "No file summary for %s — it will have no file-level retrieval entry",
+                            item.rel_path,
+                        )
+                    self._report_progress(2, "Summarizing files…", done / total, stats)
+
+        self._store_summaries(generated, stats)
+
+        failed = stats.get("file_summaries_failed", 0)
+        embedded = stats.get("file_summaries_embedded", 0)
+        self._console.print(
+            f"[dim]  Phase 2.5: {len(generated)}/{total} summaries generated, "
+            f"{embedded} embedded[/dim]"
+        )
+        if failed:
+            self._console.print(
+                f"[yellow]  {failed} file summary(ies) failed and are missing from the "
+                f"file-level retrieval leg[/yellow]"
+            )
+        if generated and not embedded:
+            self._console.print(
+                "[yellow]  file_summaries rows were written but none were embedded — "
+                "the file-level retrieval leg is inert for this run[/yellow]"
+            )
+        if limiter.waits:
+            logger.info(
+                "Phase 2.5: waited on the %d req/min chat limiter %d time(s)",
+                self._summary_rpm,
+                limiter.waits,
+            )
+
+    def _store_summaries(
+        self, generated: list[tuple[_PendingSummary, str]], stats: dict[str, Any]
+    ) -> None:
+        """Write summary rows, then embed them in token-aware batches under the TPM limiter.
+
+        Main thread only — see `_PendingSummary` and db.py:292 for why.
+
+        Batched rather than one call per file: the old code issued
+        `self.embedder.embed([summary])` per file, which for this repo is 428 separate
+        embed requests that also bypassed the limiter Phase 3 honours.
+
+        A failing embed batch costs the batch's vectors, not the run and not the rows —
+        the caller's `file_summaries_embedded` counter is what reports the difference.
+        """
+        if not generated:
+            return
+
+        for item, summary in generated:
+            try:
+                self.db.upsert_file_summary(item.file_id, summary)
+            except Exception as exc:
+                logger.warning("Storing the file summary for %s failed: %s", item.rel_path, exc)
+
+        max_tokens = self.config.embedder.embed_max_tokens_per_batch
+        # (item, summary, token_count) — counted once here rather than again per batch.
+        sized = [(item, summary, self.chunker.count_tokens(summary)) for item, summary in generated]
+        batch: list[tuple[_PendingSummary, str, int]] = []
+        batch_tokens = 0
+
+        def flush() -> None:
+            nonlocal batch, batch_tokens
+            if not batch:
+                return
+            current, batch, batch_tokens = batch, [], 0
+            try:
+                self._side_embed_limiter.acquire(sum(t for _, _, t in current))
+                embeddings = self.embedder.embed([s for _, s, _ in current])
+                for (entry, _, _), embedding in zip(current, embeddings):
+                    self.vector_store.upsert_file_summary_embedding(entry.file_id, embedding)
+                    stats["file_summaries_embedded"] = stats.get("file_summaries_embedded", 0) + 1
+            except Exception as exc:
+                # Contained here, not raised: by now every chunk row and every file hash
+                # in this batch is committed, so an escaping error would leave those
+                # files' chunks with no vectors AND make every later run skip them as up
+                # to date. A summary is optional; the files' embeddings are not.
+                logger.warning(
+                    "Embedding %d file summary(ies) failed — those files keep their "
+                    "summary row but stay out of the file-level retrieval leg: %s",
+                    len(current),
+                    exc,
+                )
+
+        for entry in sized:
+            if batch and batch_tokens + entry[2] > max_tokens:
+                flush()
+            batch.append(entry)
+            batch_tokens += entry[2]
+        flush()
 
     # ──────────────────────────────────────────────────────────────────────
     # Phase 3: token-aware batch embed + store
@@ -1365,6 +1723,9 @@ class Indexer:
                 "symbols_extracted": 0,
                 "chunks_total": 0,
                 "chunks_embedded": 0,
+                "file_summaries_generated": 0,
+                "file_summaries_failed": 0,
+                "file_summaries_embedded": 0,
                 "errors": 0,
             }
 
@@ -1383,7 +1744,12 @@ class Indexer:
                     "ms": round((time.perf_counter() - t0) * 1000),
                 }
 
-            pending = self._insert_one(pf, inner_stats)
+            pending, summary_request = self._insert_one(pf, inner_stats)
+
+            # Same phase order as index(), with a one-item work list: the fan-out
+            # degenerates to a single call rather than diverging into a second code path.
+            if summary_request is not None:
+                self._summarize_files([summary_request], inner_stats)
 
             if pending:
                 self._batch_embed_and_store(pending, inner_stats)

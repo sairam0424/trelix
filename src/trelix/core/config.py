@@ -386,6 +386,87 @@ class StoreConfig(BaseSettings):
     bm25_read_pool_size: int = Field(default=0, alias="TRELIX_STORE_BM25_READ_POOL_SIZE")
 
 
+# ---------------------------------------------------------------------------
+# Retrieval weight env parsing
+# ---------------------------------------------------------------------------
+# These sit at module scope, outside RetrievalConfig, so RetrievalConfig.__init__ can
+# run them BEFORE pydantic gets control. That placement is a secrets boundary, not a
+# style choice. Measured on pydantic 2.13.4 / pydantic-settings 2.14.2: a ValueError
+# raised from model_post_init (or from any model-level validator) is caught by pydantic
+# and re-raised as a ValidationError that carries the model's whole input dict —
+#
+#   str(exc)     -> "... input_value={'COHERE_API_KEY': 'co-FA...3b6a1f5e7c2d40aabbccdd'}"
+#   exc.errors() -> [{'input': {'COHERE_API_KEY': 'co-FAKE-<the whole key>'}}]
+#
+# str() and the traceback print the trailing ~22 characters of whichever secret lands
+# last in the dict; errors() and json() print every value in full. RetrievalConfig
+# loads .env, and pydantic-settings copies unmatched dotenv keys into the input dict
+# verbatim, so OPENAI_API_KEY/AZURE_API_KEY arrive here even though this model has no
+# such fields — and cohere_api_key (alias COHERE_API_KEY) IS a field of this model, so
+# no settings-source filtering could keep key material out of that dict. One typo'd
+# weight variable was therefore enough to put a key fragment in a terminal, a CI log,
+# or a pasted issue report. Raising before super().__init__() keeps the error an
+# ordinary ValueError that pydantic never sees, so its text is only ours.
+
+_FILE_TYPE_WEIGHT_PREFIX = "TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_"
+_LEG_WEIGHT_PREFIX = "TRELIX_RETRIEVAL_LEG_WEIGHT_"
+
+
+def _parse_retrieval_weight(env_var: str, raw: str) -> float:
+    """
+    Parse one per-language/per-leg weight, naming the variable when it is bad.
+
+    A bare float(raw) at the two weight-merge sites aborted EVERY trelix command
+    with "could not convert string to float: 'abc'" and no variable name — the
+    user had to bisect ~96 TRELIX_* aliases to find their own typo. Weights are
+    the one knob the changelog invites people to experiment with, so a typo here
+    is the likely case, not the exotic one.
+
+    Non-finite values are refused for the same reason even though float() accepts
+    them: "nan" parses fine, then every fused score becomes NaN, every score
+    comparison returns False, and results come back in insertion order with
+    nothing logged anywhere — a silently wrong ranking is worse than a crash.
+
+    We refuse rather than warn-and-ignore. A weight exists so two rankings can be
+    compared; dropping a bad one would leave the user measuring the DEFAULT while
+    believing they measured their override, and drawing a conclusion from it.
+
+    Raises a plain ValueError. Callers must invoke this from outside pydantic
+    validation — see the secrets note above.
+    """
+    import math
+
+    try:
+        weight = float(raw)
+    except ValueError:
+        raise ValueError(
+            f"{env_var}={raw!r} is not a valid retrieval weight. Expected a "
+            f"decimal number, e.g. {env_var}=0.5. Fix or unset the variable."
+        ) from None
+    if not math.isfinite(weight):
+        raise ValueError(
+            f"{env_var}={raw!r} is not a usable retrieval weight: nan/inf make "
+            f"every fused score non-comparable and silently destroy result "
+            f"ranking. Use a finite number, e.g. {env_var}=0.5."
+        )
+    return weight
+
+
+def _prefixed_weight_overrides(prefix: str) -> dict[str, float]:
+    """Parse every ``{prefix}{NAME}`` env var into ``{"name": weight}``.
+
+    Pydantic BaseSettings does not merge individual env keys into a dict field, so
+    these one-var-per-key overrides are read by hand.
+    """
+    import os
+
+    return {
+        key[len(prefix) :].lower(): _parse_retrieval_weight(key, val)
+        for key, val in os.environ.items()
+        if key.startswith(prefix)
+    }
+
+
 class RetrievalConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_RETRIEVAL_",
@@ -613,6 +694,12 @@ class RetrievalConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _warn_deprecated_flare_iter_env(self) -> RetrievalConfig:
+        # Warns; must not raise. A ValueError from any model-level validator (mode
+        # "before"/"after", or model_post_init) is re-raised by pydantic with
+        # input_value=<this model's whole input dict>, which on a measured run printed
+        # COHERE_API_KEY material — see the note above _parse_retrieval_weight. Reject a
+        # value from __init__ or a field_validator instead; a field_validator's
+        # input_value is only that field.
         import os
         import warnings
 
@@ -914,44 +1001,21 @@ class RetrievalConfig(BaseSettings):
       ...
     """
 
+    def __init__(self, **values: Any) -> None:
+        # Parse the weight env vars here and throw the result away: model_post_init
+        # needs them again after field validation, but it is not allowed to be the one
+        # that fails. A ValueError raised from there comes back as a ValidationError
+        # holding this model's input dict, .env secrets and cohere_api_key included
+        # (see the note above _parse_retrieval_weight). Failing first, out here, gives
+        # the identical message with nothing attached to it. Cost is two extra
+        # os.environ scans per construction.
+        _prefixed_weight_overrides(_FILE_TYPE_WEIGHT_PREFIX)
+        _prefixed_weight_overrides(_LEG_WEIGHT_PREFIX)
+        super().__init__(**values)
+
     def model_post_init(self, __context: Any) -> None:
         import json
-        import math
         import os
-
-        def _parse_weight(env_var: str, raw: str) -> float:
-            """
-            Parse one per-language/per-leg weight, naming the variable when it is bad.
-
-            A bare float(raw) at the two call sites below aborted EVERY trelix command
-            with "could not convert string to float: 'abc'" and no variable name — the
-            user had to bisect ~96 TRELIX_* aliases to find their own typo. Weights are
-            the one knob the changelog invites people to experiment with, so a typo here
-            is the likely case, not the exotic one.
-
-            Non-finite values are refused for the same reason even though float() accepts
-            them: "nan" parses fine, then every fused score becomes NaN, every score
-            comparison returns False, and results come back in insertion order with
-            nothing logged anywhere — a silently wrong ranking is worse than a crash.
-
-            We refuse rather than warn-and-ignore. A weight exists so two rankings can be
-            compared; dropping a bad one would leave the user measuring the DEFAULT while
-            believing they measured their override, and drawing a conclusion from it.
-            """
-            try:
-                weight = float(raw)
-            except ValueError:
-                raise ValueError(
-                    f"{env_var}={raw!r} is not a valid retrieval weight. Expected a "
-                    f"decimal number, e.g. {env_var}=0.5. Fix or unset the variable."
-                ) from None
-            if not math.isfinite(weight):
-                raise ValueError(
-                    f"{env_var}={raw!r} is not a usable retrieval weight: nan/inf make "
-                    f"every fused score non-comparable and silently destroy result "
-                    f"ranking. Use a finite number, e.g. {env_var}=0.5."
-                )
-            return weight
 
         # Build the canonical defaults (same dict as default_factory).
         # When pydantic-settings reads TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTS from the
@@ -999,11 +1063,12 @@ class RetrievalConfig(BaseSettings):
         # Per-language overrides (highest priority — applied last).
         # These are NOT picked up by pydantic-settings since they do not match
         # any field name (the field is file_type_weights, not file_type_weight_*).
-        prefix = "TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_"
-        for key, val in os.environ.items():
-            if key.startswith(prefix):
-                lang = key[len(prefix) :].lower()
-                self.file_type_weights[lang] = _parse_weight(key, val)
+        # __init__ already parsed the same variables, so this call cannot raise on any
+        # path that goes through the constructor.
+        self.file_type_weights = {
+            **self.file_type_weights,
+            **_prefixed_weight_overrides(_FILE_TYPE_WEIGHT_PREFIX),
+        }
 
         # Per-leg RRF weighting — same defaults-then-env-merge pattern as
         # file_type_weights above.
@@ -1015,13 +1080,11 @@ class RetrievalConfig(BaseSettings):
             "sub_chunk": 1.0,
             "sparse": 1.0,
         }
-        self.leg_weights = {**_leg_defaults, **self.leg_weights}
-
-        leg_prefix = "TRELIX_RETRIEVAL_LEG_WEIGHT_"
-        for key, val in os.environ.items():
-            if key.startswith(leg_prefix):
-                leg = key[len(leg_prefix) :].lower()
-                self.leg_weights[leg] = _parse_weight(key, val)
+        self.leg_weights = {
+            **_leg_defaults,
+            **self.leg_weights,
+            **_prefixed_weight_overrides(_LEG_WEIGHT_PREFIX),
+        }
 
 
 class LLMConfig(BaseSettings):

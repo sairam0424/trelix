@@ -497,3 +497,147 @@ def compute_drift(config: IndexConfig, db: Database) -> DriftReport:
         walk_was_complete=walker.walk_was_complete,
         incomplete_paths=tuple(walker.incomplete_paths),
     )
+
+
+# ---------------------------------------------------------------------------
+# Prune planning
+# ---------------------------------------------------------------------------
+
+# Share of the index one prune may remove before the size of the request is itself read as
+# evidence that the walk is wrong, rather than that the repository lost that many files.
+#
+# Chosen against the two measured shapes on this repository, which sit on either side of
+# it. The false-deletion event the guards above exist for was 35 of 467 indexed files
+# (7.5%) from `extra_ignore_dirs` alone — under this cap, and deliberately so: that case is
+# refused by `walk_config_changed`, and tuning the cap down to catch it would make the cap
+# fire on ordinary refactors instead. What the cap is for is the catastrophic shape, where
+# a whole subtree stops being reachable at once: one line in `workspace-vscode/.gitignore`
+# governs 74% of this index (see `_gitignore_digest`), and a walk rooted one directory too
+# deep reaches nothing at all and so proposes deleting 100%. Those are an order of
+# magnitude above 10%, and a legitimate prune is normally a handful of files.
+_PRUNE_MAX_FRACTION_DEFAULT = 0.10
+
+# A percentage alone makes a small index unprunable: 10% of a 20-file repo is 2 files, and
+# deleting 2 files is an ordinary commit. Below this many candidates the percentage does
+# not apply — at this size the dry-run has already printed the complete list, and a human
+# can read ten paths before typing --yes, which is a better check than any ratio.
+_PRUNE_MIN_CANDIDATES_FOR_CAP = 10
+
+
+@dataclass(frozen=True)
+class PrunePlan:
+    """The files a prune would delete, and every reason it must not run.
+
+    Refusals are sentences rather than an enum because each one carries its own remedy:
+    "re-index so provenance exists" and "re-run with the environment that built the index"
+    are different actions, and a caller holding only a boolean would have to reinvent the
+    mapping to say anything a user could act on. A prune that reports only "refused" gets
+    re-run with more force.
+
+    An empty `refusals` is a licence to delete paid-for embeddings, so nothing but
+    `plan_prune` should ever construct one of these.
+    """
+
+    candidates: tuple[str, ...] = ()
+    indexed_count: int = 0
+    refusals: tuple[str, ...] = ()
+    max_fraction: float = _PRUNE_MAX_FRACTION_DEFAULT
+
+    @property
+    def is_refused(self) -> bool:
+        return bool(self.refusals)
+
+    @property
+    def fraction_of_index(self) -> float:
+        """Share of the index `candidates` represents; 0.0 when nothing is indexed."""
+        if self.indexed_count <= 0:
+            return 0.0
+        return len(self.candidates) / self.indexed_count
+
+
+def plan_prune(
+    report: DriftReport,
+    provenance: IndexProvenance,
+    indexed_count: int,
+    *,
+    max_fraction: float = _PRUNE_MAX_FRACTION_DEFAULT,
+) -> PrunePlan:
+    """Decide whether `report.missing` may be deleted, and refuse in the user's words if not.
+
+    Pure by design: it takes an already-computed `DriftReport` instead of computing one, so
+    a prune costs exactly one walk and every refusal is testable without a repository.
+
+    The licence to delete is a conjunction of four independent facts, each of which has
+    made `missing` lie in production:
+
+    * `walk_was_complete` — an unreadable directory drops its whole subtree, and every
+      file under it then reads as deleted while being present.
+    * `walk_config_comparable` — an index with no recorded walk config cannot be compared
+      at all, and "cannot tell" must not resolve to "same".
+    * not `walk_config_changed` — measured at 35 phantom deletions here from
+      `extra_ignore_dirs`, which REPLACES rather than extends the default list.
+    * `provenance.trelix_version == __version__` — the version is checked separately from
+      the other three because an older trelix can have walked differently in ways no
+      `_WALK_FIELDS` entry describes: v3.1.2 started reading nested `.gitignore` chains and
+      moved this project's own index by 74% without a single config field changing.
+
+    The first three are exactly `DriftReport.missing_is_trustworthy`; it is re-derived
+    field by field here so a refusal can name which one failed.
+    """
+    from trelix import __version__
+
+    refusals: list[str] = []
+
+    if not report.walk_was_complete:
+        shown = ", ".join(report.incomplete_paths[:5])
+        refusals.append(
+            f"{len(report.incomplete_paths)} path(s) could not be read during the walk "
+            f"({shown}{' …' if len(report.incomplete_paths) > 5 else ''}), so every file "
+            "under them looks deleted while being present. Fix the permission (or the "
+            "broken symlink) and re-run."
+        )
+
+    if not report.walk_config_comparable:
+        refusals.append(
+            "this index records no walk config, so whether this walk used the same ignore "
+            "rules that built it cannot be checked — and 'cannot tell' is not 'the same'. "
+            "A full `trelix index <repo>` writes provenance; prune after that."
+        )
+    elif report.walk_config_changed:
+        names = ", ".join(name for name, _recorded, _current in report.walk_config_diff)
+        refusals.append(
+            f"the walk settings changed since this index was built ({names}), so files the "
+            "walk no longer reaches are indistinguishable from files that were deleted. "
+            "Re-run with the environment that built the index — `scripts/self-index.sh` is "
+            "the reference — then prune."
+        )
+
+    if provenance.trelix_version != __version__:
+        refusals.append(
+            f"this index was built by trelix {provenance.trelix_version or '(unrecorded)'} "
+            f"and this is {__version__}; a different version can walk differently in ways "
+            "the recorded settings do not describe. Re-index with this version, then prune."
+        )
+
+    # Last, and independent of the four above: even a fully-verified walk does not license
+    # a prune of this shape without someone having read the list.
+    if (
+        len(report.missing) > _PRUNE_MIN_CANDIDATES_FOR_CAP
+        and indexed_count > 0
+        and len(report.missing) > max_fraction * indexed_count
+    ):
+        share = len(report.missing) / indexed_count
+        refusals.append(
+            f"{len(report.missing)} of {indexed_count} indexed files ({share:.1%}) would be "
+            f"removed, over the {max_fraction:.0%} cap. That is the shape of a walk that "
+            "lost a subtree, not of a repository that lost that many files. Read the list "
+            "above; if those files are genuinely gone, re-run with an explicit higher cap "
+            "(`--prune-max-percent`)."
+        )
+
+    return PrunePlan(
+        candidates=report.missing,
+        indexed_count=indexed_count,
+        refusals=tuple(refusals),
+        max_fraction=max_fraction,
+    )

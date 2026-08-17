@@ -8,7 +8,11 @@ Flow:
   2. Intent-based routing dispatches to the right retrieval path.
   3. Standard path: three retrieval legs -> RRF fusion -> graph expansion
      -> rerank -> assemble.
-     File/project paths: DB-direct lookup -> assemble (no fusion/rerank overhead).
+     File/project/config paths: DB-direct lookup -> assemble (no fusion/rerank
+     overhead) — but see the breadth floor below: a direct lookup that resolves too
+     few files AND too few symbols now ALSO runs the standard path and merges, with
+     direct hits ordered first, instead of returning a thin result as complete.
+     The `breadth_floor` trace section records the decision on every such query.
 
 Debug tracing: every query writes a structured JSON file to .trelix/debug/
 relative to the project root configured in IndexConfig.repo_path.
@@ -168,6 +172,77 @@ def _looks_like_config(hint: str) -> bool:
     if stem in _CONFIG_FILENAMES:
         return True
     return "config" in name
+
+
+# --------------------------------------------------------------------------
+# Breadth floor for the three direct-lookup paths
+# --------------------------------------------------------------------------
+#
+# `_retrieve_file_overview`, `_retrieve_project_overview` and `_retrieve_config` each
+# widened to standard retrieval only on `if not results:` — a total miss. One matched
+# file yielding a handful of symbols therefore returned exclusively those symbols and
+# suppressed the vector, BM25 and grep legs completely. Measured on this tree with a
+# mocked DB (1 file, 2 symbols): `_retrieve_standard` was never called and assembly saw
+# 1 result. Widening the config filename gate made that reachable rather than rarer —
+# a query whose only matching hint was `Dockerfile` went from `files_matched=0` plus a
+# full-breadth fallback to short-circuiting on 2 section chunks.
+#
+# MIN_SYMBOLS is `graph_expansion_max_symbols`' default (10): the standard path already
+# calls 10 the number of candidates worth expanding from, so fewer than that from a
+# direct lookup is below the pipeline's own idea of enough material.
+#
+# MIN_FILES is the assembler's `_breadth_first_candidates(max_per_file=2)` premise read
+# the other way round — breadth means covering more than one file, and the measured
+# failure was exactly `files_matched=1`.
+#
+# The two are ANDed, not ORed. A legitimate single-file overview ("what does
+# retriever.py do?") resolves 1 file and ~40 symbols; OR would fire the floor on it and
+# charge the cheapest path in the system three retrieval legs plus a rerank round-trip
+# on every such query. Requiring both counts to be short is what separates it from the
+# Dockerfile case (1 file, 2 symbols). Known gap this leaves: 3 files at 1 symbol each
+# passes the file test and does not fire. The trace records both counts on every query
+# so that gap is measurable rather than assumed.
+#
+# Read from the environment rather than RetrievalConfig so the floor can be tuned and
+# A/B'd against the golden set without a config migration; promote to RetrievalConfig
+# once the numbers are settled.
+_BREADTH_FLOOR_MIN_FILES = 2
+_BREADTH_FLOOR_MIN_SYMBOLS = 10
+
+
+def _breadth_floor_thresholds() -> tuple[bool, int, int]:
+    """Resolve ``(enabled, min_files, min_symbols)`` from the environment.
+
+    Env: TRELIX_RETRIEVAL_BREADTH_FLOOR=false restores the pre-3.1.2 all-or-nothing
+    short-circuit exactly, which is what makes the floor's effect measurable as a diff.
+    TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_FILES / _MIN_SYMBOLS override the thresholds.
+    Unparseable values fall back to the defaults with a warning rather than raising —
+    a malformed env var must not take retrieval down.
+    """
+    import os
+
+    enabled = os.environ.get("TRELIX_RETRIEVAL_BREADTH_FLOOR", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+    def _int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            logger.warning("%s=%r is not an integer — using default %d", name, raw, default)
+            return default
+
+    return (
+        enabled,
+        _int("TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_FILES", _BREADTH_FLOOR_MIN_FILES),
+        _int("TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_SYMBOLS", _BREADTH_FLOOR_MIN_SYMBOLS),
+    )
 
 
 class Retriever:
@@ -455,6 +530,29 @@ class Retriever:
     # ------------------------------------------------------------------
 
     def _retrieve_standard(self, plan: QueryPlan) -> RetrievedContext:
+        candidates = self._standard_candidates(plan)
+        with pipeline_stage_span(
+            self.config.retrieval, "assembly", {"candidate_count": len(candidates)}
+        ):
+            return self._assemble(
+                plan.raw_query,
+                candidates,
+                intent=plan.intent.value,
+                assembly_mode=plan.strategy.assembly_mode,
+            )
+
+    def _standard_candidates(self, plan: QueryPlan) -> list[SearchResult]:
+        """The standard pipeline up to (but not including) assembly.
+
+        Split out of `_retrieve_standard` so the breadth floor can merge these
+        candidates with high-precision direct hits and pack the union ONCE. Merging
+        `_retrieve_standard`'s RetrievedContext instead would mean assembling twice:
+        the inner pack has already truncated to the token budget without knowing the
+        direct hits exist, so the outer pack would only ever see a pool one budget
+        wide that was chosen against the wrong candidate set — and with compression
+        enabled it would run the compressor over bodies the inner pass had already
+        compressed. Returning the candidate list avoids both.
+        """
         cfg = self.config.retrieval
         strategy = plan.strategy
 
@@ -783,15 +881,84 @@ class Retriever:
         # PageRank boost — applied post-rerank, pre-assemble (no-op internally
         # when cfg.pagerank_boost_enabled is False, so always safe to wrap).
         with pipeline_stage_span(cfg, "pagerank_boost"):
-            candidates = self._apply_pagerank_boost(candidates)
+            return self._apply_pagerank_boost(candidates)
 
-        with pipeline_stage_span(cfg, "assembly", {"candidate_count": len(candidates)}):
-            return self._assemble(
-                plan.raw_query,
-                candidates,
-                intent=plan.intent.value,
-                assembly_mode=plan.strategy.assembly_mode,
+    # ------------------------------------------------------------------
+    # Breadth floor — shared by the three direct-lookup paths
+    # ------------------------------------------------------------------
+
+    def _assemble_direct(
+        self,
+        plan: QueryPlan,
+        direct: list[SearchResult],
+        *,
+        path: str,
+    ) -> RetrievedContext:
+        """Assemble direct-lookup results, widening to standard retrieval when thin.
+
+        `direct` must arrive in its intended presentation order, deduped as its own
+        path requires (project_overview's ids come from one query and are already
+        unique; the other two run `_dedup` first).
+        Direct hits keep that order in the merged list and are NOT rescored: the
+        greedy pack every direct path uses consumes the list in order, so ordering
+        alone gives them precedence, and inventing synthetic scores to express the
+        same thing would push fabricated numbers into the trace and telemetry that
+        record real fusion/rerank scores. Caveat worth naming: under
+        `context_budget_per_source=True` (off by default) the assembler slices the
+        budget per `source`, so `file_direct` gets a slice proportional to its count
+        instead of first refusal — the merge cannot express direct-first there.
+        """
+        enabled, min_files, min_symbols = _breadth_floor_thresholds()
+        files = {r.file.rel_path for r in direct}
+        fired = enabled and len(files) < min_files and len(direct) < min_symbols
+
+        decision: dict[str, Any] = {
+            "path": path,
+            "enabled": enabled,
+            "direct_files": len(files),
+            "direct_symbols": len(direct),
+            "min_files": min_files,
+            "min_symbols": min_symbols,
+            "fired": fired,
+        }
+
+        if not fired:
+            self._trace("breadth_floor", decision)
+            return self._assemble(plan.raw_query, direct, intent=plan.intent.value)
+
+        # Same default_plan() the total-miss fallback below already uses, so the widened
+        # leg is the exact pipeline the pre-floor fallback was measured on.
+        logger.info(
+            "%s: direct lookup thin (files=%d<%d symbols=%d<%d) — also running standard "
+            "retrieval and merging, direct hits first",
+            path,
+            len(files),
+            min_files,
+            len(direct),
+            min_symbols,
+        )
+        try:
+            standard = self._standard_candidates(default_plan(plan.raw_query))
+        except Exception as exc:
+            # Direct-only would have answered this query before the floor existed;
+            # failing it now would be a regression caused by the widening itself. Loud
+            # and recorded, because a floor that silently stops widening is the same
+            # invisible thinness it was added to remove.
+            logger.warning(
+                "%s: breadth-floor standard leg failed — assembling direct only: %s", path, exc
             )
+            decision["standard_error"] = repr(exc)
+            self._trace("breadth_floor", decision)
+            return self._assemble(plan.raw_query, direct, intent=plan.intent.value)
+
+        seen = {r.chunk.symbol_id for r in direct}
+        merged = [*direct, *(r for r in standard if r.chunk.symbol_id not in seen)]
+        decision["standard_candidates"] = len(standard)
+        decision["merged_symbols"] = len(merged)
+        decision["merged_files"] = len({r.file.rel_path for r in merged})
+        self._trace("breadth_floor", decision)
+
+        return self._assemble(plan.raw_query, merged, intent=plan.intent.value)
 
     # ------------------------------------------------------------------
     # File overview (file_overview intent)
@@ -805,10 +972,12 @@ class Retriever:
         """
         file_hints = [h for sq in plan.sub_queries for h in sq.file_hints]
         # Also treat grep_hints that look like filenames (contain a dot) as file hints
+        promoted_grep_hints: list[str] = []
         for sq in plan.sub_queries:
             for hint in sq.grep_hints:
                 if "." in hint and hint not in file_hints:
                     file_hints.append(hint)
+                    promoted_grep_hints.append(hint)
 
         results: list[SearchResult] = []
         visited_file_ids: set[int] = set()
@@ -829,6 +998,12 @@ class Retriever:
             "file_overview",
             {
                 "file_hints": file_hints,
+                # Recorded separately because the "contains a dot" test above is far
+                # looser than _looks_like_config: `self.db` and `os.path` are promoted
+                # to file hints as readily as `retriever.py`. Naming which hints came in
+                # that way makes a thin file_overview traceable to the promotion rule
+                # instead of looking like a genuinely small file.
+                "promoted_grep_hints": promoted_grep_hints,
                 "files_matched": len(visited_file_ids),
                 "symbols_fetched": len(results),
             },
@@ -840,7 +1015,7 @@ class Retriever:
             )
             return self._retrieve_standard(default_plan(plan.raw_query))
 
-        return self._assemble(plan.raw_query, self._dedup(results), intent=plan.intent.value)
+        return self._assemble_direct(plan, self._dedup(results), path="file_overview")
 
     # ------------------------------------------------------------------
     # Project overview (project_overview intent)
@@ -871,7 +1046,7 @@ class Retriever:
             logger.info("project_overview: no overview symbols found — falling back to standard")
             return self._retrieve_standard(default_plan(plan.raw_query))
 
-        return self._assemble(plan.raw_query, results, intent=plan.intent.value)
+        return self._assemble_direct(plan, results, path="project_overview")
 
     # ------------------------------------------------------------------
     # Config lookup (config_lookup intent)
@@ -911,7 +1086,7 @@ class Retriever:
             logger.info("config_lookup: no config file matched — falling back to standard")
             return self._retrieve_standard(default_plan(plan.raw_query))
 
-        return self._assemble(plan.raw_query, self._dedup(results), intent=plan.intent.value)
+        return self._assemble_direct(plan, self._dedup(results), path="config_lookup")
 
     # ------------------------------------------------------------------
     # Sub-query execution — one unit of retrieval per sub-query

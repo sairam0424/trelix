@@ -3,6 +3,8 @@
 from trelix.graph.builder import GraphBuilder, GraphBuildResult
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import (
+    PartitionQuality,
+    assess_partition_quality,
     assign_communities,
     compute_affected_frontier,
     compute_pagerank,
@@ -25,6 +27,8 @@ __all__ = [
     "compute_affected_frontier",
     "assign_communities",
     "get_community_summary",
+    "PartitionQuality",
+    "assess_partition_quality",
     "compute_pagerank",
     "save_graph_metadata",
     "load_graph_metadata",

@@ -28,6 +28,12 @@ Async support (U5):
   Local / VoyageEmbedder (sync library): run_in_executor (CPU-bound or sync SDK).
   BaseEmbedder provides a default fallback via run_in_executor for any subclass
   that does not override embed_async.
+
+Cost metrics (opt-in, TRELIX_OTEL_ENABLED=true):
+  Every successful provider call is counted via _count_embed_call() —
+  requests/texts/characters always, provider-reported tokens where the response
+  carries them. Embedding is the only per-call billed operation in trelix, so
+  this is the one place spend is countable rather than merely traceable.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ from typing import Any
 
 from trelix.core.config import EmbedderConfig
 from trelix.core.retry import with_retry
+from trelix.retrieval import otel_tracing
 
 # Module-level thread pool for sync embedders that need to run in an executor.
 # Modest pool: each task is either CPU-bound (local) or a blocking sync SDK call.
@@ -50,6 +57,46 @@ def _get_sync_executor() -> ThreadPoolExecutor:
     if _SYNC_EXECUTOR is None:
         _SYNC_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="trelix-embed-sync")
     return _SYNC_EXECUTOR
+
+
+def _count_embed_call(
+    provider: str, model: str, texts: list[str], tokens: int | None = None
+) -> None:
+    """Record one successful provider call on the OTel embedding counters.
+
+    Called after the response lands, so retried-then-failed attempts are not
+    counted as requests. *tokens* is whatever the provider reported, or None —
+    local models and Cohere-on-Bedrock report nothing, and a chars/4 guess in
+    a cost counter is worse than a visibly missing series.
+
+    The metrics_enabled() guard is what keeps the character sum off the hot
+    path when the flag is off (a memoized tuple read; see otel_tracing).
+    """
+    if not otel_tracing.metrics_enabled():
+        return
+    otel_tracing.record_embedding_call(
+        provider=provider,
+        model=model,
+        texts=len(texts),
+        characters=sum(len(t) for t in texts),
+        tokens=tokens,
+    )
+
+
+def _usage_tokens(response: Any) -> int | None:
+    """Provider-reported total token count, or None when it reports none.
+
+    OpenAI/Azure put it on `response.usage.total_tokens`; Voyage puts it flat
+    on `response.total_tokens`. Anything else yields None rather than an
+    estimate. Bedrock returns JSON, not an object, and is read at its call site.
+    """
+    usage = getattr(response, "usage", None)
+    total = (
+        getattr(usage, "total_tokens", None)
+        if usage is not None
+        else getattr(response, "total_tokens", None)
+    )
+    return int(total) if isinstance(total, int | float) and not isinstance(total, bool) else None
 
 
 class BaseEmbedder(ABC):
@@ -137,6 +184,7 @@ class AzureOpenAIEmbedder(BaseEmbedder):
                 input=batch,
                 dimensions=self._dimensions,
             )
+            _count_embed_call("azure", self._deployment, batch, _usage_tokens(response))
             results.extend([item.embedding for item in response.data])
         return results
 
@@ -152,6 +200,7 @@ class AzureOpenAIEmbedder(BaseEmbedder):
                 input=batch,
                 dimensions=self._dimensions,
             )
+            _count_embed_call("azure", self._deployment, batch, _usage_tokens(response))
             results.extend([item.embedding for item in response.data])
         await async_client.close()
         return results
@@ -206,6 +255,7 @@ class OpenAIEmbedder(BaseEmbedder):
                 input=batch,
                 dimensions=self._dimensions,
             )
+            _count_embed_call("openai", self._model, batch, _usage_tokens(response))
             results.extend([item.embedding for item in response.data])
         return results
 
@@ -221,6 +271,7 @@ class OpenAIEmbedder(BaseEmbedder):
                 input=batch,
                 dimensions=self._dimensions,
             )
+            _count_embed_call("openai", self._model, batch, _usage_tokens(response))
             results.extend([item.embedding for item in response.data])
         await async_client.close()
         return results
@@ -253,6 +304,7 @@ class LocalEmbedder(BaseEmbedder):
                 "Install it with: pip install 'trelix[local]'"
             ) from exc
         self._model = SentenceTransformer(config.local_model)
+        self._model_name = config.local_model  # self._model is the loaded model, not its id
         self._batch_size = config.batch_size
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -262,6 +314,9 @@ class LocalEmbedder(BaseEmbedder):
             show_progress_bar=False,
             convert_to_numpy=True,
         )
+        # No tokens: sentence-transformers reports no usage and nothing is
+        # billed — the characters counter is the only volume signal here.
+        _count_embed_call("local", self._model_name, texts)
         return embeddings.tolist()  # type: ignore[no-any-return]
 
     def embed_query(self, text: str) -> list[float]:
@@ -307,7 +362,11 @@ class VoyageEmbedder(BaseEmbedder):
 
     @with_retry(max_attempts=5)
     def _embed(self, texts: list[str], **kwargs: object) -> Any:
-        return self._client.embed(texts, **kwargs)
+        response = self._client.embed(texts, **kwargs)
+        # Single call site for both embed() and embed_query(), so counting here
+        # covers document and query embeddings alike.
+        _count_embed_call("voyage", self._model, texts, _usage_tokens(response))
+        return response
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         results: list[list[float]] = []
@@ -355,6 +414,7 @@ class LocalCodeEmbedder(BaseEmbedder):
                 "Install it with: pip install 'trelix[local]'"
             ) from exc
         self._model = SentenceTransformer(config.local_code_model, trust_remote_code=True)
+        self._model_name = config.local_code_model
         self._batch_size = config.batch_size
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -364,6 +424,7 @@ class LocalCodeEmbedder(BaseEmbedder):
             show_progress_bar=False,
             convert_to_numpy=True,
         )
+        _count_embed_call("local-code", self._model_name, texts)
         return embeddings.tolist()  # type: ignore[no-any-return]
 
     def embed_query(self, text: str) -> list[float]:
@@ -477,7 +538,11 @@ class BedrockTitanEmbedder(_BedrockEmbedderBase):
             contentType="application/json",
             accept="application/json",
         )
-        return json.loads(response["body"].read())["embedding"]  # type: ignore[no-any-return]
+        payload = json.loads(response["body"].read())
+        # Titan is the one Bedrock embedder that reports usage, as
+        # inputTextTokenCount on the response body.
+        _count_embed_call("bedrock-titan", self._model, [text], payload.get("inputTextTokenCount"))
+        return payload["embedding"]  # type: ignore[no-any-return]
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [self._embed_one(t) for t in texts]
@@ -544,6 +609,9 @@ class BedrockCohereEmbedder(_BedrockEmbedderBase):
             contentType="application/json",
             accept="application/json",
         )
+        # `safe`, not `texts`: the pre-truncated strings are what was actually
+        # sent and billed. Cohere on Bedrock reports no token count → None.
+        _count_embed_call("bedrock-cohere", self._model, safe)
         return json.loads(response["body"].read())["embeddings"]  # type: ignore[no-any-return]
 
     def embed(self, texts: list[str]) -> list[list[float]]:

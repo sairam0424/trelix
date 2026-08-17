@@ -12,16 +12,60 @@ Best for:
 Usage:
     TRELIX_STORE_BACKEND=lance LANCE_URI=.trelix/lance trelix index ./my-repo
     pip install trelix[lance]
+
+Concurrency:
+    A LanceDB table handle pins the version it opened at, and upsert_batch
+    replaces rows with two separate commits (delete then add). Both facts are
+    load-bearing here — see _checkout_latest and _WRITE_LOCKS. Writes from a
+    second OS process on the same URI are still outside this module's reach;
+    upsert_batch reports the duplicate rows they leave rather than hiding them.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from typing import Any
 
 from trelix.store.vector import BaseVectorStore
 
 logger = logging.getLogger("trelix.store.lance")
+
+# One write lock per LanceDB table, shared by every LanceVectorStore in this
+# process that points at it.
+#
+# upsert_batch replaces rows with a delete followed by an add — two separate
+# LanceDB commits — and LanceDB enforces no uniqueness on chunk_id. Two writers
+# that both delete a chunk_id before either adds leave TWO rows for it, and both
+# calls return normally: measured on lancedb 0.33.0, a forced interleave on one
+# shared table handle gives 2 rows for one chunk_id with zero exceptions raised.
+#
+# This lock covers only that interleave. It is necessary but not sufficient —
+# _checkout_latest fixes the other half, and the cross-handle case needs both.
+# Table.merge_insert, LanceDB's own upsert primitive, was measured worse rather
+# than better: 4 threads over 50 chunk_ids left 53-62 rows via merge_insert
+# against 50-53 via delete+add, equally silently, so it is not a way out of
+# locking.
+#
+# Keyed per table rather than one global lock so unrelated tables still write in
+# parallel. Costs roughly a third of two-writer upsert throughput (median 135 ->
+# 87 batches of 32 per second, 9 runs) by reducing two writers to one; the
+# indexer caps embedding concurrency at 4 API calls, so the embedder, not this,
+# is the pipeline's limit unless the embedder is local and very fast.
+_WRITE_LOCKS: dict[tuple[str, str], threading.RLock] = {}
+_WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def _write_lock(uri: str, table_name: str) -> threading.RLock:
+    """Return the process-wide write lock for one (uri, table_name) pair."""
+    key = (uri if "://" in uri else os.path.realpath(uri), table_name)
+    with _WRITE_LOCKS_GUARD:
+        lock = _WRITE_LOCKS.get(key)
+        if lock is None:
+            lock = _WRITE_LOCKS[key] = threading.RLock()
+        return lock
+
 
 _lancedb: Any | None
 try:
@@ -59,6 +103,7 @@ class LanceVectorStore(BaseVectorStore):
         self._dimension = dimension
         self._db = lancedb.connect(uri)
         self._table = self._get_or_create_table()
+        self._write_lock = _write_lock(uri, table_name)
 
     def _get_or_create_table(self) -> Any:
         try:
@@ -108,20 +153,102 @@ class LanceVectorStore(BaseVectorStore):
         # deliberately louder than delete_batch below, where a swallowed failure
         # only leaves rows behind that a later upsert can still replace.
         id_list = ", ".join(str(i) for i in ids)
+        predicate = f"chunk_id IN ({id_list})"
+        # The lock makes delete+add one write step for this table (see
+        # _WRITE_LOCKS): without it a concurrent writer on the same chunk_id
+        # duplicates the row and nothing raises.
+        with self._write_lock:
+            try:
+                # Refresh before deleting: on a pinned snapshot the delete
+                # removes nothing and the add below appends a second row for a
+                # chunk_id that already had one. See _checkout_latest.
+                self._checkout_latest()
+                self._table.delete(predicate)
+            except Exception as exc:
+                logger.error(
+                    "LanceDB upsert_batch aborted: refresh/delete of %d chunk_id(s) failed "
+                    "(%s) — adding anyway would create duplicate rows for those ids",
+                    len(ids),
+                    exc,
+                )
+                raise
+            self._table.add(data)
+            self._report_duplicate_rows(ids, predicate)
+
+    def _checkout_latest(self) -> None:
+        """
+        Point this handle at the table's newest version.
+
+        A handle pins the version it opened at and never advances on another
+        handle's or process's writes. Measured on lancedb 0.33.0, two handles on
+        one URI: after handle B upserts one row, A.count() returns 0 against a
+        true 1, and A.delete("chunk_id IN (3)") commits a new table version yet
+        removes nothing — the predicate ran against A's old snapshot. That is how
+        upsert_batch duplicates a row without any call failing, and it is why the
+        write lock alone is not enough. Costs 0.21 ms on a 200k-row table,
+        against 9.2 ms for one k=10 search.
+        """
+        self._table.checkout_latest()
+
+    def _report_duplicate_rows(self, ids: list[int], predicate: str) -> None:
+        """
+        Count the rows the upsert just wrote and log if there is more than one
+        per chunk_id.
+
+        The lock above is process-local, so a second OS process on the same URI
+        — the "multi-repo deployments sharing a vector store" case in this
+        module's docstring — can still interleave with delete+add. Duplicates
+        only disappear on a later clean upsert of the same chunk_id (verified:
+        2 rows -> 1 after one), and the indexer embeds each chunk once per run,
+        so in practice they survive the run: search() then spends N of its k
+        slots on one chunk and count() drifts above the SQLite chunks table.
+        Silence there is what made the earlier delete-swallowing bug invisible,
+        so report it instead.
+
+        Costs one filtered count_rows — measured 2.3 ms for 32 ids over 200k
+        rows, against an embedding-bound pipeline.
+
+        Only an over-count is reported. Fewer rows than written means a
+        concurrent delete_batch removed some, which is a legitimate caller
+        action, not damage.
+        """
+        expected = len(set(ids))
         try:
-            self._table.delete(f"chunk_id IN ({id_list})")
+            written = int(self._table.count_rows(predicate))
         except Exception as exc:
-            logger.error(
-                "LanceDB upsert_batch aborted: delete of %d chunk_id(s) failed (%s) — "
-                "adding anyway would create duplicate rows for those ids",
-                len(ids),
-                exc,
+            logger.warning(
+                "LanceDB upsert_batch could not verify %d chunk_id(s): %s", expected, exc
             )
-            raise
-        self._table.add(data)
+            return
+        if written <= expected:
+            return
+        repeats_in_batch = len(ids) - expected
+        cause = (
+            f"This batch repeated {repeats_in_batch} chunk_id(s)."
+            if repeats_in_batch
+            else (
+                "A writer outside this process interleaved with the delete+add "
+                "(the per-table lock cannot span processes)."
+            )
+        )
+        logger.error(
+            "LanceDB upsert_batch left %d rows for %d chunk_id(s) — %d duplicate row(s). %s "
+            "search() will return those chunk_ids more than once and count() will "
+            "over-report until they are reindexed. ids: %s",
+            written,
+            expected,
+            written - expected,
+            cause,
+            predicate,
+        )
 
     def search(self, query: list[float], k: int) -> list[tuple[int, float]]:
         """Return top-k (chunk_id, distance) pairs for the query vector."""
+        # Same pinned-snapshot problem as the write path: without this a handle
+        # opened before another process indexed answers from the version it
+        # opened at and silently misses every vector written since. 0.21 ms
+        # against a 9.2 ms search on 200k rows.
+        self._checkout_latest()
         rows = self._table.search(query).limit(k).to_list()
         return [(row["chunk_id"], row.get("_distance", 0.0)) for row in rows]
 
@@ -130,14 +257,24 @@ class LanceVectorStore(BaseVectorStore):
         if not chunk_ids:
             return
         id_list = ", ".join(str(i) for i in chunk_ids)
+        # Same lock as upsert_batch: landing between a concurrent upsert's delete
+        # and its add would let that add put the row back, silently undoing this
+        # delete. And the same refresh — on a pinned snapshot this delete commits
+        # a new version but removes nothing, so the row survives with no error.
         try:
-            self._table.delete(f"chunk_id IN ({id_list})")
+            with self._write_lock:
+                self._checkout_latest()
+                self._table.delete(f"chunk_id IN ({id_list})")
         except Exception as exc:
             logger.warning("LanceDB delete_batch failed: %s", exc)
 
     def count(self) -> int:
         """Return the total number of stored embeddings."""
         try:
+            # Refresh first — count() is what callers compare against the SQLite
+            # chunks table to spot drift, and a pinned handle under-reports it
+            # (measured 0 against a true 1 after another handle's upsert).
+            self._checkout_latest()
             return int(self._table.count_rows())
         except Exception:
             return 0

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from typing import Any
 
 import networkx as nx
@@ -11,6 +12,31 @@ import networkx as nx
 from trelix.graph.code_graph import CodeGraph
 
 logger = logging.getLogger("trelix.graph.community")
+
+# Above this share of one-node communities the partition carries almost no
+# grouping information and callers should be told so. Measured on trelix's own
+# index at 99.1% (6579 singletons of 6640 communities) — see
+# assess_partition_quality() for why that is an edge-coverage fact, not a
+# Louvain tuning fact.
+_DEGENERATE_SINGLETON_SHARE = 0.5
+
+
+def _simple_undirected(cg: CodeGraph) -> nx.Graph:
+    """
+    Collapse the MultiDiGraph into the simple undirected Graph the community
+    algorithms actually run on: parallel edges dropped, direction dropped,
+    isolated nodes preserved so every node is covered by the partition.
+
+    Shared by detect_communities(), detect_communities_incremental() and
+    assess_partition_quality() so the quality numbers describe the same graph
+    the partition was computed from.
+    """
+    g_undirected = cg.nx.to_undirected()
+    simple = nx.Graph((u, v) for u, v, _ in g_undirected.edges(data=True))
+    for node in g_undirected.nodes():
+        if node not in simple:
+            simple.add_node(node)
+    return simple
 
 
 def detect_communities(
@@ -28,15 +54,7 @@ def detect_communities(
     if cg.node_count == 0:
         return {}
 
-    # Work on undirected version for community detection
-    G_undirected = cg.nx.to_undirected()
-
-    # Build a simple Graph from edges (drops parallel edges for community algorithms)
-    G_connected = nx.Graph((u, v) for u, v, _ in G_undirected.edges(data=True))
-    # Re-add isolated nodes so every node is covered
-    for node in G_undirected.nodes():
-        if node not in G_connected:
-            G_connected.add_node(node)
+    G_connected = _simple_undirected(cg)
 
     mapping: dict[int, int] = {}
 
@@ -77,6 +95,180 @@ def assign_communities(cg: CodeGraph, communities: dict[int, int]) -> None:
     for node_id, community_id in communities.items():
         if node_id in cg.nx:
             cg.nx.nodes[node_id]["community"] = community_id
+
+
+@dataclass(frozen=True)
+class PartitionQuality:
+    """
+    Measured shape of a community partition, and how much of that shape the
+    graph's edge set forced.
+
+    Exists because `community_count` alone is actively misleading. On trelix's
+    own index the graph command reported "Communities: 6640" for 10991 nodes and
+    said nothing else; 6579 of those 6640 were one-node communities. See
+    assess_partition_quality() for the attribution.
+    """
+
+    node_count: int
+    edge_count: int
+    isolated_nodes: int
+    community_count: int
+    singleton_communities: int
+    isolated_singletons: int
+    modularity: float
+    largest_sizes: list[int] = field(default_factory=list)
+
+    @property
+    def singleton_share(self) -> float:
+        """Fraction of communities that contain exactly one node."""
+        if self.community_count == 0:
+            return 0.0
+        return self.singleton_communities / self.community_count
+
+    @property
+    def isolated_share(self) -> float:
+        """Fraction of nodes with no edge of any kind."""
+        if self.node_count == 0:
+            return 0.0
+        return self.isolated_nodes / self.node_count
+
+    @property
+    def is_degenerate(self) -> bool:
+        """True when singletons dominate, i.e. the labels group almost nothing."""
+        return self.singleton_share > _DEGENERATE_SINGLETON_SHARE
+
+    @property
+    def is_edge_limited(self) -> bool:
+        """
+        True when the singletons are explained by isolated nodes rather than by
+        the algorithm. A degree-0 node contributes zero to modularity in every
+        possible community, so Louvain leaves it alone at ANY resolution — no
+        parameter value can merge it. When this is True, tuning is the wrong
+        lever and edge extraction is the right one.
+        """
+        if self.singleton_communities == 0:
+            return False
+        return self.isolated_singletons / self.singleton_communities > 0.9
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-serializable form for reports and API payloads."""
+        return {
+            "node_count": self.node_count,
+            "edge_count": self.edge_count,
+            "isolated_nodes": self.isolated_nodes,
+            "isolated_share": round(self.isolated_share, 4),
+            "community_count": self.community_count,
+            "singleton_communities": self.singleton_communities,
+            "singleton_share": round(self.singleton_share, 4),
+            "isolated_singletons": self.isolated_singletons,
+            "modularity": round(self.modularity, 4),
+            "largest_sizes": list(self.largest_sizes),
+            "degenerate": self.is_degenerate,
+            "edge_limited": self.is_edge_limited,
+        }
+
+    def describe(self) -> str:
+        """One-paragraph human summary naming the number and the consequence."""
+        connected = self.node_count - self.isolated_nodes
+        parts = [
+            f"{self.singleton_communities}/{self.community_count} communities "
+            f"({self.singleton_share:.1%}) contain a single node; "
+            f"{self.isolated_nodes}/{self.node_count} nodes ({self.isolated_share:.1%}) "
+            f"have no edge at all.",
+        ]
+        if self.is_edge_limited:
+            parts.append(
+                f"{self.isolated_singletons} of the singletons are those isolated nodes, "
+                "so this is edge coverage, not Louvain tuning — a degree-0 node cannot be "
+                "merged at any resolution. Community labels only carry information for the "
+                f"{connected} connected nodes."
+            )
+        parts.append(
+            f"Modularity {self.modularity:.3f} — note this stays high because isolated "
+            "singletons contribute exactly zero to it, so it does not detect this."
+        )
+        return " ".join(parts)
+
+
+def assess_partition_quality(
+    cg: CodeGraph,
+    communities: dict[int, int],
+) -> PartitionQuality:
+    """
+    Measure the partition returned by `detect_communities` against the graph it
+    came from, so a degenerate result is reportable instead of silent.
+
+    Measured on trelix's own self-index (10991 nodes / 9483 simple edges):
+    6579 of 6640 communities were singletons (99.1%), and 6576 of those 6579
+    were nodes with degree 0 (59.8% of the graph). A resolution sweep over
+    0.2/0.5/1.0/2.0/5.0 returned the SAME 6579 singletons every time — only the
+    giant clusters resized. That is why this reports isolated-node counts rather
+    than offering a tuning knob: the partition is limited by edge extraction
+    (50.8% of call edges are unresolved by design for stdlib/external targets,
+    and markdown/JSON/YAML/TOML symbols cannot have call or import edges at
+    all), not by the algorithm.
+
+    Args:
+        cg:          CodeGraph the partition was computed over
+        communities: {node_id: community_id} from detect_communities()
+
+    Returns:
+        PartitionQuality — all-zero when the graph or partition is empty
+    """
+    if cg.node_count == 0 or not communities:
+        return PartitionQuality(
+            node_count=cg.node_count,
+            edge_count=0,
+            isolated_nodes=0,
+            community_count=0,
+            singleton_communities=0,
+            isolated_singletons=0,
+            modularity=0.0,
+        )
+
+    G = _simple_undirected(cg)
+    degrees = dict(G.degree())
+    isolated = {node for node, deg in degrees.items() if deg == 0}
+
+    members: dict[int, list[int]] = defaultdict(list)
+    for node_id, community_id in communities.items():
+        members[community_id].append(node_id)
+
+    singletons = [group[0] for group in members.values() if len(group) == 1]
+    sizes = sorted((len(group) for group in members.values()), reverse=True)
+
+    # Modularity of the partition as produced. Nodes the partition does not
+    # mention would raise NotAPartition, so only covered nodes are passed and a
+    # coverage gap is reported rather than crashing the graph build.
+    covered = [set(group) & set(G.nodes()) for group in members.values()]
+    covered = [group for group in covered if group]
+    modularity = 0.0
+    if G.number_of_edges() > 0 and covered:
+        assigned = set().union(*covered)
+        leftover = set(G.nodes()) - assigned
+        if leftover:
+            logger.warning(
+                "Community partition covers %d/%d nodes — %d unassigned, "
+                "excluded from the modularity figure",
+                len(assigned),
+                G.number_of_nodes(),
+                len(leftover),
+            )
+        try:
+            modularity = float(nx.community.modularity(G.subgraph(assigned), covered))
+        except Exception as exc:  # ZeroDivisionError on an edgeless subgraph, etc.
+            logger.warning("Modularity computation failed, reporting 0.0: %s", exc)
+
+    return PartitionQuality(
+        node_count=G.number_of_nodes(),
+        edge_count=G.number_of_edges(),
+        isolated_nodes=len(isolated),
+        community_count=len(members),
+        singleton_communities=len(singletons),
+        isolated_singletons=sum(1 for node in singletons if node in isolated),
+        modularity=modularity,
+        largest_sizes=sizes[:5],
+    )
 
 
 def compute_affected_frontier(
@@ -158,11 +350,7 @@ def detect_communities_incremental(
     if not prev_partition:
         return detect_communities(cg)
 
-    G_undirected = cg.nx.to_undirected()
-    G_connected = nx.Graph((u, v) for u, v, _ in G_undirected.edges(data=True))
-    for node in G_undirected.nodes():
-        if node not in G_connected:
-            G_connected.add_node(node)
+    G_connected = _simple_undirected(cg)
 
     total_nodes = G_connected.number_of_nodes()
     if total_nodes == 0:
@@ -270,7 +458,18 @@ def compute_pagerank(
 
 
 def get_community_summary(cg: CodeGraph) -> list[dict[str, Any]]:
-    """Return summary info per detected community."""
+    """
+    Return summary info per detected community, largest first.
+
+    Ordered by size because the only consumer that trusts this order is the CLI,
+    which prints the first five under the heading "Top Communities". Sorted by
+    community_id it printed the five LOWEST IDs — measured on this repo as
+    "2, 2, 279, 13, 3 nodes" while the actual largest were 445/382/309/281/279,
+    so the giant clusters the heading promises were invisible. The API's
+    /graph/communities and the MCP build_knowledge_graph tool both re-sort by
+    size themselves, so this is a no-op for them. Ties break on community_id to
+    keep the output stable across runs.
+    """
     if cg.node_count == 0:
         return []
 
@@ -284,7 +483,7 @@ def get_community_summary(cg: CodeGraph) -> list[dict[str, Any]]:
         return []
 
     summaries = []
-    for cid, members in sorted(by_community.items()):
+    for cid, members in sorted(by_community.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         # Top files by member count
         file_counts: Counter[str] = Counter()
         symbol_names: list[str] = []

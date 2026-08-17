@@ -47,6 +47,44 @@ disabling its deletion path for every later test in the session.
 
 ### Added
 
+- **`trelix index --prune`** — remove index rows for files deleted from the repository.
+  Deliberately unbuilt until now: a prune keyed on "files the walk did not yield" reads a
+  truncated walk as deletions and deletes embeddings that cost money. It ships only because
+  every prerequisite landed — the walk-completeness signal, walk-config recording, and the
+  `.gitignore`-contents digest — and it **refuses** unless all five hold: the walk was
+  complete, the walk config is comparable, the walk config is unchanged, the index was built
+  by this trelix version, and the removal is under a 10% cap. Each refusal names which
+  condition failed and how to fix it, rather than reporting a bare "refused". Preview is the
+  default; `--yes` is required to act.
+
+  Verified against this repository's live index: **refused**, with two reasons — no walk
+  config recorded, and no version recorded — over **35 candidates that are every file under
+  `packages/`, all present on disk.** Without the guard a prune would have deleted 35 real
+  files.
+
+- **`trelix index --dry-run`** — walk, chunk and count tokens with the real tokenizer, then
+  report the estimated embedding spend and exit without embedding anything. Reports "unknown"
+  rather than guessing where a provider's rate cannot be established.
+
+- **OpenTelemetry metrics.** Observability was tracing-only: `rg 'get_meter|create_counter'
+  src/` found nothing, so with `[otel]` configured you could see that a request happened but
+  not what it cost. A meter seam now sits beside the span helpers, gated on the same flag and
+  degrading to a true no-op — importing nothing — when the optional extra is absent. Every
+  embedder counts `trelix.embedder.requests`, `.texts`, `.characters` and `.tokens` per
+  provider and model, since embedding is the only per-call billed operation in trelix. Token
+  counts are recorded only where the provider actually reports them.
+
+- **`docs/migration/v2-to-v3.md`** — the guide `BACKWARDS_COMPATIBILITY.md` promised before
+  any MAJOR release and which was never written. Its central finding is that the obvious
+  remediation is a **silent no-op**: v3.0.1 retracted v3.0.0's "no reindex needed" claim
+  because the Python extractor's off-by-one made 8,815 of 8,815 index references wrong, and a
+  plain `trelix index` afterwards selects zero files, prints "Nothing to index — all files up
+  to date.", exits 0, and leaves the wrong call graph in place. The working command is
+  `TRELIX_INCREMENTAL=false trelix index .`, which no CLI flag exposes. Every claimed break
+  was checked against the code rather than copied from the changelog — the
+  `TRELIX_RETRIEVAL_FLARE_MAX_ITER` removal scheduled for v3.0.0 **did not happen** and the
+  alias is still live.
+
 - **`trelix taint --rules PATH`.** `TaintAnalyzer.run()` always accepted a
   `rules_path`; the CLI never passed one, so every invocation ran the `p/default`
   registry pack — network-dependent, and free to change between runs. A missing path is
@@ -313,6 +351,67 @@ disabling its deletion path for every later test in the session.
   `Makefile` and `scripts/verify-index.sh` now rank 1 for queries about them.
 
 ### Fixed
+
+- **A malformed retrieval-weight variable printed API-key material.** The weights were parsed
+  inside `RetrievalConfig.model_post_init`, so pydantic caught the `ValueError` and re-raised
+  it as a `ValidationError` carrying the model's entire settings input dict. Measured on
+  pydantic 2.13.4: pydantic truncates `input_value` to ~50 characters keeping the head **and
+  the tail**, so `str(exc)` and the traceback printed the trailing ~22 characters of a key
+  verbatim — and `exc.errors()` and `exc.json()` printed every value in full. One typo was
+  enough to put key material into a terminal, a CI log, or a pasted issue report, and *which*
+  secret leaked was dict-order dependent. Weights are now parsed in `__init__`, before
+  pydantic gets control, so the failure stays an ordinary `ValueError` carrying only its own
+  message. The type, message and exit code are unchanged, which keeps the CLI's ten
+  `except (ValueError, FileNotFoundError)` handlers and the existing tests working.
+
+  Three cheaper fixes were rejected on evidence: a `ValueError` *subclass* is still wrapped;
+  `PydanticCustomError` is itself a `ValueError`; and settings-source filtering cannot help
+  because `cohere_api_key` is a legitimate field of this model, so the secret belongs in its
+  input dict. Related, reported not fixed: `DotEnvSettingsSource` copies every unmatched
+  dotenv key into the input dict when `extra != "forbid"`, so `.env` secrets reach all 12
+  settings classes — including ones with no such field.
+
+- **LanceDB duplicated rows under concurrent writers even when the delete succeeded.** Two
+  handles on one URI, 40 upserts each over 50 chunk_ids from two threads, produced 55 rows
+  with **zero exceptions raised** — a stale-snapshot race, each handle deleting against its
+  own table version, distinct from the swallowed-delete defect fixed earlier in this release.
+  It reaches production through the indexer's upsert `ThreadPoolExecutor`. Fixed with
+  `checkout_latest()` plus a per-`(uri, table)` lock. `Table.merge_insert`, LanceDB's own
+  upsert primitive, was **measured worse rather than better** — 4 threads over 50 chunk_ids
+  left 53-62 rows through it — so it was rejected on evidence rather than adopted on
+  reputation.
+
+- **A thin direct lookup suppressed every hybrid leg.** `file_overview`, `project_overview`
+  and `config_lookup` widened to standard retrieval only when the direct DB lookup found
+  *nothing*, so one matched file yielding a handful of symbols returned exclusively those
+  symbols and silently suppressed vector, BM25 and grep. Measured with a mocked DB (1 file,
+  2 symbols): standard retrieval was never invoked and assembly saw 1 result. A breadth floor
+  now also runs the standard path and merges when the direct lookup resolves fewer than 2
+  distinct files **and** fewer than 10 symbols; direct hits keep first position, and the union
+  is packed against the token budget once. Widening the config filename gate earlier in this
+  release had made this more reachable, not less — that commit predicted it and deliberately
+  left the mechanism alone.
+
+- **`trelix graph` reported a degenerate community partition as a healthy number.** Community
+  detection returns 6,579 single-node communities out of 6,640 (99.1%) on trelix's own index,
+  and the command printed only `Communities: 6640`. **Characterised rather than tuned**, which
+  turned out to matter: 6,576 of the 6,579 singletons (99.95%) are nodes with **no edge at
+  all** — 59.8% of the graph — and a resolution sweep over 0.2/0.5/1.0/2.0/5.0 returns the
+  *same* 6,579 singletons every time, because a degree-0 node contributes zero to modularity
+  in every possible partition. No resolution value can merge them. The cause is edge coverage,
+  not Louvain: 50.8% of call edges are unresolved by design for stdlib and external targets,
+  there are only 130 type edges, and 3,797 isolated nodes are markdown/JSON/YAML/TOML symbols
+  that *cannot* have call or import edges. The build now reports singleton share and
+  isolated-node count at WARNING, with the cause attributed.
+
+- **File-summary failures were invisible.** `FileSummarizer.summarize()` returned `""` on any
+  LLM error and logged at DEBUG, and the indexer had no `else` and no counter — so 0 of 467
+  summaries was indistinguishable from complete success. The live count was 442/467, meaning
+  25 had already failed silently. `index()` now reports `file_summaries_generated`,
+  `_failed` and `_embedded`, and failures log at WARNING.
+
+- **`watch-all`'s summary omitted `files_skipped_ignored`.** The counter existed in `stats()`
+  and was invisible on the CLI.
 
 Eight of the entries below share one shape — **switched on and doing nothing, or failing
 and saying nothing** — and were found by re-auditing the tree after the first pass. Each
@@ -825,6 +924,16 @@ was proven red first.
   that resolved to `docs/docs/superpowers/…`.
 
 ### Changed
+
+- **Phase 2.5 (LLM file summaries) runs concurrently.** It was 89.6% of an index run — 428
+  summaries over 1034.2 s of 1153.7 s — and fully sequential, while Phase 3 did 10,423 chunks
+  in 74 s at 4-way. Chat calls now fan out over a thread pool (default 4) behind a new
+  sliding-window requests-per-minute limiter: the **first chat-side rate limit in trelix**,
+  since `tpm_limit` was embedder-only and fanning out without one would have leaned entirely
+  on retry backoff, converting a rate limit into cost and latency. Measured 3.9x on the phase.
+  Overridable via `TRELIX_FILE_SUMMARY_WORKERS` / `TRELIX_FILE_SUMMARY_RPM`. DB writes and
+  summary embeds stay on the main thread. Visibility was fixed **before** concurrency, on
+  purpose — parallelising an invisible failure mode multiplies a problem you cannot see.
 
 - `Database` gained generic `get_index_metadata` / `set_index_metadata` /
   `delete_index_metadata` / `get_index_metadata_with_prefix`, and the three

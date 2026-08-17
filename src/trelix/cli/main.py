@@ -30,9 +30,17 @@ from rich.table import Table
 from trelix.core.console_safety import safe_text
 from trelix.federation.registry import RepoRegistry
 
+# Imported eagerly, unlike every other store import in this module, because it is the
+# default value of `index --prune-max-percent` and typer reads that at decoration time.
+# provenance.py itself pulls in nothing heavier than hashlib/subprocess.
+from trelix.store.provenance import _PRUNE_MAX_FRACTION_DEFAULT
+
 if TYPE_CHECKING:
-    from trelix.core.config import EmbedderConfig
-    from trelix.store.provenance import DriftReport, IndexProvenance
+    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.core.models import IndexedFile
+    from trelix.indexing.indexer import Indexer
+    from trelix.store.db import Database
+    from trelix.store.provenance import DriftReport, IndexProvenance, PrunePlan
 
 # Windows' legacy console codepage (cp1252 etc.) can't encode the Unicode
 # braille glyphs Rich's default spinner renders (e.g. U+280B), crashing with
@@ -262,6 +270,36 @@ def index(
     repo: str = typer.Argument(..., help="Path to the repository to index"),
     provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "Cost preview only. Walks, chunks and counts tokens with the real tokenizer, "
+            "then reports the embedding spend a real run would incur. Embeds nothing."
+        ),
+    ),
+    prune: bool = typer.Option(
+        False,
+        "--prune",
+        help=(
+            "After indexing, remove index rows and embeddings for files no longer in the "
+            "repository. Previews only unless --yes is given, and refuses unless the walk "
+            "can be shown to be trustworthy."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Actually delete what --prune found. Meaningless without --prune.",
+    ),
+    prune_max_percent: float = typer.Option(
+        _PRUNE_MAX_FRACTION_DEFAULT * 100,
+        "--prune-max-percent",
+        help=(
+            "Refuse a prune that would remove more than this percentage of the index. "
+            "Raise it only after reading the previewed list."
+        ),
+    ),
 ) -> None:
     """Index a repository — builds the search index at <repo>/.trelix/index.db"""
     _setup_logging(verbose)
@@ -270,6 +308,22 @@ def index(
 
     from trelix.core.config import IndexConfig
     from trelix.indexing.indexer import Indexer
+
+    # Refused rather than resolved by precedence. Either combination means the user has a
+    # different command in mind than the one they typed, and picking one for them is how a
+    # `--yes` that was meant to authorise a prune ends up authorising nothing at all.
+    if dry_run and yes:
+        _print_error(
+            "Contradictory flags",
+            "--dry-run changes nothing, so --yes has nothing to authorise. Drop one.",
+        )
+        raise typer.Exit(1)
+    if yes and not prune:
+        _print_error(
+            "Nothing to authorise",
+            "--yes only applies to --prune. Add --prune, or drop --yes.",
+        )
+        raise typer.Exit(1)
 
     try:
         config = IndexConfig(
@@ -289,6 +343,20 @@ def index(
 
     # _safe_text(repo): a directory legitimately named e.g. "Project [old]" would
     # otherwise render with "[old]" swallowed as a markup tag.
+    if dry_run:
+        console.print(
+            Panel(
+                f"[bold cyan]Dry run — cost preview only[/bold cyan] {_safe_text(repo)}",
+                expand=False,
+            )
+        )
+        _print_cost_preview(config)
+        if prune:
+            # Previewed against the index as it stands, which is the point: a prune
+            # planned before a re-index reports the refusal the user would hit.
+            _prune_from_index(config, confirmed=False, max_fraction=prune_max_percent / 100.0)
+        return
+
     console.print(Panel(f"[bold cyan]Indexing[/bold cyan] {_safe_text(repo)}", expand=False))
 
     t0 = time.perf_counter()
@@ -316,6 +384,393 @@ def index(
     if stats.get("errors"):
         table.add_row("[red]Errors[/red]", f"[red]{stats['errors']}[/red]")
     console.print(table)
+
+    if prune:
+        # After the index, never before: a prune is only ever licensed by provenance that
+        # matches this version and this walk config, and a full index run is what writes
+        # it. The drift check below therefore pays for a second walk — which is why --prune
+        # is opt-in rather than part of every run.
+        _run_prune(
+            config,
+            indexer.db,
+            indexer.vector_store,
+            confirmed=yes,
+            max_fraction=prune_max_percent / 100.0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# index --prune
+# ---------------------------------------------------------------------------
+
+# How many candidate paths to print before summarising the rest. A prune is authorised by
+# a human reading this list, so it has to be readable; the count and the percentage below
+# it carry the part that got elided.
+_PRUNE_PREVIEW_LIMIT = 25
+
+
+def _run_prune(
+    config: IndexConfig,
+    db: Database,
+    vector_store: object | None,
+    *,
+    confirmed: bool,
+    max_fraction: float,
+) -> None:
+    """Plan a prune, print it, and delete only when every guard licenses it.
+
+    Exits nonzero on a refusal. A refused prune that exited 0 would tell a script that the
+    deletions happened, which is the failure mode this whole feature was withheld over.
+    """
+    from trelix.store.provenance import compute_drift, plan_prune, read_provenance
+
+    report = compute_drift(config, db)
+    plan = plan_prune(
+        report,
+        read_provenance(db),
+        len(db.get_all_file_rel_paths()),
+        max_fraction=max_fraction,
+    )
+
+    _print_prune_plan(plan, will_act=confirmed and not plan.is_refused)
+
+    if plan.is_refused:
+        raise typer.Exit(1)
+    if not plan.candidates or not confirmed:
+        return
+
+    repo_root = Path(config.repo_path)
+    deleted = 0
+    unmatched: list[str] = []
+    for rel_path in plan.candidates:
+        # The absolute path is reconstructed rather than read back out of `files.path`
+        # because delete_file_by_path matches `path = ? OR rel_path = ?` — so a checkout
+        # that has moved since it was indexed still deletes on the rel_path arm.
+        if db.delete_file_by_path(str(repo_root / rel_path), rel_path, vector_store):
+            deleted += 1
+        else:
+            unmatched.append(rel_path)
+
+    console.print(
+        f"[green]Pruned {deleted} file(s)[/green] — rows, symbols, chunks and embeddings."
+    )
+    if unmatched:
+        # Loud, and nonzero. The plan came from `files.rel_path` seconds earlier, so a row
+        # that cannot be found by the same key now means the delete and the plan disagree
+        # about identity, and the remaining embeddings are orphaned rather than removed.
+        err_console.print(
+            f"[red]{len(unmatched)} planned deletion(s) matched no index row[/red] "
+            f"({_safe_text(', '.join(unmatched[:5]))}"
+            f"{' …' if len(unmatched) > 5 else ''}) — the plan and the index disagree. "
+            "Run `trelix stats --drift` before trusting this index."
+        )
+        raise typer.Exit(1)
+
+
+def _prune_from_index(config: IndexConfig, *, confirmed: bool, max_fraction: float) -> None:
+    """Plan a prune against the index as it already stands, without indexing first.
+
+    Only reachable from `--dry-run`, so nothing is deleted and no vector store is needed.
+    Opening the Database does run its idempotent schema migrations, which is a write — the
+    embeddings are untouched, but this is why the delete path is never reached from here.
+    """
+    from trelix.store.db import Database as _Database
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        err_console.print(
+            f"[yellow]No index at {_safe_text(str(db_path))}[/yellow] — nothing to prune. "
+            "Run `trelix index` first."
+        )
+        return
+
+    with _Database(db_path) as db:
+        _run_prune(config, db, None, confirmed=confirmed, max_fraction=max_fraction)
+
+
+def _print_prune_plan(plan: PrunePlan, *, will_act: bool) -> None:
+    """Render what a prune would remove, then every reason it may not.
+
+    The list comes first and the refusals last, deliberately: the refusals name what to fix
+    and the fix depends on what is in the list (35 phantom deletions all under `packages/`
+    is a different problem from one file under an unreadable directory).
+    """
+    if not plan.candidates:
+        console.print(
+            "\n[green]Nothing to prune:[/green] every indexed file was yielded by this walk."
+        )
+    else:
+        table = Table(
+            title="Indexed but no longer in the repository",
+            show_header=True,
+            header_style="bold cyan",
+        )
+        table.add_column("Path")
+        for rel_path in plan.candidates[:_PRUNE_PREVIEW_LIMIT]:
+            # Repository-controlled text: a directory named "old[1]" renders wrong, and one
+            # named "old[/1]" raises MarkupError, taking the whole listing with it.
+            table.add_row(_safe_text(rel_path))
+        console.print(table)
+        if len(plan.candidates) > _PRUNE_PREVIEW_LIMIT:
+            console.print(
+                f"[dim]… and {len(plan.candidates) - _PRUNE_PREVIEW_LIMIT} more not shown.[/dim]"
+            )
+        console.print(
+            f"[bold]{len(plan.candidates)} of {plan.indexed_count} indexed file(s)[/bold] "
+            f"({plan.fraction_of_index:.1%} of the index)."
+        )
+
+    for refusal in plan.refusals:
+        # Escaped as a whole: these sentences carry repo-controlled paths and setting
+        # values interpolated by plan_prune.
+        err_console.print(f"[red]Prune refused:[/red] {_safe_text(refusal)}")
+
+    if plan.candidates and not plan.refusals and not will_act:
+        console.print(
+            "[yellow]Nothing was deleted[/yellow] — `--prune` previews by default. "
+            "Re-run with `--prune --yes` to remove the file(s) above and their embeddings."
+        )
+
+
+# ---------------------------------------------------------------------------
+# index --dry-run  (cost preview)
+# ---------------------------------------------------------------------------
+
+# USD per 1,000,000 input tokens at each provider's published list price, checked
+# 2026-08. A provider/model pair absent from here is reported as "unknown" rather than
+# defaulted or interpolated: this table exists so someone can decide whether to spend the
+# money, and a stale-but-plausible number is indistinguishable from a checked one.
+#
+# Azure is deliberately absent and unpriceable from config: it bills per deployment and
+# tier, and `azure_embeddings_deployment` is a name chosen by whoever created the
+# deployment, so it carries no rate at all.
+_EMBED_PRICE_PER_MTOK_USD: dict[tuple[str, str], float] = {
+    ("openai", "text-embedding-3-large"): 0.13,
+    ("openai", "text-embedding-3-small"): 0.02,
+    ("openai", "text-embedding-ada-002"): 0.10,
+    ("voyage", "voyage-code-3"): 0.18,
+}
+
+# Providers that never make a billed call. The cost is real — CPU/GPU time and disk — but
+# it is not a token bill, and reporting $0.00 for them would read as "free".
+_LOCAL_EMBED_PROVIDERS = frozenset({"local", "local-code", "bge-code", "nomic-code"})
+
+# Which EmbedderConfig field holds the model name for each provider. There is no single
+# `model` attribute, so this is the mapping the price lookup keys on.
+_EMBED_MODEL_FIELDS = {
+    "openai": "openai_model",
+    "azure": "azure_embeddings_deployment",
+    "voyage": "voyage_model",
+    "local": "local_model",
+    "local-code": "local_code_model",
+    "bge-code": "bge_code_model",
+    "nomic-code": "nomic_code_model",
+    "bedrock-titan": "bedrock_titan_model",
+    "bedrock-cohere": "bedrock_cohere_model",
+}
+
+
+def _embed_model_name(embedder: EmbedderConfig) -> str:
+    field = _EMBED_MODEL_FIELDS.get(str(embedder.provider))
+    return str(getattr(embedder, field, "") or "") if field else "unknown"
+
+
+def _print_cost_preview(config: IndexConfig) -> None:
+    """Report what a real run would embed and what it would cost, embedding nothing.
+
+    `scripts/self-index.sh --dry-run` already answers "which files would be indexed" and
+    where they live, so this deliberately does not repeat that breakdown. What it adds is
+    the number that decides whether to start: tokens, counted with the chunker's own
+    tiktoken encoder over the chunk text the chunker actually builds, priced where the rate
+    is known and reported as unknown where it is not.
+
+    The count is an UPPER BOUND for files that are already indexed and have changed: the
+    real run re-embeds only the symbols whose content hash moved, and reproducing that
+    needs the symbol rows this preview declines to write. For a first index of a repo the
+    two agree.
+    """
+    from trelix.indexing.chunker import Chunker
+    from trelix.indexing.indexer import Indexer
+    from trelix.indexing.walker import FileWalker
+
+    walker = FileWalker(config)
+    files = list(walker.walk())
+
+    if not walker.walk_was_complete:
+        # Same disclosure the real indexer makes: an unreadable directory drops its whole
+        # subtree, so an estimate built on this walk under-counts by an unknown amount.
+        skipped = walker.incomplete_paths
+        err_console.print(
+            f"[yellow]{len(skipped)} path(s) could not be read and are missing from this "
+            f"estimate: {_safe_text(', '.join(skipped[:5]))}"
+            f"{' …' if len(skipped) > 5 else ''}[/yellow]"
+        )
+
+    to_embed, index_read_error = _files_needing_embedding(config, files)
+
+    chunker = Chunker(config.chunker)
+    chunk_count = 0
+    token_count = 0
+    no_symbols = 0
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Chunking (no embedding)…", total=len(to_embed))
+        for file in to_embed:
+            progress.advance(task)
+            try:
+                # Called unbound on purpose. `_parse_one` touches no instance state, and
+                # constructing an Indexer would load an embedding model — the one thing a
+                # cost preview must not do. Borrowing it also means the preview cannot
+                # drift from the parse whose cost it is estimating; a private copy here
+                # would silently mis-count the line-window fallback.
+                parsed = Indexer._parse_one(cast("Indexer", None), file)
+            except Exception as exc:
+                no_symbols += 1
+                logging.getLogger("trelix.cli").debug(
+                    "Dry run could not parse %s: %s", file.rel_path, exc
+                )
+                continue
+            if parsed.skipped or parsed.parse_result is None:
+                no_symbols += 1
+                continue
+            symbols = parsed.parse_result.symbols
+            chunks = chunker.build_chunks(
+                symbols=symbols,
+                imports=parsed.parse_result.import_edges,
+                file_rel_path=file.rel_path,
+                language=file.language.value,
+                # `parent_id` is still a local index at this point — Phase 2 is what
+                # remaps it to DB ids — so the parent map is keyed the same way. Keyed by
+                # DB id here instead, every method would lose its "# Class:" header line
+                # and the token count with it.
+                parent_symbols=dict(enumerate(symbols)),
+            )
+            chunk_count += len(chunks)
+            token_count += sum(c.token_count for c in chunks)
+
+    table = Table(
+        title="Cost preview (nothing embedded)", show_header=True, header_style="bold cyan"
+    )
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+    table.add_row("Files walked", f"{len(files):,}")
+    if not walker.walk_was_complete:
+        table.add_row("[yellow]Paths unreadable[/yellow]", f"{len(walker.incomplete_paths):,}")
+    table.add_row("Unchanged since last index", f"{len(files) - len(to_embed):,}")
+    table.add_row("Files to embed", f"{len(to_embed):,}")
+    if no_symbols:
+        table.add_row("Files yielding no symbols", f"{no_symbols:,}")
+    table.add_row("Chunks to embed", f"{chunk_count:,}")
+    table.add_row("Embedding tokens", f"{token_count:,}")
+    console.print(table)
+
+    if index_read_error is not None:
+        console.print(
+            f"[yellow]The existing index could not be read[/yellow] "
+            f"({_safe_text(index_read_error)}), so every walked file is counted as new — "
+            "this is an over-estimate, not an under-estimate."
+        )
+
+    _print_cost_estimate(config, token_count)
+    _print_cost_caveats(config)
+
+
+def _files_needing_embedding(
+    config: IndexConfig, files: list[IndexedFile]
+) -> tuple[list[IndexedFile], str | None]:
+    """Split off the files a real run would skip on an unchanged content hash.
+
+    Read through a read-only sqlite3 connection rather than `Database`, whose constructor
+    runs schema migrations: a cost preview must not be able to modify the index it prices.
+    Returns the files to embed plus the reason the index could not be consulted, if any —
+    reported rather than swallowed, because "no index readable" and "index fully current"
+    are opposite answers that would otherwise look the same.
+    """
+    import sqlite3
+
+    if not config.incremental:
+        return list(files), None
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        return list(files), None
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute("SELECT rel_path, hash FROM files")
+            stored = {str(r[0]): str(r[1]) for r in rows}
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return list(files), str(exc)
+
+    return [f for f in files if stored.get(f.rel_path) != f.hash], None
+
+
+def _print_cost_estimate(config: IndexConfig, token_count: int) -> None:
+    """Price the token count, or say plainly that this provider cannot be priced."""
+    provider = str(config.embedder.provider)
+    model = _embed_model_name(config.embedder)
+    label = _safe_text(f"{provider} / {model}")
+
+    if provider in _LOCAL_EMBED_PROVIDERS:
+        console.print(
+            f"[bold]Estimated cost[/bold] none — {label} runs locally, so there is no API "
+            "cost. The spend is CPU/GPU time and disk, which this does not estimate."
+        )
+    elif (price := _EMBED_PRICE_PER_MTOK_USD.get((provider, model))) is not None:
+        console.print(
+            f"[bold]Estimated cost[/bold] ${token_count / 1_000_000 * price:.4f} — "
+            f"{token_count:,} tokens at ${price:.2f} per 1M tokens ({label})."
+        )
+    else:
+        console.print(
+            f"[bold]Estimated cost[/bold] unknown — trelix has no checked list price for "
+            f"{label}, and a guessed rate is worse than none. {token_count:,} tokens would "
+            "be sent; price them against that provider's own published rate."
+        )
+
+    # Stated for every provider, not only the ones it is wrong for. cl100k_base is the
+    # chunker's encoder, so it is exactly what a real run's Phase 3 reports — but only
+    # OpenAI and Azure bill on it, and Voyage / Titan / Cohere tokenize differently.
+    console.print(
+        "[dim]Tokens counted with cl100k_base, the encoder the chunker uses. Providers "
+        "outside OpenAI/Azure bill on their own tokenizer, so their invoice will differ "
+        "from this count.[/dim]"
+    )
+
+
+def _print_cost_caveats(config: IndexConfig) -> None:
+    """Name the spend this preview does NOT include, one line per enabled feature."""
+    console.print(
+        "[dim]Files already indexed and changed are counted whole: the real run re-embeds "
+        "only the symbols whose content hash moved, so the figure above is an upper bound "
+        "for them.[/dim]"
+    )
+    if config.chunker.contextual:
+        console.print(
+            "[yellow]Contextual chunking is enabled[/yellow] — every chunk also costs one "
+            f"LLM call ({_safe_text(config.chunker.contextual_model)}), which is not priced "
+            "above."
+        )
+    if config.file_summaries_enabled:
+        console.print(
+            "[yellow]File summaries are enabled[/yellow] — one LLM call per file on top of "
+            "the embeddings above, not priced here."
+        )
+    if config.chunker.multi_granularity_enabled:
+        console.print(
+            "[yellow]Multi-granularity indexing is enabled[/yellow] — it embeds once per "
+            "sub-symbol as well, bypassing the token batching, and those embeddings are "
+            "NOT in the count above."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1506,10 +1961,17 @@ def watch_all(
         pass
 
     stats = watcher.stats()
+    # files_skipped_ignored existed in MultiRepoWatcher.stats() and was invisible here, so
+    # the one counter that says "an ignore rule is hiding files you think are watched" never
+    # reached a user. `.get` rather than `[...]`: a stats() without the key means a watcher
+    # too old to count it, and "n/a" is the honest rendering of that — 0 would assert
+    # nothing was ignored.
+    ignored = stats.get("files_skipped_ignored")
     console.print(
         f"\n[dim]Watch stopped. "
         f"Re-indexed: {stats['files_reindexed']} files | "
-        f"Skipped (unchanged): {stats['files_skipped_unchanged']} files.[/dim]"
+        f"Skipped (unchanged): {stats['files_skipped_unchanged']} files | "
+        f"Skipped (ignored): {'n/a' if ignored is None else ignored} files.[/dim]"
     )
 
 
