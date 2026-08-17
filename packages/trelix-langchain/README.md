@@ -8,16 +8,21 @@ LangChain retriever for [trelix](https://github.com/sairam0424/trelix) — seman
 pip install trelix-langchain
 ```
 
+Optional features live on **core's** extras, not the adapter's — `trelix-langchain` declares
+none of its own, so install it alongside the core extra you want.
+
 For AWS Bedrock embeddings (Cohere or Titan):
 
 ```bash
-pip install "trelix-langchain[bedrock]"
+pip install trelix-langchain "trelix[bedrock]"
 ```
 
-For code-optimized embeddings (BGE-Code, Nomic-Code, or Lance backend):
+For code-optimized embeddings, pick the backend you want:
 
 ```bash
-pip install "trelix-langchain[code-embeddings]"
+pip install trelix-langchain "trelix[bge-code]"     # BGE-Code
+pip install trelix-langchain "trelix[nomic-code]"   # Nomic-Code
+pip install trelix-langchain "trelix[lance]"        # Lance vector backend
 ```
 
 With knowledge graph support (NetworkX BFS retrieval leg):

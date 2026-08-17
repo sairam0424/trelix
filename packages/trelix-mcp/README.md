@@ -24,22 +24,27 @@ for r in response["results"]:  # now dict with pagination
 ## Install
 
 ```bash
-pip install trelix-mcp==2.12.0
+pip install trelix-mcp
 ```
+
+Unpinned on purpose. `trelix-mcp` carries the core version stamp and is published only by a
+core `v*` tag, so the newest `trelix-mcp` is always the one built alongside the newest
+`trelix`. To pin in your own `requirements.txt`, pin all four distributions to the same
+version — see [the FAQ](../../docs/FAQ.md#is-trelix-suitable-for-production-use).
 
 To use Bedrock embeddings or synthesis (no extra API key beyond AWS credentials):
 
 ```bash
-pip install "trelix-mcp==2.12.0" "trelix[bedrock]"
+pip install trelix-mcp "trelix[bedrock]"
 ```
 
 Other optional LLM provider extras:
 
 ```bash
-pip install "trelix-mcp==2.12.0" "trelix[anthropic]"   # Anthropic Claude direct
-pip install "trelix-mcp==2.12.0" "trelix[vertex]"       # Google Vertex AI / Gemini
-pip install "trelix-mcp==2.12.0" "trelix[litellm]"      # 100+ providers via LiteLLM
-pip install "trelix-mcp==2.12.0" "trelix[llm-all]"      # all LLM providers
+pip install trelix-mcp "trelix[anthropic]"   # Anthropic Claude direct
+pip install trelix-mcp "trelix[vertex]"      # Google Vertex AI / Gemini
+pip install trelix-mcp "trelix[litellm]"     # 100+ providers via LiteLLM
+pip install trelix-mcp "trelix[llm-all]"     # all LLM providers
 ```
 
 ## Usage
@@ -261,7 +266,7 @@ graph_search_mcp(query="how does auth relate to the user model?", repo_path="/pa
 Install the knowledge graph extra for full functionality:
 
 ```bash
-pip install 'trelix-mcp==2.12.0' 'trelix[knowledge-graph]'
+pip install trelix-mcp 'trelix[knowledge-graph]'
 ```
 
 ## Watch Bridge (v2.7.0)

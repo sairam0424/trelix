@@ -6,7 +6,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **Two README install commands that could never have worked, both live on PyPI.** Each
+  distribution's `pyproject.toml` sets `readme = "README.md"`, so those files are the **PyPI
+  long description** — the project page a reader copies commands from, not internal notes.
+  - `packages/trelix-langchain/README.md` advertised `pip install "trelix-langchain[bedrock]"`
+    and `"trelix-langchain[code-embeddings]"`. That `pyproject.toml` has no
+    `[project.optional-dependencies]` table at all — PyPI reports `provides_extra: None` — and
+    pip treats an unknown extra as a warning rather than an error, so a reader following the
+    page silently received the base package. `code-embeddings` does not exist on core either;
+    the three real backends are `bge-code`, `nomic-code` and `lance`. Both commands now use
+    the two-package form the same file already used correctly six lines below:
+    `pip install trelix-langchain "trelix[bedrock]"`.
+  - `packages/trelix-mcp/README.md` hard-pinned `trelix-mcp==2.12.0` in **seven** places,
+    including the primary command under its own `## Install` heading, while the package
+    shipped `3.1.2` — five releases stale. Now unpinned, with the reason stated: all four
+    distributions ship on one core tag, so an unpinned install resolves a working pair by
+    construction, and pinning belongs in a reader's own `requirements.txt`.
+
+- **The doc-stamp grep had a blind spot exactly where the worst rot was.**
+  `CONTRIBUTING.md`'s procedure was scoped `docs/*.md *.md`, which never descends into
+  `packages/`, so it could not see any of the seven stale pins above. Scope now includes
+  `packages/*/README.md`. A grep with a blind spot reads as coverage, so the properties are
+  additionally asserted in CI by `tests/unit/test_readme_install_commands.py`: every extra a
+  README advertises must exist in the owning `pyproject.toml`, and no README may hard-pin a
+  trelix version. Proven against the defects — 9 failures before the fix, 24 passing after,
+  and re-introducing either defect turns it red again.
 
 ## [3.1.2] — 2026-08-17
 

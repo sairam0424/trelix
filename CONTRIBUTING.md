@@ -508,12 +508,12 @@ must name the current version, whatever number they currently hold:
 
 ```bash
 grep -rnE '[Cc]urrent version|trelix(-mcp|-langchain|-llama-index)?==|^\*\*Version|image: .*trelix:' \
-    docs/*.md *.md \
+    docs/*.md *.md packages/*/README.md \
   | grep -v '^CHANGELOG.md' \
   | grep -viE "new in|fixed in|added in|since v|what's new|removed in|deprecated in"
 ```
 
-That returns 14 readable lines — a few of which are this section quoting its own
+That returns 15 readable lines — several of which are this section quoting its own
 pattern — rather than the 251 that "every semver-shaped token that isn't the current
 version" produces over the same files. It catches the stamps a previous-version grep
 cannot: `docs/CLI_REFERENCE.md`'s `**Version:**` header, the adapter `==` install pins in
@@ -524,6 +524,16 @@ longer has any: its install lines are deliberately unpinned, since a version har
 a doc's own install command is what rotted them last time.
 `CHANGELOG.md` is excluded on purpose — it is an append-only historical record, never a
 stamp to bump.
+
+`packages/*/README.md` is in scope because each distribution's `pyproject.toml` sets
+`readme = "README.md"`, making those files the **PyPI long description** — the project page
+readers copy commands from. The glob was `docs/*.md *.md` until this release, which never
+descended into `packages/`, and that blind spot is exactly where the worst rot was:
+`packages/trelix-mcp/README.md` hard-pinned `trelix-mcp==2.12.0` in seven places, including
+the primary command under its own `## Install` heading, while the package shipped `3.1.2`.
+A grep with a blind spot reads as coverage. `tests/unit/test_readme_install_commands.py`
+now asserts the same properties in CI, so this does not depend on anyone remembering to run
+the grep.
 
 Read every hit before editing. A blind `sed` over `docs/` will silently rewrite
 "New in v3.0.0" and the shipped-version table in `ROADMAP.md`, turning accurate
