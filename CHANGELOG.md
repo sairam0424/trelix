@@ -34,6 +34,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   trelix version. Proven against the defects — 9 failures before the fix, 24 passing after,
   and re-introducing either defect turns it red again.
 
+- **Fourteen more published assertions the code contradicts.** A five-dimension audit of
+  every documented config value, CLI flag, packaging claim, API/MCP surface element and
+  provider claim against the code that defines it found **129 contradictions** (132 raised, 3
+  refuted on review): 31 that break at runtime, 68 wrong but silent, 30 merely stale. Thirty
+  are both published and user-facing. This entry fixes the subset that needs no API decision;
+  the rest is tracked separately. Each was confirmed by reading both the claim and the
+  contradicting code line, and the replacement values were confirmed by running them.
+  - `README.md` — the golden-set schema was published as `expected_file`; the harness reads
+    only `relevant_files` and raises `ValueError` on the *whole run*, uncaught by the CLI, so
+    a reader following the README got a traceback and no metrics. `expected_file` appears
+    nowhere in the codebase.
+  - `README.md` — `[all]` was described as resolving to six extras with "the other 17"
+    installing separately, and named `serve`, `otel`, `sparse` and `knowledge-graph` as
+    outside it. It resolves to **ten**, including all four of those, leaving **13** outside.
+    `pyproject.toml:194` documents the widening the README never absorbed.
+  - `README.md` — telemetry was documented as writing to `.trelix/telemetry.db`, a file that
+    is never created; the rows go to the `query_telemetry` table inside `.trelix/index.db`.
+    "Leg hit rates and token usage" are not recorded or rendered at all, and `trelix eval`
+    reports Recall@10 only, not `Recall@1/5/10`.
+  - `packages/trelix-langchain/README.md` — advertised `lance` as a `TRELIX_EMBEDDER_PROVIDER`
+    value, which pydantic rejects at startup; `lance` is a `TRELIX_STORE_BACKEND` value that
+    merely shares the name. Also documented `AWS_DEFAULT_REGION` (the real alias is
+    `AWS_REGION`, and boto3's own fallback never applies because the region is passed
+    explicitly), `TRELIX_RETRIEVAL_TELEMETRY` (no such variable; it is
+    `TRELIX_TELEMETRY_ENABLED` on a different settings class), and a FLARE default of `3`
+    when `3` is the `le=` ceiling and the default is `1`.
+  - `packages/trelix-llama-index/README.md` — advertised a `huggingface` embedder provider,
+    a `HUGGINGFACE_API_KEY`, and a runnable command using both. No such provider member,
+    field or alias exists; the only `huggingface` string in the tree is a warnings filter.
+    Its result example also read `metadata.get("source")`, which is always `None` — this
+    adapter writes `"file"` and `"symbol"`, and `"source"` is the *langchain* adapter's key.
+  - `packages/trelix-mcp/README.md` — the Tools table listed a tool named `ask`; the server
+    registers 15 tools and none is `ask` (`ask_agent` is documented separately, and the
+    streaming surface is REST `GET /ask`). `subscribe_resource` was shown taking a list of
+    globs; it takes two required strings and has no glob support. And the change notification
+    was described as carrying changed file paths and re-index stats when it carries only
+    `{uri, _meta.subscriptionId}` — its own docstring says so.
+
 ## [3.1.2] — 2026-08-17
 
 ### Overview

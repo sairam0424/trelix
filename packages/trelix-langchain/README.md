@@ -185,12 +185,12 @@ for doc in result["source_documents"]:
 
 | Env var | Default | Description |
 |---|---|---|
-| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider: `local` \| `local-code` \| `bge-code` \| `nomic-code` \| `lance` \| `openai` \| `azure` \| `voyage` \| `bedrock-cohere` \| `bedrock-titan` |
+| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider: `local` \| `local-code` \| `bge-code` \| `nomic-code` \| `openai` \| `azure` \| `voyage` \| `bedrock-cohere` \| `bedrock-titan` (`lance` is a *store* backend, `TRELIX_STORE_BACKEND`, not an embedder) |
 | `OPENAI_API_KEY` | — | Required for `openai` provider |
 | `AZURE_API_KEY` | — | Required for `azure` provider |
 | `AWS_ACCESS_KEY_ID` | — | Required for Bedrock providers |
 | `AWS_SECRET_ACCESS_KEY` | — | Required for Bedrock providers |
-| `AWS_DEFAULT_REGION` | `us-east-1` | AWS region for Bedrock |
+| `AWS_REGION` | `us-east-1` | AWS region for Bedrock |
 
 You can also set the provider directly on the retriever instance:
 
@@ -231,7 +231,7 @@ from trelix_langchain import TrelixRetriever
 # TRELIX_RETRIEVAL_HYDE_FALLBACK=true        # HyDE: expand queries with hypothetical docs
 # TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true    # Add file-summary retrieval leg
 # TRELIX_RETRIEVAL_PAGERANK_BOOST=true      # Boost symbols by PageRank centrality
-# TRELIX_RETRIEVAL_TELEMETRY=true           # Emit retrieval metrics
+# TRELIX_TELEMETRY_ENABLED=true             # Record per-query telemetry
 
 retriever = TrelixRetriever(
     repo_path="/path/to/repo",
@@ -363,7 +363,7 @@ In addition to the env vars above, v2.4.0 adds:
 
 | Env var | Default | Description |
 |---|---|---|
-| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `3` | Max FLARE re-retrieval iterations (replaces `TRELIX_RETRIEVAL_FLARE_MAX_ITER`) |
+| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Max FLARE re-retrieval iterations, accepted range 1-3 (replaces `TRELIX_RETRIEVAL_FLARE_MAX_ITER`) |
 | `TRELIX_GRAPH_SEARCH_ENABLED` | `false` | Enable graph BFS retrieval leg |
 | `GITHUB_TOKEN` | — | Required for `trelix review --pr` GitHub integration |
 
