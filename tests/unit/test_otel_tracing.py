@@ -90,10 +90,30 @@ class TestDisabledIsNoOp:
             assert not any(k.startswith("opentelemetry") for k in sys.modules)
         finally:
             sys.modules.update(purged)
-            if retriever_mod is not None:
-                sys.modules["trelix.retrieval.retriever"] = retriever_mod
-            if otel_tracing_mod is not None:
-                sys.modules["trelix.retrieval.otel_tracing"] = otel_tracing_mod
+            # Restoring sys.modules is NOT enough, and the difference is a real bug this
+            # test used to cause. The fresh `import trelix.retrieval.retriever` above pulls
+            # in a NEW otel_tracing module object and binds it as the PACKAGE ATTRIBUTE
+            # `trelix.retrieval.otel_tracing`. Putting the original back in sys.modules
+            # leaves that attribute pointing at the orphan, so any later
+            # `from trelix.retrieval import otel_tracing` — or a helper that resets
+            # module-level metric state — operates on a different object than the code under
+            # test. Measured: `pytest test_otel_metrics.py` alone passed 12/12, while
+            # `pytest test_otel_tracing.py test_otel_metrics.py` failed 5, purely on
+            # alphabetical ordering.
+            #
+            # Same defect class as the `watchfiles` reload earlier in this release, where a
+            # module left half-restored silently disabled the deletion path for every
+            # subsequent test in the session.
+            package = sys.modules.get("trelix.retrieval")
+            for name, module in (
+                ("retriever", retriever_mod),
+                ("otel_tracing", otel_tracing_mod),
+            ):
+                if module is None:
+                    continue
+                sys.modules[f"trelix.retrieval.{name}"] = module
+                if package is not None:
+                    setattr(package, name, module)
 
 
 # ---------------------------------------------------------------------------
@@ -104,11 +124,30 @@ class TestDisabledIsNoOp:
 @pytest.fixture(scope="module")
 def _test_tracer_provider():
     """
-    Install a real SDK TracerProvider backed by InMemorySpanExporter, once for
-    this test module. OpenTelemetry's global TracerProvider can only be set
-    once per process — a second call to set_tracer_provider() is a silent
-    no-op (with a logged warning) — so this installs lazily (only when a test
-    in this module actually runs, not merely on collection) and only once.
+    Get an InMemorySpanExporter fed by the process's global TracerProvider.
+
+    ATTACHES to whatever provider is installed rather than assuming it can
+    install its own, because the global TracerProvider is a ONE-SHOT process
+    resource: `set_tracer_provider()` is guarded by a `Once`, so the second
+    caller anywhere in the session gets a silent no-op plus a logged
+    "Overriding of current TracerProvider is not allowed".
+
+    This module used to be that second caller. tests/unit/test_structured_logging.py
+    installs a bare `TracerProvider()` (no span processors) and never restores it, so
+    under reverse collection order — where test_structured_logging sorts after
+    test_otel_tracing and therefore runs first — this fixture's provider was
+    discarded, every span went to a processor-less provider, and all five
+    "enabled path" tests below failed on empty span lists (three on
+    `len(spans) == 1` against `()`, two on a KeyError/`in spans` miss). Measured:
+    `pytest tests/unit/test_otel_tracing.py tests/unit/test_otel_metrics.py
+    tests/unit/test_structured_logging.py` was 38 passed forward, 6 failed
+    reversed — these 5 plus one unrelated failure inside test_otel_metrics.py.
+
+    Adding a SpanProcessor to the incumbent SDK provider is enough — the
+    exporter sees every sampled span regardless of who owns the provider — and
+    is order-independent in both directions. A non-SDK incumbent (e.g. a
+    NoOpTracerProvider) has no `add_span_processor`, so that case fails loudly
+    instead of silently collecting zero spans.
 
     Skips (rather than errors) when `opentelemetry-sdk` isn't installed —
     CI's default `pip install -e ".[local,dev]"` deliberately does NOT include
@@ -124,11 +163,30 @@ def _test_tracer_provider():
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        # Nothing real installed yet (ProxyTracerProvider), so claim the slot.
+        provider = TracerProvider(resource=Resource.create({SERVICE_NAME: "trelix-test"}))
+        trace.set_tracer_provider(provider)
+        installed = trace.get_tracer_provider()
+        if installed is not provider:
+            pytest.fail(
+                "the global TracerProvider is held by a non-SDK "
+                f"{type(installed).__name__}, which cannot export spans — some earlier "
+                "test set it and did not restore it"
+            )
+
     exporter = InMemorySpanExporter()
-    provider = TracerProvider(resource=Resource.create({SERVICE_NAME: "trelix-test"}))
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
-    return exporter
+    processor = SimpleSpanProcessor(exporter)
+    provider.add_span_processor(processor)
+    try:
+        yield exporter
+    finally:
+        # The SDK has no remove_span_processor(), and the provider may be shared
+        # with the rest of the session, so shut the processor down instead:
+        # InMemorySpanExporter.export() refuses once stopped, which stops this
+        # module's exporter accumulating every later test's spans.
+        processor.shutdown()
 
 
 @pytest.fixture()

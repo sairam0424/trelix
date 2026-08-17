@@ -75,6 +75,40 @@ describe("TrelixClient", () => {
     expect(url.searchParams.get("cursor")).toBe("10");
   });
 
+  // intent_hint/hyde_snippet_hint let a caller that already classified the query
+  // (an agent) skip trelix's internal LLM intent classification. They shipped on
+  // GET /search but were unreachable from this client while schema.ts was stale.
+  it("search() forwards intent_hint and hyde_snippet_hint when provided", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ results: [], next_cursor: null, total_available: 0 }));
+    const client = new TrelixClient("http://127.0.0.1:8765", { fetch: fetchMock });
+
+    await client.search({
+      query: "auth",
+      repo: "/repo",
+      intentHint: "symbol_lookup",
+      hydeSnippetHint: "def authenticate(request): ...",
+    });
+
+    const url = fetchMock.mock.calls[0][0] as URL;
+    expect(url.searchParams.get("intent_hint")).toBe("symbol_lookup");
+    expect(url.searchParams.get("hyde_snippet_hint")).toBe("def authenticate(request): ...");
+  });
+
+  it("search() omits intent_hint/hyde_snippet_hint when not provided", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ results: [], next_cursor: null, total_available: 0 }));
+    const client = new TrelixClient("http://127.0.0.1:8765", { fetch: fetchMock });
+
+    await client.search({ query: "auth", repo: "/repo" });
+
+    const url = fetchMock.mock.calls[0][0] as URL;
+    expect(url.searchParams.has("intent_hint")).toBe(false);
+    expect(url.searchParams.has("hyde_snippet_hint")).toBe(false);
+  });
+
   it("index() POSTs repo_path as the JSON body", async () => {
     const indexResult = {
       files_found: 10,
@@ -111,6 +145,68 @@ describe("TrelixClient", () => {
     expect(url.searchParams.get("repo")).toBe("/repo");
   });
 
+  // POST /parse is the editor/pre-commit route: structural info for content that
+  // was never indexed. The server enforces "exactly one content source", so the
+  // client's job is only to pass through whichever one the caller supplied.
+  it("parseFile() POSTs a disk-backed file_path and returns the parse result", async () => {
+    const parseResult = {
+      symbols: [
+        {
+          name: "foo",
+          qualified_name: "mod.foo",
+          kind: "function",
+          line_start: 1,
+          line_end: 5,
+          signature: "def foo()",
+        },
+      ],
+      call_edge_count: 0,
+      import_edge_count: 2,
+      type_edge_count: 0,
+      parse_errors: 0,
+      note: "single-file parse; cross-file resolution skipped",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(parseResult));
+    const client = new TrelixClient("http://127.0.0.1:8765", { fetch: fetchMock });
+
+    const result = await client.parseFile({ repo_path: "/repo", file_path: "src/foo.py" });
+
+    expect(result).toEqual(parseResult);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8765/parse");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      repo_path: "/repo",
+      file_path: "src/foo.py",
+    });
+  });
+
+  it("parseFile() passes inline content + file_name through unchanged", async () => {
+    const empty = {
+      symbols: [],
+      call_edge_count: 0,
+      import_edge_count: 0,
+      type_edge_count: 0,
+      parse_errors: 0,
+      note: "",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(empty));
+    const client = new TrelixClient("http://127.0.0.1:8765", { fetch: fetchMock });
+
+    await client.parseFile({
+      repo_path: "/repo",
+      content: "def unsaved(): ...",
+      file_name: "draft.py",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      repo_path: "/repo",
+      content: "def unsaved(): ...",
+      file_name: "draft.py",
+    });
+  });
+
   it("graphCommunities() returns a list of community summaries", async () => {
     const summaries = [
       { community_id: 0, size: 5, top_files: ["a.py"], top_symbols: ["foo"], label: "auth" },
@@ -121,6 +217,27 @@ describe("TrelixClient", () => {
     const result = await client.graphCommunities("/repo");
 
     expect(result).toEqual(summaries);
+  });
+
+  // The server caps this route at the 50 largest communities of size >= 2 (on
+  // trelix's own index the uncapped list is 6,497 entries / ~1.16 MB, 99.1% of
+  // them singletons). min_community_size=1 + max_communities=0 is the documented
+  // escape hatch back to the uncapped list, so it has to be expressible here.
+  it("graphCommunities() forwards the size/count caps only when overridden", async () => {
+    // mockImplementation, not mockResolvedValue: a single Response body can only
+    // be read once, and this case issues two requests.
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
+    const client = new TrelixClient("http://127.0.0.1:8765", { fetch: fetchMock });
+
+    await client.graphCommunities("/repo");
+    let url = fetchMock.mock.calls[0][0] as URL;
+    expect(url.searchParams.has("min_community_size")).toBe(false);
+    expect(url.searchParams.has("max_communities")).toBe(false);
+
+    await client.graphCommunities("/repo", { minCommunitySize: 1, maxCommunities: 0 });
+    url = fetchMock.mock.calls[1][0] as URL;
+    expect(url.searchParams.get("min_community_size")).toBe("1");
+    expect(url.searchParams.get("max_communities")).toBe("0");
   });
 
   it("graphVisualize() includes the optional output param only when provided", async () => {

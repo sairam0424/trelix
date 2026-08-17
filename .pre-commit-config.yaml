@@ -27,3 +27,19 @@ repos:
         additional_dependencies: [pydantic, pydantic-settings]
         args: [--ignore-missing-imports]
         files: ^src/
+
+  # Secret scanning. There was none anywhere in the project — not here, not in CI —
+  # for a repo that publishes four PyPI packages and two container images.
+  #
+  # Prefix-matching alone would not have caught what is in this working tree: the AWS
+  # credential pair in the local .env is base64-wrapped, so `AKIA…` never appears and
+  # every AKIA-prefix scanner, including GitHub's push protection, reads it as clean.
+  # gitleaks matches on entropy and context as well as prefixes.
+  #
+  # .env is gitignored and absent from history, so this is prophylactic rather than
+  # remedial — the point is that nothing was watching, and a single `git add -f` or a
+  # renamed copy (`env.backup`, `.env.prod`) would have gone straight through.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.29.0
+    hooks:
+      - id: gitleaks

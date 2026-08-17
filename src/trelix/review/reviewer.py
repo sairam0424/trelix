@@ -38,6 +38,15 @@ Return a JSON array of review comments, each with:
 Return [] if no issues are found. Do not explain your reasoning outside the JSON array.
 """
 
+# A hunk whose retrieval raised is still reviewed, from the diff alone — a
+# diff-only comment is often still right, so dropping the hunk would be worse.
+# But the fallback used to be `except Exception: pass`, so a vector store that
+# had gone missing produced a full page of confident comments written against
+# context_text="" with not one log line and nothing in the output to tell them
+# apart from grounded ones. `comment` is the only field every renderer prints
+# (CLI table, --json, posted GitHub inline comments), so the label goes there.
+_NO_CONTEXT_LABEL = " [trelix: no codebase context — retrieval failed for this hunk]"
+
 
 @dataclass
 class ReviewComment:
@@ -131,12 +140,22 @@ class DiffReviewer:
         # Retrieve context for this hunk
         query = hunk.to_search_query()
         context_text = ""
+        retrieval_failed = False
         try:
             retriever = self._get_retriever()
             ctx = retriever.retrieve(query)
             context_text = ctx.context_text[:3000]  # cap context size
-        except Exception:
-            pass  # proceed without context if retrieval fails
+        except Exception as exc:
+            # WARNING, matching the sibling per-hunk handler in review(): the CLI
+            # configures WARNING, so a DEBUG record would be as silent as the
+            # `pass` this replaced. The file name is in the message because one
+            # degraded hunk in a 40-hunk PR is only actionable if you know which.
+            retrieval_failed = True
+            logger.warning(
+                "DiffReviewer: context retrieval failed for %s — reviewing the diff alone: %s",
+                hunk.file_path,
+                exc,
+            )
 
         # Build diff text for the hunk
         diff_lines = []
@@ -167,10 +186,15 @@ class DiffReviewer:
             system=_REVIEW_SYSTEM,
         )
 
-        return self._parse_response(response.content, hunk)
+        return self._parse_response(response.content, hunk, context_failed=retrieval_failed)
 
-    def _parse_response(self, content: str, hunk: DiffHunk) -> list[ReviewComment]:
+    def _parse_response(
+        self, content: str, hunk: DiffHunk, *, context_failed: bool = False
+    ) -> list[ReviewComment]:
         """Parse LLM JSON response into ReviewComment objects."""
+        # Labelled per hunk, not per review: retrieval failing on one file must
+        # not cast doubt on the grounded comments for the rest of the PR.
+        suffix = _NO_CONTEXT_LABEL if context_failed else ""
         try:
             # Extract JSON array from response (LLM may add prose before/after)
             start = content.find("[")
@@ -184,7 +208,7 @@ class DiffReviewer:
                     line_start=int(item.get("line_start", hunk.new_start)),
                     line_end=int(item.get("line_end", hunk.new_start + hunk.new_lines)),
                     severity=str(item.get("severity", "INFO")),
-                    comment=str(item.get("comment", "")),
+                    comment=str(item.get("comment", "")) + suffix,
                 )
                 for item in items
                 if isinstance(item, dict) and item.get("comment")

@@ -23,15 +23,24 @@ from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import typer
 from rich.console import Console
-from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
+from trelix.core.console_safety import safe_text
 from trelix.federation.registry import RepoRegistry
 
+# Imported eagerly, unlike every other store import in this module, because it is the
+# default value of `index --prune-max-percent` and typer reads that at decoration time.
+# provenance.py itself pulls in nothing heavier than hashlib/subprocess.
+from trelix.store.provenance import _PRUNE_MAX_FRACTION_DEFAULT
+
 if TYPE_CHECKING:
-    from trelix.core.config import EmbedderConfig
+    from trelix.core.config import EmbedderConfig, IndexConfig
+    from trelix.core.models import IndexedFile
+    from trelix.indexing.indexer import Indexer
+    from trelix.store.db import Database
+    from trelix.store.provenance import DriftReport, IndexProvenance, PrunePlan
 
 # Windows' legacy console codepage (cp1252 etc.) can't encode the Unicode
 # braille glyphs Rich's default spinner renders (e.g. U+280B), crashing with
@@ -58,6 +67,8 @@ app = typer.Typer(
 console = Console()
 err_console = Console(stderr=True)
 
+logger = logging.getLogger("trelix.cli")
+
 
 def _print_error(label: str, detail: object) -> None:
     """Print a "[red]<label>:[/red] <detail>" error line, safely.
@@ -71,7 +82,7 @@ def _print_error(label: str, detail: object) -> None:
     leaving the surrounding [red]/[/red] markup intact.
     """
 
-    err_console.print(f"[red]{label}:[/red] {escape(str(detail))}")
+    err_console.print(f"[red]{label}:[/red] {_safe_text(str(detail))}")
 
 
 def _print_json(payload: object, *, indent: int | None = 2) -> None:
@@ -102,6 +113,14 @@ def _print_json(payload: object, *, indent: int | None = 2) -> None:
         highlight=False,
         soft_wrap=True,
     )
+
+
+# Relocated to trelix.core.console_safety so indexing/indexer.py can share it — it is
+# the only other module in src/ that builds a markup Console, and it cannot import from
+# the CLI without a cycle. Aliased to the private name so the ~86 call sites below are
+# unchanged; see that module for why the strip-then-escape order is load-bearing.
+
+_safe_text = safe_text
 
 
 def _status_console(json_output: bool) -> Console:
@@ -251,6 +270,36 @@ def index(
     repo: str = typer.Argument(..., help="Path to the repository to index"),
     provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "Cost preview only. Walks, chunks and counts tokens with the real tokenizer, "
+            "then reports the embedding spend a real run would incur. Embeds nothing."
+        ),
+    ),
+    prune: bool = typer.Option(
+        False,
+        "--prune",
+        help=(
+            "After indexing, remove index rows and embeddings for files no longer in the "
+            "repository. Previews only unless --yes is given, and refuses unless the walk "
+            "can be shown to be trustworthy."
+        ),
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Actually delete what --prune found. Meaningless without --prune.",
+    ),
+    prune_max_percent: float = typer.Option(
+        _PRUNE_MAX_FRACTION_DEFAULT * 100,
+        "--prune-max-percent",
+        help=(
+            "Refuse a prune that would remove more than this percentage of the index. "
+            "Raise it only after reading the previewed list."
+        ),
+    ),
 ) -> None:
     """Index a repository — builds the search index at <repo>/.trelix/index.db"""
     _setup_logging(verbose)
@@ -259,6 +308,22 @@ def index(
 
     from trelix.core.config import IndexConfig
     from trelix.indexing.indexer import Indexer
+
+    # Refused rather than resolved by precedence. Either combination means the user has a
+    # different command in mind than the one they typed, and picking one for them is how a
+    # `--yes` that was meant to authorise a prune ends up authorising nothing at all.
+    if dry_run and yes:
+        _print_error(
+            "Contradictory flags",
+            "--dry-run changes nothing, so --yes has nothing to authorise. Drop one.",
+        )
+        raise typer.Exit(1)
+    if yes and not prune:
+        _print_error(
+            "Nothing to authorise",
+            "--yes only applies to --prune. Add --prune, or drop --yes.",
+        )
+        raise typer.Exit(1)
 
     try:
         config = IndexConfig(
@@ -276,13 +341,37 @@ def index(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
-    # escape(repo): a directory legitimately named e.g. "Project [old]" would
+    # _safe_text(repo): a directory legitimately named e.g. "Project [old]" would
     # otherwise render with "[old]" swallowed as a markup tag.
-    console.print(Panel(f"[bold cyan]Indexing[/bold cyan] {escape(repo)}", expand=False))
+    if dry_run:
+        console.print(
+            Panel(
+                f"[bold cyan]Dry run — cost preview only[/bold cyan] {_safe_text(repo)}",
+                expand=False,
+            )
+        )
+        _print_cost_preview(config)
+        if prune:
+            # Previewed against the index as it stands, which is the point: a prune
+            # planned before a re-index reports the refusal the user would hit.
+            _prune_from_index(config, confirmed=False, max_fraction=prune_max_percent / 100.0)
+        return
+
+    console.print(Panel(f"[bold cyan]Indexing[/bold cyan] {_safe_text(repo)}", expand=False))
 
     t0 = time.perf_counter()
     try:
         indexer = Indexer(config)
+
+        # Read BEFORE index() runs. index() writes provenance at the end of the run, so a
+        # record read after it describes the run that just finished — and a prune guard fed
+        # that record compares this walk config against a copy of itself. Captured here even
+        # when --prune was not passed: it is one cheap key-value read, and making it
+        # conditional invites the next caller to reach for the post-run value.
+        from trelix.store.provenance import read_provenance
+
+        provenance_before = read_provenance(indexer.db)
+
         stats = indexer.index()
     except KeyboardInterrupt:
         err_console.print("[yellow]Indexing cancelled.[/yellow]")
@@ -305,6 +394,440 @@ def index(
     if stats.get("errors"):
         table.add_row("[red]Errors[/red]", f"[red]{stats['errors']}[/red]")
     console.print(table)
+
+    if prune:
+        # The DELETIONS run after the index — a prune wants the freshest possible view of
+        # what is on disk, and the drift check pays for a second walk, which is why --prune
+        # is opt-in rather than part of every run.
+        #
+        # But the GUARD is evaluated against `provenance_before`, captured above before
+        # `index()` ran. index() writes provenance at the end of the run, so reading it here
+        # would compare this run's walk config against a copy of itself and disarm three of
+        # the five conditions. See _run_prune's docstring for the reproduction.
+        _run_prune(
+            config,
+            indexer.db,
+            indexer.vector_store,
+            confirmed=yes,
+            max_fraction=prune_max_percent / 100.0,
+            provenance=provenance_before,
+        )
+
+
+# ---------------------------------------------------------------------------
+# index --prune
+# ---------------------------------------------------------------------------
+
+# How many candidate paths to print before summarising the rest. A prune is authorised by
+# a human reading this list, so it has to be readable; the count and the percentage below
+# it carry the part that got elided.
+_PRUNE_PREVIEW_LIMIT = 25
+
+
+def _run_prune(
+    config: IndexConfig,
+    db: Database,
+    vector_store: object | None,
+    *,
+    confirmed: bool,
+    max_fraction: float,
+    provenance: IndexProvenance,
+) -> None:
+    """Plan a prune, print it, and delete only when every guard licenses it.
+
+    Exits nonzero on a refusal. A refused prune that exited 0 would tell a script that the
+    deletions happened, which is the failure mode this whole feature was withheld over.
+
+    `provenance` MUST be the record as it stood BEFORE the index run that precedes this
+    call, and is therefore passed in rather than read here. Reading it here is what the
+    first version did, and it silently disarmed three of the five guards:
+
+    `Indexer.index()` writes provenance at the END of the run, and this prune executes
+    after that — so a locally-read record describes the run that just finished, and
+    `walk_config_comparable`, `walk_config_changed` and the `trelix_version` check all
+    compare the current walk config against a copy of itself. They could only ever pass.
+
+    Reproduced end to end with a real Indexer over a temp repo: index three files, then
+    re-run with one file edited and `vendored/` newly ignored. The two `vendored/` files
+    are still on disk, and the plan came back with 2 candidates and **zero refusals**.
+    On this repository that is the 35 files under `packages/`.
+
+    It looked correct under test because `index()` returns early when nothing changed
+    (`if not to_parse`), never reaching the provenance write — so with an unmodified tree
+    the stale record is still there and the guard fires. One edited file removes that
+    accident. The question the guard asks — "was the index I am about to prune built with
+    the walk config I am pruning it with?" — is about the state before the run, so the
+    pre-run snapshot is not a workaround, it is the correct input.
+    """
+    from trelix.store.provenance import compute_drift, plan_prune
+
+    # The snapshot goes to BOTH. Two of the five guards (`walk_config_comparable`,
+    # `walk_config_changed`) are read off the report, not off this argument, so passing it
+    # only to plan_prune left them comparing the post-run record against itself — measured,
+    # and it is what made the first version of this feature delete live files.
+    report = compute_drift(config, db, provenance=provenance)
+    plan = plan_prune(
+        report,
+        provenance,
+        len(db.get_all_file_rel_paths()),
+        max_fraction=max_fraction,
+    )
+
+    _print_prune_plan(plan, will_act=confirmed and not plan.is_refused)
+
+    if plan.is_refused:
+        raise typer.Exit(1)
+    if not plan.candidates or not confirmed:
+        return
+
+    repo_root = Path(config.repo_path)
+    deleted = 0
+    unmatched: list[str] = []
+    for rel_path in plan.candidates:
+        # The absolute path is reconstructed rather than read back out of `files.path`
+        # because delete_file_by_path matches `path = ? OR rel_path = ?` — so a checkout
+        # that has moved since it was indexed still deletes on the rel_path arm.
+        if db.delete_file_by_path(str(repo_root / rel_path), rel_path, vector_store):
+            deleted += 1
+        else:
+            unmatched.append(rel_path)
+
+    console.print(
+        f"[green]Pruned {deleted} file(s)[/green] — rows, symbols, chunks and embeddings."
+    )
+    if unmatched:
+        # Loud, and nonzero. The plan came from `files.rel_path` seconds earlier, so a row
+        # that cannot be found by the same key now means the delete and the plan disagree
+        # about identity, and the remaining embeddings are orphaned rather than removed.
+        err_console.print(
+            f"[red]{len(unmatched)} planned deletion(s) matched no index row[/red] "
+            f"({_safe_text(', '.join(unmatched[:5]))}"
+            f"{' …' if len(unmatched) > 5 else ''}) — the plan and the index disagree. "
+            "Run `trelix stats --drift` before trusting this index."
+        )
+        raise typer.Exit(1)
+
+
+def _prune_from_index(config: IndexConfig, *, confirmed: bool, max_fraction: float) -> None:
+    """Plan a prune against the index as it already stands, without indexing first.
+
+    Only reachable from `--dry-run`, so nothing is deleted and no vector store is needed.
+
+    Opened `read_only=True`, which is load-bearing rather than tidy. A normal `Database(...)`
+    runs `init_schema()` — DDL, migrations, and a `PRAGMA user_version` stamp — so on any
+    pre-3.1.2 index this path used to commit a `DELETE` and a schema write while telling the
+    user it was a dry run. The cost-preview path in this same file already opened
+    `file:…?mode=ro` for exactly this reason; the two disagreed. SQLite now enforces it: a
+    stray write raises instead of succeeding.
+
+    The provenance record is read here rather than snapshotted, and that is correct on this
+    path: no index run precedes it, so what is in the database IS the pre-run state.
+    """
+    from trelix.store.db import Database as _Database
+    from trelix.store.provenance import read_provenance
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        err_console.print(
+            f"[yellow]No index at {_safe_text(str(db_path))}[/yellow] — nothing to prune. "
+            "Run `trelix index` first."
+        )
+        return
+
+    with _Database(db_path, read_only=True) as db:
+        _run_prune(
+            config,
+            db,
+            None,
+            confirmed=confirmed,
+            max_fraction=max_fraction,
+            provenance=read_provenance(db),
+        )
+
+
+def _print_prune_plan(plan: PrunePlan, *, will_act: bool) -> None:
+    """Render what a prune would remove, then every reason it may not.
+
+    The list comes first and the refusals last, deliberately: the refusals name what to fix
+    and the fix depends on what is in the list (35 phantom deletions all under `packages/`
+    is a different problem from one file under an unreadable directory).
+    """
+    if not plan.candidates:
+        console.print(
+            "\n[green]Nothing to prune:[/green] every indexed file was yielded by this walk."
+        )
+    else:
+        table = Table(
+            title="Indexed but no longer in the repository",
+            show_header=True,
+            header_style="bold cyan",
+        )
+        table.add_column("Path")
+        for rel_path in plan.candidates[:_PRUNE_PREVIEW_LIMIT]:
+            # Repository-controlled text: a directory named "old[1]" renders wrong, and one
+            # named "old[/1]" raises MarkupError, taking the whole listing with it.
+            table.add_row(_safe_text(rel_path))
+        console.print(table)
+        if len(plan.candidates) > _PRUNE_PREVIEW_LIMIT:
+            console.print(
+                f"[dim]… and {len(plan.candidates) - _PRUNE_PREVIEW_LIMIT} more not shown.[/dim]"
+            )
+        console.print(
+            f"[bold]{len(plan.candidates)} of {plan.indexed_count} indexed file(s)[/bold] "
+            f"({plan.fraction_of_index:.1%} of the index)."
+        )
+
+    for refusal in plan.refusals:
+        # Escaped as a whole: these sentences carry repo-controlled paths and setting
+        # values interpolated by plan_prune.
+        err_console.print(f"[red]Prune refused:[/red] {_safe_text(refusal)}")
+
+    if plan.candidates and not plan.refusals and not will_act:
+        console.print(
+            "[yellow]Nothing was deleted[/yellow] — `--prune` previews by default. "
+            "Re-run with `--prune --yes` to remove the file(s) above and their embeddings."
+        )
+
+
+# ---------------------------------------------------------------------------
+# index --dry-run  (cost preview)
+# ---------------------------------------------------------------------------
+
+# USD per 1,000,000 input tokens at each provider's published list price, checked
+# 2026-08. A provider/model pair absent from here is reported as "unknown" rather than
+# defaulted or interpolated: this table exists so someone can decide whether to spend the
+# money, and a stale-but-plausible number is indistinguishable from a checked one.
+#
+# Azure is deliberately absent and unpriceable from config: it bills per deployment and
+# tier, and `azure_embeddings_deployment` is a name chosen by whoever created the
+# deployment, so it carries no rate at all.
+_EMBED_PRICE_PER_MTOK_USD: dict[tuple[str, str], float] = {
+    ("openai", "text-embedding-3-large"): 0.13,
+    ("openai", "text-embedding-3-small"): 0.02,
+    ("openai", "text-embedding-ada-002"): 0.10,
+    ("voyage", "voyage-code-3"): 0.18,
+}
+
+# Providers that never make a billed call. The cost is real — CPU/GPU time and disk — but
+# it is not a token bill, and reporting $0.00 for them would read as "free".
+_LOCAL_EMBED_PROVIDERS = frozenset({"local", "local-code", "bge-code", "nomic-code"})
+
+# Which EmbedderConfig field holds the model name for each provider. There is no single
+# `model` attribute, so this is the mapping the price lookup keys on.
+_EMBED_MODEL_FIELDS = {
+    "openai": "openai_model",
+    "azure": "azure_embeddings_deployment",
+    "voyage": "voyage_model",
+    "local": "local_model",
+    "local-code": "local_code_model",
+    "bge-code": "bge_code_model",
+    "nomic-code": "nomic_code_model",
+    "bedrock-titan": "bedrock_titan_model",
+    "bedrock-cohere": "bedrock_cohere_model",
+}
+
+
+def _embed_model_name(embedder: EmbedderConfig) -> str:
+    field = _EMBED_MODEL_FIELDS.get(str(embedder.provider))
+    return str(getattr(embedder, field, "") or "") if field else "unknown"
+
+
+def _print_cost_preview(config: IndexConfig) -> None:
+    """Report what a real run would embed and what it would cost, embedding nothing.
+
+    `scripts/self-index.sh --dry-run` already answers "which files would be indexed" and
+    where they live, so this deliberately does not repeat that breakdown. What it adds is
+    the number that decides whether to start: tokens, counted with the chunker's own
+    tiktoken encoder over the chunk text the chunker actually builds, priced where the rate
+    is known and reported as unknown where it is not.
+
+    The count is an UPPER BOUND for files that are already indexed and have changed: the
+    real run re-embeds only the symbols whose content hash moved, and reproducing that
+    needs the symbol rows this preview declines to write. For a first index of a repo the
+    two agree.
+    """
+    from trelix.indexing.chunker import Chunker
+    from trelix.indexing.indexer import Indexer
+    from trelix.indexing.walker import FileWalker
+
+    walker = FileWalker(config)
+    files = list(walker.walk())
+
+    if not walker.walk_was_complete:
+        # Same disclosure the real indexer makes: an unreadable directory drops its whole
+        # subtree, so an estimate built on this walk under-counts by an unknown amount.
+        skipped = walker.incomplete_paths
+        err_console.print(
+            f"[yellow]{len(skipped)} path(s) could not be read and are missing from this "
+            f"estimate: {_safe_text(', '.join(skipped[:5]))}"
+            f"{' …' if len(skipped) > 5 else ''}[/yellow]"
+        )
+
+    to_embed, index_read_error = _files_needing_embedding(config, files)
+
+    chunker = Chunker(config.chunker)
+    chunk_count = 0
+    token_count = 0
+    no_symbols = 0
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Chunking (no embedding)…", total=len(to_embed))
+        for file in to_embed:
+            progress.advance(task)
+            try:
+                # Called unbound on purpose. `_parse_one` touches no instance state, and
+                # constructing an Indexer would load an embedding model — the one thing a
+                # cost preview must not do. Borrowing it also means the preview cannot
+                # drift from the parse whose cost it is estimating; a private copy here
+                # would silently mis-count the line-window fallback.
+                parsed = Indexer._parse_one(cast("Indexer", None), file)
+            except Exception as exc:
+                no_symbols += 1
+                logging.getLogger("trelix.cli").debug(
+                    "Dry run could not parse %s: %s", file.rel_path, exc
+                )
+                continue
+            if parsed.skipped or parsed.parse_result is None:
+                no_symbols += 1
+                continue
+            symbols = parsed.parse_result.symbols
+            chunks = chunker.build_chunks(
+                symbols=symbols,
+                imports=parsed.parse_result.import_edges,
+                file_rel_path=file.rel_path,
+                language=file.language.value,
+                # `parent_id` is still a local index at this point — Phase 2 is what
+                # remaps it to DB ids — so the parent map is keyed the same way. Keyed by
+                # DB id here instead, every method would lose its "# Class:" header line
+                # and the token count with it.
+                parent_symbols=dict(enumerate(symbols)),
+            )
+            chunk_count += len(chunks)
+            token_count += sum(c.token_count for c in chunks)
+
+    table = Table(
+        title="Cost preview (nothing embedded)", show_header=True, header_style="bold cyan"
+    )
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+    table.add_row("Files walked", f"{len(files):,}")
+    if not walker.walk_was_complete:
+        table.add_row("[yellow]Paths unreadable[/yellow]", f"{len(walker.incomplete_paths):,}")
+    table.add_row("Unchanged since last index", f"{len(files) - len(to_embed):,}")
+    table.add_row("Files to embed", f"{len(to_embed):,}")
+    if no_symbols:
+        table.add_row("Files yielding no symbols", f"{no_symbols:,}")
+    table.add_row("Chunks to embed", f"{chunk_count:,}")
+    table.add_row("Embedding tokens", f"{token_count:,}")
+    console.print(table)
+
+    if index_read_error is not None:
+        console.print(
+            f"[yellow]The existing index could not be read[/yellow] "
+            f"({_safe_text(index_read_error)}), so every walked file is counted as new — "
+            "this is an over-estimate, not an under-estimate."
+        )
+
+    _print_cost_estimate(config, token_count)
+    _print_cost_caveats(config)
+
+
+def _files_needing_embedding(
+    config: IndexConfig, files: list[IndexedFile]
+) -> tuple[list[IndexedFile], str | None]:
+    """Split off the files a real run would skip on an unchanged content hash.
+
+    Read through a read-only sqlite3 connection rather than `Database`, whose constructor
+    runs schema migrations: a cost preview must not be able to modify the index it prices.
+    Returns the files to embed plus the reason the index could not be consulted, if any —
+    reported rather than swallowed, because "no index readable" and "index fully current"
+    are opposite answers that would otherwise look the same.
+    """
+    import sqlite3
+
+    if not config.incremental:
+        return list(files), None
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        return list(files), None
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute("SELECT rel_path, hash FROM files")
+            stored = {str(r[0]): str(r[1]) for r in rows}
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return list(files), str(exc)
+
+    return [f for f in files if stored.get(f.rel_path) != f.hash], None
+
+
+def _print_cost_estimate(config: IndexConfig, token_count: int) -> None:
+    """Price the token count, or say plainly that this provider cannot be priced."""
+    provider = str(config.embedder.provider)
+    model = _embed_model_name(config.embedder)
+    label = _safe_text(f"{provider} / {model}")
+
+    if provider in _LOCAL_EMBED_PROVIDERS:
+        console.print(
+            f"[bold]Estimated cost[/bold] none — {label} runs locally, so there is no API "
+            "cost. The spend is CPU/GPU time and disk, which this does not estimate."
+        )
+    elif (price := _EMBED_PRICE_PER_MTOK_USD.get((provider, model))) is not None:
+        console.print(
+            f"[bold]Estimated cost[/bold] ${token_count / 1_000_000 * price:.4f} — "
+            f"{token_count:,} tokens at ${price:.2f} per 1M tokens ({label})."
+        )
+    else:
+        console.print(
+            f"[bold]Estimated cost[/bold] unknown — trelix has no checked list price for "
+            f"{label}, and a guessed rate is worse than none. {token_count:,} tokens would "
+            "be sent; price them against that provider's own published rate."
+        )
+
+    # Stated for every provider, not only the ones it is wrong for. cl100k_base is the
+    # chunker's encoder, so it is exactly what a real run's Phase 3 reports — but only
+    # OpenAI and Azure bill on it, and Voyage / Titan / Cohere tokenize differently.
+    console.print(
+        "[dim]Tokens counted with cl100k_base, the encoder the chunker uses. Providers "
+        "outside OpenAI/Azure bill on their own tokenizer, so their invoice will differ "
+        "from this count.[/dim]"
+    )
+
+
+def _print_cost_caveats(config: IndexConfig) -> None:
+    """Name the spend this preview does NOT include, one line per enabled feature."""
+    console.print(
+        "[dim]Files already indexed and changed are counted whole: the real run re-embeds "
+        "only the symbols whose content hash moved, so the figure above is an upper bound "
+        "for them.[/dim]"
+    )
+    if config.chunker.contextual:
+        console.print(
+            "[yellow]Contextual chunking is enabled[/yellow] — every chunk also costs one "
+            f"LLM call ({_safe_text(config.chunker.contextual_model)}), which is not priced "
+            "above."
+        )
+    if config.file_summaries_enabled:
+        console.print(
+            "[yellow]File summaries are enabled[/yellow] — one LLM call per file on top of "
+            "the embeddings above, not priced here."
+        )
+    if config.chunker.multi_granularity_enabled:
+        console.print(
+            "[yellow]Multi-granularity indexing is enabled[/yellow] — it embeds once per "
+            "sub-symbol as well, bypassing the token batching, and those embeddings are "
+            "NOT in the count above."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +901,7 @@ def search(
     # them raised MarkupError and rendered zero rows. See the markup-safety note
     # near the top of this file. `query` is escaped too: searching for the very
     # regex that triggers this bug ("trelix search . '[/!]'") must not crash.
-    table = Table(title=f"Search: {escape(query)}", show_header=True, header_style="bold cyan")
+    table = Table(title=f"Search: {_safe_text(query)}", show_header=True, header_style="bold cyan")
     table.add_column("File", style="dim", max_width=40)
     table.add_column("Symbol", style="bold")
     table.add_column("Lines", justify="right")
@@ -386,8 +909,8 @@ def search(
 
     for r in context.results:
         table.add_row(
-            escape(r.file.rel_path),
-            escape(r.symbol.name),
+            _safe_text(r.file.rel_path),
+            _safe_text(r.symbol.name),
             f"{r.symbol.line_start}-{r.symbol.line_end}",
             f"{r.score:.4f}",
         )
@@ -456,8 +979,8 @@ def ask(
             # `re.sub(r"^//[/!]?\s?", ...)` raised MarkupError, so `trelix ask`
             # printed nothing and exited nonzero. escape() is display-only —
             # nothing here is trelix-authored markup meant to be interpreted.
-            console.print(escape(answer))
-            err_console.print(f"[dim]Session: {escape(resolved_session)}[/dim]")
+            console.print(_safe_text(answer))
+            err_console.print(f"[dim]Session: {_safe_text(resolved_session)}[/dim]")
             return
 
         retriever = Retriever(config)
@@ -472,7 +995,7 @@ def ask(
 
             loop = FLARELoop(retriever, synth, config)
             answer = loop.run(query)
-            console.print(escape(answer))
+            console.print(_safe_text(answer))
         else:
             context = retriever.retrieve(query)
             # If provider=local (no API key), print the context text directly.
@@ -481,10 +1004,10 @@ def ask(
             # --provider wasn't passed.
             if config.embedder.provider == "local":
                 console.print(
-                    Panel(f"[bold cyan]Context for:[/bold cyan] {escape(query)}", expand=False)
+                    Panel(f"[bold cyan]Context for:[/bold cyan] {_safe_text(query)}", expand=False)
                 )
                 if context.context_text:
-                    console.print(escape(context.context_text))
+                    console.print(_safe_text(context.context_text))
                 else:
                     console.print("[yellow]No relevant code found.[/yellow]")
                 return
@@ -493,7 +1016,7 @@ def ask(
             # form a tag, and a complete "[/!]" inside one token can no longer
             # abort the stream mid-answer.
             for token in synth.stream(context, config.retrieval):
-                console.print(escape(token), end="", highlight=False)
+                console.print(_safe_text(token), end="", highlight=False)
             console.print()  # final newline
     except Exception as exc:
         _print_error("Synthesis failed", exc)
@@ -536,7 +1059,7 @@ def query(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
-    console.print(Panel(f"[bold cyan]Query:[/bold cyan] {escape(query_str)}", expand=False))
+    console.print(Panel(f"[bold cyan]Query:[/bold cyan] {_safe_text(query_str)}", expand=False))
 
     try:
         retriever = Retriever(config)
@@ -563,8 +1086,8 @@ def query(
     # Indexed-repository text into markup-parsed cells — same sink as search().
     for r in context.results:
         table.add_row(
-            escape(r.file.rel_path),
-            escape(r.symbol.name),
+            _safe_text(r.file.rel_path),
+            _safe_text(r.symbol.name),
             f"{r.symbol.line_start}-{r.symbol.line_end}",
             f"{r.score:.4f}",
         )
@@ -620,7 +1143,7 @@ def call_graph(
         _print_error("Failed to open index", exc)
         raise typer.Exit(1) from exc
 
-    console.print(f"\n[bold] Graph:[/bold] {escape(symbol)}\n")
+    console.print(f"\n[bold] Graph:[/bold] {_safe_text(symbol)}\n")
 
     def _render_table(title: str, results: list[_SearchResult]) -> None:
         tbl = Table(show_header=True, header_style="bold cyan", title=title)
@@ -634,8 +1157,8 @@ def call_graph(
             # is left alone. The "(none)" row below is trelix's own markup.
             for r in results:
                 tbl.add_row(
-                    escape(r.file.rel_path),
-                    escape(r.symbol.qualified_name or r.symbol.name),
+                    _safe_text(r.file.rel_path),
+                    _safe_text(r.symbol.qualified_name or r.symbol.name),
                     f"{r.symbol.line_start}-{r.symbol.line_end}",
                     r.symbol.kind.value if hasattr(r.symbol.kind, "value") else str(r.symbol.kind),
                 )
@@ -646,7 +1169,7 @@ def call_graph(
     valid_directions = {"callers", "callees", "importers", "all"}
     if direction not in valid_directions:
         err_console.print(
-            f"[red]Invalid direction[/red] {escape(repr(direction))}. "
+            f"[red]Invalid direction[/red] {_safe_text(repr(direction))}. "
             f"Choose from: {', '.join(sorted(valid_directions))}"
         )
         raise typer.Exit(1)
@@ -661,7 +1184,7 @@ def call_graph(
 
     if direction in ("importers", "all"):
         importers = retriever.get_importers(symbol)
-        _render_table(f'Importers of "{escape(symbol)}" ({len(importers)})', importers)
+        _render_table(f'Importers of "{_safe_text(symbol)}" ({len(importers)})', importers)
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +1195,14 @@ def call_graph(
 @app.command()
 def stats(
     repo: str = typer.Argument(..., help="Path to the indexed repository"),
+    drift: bool = typer.Option(
+        False,
+        "--drift",
+        help=(
+            "Also compare every indexable file on disk against its stored hash. "
+            "Costs a full walk plus a SHA-256 per file, so it is off by default."
+        ),
+    ),
 ) -> None:
     """Show index statistics (files, symbols, chunks, DB size)"""
     _setup_logging(False)
@@ -697,10 +1228,12 @@ def stats(
     db_path = config.db_path_absolute
     if not db_path.exists():
         err_console.print(
-            f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {escape(repo)}` first."
+            f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
+            f" run `trelix index {_safe_text(repo)}` first."
         )
         raise typer.Exit(1)
+
+    from trelix.store.provenance import commits_since, compute_drift, read_provenance
 
     try:
         with Database(db_path) as db:
@@ -709,13 +1242,17 @@ def stats(
             symbol_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
             chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             db_size_bytes = db_path.stat().st_size
+            provenance = read_provenance(db)
+            # Computed inside the `with` because it reads per-file hashes back out of
+            # this same connection.
+            drift_report = compute_drift(config, db) if drift else None
     except Exception as exc:
         _print_error("Failed to read index", exc)
         raise typer.Exit(1) from exc
 
     db_size_kb = db_size_bytes / 1024
 
-    console.print(Panel(f"[bold cyan]Index Stats:[/bold cyan] {escape(repo)}", expand=False))
+    console.print(Panel(f"[bold cyan]Index Stats:[/bold cyan] {_safe_text(repo)}", expand=False))
 
     table = Table(show_header=True, header_style="bold cyan")
     table.add_column("Metric", style="dim")
@@ -726,6 +1263,160 @@ def stats(
     table.add_row("DB size", f"{db_size_kb:.1f} KB")
     console.print(table)
 
+    _print_provenance(provenance, commits_since(config, provenance.git_commit))
+    if drift_report is not None:
+        _print_drift(drift_report)
+
+
+def _print_provenance(provenance: IndexProvenance, behind: int | None) -> None:
+    """Render what the index was built from, or say plainly that it is unknown."""
+    if provenance.is_empty:
+        console.print(
+            "\n[yellow]Provenance:[/yellow] not recorded — this index predates "
+            "provenance tracking. Re-index to capture it."
+        )
+        return
+
+    table = Table(show_header=True, header_style="bold cyan", title="Built from")
+    table.add_column("Field", style="dim")
+    table.add_column("Value", justify="right")
+
+    if provenance.git_commit:
+        commit = provenance.git_commit[:12]
+        # "unknown" rather than "up to date" when the count could not be computed: the
+        # recorded commit may have been rebased away or garbage collected, and rendering
+        # that as 0 would assert the index is current when nothing checked.
+        if behind is None:
+            suffix = " [dim](distance from HEAD unknown)[/dim]"
+        elif behind == 0:
+            suffix = " [green](= HEAD)[/green]"
+        else:
+            suffix = f" [yellow](HEAD is {behind} commit(s) ahead)[/yellow]"
+        table.add_row("Commit", _safe_text(commit) + suffix)
+    if provenance.git_branch:
+        table.add_row("Branch", _safe_text(provenance.git_branch))
+    if provenance.git_dirty is not None:
+        table.add_row(
+            "Worktree at index time",
+            "[yellow]had uncommitted changes[/yellow]" if provenance.git_dirty else "clean",
+        )
+    if provenance.indexed_at:
+        table.add_row("Indexed at", _safe_text(provenance.indexed_at))
+    if provenance.trelix_version:
+        table.add_row("trelix version", _safe_text(provenance.trelix_version))
+    if provenance.embedder_provider:
+        model = f" / {provenance.embedder_model}" if provenance.embedder_model else ""
+        table.add_row("Embedder", _safe_text(provenance.embedder_provider + model))
+
+    console.print(table)
+
+
+def _print_drift(report: DriftReport) -> None:
+    """Render file-level drift, and refuse to present `missing` as actionable.
+
+    A truncated walk yields the same `missing` list as a set of genuinely deleted files.
+    Anyone acting on that count would delete embeddings that cost money to recompute, so
+    an incomplete walk is stated before the numbers rather than after them — and, when
+    `missing_is_trustworthy` is False, the headline total (`actionable_drifted_count`) and
+    the remediation sentence are both gated on it as well. Printing a warning and then a
+    number that ignores it is worse than printing neither: it reads as a rounding
+    disagreement rather than as a limit on what was measured.
+    """
+    if not report.walk_was_complete:
+        shown = ", ".join(report.incomplete_paths[:5])
+        console.print(
+            f"\n[yellow]Warning:[/yellow] {len(report.incomplete_paths)} path(s) could not "
+            f"be read during this walk ({_safe_text(shown)}"
+            f"{' …' if len(report.incomplete_paths) > 5 else ''}). Files under them are "
+            "counted as [bold]missing[/bold] below even though they may be present — do "
+            "not prune on this result."
+        )
+
+    if report.walk_config_changed:
+        console.print(
+            "\n[yellow]Warning:[/yellow] this walk used different settings than the index "
+            "was built with, so [bold]missing[/bold] below includes files the walk simply "
+            "no longer reaches — not deletions."
+        )
+        diff_table = Table(show_header=True, header_style="bold yellow")
+        diff_table.add_column("Setting", style="dim")
+        diff_table.add_column("At index time")
+        diff_table.add_column("Now")
+        for name, recorded, current in report.walk_config_diff:
+            diff_table.add_row(
+                _safe_text(name), _safe_text(recorded[:60]), _safe_text(current[:60])
+            )
+        console.print(diff_table)
+        console.print(
+            "[dim]TRELIX_WALKER_* is read from the process environment only, never from "
+            ".env, and EXTRA_IGNORE_DIRS replaces the default list rather than extending "
+            "it. Re-run with the same environment that built the index — "
+            "`scripts/self-index.sh` is the reference.[/dim]"
+        )
+    elif not report.walk_config_comparable:
+        console.print(
+            "\n[dim]This index predates walk-config recording, so whether the walk used "
+            "the same ignore rules could not be checked. Treat [bold]missing[/bold] as "
+            "unverified.[/dim]"
+        )
+
+    if report.is_clean:
+        console.print(
+            f"\n[green]No drift:[/green] all {report.unchanged_count} indexable files "
+            "match their stored hashes."
+        )
+        return
+
+    table = Table(show_header=True, header_style="bold cyan", title="Worktree drift")
+    table.add_column("State", style="dim")
+    table.add_column("Files", justify="right")
+    table.add_column("Examples")
+
+    # The row label carries the caveat too. A bare "Indexed but not found  35" beside a
+    # total of 64 reads as an arithmetic bug rather than a deliberate exclusion.
+    missing_label = (
+        "Indexed but not found"
+        if report.missing_is_trustworthy
+        else "Indexed but not found (unverified)"
+    )
+    for label, paths in (
+        ("Changed since indexing", report.stale),
+        ("Not indexed yet", report.new),
+        (missing_label, report.missing),
+    ):
+        if paths:
+            examples = ", ".join(paths[:3]) + (" …" if len(paths) > 3 else "")
+            table.add_row(label, str(len(paths)), _safe_text(examples))
+    table.add_row("Unchanged", str(report.unchanged_count), "")
+    console.print(table)
+
+    if report.missing_is_trustworthy:
+        console.print(
+            f"[yellow]{report.drifted_count} file(s) have drifted.[/yellow] "
+            "Run `trelix index` to rebuild, or `trelix update-index <file>` per file."
+        )
+        return
+
+    # Neither the total nor the remedy may contradict the warning printed above. Measured
+    # on this repository: "99 file(s) have drifted. Run `trelix index` to rebuild" where
+    # 35 of the 99 were every file under `packages/`, all present on disk — `packages` is
+    # in the default `extra_ignore_dirs` for .NET NuGet output, so that walk could not
+    # reach them. A bare `trelix index` repeats the same walk and so restores none of
+    # them; the number was inflated and the advice was void.
+    console.print(
+        f"[yellow]{report.actionable_drifted_count} file(s) have drifted.[/yellow] "
+        "Run `trelix index` to rebuild, or `trelix update-index <file>` per file."
+    )
+    if report.missing:
+        console.print(
+            f"[yellow]The {len(report.missing)} 'not found' file(s) are excluded from "
+            "that total[/yellow] — see the warning above; they may all be present. "
+            "`trelix index` will [bold]NOT[/bold] restore them: it repeats the same walk, "
+            "which cannot reach them, so it has nothing to re-index. Fix the walk first "
+            "(same environment and ignore rules as the index), then re-run --drift to "
+            "find out whether any of them were really deleted."
+        )
+
 
 # ---------------------------------------------------------------------------
 # link-tickets
@@ -735,14 +1426,24 @@ def stats(
 @app.command("link-tickets")
 def link_tickets(
     repo: str = typer.Argument(..., help="Path to the indexed repository (must be a git repo)"),
-    max_commits: int = typer.Option(5_000, help="Max commits to walk (bounds cost on large repos)"),
+    # All three default to None so an omitted flag can be told apart from an explicit
+    # one. Passing a typer default unconditionally into GitLinkerConfig() made the
+    # kwarg win over pydantic-settings, so TRELIX_GIT_LINKER_TICKET_PATTERN,
+    # _MAX_COMMITS and _SINCE were inert on the only path that invokes this — while
+    # docs/CONFIGURATION.md documents all three as working. `_build_embedder_config`
+    # above already solves this exact bug class the same way: omit the kwarg and let
+    # the settings loader fall through to the environment.
+    max_commits: int | None = typer.Option(
+        None, help="Max commits to walk (bounds cost on large repos) [default: 5000]"
+    ),
     since: str | None = typer.Option(
         None,
         help='Only walk commits after this date, e.g. "90 days ago" (passed to git log --since)',
     ),
-    ticket_pattern: str = typer.Option(
-        r"[A-Z]+-\d+",
-        help='Regex for ticket IDs in commit messages (default: Jira-style "PROJ-123")',
+    ticket_pattern: str | None = typer.Option(
+        None,
+        help='Regex for ticket IDs in commit messages (default: Jira-style "PROJ-123", '
+        "excluding technical constants like UTF-8 and CVE-2021-44228)",
     ),
 ) -> None:
     """
@@ -777,17 +1478,21 @@ def link_tickets(
     db_path = config.db_path_absolute
     if not db_path.exists():
         err_console.print(
-            f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {escape(repo)}` first."
+            f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
+            f" run `trelix index {_safe_text(repo)}` first."
         )
         raise typer.Exit(1)
 
-    linker_config = GitLinkerConfig(
-        enabled=True,
-        max_commits=max_commits,
-        since=since,
-        ticket_pattern=ticket_pattern,
-    )
+    # Only what the user actually passed, so an unset flag leaves the field to the
+    # settings loader (env var, .env, then the field default).
+    linker_overrides: dict[str, object] = {"enabled": True}
+    if max_commits is not None:
+        linker_overrides["max_commits"] = max_commits
+    if since is not None:
+        linker_overrides["since"] = since
+    if ticket_pattern is not None:
+        linker_overrides["ticket_pattern"] = ticket_pattern
+    linker_config = GitLinkerConfig(**linker_overrides)  # type: ignore[arg-type]
 
     try:
         with Database(db_path) as db:
@@ -847,8 +1552,8 @@ def link_artifacts(
     db_path = config.db_path_absolute
     if not db_path.exists():
         err_console.print(
-            f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {escape(repo)}` first."
+            f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
+            f" run `trelix index {_safe_text(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -937,11 +1642,23 @@ def migrate_vectors(
         typer.Option(
             "--reset",
             help=(
-                "Clear all stored embeddings and dimension metadata so trelix index starts fresh. "
+                "Rebuild the vector store at the current embedder's dimension and "
+                "invalidate every file hash, so `trelix index` re-embeds from scratch. "
                 "Use after switching embedding providers."
             ),
         ),
     ] = False,
+    provider: Annotated[
+        str,
+        typer.Option(
+            "--provider",
+            help=(
+                "With --reset: the embedding provider to rebuild FOR. The vector store's "
+                "width is fixed at creation, so this decides it. Defaults to "
+                "TRELIX_EMBEDDER_PROVIDER."
+            ),
+        ),
+    ] = "",
 ) -> None:
     """Migrate embeddings from SQLite to Qdrant (or another backend).
 
@@ -964,22 +1681,78 @@ def migrate_vectors(
 
     if reset:
         from trelix.core.config import IndexConfig as _IndexConfig
+        from trelix.embedder import make_embedder
         from trelix.store.db import Database as _Database
         from trelix.store.dimension_guard import DimensionGuard as _DimensionGuard
+        from trelix.store.vector import make_vector_store
 
         cfg = _IndexConfig(repo_path=str(Path(repo).resolve()))
+        if provider:
+            cfg.embedder = _build_embedder_config(provider)
+
+        # Refuse early on a backend this cannot rebuild. Qdrant and LanceDB pin their
+        # dimension at collection/table creation exactly as vec0 does, and --reset has
+        # no per-backend dispatch, so it would otherwise print success having touched
+        # nothing. A loud refusal naming the backend beats both a false success and the
+        # generic NotImplementedError the base store would raise a few lines later.
+        if cfg.store.backend != "sqlite":
+            _print_error(
+                f"--reset does not support the '{cfg.store.backend}' backend",
+                "only the sqlite backend can be rebuilt in place; delete the collection "
+                "or table and re-index instead",
+            )
+            raise typer.Exit(1)
+
         db = _Database(cfg.db_path_absolute)
+
+        # Three things have to happen for a re-index to actually work afterwards, and
+        # the previous implementation did none of them.
+        #
+        # 1. The vec0 table must be REBUILT, not emptied. Its vector width is fixed by
+        #    its CREATE statement, so a row delete leaves a table that still rejects
+        #    vectors of the new dimension. Worse, the delete never happened: it ran on
+        #    Database's connection, which does not load the sqlite-vec extension, so it
+        #    raised "no such module: vec0" into a bare `except: pass`.
+        # 2. Every file hash must be invalidated. `index()` skips files whose hash is
+        #    unchanged and does not check whether their vectors still exist, so
+        #    otherwise the next run prints "Nothing to index — all files up to date"
+        #    over an index with no vectors at all.
+        # 3. The recorded dimension is cleared LAST. Clearing it first — as this did —
+        #    leaves DimensionGuard with nothing to compare against, so a mismatch is no
+        #    longer caught up front and the next run pays for a full embedding pass
+        #    before failing on its first insert.
+        try:
+            dimension = make_embedder(cfg.embedder).dimension
+        except Exception as exc:
+            _print_error("Cannot determine the embedder's dimension", exc)
+            raise typer.Exit(1) from exc
+
+        vector_store = make_vector_store(cfg, dimension=dimension)
+        try:
+            db.clear_all_embeddings(vector_store=vector_store)
+        except Exception as exc:
+            _print_error("Could not rebuild the vector store", exc)
+            raise typer.Exit(1) from exc
+
+        # Both levels, because they gate different stages. File hashes gate re-PARSING;
+        # symbol content hashes gate re-EMBEDDING, and `_insert_one` leaves a symbol
+        # whose hash still matches completely untouched. Invalidating only the file
+        # hashes re-parsed every file and still embedded nothing.
+        files_invalidated = db.invalidate_all_file_hashes()
+        symbols_invalidated = db.invalidate_all_symbol_hashes()
         _DimensionGuard.reset(db)
-        db.clear_all_embeddings()
+
         console.print(
-            "[green]Embeddings and dimension metadata cleared.[/green]\n"
+            f"[green]Vector store rebuilt at {dimension} dimensions.[/green]\n"
+            f"Invalidated {files_invalidated} file and {symbols_invalidated} symbol "
+            "hashes so every chunk is re-embedded.\n"
             "Run [bold]trelix index .[/bold] to re-embed with the new provider."
         )
         return
 
     if to != "qdrant":
         err_console.print(
-            f"[red]Unsupported target backend:[/red] {escape(repr(to))}."
+            f"[red]Unsupported target backend:[/red] {_safe_text(repr(to))}."
             " Only 'qdrant' is supported."
         )
         raise typer.Exit(1)
@@ -1001,8 +1774,8 @@ def migrate_vectors(
     db_path = config.db_path_absolute
     if not db_path.exists():
         err_console.print(
-            f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {escape(repo)}` first."
+            f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
+            f" run `trelix index {_safe_text(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -1050,7 +1823,7 @@ def migrate_vectors(
     total_row = conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()
     total = total_row[0] if total_row else 0
     console.print(
-        f"[cyan]Migrating {total:,} embeddings (dim={dimension}) → Qdrant {escape(url)}[/cyan]"
+        f"[cyan]Migrating {total:,} embeddings (dim={dimension}) → Qdrant {_safe_text(url)}[/cyan]"
     )
 
     BATCH = 500
@@ -1131,7 +1904,7 @@ def watch(
         raise typer.Exit(1) from exc
 
     # Run initial full index so the watcher starts from a known-good state
-    console.print(Panel(f"[bold cyan]Initial index[/bold cyan] {escape(repo)}", expand=False))
+    console.print(Panel(f"[bold cyan]Initial index[/bold cyan] {_safe_text(repo)}", expand=False))
     try:
         indexer.index()
     except Exception as exc:
@@ -1190,7 +1963,9 @@ def watch_all(
             f"[bold cyan]watch-all[/bold cyan] — watching {len(entries)} repo(s):\n"
             # Alias/path come from the federation registry JSON on disk, not
             # from argv — bracket-shaped values there must not eat the Panel.
-            + "\n".join(f"  [green]{escape(e.alias)}[/green]  {escape(e.path)}" for e in entries),
+            + "\n".join(
+                f"  [green]{_safe_text(e.alias)}[/green]  {_safe_text(e.path)}" for e in entries
+            ),
             expand=False,
         )
     )
@@ -1206,30 +1981,54 @@ def watch_all(
     import asyncio
     import signal
 
-    stop_event = asyncio.Event()
+    async def _watch_until_signalled() -> None:
+        # Handlers MUST be installed from in here, on the loop asyncio.run
+        # built. Registering them against asyncio.get_event_loop() out in the
+        # sync body put them on a different loop object that never runs an
+        # iteration (measured: differing id(), and _signal_handlers[SIGTERM]
+        # is None inside this coroutine), so a `docker stop` / `kubectl
+        # delete` SIGTERM was swallowed for the whole grace period and the
+        # process got hard-killed before the stats block below ever printed.
+        # add_signal_handler also repoints process-level SIGINT at asyncio's
+        # no-op handler, so the old KeyboardInterrupt fallback was dead too —
+        # Ctrl+C did literally nothing.
+        loop = asyncio.get_running_loop()
+        stop_event = asyncio.Event()
 
-    def _on_signal(*_: object) -> None:
-        stop_event.set()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop_event.set)
+            except (NotImplementedError, RuntimeError) as exc:
+                # Windows has no add_signal_handler. Say so instead of
+                # pretending shutdown is graceful: on this platform Ctrl+C
+                # unwinds via KeyboardInterrupt and SIGTERM just kills us,
+                # losing the summary.
+                console.print(
+                    f"[yellow]Warning:[/yellow] cannot install a {sig.name} handler "
+                    f"({_safe_text(str(exc))}) — shutdown on {sig.name} will not be graceful."
+                )
 
-    try:
-        asyncio.get_event_loop().add_signal_handler(signal.SIGINT, _on_signal)
-        asyncio.get_event_loop().add_signal_handler(signal.SIGTERM, _on_signal)
-    except (NotImplementedError, RuntimeError):
-        # Windows / no event loop yet — fall through to KeyboardInterrupt
-        pass
+        await watcher.run(stop_event)
 
     console.print("[green]Watching for changes. Press Ctrl+C to stop.[/green]")
 
     try:
-        asyncio.run(watcher.run(stop_event))
+        asyncio.run(_watch_until_signalled())
     except KeyboardInterrupt:
         pass
 
     stats = watcher.stats()
+    # files_skipped_ignored existed in MultiRepoWatcher.stats() and was invisible here, so
+    # the one counter that says "an ignore rule is hiding files you think are watched" never
+    # reached a user. `.get` rather than `[...]`: a stats() without the key means a watcher
+    # too old to count it, and "n/a" is the honest rendering of that — 0 would assert
+    # nothing was ignored.
+    ignored = stats.get("files_skipped_ignored")
     console.print(
         f"\n[dim]Watch stopped. "
         f"Re-indexed: {stats['files_reindexed']} files | "
-        f"Skipped (unchanged): {stats['files_skipped_unchanged']} files.[/dim]"
+        f"Skipped (unchanged): {stats['files_skipped_unchanged']} files | "
+        f"Skipped (ignored): {'n/a' if ignored is None else ignored} files.[/dim]"
     )
 
 
@@ -1258,8 +2057,68 @@ def serve(
     setup_json_logging()
 
     api_app = create_app()
+
+    _warn_if_exposed_without_auth(host)
+
     typer.echo(f"trelix API serving {repo_path} at http://{host}:{port}")
     uvicorn.run(api_app, host=host, port=port, log_config=uvicorn_log_config())
+
+
+# Loopback forms. Anything else is reachable from another machine.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+def _warn_if_exposed_without_auth(host: str) -> None:
+    """Say so, loudly, when the API is reachable off-box with no credential required.
+
+    `api/app.py`'s `authenticate()` is open by design when neither a static token nor
+    OIDC is configured — see the "3./4." branch there. That is a reasonable default for
+    the documented local use (`--host` defaults to `127.0.0.1`), and this does NOT change
+    it: failing closed would break that UX and is a bigger decision than a warning.
+
+    What makes it dangerous is that the shipped container overrides the host.
+    `Dockerfile:56` and `docker-compose.yml` both run `serve /repo --host 0.0.0.0`, and
+    compose publishes `8765` while bind-mounting the user's repository — so
+    `docker compose up` served open, unauthenticated code search over the mounted repo.
+    `.github/SECURITY.md` told readers serve binds to 127.0.0.1, which is true of the CLI
+    and inverted by the image.
+
+    Warning at the bind boundary rather than in compose alone because it also catches
+    `trelix serve --host 0.0.0.0` run directly, which no compose fix can reach. This
+    release exists largely because things were switched on and saying nothing; an open
+    port is the last place to keep that habit.
+    """
+    if host in _LOOPBACK_HOSTS:
+        return
+
+    # Reuses the exact objects `create_app()` gates on, so this cannot drift from the
+    # real decision. `_ApiAuthSettings` lives in api/app.py rather than core/config
+    # because auth is process-wide while IndexConfig is per-repo.
+    #
+    # OIDC alone is sufficient protection: once a verifier exists, `authenticate()`
+    # raises 401 for a missing credential, so an SSO-only deployment is not open. Asking
+    # `_build_oidc_verifier` rather than reading an env var means an SSO config that is
+    # enabled but unusable (bad issuer, unreachable JWKS) still triggers the warning —
+    # which is the case where a reader would most wrongly assume they were covered.
+    from trelix.api.app import _ApiAuthSettings, _build_oidc_verifier
+    from trelix.core.config import SSOConfig
+
+    try:
+        if _ApiAuthSettings().api_auth_token is not None:
+            return
+        if _build_oidc_verifier(SSOConfig()) is not None:
+            return
+    except Exception as exc:  # pragma: no cover - config shape is validated elsewhere
+        logger.debug("Could not read auth settings for the exposure check: %s", exc)
+        return
+
+    err_console.print(
+        f"[bold yellow]WARNING:[/bold yellow] serving on [bold]{_safe_text(host)}[/bold] "
+        "with no authentication configured — every endpoint is open to anyone who can "
+        "reach this port.\n"
+        "[dim]Set TRELIX_API_AUTH_TOKEN=<secret> to require an X-Trelix-Api-Key header, "
+        "or bind to 127.0.0.1 instead. See docs/SSO.md for the OIDC path.[/dim]"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1301,13 +2160,43 @@ def graph(
     with _status_console(json_output).status("Building knowledge graph..."):
         result = builder.build(extract_concepts=concepts)
 
+    # Exported BEFORE the --json early return below. It used to sit after it, so
+    # `--visualize --json` accepted the flag, wrote no file, and said nothing —
+    # measured on this repo as a stale 31-byte graph.html surviving the run while the
+    # same command without --json wrote 326 KB.
+    viz_path: str | None = None
+    viz_error: str | None = None
+    if visualize:
+        from trelix.graph.visualizer import GraphVisualizer
+
+        out = output or str(_Path(repo_path) / ".trelix" / "graph.html")
+        try:
+            viz_path = str(GraphVisualizer().export_html(result.code_graph, out))
+        except Exception as exc:
+            # Guarded because moving the export BEFORE the --json return also moved it
+            # in front of the payload. Unguarded, a pyvis failure or an unwritable
+            # output path would take the graph statistics down with it — the command's
+            # primary result, which was already computed successfully. The visualization
+            # is the optional half, so it fails on its own.
+            viz_error = str(exc)
+            logger.warning("Graph visualization failed: %s", exc)
+
     if json_output:
-        data = {
+        data: dict[str, object] = {
             "node_count": result.node_count,
             "edge_count": result.edge_count,
             "community_count": result.community_count,
             "concept_count": result.concept_count,
         }
+        # Additive only, and only when the flag was passed: the four documented keys
+        # keep their names and types, so an existing consumer is unaffected, while one
+        # that asked for a visualization learns where it landed.
+        if viz_path is not None:
+            data["visualization_path"] = viz_path
+        elif viz_error is not None:
+            # Reported in-band rather than dropped: a consumer that asked for a
+            # visualization needs to learn it did not get one.
+            data["visualization_error"] = viz_error
         # indent=None keeps this payload compact, as it has always been —
         # _print_json's default would reformat a machine-readable contract.
         _print_json(data, indent=None)
@@ -1327,16 +2216,16 @@ def graph(
         # "[3]" is not tag-shaped to Rich (a tag must start [a-z#/@]), so the
         # surrounding brackets are left as the literal formatting they are.
         for c in result.community_summary[:5]:
-            files = escape(", ".join(c["top_files"][:3]))
+            files = _safe_text(", ".join(c["top_files"][:3]))
             console.print(f"  [{c['community_id']}] {c['size']} nodes — {files}")
 
-    if visualize:
-        from trelix.graph.visualizer import GraphVisualizer
-
-        out = output or str(_Path(repo_path) / ".trelix" / "graph.html")
-        viz = GraphVisualizer()
-        path = viz.export_html(result.code_graph, out)
-        console.print(f"\n[blue]Graph visualization:[/blue] {escape(str(path))}")
+    if viz_path is not None:
+        console.print(f"\n[blue]Graph visualization:[/blue] {_safe_text(viz_path)}")
+    elif viz_error is not None:
+        err_console.print(
+            f"\n[yellow]Graph visualization failed (statistics above are "
+            f"unaffected):[/yellow] {_safe_text(viz_error)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1377,9 +2266,9 @@ def telemetry(
     # inserted backslash, and a truncated half-tag renders literally anyway.
     for row in rows:
         table.add_row(
-            escape(str(row["ts"])),
-            escape(row["query"][:50]),
-            escape(str(row["intent"])),
+            _safe_text(str(row["ts"])),
+            _safe_text(row["query"][:50]),
+            _safe_text(str(row["intent"])),
             f"{row['elapsed_ms']:.0f}",
             str(row["result_count"]),
         )
@@ -1407,7 +2296,7 @@ def eval(
     try:
         metrics = harness.run(golden)
     except FileNotFoundError:
-        console.print(f"[red]Golden file not found: {escape(golden)}[/red]")
+        console.print(f"[red]Golden file not found: {_safe_text(golden)}[/red]")
         console.print("Create a golden.jsonl with lines like:")
         console.print('  {"query": "how does auth work", "relevant_files": ["src/auth.py"]}')
         raise typer.Exit(1)
@@ -1438,7 +2327,7 @@ def eval_synthesis(
     try:
         metrics = harness.run(golden)
     except FileNotFoundError:
-        console.print(f"[red]Golden file not found: {escape(golden)}[/red]")
+        console.print(f"[red]Golden file not found: {_safe_text(golden)}[/red]")
         console.print("Create a golden_synthesis.jsonl with lines like:")
         console.print(
             '  {"query": "how does auth work", "relevant_files": ["src/auth.py"],'
@@ -1472,6 +2361,15 @@ def taint(
     severity: Annotated[
         str, typer.Option("--severity", "-s", help="Filter: ERROR|WARNING|INFO")
     ] = "",
+    rules: Annotated[
+        str,
+        typer.Option(
+            "--rules",
+            "-r",
+            help="Path to a semgrep rules file or directory. "
+            "Defaults to the 'p/default' registry pack, which requires network access.",
+        ),
+    ] = "",
     json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON.")] = False,
 ) -> None:
     """Run Semgrep taint analysis and show source->sink flows.
@@ -1483,10 +2381,26 @@ def taint(
     from trelix.core.config import IndexConfig
     from trelix.store.db import Database
 
+    # TaintAnalyzer.run() has always taken a rules_path; the CLI just never passed one,
+    # so every invocation was pinned to the `p/default` registry pack. That needs
+    # outbound network access and can change between runs, which makes a taint result
+    # neither reproducible nor pinnable in CI. `--rules config/semgrep-taint.yaml` runs
+    # against rules that live in the repository and change only when a commit changes
+    # them.
+    rules_path = str(Path(rules).resolve()) if rules else None
+    if rules_path and not Path(rules_path).exists():
+        _print_error("Rules not found", rules_path)
+        raise typer.Exit(code=1)
+
     config = IndexConfig(repo_path=str(Path(repo).resolve()))
     analyzer = TaintAnalyzer(repo_path=str(Path(repo).resolve()), tier=tier)
     with _status_console(json_output).status("Running Semgrep taint analysis..."):
-        flows = analyzer.run()
+        # scan() rather than run(): run() returns [] for a clean scan, a missing binary
+        # AND a failed one, so it cannot distinguish "no vulnerabilities" from "no
+        # analysis". Reporting the former when the latter happened is the worst thing
+        # this command can do.
+        scan_result = analyzer.scan(rules_path=rules_path)
+    flows = scan_result.flows
 
     if not flows:
         # Two defects lived in this one message. It printed prose to STDOUT even
@@ -1496,12 +2410,58 @@ def taint(
         # opening tag and swallowed it, rendering the fix instruction as
         # "pip install 'trelix'" — telling the reader to install the package they
         # already have. That is the same swallow _print_error() documents.
+        from trelix.analysis.taint import ScanOutcome
+
+        # A third defect lived in this one message: it reported a CLEAN SCAN as a
+        # possible missing install, because run() collapses four different outcomes into
+        # an empty list. An earlier attempt at fixing it branched on `shutil.which`
+        # alone, which made one case worse — a scan that FAILED (for example --tier
+        # intrafile without the Semgrep Pro Engine, which exits 2 with empty stdout)
+        # then printed a confident "semgrep ran and reported nothing" at exit 0.
         if json_output:
+            # The payload stays `[]` so `| jq` keeps working, but the EXIT CODE must
+            # still distinguish a clean scan from one that never ran. Printing [] and
+            # exiting 0 here left the very defect this branch exists to fix in place on
+            # the JSON path — which is the path CI uses, and therefore the one where a
+            # false all-clear does the most damage. Diagnostics go to stderr so stdout
+            # remains byte-compatible.
             _print_json([])
+            if scan_result.outcome is not ScanOutcome.OK:
+                err_console.print(
+                    f"[red]Taint analysis did not complete ({scan_result.outcome}):[/red] "
+                    f"{_safe_text(scan_result.detail or 'no detail')}"
+                )
+                if scan_result.outcome is not ScanOutcome.SEMGREP_MISSING:
+                    raise typer.Exit(1)
+        elif scan_result.outcome is ScanOutcome.SEMGREP_MISSING:
+            console.print(
+                "[yellow]semgrep is not installed, so no taint analysis ran: "
+                f"pip install {_safe_text('trelix[taint]')}[/yellow]"
+            )
+        elif scan_result.outcome is ScanOutcome.SEMGREP_FAILED:
+            _print_error(
+                "Taint analysis failed — this is NOT a clean result",
+                scan_result.detail or "semgrep exited with an error",
+            )
+            if tier != "default":
+                err_console.print(
+                    f"[dim]--tier {_safe_text(tier)} requires the Semgrep Pro Engine, which "
+                    f"pip install {_safe_text('trelix[taint]')} does not include.[/dim]"
+                )
+            raise typer.Exit(1)
+        elif scan_result.outcome is ScanOutcome.SCANNED_NOTHING:
+            _print_error(
+                "Taint analysis examined 0 files — this is NOT a clean result",
+                scan_result.detail or "check the target path and the rules' languages",
+            )
+            raise typer.Exit(1)
         else:
             console.print(
-                "[yellow]No taint flows found. "
-                f"Ensure semgrep is installed: pip install {escape('trelix[taint]')}[/yellow]"
+                f"[green]No taint flows found.[/green] semgrep examined "
+                f"{scan_result.files_scanned} file(s) and reported nothing.\n"
+                "[dim]If you expected findings, check the ruleset — the default "
+                "'p/default' registry pack needs network access. Pass --rules "
+                "<path> to scan against rules you control.[/dim]"
             )
         return
 
@@ -1536,10 +2496,10 @@ def taint(
     # scanned repository — all third-party text landing in markup-parsed cells.
     for f in filtered[:50]:
         table.add_row(
-            escape(f.severity),
-            escape(f.rule_id),
-            f"{escape(f.source_file)}:{f.source_line}",
-            f"{escape(f.sink_file)}:{f.sink_line}",
+            _safe_text(f.severity),
+            _safe_text(f.rule_id),
+            f"{_safe_text(f.source_file)}:{f.source_line}",
+            f"{_safe_text(f.sink_file)}:{f.sink_line}",
         )
     console.print(table)
 
@@ -1612,7 +2572,7 @@ def review(
         # file and parse it as JSON.
         status_console = _status_console(json_output)
 
-        status_console.print(f"[cyan]Fetching PR diff from GitHub:[/cyan] {escape(pr)}")
+        status_console.print(f"[cyan]Fetching PR diff from GitHub:[/cyan] {_safe_text(pr)}")
         gh_client = GitHubPRClient(token=token)
 
         try:
@@ -1626,7 +2586,7 @@ def review(
         for f in pr_files:
             if f.patch is None:
                 status_console.print(
-                    f"[dim]Skipping binary/oversized file: {escape(f.filename)}[/dim]"
+                    f"[dim]Skipping binary/oversized file: {_safe_text(f.filename)}[/dim]"
                 )
                 continue
             diff_lines.append(f"diff --git a/{f.filename} b/{f.filename}")
@@ -1686,10 +2646,10 @@ def review(
             for c in comments:
                 color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
                 table.add_row(
-                    escape(c.file_path),
+                    _safe_text(c.file_path),
                     f"{c.line_start}-{c.line_end}",
-                    f"[{color}]{escape(c.severity)}[/{color}]",
-                    escape(c.comment),
+                    f"[{color}]{_safe_text(c.severity)}[/{color}]",
+                    _safe_text(c.comment),
                 )
             console.print(table)
 
@@ -1720,7 +2680,7 @@ def review(
                 )
             except Exception as exc:
                 err_console.print(
-                    f"[yellow]Warning: failed to post comments: {escape(str(exc))}[/yellow]"
+                    f"[yellow]Warning: failed to post comments: {_safe_text(str(exc))}[/yellow]"
                 )
 
         raise typer.Exit(0)
@@ -1788,10 +2748,10 @@ def review(
     for c in comments:
         color = {"ERROR": "red", "WARN": "yellow", "INFO": "blue"}.get(c.severity, "white")
         table.add_row(
-            escape(c.file_path),
+            _safe_text(c.file_path),
             f"{c.line_start}-{c.line_end}",
-            f"[{color}]{escape(c.severity)}[/{color}]",
-            escape(c.comment),
+            f"[{color}]{_safe_text(c.severity)}[/{color}]",
+            _safe_text(c.comment),
         )
     console.print(table)
 
@@ -1812,6 +2772,7 @@ def search_all(
 ) -> None:
     """Search across all registered repos (federated search)."""
 
+    from trelix.core.config import RetrievalConfig
     from trelix.federation.registry import RepoRegistry
     from trelix.federation.retriever import FederatedRetriever
 
@@ -1829,8 +2790,32 @@ def search_all(
             )
         return
 
-    fed = FederatedRetriever(registry)
-    with _status_console(json_output).status(f"Searching {len(registry.list())} repos..."):
+    # federation_max_repos (TRELIX_FEDERATION_MAX_REPOS, default 50) was declared in
+    # RetrievalConfig, documented in docs/CONFIGURATION.md and enforced by
+    # packages/trelix-mcp — while this line read `FederatedRetriever(registry)`, so the
+    # constructor default of max_repos=None applied and search-all fanned out to every
+    # registered repo. The cap's stated purpose is to stop a runaway federation_add_repo
+    # loop from making every later query scale linearly with the repo count — and both
+    # sides read the same RepoRegistry (default ~/.config/trelix/repos.json), so a
+    # registry the MCP tools grew was uncapped the moment it was queried from the CLI.
+    max_repos = RetrievalConfig().federation_max_repos
+    fed = FederatedRetriever(registry, max_repos=max_repos)
+
+    total_registered = len(registry.list())
+    # Mirrors the truncation the retriever actually performs — `entries[:max_repos]` in
+    # FederatedRetriever._query_repos, i.e. the first N in registry order.
+    repos_queried = min(total_registered, max_repos)
+    if repos_queried < total_registered:
+        # Truncating the fan-out in silence would report a partial search as a complete
+        # one: the table looks identical, exits 0, and omits whatever the skipped repos
+        # held. Named on stderr — the same stream _status_console() routes to under
+        # --json — so `search-all --json | jq` keeps a clean stdout.
+        err_console.print(
+            f"[yellow]Querying {repos_queried} of {total_registered} registered repos: "
+            f"{total_registered - repos_queried} skipped by "
+            f"TRELIX_FEDERATION_MAX_REPOS={max_repos}.[/yellow]"
+        )
+    with _status_console(json_output).status(f"Searching {repos_queried} repos..."):
         results = fed.retrieve(query, k=k)
 
     if not results:
@@ -1855,7 +2840,7 @@ def search_all(
 
     from rich.table import Table
 
-    table = Table(title=f"Federated Search: '{escape(query)}' ({len(results)} results)")
+    table = Table(title=f"Federated Search: '{_safe_text(query)}' ({len(results)} results)")
     table.add_column("Repo", style="dim")
     table.add_column("File")
     table.add_column("Symbol")
@@ -1867,9 +2852,9 @@ def search_all(
     for r in results[:20]:
         repo_tag = r.source.split(":")[0] if ":" in r.source else ""
         table.add_row(
-            escape(repo_tag),
-            escape(r.file.rel_path),
-            escape(r.symbol.qualified_name),
+            _safe_text(repo_tag),
+            _safe_text(r.file.rel_path),
+            _safe_text(r.symbol.qualified_name),
             f"{r.score:.4f}",
         )
     console.print(table)
@@ -1897,9 +2882,9 @@ def federation_add(
     try:
         registry.add(alias, path, weight)
         registry.save()
-        console.print(f"[green]Registered '{escape(alias)}' -> {escape(path)}[/green]")
+        console.print(f"[green]Registered '{_safe_text(alias)}' -> {_safe_text(path)}[/green]")
     except ValueError as exc:
-        console.print(f"[red]{escape(str(exc))}[/red]")
+        console.print(f"[red]{_safe_text(str(exc))}[/red]")
         raise typer.Exit(1)
 
 
@@ -1920,7 +2905,7 @@ def federation_list(
     table.add_column("Path")
     table.add_column("Weight", justify="right")
     for e in entries:
-        table.add_row(escape(e.alias), escape(e.path), str(e.weight))
+        table.add_row(_safe_text(e.alias), _safe_text(e.path), str(e.weight))
     console.print(table)
 
 
@@ -1937,9 +2922,9 @@ def federation_remove(
     registry.remove(alias)
     registry.save()
     if existed:
-        console.print(f"[green]Removed '{escape(alias)}'[/green]")
+        console.print(f"[green]Removed '{_safe_text(alias)}'[/green]")
     else:
-        console.print(f"[yellow]No repo registered with alias '{escape(alias)}'[/yellow]")
+        console.print(f"[yellow]No repo registered with alias '{_safe_text(alias)}'[/yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -1984,10 +2969,10 @@ def agent_sessions_list(
     # The recorded `query` is arbitrary text (same sink as telemetry()).
     for s in sessions:
         table.add_row(
-            escape(str(s["session_id"])),
-            escape(s["query"][:60]),
+            _safe_text(str(s["session_id"])),
+            _safe_text(s["query"][:60]),
             str(s["turn_count"]),
-            escape(str(s["last_active_at"])),
+            _safe_text(str(s["last_active_at"])),
         )
     console.print(table)
 
@@ -2009,7 +2994,7 @@ def agent_sessions_show(
         db.close()
 
     if not turns:
-        console.print(f"[yellow]No turns found for session '{escape(session_id)}'.[/yellow]")
+        console.print(f"[yellow]No turns found for session '{_safe_text(session_id)}'.[/yellow]")
         return
 
     for t in turns:
@@ -2020,11 +3005,11 @@ def agent_sessions_show(
         # [bold] labels are trelix's own markup.
         console.print(
             Panel(
-                f"[bold]Thought:[/bold] {escape(str(t['thought']))}\n"
-                f"[bold]Action:[/bold] {escape(str(t['action_type']))} "
-                f"{escape(str(t['action_arguments']))}\n"
+                f"[bold]Thought:[/bold] {_safe_text(t['thought'])}\n"
+                f"[bold]Action:[/bold] {_safe_text(str(t['action_type']))} "
+                f"{_safe_text(str(t['action_arguments']))}\n"
                 f"[bold]Observation ({'ok' if t['observation_success'] else 'err'}):[/bold] "
-                f"{escape(t['observation_content'][:500])}",
+                f"{_safe_text(t['observation_content'][:500])}",
                 title=f"Turn {t['turn_index'] + 1}",
             )
         )
@@ -2047,9 +3032,9 @@ def agent_sessions_clear(
         db.close()
 
     if existed:
-        console.print(f"[green]Cleared session '{escape(session_id)}'[/green]")
+        console.print(f"[green]Cleared session '{_safe_text(session_id)}'[/green]")
     else:
-        console.print(f"[yellow]No session found with ID '{escape(session_id)}'[/yellow]")
+        console.print(f"[yellow]No session found with ID '{_safe_text(session_id)}'[/yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -2097,8 +3082,8 @@ def connector_sync(
     db_path = config.db_path_absolute
     if not db_path.exists():
         err_console.print(
-            f"[red]No index found at {escape(str(db_path))}[/red] —"
-            f" run `trelix index {escape(repo)}` first."
+            f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
+            f" run `trelix index {_safe_text(repo)}` first."
         )
         raise typer.Exit(1)
 
@@ -2170,7 +3155,7 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
     # below — sqlite cannot open those, so that guard does fire for them.
     if not path.exists():
         err_console.print(
-            f"[red]Audit database does not exist[/red] at {escape(str(path))} — "
+            f"[red]Audit database does not exist[/red] at {_safe_text(str(path))} — "
             "nothing was read, and no database was created. Check the path, or "
             "enable auditing (TRELIX_AUDIT_ENABLED=true) to start a chain."
         )
@@ -2179,7 +3164,7 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
     store = AuditStore(path)
     if not store.is_open:
         err_console.print(
-            f"[red]Could not open audit database[/red] at {escape(str(path))} — "
+            f"[red]Could not open audit database[/red] at {_safe_text(str(path))} — "
             "nothing was read. Check the path (it must be a file, not a directory) "
             "and that it is readable."
         )
@@ -2203,7 +3188,7 @@ def audit_list(
     # title is markup-parsed like any cell, so `--db '/tmp/a[/x].db'` still
     # raised MarkupError after every row had been made safe.
     table = Table(
-        title=f"Audit Log ({escape(str(path))})", show_header=True, header_style="bold cyan"
+        title=f"Audit Log ({_safe_text(str(path))})", show_header=True, header_style="bold cyan"
     )
     table.add_column("id", justify="right", style="dim")
     table.add_column("ts", style="dim")
@@ -2219,13 +3204,13 @@ def audit_list(
     # exactly the log a responder needs during an incident.
     for r in rows:
         table.add_row(
-            escape(str(r.get("id", ""))),
-            escape(str(r.get("ts", ""))),
-            escape(str(r.get("principal", ""))),
-            escape(str(r.get("action", ""))),
-            escape(str(r.get("resource", "") or "")),
-            escape(str(r.get("outcome", ""))),
-            escape(str(r.get("status_code", "") if r.get("status_code") is not None else "")),
+            _safe_text(str(r.get("id", ""))),
+            _safe_text(str(r.get("ts", ""))),
+            _safe_text(str(r.get("principal", ""))),
+            _safe_text(str(r.get("action", ""))),
+            _safe_text(str(r.get("resource", "") or "")),
+            _safe_text(str(r.get("outcome", ""))),
+            _safe_text(str(r.get("status_code", "") if r.get("status_code") is not None else "")),
         )
     console.print(table)
 

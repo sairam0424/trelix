@@ -6,6 +6,1257 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [3.1.2] — 2026-08-17
+
+### Overview
+
+Shipping as **3.1.2**. No 3.1.2 was ever tagged or published, so everything below — the
+self-index findings, the features, and the fixes that arrived on branches after the version
+was first stamped — is one release.
+
+Sixteen defects were found by indexing this repository with trelix and then checking whether
+each dimension of the resulting index was actually populated. Seven were fixed in the first
+pass; the nine documented as "found, not fixed" were worked through in a second, each
+researched, adversarially reviewed before implementation, and audited after. Re-auditing the
+result then surfaced a further batch, and re-auditing *that* surfaced defects in the fixes
+themselves.
+
+The theme is **features that were on and doing nothing**. `.env` enabled file summaries,
+PageRank boosting, adaptive query planning and telemetry. The index had 0 file summaries;
+the PageRank boost had never once fired; `taint_flows` was empty on a repository semgrep
+does find flows in; and the query planner classified every one of 219 recorded queries as
+the same one of its eight intents. None of it was visible from outside: each failure path
+logged at DEBUG while the CLI runs at WARNING, or was swallowed by a bare `except`, or was
+reported as a number nobody had reason to doubt.
+
+Several were found only by running the real thing rather than reading the code — real
+semgrep output rather than a hand-written fixture, a real sqlite-vec table rather than an
+assumption about what SQL it would accept, a real pty, a real fastmcp, a real lancedb. In
+the first two the *obvious* fix was also wrong, and only measurement showed it.
+
+A pattern in the test suite is worth naming, because it is why several survived: **the tests
+exercised the paths that worked.** The taint parser was verified against a fixture invented
+to match its own misreading. Every planner test supplies no credentials, so none could
+notice credentials being dropped. The eval metric tests used unique IDs only, so none could
+notice a repeated ID scoring twice. All three MCP prompts failed on use while their 82-test
+package suite was fully green. The walker yielded one file 34 times with no assertion
+noticing. And one test reloaded the module under test inside a `sys.modules` patch, silently
+disabling its deletion path for every later test in the session.
+
+### Security
+
+- **The advertised security-disclosure path reached nobody.** GitHub resolves
+  `.github/SECURITY.md` ahead of the repository root, so that file was the published policy —
+  and **both** channels it listed were dead. The email was the literal string
+  `trelix-security@[maintainer-domain]`, shipped with its own "replace with actual contact"
+  note. The route it called *preferred* was equally unusable: private vulnerability reporting
+  is disabled on this repository — `gh api repos/sairam0424/trelix/private-vulnerability-reporting`
+  returns `{"enabled":false}` — and with it off, only users with write access can open a draft
+  advisory, so `/security/advisories/new` gives an outside reporter nothing. Reporting now
+  names the maintainer address the root `SECURITY.md` has carried since v1.0.0, and states the
+  PVR gap outright, with the command that measures it and the one that enables it.
+
+- **Both supported-version tables were wrong, in different directions, and both promised a
+  practice that never existed.** Root claimed `1.x`/`0.7.x`; `.github/` claimed `2.7.x` active
+  with `2.6.x` security-only. Neither listed any 3.x release, so the shipping version appeared
+  in neither. Across all 34 releases from 0.1.0 to 3.1.2 no patch has ever landed on an older
+  line after a newer minor shipped — `2.7.3` preceded `2.8.0`, `2.11.1` preceded `2.12.0`,
+  `3.0.1` preceded `3.1.0` — and there are no maintenance branches. The policy now says what
+  is true: latest release only, fixes ship as a new version from `main`, with PyPI rather than
+  a hand-maintained table as the authority. The two files now own disjoint content — `.github/`
+  the reporting policy, root the threat model — because deleting either would break links that
+  other files, including two in `src/` and `tests/`, point at.
+
+- **The release-verification example could never have run.** It documented
+  `python -m pypi_attestations verify trelix==2.12.0`, which is invalid at any version:
+  `verify` takes an `attestation`/`pypi` subcommand and no form accepts a `name==version`
+  requirement string. The *claim* it illustrated is real, and was checked rather than assumed —
+  `curl https://pypi.org/integrity/trelix/3.1.1/…/provenance` returns a populated
+  `attestation_bundles` naming publisher `sairam0424/trelix`, workflow `release.yml`, an
+  identity bound to `refs/tags/v3.1.1`, and a Rekor entry with an inclusion proof. Only the
+  command was wrong, so only the command changed.
+
+- **Supply-chain scanning existed nowhere** — no dependency audit, container scan, SBOM or
+  SAST anywhere in `.github/`, `.pre-commit-config.yaml` or the `Makefile`, for a project that
+  publishes four PyPI packages and two GHCR images. And `config/semgrep-taint.yaml` — 6.2 KB
+  of real rules, with the `taint` extra pulling semgrep — shipped with **nothing invoking it.**
+  Added `security-scan.yml`, and Dependabot went from 3 covered ecosystems to the 8 actually
+  built (three npm projects, the Dockerfile, and the two adapter packages `release.yml`
+  publishes were all uncovered).
+
+- **`ruff` gained the `S` (bandit) and `B` (bugbear) rule sets**, which were absent from a
+  project shipping a security policy.
+
+### Added
+
+
+
+- **`trelix index --prune`** — remove index rows for files deleted from the repository.
+  Deliberately unbuilt until now: a prune keyed on "files the walk did not yield" reads a
+  truncated walk as deletions and deletes embeddings that cost money. It ships only because
+  every prerequisite landed — the walk-completeness signal, walk-config recording, and the
+  `.gitignore`-contents digest — and it **refuses** unless all five hold: the walk was
+  complete, the walk config is comparable, the walk config is unchanged, the index was built
+  by this trelix version, and the removal is under a 10% cap. Each refusal names which
+  condition failed and how to fix it, rather than reporting a bare "refused". Preview is the
+  default; `--yes` is required to act.
+
+  Verified against this repository's live index: **refused**, with two reasons — no walk
+  config recorded, and no version recorded — over **35 candidates that are every file under
+  `packages/`, all present on disk.** Without the guard a prune would have deleted 35 real
+  files.
+
+- **`trelix index --dry-run`** — walk, chunk and count tokens with the real tokenizer, then
+  report the estimated embedding spend and exit without embedding anything. Reports "unknown"
+  rather than guessing where a provider's rate cannot be established.
+
+- **OpenTelemetry metrics.** Observability was tracing-only: `rg 'get_meter|create_counter'
+  src/` found nothing, so with `[otel]` configured you could see that a request happened but
+  not what it cost. A meter seam now sits beside the span helpers, gated on the same flag and
+  degrading to a true no-op — importing nothing — when the optional extra is absent. Every
+  embedder counts `trelix.embedder.requests`, `.texts`, `.characters` and `.tokens` per
+  provider and model, since embedding is the only per-call billed operation in trelix. Token
+  counts are recorded only where the provider actually reports them.
+
+- **`docs/migration/v2-to-v3.md`** — the guide `BACKWARDS_COMPATIBILITY.md` promised before
+  any MAJOR release and which was never written. Its central finding is that the obvious
+  remediation is a **silent no-op**: v3.0.1 retracted v3.0.0's "no reindex needed" claim
+  because the Python extractor's off-by-one made 8,815 of 8,815 index references wrong, and a
+  plain `trelix index` afterwards selects zero files, prints "Nothing to index — all files up
+  to date.", exits 0, and leaves the wrong call graph in place. The working command is
+  `TRELIX_INCREMENTAL=false trelix index .`, which no CLI flag exposes. Every claimed break
+  was checked against the code rather than copied from the changelog — the
+  `TRELIX_RETRIEVAL_FLARE_MAX_ITER` removal scheduled for v3.0.0 **did not happen** and the
+  alias is still live.
+
+- **`trelix taint --rules PATH`.** `TaintAnalyzer.run()` always accepted a
+  `rules_path`; the CLI never passed one, so every invocation ran the `p/default`
+  registry pack — network-dependent, and free to change between runs. A missing path is
+  an error rather than a silent fallback, because falling back reports registry findings
+  under the reader's assumption that their own rules produced them.
+
+- **`config/semgrep-taint.yaml`** — six auditable taint rules scoped to source/sink
+  pairs that occur in this codebase. trelix shipped no rules of its own, so there was
+  previously no offline route to a taint scan at all.
+
+- **`scripts/self-index.sh`** — reproducible clean self-index. Needed because
+  `TRELIX_WALKER_*` and `TRELIX_PARSER_*` are process-env-only, and because
+  `EXTRA_IGNORE_DIRS` *replaces* rather than extends the default, so all 30 entries must
+  be restated to drop `"packages"` — present for .NET NuGet output, but it also hides
+  this repo's own `packages/` monorepo and its three shipped sub-packages. Refuses up
+  front on an embedding-dimension mismatch, printing the one remedy that works.
+
+- **`scripts/verify-index.sh`** — asserts that populated dimensions are non-empty *and*
+  that unpopulated ones are still empty, each with its reason recorded.
+
+- **`scripts/measure_index_hygiene.py`** — measures what share of the corpus, and of
+  actual top-10 results, was never source code. Needs no golden set.
+
+- **`eval/README.md`** — the golden-set format, and the two ways to get a silently
+  wrong score from it: paths are compared by exact string equality, and an entry with
+  no `relevant_files` is skipped rather than failed.
+
+- **All twelve version stamps now agree, so the `verify-version` gate passes 12/12.** It failed
+  3 of 7 when introduced, which was the gate working. The Helm chart *deployed a different
+  trelix than it advertised* — `values.yaml`'s `image.tag` was `2.12.0` while `Chart.yaml`
+  said `appVersion: 3.1.2`, so `helm install` at defaults ran an image five releases behind;
+  `helm template` now renders `:3.1.2`. `packages/trelix-mcp/server.json` carried `2.12.0`
+  in both version fields. A `v3.2.0` control still fails all 12, so the gate is fixed at the
+  sites rather than defanged; those 7 checks became 12 when both adapters' stamps and
+  `trelix_mcp.__version__` joined it (below). `Chart.yaml`'s own chart `version` moves 0.1.0 → 0.2.0: it had not moved across
+  the five releases that bumped `appVersion`, so two structurally different charts were both
+  stamped 0.1.0.
+
+- **`scripts/verify-index.sh` gated 6 of 31 tables; four counters could fall to zero
+  unnoticed.** Proven by injecting all four regressions into a copy of the live index — the
+  old 22-gate script exited **0**. The new 26-gate version fails all four and still passes
+  clean on the real index. Three `EXPECTED_EMPTY` reason strings also documented bugs that
+  are fixed, and one was simply wrong: `generic_edges` is not empty for want of ticket
+  references (the linker's own `_walk_log` matches 13 strings across 9 of 871 commits) — it
+  is empty because **`trelix index` never runs the linker at all.**
+
+- **`packages/trelix-typescript/src/generated/schema.ts` had silently drifted** to 604
+  committed lines against 768 regenerated, hiding shipped server features from the typed
+  client: all of `POST /parse`, the `/search` `intent_hint` and `hyde_snippet_hint` params,
+  the `/graph/communities` caps, and the auth headers on every gated route. `npm run build`
+  and `npm test` both pass against a stale schema, so nothing failed. Regeneration required
+  a human because `codegen.mjs` could only fetch from a running `trelix serve`; it now
+  defaults to an in-process `create_app().openapi()` dump — 1.37 s for the full codegen, no
+  server, no port, no readiness race — which is what makes the new `schema-drift.yml` gate
+  possible.
+
+- **`trelix-langchain` and `trelix-llama-index` published as `License: UNSPECIFIED`.**
+  Neither declared `license`, `classifiers`, `authors` or `keywords`; only `trelix-mcp` did.
+  The LICENSE file was always *in* the wheel, but PyPI renders the field and the classifier —
+  verified live against the PyPI JSON API across all 7 releases up to 2.4.0. Both now mirror
+  `trelix-mcp` exactly. Both also floored on `trelix>=0.4.0`, **a core release that was never
+  published** (the oldest on PyPI is 0.5.0). `workspace-vscode/package.json` had no
+  `license` key at all while `vscode-extension-ci.yml` runs `vsce package`.
+
+- **CI could not see six real type errors and ran 29 tests nowhere.** The `lint` job
+  installed only `[local,sso,dev]`, so voyageai/google-genai/watchdog were absent and every
+  expression touching them degraded to `Any`. The cause was the missing extras, not
+  `--ignore-missing-imports`, which is a no-op because pyproject already sets
+  `ignore_missing_imports = true`. A new `type-check-extras` job installs them and gates the
+  errors as a recorded ceiling keyed on (file, error-code): known debt is green, anything
+  outside it fails, and a mypy *crash* can no longer parse as "zero errors" and pass. `ruff`
+  now covers `scripts/` and all three `packages/*/tests`. The 19 langchain and 10
+  llama-index tests ran nowhere and are now separate invocations — both resolve to module
+  `tests.test_retriever`, so a single combined run would silently skip one.
+
+- **Six inert config knobs were documented as working switches**, marked **Inert.** now
+  following the existing convention. `docs/GLOSSARY.md` went furthest, claiming
+  `TRELIX_FEDERATION_ENABLED=true` "activates federation at retrieval time" — in fact
+  `search-all` builds `FederatedRetriever(registry)` with no arguments, so it federates
+  whether the flag is set or not, the worker pool is permanently the constructor default of
+  4, and `max_repos` stays unbounded so `TRELIX_FEDERATION_MAX_REPOS` never applies on the
+  CLI path at all.
+
+- **`.env.example` documented 27 of ~96 `TRELIX_*` aliases** while `CONTRIBUTING.md`
+  declares it stable public API. Extended to the whole 3.x surface, grouped, with no real
+  secret values.
+
+- **Two governance docs contradicted each other on three rules, and reality matched
+  neither.** `BACKWARDS_COMPATIBILITY.md` and `CONTRIBUTING.md` disagreed on the deprecation
+  grace period (2 minor versions vs one) and on integration-package versioning (core version
+  vs "independent cadence"). Resolved to the stricter grace period — 2 minor versions **and**
+  3 months, whichever is later, since v2.4.0 → v3.0.0 was 40 days and the calendar clock is
+  the one that binds — and to lockstep versioning, because `release.yml` fires only on core
+  `v*` tags and publishes all four dists in one job, so no independent cadence exists to be
+  on. The release checklist listed five of the seven sites the gate then checked, and told
+  contributors to grep for the *previous* version, which structurally cannot match a site
+  stranded on 2.x — as both adapters were, on 2.4.0.
+
+- **Docs: five broken relative links and two false claims.** `docs/README.md` linked
+  `../CONFIGURATION.md` and `../CLI_REFERENCE.md` as though both lived at the repo root, and
+  `v3-0-0-breaking-changes.md` was one `../` short on all three of its links. 73 links
+  resolved against the filesystem: 5 broken before, 0 after. `docs/README.md` also claimed
+  to be "a complete index of every documentation file" while omitting `AUDIT.md`, `SSO.md`,
+  `BACKWARDS_COMPATIBILITY.md`, `ROADMAP.md` and all of `docs/reports/` — including the
+  report this release reasons from. And `README.md` advertised `pip install "trelix[all]"`
+  as "every optional extra (voyage, qdrant, lance, rerank, LLM providers, …)" when `[all]`
+  resolves to `local,rerank,voyage,qdrant,watch,sso` — omitting exactly the two things the
+  comment named.
+
+- **A local `python -m build` produced a 928 MB sdist.** hatchling does not honour *nested*
+  `.gitignore` files, and `workspace-vscode/.gitignore` ignores `.vscode-test/`, which
+  `@vscode/test-electron` fills with three ~900 MB VS Code app bundles. CI publishes from a
+  clean checkout so the released sdist was always ~6 MB; the new `[tool.hatch.build.targets.sdist]`
+  excludes make a local build match it.
+
+- **The release path refuses a tag that disagrees with the tree.** `release.yml` fires on
+  `push: tags: v*`, derived nothing from the tree, and sets `skip-existing: true` on all
+  four PyPI publish steps — so tagging `v3.2.0` on a tree stamped `3.1.2` built
+  `trelix-3.1.2`, PyPI skipped it as already present, and the run went **green** with a
+  GitHub Release full of binaries and **zero new packages**. Nothing in the logs said
+  "published nothing". `skip-existing` is kept deliberately (it is what makes a re-run
+  after a partial failure safe), so the guard is a separate `verify-version` job that every
+  build and publish job now depends on.
+
+  It checks **twelve** version stamps, not the five `CONTRIBUTING.md`'s checklist named. Two
+  of the sites it added beyond that five are precisely those the documented procedure cannot
+  find, because it greps for the *previous* version and both were still on `2.x`:
+  `helm/trelix/values.yaml`'s `image.tag` — the chart advertised `appVersion: 3.1.2` while
+  deploying **2.12.0**, having been skipped by all five release commits that did bump
+  `Chart.yaml` — and `packages/trelix-mcp/server.json`, which carries the version twice.
+  Run against the tree as it then stood, the gate failed 3 of 7 — which was the point; those
+  three sites are fixed above, and the tree now passes 12/12.
+
+- **The release path runs the test suite.** `ci.yml` triggers on push/PR to
+  `[main, develop]` and never on tags, so the entire gate on four PyPI packages and two
+  container images was `python -m build`, `twine check`, and a `--help` smoke test.
+
+- **Both adapters were published by `release.yml` and gated by nothing.** `trelix-langchain`
+  and `trelix-llama-index` sat on `2.4.0` while core reached `3.1.2`, and `verify-version`
+  checked neither — so a `v3.1.2` tag would have built `trelix-langchain-2.4.0`, found it
+  already on PyPI, skipped it under `skip-existing: true`, and reported success having
+  published **2 of the 4 dists it advertises**. That is the exact failure the gate above
+  exists to prevent, and the gate had that hole for half the distributions. Both are now
+  stamped `3.1.2` in three places each — the dist version, the runtime `__version__` an
+  installed package reports, and the assertion in each suite that pins it — and all four
+  dist and runtime stamps joined the gate. `trelix_mcp.__version__` joined at the same time:
+  it was the one stamp the checklist had marked ungated, with the instruction to "verify it
+  by hand until that check is added", which is the same silent-mis-publish risk in a smaller
+  package. That takes the gate from 7 checks to **12** — one per stamp, no exceptions left.
+  Measured by running the job's shell body directly: `GITHUB_REF_NAME=v3.1.2` prints `ok`
+  twelve times and exits 0; a `v3.2.0` control emits twelve `::error file=` annotations and
+  exits 1.
+
+  `tests/unit/test_release_version_gate.py` additionally asserts that every stamp agrees
+  with root `pyproject.toml` *before* any tag exists. `verify-version` compares each stamp to
+  the tag, so it can only fail once someone has cut one — by which point a wrong artifact may
+  already be public. Stamps disagreeing with each other is the same defect, needs no tag to
+  detect, and is what actually happened: nothing in the tree contradicted `2.4.0` across the
+  seventeen releases that shipped after it.
+
+  `release.yml`'s `test` job now runs all four suites. Wiring the adapter suites into
+  `ci.yml` (above) did not reach the release path, because `ci.yml` fires on push/PR to
+  `[main, develop]` and never on a tag — so the job that builds and publishes both dists had
+  never executed their tests, including each suite's assertion that the *installed* package
+  reports `3.1.2` — which the gate's grep over the source file cannot establish. Both run as
+  separate `pytest` invocations, for the `tests.test_retriever` collision noted above.
+
+  The `trelix>=3.0.0` dependency floor is deliberately **unchanged**, because lockstep
+  governs the version stamp — identity — and not the floor, which is a compatibility
+  contract. v2.7.1 reverted precisely this move: v2.7.0 had raised these two floors (and
+  `trelix-mcp`'s) "based on an unverified assumption about API usage", and the remedy was to
+  re-check every import and floor on what that supported. `3.0.0` remains the lowest
+  published core verified to expose every name the adapters use, so `3.1.2` declaring
+  `trelix>=3.0.0` says the honest thing: this is 3.1.2, and it works with core 3.0.0 and up.
+  The stamp jump encodes nothing else either: the whole of
+  `git diff v2.4.0..HEAD -- packages/trelix-*/src` is **13 insertions, 3 deletions**, every
+  one of them a type annotation (a `TYPE_CHECKING` import, a `-> "Retriever"` return type,
+  `__init__` parameter types). It is a re-alignment onto the core version line, not a record
+  of adapter change.
+
+- **`docker-publish.yml` had the same hole and now has the same guard.** It derived the
+  image tag from `${GITHUB_REF_NAME#v}` with nothing comparing it to the tree, so a
+  `v3.2.0` tag published `ghcr.io/…/trelix:3.2.0` containing a binary reporting `3.1.2`.
+  Skipped for `workflow_dispatch`, whose whole purpose is backfilling an older release
+  where the tree legitimately differs. Its `${{ github.event.inputs.version }}` also moved
+  out of the script body into `env:` — a dispatch input interpolated into `run:` is a
+  shell-injection sink.
+
+- **`gitleaks` pre-commit hook.** There was no secret scanning anywhere — not in
+  `.pre-commit-config.yaml`, not in CI — for a project publishing four PyPI packages and
+  two container images. Prefix matching alone would not have sufficed either: the AWS
+  credential pair in a local `.env` is base64-wrapped, so `AKIA…` never appears and every
+  prefix scanner, GitHub push protection included, reads it as clean.
+
+- **`trelix serve` warns when it is reachable off-box with no credential.**
+  `api/app.py`'s `authenticate()` is open by design when neither a static token nor OIDC is
+  configured, which is reasonable for the documented local use where `--host` defaults to
+  `127.0.0.1`. The shipped container overrides exactly that: `Dockerfile` runs
+  `serve /repo --host 0.0.0.0`, which a published port requires, and `docker-compose.yml`
+  published `8765` on every host interface while bind-mounting the user's repository — so
+  `docker compose up` served open, unauthenticated code search over it. Compose now
+  publishes to `127.0.0.1:8765` and lists `TRELIX_API_AUTH_TOKEN` so it is discoverable.
+
+  The warning lives at the bind boundary rather than in compose alone because it also
+  catches `trelix serve --host 0.0.0.0` run directly, which no compose change can reach. It
+  asks `_build_oidc_verifier` rather than reading an env var, so an SSO config that is
+  enabled but unusable still warns — the case where a reader would most wrongly assume they
+  were covered. `.github/SECURITY.md` claimed serve binds to `127.0.0.1`, true of the CLI
+  and inverted by the image; corrected.
+
+- **`config_lookup` no longer drops extensionless config files.** `_retrieve_config`
+  gated every planner hint on six suffixes or the substring `"config"`, and
+  `Path("Dockerfile").suffix` is `""` — so `Dockerfile`, `Makefile`, `Procfile`,
+  `setup.cfg`, `nginx.conf` and every `*.tf` were silently unresolvable, for **every**
+  repository. `find_file_by_path_fragment("Dockerfile")` worked the whole time and was
+  simply never called.
+
+  The gate could not just be deleted: `file_hints` is concatenated with `grep_hints`,
+  documented at `planner/models.py:63` as "exact symbol names", so unfiltered hints would
+  feed path lookups terms like `EXPOSE` and `ports:`. It now tests the filename, not only
+  the suffix — `_looks_like_config` checks a config-filename set, a broadened suffix set,
+  and the `Dockerfile.prod` variant shape.
+
+  Measured on the golden set: the four ops queries went from an **unstable 0.00 / 0.50 /
+  0.75 Recall@10 across identical configs to a stable 1.0000 nDCG@10 / Recall@10 / MRR**,
+  and "what port does the container expose and what is its entrypoint" — which returned a
+  single distinct file and answered confidently without the Dockerfile — now ranks
+  `Dockerfile` first with HyDE disabled for determinism.
+
+  **Caveat, disclosed rather than buried:** the 50-query set reads 0.6039 / 0.5791 against
+  0.6105 / 0.6063 before. The within-config spread is 0.0248, *larger* than that
+  difference, so two runs cannot separate the effect from noise. The plausible mechanism is
+  that `config_lookup` now succeeds more often and `retriever.py`'s `if not results:`
+  returns only the matched file's symbols, suppressing the vector, BM25 and grep legs
+  entirely. That short-circuit is a pre-existing design issue, unchanged here and recorded
+  under Known limitations.
+
+- **`trelix[watch]` can now satisfy `watch-all`.** The extra installed only `watchdog`,
+  while `indexing/multi_watcher.py` uses `watchfiles.awatch()` — so the ImportError at
+  `multi_watcher.py:30-38`, which tells the user to run `pip install 'trelix[watch]'`, did
+  not fix the problem it diagnosed. Masked locally because `uvicorn[standard]`, via the
+  `serve` extra, pulls `watchfiles` in transitively.
+
+- **Index provenance, reported by `trelix stats`.** `index_metadata` held exactly one row
+  — `embedding_dimension` — so nothing recorded *what* an index was a snapshot of. A
+  stale index does not fail loudly; it returns confident, well-ranked answers about code
+  that has since changed. `trelix stats` now reports the commit, branch, worktree
+  cleanliness, timestamp, trelix version and embedder the index was built from, plus how
+  many commits `HEAD` has moved since.
+
+  Captured at the **start** of an index run, not the end. Hashes are computed during the
+  walk, so end-of-run capture would pair a newer commit with older content — recording an
+  index as more current than it is, which is the direction that produces silent wrong
+  answers. Written at the end, so a run that crashed partway leaves no record claiming
+  completeness.
+
+  A pre-v3.1.2 index says provenance was not recorded rather than guessing, and every
+  field degrades independently — a non-git directory or absent `git` binary still records
+  version and embedder rather than failing the index.
+
+- **`trelix stats --drift`** — compares every indexable file on disk against its stored
+  hash, reporting changed / not-yet-indexed / indexed-but-not-found counts. Opt-in
+  because it costs a full walk plus a SHA-256 per file, where the rest of `stats` is a
+  few SQL counts. It reuses `FileWalker` rather than reimplementing discovery: the
+  indexer's own staleness rule is `db.get_file_hash(rel_path) != file.hash`, and a
+  divergent hash would report every file stale on a freshly built index.
+
+  `Indexed but not found` is deliberately **not** presented as a list of deletions. It is
+  "indexed paths this walk did not yield", which has two innocent explanations, and both
+  are surfaced above the counts because acting on the number deletes embeddings that cost
+  money to recompute:
+
+  - an incomplete walk (a directory that could not be read), using the walk-completeness
+    signal added earlier in this release;
+  - **a changed walk config**, which is now detectable because the walk-determining
+    settings are recorded at index time and any difference is named in the output.
+    Measured while building this: a drift check run without `scripts/self-index.sh`'s
+    environment reported **35 present files** under `packages/` as deleted, because
+    `TRELIX_WALKER_*` is process-env-only and `EXTRA_IGNORE_DIRS` replaces the default
+    30-entry list (which contains `packages` for .NET NuGet output) rather than extending
+    it. An index predating the recording reports `missing` as unverified rather than
+    trustworthy.
+
+- **Ops artifacts are indexed: shell, Dockerfile, Makefile, SQL and protobuf** (21 → 26
+  languages). Two independent gaps had to close for this to work, and either alone would
+  have left the files unreachable:
+
+  - `Path("Dockerfile").suffix` is `""`, so no `EXTENSION_MAP` entry could ever match an
+    extensionless artifact. Detection is now filename-aware via `FILENAME_MAP`, behind a
+    shared `detect_language()` — previously each of five call sites (walker, watcher ×2,
+    `api/app.py`, `indexer.py`) did its own `EXTENSION_MAP` lookup and would have needed
+    the same fix five times.
+  - Chunks hang off `symbol_id`, so a file yielding no symbols yields no chunks and is
+    invisible to *every* retrieval leg — vector, BM25, grep, summary and sub-chunk alike.
+    Shell, Dockerfile and Make have tree-sitter grammars but no structural extractor, so
+    being detected was not sufficient.
+
+- **`LineWindowParser`** — makes a file retrievable when nothing can parse its structure,
+  emitting fixed line windows as `SECTION` symbols with honest 1-indexed line numbers. It
+  extracts no calls, names or imports and reports `language_name == "line-window"` so a
+  caller can tell the symbols came from a line split rather than a parse. Windows rather
+  than one symbol per file because `Chunker` **truncates** an over-budget chunk instead of
+  splitting it, so a single 200-line symbol would silently lose its tail.
+
+  Also applied as a fallback in `_parse_one` when a real extractor returns zero symbols
+  from non-empty source: a Go-templated helm manifest the YAML extractor cannot parse went
+  0 → 5 `SECTION` symbols covering lines 1-184.
+
+  Measured: walk 459 → 465 discovered, index 467 files, zero-symbol files 12 → 11.
+  `Makefile` and `scripts/verify-index.sh` now rank 1 for queries about them.
+
+### Fixed
+
+- **The unit suite was order-dependent in 13 places, and it hid real bugs three times.**
+  `tests/unit` passed forward and failed under reverse collection order — with no integration
+  suite involved, contradicting a claim made earlier in this release. The causes were all the
+  same shape: a test mutating process-global state and restoring it incompletely.
+
+  Two were fixed here beyond the batch. `test_cli_audit.py`'s three failures were a **leaked
+  `logging.StreamHandler`**: `_setup_logging()` builds a bare handler bound to whatever
+  `sys.stderr` is at construction time, which under `CliRunner` is a capture buffer that
+  closes when the invocation ends — while the handler survives on the root logger, so the next
+  test to log anything dumps a `--- Logging error ---` traceback into *its* captured output.
+  Those three tests are canaries, not casualties: they assert on a marker and fail with "an
+  earlier test leaked a logging.StreamHandler bound to a now-closed CliRunner buffer", which is
+  a correct diagnosis of someone else's mess. A guard existed but only inside
+  `test_cli_markup_safety.py`; it is now an autouse fixture in `tests/unit/conftest.py`, since
+  the victim is whichever test logs next rather than anything specific to one module.
+
+  The last one was a **cumulative OpenTelemetry counter**. OTel's global `MeterProvider` can be
+  set only once per process, so the in-memory reader is shared and every counter accumulates
+  for the whole session. `_counter_total`'s own docstring says each test keeps its series
+  disjoint via a distinct provider label — but two tests legitimately need the real `"openai"`
+  label, so `test_openai_embed_counts_one_request_per_api_call` failed `assert 3 == 2` purely
+  on ordering. Now asserts a delta. Fixing that surfaced a second latent hazard in the same
+  helper: `get_metrics_data()` returns `None`, not an empty container, on a reader that has
+  collected nothing — so taking a baseline before any recording raised `AttributeError`.
+
+  **Reverse-order result: 3068 passed, 0 failed.** The suite is now order-independent.
+
+- **The eval harness could report a better score than reality.** It skipped a golden entry
+  whose `relevant_files` was empty, which shrinks the denominator — so a malformed golden file
+  scored *higher*, not lower. `eval/README.md` already listed this as one of "two ways to get a
+  silently wrong score". There is now a third documented, previously recorded only in the
+  self-index report: `query_cache_size` (default 256) memoises `embed_query`, so a repeat loop
+  in one process measures once and echoes.
+
+- **`TRELIX_FEDERATION_MAX_REPOS` was inert on the CLI.** Declared, documented, and enforced by
+  `packages/trelix-mcp` — while `cli/main.py` built `FederatedRetriever(registry)` with no
+  arguments, so `max_repos` stayed `None` and `trelix search-all` fanned out to every
+  registered repo. Both sides read the same registry file, so a registry grown by a runaway
+  `federation_add_repo` loop was uncapped the moment it was queried from the CLI, which is the
+  exact scaling the cap exists to prevent. It now passes the cap and **names the skipped
+  count** on stderr rather than truncating silently.
+
+- **A fresh contributor's first `pytest tests/unit` was a collection error.**
+  `.devcontainer/devcontainer.json` installed `.[local,dev]`, but two unit tests import `jwt`
+  at module scope and pyjwt ships only in `[sso]`. pytest does not degrade to skipping those
+  files — it reports "2 errors during collection / Interrupted", so all ~3000 tests vanish.
+  `ci.yml` documents this exact hazard in a comment and installs `[sso]` to avoid it.
+
+- **`scripts/measure_index_hygiene.py` accepted an invalid `--provider` and exited 0**, and was
+  the single file blocking a repo-wide `ruff format` scope widening.
+
+- **Deleting a file left its summary vector behind.** `delete_file_by_path` drove its vector
+  cleanup from `get_chunk_ids_for_file()`, but a file summary's vector lives in the same
+  `chunk_embeddings` table under the `chunk_id = -(file_id)` sentinel — so it was never in
+  that list, while the `file_summaries` row itself cascades away with the `files` row. The
+  result was a vector with neither a summary nor a file behind it. The leak long predates
+  `--prune`: the watcher's delete path has taken it for as long as file summaries have
+  existed.
+
+  Found by the gate widened earlier in this release, the first time a real `--prune` removed
+  a file: `verify-index.sh` reported 482 summary vectors against 481 summaries, the orphan
+  being `-475` for a `file_id` that no longer existed. Both vectors now go in one
+  `delete_batch` call, deliberately not gated on the chunk list being non-empty — a file can
+  have a summary and no chunks, which is exactly what every zero-symbol file was.
+
+- **A standing detector for re-introduced orphan rows.** The sweep that reclaimed 4,768
+  `def_use_edges` rows is one-shot — gated on `on_disk < SCHEMA_VERSION`, and the live index is
+  now stamped — and the existing gate is a row-count *floor*, which orphans only inflate.
+  `verify-index.sh` now anti-joins `def_use_edges`, `sub_chunks` and `sparse_embeddings`
+  against their parents, proven to fail against an orphan injected into a copy of the index.
+
+- **A malformed retrieval-weight variable printed API-key material.** The weights were parsed
+  inside `RetrievalConfig.model_post_init`, so pydantic caught the `ValueError` and re-raised
+  it as a `ValidationError` carrying the model's entire settings input dict. Measured on
+  pydantic 2.13.4: pydantic truncates `input_value` to ~50 characters keeping the head **and
+  the tail**, so `str(exc)` and the traceback printed the trailing ~22 characters of a key
+  verbatim — and `exc.errors()` and `exc.json()` printed every value in full. One typo was
+  enough to put key material into a terminal, a CI log, or a pasted issue report, and *which*
+  secret leaked was dict-order dependent. Weights are now parsed in `__init__`, before
+  pydantic gets control, so the failure stays an ordinary `ValueError` carrying only its own
+  message. The type, message and exit code are unchanged, which keeps the CLI's ten
+  `except (ValueError, FileNotFoundError)` handlers and the existing tests working.
+
+  Three cheaper fixes were rejected on evidence: a `ValueError` *subclass* is still wrapped;
+  `PydanticCustomError` is itself a `ValueError`; and settings-source filtering cannot help
+  because `cohere_api_key` is a legitimate field of this model, so the secret belongs in its
+  input dict. Related, reported not fixed: `DotEnvSettingsSource` copies every unmatched
+  dotenv key into the input dict when `extra != "forbid"`, so `.env` secrets reach all 12
+  settings classes — including ones with no such field.
+
+- **LanceDB duplicated rows under concurrent writers even when the delete succeeded.** Two
+  handles on one URI, 40 upserts each over 50 chunk_ids from two threads, produced 55 rows
+  with **zero exceptions raised** — a stale-snapshot race, each handle deleting against its
+  own table version, distinct from the swallowed-delete defect fixed earlier in this release.
+  It reaches production through the indexer's upsert `ThreadPoolExecutor`. Fixed with
+  `checkout_latest()` plus a per-`(uri, table)` lock. `Table.merge_insert`, LanceDB's own
+  upsert primitive, was **measured worse rather than better** — 4 threads over 50 chunk_ids
+  left 53-62 rows through it — so it was rejected on evidence rather than adopted on
+  reputation.
+
+- **A thin direct lookup suppressed every hybrid leg.** `file_overview`, `project_overview`
+  and `config_lookup` widened to standard retrieval only when the direct DB lookup found
+  *nothing*, so one matched file yielding a handful of symbols returned exclusively those
+  symbols and silently suppressed vector, BM25 and grep. Measured with a mocked DB (1 file,
+  2 symbols): standard retrieval was never invoked and assembly saw 1 result. A breadth floor
+  now also runs the standard path and merges when the direct lookup resolves fewer than 2
+  distinct files **and** fewer than 10 symbols; direct hits keep first position, and the union
+  is packed against the token budget once. Widening the config filename gate earlier in this
+  release had made this more reachable, not less — that commit predicted it and deliberately
+  left the mechanism alone.
+
+  **This closed the retrieval regression this release had been carrying.** The 50-query
+  golden set had drifted from a 0.6189 / 0.6312 nDCG@10 baseline to 0.6105 / 0.6063 after ops
+  indexing and 0.6039 / 0.5791 after the filename gate — a cumulative ~0.034 that two runs
+  could not separate from noise, disclosed at the time as unresolved with the short-circuit
+  named as the suspected mechanism. With the breadth floor it reads **0.6189 / 0.6217**, back
+  in the baseline range, and MRR **0.6254 / 0.6332** against a 0.5919 / 0.6142 baseline —
+  above it on both runs. So the suspected mechanism was the actual one.
+
+  The ops queries pay for it in ranking precision, which is the expected direction and worth
+  stating: Recall@10 stays **1.0000** — every target file is still found — while nDCG@10 goes
+  1.0000 to 0.8253, because merged standard results now compete for the top rank on queries
+  where the direct hit had been the only candidate. Perfect recall with slightly diffuse
+  ranking on four queries, in exchange for ~0.03 MRR across fifty, is a trade worth taking.
+
+- **`trelix graph` reported a degenerate community partition as a healthy number.** Community
+  detection returns 6,579 single-node communities out of 6,640 (99.1%) on trelix's own index,
+  and the command printed only `Communities: 6640`. **Characterised rather than tuned**, which
+  turned out to matter: 6,576 of the 6,579 singletons (99.95%) are nodes with **no edge at
+  all** — 59.8% of the graph — and a resolution sweep over 0.2/0.5/1.0/2.0/5.0 returns the
+  *same* 6,579 singletons every time, because a degree-0 node contributes zero to modularity
+  in every possible partition. No resolution value can merge them. The cause is edge coverage,
+  not Louvain: 50.8% of call edges are unresolved by design for stdlib and external targets,
+  there are only 130 type edges, and 3,797 isolated nodes are markdown/JSON/YAML/TOML symbols
+  that *cannot* have call or import edges. The build now reports singleton share and
+  isolated-node count at WARNING, with the cause attributed.
+
+- **File-summary failures were invisible.** `FileSummarizer.summarize()` returned `""` on any
+  LLM error and logged at DEBUG, and the indexer had no `else` and no counter — so 0 of 467
+  summaries was indistinguishable from complete success. The live count was 442/467, meaning
+  25 had already failed silently. `index()` now reports `file_summaries_generated`,
+  `_failed` and `_embedded`, and failures log at WARNING.
+
+- **`watch-all`'s summary omitted `files_skipped_ignored`.** The counter existed in `stats()`
+  and was invisible on the CLI.
+
+Eight of the entries below share one shape — **switched on and doing nothing, or failing
+and saying nothing** — and were found by re-auditing the tree after the first pass. Each
+was reproduced by running code before being fixed, and each carries a regression test that
+was proven red first.
+
+- **`watch-all` indexed everything, including `node_modules/`.** `MultiRepoWatcher` handed
+  every path watchfiles reported straight to `Indexer.index_file()`, which checks only
+  language and content hash — so one `npm install`, `uv sync` or build under a registered
+  repo pushed vendored trees into the embedder, work that both `trelix index` and
+  single-repo `trelix watch` refuse. Measured on this repository: the pre-fix gate accepted
+  **90,385** files where `FileWalker.walk()` accepts **444** — 99.5% of a full-tree event
+  burst would have been `.venv/` and `node_modules/`. Events now route through the owning
+  repo's own `FileWalker`, so the ignore chain, filenames, extensions, language allow-list
+  and size cap are the same objects a batch index uses rather than a restatement that can
+  drift. Filtering runs before the hash guard, so a 40 MB bundle is no longer read just to
+  be rejected. Deletions stay unfiltered, so rows written before an ignore rule existed
+  remain removable. `stats()` reports `files_skipped_ignored` separately from
+  `files_skipped_unchanged`.
+
+- **`watch-all` ignored SIGTERM, and Ctrl+C with it.** The SIGINT/SIGTERM handlers were
+  registered against `asyncio.get_event_loop()` *before* `asyncio.run()`, which builds its
+  own loop — measured, the two have different `id()`s and `_signal_handlers[SIGTERM]` is
+  `None` inside the coroutine. So `docker stop`, `kubectl delete` and systemd were swallowed
+  for the whole grace period and the process was hard-killed before printing its summary
+  (reproduced: 4 s elapsed, stop event never set). Worse than SIGTERM alone:
+  `add_signal_handler` repoints process-level SIGINT at asyncio's no-op handler, which stops
+  `asyncio.Runner` installing its own, so the `except KeyboardInterrupt` fallback was dead
+  too and Ctrl+C did nothing. Handlers are now installed from inside the coroutine via
+  `asyncio.get_running_loop()`, per-signal so one failure cannot skip the other, and a
+  platform that cannot install one now warns naming the signal and the lost guarantee.
+
+- **`LanceVectorStore.upsert_batch` turned every upsert into an append.** It swallowed its
+  delete with `except Exception: pass` and then called `add()` regardless. LanceDB enforces
+  no uniqueness on `chunk_id`, so a single failing delete left duplicates no later upsert
+  could repair: against real lancedb 0.33.0 one `chunk_id` grew 1 → 2 → 3 → 4 rows across
+  three failed-delete upserts, with **zero log output at any level**. Vector search then
+  returned that chunk four times, spending four of the k result slots on it, and `count()`
+  over-reported by 3 against the SQLite `chunks` table. It now logs at ERROR and re-raises
+  *before* adding, so the table keeps its prior single row and the caller learns the batch
+  did not land. Deliberately louder than the sibling `delete_batch` seven lines below,
+  whose swallowed failures only leave rows a later upsert can still replace.
+
+- **A malformed retrieval weight killed every command without naming itself.** Two
+  unguarded `float(val)` calls in `RetrievalConfig.model_post_init` meant a typo in any
+  `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_*` or `..._LEG_WEIGHT_*` aborted `trelix stats` — or
+  anything else — with `could not convert string to float: 'abc'`, naming neither the
+  variable nor which of ~96 `TRELIX_*` aliases to look at. This is the one knob the notes
+  invite users to experiment with. Both sites now route through one parser that reports the
+  variable, its value and a corrected example. The same parser rejects `nan`/`inf`, which
+  `float()` accepted silently — and with a NaN weight every fused score becomes NaN,
+  `nan * 0.5 > 0.9` is `False`, and results come back in insertion order with nothing raised
+  or logged. Bad weights fail fast rather than being warned about and dropped, because a
+  silently ignored weight leaves you measuring the default while believing otherwise.
+
+- **PR review hid that retrieval had died under it.** `DiffReviewer._review_hunk` wrapped
+  context retrieval in `except Exception: pass`, so a missing or broken vector store
+  produced a page of confident review comments written against `context_text=""` —
+  measured, an ERROR-severity comment returned with zero log records at any level including
+  DEBUG, and nothing distinguishing it from a grounded review. The failure now logs at
+  WARNING with the exception and file bound (matching the sibling handler ten lines above;
+  DEBUG would have been as silent as the `pass`, since the CLI runs at WARNING), and every
+  comment from a context-free hunk carries a `[trelix: no codebase context — retrieval
+  failed for this hunk]` label in its text — the one field the CLI table, `--json` and
+  posted GitHub comments all render. Scoped per hunk, so one broken file does not discredit
+  the rest of the PR.
+
+- **Connector syncs reported a failure count and nothing else.** `ArtifactSource.sync()`
+  caught per-artefact write and auto-link failures with a bare `except Exception:` — no
+  exception bound, no log call — so a run reporting `errors: 340` gave the operator no
+  type, no message and no failing `source_ref`, and exited 1 with nothing to diagnose.
+  Measured on a 340-artefact sync: zero log records at any level. Failures are now bound
+  and logged — the first 5 in full with a traceback, the rest at DEBUG, plus one WARNING
+  tallied by type (`failed to write 340 of 340 artefact(s) — ValueError x339,
+  TimeoutError x1`), turning 340 identical lines into 6 that name the single outlier.
+
+- **The vector leg silently returned fewer than `k` results.** `_vector_search` fetches
+  exactly `k` (the oversample applies only under a `path_filter`), so every
+  `_hydrate_chunk` returning None — an ANN entry whose chunk row is gone — permanently
+  consumed a result slot with no diagnostic anywhere: measured 3 results for `k=5` with 2
+  dead chunk_ids and zero log records. It now reports the shortfall at WARNING with the
+  miss count and offending ids, rather than over-fetching to hide store drift behind a
+  full-looking result set. Prefix rejects and small indexes stay silent, so the warning
+  means exactly one thing.
+
+- **The PageRank empty-centrality warning fired on every query** despite the comment above
+  it promising it is said once — two queries against an index with empty `graph_metadata`
+  produced two identical records, drowning the one actionable line (`run trelix graph`).
+
+- **`rerank_provider="xtr"` reranked nothing.** The XTR path built a query-token dict
+  containing a single synthetic token, so `xtr_score_documents` computed `sum([s])/1 == s`
+  and every "reranked" score came back bit-identical to its input — measured on a 3-result
+  fixture the output was exactly a descending sort of the incoming fused scores, and the
+  `query` argument was never read. The only signal was a UserWarning calling XTR
+  "unbenchmarked", which understates an identity function, and its
+  `xtr_candidate_tokens` knob has zero reads anywhere in `src/`. Real token-level XTR needs
+  a ColBERT-style multi-vector index trelix does not build, so rather than fake it the
+  provider now warns on every call that it reranks nothing and that the knob has no effect,
+  and the module docstring marks it DEGENERATE and points at `plaid`. Fixed in the same
+  path: `results.index(r)` keyed scores by dataclass *value* equality, so value-equal
+  duplicates all inherited doc 0's score — burying the true winner — at O(n²) cost.
+
+- **`def_use_edges` — the largest table in the index — had no cleanup path at all, and
+  4.0% of it was already orphaned.** `symbol_id` is `INTEGER NOT NULL` with no
+  `REFERENCES`, and the table had a CREATE, an INDEX, an INSERT, one unused SELECT and
+  **zero DELETE** anywhere in `src/`. Every symbol removal leaked its edges — both
+  re-index paths on each changed symbol, and `delete_file_by_path()` on every file removed
+  from a watched repo, since it shipped. Measured on the live 192 MB index: **4,768 of
+  117,814 rows already pointed at a `symbols.id` that no longer exists.** A new
+  `_purge_fkless_symbol_rows()` is called from all three symbol-removal paths and covers
+  the three symbol-derived tables no `ON DELETE CASCADE` reaches — `sub_chunks`,
+  `def_use_edges` and `sparse_embeddings`, the last being the same defect one level out.
+
+- **The index schema was unversioned**, so an older install silently opened a
+  newer-written index. `pragma user_version` was 0 across 30 tables and an unversioned
+  chain of `CREATE TABLE IF NOT EXISTS`/`ALTER` blocks whose comments name v2.2/v2.3/v2.4
+  with nothing queryable; `dimension_guard.py` was the only guard, while
+  `BACKWARDS_COMPATIBILITY.md` promised additive-only evolution with no test enforcing it.
+  An existing index still reads 0 and is treated as current, not corrupt.
+
+- **`FileWalker` aborted an entire index run on a symlink loop.** With
+  `TRELIX_WALKER_FOLLOW_SYMLINKS=false`, `_is_within_root` guarded `entry.resolve()` with
+  `except OSError` — but `Path.resolve(strict=False)` on 3.11/3.12 *swallows* every OSError
+  and re-raises ELOOP as `RuntimeError`. Measured on 3.11.14: broken, nonexistent and
+  chmod-000-parent paths all resolve silently, so the handler was dead code and a mutual
+  loop (`la -> lb`, `lb -> la`) killed the whole walk with an uncaught `RuntimeError`,
+  losing every legitimate sibling file. Loops and dangling links are now excluded
+  silently — nothing real sits behind an unresolvable path, matching the symlink-cycle
+  precedent — while a non-loop resolve failure calls `_record_incomplete`, so
+  `walk_was_complete` (and through it `missing_is_trustworthy`) stops claiming the index
+  mirrors the repo after real content was dropped.
+
+- **`trelix stats --drift` printed a total and a remedy it had already disclaimed.** The
+  honesty warning about `missing` was gated on `missing_is_trustworthy`; the headline count
+  and the remediation sentence were not. Measured here: *"99 file(s) have drifted. Run
+  `trelix index` to rebuild"* directly beneath *"Treat missing as unverified"* — where 35 of
+  the 99 were every file under `packages/`, all present on disk, unreachable only because
+  `packages` is in the default `extra_ignore_dirs` for .NET output, and restorable by no
+  `trelix index`. The total is now `actionable_drifted_count` (68 on the same tree), the row
+  is labelled *(unverified)*, and the excluded count is named with the reason.
+
+- **`.gitignore` contents were not fingerprinted, so an ignore-rule edit left drift falsely
+  trustworthy.** `_WALK_FIELDS` recorded `respect_gitignore` as a bool only. Reproduced in a
+  temp repo: changing `.gitignore` to `sub/` produced `missing=('sub/b.py',)` with
+  `walk_config_diff=()` and `missing_is_trustworthy=True` — which a future `--prune` would
+  act on by deleting a present file. The chain's contents are now digested into the
+  fingerprint.
+
+- **Test isolation: two module-scope `load_dotenv()` calls published the developer's real
+  `.env` into `os.environ` for the whole pytest process.** Because pydantic-settings reads
+  env vars *before* the `.env` file, either one outlived every fixture and rewrote config
+  defaults for unrelated tests. `pytest tests/perf tests/unit/test_config.py::TestEmbedderConfig::test_default_provider_is_local`
+  failed with `assert 'azure' == 'local'` in 0.19 s — and `pytest tests/perf/ --collect-only`
+  prints "no tests collected" while still *importing* the module, so collection alone
+  activated live credentials. The integration site now reads the file with `dotenv_values()`
+  and injects it per-test under `monkeypatch`; the perf script loads it inside `__main__`,
+  repo-root-anchored rather than cwd-relative (the old bare call silently found nothing when
+  run from anywhere else).
+
+- **`pytest -m "not integration"` deselected nothing.** `CONTRIBUTING.md` documents it as
+  the credential-free run, but the marker was neither registered **nor applied to any
+  test** — so it collected all 3,001 tests, byte-identical to bare pytest, and drove the
+  live Azure/Bedrock calls it claimed to skip. Registering it alone would have fixed
+  nothing. Now registered and applied by directory: **2,897 collected, 104 deselected**.
+  `--strict-markers` added so a typo in the applied mark is a collection error rather than a
+  silent no-op.
+
+- **`_isolate_beast_mode_flags` was triplicated and had drifted.** Only the `tests/unit`
+  copy carried `_CODE_DEFAULTS` and `_ENV_PREFIXES_TO_SCRUB`, so the integration and eval
+  suites let a developer's environment through — the contamination the eval conftest's own
+  docstring calls "load-bearing". Now one shared `tests/_env_isolation.py`, with the tables
+  made immutable so one suite's fixture cannot silently change what the other two observe.
+
+- **A test silently disabled the code it was testing for the rest of the session.**
+  `test_multi_watcher.py` called `importlib.reload(multi_watcher)` inside
+  `patch.dict(sys.modules, {"watchfiles": None})`. The reload re-runs a module-scope
+  `try: from watchfiles import Change`, so both `Change` and `awatch` became `None`, and
+  `patch.dict` restores `sys.modules` without restoring the module object it poisoned.
+  `MultiRepoWatcher.run`'s deletion branch is guarded by `if Change is not None and
+  change_type == Change.deleted`, so from that point on every delete event fell through to
+  the ignore filter. Nothing caught it while no test depended on deletions; the first one
+  that did failed only in a full-suite run and passed in isolation. Now restored in a
+  `finally`, with an assertion pinning it. Verified directly: `Change is None` after the
+  poisoning reload, `<enum 'Change'>` after the restoring one.
+
+- **Nested `.gitignore` files were never read, despite the docstring saying they
+  were.** `walker.py`'s module docstring advertised "respects nested .gitignore files"
+  while `_load_gitignore_spec()` read only `repo_root/.gitignore`, so every
+  `.gitignore` in every subdirectory of every indexed repository was ignored.
+
+  Measured on this repository: `workspace-vscode/.gitignore` excludes `.vscode-test/`,
+  which `@vscode/test-electron` fills with a **2.6 GB VS Code application bundle**. The
+  walker indexed **543 of 915 files (59%) and 23,865 of 32,337 chunks (74%)** out of
+  that bundle. The symbols it extracted are minified single-letter identifiers, and
+  they competed with real code: the query *"how does the file walker filter ignored
+  directories"* returned **6 of 10 results from the bundle** and pushed `FileWalker`
+  itself down to rank 4.
+
+  Corpus pollution and retrieval damage turned out to be very different numbers. Across
+  a 10-query set, mean precision@10 was **94%** — the fusion pipeline masks the noise
+  for most queries. The damage concentrates on queries whose vocabulary overlaps the
+  junk, and there it is severe.
+
+  The fix walks the `.gitignore` chain from repo root down to a path's own directory and
+  applies git's real semantics, which a single root spec cannot express: each file's
+  patterns match **relative to its own directory** (otherwise an anchored `/rooted.py`
+  or a directory pattern `harness/` in a nested file silently matches nothing), and
+  **proximity decides**, so a deeper `!keep.log` re-includes what its parent excluded.
+  That last part needs pathspec's `check_file()`, which distinguishes *ignored* from
+  *explicitly re-included* from *unmentioned*; `match_file()` collapses the last two and
+  cannot express it. Specs are parsed once per directory and cached.
+
+  On this repo: **915 files → 422**, zero from `.vscode-test`, walk in 0.1 s.
+  `_is_ignored_file()` still works on an arbitrary path rather than requiring traversal
+  state, because `watcher.py` calls it that way for single filesystem events — so
+  `trelix watch` gets the fix too.
+
+- **The taint parser was written against an invented fixture and got all three of its
+  fields wrong.** Verified against real semgrep 1.x output for a rule matching
+  `input()` → `cur.execute()`:
+
+  `taint_sink` is a two-element tagged **list**, `["CliLoc", [location, code]]`, not a
+  mapping. `trace.get("taint_sink", {}).get("location", {})` therefore called `.get()`
+  on a list, raised `AttributeError`, and the bare `except Exception: continue` dropped
+  the finding. Since only genuine taint flows carry a `dataflow_trace`, **taint analysis
+  reported nothing, ever** — matching the 0 rows in `taint_flows`.
+
+  `severity` is under `extra`, so the top-level read always fell through to the `"INFO"`
+  default: every flow looked harmless and `--severity ERROR` could never match.
+
+  And semgrep reports a match **at the sink**, so the top-level `path`/`start` is the
+  sink's location. Using it as the source inverted the flow — for the fixture above it
+  reported line 5 (the `execute` call) as the source and never saw line 3 (the `input`
+  call).
+
+  The existing test asserted all three misreadings, using a fixture with `severity` at
+  the top level and `taint_sink` as a `{"location": ...}` dict, and passed. That is why
+  this shipped: a fabricated fixture froze a wrong contract in place. The new fixture is
+  captured verbatim from semgrep with only `path` values stubbed. The parser accepts
+  both shapes, so the old dict form still works. End-to-end: 1 flow, `ERROR`, source
+  `:3`, sink `:5`; before, 0 flows.
+
+- **nDCG@10 and Recall@10 could exceed 1.0.** Both functions document a `[0, 1]` result
+  and `docs/CLI_REFERENCE.md` shows example output in that range. `EvalHarness` ranks
+  *chunks* and maps them onto file-level IDs while golden-set ground truth is
+  file-level, and `Retriever._dedup` keys on `symbol_id`, never on file — so one file
+  routinely occupies several of the top ten slots (this index averages ~77 chunks per
+  file). Each occurrence scored again.
+
+  Measured: one relevant file appearing 5 times in the top 10 scored **recall@10 = 5.0,
+  nDCG@10 = 2.52**; all ten scored 10.0 and 4.54. Worse than the range violation,
+  padding a result list with duplicates **raised** the score, so the metric rewarded
+  redundancy.
+
+  Deduplication now happens in the metric functions, covering every caller —
+  `tests/eval/metrics.py` already implemented this first-hit-only rule locally, which is
+  why the test-suite harness reported sane numbers while the shipped CLI did not. `mrr`
+  is deduplicated too: it could not exceed 1.0, but duplicates *before* the first
+  relevant hit inflate that hit's rank and **depress** the score (`[A,A,A,B]` scored 1/4
+  instead of 1/2), so leaving it alone would have left the three metrics disagreeing
+  about what a rank is. `@k` now means k distinct files. **Scores from before this change
+  are not comparable with scores after it**, in both directions.
+
+- **Sentinel rows stole slots from the vector search top-k.** Three kinds of row share
+  the `chunk_embeddings` vec0 table: real chunks at positive ids, file summaries at
+  `-file_id`, sub-chunks at `+10_000_000`. `search()` queried all three.
+
+  That is not merely noise. `Retriever._vector_search` sets `fetch_k = k` with no
+  oversample, hydrates each returned id, and `continue`s when hydration yields `None` —
+  and `raw` holds only `k` rows, so **there is nothing left to backfill from**. Every
+  sentinel in the top-k is a real result the caller silently never sees. Reproduced on
+  an in-memory vec0: one summary and one sub-chunk vector placed nearer the query than
+  any real chunk took the **top two of five** slots.
+
+  Both obvious fixes are wrong, which is why this needed measuring rather than
+  reasoning. `WHERE embedding MATCH ? AND chunk_id > 0 ... LIMIT ?` is **rejected
+  outright** by sqlite-vec 0.1.9 — *"A LIMIT or 'k = ?' constraint is required on vec0
+  knn queries"* — because the added predicate stops its planner recognising the `LIMIT`.
+  The `k = ?` constraint form is accepted but **silently wrong**: it applies the
+  predicate after the ANN cut, so a `k=5` query returned 4 rows, trading a polluted
+  top-k for a short one.
+
+  So the filter is in Python, and when the first pass comes back short it re-asks for
+  `k` plus the exact number of sentinel rows stored — provably enough even if every
+  sentinel outranks the k-th real chunk. The count is only paid when a filter actually
+  removed something, so an index with no summaries or sub-chunks issues exactly the
+  query it always did.
+
+  Deliberately **not** applied to the Qdrant and LanceDB backends: they build
+  `search_file_summaries()` and `search_sub_chunks()` *on top of* `search()` with a `k*5`
+  oversample, so sentinels there are load-bearing and the same change would break both
+  legs. The SQLite backend's sentinel legs run their own scans, which is what makes the
+  exclusion safe here; a test pins the distinction.
+
+- **The PageRank boost had never fired, and said nothing.**
+  `get_top_central_symbols()` read `graph_metadata` without the `_ensure_table(db)` call
+  its two siblings make. That table is created on demand rather than by the base schema,
+  so on any index where `trelix graph` had not run the read raised
+  `no such table: graph_metadata` — confirmed on this repo's index, where
+  `SELECT name FROM sqlite_master WHERE name LIKE 'graph%'` returned zero rows.
+
+  `Retriever._apply_pagerank_boost` caught that and logged at **DEBUG** while the CLI
+  configures **WARNING**. With `TRELIX_RETRIEVAL_PAGERANK_BOOST=true` in `.env`, the
+  result was an enabled retrieval feature that was inert and indistinguishable from a
+  working one. The read now ensures the table, and an empty centrality set logs at
+  WARNING naming both the fix and how to silence it.
+
+- **A failed file summary permanently cost a file its vectors.** Phase 2.5's comment
+  says failures are swallowed inside `FileSummarizer.summarize()`, and they are — but
+  the `self.embedder.embed([summary])` call that follows had no boundary of its own,
+  unlike the multi-granularity phase directly below it.
+
+  The loss is permanent, not transient. The file's chunk rows **and its content hash**
+  are already committed by then, so an embedder error unwinds past
+  `all_pending.extend(pending)` — those chunks never receive vectors, and because the
+  hash is stored, every later `trelix index` skips the file as "up to date" and never
+  repairs it. The only outward sign was a generic red `DB error <path>`.
+
+  Reproduced with an embedder that fails only on the single-text summary call:
+  `files_indexed=1, symbols_extracted=1, chunks_total=0, chunks_embedded=0, errors=1` —
+  a file recorded as indexed, with committed chunks and no vectors. Live for any run
+  with `TRELIX_FILE_SUMMARIES_ENABLED=true`, where one Azure 429 past the retry budget
+  was enough.
+
+- **The query planner discarded its credentials, collapsing eight intents into one.**
+  `QueryPlanner.__init__` builds its `LLMConfig` with `_env_file=None`, disabling dotenv
+  loading, and then used it as-is. Credentials supplied via `.env` — the documented
+  route — never reached the client, so `_plan_direct` fell back to `default_plan()` on
+  every call and all eight `IntentType` values became the hard-coded `FEATURE_FLOW`.
+
+  Measured with credentials in `.env` and nothing exported: eight textbook queries, one
+  per intent, produced **one** distinct intent. Two are near-verbatim copies of the
+  enum's own examples — *"what does this project do"* is exactly the `PROJECT_OVERVIEW`
+  comment — and both classified as `feature_flow`. After the fix, with the Azure
+  variables explicitly removed from the environment so credentials can only come from
+  `.env`: **8 of 8**.
+
+  `INTENT_STRATEGIES` keys off intent to choose which retrieval legs run and how far
+  call-graph expansion goes, so an inert classifier gives every query an identical plan.
+  On a 50-query golden set for this repository, activating it moved **nDCG@10 by +0.027
+  and MRR by +0.040 while costing 0.040 recall** — a real precision-for-recall trade,
+  every delta 5–8× the ±0.005 run-to-run noise floor measured on the same set. The
+  direction is not the point. The point is that the number depended on whether
+  credentials happened to be *exported* rather than read from `.env`, with nothing at
+  the CLI's default log level to distinguish the two.
+
+  The fix is the step its siblings already take: `Synthesizer` and `graph_rag` use the
+  same shim and both follow it with `model_copy(update={…})` to carry credentials off
+  the `EmbedderConfig` — `graph_rag` labels the block `# Carry over credentials`. The
+  planner was the one site that skipped it. That asymmetry is also why synthesis was
+  never affected: `trelix ask` worked throughout, because `Synthesizer` accepts an
+  explicit `llm_config` *and* copies credentials in its fallback.
+
+  Every pre-existing planner test supplies no credentials, so all of them passed either
+  way. That is the gap that let this ship.
+
+- **`trelix eval-synthesis` could never produce a non-empty answer.**
+  `SynthesisEvalHarness.run()` passed the CLI's `IndexConfig` to `Synthesizer`, which
+  takes an `EmbedderConfig` first and, with `llm_config=None`, falls into a shim reading
+  `config.provider`. Every call raised `AttributeError` into a bare `except`, becoming
+  `answer = ""`. Measured on the sample golden file: hallucination/completeness/
+  faithfulness all 0.0000 and overall a **constant 0.4000** before, **0.8733** after.
+  The `__init__` annotation was `Any`, which is what stopped mypy --strict from catching
+  it, and the existing test patched `Synthesizer` wholesale — a MagicMock accepts any
+  arguments, so the wrong type never raised under test.
+
+- **`GitLinker` dropped every merge commit's file list.** `git log --name-only` prints no
+  diff for a merge unless told which parent to diff against. On this repo, merge `3dea90a`
+  yielded 0 files; with `--diff-merges=first-parent` it yields 4. That is the common case
+  for PR-based work, where the ticket key lives in "Merge pull request … from
+  feature/PROJ-456". Not `-m` (double-counts every file) and not `--first-parent` (hides
+  the branch's own commits); for non-merge history the output is byte-identical.
+
+- **The default ticket pattern read `UTF-8` and `SHA-256` as ticket ids.** `r"[A-Z]+-\d+"`
+  matched 12 strings across 830 commits, **all** false positives. Anchoring alone fixes
+  almost nothing — adding `\b` and a two-letter minimum removed exactly one — because a
+  ticket key and a technical constant are structurally identical. The default now carries
+  a noise-prefix vocabulary. The trailing guard allows a trailing hyphen deliberately: a
+  stricter one dropped `feature/PROJ-456-thing`, gutting the merge fix above. The CLI
+  restated the old literal as its own default and overrode the config, so both now
+  reference one constant.
+
+- **`trelix graph --visualize --json` wrote no HTML.** The `--json` branch returned before
+  the export ran, so the flag was accepted and ignored — a stale 31-byte file survived
+  where the same command without `--json` wrote 326 KB. The path is now reported as
+  `visualization_path`; the four documented keys are unchanged.
+
+- **`trelix taint` reported a FAILED scan as clean.** `run()` returns `[]` for four
+  different situations, so the CLI could not distinguish them. The first attempt at this
+  branched on `shutil.which` alone and made it worse: `--tier intrafile` without the
+  Semgrep Pro Engine exits 2 with empty stdout, and that began printing "semgrep ran and
+  reported nothing" at exit 0 — a confident all-clear for a scan that never ran. `scan()`
+  now classifies the outcome from the exit code, semgrep's own `errors[]`, and
+  `paths.scanned`, because no one of those covers every case. A failed or vacuous scan
+  exits 1 and makes no clean claim.
+
+- **Sparse indexing could not work, at two levels.** The default model
+  `naver-splab/splade-code-distil` does not exist on the Hub. Correcting the id alone
+  would not have helped: both real SPLADE-Code releases are `model_type=qwen3`, absent
+  from transformers' MaskedLM auto-mapping, so `AutoModelForMaskedLM` cannot load them.
+  And `embed()` ran ONE forward pass over every text — for this repo's 10,700 chunks that
+  is a **668 GB** logits tensor — while `SparseConfig.batch_size` was referenced nowhere
+  in `src/` and the constructor did not even accept it. Now a real BERT-family SPLADE,
+  batched, verified at 60 snippets / 0.87 GB peak RSS.
+
+- **`migrate-vectors --reset` did nothing while reporting success.**
+  `clear_all_embeddings()` ran `DELETE FROM chunk_embeddings` on a connection with no
+  sqlite-vec extension, raising `no such module: vec0` into `except: pass` — a guaranteed
+  no-op on every install, with one caller and zero tests. A working delete would not have
+  helped either: a vec0 table's width is fixed by its CREATE statement. And the hashes
+  survived at both levels, so the re-index the message prescribed either reported
+  "Nothing to index" or re-parsed everything and embedded nothing. Now: drop and rebuild
+  at the new dimension (transactionally), invalidate file AND symbol hashes, clear the
+  dimension record last, refuse on backends this cannot rebuild, and a new `--provider`
+  to say which width to rebuild for.
+
+- **A symbol's sub-chunks and their vectors outlived it.**
+  `sub_chunks.parent_symbol_id` has no foreign key — `PRAGMA foreign_key_list(sub_chunks)`
+  returns `[]`, unlike `chunks` — and no `DELETE FROM sub_chunks` existed anywhere, so
+  rows accumulated on every re-index. `architecture.md` described the column as
+  `FK→symbols CASCADE`, which was never true. Vectors are deleted before rows, because
+  the row id is the only handle on its vector; a cascade could not have covered that half
+  regardless, since the vectors live in a virtual table.
+
+- **An unreadable directory vanished from the index in silence.** `_iter_files` caught
+  `PermissionError` and bare-`return`ed, dropping the entire subtree with no trace, so
+  `files_found` was reported as though it were the repository's contents. `FileWalker`
+  now records what it could not read and `Indexer` reports it as `files_unreadable`. This
+  is also the prerequisite for the reconciliation pass `trelix index` still lacks — see
+  Known limitations.
+
+- **Indexed content could drive the user's terminal.** `rich.markup.escape()`
+  neutralises `[` markup brackets and nothing else, so ANSI/OSC control bytes
+  stored in an indexed file reached the terminal verbatim when rendered by
+  `trelix ask`, `search`, `review` and the agent surfaces. Two payloads mattered:
+  **OSC 52**, which writes the user's clipboard on iTerm2/kitty/WezTerm, and
+  cursor-up + erase-line, which lets injected content **scrub trelix's own output
+  above it** so a reader cannot tell what was displayed. A new `_safe_text()`
+  helper strips control bytes and then escapes markup, and is applied to every
+  dynamic value rendered to the terminal by `cli/main.py` and `indexing/indexer.py`
+  — the only two modules in `src/` that construct a markup-enabled `Console`.
+
+  The indexer half landed later than the CLI half, and for a period this entry
+  over-claimed. It is worth recording why that was worse than the original gap: the
+  four indexer sites rendered `walker.incomplete_paths`, `orig.rel_path`,
+  `pf.file.rel_path` and exception text — repo-controlled filenames, and a POSIX
+  filename may contain any byte except `/` and NUL. Their only protection was
+  accidental: with Rich's default `highlight=True` the reprhighlighter inserts SGR
+  codes between the ESC and its payload, so multi-token sequences like OSC 52 fail
+  to form. That is not a control — adding `highlight=False` anywhere removes it, and
+  measured through a default-highlighting console `\x1bc` (RIS, full terminal
+  reset), `\x1b#8` (DECALN screen fill) and `\x1b=` survive intact regardless. The
+  helper now lives in `trelix.core.console_safety` so both modules share one copy,
+  and the structural test that pins "exactly one `escape()` call in the repo" runs
+  over all of `src/` rather than over `cli/main.py` alone, which is what let the gap
+  exist while the guard reported green.
+
+  The **order is load-bearing** and was wrong in the first version of this fix.
+  `escape()`'s regex only treats `[` as a tag opener when the next byte is in
+  `[a-z#/@]`; escaping *before* stripping therefore leaves `[` unescaped, and
+  deleting the control byte then **synthesises a live markup tag** out of text that
+  had none. Measured against a real pty, `pre[\x1blink=http://evil.example]CLICK`
+  emitted an **OSC 8 hyperlink to an attacker-controlled URL** — a capability that
+  does not exist on v3.1.1. Stripping first is what makes the escape total.
+
+  Machine-readable output is deliberately unchanged: `--json` stays byte-exact
+  (`markup=False, highlight=False, soft_wrap=True`), because escaping there would
+  write stray backslashes into consumers' parsed strings. The strip is at the
+  render boundary, not at index time — stored content stays intact, and the REST
+  and MCP surfaces still return raw bytes for machine consumers.
+
+- **A symlink cycle multiplied one file into dozens of copies.** A link pointing at
+  one of its own ancestors (`repo/loop -> repo`) made the walk re-enter a directory
+  it was already inside, yielding a single real file **17 to 33 times** depending on
+  layout, at nesting depths bounded only by the OS path limit — the same multiple of
+  the embedding cost, and that many duplicate results for one file. Some topologies
+  (a link chain resolving to an ancestor, two loop links in one directory) **did not
+  terminate at all**.
+
+  `FileWalker._iter_files` now tracks the resolved paths of the current recursion
+  chain and skips a directory whose resolved target is already an ancestor on that
+  path. Deliberately **not** a global visited-set: that would collapse
+  `repo/a -> repo/shared` and `repo/b -> repo/shared` into one and silently drop
+  `b/`'s files from a legitimate layout. Note that `TRELIX_WALKER_FOLLOW_SYMLINKS=false`
+  does *not* help here — the loop target resolves *inside* the root, so containment
+  correctly permits it. Cycle detection and containment are orthogonal.
+
+  For an index built before this, duplicate rows disappear on the next index run.
+  Strictly fewer rows, never fewer *distinct* files; no reindex is required for
+  correctness.
+
+- **All three MCP prompts failed at `prompts/get`.** fastmcp ≥ 3.4 validates a
+  prompt's return value and accepts only `Message` or `str`; the builders returned
+  plain dicts, so every `prompts/get` raised `TypeError: messages[0] must be
+  Message or str, got dict`. `prompts/list` was unaffected, so all three
+  **advertised themselves and then errored on use**. Conversion now happens at the
+  transport boundary in `server.py`, keeping `prompts.py` fastmcp-free, and the
+  role is narrowed to the two literals the MCP spec allows. The `fastmcp` pin is
+  bounded (`>=3.4.0,<4`) — an unbounded major is how this contract changed
+  silently in the first place.
+
+- **A deprecation deadline that had already passed.** `BACKWARDS_COMPATIBILITY.md`,
+  `ROADMAP.md`, `FAQ.md` and the runtime `DeprecationWarning` itself all stated
+  that `TRELIX_RETRIEVAL_FLARE_MAX_ITER` "will be removed in v3.0.0". v3.0.0
+  shipped on 2026-08-13 and the alias is still live, so a reader was told the env
+  var was gone in v3.x when it still works. Since the project's own policy permits
+  removal only on a MAJOR bump, the target is retargeted to **v4.0.0** and the slip
+  is recorded rather than quietly rewritten. Also corrected in the same document:
+  a source citation off by 143 lines (`config.py:434` → `:577`) and a relative link
+  that resolved to `docs/docs/superpowers/…`.
+
+### Changed
+
+- **`scikit-learn` removed from the core dependencies.** It was unconditional with **zero
+  importers** — nothing under `src/`, `packages/`, `tests/`, `scripts/` or `eval/` imports
+  sklearn or scipy, and all 142 modules import cleanly with sklearn, scipy, joblib and
+  threadpoolctl blocked at `__import__`. Measured cost: **120 MB** on every `pip install
+  trelix` (scipy 82, sklearn 36, joblib 2). `trelix.spec` already excluded all three from the
+  shipped binary, which was the tell. Users on the local provider still get them transitively,
+  because sentence-transformers requires them.
+
+- **`httpx2` kept, and its comment corrected.** The audit flagged it as a third-party httpx
+  fork duplicating a core dependency. It is not: `httpx2` is by the httpx author, Starlette's
+  `testclient.py` does `import httpx2 as httpx` and falls back to `httpx` only with a
+  `StarletteDeprecationWarning`, and its own fallback branch is marked `# pragma: no cover`. So
+  it is the supported path, not redundancy, and removing it would have moved 45 `TestClient`
+  constructions onto a deprecated branch. The old comment ("httpx2 replaces httpx") was wrong
+  and the `>=0.27` floor was fiction — there is no 0.x line at all.
+
+- **`fail_under` raised** from 75 against ~82.7% actual coverage, which `ci.yml`'s own comment
+  had asked for.
+
+- **The LanceDB backend's new hard-abort is documented** in `docs/PROVIDERS.md`. Making
+  `upsert_batch` re-raise on a failed delete was right — it replaced silent row duplication —
+  but no caller handled it, so a single failure could abort a whole index run that previously
+  always completed.
+
+- **`e2e_test.sh` deleted.** Stamped "trelix v0.4.0 beast mode", referenced by nothing in the
+  `Makefile`, `.github/` or `CONTRIBUTING.md`, and covering nothing the suite does not.
+
+- **Phase 2.5 (LLM file summaries) runs concurrently.** It was 89.6% of an index run — 428
+  summaries over 1034.2 s of 1153.7 s — and fully sequential, while Phase 3 did 10,423 chunks
+  in 74 s at 4-way. Chat calls now fan out over a thread pool (default 4) behind a new
+  sliding-window requests-per-minute limiter: the **first chat-side rate limit in trelix**,
+  since `tpm_limit` was embedder-only and fanning out without one would have leaned entirely
+  on retry backoff, converting a rate limit into cost and latency. Measured 3.9x on the phase.
+  Overridable via `TRELIX_FILE_SUMMARY_WORKERS` / `TRELIX_FILE_SUMMARY_RPM`. DB writes and
+  summary embeds stay on the main thread. Visibility was fixed **before** concurrency, on
+  purpose — parallelising an invisible failure mode multiplies a problem you cannot see.
+
+- `Database` gained generic `get_index_metadata` / `set_index_metadata` /
+  `delete_index_metadata` / `get_index_metadata_with_prefix`, and the three
+  `embedding_dimension` helpers now delegate to them instead of carrying their own copy
+  of the upsert. The prefix query escapes `LIKE` wildcards: `_` is a single-character
+  wildcard in SQL, so an unescaped prefix of `a_` also matches `abx`.
+- `docs/GETTING_STARTED.md` no longer claims `trelix stats` prints a language breakdown.
+  It never did — the row also promised "embedder, timestamp", which only became true with
+  provenance above.
+- `TRELIX_PARSER_TAINT` is documented as **inert**. `ParserConfig.taint_enabled` is
+  declared and read nowhere in `src/`; taint analysis happens only when `trelix taint`
+  runs, and that command does not consult it. It had been documented as "Enable
+  taint-flow tracking during parsing".
+- `TRELIX_PARSER_DATAFLOW` now records that it is Python-only in practice, since the
+  extractor requests the Python grammar unconditionally.
+- `TRELIX_WALKER_RESPECT_GITIGNORE`, and the ignore sections of `CONFIGURATION.md`,
+  `TROUBLESHOOTING.md` (two sites) and `MCP_GUIDE.md`, now describe nested-`.gitignore`
+  support. All four correctly documented the old single-file limitation and would
+  otherwise have been left asserting the opposite of the code.
+- The `trelix taint` reference records two behaviours it had omitted: persistence to
+  `taint_flows` is unconditional and happens *before* `--severity` filtering, and
+  `--tier intrafile`/`interfile` both require the Semgrep Pro Engine, which
+  `pip install trelix[taint]` does not provide.
+
+- Documentation version stamps advanced to 3.1.2 across 14 files. Historical
+  references ("New in v3.0.0", "Fixed in v3.0.0", the shipped-version table) are
+  deliberately left alone. `CONTRIBUTING.md` now carries a release checklist naming all
+  twelve stamps `verify-version` checks, the two things that look like version sites but are
+  not — the Helm chart's own `version`, which tracks the chart's structure rather than the
+  app, and the adapters' dependency floor, which is a compatibility contract rather than an
+  identity — and why a blind `sed` over `docs/` corrupts history. An earlier revision of that
+  checklist named five sites and filed the langchain and llama-index packages under
+  "independently versioned" — both retired by the lockstep resolution above and by the four
+  adapter stamps the gate now checks.
+- `docs/architecture.md` claimed "110+ source modules"; the real count is 140.
+
+### Known limitations
+
+- **`trelix index --prune` needs provenance, so it refuses on an index built before this
+  release.** The reconciliation pass shipped (see Added), but its guard requires a recorded
+  walk config and version, and an index written by an earlier trelix has neither — so the
+  first prune after upgrading refuses and says so. `trelix index` writes provenance, and a
+  prune after that works. Deleting `.trelix/index.db` is **not** the remedy: it discards a
+  paid-for index, and `TRELIX_INCREMENTAL=false trelix index .` re-parses everything without
+  re-buying embeddings for unchanged files.
+- **`TRELIX_PARSER_TAINT` is inert** — declared and read nowhere; taint analysis runs only
+  via `trelix taint`.
+- **SPLADE-Code models cannot be used** as the sparse model until `sparse.py` grows a
+  causal-LM path; the default is a general SPLADE v3 checkpoint instead.
+- **The breadth floor changes which results a thin direct lookup returns**, and its
+  thresholds (fewer than 2 distinct files **and** fewer than 10 symbols) were chosen against
+  one repository's golden set. `TRELIX_RETRIEVAL_BREADTH_FLOOR=false` restores the previous
+  all-or-nothing behaviour; `..._MIN_FILES` and `..._MIN_SYMBOLS` tune it. The four ops
+  queries keep Recall@10 = 1.0000 but lose top-rank precision (nDCG 1.0000 -> 0.8253), so a
+  workload dominated by exact-filename questions may prefer it off.
+- **`test_watcher.py` gained a positive case.** The import-guard test previously deleted
+  `watchdog*` from `sys.modules`, which only clears the cache — an installed package
+  re-imports and no `ImportError` is raised. It was therefore the sole failing test
+  wherever `[watch]` was installed, and passed for the wrong reason wherever it was not:
+  against an absent dependency rather than against the guard. Now uses
+  `patch.dict("sys.modules", {"watchdog": None})`, the idiom already used for `trelix_mcp`
+  in the same file, plus a case asserting the guard is silent when watchdog *is* importable
+  — without which an unconditionally-raising guard would still pass.
+- **Provenance is refreshed only by a full `trelix index`.** `trelix update-index` and
+  `trelix watch` go through `index_file()`, which does not touch it, so the recorded commit
+  can name an older tree than the index actually contains. Deliberate rather than
+  overlooked: a per-file update has no single commit to attribute the index to, and
+  stamping the current `HEAD` after touching one file would assert the whole index is
+  current when it is not. `trelix stats --drift` is unaffected — it compares file hashes.
+- **Ops-language ranking weight is an open question, not a tuned value.** The five
+  line-window languages have no `file_type_weights` entry, so `fusion.py` gives them its
+  1.0 fallback — the same weight as parsed Python, despite carrying less structural
+  evidence. The 50-query golden set does read ~0.017 nDCG@10 lower with them present, but
+  that is only ~1.4× measured same-config noise (0.012), and every attempt to tune it made
+  ops files unreachable for queries specifically about them. Target rank moved
+  **non-monotonically** with the multiplier (rank 9 at 1.0, absent at 0.8, rank 2 at 0.4),
+  which means chunk-level near-ties decide it rather than the weight. Needs a ~20-query ops
+  golden set before a value can be chosen honestly; overridable meanwhile with
+  `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_SHELL` and friends.
+- **The 11 remaining zero-symbol files stay unreachable** until they are re-parsed. Both
+  `trelix index` and `trelix update-index` skip them on the content-hash check
+  (`indexer.py:512`), which the line-window fallback cannot get past.
+
+  The remedy is `TRELIX_INCREMENTAL=false trelix index .` — **not** deleting the index.
+  The `else` branch at `indexer.py:514` sets `to_parse = files`, forcing a re-parse of
+  everything, and it costs almost nothing extra: `_insert_one` diffs symbols by
+  qualified-name + content hash, and Phase 2.5 short-circuits on `if not chunks`
+  (`indexer.py:984`), so unchanged files regenerate no chunks and re-buy no embeddings.
+  An earlier revision of this entry implied a from-scratch rebuild was required, which
+  would have meant discarding a 192 MB index and re-paying for ~2M tokens for nothing.
+- **One ops query still fails for an unrelated reason.** "what port does the container
+  expose and what is its entrypoint" returns only a *single* distinct file regardless of
+  language weighting, so `Dockerfile` cannot place. That is retrieval breadth, not
+  detection or parsing, and is untouched here.
+- **The suite has a pre-existing test-isolation defect.** `test_config`,
+  `test_llm_client`, `test_llm_bedrock_backend` and `test_git_linker` assertions about
+  default providers and env precedence pass in isolation and when `tests/unit` runs alone,
+  but fail once `tests/integration` runs in the same session. Minimal reproducer:
+  `pytest tests/integration tests/unit/test_config.py::TestEmbedderConfig::test_default_provider_is_local`.
+
+  `tests/integration/conftest.py::_isolate_beast_mode_flags` neither scrubs
+  `_ENV_PREFIXES_TO_SCRUB` nor applies `_CODE_DEFAULTS`, both of which its `tests/unit`
+  namesake does — so a `.env` present in the working tree reaches tests that assert code
+  defaults.
+
+  Measured rather than assumed: `tests/unit tests/integration` fails **10** at
+  `c79f7c2` (checked in a clean `git worktree` at that commit) and **7** with these
+  changes applied, and the 7 are a strict subset of the 10. Which tests get hit depends on
+  collection order, so adding a test file shuffles the set — the count is not a quality
+  signal in either direction. CI does not surface any of it: `pytest tests/unit/` and
+  `tests/integration/` run as separate jobs.
+
+### Closed without merging
+
+- Dependabot **#133** (`mcp` `<2.0` → `<3.0`). `fastmcp-slim==3.4.7` itself declares
+  `mcp<2.0,>=1.24.0`, so the existing pin matches upstream exactly. `mcp` 2.0.0 is
+  GA, but fastmcp does not accept it; merging would advertise support fastmcp
+  forbids. Revisit when fastmcp raises its own ceiling.
+
 ## [3.1.1] — 2026-08-15
 
 ### Overview

@@ -11,12 +11,26 @@ Schema design:
 
 FTS5 is built into SQLite — zero extra dependencies, fast, good enough for
 repos up to millions of lines. (Stolen from ctags-based tools.)
+
+Schema generation: stamped in `pragma user_version` (SCHEMA_VERSION below) and
+checked on every open, so an older trelix refuses a newer index instead of
+misreading it. See SCHEMA_VERSION for when a bump is warranted.
+
+Referential integrity: `PRAGMA foreign_keys = ON` is in the DDL and verified to be in
+effect (tests/unit/test_db_structural.py), so every ON DELETE CASCADE here is real. Three
+tables predate that discipline and hold symbol-derived rows with no foreign key —
+sub_chunks, def_use_edges, sparse_embeddings — so no cascade reaches them. All three
+are cleaned by _purge_fkless_symbol_rows(), which every symbol-removal path calls;
+add any new FK-less table there. taint_flows / artifacts / diff_chunks are also
+FK-less but are keyed by file path, source_ref and pr_ref rather than by a row id,
+so they hold no id-shaped orphans and are not this method's business.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -45,6 +59,56 @@ from trelix.core.models import (
 if TYPE_CHECKING:
     from trelix.analysis.defuse import DefUseEdge
     from trelix.analysis.taint import TaintFlow
+
+logger = logging.getLogger("trelix.store.db")
+
+# Schema generation stamped into `pragma user_version`. Before this existed the
+# live index read 0 across 30 user tables built by an unversioned linear chain of
+# ~17 `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE` blocks whose comments name
+# v2.2/v2.3/v2.4/v2.8 with nothing queryable — so an older install opened a
+# newer-written index in silence, with DimensionGuard (embedding width only) the
+# sole thing standing between that and wrong answers.
+#
+# The guard is forward-looking by construction: an install that predates this
+# constant does not read user_version at all, so it still cannot refuse anything.
+# What version 1 buys is that every index written from here on is identifiable.
+#
+# When to bump: ONLY for a change an older reader would MISREAD — a column whose
+# meaning changed, a table an older reader would read with different semantics, a
+# dropped/renamed column. Purely additive changes (new table, new nullable column)
+# stay backward-readable and must NOT bump, because a bump locks every older
+# install out of the index. That is the contract docs/BACKWARDS_COMPATIBILITY.md
+# already promises for `query_telemetry`, now enforceable rather than aspirational.
+#
+# Version 1 is the first stamped generation: it is schema-identical to what
+# unstamped (user_version = 0) indexes already hold. 0 therefore means
+# "written before versioning", NOT corrupt — see _guard_schema_version().
+SCHEMA_VERSION = 1
+
+
+class SchemaVersionError(Exception):
+    """Raised when the index on disk was written by a newer trelix than this one.
+
+    Refusing beats misreading: the alternative is an older reader applying its own
+    idea of a column's meaning to rows written under different semantics, which
+    surfaces as wrong search results rather than an error.
+    """
+
+    def __init__(self, db_path: Path, found: int, supported: int) -> None:
+        self.found = found
+        self.supported = supported
+        super().__init__(
+            f"Index at {db_path} has schema version {found}, but this trelix "
+            f"only understands up to {supported}.\n\n"
+            f"The index was written by a newer trelix. Reading it with this one "
+            f"could silently return wrong results, so it is refused.\n\n"
+            f"Fix, either one:\n"
+            f"  pip install --upgrade trelix          # match the version that wrote it\n"
+            f"  rm {db_path}* && trelix index <repo>  # rebuild with this version\n\n"
+            f"(The rm glob also removes the -wal/-shm sidecars; `trelix index` has no "
+            f"force flag, so removing the file is how a rebuild from scratch is asked for.)"
+        )
+
 
 DDL = """
 PRAGMA journal_mode = WAL;
@@ -214,11 +278,32 @@ class Database:
         db.close()
     """
 
-    def __init__(self, db_path: Path) -> None:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, db_path: Path, *, read_only: bool = False) -> None:
+        """Open the index. `read_only=True` opens it without being able to write to it.
+
+        The default path runs `init_schema()`, which is a WRITE — it applies DDL, runs
+        migrations and stamps `user_version`. That is correct for every normal caller and
+        wrong for exactly one: `trelix index --dry-run`, whose entire promise is that it
+        changes nothing. Before this flag existed, `--dry-run --prune` opened the index
+        normally and committed a `DELETE` plus a `PRAGMA user_version` write on any
+        pre-3.1.2 index, while the cost-preview path twenty lines away deliberately used a
+        `mode=ro` URI "because a cost preview must not be able to modify the index it
+        prices". Same promise, two answers.
+
+        Enforced by SQLite rather than by discipline: a `mode=ro` URI makes a stray write
+        raise `sqlite3.OperationalError` instead of silently succeeding, so a future caller
+        cannot quietly reintroduce the write. Schema init is skipped, which is why this must
+        not be used for anything that needs a current schema — reads that touch a table a
+        migration would have added will fail, loudly, which is the right outcome.
+        """
+        self._read_only = read_only
         self._db_path = db_path
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+
+        # Declared once, above the branch, because there are now two constructor paths.
+        # Annotating inside either is not enough — mypy reads a branch-local annotation as
+        # narrowing rather than as the attribute's declaration, so the other path becomes a
+        # [no-redef] and enable_bm25_read_pool's assignment becomes an [assignment] error.
+        # CI caught both: the read-only path was added without re-running mypy.
         self._bm25_read_pool: ReadOnlyConnectionPool | None = None
         # Guards concurrent access to the single shared writer connection
         # (self._conn) from hydration calls that bm25_search()'s retrieval-layer
@@ -226,6 +311,17 @@ class Database:
         # pool — sqlite3.Connection is not safe for concurrent statement
         # execution from multiple threads even with check_same_thread=False.
         self._conn_lock = threading.Lock()
+
+        if read_only:
+            self._conn = sqlite3.connect(
+                f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
+            )
+            self._conn.row_factory = sqlite3.Row
+            return
+
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
         self.init_schema()
 
     def enable_bm25_read_pool(self, pool_size: int) -> None:
@@ -244,9 +340,68 @@ class Database:
         """Initialize or refresh the database schema and apply all migrations.
 
         Safe to call multiple times — uses IF NOT EXISTS guards throughout.
+
+        Refuses (SchemaVersionError) an index stamped NEWER than SCHEMA_VERSION
+        before touching it, so an older reader never half-migrates a schema it
+        does not understand.
         """
+        on_disk = self.schema_version()
+        self._guard_schema_version(on_disk)
         self._apply_ddl()
         self._apply_migrations()
+        if on_disk < SCHEMA_VERSION:
+            self._upgrade_to_current(on_disk)
+
+    def schema_version(self) -> int:
+        """Schema generation stamped in `pragma user_version`.
+
+        0 on any index written before versioning existed (which is every index
+        in the wild at the time this shipped) and on a freshly-created file, since
+        SQLite defaults user_version to 0 — the two are indistinguishable and both
+        are handled by _upgrade_to_current().
+        """
+        return int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+
+    def _guard_schema_version(self, on_disk: int) -> None:
+        if on_disk > SCHEMA_VERSION:
+            raise SchemaVersionError(self._db_path, found=on_disk, supported=SCHEMA_VERSION)
+
+    def _upgrade_to_current(self, on_disk: int) -> None:
+        """One-time work for an index stamped below SCHEMA_VERSION, then stamp it.
+
+        Gated on the stamp rather than run on every open because the def-use reclaim
+        is an anti-join over the largest table in the index. Measured on a copy of the
+        live 192 MB index: 28.4 ms for the upgrading open (4,768 rows reclaimed),
+        1.2 ms for every open after it.
+        """
+        logger.debug("Upgrading index schema %d -> %d", on_disk, SCHEMA_VERSION)
+        self._reclaim_orphaned_def_use_edges()
+        # PRAGMA takes no bound parameters, so the value is interpolated. It is a
+        # module-level int constant, never user input — the parameterized-query
+        # rule is about untrusted values and there is none here.
+        self._conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
+        self._conn.commit()
+
+    def _reclaim_orphaned_def_use_edges(self) -> int:
+        """Delete def_use_edges rows whose symbol is already gone. Returns the count.
+
+        These are the rows leaked before _purge_def_use_edges() existed: 4,768 of
+        117,814 (4.0%) on the live index. Nothing else would ever reclaim them —
+        the table has no foreign key, so no cascade reaches it, and get_data_flows()
+        is keyed by symbol_id so an orphan is unreachable as well as dead.
+        """
+        cursor = self._conn.execute(
+            "DELETE FROM def_use_edges WHERE symbol_id NOT IN (SELECT id FROM symbols)"
+        )
+        self._conn.commit()
+        reclaimed = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        if reclaimed:
+            logger.info(
+                "Reclaimed %d orphaned def_use_edges rows left by pre-%s indexing",
+                reclaimed,
+                SCHEMA_VERSION,
+            )
+        return reclaimed
 
     def _apply_ddl(self) -> None:
         self._conn.executescript(DDL)
@@ -360,6 +515,13 @@ class Database:
         self._conn.commit()
 
         # v2.2 migration: def-use chains (data-flow analysis)
+        # symbol_id deliberately carries NO `REFERENCES symbols(id)`: the constraint
+        # cannot be ALTERed into an existing table, and every install already holds
+        # rows here (117,814 on the live index) — some of them orphaned, which would
+        # make the required table rebuild fail outright under `foreign_keys = ON`.
+        # Cleanup is explicit instead; see _purge_def_use_edges(), which every
+        # symbol-removal path calls, and _reclaim_orphaned_def_use_edges() for the
+        # one-time sweep of what the FK-less years left behind.
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS def_use_edges ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -521,6 +683,38 @@ class Database:
     # Files
     # ------------------------------------------------------------------
 
+    def invalidate_all_symbol_hashes(self) -> int:
+        """Blank every stored symbol content hash so the next index re-embeds.
+
+        Invalidating file hashes alone only forces a re-PARSE. `Indexer._insert_one`
+        then diffs each parsed symbol against the stored one by
+        `qualified_name + content_hash` and leaves matches completely untouched — "no
+        delete, no re-insert, no re-embed" — so a re-index after clearing embeddings
+        produced `chunks_embedded=0` and the vectors never came back.
+
+        Both levels have to be invalidated for a reset to mean anything. Returns the
+        number of rows affected.
+        """
+        cursor = self._conn.execute("UPDATE symbols SET content_hash = ''")
+        self._conn.commit()
+        return int(cursor.rowcount or 0)
+
+    def invalidate_all_file_hashes(self) -> int:
+        """Blank every stored file hash so the next index re-parses and re-embeds.
+
+        `Indexer.index()` skips any file whose stored hash still matches the one on
+        disk, and that check knows nothing about whether the file's VECTORS still exist.
+        So after embeddings are discarded, an index run finds every hash unchanged and
+        prints "Nothing to index — all files up to date" over an index that has chunks
+        and no vectors.
+
+        Returns the number of rows invalidated, so a caller can report it rather than
+        assert it.
+        """
+        cursor = self._conn.execute("UPDATE files SET hash = ''")
+        self._conn.commit()
+        return int(cursor.rowcount or 0)
+
     def get_file_hash(self, rel_path: str) -> str | None:
         """Return stored hash for a file, or None if not indexed yet."""
         row = self._conn.execute(
@@ -538,6 +732,16 @@ class Database:
             """,
             (rel_path,),
         ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_symbol_ids_for_file_id(self, file_id: int) -> list[int]:
+        """Return all symbol IDs belonging to the given file id.
+
+        The file_id-keyed counterpart to `get_symbol_ids_for_file`. Callers that already
+        hold a file_id — the import graph in particular, whose edges are file_id-based —
+        should not have to round-trip through rel_path to use it.
+        """
+        rows = self._conn.execute("SELECT id FROM symbols WHERE file_id = ?", (file_id,)).fetchall()
         return [r[0] for r in rows]
 
     def upsert_file(self, file: IndexedFile) -> int:
@@ -559,8 +763,114 @@ class Database:
         self._conn.commit()
         return row[0]  # type: ignore[no-any-return]
 
-    def delete_file_symbols(self, file_id: int) -> None:
+    def _sub_chunk_ids_for_symbols(self, symbol_ids: list[int]) -> list[int]:
+        """Row ids of the sub_chunks belonging to the given symbols."""
+        if not symbol_ids:
+            return []
+        placeholders = ",".join("?" for _ in symbol_ids)
+        rows = self._conn.execute(
+            f"SELECT id FROM sub_chunks WHERE parent_symbol_id IN ({placeholders})",
+            tuple(symbol_ids),
+        ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def _purge_sub_chunks(self, symbol_ids: list[int], vector_store: object | None) -> None:
+        """Delete sub_chunks rows for `symbol_ids`, and their vectors first.
+
+        `sub_chunks.parent_symbol_id` carries NO foreign key — unlike `chunks.symbol_id`,
+        which has ON DELETE CASCADE — so deleting a symbol left its sub-chunks behind
+        forever. `PRAGMA foreign_key_list(sub_chunks)` returns []; there was also no
+        `DELETE FROM sub_chunks` anywhere in src/, so rows accumulated on every re-index.
+
+        The FK is not added retroactively because SQLite cannot ALTER TABLE a constraint
+        in, and rebuilding a table that may already hold a user's rows is a bigger risk
+        than doing the cleanup here.
+
+        Vectors are deleted BEFORE the rows, because the row id is the only handle on its
+        vector: losing the row first would leave a vector nothing can ever find. A
+        foreign key could not have done this half regardless — cascade cannot reach a
+        virtual table.
+        """
+        sub_chunk_ids = self._sub_chunk_ids_for_symbols(symbol_ids)
+        if not sub_chunk_ids:
+            return
+        if vector_store is not None:
+            vector_store.delete_sub_chunk_embeddings(sub_chunk_ids)  # type: ignore[attr-defined]
+        placeholders = ",".join("?" for _ in sub_chunk_ids)
+        self._conn.execute(
+            f"DELETE FROM sub_chunks WHERE id IN ({placeholders})", tuple(sub_chunk_ids)
+        )
+
+    def _purge_def_use_edges(self, symbol_ids: list[int]) -> None:
+        """Delete def_use_edges rows for `symbol_ids`. Must run BEFORE the symbols.
+
+        `def_use_edges.symbol_id` is `INTEGER NOT NULL` with no REFERENCES, so it is
+        the same defect as sub_chunks above — except this is the LARGEST table in the
+        index (117,814 rows on the live 192 MB index vs 10,991 symbols, ~11 edges per
+        symbol) and it had no DELETE anywhere in src/ at all. Every file deletion
+        through delete_file_by_path() — the watcher's path, which runs whenever a file
+        disappears from a watched repo — leaked the deleted symbols' edges, and both
+        re-index paths leaked on every changed symbol. Measured on the live index
+        before the fix: 4,768 of 117,814 rows (4.0%) already orphaned.
+
+        An explicit deleter, not a retroactive FK. Adding `REFERENCES symbols(id) ON
+        DELETE CASCADE` cannot be done by ALTER TABLE; it needs the 12-step rebuild,
+        which on a 180+ MB index means copying 117k rows at open time for every
+        existing install. Worse, the copy runs with `PRAGMA foreign_keys = ON` (it is
+        on — see the DDL, verified), so the 4,768 pre-existing orphans would make
+        `INSERT INTO new SELECT * FROM old` fail and the migration would abort the
+        open. The deleter has none of that blast radius and covers the same paths.
+        """
+        if not symbol_ids:
+            return
+        placeholders = ",".join("?" for _ in symbol_ids)
+        self._conn.execute(
+            f"DELETE FROM def_use_edges WHERE symbol_id IN ({placeholders})", tuple(symbol_ids)
+        )
+
+    def _purge_sparse_embeddings(self, symbol_ids: list[int]) -> None:
+        """Delete sparse_embeddings rows for the symbols' chunks. Must run BEFORE them.
+
+        `sparse_embeddings.chunk_id` has the same FK-less shape one level further out:
+        it points at `chunks.id`, and chunks die by cascade from symbols. SparseStore
+        (store/sparse_store.py) only ever deletes a chunk_id it is about to re-upsert,
+        so a chunk removed by cascade left its sparse rows behind permanently and
+        unreachable — chunk ids are AUTOINCREMENT, never reused, so nothing can ever
+        match them again.
+
+        Latent rather than measured: the live index holds 0 sparse rows because SPLADE
+        is flag-gated and was itself broken until recently (see the note in
+        core/config.py). This closes it before the flag is worth turning on.
+        """
+        if not symbol_ids:
+            return
+        placeholders = ",".join("?" for _ in symbol_ids)
+        self._conn.execute(
+            "DELETE FROM sparse_embeddings WHERE chunk_id IN "
+            f"(SELECT id FROM chunks WHERE symbol_id IN ({placeholders}))",
+            tuple(symbol_ids),
+        )
+
+    def _purge_fkless_symbol_rows(self, symbol_ids: list[int], vector_store: object | None) -> None:
+        """Every symbol-derived table that no ON DELETE CASCADE reaches.
+
+        Called from all three symbol-removal paths (full re-index, partial
+        content-hash-diffed re-index, watcher file delete). A new FK-less table keyed
+        on symbols must be added here, not to the three call sites.
+        """
+        self._purge_sub_chunks(symbol_ids, vector_store)
+        self._purge_def_use_edges(symbol_ids)
+        self._purge_sparse_embeddings(symbol_ids)
+
+    def delete_file_symbols(self, file_id: int, vector_store: object | None = None) -> None:
         """Remove all symbols (and cascaded data) for a file before re-indexing."""
+        symbol_ids = [
+            int(r[0])
+            for r in self._conn.execute(
+                "SELECT id FROM symbols WHERE file_id = ?", (file_id,)
+            ).fetchall()
+        ]
+        self._purge_fkless_symbol_rows(symbol_ids, vector_store)
         self._conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
         self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
         self._conn.commit()
@@ -576,7 +886,12 @@ class Database:
         ).fetchall()
         return {row[0]: row[1] for row in rows}
 
-    def delete_symbols_by_qualified_names(self, file_id: int, qualified_names: list[str]) -> None:
+    def delete_symbols_by_qualified_names(
+        self,
+        file_id: int,
+        qualified_names: list[str],
+        vector_store: object | None = None,
+    ) -> None:
         """Remove only the named symbols (and cascaded data) for a file —
         a partial version of delete_file_symbols(), used when some symbols
         in the file are unchanged and must be preserved.
@@ -584,6 +899,17 @@ class Database:
         if not qualified_names:
             return
         placeholders = ",".join("?" for _ in qualified_names)
+        # Resolved before the delete: sub_chunks, def_use_edges and sparse_embeddings
+        # have no FK to symbols, so once the symbol rows are gone nothing links their
+        # rows to anything.
+        symbol_ids = [
+            int(r[0])
+            for r in self._conn.execute(
+                f"SELECT id FROM symbols WHERE file_id = ? AND qualified_name IN ({placeholders})",
+                (file_id, *qualified_names),
+            ).fetchall()
+        ]
+        self._purge_fkless_symbol_rows(symbol_ids, vector_store)
         self._conn.execute(
             f"DELETE FROM symbols WHERE file_id = ? AND qualified_name IN ({placeholders})",
             (file_id, *qualified_names),
@@ -706,11 +1032,43 @@ class Database:
 
         file_id: int = row[0]
 
-        # Delete vectors before DB rows so we never have orphaned vectors
+        # Delete vectors before DB rows so we never have orphaned vectors.
         if vector_store is not None:
-            chunk_ids = self.get_chunk_ids_for_file(file_id)
-            if chunk_ids:
-                vector_store.delete_batch(chunk_ids)  # type: ignore[attr-defined]
+            # The file-summary vector is included, and it is NOT in
+            # `get_chunk_ids_for_file()`. Summaries live in the same `chunk_embeddings`
+            # table under the `chunk_id = -(file_id)` sentinel, so a delete driven only by
+            # chunk ids never reached them — while the `file_summaries` row itself cascades
+            # away with the `files` row, leaving a vector with neither a summary nor a file.
+            #
+            # Found by `verify-index.sh`'s "summary vectors == summaries" gate immediately
+            # after the first real `--prune` removed one file: 482 vectors against 481
+            # summaries, the orphan being `-475` for a `file_id` that no longer existed.
+            # That gate was widened earlier in this release to catch exactly this class. The
+            # leak long predates `--prune` — the watcher's delete path has taken it for as
+            # long as file summaries have existed.
+            #
+            # One call rather than two, and deliberately NOT gated on `chunk_ids` being
+            # non-empty: a file can have a summary and no chunks (every zero-symbol file
+            # does, and there were 11 of those before the line-window fallback), so a guard
+            # on chunk ids would skip precisely the files whose only vector is the sentinel.
+            vector_store.delete_batch(  # type: ignore[attr-defined]
+                [*self.get_chunk_ids_for_file(file_id), -file_id]
+            )
+
+        # The FK-less symbol-derived tables too. `symbols` cascades from `files`, but
+        # sub_chunks / def_use_edges / sparse_embeddings have no foreign key to
+        # `symbols`, so deleting the file row here removed the symbols and left their
+        # rows — and, for sub-chunks, their vectors — behind. This is the WATCHER's
+        # path, so it ran every time a file was deleted from a watched repo; the
+        # def_use_edges half of that leak is where the live index's 4,768 orphans
+        # came from.
+        symbol_ids = [
+            int(r[0])
+            for r in self._conn.execute(
+                "SELECT id FROM symbols WHERE file_id = ?", (file_id,)
+            ).fetchall()
+        ]
+        self._purge_fkless_symbol_rows(symbol_ids, vector_store)
 
         # ON DELETE CASCADE on symbols handles chunks / calls / type_edges
         # Explicit import delete handles the file_id FK
@@ -2178,42 +2536,95 @@ class Database:
     # index_metadata helpers (v2.3 Plan E: embedding dimension guard)
     # ------------------------------------------------------------------
 
-    def get_embedding_dimension(self) -> int | None:
-        """Return stored embedding dimension, or None if not yet recorded."""
+    def get_index_metadata(self, key: str) -> str | None:
+        """Return a raw `index_metadata` value, or None if the key is absent."""
         row = self._conn.execute(
-            "SELECT value FROM index_metadata WHERE key = 'embedding_dimension'"
+            "SELECT value FROM index_metadata WHERE key = ?", (key,)
         ).fetchone()
-        if row is None:
-            return None
-        return int(row[0])
+        return None if row is None else str(row[0])
 
-    def set_embedding_dimension(self, dimension: int) -> None:
-        """Store the embedding dimension used for this index."""
+    def set_index_metadata(self, key: str, value: str) -> None:
+        """Upsert a raw `index_metadata` value."""
         self._conn.execute(
-            "INSERT INTO index_metadata (key, value) VALUES ('embedding_dimension', ?) "
+            "INSERT INTO index_metadata (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (str(dimension),),
+            (key, value),
         )
         self._conn.commit()
 
-    def delete_embedding_dimension_key(self) -> None:
-        """Delete the stored embedding_dimension key from index_metadata."""
-        self._conn.execute("DELETE FROM index_metadata WHERE key = 'embedding_dimension'")
+    def delete_index_metadata(self, key: str) -> None:
+        """Remove a key from `index_metadata`. A missing key is not an error."""
+        self._conn.execute("DELETE FROM index_metadata WHERE key = ?", (key,))
         self._conn.commit()
 
-    def clear_all_embeddings(self) -> None:
-        """
-        Delete all rows from chunk_embeddings (sqlite-vec virtual table).
+    def get_index_metadata_with_prefix(self, prefix: str) -> dict[str, str]:
+        """Return every key starting with `prefix`, with the prefix stripped.
 
-        Best-effort: the table may not exist yet on a fresh install.
-        Any error is silently swallowed so callers don't need to guard
-        against a missing virtual table.
+        LIKE with an explicit ESCAPE, because a prefix containing `_` — and the
+        provenance keys do — would otherwise have it treated as a single-character
+        wildcard and match keys it should not.
         """
-        try:
-            self._conn.execute("DELETE FROM chunk_embeddings")
-            self._conn.commit()
-        except Exception:
-            pass  # chunk_embeddings is a sqlite-vec virtual table; may not exist yet
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        rows = self._conn.execute(
+            "SELECT key, value FROM index_metadata WHERE key LIKE ? ESCAPE '\\'",
+            (escaped + "%",),
+        ).fetchall()
+        return {str(k)[len(prefix) :]: str(v) for k, v in rows}
+
+    # The three below predate the generic helpers and are kept as the named API the
+    # dimension guard and its tests already call. They delegate rather than duplicate
+    # the SQL: the guard's whole job is to be trustworthy about a mismatch, and two
+    # copies of an upsert are two places for it to drift.
+
+    def get_embedding_dimension(self) -> int | None:
+        """Return stored embedding dimension, or None if not yet recorded."""
+        value = self.get_index_metadata("embedding_dimension")
+        return None if value is None else int(value)
+
+    def set_embedding_dimension(self, dimension: int) -> None:
+        """Store the embedding dimension used for this index."""
+        self.set_index_metadata("embedding_dimension", str(dimension))
+
+    def delete_embedding_dimension_key(self) -> None:
+        """Delete the stored embedding_dimension key from index_metadata."""
+        self.delete_index_metadata("embedding_dimension")
+
+    def get_all_file_rel_paths(self) -> list[str]:
+        """Every indexed file's repo-relative path.
+
+        Used to find indexed files the walk no longer yields. Returned as a list rather
+        than a generator because the caller diffs it against a set — streaming would buy
+        nothing and invites the connection being reused mid-iteration.
+        """
+        return [str(r[0]) for r in self._conn.execute("SELECT rel_path FROM files")]
+
+    def clear_all_embeddings(self, vector_store: object | None = None) -> None:
+        """
+        Discard every stored embedding.
+
+        Pass the `vector_store`: `chunk_embeddings` is a sqlite-vec VIRTUAL table, and
+        this class never loads the sqlite-vec extension on its own connection. Without
+        it, `DELETE FROM chunk_embeddings` raises `OperationalError: no such module:
+        vec0` — which the previous implementation caught and discarded, making the
+        method a guaranteed no-op on every install. `trelix migrate-vectors --reset`
+        printed "Embeddings and dimension metadata cleared" while clearing none of them.
+
+        The `vector_store` parameter follows `delete_file_by_path`, which takes one for
+        the same reason: only the store's own connection can reach its virtual table.
+
+        Called with no vector_store, this raises rather than pretending — a caller that
+        cannot clear embeddings needs to know.
+        """
+        if vector_store is None:
+            raise ValueError(
+                "clear_all_embeddings() requires the vector_store: chunk_embeddings is "
+                "a sqlite-vec virtual table and Database's connection cannot reach it"
+            )
+        # recreate() rather than a row delete, because a vec0 table's vector width is
+        # fixed by its CREATE statement — deleting rows leaves a table that still
+        # rejects vectors of a new dimension, which is the situation this is called to
+        # recover from.
+        vector_store.recreate()  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     # Hydration queries  (chunk_id / symbol_id → full objects)

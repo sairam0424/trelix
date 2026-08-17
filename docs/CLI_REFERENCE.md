@@ -1,6 +1,6 @@
 # trelix CLI Reference
 
-**Version:** 3.0.0  
+**Version:** 3.1.2  
 **Last updated:** 2026-08-03
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
@@ -62,7 +62,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 3.1.1
+trelix --version        # trelix 3.1.2
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -113,7 +113,7 @@ below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 | `TRELIX_RETRIEVAL_SPARSE` | `false` | Enable SPLADE-Code sparse retrieval leg |
 | `TRELIX_RETRIEVAL_AGENTIC` | `false` | Enable multi-turn ReAct loop (also set by `--agentic`) |
 | `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE confidence-gated re-retrieval |
-| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Max FLARE retries (range: 1–3). Replaces the old `TRELIX_RETRIEVAL_FLARE_MAX_ITER`, which is **deprecated but still honoured** as of v3.0.0 — it remains in the field's `AliasChoices` and setting it logs a deprecation warning rather than being ignored. Values > 3 raise `ValidationError` at startup. |
+| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Max FLARE retries (range: 1–3). Replaces the old `TRELIX_RETRIEVAL_FLARE_MAX_ITER`, which is **deprecated but still honoured** as of v3.1.2 — it remains in the field's `AliasChoices` and setting it logs a deprecation warning rather than being ignored. Values > 3 raise `ValidationError` at startup. |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Boost results by PageRank symbol importance |
 | `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTING` | `true` | Apply per-language RRF score multipliers |
 | `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_<LANG>` | varies | Per-language override, e.g. `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_MARKDOWN=0.1` |
@@ -127,8 +127,8 @@ below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 |----------|---------|-------------|
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel parse workers during `trelix index` |
 | `TRELIX_CHUNKER_MULTI_GRANULARITY` | `false` | Index sub-symbol blocks and statements (MGS3) |
-| `TRELIX_PARSER_DATAFLOW` | `false` | Extract def-use chains during parsing |
-| `TRELIX_PARSER_TAINT` | `false` | Enable taint-flow tracking during parsing |
+| `TRELIX_PARSER_DATAFLOW` | `false` | Extract def-use chains during parsing. Python-only in practice — the extractor requests the Python grammar unconditionally |
+| `TRELIX_PARSER_TAINT` | `false` | **Inert.** `ParserConfig.taint_enabled` is declared but read nowhere in `src/`, so setting this has no effect. Taint analysis happens only when you run `trelix taint`, which does not consult it |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM file-level summaries at index time (RAPTOR-style) |
 | `TRELIX_TELEMETRY_ENABLED` | `false` | Record every `retrieve()` call to `query_telemetry` table |
 
@@ -136,8 +136,8 @@ below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TRELIX_FEDERATION_ENABLED` | `false` | Enable multi-repo federated retrieval |
-| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Max parallel workers for federated search (range: 1–16) |
+| `TRELIX_FEDERATION_ENABLED` | `false` | **Inert.** `RetrievalConfig.federation_enabled` is declared but read nowhere in `src/`. Federation is reached only by running `trelix search-all`, which federates whether this is set or not; no other retrieval path federates because it is set |
+| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | **Inert.** `RetrievalConfig.federation_max_workers` is declared but read nowhere in `src/`. `search-all` builds `FederatedRetriever(registry)` with no arguments, so the pool size is always the constructor's own default of 4 — raising this to 16 changes nothing |
 | `TRELIX_FEDERATION_MAX_REPOS` | `50` | Max repos actually queried per `federation_search_all` MCP call, and max repos `federation_add_repo` will accept (range: 1–500) |
 
 **MCP security note:** The four federation MCP tools (`federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`) confine any caller-supplied `config_path` argument to `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/`, rejecting paths outside both roots. Prevents prompt-injected or adversarial clients from pointing registry I/O at arbitrary filesystem locations.
@@ -172,7 +172,7 @@ commands on the same repository.
 | `bedrock-cohere` | `cohere.embed-english-v3` (1024-dim) | AWS credentials |
 
 **Important:** Switching provider after indexing changes the embedding dimension.
-Run `trelix migrate-vectors <repo> --reset` and then re-index.
+Run `trelix migrate-vectors <repo> --reset --provider <new-provider>` and then re-index.
 
 ---
 
@@ -422,7 +422,7 @@ trelix call-graph . "trelix.retrieval.retriever" --direction importers
 #### Synopsis
 
 ```
-trelix stats <repo_path>
+trelix stats <repo_path> [--drift]
 ```
 
 #### Description
@@ -431,20 +431,52 @@ Reads the SQLite index at `<repo_path>/.trelix/index.db` and prints a summary
 table showing the number of indexed files, symbols, chunks, and database size
 on disk.
 
+Also prints **provenance** — the commit, branch, worktree cleanliness, timestamp,
+trelix version and embedder the index was built from — and how many commits `HEAD`
+has moved since. Provenance is recorded at the *start* of an index run, so a caller
+who commits mid-index gets the commit whose content was actually hashed rather than
+a newer one, which would make a stale index read as current.
+
+An index created before v3.1.2 has no provenance and says so rather than guessing.
+
 #### Options
 
-None.
+| Option | Default | Description |
+|---|---|---|
+| `--drift` | off | Also compare every indexable file on disk against its stored hash, reporting counts of changed / not-yet-indexed / indexed-but-not-found files |
+
+`--drift` is opt-in because it costs a full walk plus a SHA-256 of every file, which
+is proportional to repository size — the rest of `stats` is a handful of SQL counts.
 
 #### Examples
 
 ```bash
 trelix stats .
+trelix stats . --drift
 trelix stats /path/to/large-repo
 ```
 
 #### Notes
 
 - Exits with code 1 if no index exists. Run `trelix index <repo_path>` first.
+- **`Indexed but not found` is not a list of deletions.** It is "indexed paths this
+  walk did not yield", which also covers files under a directory the walk could not
+  read, and files the current ignore rules exclude. Both are reported explicitly
+  above the counts; do not prune on this output.
+- **Provenance describes the last full `trelix index`, not the last change.**
+  `trelix update-index` and `trelix watch` update individual files without refreshing it,
+  so the recorded commit can name an older tree than the index now contains. `--drift` is
+  the authoritative answer in that situation, since it compares actual file hashes and is
+  unaffected.
+- **Run `--drift` with the same environment that built the index.** `TRELIX_WALKER_*`
+  is read from the process environment only, never from `.env`, and
+  `TRELIX_WALKER_EXTRA_IGNORE_DIRS` *replaces* the default list rather than extending
+  it — so the config a later command reconstructs is routinely not the one that built
+  the index. Measured on this repository: a drift check run without
+  `scripts/self-index.sh`'s environment reported 35 present files under `packages/` as
+  deleted, because the default ignore list contains `packages` for .NET NuGet output.
+  The walk settings are recorded at index time and any difference is named in the
+  output, so this is now detectable rather than silent.
 
 ---
 
@@ -491,14 +523,23 @@ trelix update-index /my/repo src/core/db.go --provider openai
 #### Synopsis
 
 ```
-trelix migrate-vectors <repo_path> [--to TARGET] [--url URL] [--collection NAME] [--api-key KEY] [--reset]
+trelix migrate-vectors <repo_path> [--to TARGET] [--url URL] [--collection NAME]
+                       [--api-key KEY] [--reset] [--provider PROVIDER]
 ```
 
 #### Description
 
 Either migrates all embeddings from the local SQLite store to Qdrant
-(`--to qdrant`), or clears the local embedding store and dimension metadata
-so the next `trelix index` run starts fresh (`--reset`).
+(`--to qdrant`), or rebuilds the local embedding store so the next `trelix index` run
+re-embeds from scratch (`--reset`).
+
+`--reset` **rebuilds** the vec0 table rather than emptying it. A vec0 table's vector
+width is fixed by its CREATE statement, so deleting rows leaves a table that still
+rejects vectors of a different dimension — which is the situation `--reset` exists to
+recover from. It also invalidates every file and symbol content hash, because
+`trelix index` skips unchanged files by hash and leaves unchanged symbols un-embedded,
+so without that the follow-up index run reports "Nothing to index" over an index with
+no vectors.
 
 #### Options
 
@@ -508,7 +549,8 @@ so the next `trelix index` run starts fresh (`--reset`).
 | `--url` | string | `http://localhost:6333` | Qdrant server URL. |
 | `--collection` | string | `trelix` | Qdrant collection name. |
 | `--api-key` | string | `""` | Qdrant API key (for Qdrant Cloud). |
-| `--reset` | flag | `false` | Clear all stored embeddings and dimension metadata from the SQLite index. Use this when switching embedding providers. Does NOT migrate to Qdrant — it resets the local store only. |
+| `--reset` | flag | `false` | Rebuild the vector store at the current embedder's dimension and invalidate every file and symbol hash, so `trelix index` re-embeds the whole repository. Use when switching embedding providers. Does NOT migrate to Qdrant — it resets the local store only. |
+| `--provider` | string | `""` | With `--reset`: the embedding provider to rebuild **for**. This decides the rebuilt table's vector width, so pass the provider you are switching TO. Defaults to `TRELIX_EMBEDDER_PROVIDER`. |
 
 #### Examples
 
@@ -523,8 +565,9 @@ trelix migrate-vectors . \
   --api-key $QDRANT_API_KEY \
   --collection myproject
 
-# Reset after switching from openai to local provider
-trelix migrate-vectors . --reset
+# Reset after switching from openai to local provider.
+# --provider decides the rebuilt vector width, so name the provider you are moving TO.
+trelix migrate-vectors . --reset --provider local
 trelix index . --provider local
 ```
 
@@ -718,6 +761,22 @@ trelix graph . --json
   "concept_count": 0
 }
 ```
+
+`visualization_path` is added when `--visualize` is passed, reporting where the pyvis
+HTML was written:
+
+```json
+{
+  "node_count": 1840,
+  "edge_count": 5320,
+  "community_count": 12,
+  "concept_count": 0,
+  "visualization_path": "/repo/.trelix/graph.html"
+}
+```
+
+Before v3.1.2, `--visualize --json` accepted the flag and wrote no file: the `--json`
+branch returned before the export ran.
 
 #### Notes
 
@@ -913,7 +972,7 @@ adding two optional fields:
 #### Synopsis
 
 ```
-trelix taint [<repo_path>] [--tier TIER] [--severity SEVERITY] [--json]
+trelix taint [<repo_path>] [--tier TIER] [--severity SEVERITY] [--rules PATH] [--json]
 ```
 
 #### Description
@@ -921,21 +980,42 @@ trelix taint [<repo_path>] [--tier TIER] [--severity SEVERITY] [--json]
 Runs Semgrep taint analysis on the repository and displays source-to-sink data
 flows. Results are also persisted to the index database for later querying.
 
+Note the persistence is unconditional and happens *before* `--severity` filtering:
+every parsed flow is written to `taint_flows`, and the filter applies only to what is
+printed. `trelix index` never writes that table — taint analysis runs only when this
+command does.
+
 #### Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--tier` | `-t` | string | `default` | Analysis tier: `default` \| `intrafile` \| `interfile`. |
-| `--severity` | `-s` | string | `""` (all) | Filter output by severity: `ERROR` \| `WARNING` \| `INFO`. |
+| `--tier` | `-t` | string | `default` | Analysis tier: `default` \| `intrafile` \| `interfile`. `intrafile` and `interfile` both require the Semgrep **Pro** Engine, which `pip install trelix[taint]` does not include; without it semgrep exits non-zero and no flows are returned. |
+| `--severity` | `-s` | string | `""` (all) | Filter *printed* output by severity: `ERROR` \| `WARNING` \| `INFO`. |
+| `--rules` | `-r` | string | `""` | Path to a semgrep rules file or directory. When omitted, semgrep runs the `p/default` **registry** pack, which requires outbound network access and can change between runs. Pass a path for a reproducible, pinnable scan. A path that does not exist is an error rather than a silent fallback to the registry. |
 | `--json` | | flag | `false` | Output flows as JSON. |
+
+#### Empty result
+
+`trelix taint` distinguishes two cases that both produce zero flows:
+
+- **semgrep not installed** — reports that no analysis ran, with the install command.
+- **semgrep ran and found nothing** — reports a clean scan, and points at the ruleset
+  as the thing to check if findings were expected.
+
+Before v3.1.2 both printed the same "Ensure semgrep is installed" hint, so a clean scan
+was indistinguishable from a missing dependency. `--json` emits `[]` on both paths and
+stays byte-compatible.
 
 #### Examples
 
 ```bash
-# Run default taint analysis
+# Run default taint analysis (fetches the p/default registry pack — needs network)
 trelix taint .
 
-# Interfile analysis with ERROR-only output
+# Reproducible offline scan against rules committed to the repository
+trelix taint . --rules config/semgrep-taint.yaml
+
+# Interfile analysis with ERROR-only output (requires Semgrep Pro)
 trelix taint . --tier interfile --severity ERROR
 
 # JSON output
@@ -1069,7 +1149,7 @@ index prevents duplicate edges from being created.
 |--------|------|---------|-------------|
 | `--max-commits` | integer | `5000` | Maximum number of commits to walk. Bounds cost on large repos with long histories. |
 | `--since` | string | _(none)_ | Only walk commits after this date, e.g. `"90 days ago"`. Passed straight through to `git log --since`. |
-| `--ticket-pattern` | string (regex) | `[A-Z]+-\d+` | Regex for matching ticket IDs in commit messages. The default matches Jira-style tickets (`PROJ-123`); override for other conventions, e.g. GitHub-issue style (`#\d+`). |
+| `--ticket-pattern` | string (regex) | see `TICKET_PATTERN_DEFAULT` | Regex for matching ticket IDs in commit messages. Matches Jira/Linear-style keys (`PROJ-123`, `ENG-45`), including inside branch names in merge subjects (`feature/PROJ-456-thing`), while excluding technical constants that share the same shape (`UTF-8`, `SHA-256`, `HTTP-400`). Override for other conventions, e.g. GitHub-issue style (`#\d+`). |
 
 #### Examples
 
@@ -1655,4 +1735,4 @@ trelix audit export | jq -r '.principal' | sort | uniq -c
 
 ---
 
-*End of CLI Reference — trelix v3.0.0*
+*End of CLI Reference — trelix v3.1.2*

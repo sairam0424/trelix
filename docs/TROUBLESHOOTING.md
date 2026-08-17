@@ -1,6 +1,6 @@
-# Trelix v3.0.0 Troubleshooting Guide
+# Trelix v3.1.2 Troubleshooting Guide
 
-This guide covers every common failure mode for trelix v3.0.0. Each entry follows the pattern: **Symptom → Cause → Fix**.
+This guide covers every common failure mode for trelix v3.1.2. Each entry follows the pattern: **Symptom → Cause → Fix**.
 
 ---
 
@@ -195,9 +195,10 @@ sqlite3 ./repo/.trelix/index.db \
 
 **Fix:**
 
-There is no trelix-specific ignore file. Exclusions come from the **repo-root** `.gitignore`
-(honoured by default) plus three env-configurable lists. A nested `.gitignore` inside a
-subdirectory is **not** read — patterns must live in the root file, path-qualified.
+There is no trelix-specific ignore file. Exclusions come from `.gitignore` (honoured by
+default) plus three env-configurable lists. Since v3.1.2 nested `.gitignore` files are read
+as well, so a pattern can live beside the code it excludes; before v3.1.2 only the root
+file was read and patterns had to be path-qualified there.
 
 ```bash
 # Check what was actually indexed (files / symbols / chunks / DB size)
@@ -753,7 +754,7 @@ trelix index ./repo
 **Fix:**
 
 Exclude noisy directories (build outputs, caches). There is no `.trelixignore` — trelix
-honours the repo-root `.gitignore` (nested ones are not read):
+honours `.gitignore`, including nested ones as of v3.1.2:
 ```bash
 echo "dist/" >> .gitignore
 echo "build/" >> .gitignore

@@ -180,3 +180,113 @@ class TestSymbolSourceResource:
         )
         data = json.loads(result)
         assert isinstance(data, dict)
+
+
+class TestManifestReportsTheTrueTotal:
+    """The manifest must not report its page size as the repository's file count.
+
+    `get_repo_manifest` selects with `LIMIT 500` and then returns
+    `"file_count": len(rows)`. On any repository with more than 500 indexed files, an
+    agent asking how big the codebase is was told "exactly 500" — a number that is both
+    wrong and suspiciously round, and which it cannot detect as a page boundary because
+    nothing in the response says a limit was applied.
+    """
+
+    @staticmethod
+    def _seed(tmp_path, n_files: int):  # type: ignore[no-untyped-def]
+        from trelix.core.models import IndexedFile, Language
+        from trelix.store.db import Database
+
+        db_path = tmp_path / ".trelix" / "index.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = Database(db_path)
+        for i in range(n_files):
+            db.upsert_file(
+                IndexedFile(
+                    path=f"/repo/src/f{i:04d}.py",
+                    rel_path=f"src/f{i:04d}.py",
+                    language=Language.PYTHON,
+                    hash=f"h{i}",
+                    size_bytes=10,
+                )
+            )
+        db._conn.commit()
+        db.close()
+
+    def test_total_is_the_real_count_not_the_page_size(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import json
+
+        from trelix_mcp.resources import get_repo_manifest
+
+        self._seed(tmp_path, 620)
+        manifest = json.loads(get_repo_manifest(repo_path=str(tmp_path)))
+
+        assert manifest["total_file_count"] == 620, (
+            f"reported {manifest.get('total_file_count')} for a 620-file index"
+        )
+
+    def test_the_page_is_still_reported_separately(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """An agent needs to know it is looking at a page, not the whole repo."""
+        import json
+
+        from trelix_mcp.resources import get_repo_manifest
+
+        self._seed(tmp_path, 620)
+        manifest = json.loads(get_repo_manifest(repo_path=str(tmp_path)))
+
+        assert len(manifest["files"]) == 500, "the page size changed unexpectedly"
+        assert manifest["files_truncated"] is True
+        assert manifest["file_count"] == 500, (
+            "file_count keeps its old meaning (the page) for existing consumers"
+        )
+
+    def test_a_small_repo_is_not_marked_truncated(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import json
+
+        from trelix_mcp.resources import get_repo_manifest
+
+        self._seed(tmp_path, 12)
+        manifest = json.loads(get_repo_manifest(repo_path=str(tmp_path)))
+
+        assert manifest["total_file_count"] == 12
+        assert manifest["files_truncated"] is False
+
+
+class TestIndexStatsResourceIsNotAStub:
+    """`trelix://index/stats` returned a hint string while the real implementation sat
+    unused.
+
+    `get_index_stats` in resources.py is fully written — symbol_count, file_count,
+    chunk_count, error handling — and `grep -rn get_index_stats` finds callers only in
+    its own tests. The resource that should serve it returned
+    `{"hint": "Use trelix://repo/{repo_path}/manifest ..."}`.
+    """
+
+    def test_a_repo_scoped_stats_resource_serves_real_numbers(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        import json
+
+        import trelix_mcp.server as srv
+
+        from trelix.core.models import IndexedFile, Language
+        from trelix.store.db import Database
+
+        db_path = tmp_path / ".trelix" / "index.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = Database(db_path)
+        db.upsert_file(
+            IndexedFile(
+                path="/repo/a.py",
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="h",
+                size_bytes=10,
+            )
+        )
+        db._conn.commit()
+        db.close()
+
+        stats = json.loads(srv.resource_repo_index_stats(str(tmp_path)))
+
+        assert stats["file_count"] == 1
+        assert "symbol_count" in stats and "chunk_count" in stats
+        assert "hint" not in stats, "the resource is still returning the stub"

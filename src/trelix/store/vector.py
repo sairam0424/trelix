@@ -60,6 +60,34 @@ class BaseVectorStore(ABC):
     def count(self) -> int:
         """Return the total number of stored embeddings."""
 
+    # Sub-chunk vectors are stored at `sub_chunk_id + _SUB_CHUNK_OFFSET` by every
+    # backend. Deleting them is defined here, concretely, so callers never have to know
+    # the offset — `Database` in particular has no business doing that arithmetic, and
+    # a foreign key cannot reach a vector store at all.
+    _SUB_CHUNK_OFFSET = 10_000_000
+
+    def delete_sub_chunk_embeddings(self, sub_chunk_ids: list[int]) -> None:
+        """Delete the vectors belonging to the given sub_chunk row ids."""
+        if not sub_chunk_ids:
+            return
+        self.delete_batch([sid + self._SUB_CHUNK_OFFSET for sid in sub_chunk_ids])
+
+    def recreate(self) -> None:
+        """Discard every stored vector and rebuild the store at this store's dimension.
+
+        Needed to recover from an embedding-provider change. Deleting rows is not
+        sufficient for backends whose vector width is fixed at creation time, which is
+        why this is a distinct operation rather than a `clear()`.
+
+        Default implementation raises, so a backend that cannot support it says so
+        instead of silently appearing to succeed — the failure mode this exists to
+        remove.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot recreate its vector store; "
+            "delete the index and re-index instead"
+        )
+
     @abstractmethod
     def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
         """Insert or replace a file-level summary embedding."""
@@ -174,6 +202,32 @@ class SQLiteVectorStore(BaseVectorStore):
         self._conn.commit()
         return False
 
+    def recreate(self) -> None:
+        """Drop the vec0 table and rebuild it at `self._dim`.
+
+        Deleting rows cannot change the width: both creation paths use
+        `CREATE VIRTUAL TABLE IF NOT EXISTS`, so re-issuing the DDL at a new dimension
+        is a no-op while the old table exists. Verified — after DELETEing every row and
+        re-issuing the CREATE at FLOAT[8], the schema still declared FLOAT[4] and an
+        8-dim insert failed with "Expected 4 dimensions but received 8".
+
+        Dropping is safe on a vec0 table: it removes all of its shadow tables
+        (`_auxiliary`, `_chunks`, `_info`, `_rowids`, `_vector_chunks00`) with none left
+        behind, and it is transactional, so a failure part-way leaves the old table in
+        place rather than no table at all.
+        """
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                self._conn.execute("DROP TABLE IF EXISTS chunk_embeddings")
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        # Rebuilt through the normal path, so HNSW is re-applied exactly as it would be
+        # on a fresh index rather than being reimplemented here.
+        self._hnsw_active = self._setup_table()
+
     def _try_create_hnsw_table(self) -> bool:
         """
         Attempt to create the chunk_embeddings table with an HNSW index.
@@ -253,6 +307,34 @@ class SQLiteVectorStore(BaseVectorStore):
         through the HNSW index for O(log n) approximate nearest-neighbour search.
         """
         packed = self._pack(query_embedding)
+        rows = self._knn(packed, k)
+        real = [(cid, dist) for cid, dist in rows if self._is_chunk_id(cid)]
+
+        # Sentinel rows (file summaries at -file_id, sub-chunks at +_SUB_CHUNK_OFFSET)
+        # live in this same table and compete for the ANN top-k. Anything they take is a
+        # real result the caller never sees — Retriever._vector_search fetches exactly k
+        # rows and has nothing to backfill from — so re-ask for k plus the exact number
+        # of sentinels stored, which is provably enough even if every one of them
+        # outranks the k-th real chunk.
+        #
+        # Filtering in SQL is not available: sqlite-vec rejects a `chunk_id > 0`
+        # predicate alongside `embedding MATCH ? ... LIMIT ?`, and its `k = ?` form
+        # applies the predicate after the ANN cut, silently returning fewer than k.
+        if len(real) < k:
+            sentinels = self._count_sentinels()
+            if sentinels:
+                rows = self._knn(packed, k + sentinels)
+                real = [(cid, dist) for cid, dist in rows if self._is_chunk_id(cid)]
+
+        return real[:k]
+
+    @classmethod
+    def _is_chunk_id(cls, chunk_id: int) -> bool:
+        """True for a real chunk vector, false for a summary or sub-chunk sentinel."""
+        return 0 < chunk_id < cls._SUB_CHUNK_OFFSET
+
+    def _knn(self, packed: bytes, k: int) -> list[tuple[int, float]]:
+        """Raw ANN query — returns sentinel rows as well as real chunks."""
         with self._lock:
             rows = self._conn.execute(
                 """
@@ -264,7 +346,16 @@ class SQLiteVectorStore(BaseVectorStore):
                 """,
                 (packed, k),
             ).fetchall()
-        return [(r[0], r[1]) for r in rows]
+        return [(int(r[0]), float(r[1])) for r in rows]
+
+    def _count_sentinels(self) -> int:
+        """How many non-chunk rows share the table. 0 on any of the usual indexes."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM chunk_embeddings WHERE chunk_id <= 0 OR chunk_id >= ?",
+                (self._SUB_CHUNK_OFFSET,),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def delete(self, chunk_id: int) -> None:
         self._conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,))

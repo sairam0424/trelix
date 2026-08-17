@@ -4,7 +4,6 @@ Integration tests for Feature 1 (Extended Thinking) + Feature 2 (Model-Aware Bud
 This test suite verifies that both features work together without conflicts.
 """
 
-import os
 import tempfile
 
 import pytest
@@ -53,28 +52,36 @@ def test_gemini_1m_auto_budget():
     assert r._effective_budget == 500_000
 
 
-@pytest.mark.skipif(
-    not os.getenv("GOOGLE_API_KEY"),
-    reason="Vertex backend requires google-genai (optional dependency)",
-)
 def test_gemini_with_thinking_parameter():
-    """Vertex backend accepts thinking parameter."""
-    try:
-        import inspect
+    """Vertex backend accepts thinking parameter.
 
-        from trelix.llm.providers.vertex_backend import VertexBackend
+    Gated on the google-genai import, not on GOOGLE_API_KEY. It used to be
+    `skipif(not os.getenv("GOOGLE_API_KEY"))` carrying the reason "requires google-genai
+    (optional dependency)" — a credential check wearing a dependency's reason — and no
+    workflow under .github/ sets GOOGLE_API_KEY, so the assertions ran nowhere. No
+    credential is needed to reach them: VertexBackend.__init__ only calls
+    `_build_client`, which issues no request (the HTTP call lives in
+    `_generate_content`/`_open_content_stream`, neither reached here) and, with no
+    credentials set, logs a debug line and leaves `_client` None instead of raising.
+    Signatures are introspectable either way. `importorskip` also matches how
+    test_backends_accept_thinking below gates its optional anthropic case.
+    """
+    pytest.importorskip(
+        "google.genai",
+        reason="vertex extra not installed (pip install 'trelix[vertex]')",
+    )
 
-        cfg = LLMConfig(provider="vertex", model="gemini-2.5-pro")
-        cfg.google_api_key = os.getenv("GOOGLE_API_KEY", "test-placeholder")
-        backend = VertexBackend(cfg)
+    import inspect
 
-        sig_complete = inspect.signature(backend.complete)
-        sig_stream = inspect.signature(backend.stream)
+    from trelix.llm.providers.vertex_backend import VertexBackend
 
-        assert "thinking" in sig_complete.parameters
-        assert "thinking" in sig_stream.parameters
-    except ImportError:
-        pytest.skip("google-genai not installed")
+    backend = VertexBackend(LLMConfig(provider="vertex", model="gemini-2.5-pro"))
+
+    sig_complete = inspect.signature(backend.complete)
+    sig_stream = inspect.signature(backend.stream)
+
+    assert "thinking" in sig_complete.parameters
+    assert "thinking" in sig_stream.parameters
 
 
 def test_all_target_models_auto_budget():

@@ -10,6 +10,13 @@ Supported providers:
                    requires: pip install trelix[local]
   - cohere: Cohere Rerank API (best quality, requires API key)
             requires: pip install trelix[rerank]
+  - plaid:  ColBERT late interaction via RAGatouille
+            requires: pip install trelix[plaid]
+  - xtr:    DEGENERATE — reranks nothing. Its single-token approximation makes
+            each XTR score equal the input score, so it only re-sorts by the
+            fused score and never reads the query. It logs a warning on every
+            call; use "plaid" if you want real late interaction. See
+            _xtr_rerank() for why (no token-level index exists to fix it with).
 
 When neither cohere nor sentence-transformers is installed: logs a warning and
 returns results unchanged rather than raising.
@@ -220,10 +227,17 @@ def _xtr_rerank(
 ) -> list[SearchResult]:
     """XTR late-interaction reranking (experimental, arXiv:2304.01982).
 
-    Uses a single-vector approximation: each result is treated as a single
-    retrieved token, keyed by its position index. True token-level XTR requires
-    a ColBERT-style multi-vector token embedder; this approximation reuses the
-    already-retrieved per-result scores.
+    DEGENERATE: this provider currently reranks NOTHING. It builds a
+    query_token_scores dict with exactly one synthetic token whose retrieved
+    scores are the incoming fused scores, so the XTR average over query tokens
+    is sum([s])/1 == s for every document. Measured on a 3-result fixture, each
+    output score is bit-identical to its input score and the output order is a
+    plain descending sort of the input — the query string is never read. Real
+    token-level XTR needs a ColBERT-style multi-vector token embedder, which
+    trelix does not index, so the honest behaviour is to say so on every call
+    (see the log.warning below) rather than let callers believe reranking ran.
+    `xtr_candidate_tokens` / TRELIX_RETRIEVAL_XTR_TOKENS exists for that future
+    embedder and has no effect today.
 
     Emits a UserWarning on every call (experimental status).
     Falls back gracefully (warning, no raise) if xtr_score_documents errors.
@@ -231,6 +245,16 @@ def _xtr_rerank(
     from trelix.retrieval.reranker_xtr import warn_experimental
 
     warn_experimental()
+    # Logged at selection time, every call: warn_experimental() only says
+    # "unbenchmarked", which understates a provider that is an identity
+    # function. Silence here reads as "xtr reranked your results".
+    log.warning(
+        "XTR reranker is a no-op: the single-token approximation makes every "
+        "document's XTR score equal its input score, so results are only "
+        "re-sorted by the score they already had and the query text is ignored. "
+        "TRELIX_RETRIEVAL_XTR_TOKENS has no effect (token-level indexing is not "
+        "implemented). Use rerank_provider=plaid for real late interaction."
+    )
     try:
         # Build query_token_scores: treat the single query as one token (index 0),
         # with each result's position as its doc_id and its current score as the
@@ -244,15 +268,31 @@ def _xtr_rerank(
             candidate_doc_ids=candidate_ids,
             k_impute=k_impute,
         )
-        idx_to_xtr_score = {idx: score for idx, score in xtr_pairs}
-        reranked = sorted(
-            results,
-            key=lambda r: idx_to_xtr_score.get(results.index(r), 0.0),
+        idx_to_xtr_score = dict(xtr_pairs)
+
+        # Key by POSITION, not by object: SearchResult is a plain dataclass, so
+        # results.index(r) returns the first value-equal element — duplicates all
+        # inherited doc_id 0's score, burying the real winner, and the lookup was
+        # O(n^2) besides. sorted() is stable, so equal scores keep fused order.
+        order = sorted(
+            range(len(results)),
+            key=lambda idx: idx_to_xtr_score.get(idx, 0.0),
             reverse=True,
         )
-        for i, r in enumerate(reranked, start=1):
-            r.rank = i
-        return reranked[:top_n]
+        # New SearchResults carrying the XTR score, matching _cross_encoder_rerank:
+        # the old code mutated the caller's objects' .rank in place and left .score
+        # at the pre-rerank value, which hid whether scoring had happened at all.
+        return [
+            SearchResult(
+                chunk=results[idx].chunk,
+                symbol=results[idx].symbol,
+                file=results[idx].file,
+                score=idx_to_xtr_score.get(idx, 0.0),
+                rank=i,
+                source=results[idx].source,
+            )
+            for i, idx in enumerate(order[:top_n], start=1)
+        ]
     except Exception as exc:
         log.warning("XTR reranker failed, returning unranked results: %s", exc)
         return results[:top_n]

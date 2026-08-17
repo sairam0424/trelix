@@ -185,5 +185,16 @@ def get_parser(language: Language) -> BaseParser | None:
             except ImportError:
                 return None
 
+        case Language.SHELL | Language.DOCKERFILE | Language.MAKE | Language.SQL | Language.PROTO:
+            # No structural extractor for these yet. tree-sitter-language-pack does ship
+            # grammars for all five, so a real extractor is possible and would be
+            # strictly better — but each is 200-500 lines, and until then a line-window
+            # split is the difference between "in the index and unreachable" and
+            # "findable". Chunks hang off symbol_id, so a file with no symbols has no
+            # chunks and no retrieval leg can see it.
+            from .extractors.line_window import LineWindowParser
+
+            return LineWindowParser()
+
         case _:
             return None

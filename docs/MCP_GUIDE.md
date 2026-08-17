@@ -28,7 +28,7 @@ version from the package instead:
 
 ```bash
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
-# 3.1.1
+# 3.1.2
 ```
 
 > **Note:** Python 3.10+ is required. Use a virtual environment if you manage multiple projects.
@@ -236,7 +236,7 @@ index_codebase(repo_path, provider="local") → stats dict
   "symbols_extracted": 1847,
   "chunks_stored": 4203,
   "elapsed_seconds": 18.4,
-  "index_version": "3.0.0"
+  "index_version": "3.1.2"
 }
 ```
 
@@ -288,7 +288,9 @@ get_symbol("utils.retry.exponential_backoff", "/path/to/repo")
 blast_radius(symbol_name, repo_path) → list of dependent files
 ```
 
-**What it does:** Traverses the call graph and import graph to find every file that transitively depends on the given symbol. Helps you understand the full impact of a change before you make it.
+**What it does:** Queries the resolved call edges and import edges in the index for everything that **directly** depends on the given symbol — its callers, plus every file importing the module that defines it. One hop, not a transitive closure: on this repository a single hop from `AuditStore.append` is already 104 files, and a transitive walk reaches most of the codebase, which is not an actionable answer.
+
+Answered from SQLite, so it needs no embedding model and costs 56-117 ms. Before v3.1.2 it ran a semantic search for the phrase "blast radius dependencies of X" and never read the call graph at all — measured against a SQL oracle on this repo's index, that returned **4% of the affected files** in 5.7 s, and ranked the queried symbol itself among the results.
 
 **When to use:** Always run this before refactoring a function, renaming a class, or changing a public API signature.
 
@@ -394,17 +396,36 @@ build_knowledge_graph(repo_path) → graph stats
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `repo_path` | str | required | Absolute path to the indexed repository |
+| `extract_concepts` | bool | `false` | Run LLM semantic-concept extraction (costs API calls) |
+| `min_community_size` | int | `2` | Drop communities smaller than this. `1` returns singletons too |
+| `max_communities` | int | `50` | Cap on returned communities, largest first. `0` disables the cap |
 
-**Response shape:**
+**Response shape** (verified against the live tool — the key names previously documented
+here, `nodes`/`edges`/`connected_components`/`max_depth`/`build_seconds`, do not exist):
+
 ```json
 {
-  "nodes": 1847,
-  "edges": 5312,
-  "connected_components": 3,
-  "max_depth": 12,
-  "build_seconds": 4.2
+  "node_count": 10700,
+  "edge_count": 11150,
+  "community_count": 6497,
+  "concept_count": 0,
+  "elapsed_seconds": 1.52,
+  "community_summary": [{"community_id": 12, "size": 514, "top_files": ["..."], "top_symbols": ["..."]}],
+  "singleton_count": 6437,
+  "communities_omitted": 6447
 }
 ```
+
+**Why the caps exist.** `community_summary` used to ship every detected community,
+unsorted. On trelix's own index that is **1,160,517 bytes — roughly 290,000 tokens from
+one tool call**, larger than most context windows, and 6,437 of the 6,497 entries (99.1%)
+are singletons carrying no architectural signal. The defaults return 23,788 bytes (~5,900
+tokens) while keeping every significant cluster. `community_count` still reports the true
+total, and `singleton_count` / `communities_omitted` say exactly what was left out.
+
+**What the caps do NOT fix:** every call still runs a full `GraphBuilder.build()` — a
+Louvain pass, a PageRank rebuild and two metadata saves. The payload is smaller; the
+server-side cost is unchanged.
 
 ---
 
@@ -763,21 +784,29 @@ MCP resources are read-only data endpoints that the AI can fetch without executi
 
 ### `trelix://index/stats`
 
-Returns aggregate statistics for all indexed repositories managed by the running trelix-mcp server.
+A parameterless resource cannot know which repository is meant, so this returns a pointer
+to the repo-scoped resources below. The aggregate payload previously documented here
+(`repos_indexed`, `total_files`, `total_symbols`, `total_chunks`, `server_version`) was
+never produced by any code — the resource returned only a hint string.
 
 ```json
-{
-  "repos_indexed": 2,
-  "total_files": 654,
-  "total_symbols": 3891,
-  "total_chunks": 8702,
-  "server_version": "3.0.0"
-}
+{"hint": "Use trelix://repo/{repo_path}/stats for index statistics, or trelix://repo/{repo_path}/manifest for the file listing"}
+```
+
+### `trelix://repo/{repo_path}/stats`
+
+Symbol, file and chunk counts for one indexed repository. Three `COUNT(*)` queries — no
+embedder, no graph build — so an agent can cheaply check whether a repo is indexed at all
+before committing to a search.
+
+```json
+{"symbol_count": 10700, "file_count": 459, "chunk_count": 10700, "repo_path": "/path/to/repo"}
 ```
 
 ### `trelix://repo/{repo_path}/manifest`
 
-Returns the full list of indexed files for a specific repository, including file size, language, and symbol count.
+Returns indexed files for a specific repository with language and symbol count — the
+**first 500 by path**, not "the full list" as previously documented.
 
 ```
 trelix://repo//Users/you/projects/myapp/manifest
@@ -786,12 +815,21 @@ trelix://repo//Users/you/projects/myapp/manifest
 ```json
 {
   "repo_path": "/Users/you/projects/myapp",
+  "file_count": 500,
+  "total_file_count": 620,
+  "files_truncated": true,
   "files": [
     {"path": "src/auth/service.py", "language": "python", "symbols": 12, "size_bytes": 4210},
     {"path": "src/db/pool.py", "language": "python", "symbols": 8, "size_bytes": 2108}
   ]
 }
 ```
+
+`file_count` is the size of the returned PAGE and keeps that meaning for existing
+consumers. It was previously the only count in the response, so a repository with more
+than 500 indexed files reported exactly 500 as its file count, with nothing to indicate a
+limit had been applied. `total_file_count` is the real number and `files_truncated` says
+whether you are looking at a page.
 
 ### `trelix://repo/{repo_path}/symbols/{qualified_name}`
 
@@ -1074,7 +1112,7 @@ Restart Claude Code after re-registering.
 ### `index_codebase` fails or returns 0 files
 
 - Confirm `repo_path` is an **absolute** path (not `~/...` — expand the tilde).
-- Trelix skips files matched by the **repo-root** `.gitignore` only — a nested `.gitignore` in a subdirectory is not read. There is no `.trelixignore`. If expected sources are missing, check the root `.gitignore`, or set `TRELIX_WALKER_RESPECT_GITIGNORE=false` to index them anyway.
+- Trelix skips files matched by `.gitignore` — the repo-root file *and*, as of v3.1.2, nested `.gitignore` files in subdirectories (the one closest to a path wins). There is no `.trelixignore`. If expected sources are missing, check both the root `.gitignore` and any `.gitignore` in the directories above them, or set `TRELIX_WALKER_RESPECT_GITIGNORE=false` to index them anyway. Note that variable is read from the **process environment only** — putting it in `.env` has no effect (see `docs/CONFIGURATION.md`).
 - Large repos may hit memory limits. There is no worker/parallelism env var; the levers are the walker's file-size ceiling and the embedder batch size:
 
 ```bash
@@ -1135,7 +1173,7 @@ If the failure is specifically an embedding-dimension mismatch, clear just the s
 vectors instead of the whole DB:
 
 ```bash
-trelix migrate-vectors ./my-repo --reset
+trelix migrate-vectors ./my-repo --reset --provider <new-provider>
 trelix index ./my-repo
 ```
 

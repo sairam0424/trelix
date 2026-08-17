@@ -5,6 +5,12 @@ Uses watchfiles.awatch() with a single call over all paths simultaneously.
 Debounce is handled by watchfiles' Rust layer (default 1600ms).
 Hash guard prevents re-index loops when indexer writes to source tree.
 
+Every event is routed through the owning repo's FileWalker before it reaches the
+indexer (see `_should_index`). Until v3.1.2 it was not: `index_file()` only checks
+language and content hash, so one `npm install` under a registered repo pushed the
+whole of `node_modules/` — plus `.venv/`, `dist/` and `.git/` — into the embedder,
+while `trelix index` and the single-repo `watch` path both refused those same paths.
+
 Usage:
     registry = RepoRegistry.load()
     watcher = MultiRepoWatcher(registry)
@@ -23,6 +29,7 @@ from pathlib import Path
 from trelix.core.config import IndexConfig
 from trelix.federation.registry import RepoRegistry
 from trelix.indexing.indexer import Indexer
+from trelix.indexing.walker import FileWalker, detect_language
 
 logger = logging.getLogger("trelix.indexing.multi_watcher")
 
@@ -61,6 +68,7 @@ class MultiRepoWatcher:
         self._file_hashes: dict[str, str] = {}
         self._files_reindexed = 0
         self._files_skipped = 0
+        self._files_ignored = 0
 
     def _require_watchfiles(self) -> None:
         _require_watchfiles()
@@ -92,6 +100,69 @@ class MultiRepoWatcher:
                 return entry.path
         return None  # pragma: no cover
 
+    def _should_index(self, walker: FileWalker, file_path: str) -> bool:
+        """Ask the repo's own FileWalker whether it would have yielded this path.
+
+        Every verdict below is the walker's, read from its config rather than restated
+        here: a new entry in `extra_ignore_dirs` or a new language changes `watch-all`
+        and `trelix index` together, which is the whole point of going through the
+        walker instead of keeping a fourth copy of the filter.
+
+        The directory loop is the part a walk gets for free and a watch event does not.
+        `extra_ignore_dirs` is enforced during traversal — `walk()` simply never
+        descends into `node_modules/` — so NO per-file rule mentions those names, and
+        `_is_ignored_file("repo/node_modules/left-pad/index.js")` returns False in a
+        repo with no .gitignore. A watch event arrives as a bare path with no traversal
+        behind it, so each directory between the repo root and the file has to be
+        re-asked explicitly or the exclusion never fires.
+        """
+        path = Path(file_path)
+        if not path.is_file():
+            # Vanished between the event and now, or never a file (dir mkdir events).
+            return False
+
+        try:
+            rel = path.relative_to(walker.repo_root)
+        except ValueError:
+            # _get_repo_for_path already proved textual containment, so this means the
+            # registry path and the event path disagree (trailing slash, symlink, case).
+            # Refusing is the safe answer, but it silently drops real edits — say so.
+            logger.warning(
+                "MultiRepoWatcher: %s is not under repo root %s — not indexing it",
+                file_path,
+                walker.repo_root,
+            )
+            return False
+
+        current = walker.repo_root
+        for part in rel.parts[:-1]:
+            current = current / part
+            if walker._is_ignored_dir(current):
+                return False
+
+        if walker._is_ignored_file(path):
+            return False
+
+        walker_config = walker.config.walker
+        if path.name in set(walker_config.extra_ignore_filenames):
+            return False
+        if any(path.name.endswith(ext) for ext in walker_config.extra_ignore_extensions):
+            return False
+
+        # detect_language(), never a bare suffix lookup: an extensionless Dockerfile or
+        # Makefile has no suffix, and the allow-list is what makes adding an extension
+        # to EXTENSION_MAP insufficient on its own.
+        if detect_language(path) not in set(walker_config.languages):
+            return False
+
+        try:
+            if path.stat().st_size > walker_config.max_file_size_bytes:
+                return False
+        except OSError:
+            return False
+
+        return True
+
     async def run(self, stop_event: asyncio.Event) -> None:
         """
         Watch all registered repos. Blocks until stop_event is set.
@@ -112,10 +183,16 @@ class MultiRepoWatcher:
         )
 
         repo_indexers: dict[str, Indexer] = {}
+        # One walker per repo, sharing that repo's config, so ignore rules and the
+        # parsed .gitignore chain are the same objects the batch index would use. The
+        # walker caches parsed .gitignore files, so keeping it alive for the lifetime of
+        # the watch means each one is read once rather than once per event.
+        repo_walkers: dict[str, FileWalker] = {}
         for entry in entries:
             try:
                 config = IndexConfig.model_construct(repo_path=entry.path)
                 repo_indexers[entry.path] = Indexer(config)
+                repo_walkers[entry.path] = FileWalker(config)
             except Exception as exc:  # pragma: no cover
                 logger.warning(
                     "MultiRepoWatcher: failed to create indexer for %s: %s",
@@ -153,6 +230,18 @@ class MultiRepoWatcher:
                             )
                     continue
 
+                # Ignore filtering comes FIRST: it is what keeps node_modules/, .venv/
+                # and dist/ out of the index, and it must run before the hash guard so a
+                # 40 MB vendored bundle is never read just to decide we do not want it.
+                # Deletions above are deliberately left unfiltered — a deleted path
+                # cannot be inspected, and rows written before a rule existed still
+                # have to be removable.
+                walker = repo_walkers.get(repo_path)
+                if walker is None or not self._should_index(walker, file_path):
+                    self._files_ignored += 1
+                    logger.debug("MultiRepoWatcher: ignored %s (walker filters)", file_path)
+                    continue
+
                 # For added/modified: check hash to avoid cascade loops
                 if self._is_unchanged(file_path):
                     self._files_skipped += 1
@@ -180,4 +269,8 @@ class MultiRepoWatcher:
             "repos_watched": len(self._registry.list()),
             "files_reindexed": self._files_reindexed,
             "files_skipped_unchanged": self._files_skipped,
+            # Reported separately from "unchanged": a large number here is normal (one
+            # npm install is thousands), but a non-zero count on a repo the user thinks
+            # is fully watched is the signal that an ignore rule is too broad.
+            "files_skipped_ignored": self._files_ignored,
         }

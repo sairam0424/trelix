@@ -372,6 +372,25 @@ class QueryPlanner:
             provider=config.provider if config.provider in ("openai", "azure") else "openai",
             _env_file=None,  # type: ignore[call-arg]
         )
+        # Carry over credentials — `_env_file=None` above means this LLMConfig reads no
+        # dotenv of its own, so anything supplied via `.env` has to arrive on the
+        # EmbedderConfig. Without this step the client came out unauthenticated and
+        # `_plan_direct` fell back to `default_plan()` on every call, collapsing all eight
+        # IntentType values to FEATURE_FLOW — and since INTENT_STRATEGIES keys off intent,
+        # every query then got an identical set of retrieval legs and expansion depth.
+        # It logged at DEBUG while the CLI runs at WARNING, so nothing said so.
+        #
+        # Synthesizer and graph_rag already do exactly this after the same shim; the
+        # planner was the one site that skipped it.
+        llm_cfg = llm_cfg.model_copy(
+            update={
+                "openai_api_key": config.openai_api_key,
+                "azure_api_key": config.azure_api_key,
+                "azure_endpoint": config.azure_endpoint,
+                "azure_api_version": config.azure_api_version,
+                "azure_chat_deployment": config.azure_chat_deployment,
+            }
+        )
         self._llm_client = build_chat_client(llm_cfg)
         # Keep _client for the None check in _plan_direct and AdaptiveRouter
         self._client = (

@@ -261,7 +261,8 @@ class FileWatcher:
           - Must not exceed max_file_size_bytes
           - Language must be in the allowed languages list
         """
-        from trelix.indexing.walker import EXTENSION_MAP
+        from trelix.core.models import Language
+        from trelix.indexing.walker import detect_language
 
         path = Path(abs_path)
 
@@ -269,7 +270,10 @@ class FileWatcher:
             return False
 
         # Extension must be known
-        if path.suffix.lower() not in EXTENSION_MAP:
+        # detect_language, not a bare suffix lookup: an extensionless Dockerfile or
+        # Makefile has no suffix to look up, so a watched repo would ignore every edit
+        # to one while `trelix index` picked it up.
+        if detect_language(path) is Language.UNKNOWN:
             return False
 
         # Gitignore / directory ignore
@@ -291,7 +295,7 @@ class FileWatcher:
             return False
 
         # Language must be in allowed set
-        language = EXTENSION_MAP.get(path.suffix.lower())
+        language = detect_language(path)
         if language not in set(self._walker.config.walker.languages):
             return False
 

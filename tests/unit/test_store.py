@@ -1134,3 +1134,377 @@ class TestSymbolContentHash:
         hashes = db.get_symbol_hashes_for_file(file_id)
         assert "foo" in hashes
         assert len(hashes["foo"]) == 64
+
+
+class TestVectorSearchExcludesSentinelRows:
+    """`search()` must return only real chunk vectors.
+
+    Three kinds of row share the `chunk_embeddings` vec0 table:
+
+        0 < chunk_id < _SUB_CHUNK_OFFSET   real chunk vectors
+        chunk_id = -file_id                file-summary vectors
+        chunk_id = sub_chunk_id + 10^7     sub-chunk vectors
+
+    `search()` used to query all three. A sentinel returned in the ANN top-k is not
+    merely noise: `Retriever._vector_search` fetches exactly `k` rows, hydrates each
+    one, and `continue`s when hydration yields None — so a sentinel in the top-k is a
+    real result that is silently never seen, and the loop has nothing left to backfill
+    from. With file summaries enabled that is ~430 sentinels competing on every query.
+
+    Filtering in SQL is not an option: sqlite-vec rejects `WHERE embedding MATCH ? AND
+    chunk_id > 0 ... LIMIT ?` outright ("A LIMIT or 'k = ?' constraint is required on
+    vec0 knn queries"), and the `k = ?` form silently returns FEWER than k rows because
+    it post-filters after the ANN cut. So the exclusion happens in Python, over-fetching
+    by the exact sentinel count so the top-k stays full.
+    """
+
+    DIM = 4
+
+    @pytest.fixture()
+    def vs(self, tmp_path: Path) -> VectorStore:
+        return VectorStore(tmp_path / "vectors.db", dimension=self.DIM)
+
+    def test_file_summary_sentinel_is_not_returned(self, vs: VectorStore) -> None:
+        """A summary vector identical to the query must not win the top slot."""
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert(chunk_id=1, embedding=[0.6, 0.6, 0.0, 0.0])
+        vs.upsert_file_summary_embedding(file_id=7, embedding=query)  # stored at -7
+
+        results = vs.search(query, k=5)
+
+        assert [cid for cid, _ in results] == [1], (
+            "the file-summary sentinel at chunk_id=-7 was returned as a search result"
+        )
+
+    def test_sub_chunk_sentinel_is_not_returned(self, vs: VectorStore) -> None:
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert(chunk_id=1, embedding=[0.6, 0.6, 0.0, 0.0])
+        vs.upsert_sub_chunk_embedding(sub_chunk_id=3, embedding=query)
+
+        results = vs.search(query, k=5)
+
+        assert [cid for cid, _ in results] == [1], (
+            "the sub-chunk sentinel at chunk_id=10000003 was returned as a search result"
+        )
+
+    def test_top_k_stays_full_when_sentinels_outrank_real_chunks(self, vs: VectorStore) -> None:
+        """The headline regression: sentinels must not consume result slots.
+
+        Five real chunks and three sentinels, with the sentinels placed nearer the
+        query than any of them. Asking for k=5 must still yield five real chunks.
+        """
+        query = [1.0, 0.0, 0.0, 0.0]
+        for i in range(1, 6):
+            vs.upsert(chunk_id=i, embedding=[0.5, 0.5 + i * 0.02, 0.0, 0.0])
+        for file_id in (11, 12):
+            vs.upsert_file_summary_embedding(file_id=file_id, embedding=query)
+        vs.upsert_sub_chunk_embedding(sub_chunk_id=9, embedding=query)
+
+        results = vs.search(query, k=5)
+
+        assert len(results) == 5, (
+            f"expected a full top-5 of real chunks, got {len(results)}: {results}"
+        )
+        assert all(0 < cid < 10_000_000 for cid, _ in results)
+
+    def test_ordering_is_preserved_after_filtering(self, vs: VectorStore) -> None:
+        """Removing sentinels must not disturb the distance ordering."""
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert(chunk_id=1, embedding=[0.99, 0.14, 0.0, 0.0])  # closest
+        vs.upsert(chunk_id=2, embedding=[0.7, 0.7, 0.0, 0.0])
+        vs.upsert(chunk_id=3, embedding=[0.0, 1.0, 0.0, 0.0])  # furthest
+        vs.upsert_file_summary_embedding(file_id=1, embedding=query)
+
+        results = vs.search(query, k=3)
+
+        assert [cid for cid, _ in results] == [1, 2, 3]
+
+    def test_search_with_no_sentinels_is_unchanged(self, vs: VectorStore) -> None:
+        """The common case must not pay for the fix, nor change behaviour."""
+        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+        vs.upsert(chunk_id=2, embedding=[0.0, 1.0, 0.0, 0.0])
+
+        results = vs.search([1.0, 0.0, 0.0, 0.0], k=5)
+
+        assert [cid for cid, _ in results] == [1, 2]
+
+    def test_all_sentinels_yields_no_results(self, vs: VectorStore) -> None:
+        """A table holding only sentinels must return nothing, not sentinels."""
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert_file_summary_embedding(file_id=1, embedding=query)
+        vs.upsert_sub_chunk_embedding(sub_chunk_id=1, embedding=query)
+
+        assert vs.search(query, k=5) == []
+
+    def test_summary_search_still_sees_summaries(self, vs: VectorStore) -> None:
+        """Excluding sentinels from `search()` must not break the summary leg.
+
+        `search_file_summaries` deliberately reads the negative-id rows, so the two
+        methods must disagree about what they return.
+        """
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert_file_summary_embedding(file_id=7, embedding=query)
+
+        summaries = vs.search_file_summaries(query, k=5)
+
+        assert [file_id for file_id, _ in summaries] == [7]
+
+    def test_sub_chunk_search_still_sees_sub_chunks(self, tmp_path: Path) -> None:
+        """The sub-chunk leg must keep working alongside the exclusion.
+
+        Both sentinel legs on this backend run their own scans rather than going
+        through `search()`, which is what makes excluding sentinels from `search()`
+        safe here. The Qdrant and LanceDB backends build `search_file_summaries` /
+        `search_sub_chunks` ON TOP of `search()` with a k*5 oversample, so the same
+        exclusion must NOT be copied there — this test documents which side of that
+        line the SQLite backend sits on.
+        """
+        vs = VectorStore(tmp_path / "vectors.db", dimension=self.DIM)
+        query = [1.0, 0.0, 0.0, 0.0]
+        vs.upsert(chunk_id=1, embedding=[0.6, 0.6, 0.0, 0.0])
+        vs.upsert_sub_chunk_embedding(sub_chunk_id=3, embedding=query)
+
+        sub_chunks = vs.search_sub_chunks(query, k=5)
+
+        assert [sc_id for sc_id, _ in sub_chunks] == [3]
+        assert [cid for cid, _ in vs.search(query, k=5)] == [1]
+
+
+class TestVectorStoreRecreate:
+    """`recreate()` must produce a table usable at the CURRENT dimension.
+
+    This is what makes recovery from an embedding-provider change possible. The vec0
+    table's dimension is fixed by its CREATE statement, and both creation paths use
+    `CREATE VIRTUAL TABLE IF NOT EXISTS`, so re-issuing the DDL at a new dimension is a
+    no-op while the old table exists. Verified directly: after DELETEing every row and
+    re-issuing the CREATE at FLOAT[8], the schema still declared FLOAT[4] and an 8-dim
+    insert failed with "Expected 4 dimensions but received 8".
+
+    Dropping the virtual table is what actually works, and it is safe: it removes all
+    six shadow objects (chunk_embeddings_auxiliary/_chunks/_info/_rowids/
+    _vector_chunks00) leaving none behind, and it is transactional — a ROLLBACK restores
+    the table.
+    """
+
+    def test_recreate_empties_the_table(self, tmp_path: Path) -> None:
+        vs = VectorStore(tmp_path / "v.db", dimension=4)
+        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+        vs.upsert_file_summary_embedding(file_id=3, embedding=[0.0, 1.0, 0.0, 0.0])
+        assert vs.search([1.0, 0.0, 0.0, 0.0], k=5), "precondition: the table has rows"
+
+        vs.recreate()
+
+        assert vs.search([1.0, 0.0, 0.0, 0.0], k=5) == []
+        assert vs.search_file_summaries([0.0, 1.0, 0.0, 0.0], k=5) == [], (
+            "sentinel rows survived the recreate"
+        )
+
+    def test_recreate_leaves_the_table_writable(self, tmp_path: Path) -> None:
+        """A recreate that produced an unusable table would be worse than none."""
+        vs = VectorStore(tmp_path / "v.db", dimension=4)
+        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+
+        vs.recreate()
+        vs.upsert(chunk_id=2, embedding=[0.0, 0.0, 1.0, 0.0])
+
+        assert [cid for cid, _ in vs.search([0.0, 0.0, 1.0, 0.0], k=5)] == [2]
+
+    def test_recreate_adopts_a_new_dimension(self, tmp_path: Path) -> None:
+        """The point of the whole exercise: switching embedding providers.
+
+        A store opened at a different dimension over the same file must be able to
+        recreate the table and accept vectors of the new width.
+        """
+        path = tmp_path / "v.db"
+        small = VectorStore(path, dimension=4)
+        small.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+
+        large = VectorStore(path, dimension=8)
+        large.recreate()
+        large.upsert(chunk_id=1, embedding=[1.0] * 8)
+
+        assert [cid for cid, _ in large.search([1.0] * 8, k=5)] == [1]
+
+    def test_declared_dimension_actually_changes(self, tmp_path: Path) -> None:
+        """Assert on the DDL, not just on a successful insert."""
+        path = tmp_path / "v.db"
+        VectorStore(path, dimension=4).upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+
+        large = VectorStore(path, dimension=8)
+        large.recreate()
+
+        ddl = large._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'chunk_embeddings'"
+        ).fetchone()[0]
+        assert "FLOAT[8]" in ddl, f"table still declares the old width: {ddl}"
+
+    def test_no_shadow_tables_are_orphaned(self, tmp_path: Path) -> None:
+        """A vec0 table owns several shadow tables; a leak would break the recreate."""
+        path = tmp_path / "v.db"
+        vs = VectorStore(path, dimension=4)
+        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
+
+        before = {
+            r[0]
+            for r in vs._conn.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'chunk_embeddings%'"
+            )
+        }
+        vs.recreate()
+        after = {
+            r[0]
+            for r in vs._conn.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'chunk_embeddings%'"
+            )
+        }
+        assert after == before, f"shadow objects changed: {before ^ after}"
+
+
+class TestSubChunkCleanup:
+    """Deleting a symbol must take its sub-chunks and their vectors with it.
+
+    `sub_chunks.parent_symbol_id` carries NO foreign key, unlike `chunks.symbol_id`
+    which has ON DELETE CASCADE. Verified directly: `PRAGMA foreign_key_list(sub_chunks)`
+    returns `[]` while the same query on `chunks` returns a row. There was also no
+    `DELETE FROM sub_chunks` anywhere in `src/`, so every re-index of a changed symbol
+    left its old sub-chunks behind permanently.
+
+    docs/architecture.md described the column as `parent_symbol_id FK→symbols CASCADE`,
+    which was simply not true.
+
+    The FK is not added retroactively: SQLite cannot ALTER a constraint in, and
+    rebuilding a table that may already hold a user's rows is a larger risk than doing
+    the cleanup in application code. A cascade could not have handled the vectors
+    anyway — they live in a virtual table a foreign key cannot reach.
+    """
+
+    @staticmethod
+    def _seed(tmp_path: Path):  # type: ignore[no-untyped-def]
+        """A file with two symbols, each carrying one sub-chunk row."""
+        from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
+        from trelix.store.db import Database
+
+        db = Database(tmp_path / "index.db")
+        file_id = db.upsert_file(
+            IndexedFile(
+                path="/repo/a.py",
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="h",
+                size_bytes=10,
+            )
+        )
+        ids = {}
+        for name in ("alpha", "beta"):
+            sym_id = db.insert_symbol(
+                Symbol(
+                    file_id=file_id,
+                    name=name,
+                    qualified_name=name,
+                    kind=SymbolKind.FUNCTION,
+                    line_start=1,
+                    line_end=2,
+                    signature=f"def {name}():",
+                    body=f"def {name}(): pass",
+                )
+            )
+            ids[name] = sym_id
+            db._conn.execute(
+                "INSERT INTO sub_chunks (parent_symbol_id, granularity, chunk_text, "
+                "token_count, line_start, line_end) VALUES (?, 'block', ?, 3, 1, 2)",
+                (sym_id, f"body of {name}"),
+            )
+        db._conn.commit()
+        return db, file_id, ids
+
+    @staticmethod
+    def _count(db) -> int:  # type: ignore[no-untyped-def]
+        return int(db._conn.execute("SELECT COUNT(*) FROM sub_chunks").fetchone()[0])
+
+    def test_deleting_a_file_removes_its_sub_chunks(self, tmp_path: Path) -> None:
+        db, file_id, _ = self._seed(tmp_path)
+        assert self._count(db) == 2, "precondition: two sub-chunk rows exist"
+
+        db.delete_file_symbols(file_id)
+
+        assert self._count(db) == 0, "sub_chunks rows survived the symbol delete"
+
+    def test_deleting_named_symbols_removes_only_their_sub_chunks(self, tmp_path: Path) -> None:
+        """The partial path must not take the surviving symbol's sub-chunks with it."""
+        db, file_id, _ = self._seed(tmp_path)
+
+        db.delete_symbols_by_qualified_names(file_id, ["alpha"])
+
+        remaining = db._conn.execute("SELECT chunk_text FROM sub_chunks").fetchall()
+        assert [r[0] for r in remaining] == ["body of beta"], (
+            f"wrong sub-chunks removed: {remaining}"
+        )
+
+    def test_vectors_are_deleted_before_the_rows(self, tmp_path: Path) -> None:
+        """The row id is the only handle on its vector, so order is load-bearing."""
+        from unittest.mock import MagicMock
+
+        db, file_id, _ = self._seed(tmp_path)
+        sub_chunk_ids = [
+            int(r[0]) for r in db._conn.execute("SELECT id FROM sub_chunks").fetchall()
+        ]
+        store = MagicMock()
+
+        db.delete_file_symbols(file_id, vector_store=store)
+
+        store.delete_sub_chunk_embeddings.assert_called_once()
+        passed = sorted(store.delete_sub_chunk_embeddings.call_args.args[0])
+        assert passed == sorted(sub_chunk_ids)
+
+    def test_no_sub_chunks_means_no_vector_call(self, tmp_path: Path) -> None:
+        """A repo with multi-granularity off must not pay for an empty delete."""
+        from unittest.mock import MagicMock
+
+        from trelix.core.models import IndexedFile, Language
+        from trelix.store.db import Database
+
+        db = Database(tmp_path / "index.db")
+        file_id = db.upsert_file(
+            IndexedFile(
+                path="/repo/a.py",
+                rel_path="a.py",
+                language=Language.PYTHON,
+                hash="h",
+                size_bytes=10,
+            )
+        )
+        db._conn.commit()
+        store = MagicMock()
+
+        db.delete_file_symbols(file_id, vector_store=store)
+
+        store.delete_sub_chunk_embeddings.assert_not_called()
+
+    def test_offset_arithmetic_lives_in_the_vector_store(self, tmp_path: Path) -> None:
+        """`Database` must not need to know the sentinel offset."""
+        vs = VectorStore(tmp_path / "v.db", dimension=4)
+        vs.upsert_sub_chunk_embedding(sub_chunk_id=5, embedding=[1.0, 0.0, 0.0, 0.0])
+        assert vs.search_sub_chunks([1.0, 0.0, 0.0, 0.0], k=5)
+
+        vs.delete_sub_chunk_embeddings([5])
+
+        assert vs.search_sub_chunks([1.0, 0.0, 0.0, 0.0], k=5) == []
+
+    def test_delete_file_by_path_also_purges_sub_chunks(self, tmp_path: Path) -> None:
+        """The watcher's path was missed when sub-chunk cleanup was first added.
+
+        `symbols` cascades from `files`, so deleting the file row removed the symbols —
+        but `sub_chunks` has no foreign key to `symbols`, so their sub-chunks and vectors
+        stayed. This runs every time a file is deleted from a watched repository, which
+        makes it the highest-frequency leak of the three paths.
+        """
+        from unittest.mock import MagicMock
+
+        db, _, _ = self._seed(tmp_path)
+        assert self._count(db) == 2, "precondition: two sub-chunk rows exist"
+        store = MagicMock()
+
+        assert db.delete_file_by_path("/repo/a.py", "a.py", store) is True
+
+        assert self._count(db) == 0, "sub_chunks survived delete_file_by_path"
+        store.delete_sub_chunk_embeddings.assert_called_once()

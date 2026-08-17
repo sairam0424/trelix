@@ -126,6 +126,12 @@ class GraphVisualizer:
             "elapsed_seconds": round(result.elapsed_seconds, 3),
             "communities": result.community_summary,
         }
+        # Additive. `community_count` on its own reads as a healthy number when it
+        # is mostly singletons (6640 communities / 6579 singletons on trelix's own
+        # index), so the report carries the shape alongside the count. Omitted
+        # rather than faked when the result predates the assessment.
+        if result.partition_quality is not None:
+            report["partition_quality"] = result.partition_quality.as_dict()
         Path(output_path).write_text(json.dumps(report, indent=2))
         logger.info("Community report written to %s", output_path)
         return str(Path(output_path).resolve())

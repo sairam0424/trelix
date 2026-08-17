@@ -1,11 +1,16 @@
 """
-OpenTelemetry tracing for the retrieval pipeline — off by default.
+OpenTelemetry tracing + cost metrics — off by default.
 
 Emits one span per retrieval leg (vector, BM25, grep, sparse, sub-chunk,
 file-summary) plus root/planner/fusion/expansion/rerank/assembly spans, using
 the official `gen_ai.*` semantic conventions (status: Development, not yet
 Stable — attribute names may still shift upstream; see
 docs/OBSERVABILITY.md).
+
+Also emits counters (see "Metrics" below): spans record that a request
+happened, never what it cost, so token/request volume needs instruments of its
+own. `record_embedding_call()` is the one that matters most — embedding is the
+only operation in trelix billed per call.
 
 Requires `pip install trelix[otel]`. When `TRELIX_OTEL_ENABLED=false`
 (default), every function here is a cheap no-op and the `opentelemetry.*`
@@ -35,6 +40,12 @@ _T = TypeVar("_T")
 
 _handler: TelemetryHandler | None = None
 _handler_service_name: str | None = None
+
+_meter: Any = None
+_meter_service_name: str | None = None
+_embedding_counters: dict[str, Any] | None = None
+_env_otel_settings: tuple[bool, str, str | None] | None = None
+_metrics_unavailable_logged = False
 
 
 def _build_tracer_provider(service_name: str, otlp_endpoint: str | None) -> Any:
@@ -234,3 +245,215 @@ class pipeline_stage_span:
                 self._span_cm.__exit__(exc_type, exc, tb)
             except Exception as inner_exc:
                 logger.debug("Failed to exit '%s' pipeline span: %s", self._stage, inner_exc)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Metrics — counters, gated on the same flag as the spans above
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _otel_settings(cfg: Any) -> tuple[bool, str, str | None]:
+    """(enabled, service_name, otlp_endpoint) — from *cfg*, or from the
+    environment when *cfg* is None.
+
+    Every span helper above is handed a RetrievalConfig by its caller. The
+    embedder cannot be: EmbedderConfig carries no otel_* fields, and all four
+    construction sites (indexing/indexer.py, indexing/artifact_linker.py,
+    retrieval/retriever.py, embedder/cache.py) pass only `config.embedder`.
+    Reading os.environ directly there would silently disagree with the span
+    path for anyone who sets TRELIX_OTEL_ENABLED in .env rather than the
+    process env, so cfg=None resolves through RetrievalConfig itself — same
+    field, same precedence — once per process (~15 ms, measured).
+    """
+    if cfg is not None:
+        return (
+            bool(getattr(cfg, "otel_enabled", False)),
+            getattr(cfg, "otel_service_name", "trelix"),
+            getattr(cfg, "otel_exporter_endpoint", None),
+        )
+    global _env_otel_settings
+    if _env_otel_settings is None:
+        try:
+            from trelix.core.config import RetrievalConfig
+
+            resolved = RetrievalConfig()
+            _env_otel_settings = (
+                bool(resolved.otel_enabled),
+                resolved.otel_service_name,
+                resolved.otel_exporter_endpoint,
+            )
+        except Exception as exc:
+            logger.debug("Could not resolve OTel settings from the environment: %s", exc)
+            _env_otel_settings = (False, "trelix", None)
+    return _env_otel_settings
+
+
+def metrics_enabled(cfg: Any = None) -> bool:
+    """True if metrics should be recorded, without importing opentelemetry.
+
+    Counterpart to is_enabled() for call sites that hold no config object.
+    """
+    return _otel_settings(cfg)[0]
+
+
+def _metrics_endpoint(traces_endpoint: str | None) -> str | None:
+    """Map the configured OTLP endpoint onto the metrics signal path.
+
+    docs/OBSERVABILITY.md documents OTEL_EXPORTER_OTLP_ENDPOINT with a
+    ``/v1/traces`` suffix, and a value passed as ``endpoint=`` is used verbatim
+    by the OTLP exporter (unlike the env-var form, no signal path is appended).
+    Reusing it for metrics would POST metric payloads to the traces route,
+    which collectors reject — so the suffix is swapped, not shared.
+    """
+    if not traces_endpoint:
+        return None
+    base = traces_endpoint.rstrip("/")
+    if base.endswith("/v1/traces"):
+        base = base[: -len("/v1/traces")]
+    return f"{base}/v1/metrics"
+
+
+def _build_meter_provider(service_name: str, otlp_endpoint: str | None) -> Any:
+    """Build a MeterProvider for *service_name*, exporting to *otlp_endpoint* if set.
+
+    Mirrors _build_tracer_provider(), including being separated out so the
+    exporter wiring is testable without installing a real (one-shot) global
+    provider.
+    """
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+
+    readers = []
+    endpoint = _metrics_endpoint(otlp_endpoint)
+    if endpoint:
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+
+        readers.append(PeriodicExportingMetricReader(OTLPMetricExporter(endpoint=endpoint)))
+    return MeterProvider(
+        resource=Resource.create({SERVICE_NAME: service_name}),
+        metric_readers=readers,
+    )
+
+
+def _get_meter(service_name: str, otlp_endpoint: str | None) -> Any:
+    """Lazily build (and memoize) the meter. Raises on import/init failure —
+    callers report that once, loudly (see _embedding_counters_for)."""
+    global _meter, _meter_service_name
+    if _meter is not None and _meter_service_name == service_name:
+        return _meter
+
+    from opentelemetry import metrics
+
+    # Only install our own MeterProvider when nothing has configured OTel
+    # metrics yet, same rule as _get_handler() applies to tracing. The API's
+    # unset placeholder is named `_ProxyMeterProvider` (opentelemetry-api
+    # 1.44.0, verified); the underscore-free spelling is accepted in case that
+    # private name changes. An explicit NoOpMeterProvider is a deliberate host
+    # choice and is left alone.
+    current = metrics.get_meter_provider()
+    if type(current).__name__.lstrip("_") == "ProxyMeterProvider":
+        metrics.set_meter_provider(_build_meter_provider(service_name, otlp_endpoint))
+
+    _meter = metrics.get_meter("trelix.embedder")
+    _meter_service_name = service_name
+    return _meter
+
+
+# Counter names are trelix's own (`trelix.*`): the GenAI metric conventions
+# cover chat token usage, not embedding volume, so there is nothing to borrow.
+# Attributes deliberately mix namespaces: `gen_ai.request.model` is the
+# conventional free-form model attribute (joins these counters to the
+# gen_ai.* spans), while the provider is trelix's own selector value
+# ("bedrock-titan", "local-code", ...) and NOT a `gen_ai.provider.name` enum
+# member, so it keeps a trelix.* name rather than pretending to conform.
+_ATTR_PROVIDER = "trelix.embedder.provider"
+_ATTR_MODEL = "gen_ai.request.model"
+
+
+def _embedding_counters_for(cfg: Any) -> dict[str, Any] | None:
+    """Build/reuse the four embedding counters. None when metrics can't be recorded."""
+    global _embedding_counters, _metrics_unavailable_logged
+    if _embedding_counters is not None:
+        return _embedding_counters
+    _, service_name, otlp_endpoint = _otel_settings(cfg)
+    try:
+        meter = _get_meter(service_name, otlp_endpoint)
+        _embedding_counters = {
+            "requests": meter.create_counter(
+                "trelix.embedder.requests",
+                unit="{request}",
+                description="Embedding provider calls (one per API request/model invocation)",
+            ),
+            "texts": meter.create_counter(
+                "trelix.embedder.texts",
+                unit="{text}",
+                description="Texts (chunks/queries) submitted for embedding",
+            ),
+            "characters": meter.create_counter(
+                "trelix.embedder.characters",
+                unit="{character}",
+                description="Characters submitted for embedding — the volume proxy for "
+                "providers that report no token usage",
+            ),
+            "tokens": meter.create_counter(
+                "trelix.embedder.tokens",
+                unit="{token}",
+                description="Provider-reported tokens embedded — the billed quantity; "
+                "absent for providers that report none",
+            ),
+        }
+        return _embedding_counters
+    except Exception as exc:
+        # WARNING, not debug (unlike the span helpers): the operator asked for
+        # observability and would otherwise read an empty cost dashboard as
+        # "we spent nothing". Logged once per process — this sits on the embed
+        # path. The failed import itself is retried on every later call (54 µs
+        # measured for a missing package), which is noise next to any embedding
+        # call and keeps this to one piece of state instead of two.
+        if not _metrics_unavailable_logged:
+            _metrics_unavailable_logged = True
+            logger.warning(
+                "TRELIX_OTEL_ENABLED is set but OpenTelemetry metrics are unavailable (%s) — "
+                "embedding cost counters will NOT be recorded. Install: pip install 'trelix[otel]'",
+                exc,
+            )
+        return None
+
+
+def record_embedding_call(
+    *,
+    provider: str,
+    model: str,
+    texts: int,
+    characters: int,
+    tokens: int | None = None,
+    cfg: Any = None,
+) -> None:
+    """
+    Count one embedding provider call, keyed by provider and model.
+
+    Call once per *provider call*, not per batch of texts: OpenAI/Azure/Cohere
+    send one request per batch chunk, Titan one per text.
+
+    *tokens* is the provider-reported total, or None when the provider reports
+    none (local models, Cohere on Bedrock). None leaves the tokens series
+    untouched — a series that is silently a chars/4 guess is worse than a
+    series that is visibly absent.
+
+    No-op (never raises) when metrics are disabled or opentelemetry is absent.
+    """
+    if not metrics_enabled(cfg):
+        return
+    counters = _embedding_counters_for(cfg)
+    if counters is None:
+        return
+    attrs = {_ATTR_PROVIDER: provider, _ATTR_MODEL: model}
+    try:
+        counters["requests"].add(1, attrs)
+        counters["texts"].add(texts, attrs)
+        counters["characters"].add(characters, attrs)
+        if tokens is not None:
+            counters["tokens"].add(tokens, attrs)
+    except Exception as exc:
+        logger.debug("Failed to record embedding counters for '%s': %s", provider, exc)

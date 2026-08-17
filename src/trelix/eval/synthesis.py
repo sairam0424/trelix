@@ -21,11 +21,17 @@ Code-specific extensions (trelix):
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 from trelix.retrieval.synthesizer import Synthesizer
+
+if TYPE_CHECKING:
+    from trelix.core.config import IndexConfig
+
+logger = logging.getLogger("trelix.eval.synthesis")
 
 
 @dataclass
@@ -195,7 +201,10 @@ class SynthesisEvalHarness:
     queries without them contribute only to n_queries count with score 1.0.
     """
 
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: IndexConfig) -> None:
+        # Annotated concretely rather than as `Any`: the `Any` that used to be here is
+        # what stopped mypy --strict from noticing that this IndexConfig was being handed
+        # to Synthesizer, which takes an EmbedderConfig.
         self._config = config
         from trelix.retrieval.retriever import Retriever
 
@@ -223,6 +232,7 @@ class SynthesisEvalHarness:
                 "faithfulness": 0.0,
                 "overall": 0.0,
                 "n_queries": 0.0,
+                "unscoreable": 0.0,
             }
 
         entries = []
@@ -242,8 +252,27 @@ class SynthesisEvalHarness:
                 "faithfulness": 0.0,
                 "overall": 0.0,
                 "n_queries": 0.0,
+                "unscoreable": 0.0,
             }
 
+        # Built once, outside the loop. Constructing it per entry re-initialised an LLM
+        # client for every query in the golden file.
+        #
+        # The argument shape matters and was wrong: Synthesizer takes an EmbedderConfig
+        # first, and with llm_config=None it falls into a shim that reads
+        # `config.provider`. Passing the IndexConfig raised AttributeError on every call,
+        # which the swallow below turned into an empty answer — so every query scored
+        # against `""` and `overall` was a constant. This mirrors the construction
+        # `trelix ask` uses.
+        synthesizer = Synthesizer(
+            self._config.embedder,
+            retrieval_config=self._config.retrieval,
+            llm_config=self._config.llm,
+        )
+
+        # Counted rather than inferred: a caller cannot otherwise tell a genuinely bad
+        # answer from an entry that could not be scored at all.
+        unscoreable = 0
         hallucination_scores: list[float] = []
         completeness_scores: list[float] = []
         faithfulness_scores: list[float] = []
@@ -263,9 +292,17 @@ class SynthesisEvalHarness:
                 ]
 
                 try:
-                    synthesizer = Synthesizer(self._config)
                     answer = synthesizer.synthesize(context)
-                except Exception:
+                except Exception as exc:
+                    # Still non-fatal — one flaky LLM call should not abort the run — but
+                    # no longer silent. An empty answer scores completeness and
+                    # faithfulness at 0.0, which is indistinguishable from a genuinely
+                    # bad answer, so the reader has to be told the difference.
+                    logger.warning(
+                        "Synthesis failed for query %r, scoring an empty answer: %s",
+                        query[:80],
+                        exc,
+                    )
                     answer = ""
 
                 result = evaluate_synthesis(
@@ -280,7 +317,22 @@ class SynthesisEvalHarness:
                 completeness_scores.append(result.scores["completeness"])
                 faithfulness_scores.append(result.scores["faithfulness"])
                 overall_scores.append(result.scores["overall"])
-            except Exception:
+            except Exception as exc:
+                # Reached when retrieval or scoring fails, not when the MODEL does — and
+                # the scores below are fabricated, not measured. hallucination=1.0 makes
+                # a broken index or a DB error read as "the model hallucinated
+                # everything", which is a false diagnosis of the wrong component. They
+                # are kept so a partial run still returns comparable aggregates, but the
+                # cause is now logged and the count is reported separately so the reader
+                # can tell how much of the result was measured at all.
+                logger.warning(
+                    "Could not score query %r (%s) — recording it as unscoreable; the "
+                    "hallucination/completeness/faithfulness figures for it are "
+                    "placeholders, not measurements",
+                    query[:80],
+                    exc,
+                )
+                unscoreable += 1
                 hallucination_scores.append(1.0)
                 completeness_scores.append(0.0)
                 faithfulness_scores.append(0.0)
@@ -293,4 +345,7 @@ class SynthesisEvalHarness:
             "faithfulness": sum(faithfulness_scores) / n,
             "overall": sum(overall_scores) / n,
             "n_queries": float(n),
+            # Additive: the four figures above keep their names and meaning. A non-zero
+            # value here means that many of them are placeholders.
+            "unscoreable": float(unscoreable),
         }

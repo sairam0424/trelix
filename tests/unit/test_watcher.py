@@ -143,21 +143,37 @@ class TestWatchdogImportError(unittest.TestCase):
     """Verify a friendly ImportError is raised when watchdog is absent."""
 
     def test_helpful_import_error_when_watchdog_missing(self) -> None:
-        # Temporarily hide watchdog from sys.modules
-        saved = {k: v for k, v in sys.modules.items() if k.startswith("watchdog")}
-        for k in saved:
-            del sys.modules[k]
-        try:
-            from trelix.indexing.watcher import _require_watchdog
+        """Deleting from sys.modules does not hide an INSTALLED package.
 
+        The previous version removed every `watchdog*` key and expected the import to
+        fail — but a deleted entry only clears the cache, so `import watchdog` simply
+        re-imports it from site-packages and no ImportError is raised. That made this the
+        only failing test in the tree wherever `[watch]` was installed, and made it pass
+        for the wrong reason wherever it was not: the assertion never ran against a real
+        guard, it ran against an absent dependency.
+
+        Mapping the name to None is what actually forces ImportError, and is the idiom
+        already used for `trelix_mcp` further down this file.
+        """
+        from trelix.indexing.watcher import _require_watchdog
+
+        with patch.dict("sys.modules", {"watchdog": None}):
             with self.assertRaises(ImportError) as ctx:
                 _require_watchdog()
 
-            msg = str(ctx.exception)
-            self.assertIn("watchdog", msg.lower())
-            self.assertIn("pip install", msg)
-        finally:
-            sys.modules.update(saved)
+        msg = str(ctx.exception)
+        self.assertIn("watchdog", msg.lower())
+        self.assertIn("pip install", msg)
+
+    def test_no_error_when_watchdog_is_importable(self) -> None:
+        """The guard must be silent in the normal case, not merely loud in the broken one.
+
+        Without this, a `_require_watchdog` that raised unconditionally would still pass
+        the test above.
+        """
+        from trelix.indexing.watcher import _require_watchdog
+
+        _require_watchdog()  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +480,7 @@ class TestDeleteFileByPath(unittest.TestCase):
             hash="def456",
             size_bytes=200,
         )
-        db.upsert_file(f)
+        file_id = db.upsert_file(f)
 
         mock_vs = MagicMock()
         # Patch get_chunk_ids_for_file to return fake chunk ids
@@ -472,7 +488,11 @@ class TestDeleteFileByPath(unittest.TestCase):
             result = db.delete_file_by_path("/repo/src/utils.py", "src/utils.py", mock_vs)
 
         self.assertTrue(result)
-        mock_vs.delete_batch.assert_called_once_with([10, 20, 30])
+        # The file-summary sentinel `-(file_id)` rides along in the same call. Summary
+        # vectors live in `chunk_embeddings` under a negative chunk_id, so they are absent
+        # from get_chunk_ids_for_file() and a chunk-only delete orphaned them — caught by
+        # verify-index.sh's "summary vectors == summaries" gate after the first real prune.
+        mock_vs.delete_batch.assert_called_once_with([10, 20, 30, -file_id])
         db.close()
 
 

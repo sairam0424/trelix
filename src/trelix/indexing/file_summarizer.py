@@ -48,6 +48,14 @@ class FileSummarizer:
 
     Safe to use without an LLM client — returns empty string on any failure.
     The indexer treats empty summaries as "no file-level entry" and skips them.
+
+    "" is a FAILURE signal, not a neutral one, and the caller is responsible for
+    counting it: the only other way to get "" is an empty symbol list, which the
+    caller can test for itself. The indexer's `if summary:` had no `else` and no
+    counter, so on the live index 442 of 467 summaries succeeded and the 25 that
+    failed were indistinguishable from 467 successes — from the stats dict, the
+    console, and (because the failure path logged at DEBUG while the CLI runs at
+    WARNING) the logs too.
     """
 
     def __init__(
@@ -99,7 +107,25 @@ class FileSummarizer:
                 temperature=0.0,
                 system=_SYSTEM_PROMPT,
             )
-            return response.content.strip()
+            summary = response.content.strip()
+            if not summary:
+                # A model that answers with whitespace produced no summary; without
+                # this branch it took the success path and returned "", which the
+                # caller cannot tell apart from a 429.
+                logger.warning(
+                    "File summary for %s came back blank — the file gets no "
+                    "file-level retrieval entry",
+                    rel_path,
+                )
+            return summary
         except Exception as exc:
-            logger.debug("File summarizer failed for %s: %s", rel_path, exc)
+            # WARNING, not DEBUG: this is the only place the REASON for the "" exists,
+            # and the CLI runs at WARNING. At DEBUG, a whole run's summaries could fail
+            # on expired credentials and the only visible trace was a file_summaries
+            # table that happened to be empty.
+            logger.warning(
+                "File summary failed for %s (%s) — the file gets no file-level retrieval entry",
+                rel_path,
+                exc,
+            )
             return ""

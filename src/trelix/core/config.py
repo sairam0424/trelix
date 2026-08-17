@@ -49,6 +49,14 @@ class WalkerConfig(BaseSettings):
         Language.TOML,
         Language.HTML,
         Language.CSS,
+        # Ops and contract artifacts. `languages` is an ALLOW-LIST the walker filters
+        # against, so adding an extension to EXTENSION_MAP is not enough on its own —
+        # the language has to appear here too or the file is discovered and then dropped.
+        Language.SHELL,
+        Language.DOCKERFILE,
+        Language.MAKE,
+        Language.SQL,
+        Language.PROTO,
     ]
     max_file_size_bytes: int = 500_000
     respect_gitignore: bool = True
@@ -179,8 +187,33 @@ class SparseConfig(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="TRELIX_SPARSE_")
 
+    # The previous default, "naver-splab/splade-code-distil", does not exist on the
+    # HuggingFace Hub (model_info raises RepositoryNotFoundError), so SparseEmbedder
+    # never loaded and sparse_embeddings stayed at 0 rows however the flag was set.
+    #
+    # Correcting the id alone would not have been enough. Both real SPLADE-Code
+    # releases — naver/splade-code-8B and naver/splade-code-06B — are
+    # `model_type=qwen3`, and qwen3 is absent from transformers'
+    # MODEL_FOR_MASKED_LM_MAPPING_NAMES, so the AutoModelForMaskedLM call in
+    # embedder/sparse.py cannot load them. SPLADE-Code is causal-LM based while this
+    # loader assumes the BERT-family MaskedLM shape.
+    #
+    # So the default is a real BERT-family SPLADE the existing loader can actually
+    # load: 269 MB, verified to return non-empty token weights for code snippets. It is
+    # NL-trained rather than code-specialised, which is the trade-off — a working NL
+    # sparse leg is worth more than a code-specialised one that cannot be loaded at all.
+    # Using a SPLADE-Code model needs causal-LM support in sparse.py first.
+    #
+    # LICENCE — read before enabling this in a commercial product. The SPLADE weights
+    # are published under CC BY-NC-SA-4.0 (NON-COMMERCIAL, share-alike), verified via
+    # the HuggingFace API: cardData.license == "cc-by-nc-sa-4.0". trelix itself is MIT
+    # and does not redistribute them — they are downloaded at runtime, and only if you
+    # opt into the sparse leg, which is off by default. But the obligations attach to
+    # whoever downloads and uses them, so a commercial deployment should either pick a
+    # permissively-licensed model via TRELIX_SPARSE_MODEL or leave the leg disabled.
+    # Every naver/splade* checkpoint checked carries the same licence.
     model: str = Field(
-        default="naver-splab/splade-code-distil",
+        default="naver/splade-v3-distilbert",
         alias="TRELIX_SPARSE_MODEL",
     )
     top_k_tokens: int = Field(
@@ -351,6 +384,87 @@ class StoreConfig(BaseSettings):
     # connection exactly as before. >0 opts into a pool of that many
     # read-only connections for parallel FTS5 reads.
     bm25_read_pool_size: int = Field(default=0, alias="TRELIX_STORE_BM25_READ_POOL_SIZE")
+
+
+# ---------------------------------------------------------------------------
+# Retrieval weight env parsing
+# ---------------------------------------------------------------------------
+# These sit at module scope, outside RetrievalConfig, so RetrievalConfig.__init__ can
+# run them BEFORE pydantic gets control. That placement is a secrets boundary, not a
+# style choice. Measured on pydantic 2.13.4 / pydantic-settings 2.14.2: a ValueError
+# raised from model_post_init (or from any model-level validator) is caught by pydantic
+# and re-raised as a ValidationError that carries the model's whole input dict —
+#
+#   str(exc)     -> "... input_value={'COHERE_API_KEY': 'co-FA...3b6a1f5e7c2d40aabbccdd'}"
+#   exc.errors() -> [{'input': {'COHERE_API_KEY': 'co-FAKE-<the whole key>'}}]
+#
+# str() and the traceback print the trailing ~22 characters of whichever secret lands
+# last in the dict; errors() and json() print every value in full. RetrievalConfig
+# loads .env, and pydantic-settings copies unmatched dotenv keys into the input dict
+# verbatim, so OPENAI_API_KEY/AZURE_API_KEY arrive here even though this model has no
+# such fields — and cohere_api_key (alias COHERE_API_KEY) IS a field of this model, so
+# no settings-source filtering could keep key material out of that dict. One typo'd
+# weight variable was therefore enough to put a key fragment in a terminal, a CI log,
+# or a pasted issue report. Raising before super().__init__() keeps the error an
+# ordinary ValueError that pydantic never sees, so its text is only ours.
+
+_FILE_TYPE_WEIGHT_PREFIX = "TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_"
+_LEG_WEIGHT_PREFIX = "TRELIX_RETRIEVAL_LEG_WEIGHT_"
+
+
+def _parse_retrieval_weight(env_var: str, raw: str) -> float:
+    """
+    Parse one per-language/per-leg weight, naming the variable when it is bad.
+
+    A bare float(raw) at the two weight-merge sites aborted EVERY trelix command
+    with "could not convert string to float: 'abc'" and no variable name — the
+    user had to bisect ~96 TRELIX_* aliases to find their own typo. Weights are
+    the one knob the changelog invites people to experiment with, so a typo here
+    is the likely case, not the exotic one.
+
+    Non-finite values are refused for the same reason even though float() accepts
+    them: "nan" parses fine, then every fused score becomes NaN, every score
+    comparison returns False, and results come back in insertion order with
+    nothing logged anywhere — a silently wrong ranking is worse than a crash.
+
+    We refuse rather than warn-and-ignore. A weight exists so two rankings can be
+    compared; dropping a bad one would leave the user measuring the DEFAULT while
+    believing they measured their override, and drawing a conclusion from it.
+
+    Raises a plain ValueError. Callers must invoke this from outside pydantic
+    validation — see the secrets note above.
+    """
+    import math
+
+    try:
+        weight = float(raw)
+    except ValueError:
+        raise ValueError(
+            f"{env_var}={raw!r} is not a valid retrieval weight. Expected a "
+            f"decimal number, e.g. {env_var}=0.5. Fix or unset the variable."
+        ) from None
+    if not math.isfinite(weight):
+        raise ValueError(
+            f"{env_var}={raw!r} is not a usable retrieval weight: nan/inf make "
+            f"every fused score non-comparable and silently destroy result "
+            f"ranking. Use a finite number, e.g. {env_var}=0.5."
+        )
+    return weight
+
+
+def _prefixed_weight_overrides(prefix: str) -> dict[str, float]:
+    """Parse every ``{prefix}{NAME}`` env var into ``{"name": weight}``.
+
+    Pydantic BaseSettings does not merge individual env keys into a dict field, so
+    these one-var-per-key overrides are read by hand.
+    """
+    import os
+
+    return {
+        key[len(prefix) :].lower(): _parse_retrieval_weight(key, val)
+        for key, val in os.environ.items()
+        if key.startswith(prefix)
+    }
 
 
 class RetrievalConfig(BaseSettings):
@@ -580,6 +694,12 @@ class RetrievalConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _warn_deprecated_flare_iter_env(self) -> RetrievalConfig:
+        # Warns; must not raise. A ValueError from any model-level validator (mode
+        # "before"/"after", or model_post_init) is re-raised by pydantic with
+        # input_value=<this model's whole input dict>, which on a measured run printed
+        # COHERE_API_KEY material — see the note above _parse_retrieval_weight. Reject a
+        # value from __init__ or a field_validator instead; a field_validator's
+        # input_value is only that field.
         import os
         import warnings
 
@@ -587,7 +707,7 @@ class RetrievalConfig(BaseSettings):
             warnings.warn(
                 "TRELIX_RETRIEVAL_FLARE_MAX_ITER is deprecated as of trelix v2.4.0. "
                 "Use TRELIX_RETRIEVAL_FLARE_MAX_RETRIES instead. "
-                "The old name will be removed in v3.0.0.",
+                "The old name will be removed in v4.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -620,6 +740,32 @@ class RetrievalConfig(BaseSettings):
         ge=1.0,
         le=10.0,
         alias="TRELIX_RETRIEVAL_DECLARATION_BOOST_WEIGHT",
+    )
+
+    # Breadth floor for the three direct-lookup intents (file_overview, project_overview,
+    # config_lookup). Without it, one matched file yielding a handful of symbols returned
+    # exclusively those symbols and suppressed the vector, BM25 and grep legs entirely.
+    #
+    # Declared here rather than read from os.environ, which is where they started. The
+    # original comment said "promote to RetrievalConfig once the numbers are settled" — they
+    # are (0.6189/0.6217 nDCG@10 on the 50-query set, back in the pre-regression range) — and
+    # raw os.environ reads do NOT see `.env`, so the kill switch documented in the release
+    # notes silently did nothing in the one place a user would set it. `CONTRIBUTING.md` also
+    # declares every `TRELIX_*` name in `.env.example` to be stable public API, which an
+    # os.environ read cannot participate in.
+    breadth_floor_enabled: bool = Field(
+        default=True,
+        alias="TRELIX_RETRIEVAL_BREADTH_FLOOR",
+    )
+    breadth_floor_min_files: int = Field(
+        default=2,
+        ge=0,
+        alias="TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_FILES",
+    )
+    breadth_floor_min_symbols: int = Field(
+        default=10,
+        ge=0,
+        alias="TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_SYMBOLS",
     )
 
     # Personalized PageRank — teleport mass concentrated on symbols with a
@@ -809,6 +955,24 @@ class RetrievalConfig(BaseSettings):
             "json": 0.5,
             "yaml": 0.5,
             "toml": 0.5,
+            # NOTE — shell, dockerfile, make, sql and proto are deliberately ABSENT here,
+            # which means `fusion.py` gives them its 1.0 fallback: the same weight as
+            # parsed source. That is arguably too generous, since LineWindowParser
+            # retrieves them as fixed line windows rather than parsed symbols, and the
+            # 50-query golden set does read ~0.017 nDCG@10 lower with them present than
+            # without. It is left alone anyway because that gap is only ~1.4x the
+            # measured same-config run-to-run noise (0.012), and every attempt to tune it
+            # made things worse in a way that could not be measured honestly:
+            # down-weighting to 0.4-0.6 or to 0.8 both dropped ops files out of the top 10
+            # for queries specifically about them, and target rank responded
+            # NON-monotonically to the weight (rank 9 at 1.0, absent at 0.8, rank 2 at
+            # 0.4) — a sign that rank here is decided by chunk-level near-ties, not by the
+            # multiplier. Four ops queries cannot support fitting a scalar.
+            #
+            # To revisit: grow the ops half of eval/golden.jsonl to ~20 queries first,
+            # then sweep. Until then this is an open question, not a tuned value. The
+            # weight is overridable without a code change:
+            #   TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_SHELL=0.5
             # Documentation
             "markdown": 0.3,
             # Unknown — conservative default, do not penalise unknown files
@@ -863,6 +1027,18 @@ class RetrievalConfig(BaseSettings):
       ...
     """
 
+    def __init__(self, **values: Any) -> None:
+        # Parse the weight env vars here and throw the result away: model_post_init
+        # needs them again after field validation, but it is not allowed to be the one
+        # that fails. A ValueError raised from there comes back as a ValidationError
+        # holding this model's input dict, .env secrets and cohere_api_key included
+        # (see the note above _parse_retrieval_weight). Failing first, out here, gives
+        # the identical message with nothing attached to it. Cost is two extra
+        # os.environ scans per construction.
+        _prefixed_weight_overrides(_FILE_TYPE_WEIGHT_PREFIX)
+        _prefixed_weight_overrides(_LEG_WEIGHT_PREFIX)
+        super().__init__(**values)
+
     def model_post_init(self, __context: Any) -> None:
         import json
         import os
@@ -913,11 +1089,12 @@ class RetrievalConfig(BaseSettings):
         # Per-language overrides (highest priority — applied last).
         # These are NOT picked up by pydantic-settings since they do not match
         # any field name (the field is file_type_weights, not file_type_weight_*).
-        prefix = "TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_"
-        for key, val in os.environ.items():
-            if key.startswith(prefix):
-                lang = key[len(prefix) :].lower()
-                self.file_type_weights[lang] = float(val)
+        # __init__ already parsed the same variables, so this call cannot raise on any
+        # path that goes through the constructor.
+        self.file_type_weights = {
+            **self.file_type_weights,
+            **_prefixed_weight_overrides(_FILE_TYPE_WEIGHT_PREFIX),
+        }
 
         # Per-leg RRF weighting — same defaults-then-env-merge pattern as
         # file_type_weights above.
@@ -929,13 +1106,11 @@ class RetrievalConfig(BaseSettings):
             "sub_chunk": 1.0,
             "sparse": 1.0,
         }
-        self.leg_weights = {**_leg_defaults, **self.leg_weights}
-
-        leg_prefix = "TRELIX_RETRIEVAL_LEG_WEIGHT_"
-        for key, val in os.environ.items():
-            if key.startswith(leg_prefix):
-                leg = key[len(leg_prefix) :].lower()
-                self.leg_weights[leg] = float(val)
+        self.leg_weights = {
+            **_leg_defaults,
+            **self.leg_weights,
+            **_prefixed_weight_overrides(_LEG_WEIGHT_PREFIX),
+        }
 
 
 class LLMConfig(BaseSettings):
@@ -1030,6 +1205,81 @@ class IndexerConfig(BaseSettings):
     )
 
 
+# Prefixes that form ticket-SHAPED strings but never name a ticket. A ticket key and a
+# technical constant are structurally identical — UTF-8 against ENG-8, SHA-256 against
+# PROJ-256 — so no amount of regex anchoring separates them and a vocabulary is the only
+# thing that can. Measured on this repository: the previous r"[A-Z]+-\d+" matched 12
+# strings across 830 commits and every one was a false positive of this kind.
+_TICKET_NOISE_PREFIXES: tuple[str, ...] = (
+    "UTF",
+    "SHA",
+    "MD",
+    "HTTP",
+    "HTTPS",
+    "BASE",
+    "ISO",
+    "RFC",
+    "AES",
+    "RSA",
+    "SSL",
+    "TLS",
+    "IPV",
+    "CRC",
+    "HMAC",
+    "PBKDF",
+    "ARGON",
+    "SIMD",
+    "X",
+    "EC",
+    "GB",
+    "KB",
+    "MB",
+    "TB",
+    "PY",
+    # Identifier schemes with the same PREFIX-digits shape as a ticket key. CVE matters
+    # most: its PREFIX-digits-digits form ("CVE-2021-44228") is truncated to "CVE-2021"
+    # by the deliberate trailing-hyphen allowance, so a security advisory in a commit
+    # message became a ticket reference — in a tool that ships taint analysis.
+    "CVE",
+    "PEP",
+    "RFE",
+    "ADR",
+)
+
+# Built from the list above rather than written out, so adding a prefix is a one-word
+# edit. Three deliberate choices in the surrounding anchors:
+#
+#   (?<![A-Za-z0-9])    the key must start at a boundary, so "xPROJ-123" is not a ticket.
+#                       A preceding HYPHEN is allowed on purpose: branch and tag names
+#                       routinely put a key after one ("feature-PROJ-123",
+#                       "release-2024-ENG-45"), and excluding it silently dropped every
+#                       such reference. Technical constants are excluded by the
+#                       vocabulary below, not by this anchor.
+#   [A-Z][A-Z0-9]{1,9}  2-10 characters, upper-case first. Rules out single letters
+#                       ("B-1") and lower-case prose while allowing real keys like AB-9.
+#   -\d+                greedy, NOT \d{1,6}. A bounded run plus the trailing guard below
+#                       made a 7-digit ticket match NOTHING AT ALL: every truncation the
+#                       regex tried was followed by another digit, so the lookahead
+#                       rejected each one in turn. Greedy consumes the whole number and
+#                       the guard then only has a non-digit to inspect.
+#   (?![A-Za-z0-9])     rejects a trailing letter, so "PROJ-123x" is not a ticket, but
+#                       deliberately ALLOWS a trailing hyphen. That is load-bearing:
+#                       branch names are the main place ticket keys appear in merge
+#                       subjects ("Merge pull request #12 from feature/PROJ-456-thing"),
+#                       and a stricter guard silently dropped every one of them.
+TICKET_PATTERN_DEFAULT: str = (
+    r"(?<![A-Za-z0-9])"
+    # [0-9]* after the alternation, because the key prefix below admits digits
+    # ([A-Z][A-Z0-9]{1,9}) while this vocabulary lists only the digit-free spellings.
+    # Without it, SHA3-256, X86-64, IPV6-1, UTF8-1 and MD5-1 all read as ticket keys —
+    # the same constants the vocabulary exists to exclude, merely spelled with a version
+    # number.
+    r"(?!(?:" + "|".join(_TICKET_NOISE_PREFIXES) + r")[0-9]*-\d)"
+    r"[A-Z][A-Z0-9]{1,9}-\d+"
+    r"(?![A-Za-z0-9])"
+)
+
+
 class GitLinkerConfig(BaseSettings):
     """
     Walks `git log` to link code symbols to external ticket references found
@@ -1052,7 +1302,7 @@ class GitLinkerConfig(BaseSettings):
     # Matches Jira-style ticket IDs by default (e.g. "PROJ-123"). Different
     # orgs use different conventions (GitHub "#123", Linear "ENG-123") —
     # override via TRELIX_GIT_LINKER_TICKET_PATTERN.
-    ticket_pattern: str = r"[A-Z]+-\d+"
+    ticket_pattern: str = TICKET_PATTERN_DEFAULT
     # Bounds on how much history to walk — required from day one, not an
     # afterthought, since large repos can have 100k+ commits.
     max_commits: int = Field(default=5_000, ge=1)
