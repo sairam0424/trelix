@@ -262,3 +262,67 @@ class TestForeignKeyEnforcement:
         db = Database(tmp_path / "index.db")
         assert db._conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         db.close()
+
+
+class TestFileSummaryVectorIsDeletedWithTheFile:
+    """`delete_file_by_path` must remove the file-summary vector too.
+
+    The summary vector lives in the same `chunk_embeddings` table as chunk vectors, under
+    the `chunk_id = -(file_id)` sentinel. So it is NOT returned by
+    `get_chunk_ids_for_file()`, and the `delete_batch(chunk_ids)` call never reached it —
+    while the `file_summaries` row itself cascades away with the `files` row. The result was
+    a vector with neither a summary nor a file behind it.
+
+    Found by `verify-index.sh`'s "summary vectors == summaries" gate the first time a real
+    `--prune` removed a file: 482 vectors against 481 summaries, the orphan being `-475` for
+    a `file_id` that no longer existed. The leak predates `--prune` — the watcher's delete
+    path has taken it for as long as file summaries have existed.
+    """
+
+    class _RecordingStore:
+        """Captures what delete_batch was asked to remove.
+
+        A recorder rather than a real store because the assertion is about which IDS the
+        caller passes, and the sentinel is a convention of that caller — a real vec0 table
+        would confirm the rows vanish without showing that the negative id was ever sent.
+        """
+
+        def __init__(self) -> None:
+            self.deleted: list[int] = []
+
+        def delete_batch(self, chunk_ids: list[int]) -> None:
+            self.deleted.extend(chunk_ids)
+
+    def test_the_summary_sentinel_is_included_in_the_delete(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from trelix.core.models import IndexedFile, Language
+        from trelix.store.db import Database
+
+        with Database(tmp_path / "index.db") as db:
+            file_id = db.upsert_file(
+                IndexedFile(
+                    path="/repo/gone.py",
+                    rel_path="gone.py",
+                    language=Language.PYTHON,
+                    hash="h",
+                    size_bytes=10,
+                )
+            )
+            db._conn.commit()
+
+            store = self._RecordingStore()
+            assert db.delete_file_by_path("/repo/gone.py", "gone.py", store) is True
+
+        assert -file_id in store.deleted, (
+            f"the file-summary sentinel -{file_id} was not deleted, so its vector outlives "
+            f"both the file and the summary; delete_batch saw {store.deleted}"
+        )
+
+    def test_a_missing_file_deletes_nothing(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Guards the test above against passing on a delete that fires unconditionally."""
+        from trelix.store.db import Database
+
+        with Database(tmp_path / "index.db") as db:
+            store = self._RecordingStore()
+            assert db.delete_file_by_path("/repo/absent.py", "absent.py", store) is False
+
+        assert store.deleted == [], store.deleted

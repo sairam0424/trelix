@@ -1028,11 +1028,28 @@ class Database:
 
         file_id: int = row[0]
 
-        # Delete vectors before DB rows so we never have orphaned vectors
+        # Delete vectors before DB rows so we never have orphaned vectors.
         if vector_store is not None:
-            chunk_ids = self.get_chunk_ids_for_file(file_id)
-            if chunk_ids:
-                vector_store.delete_batch(chunk_ids)  # type: ignore[attr-defined]
+            # The file-summary vector is included, and it is NOT in
+            # `get_chunk_ids_for_file()`. Summaries live in the same `chunk_embeddings`
+            # table under the `chunk_id = -(file_id)` sentinel, so a delete driven only by
+            # chunk ids never reached them — while the `file_summaries` row itself cascades
+            # away with the `files` row, leaving a vector with neither a summary nor a file.
+            #
+            # Found by `verify-index.sh`'s "summary vectors == summaries" gate immediately
+            # after the first real `--prune` removed one file: 482 vectors against 481
+            # summaries, the orphan being `-475` for a `file_id` that no longer existed.
+            # That gate was widened earlier in this release to catch exactly this class. The
+            # leak long predates `--prune` — the watcher's delete path has taken it for as
+            # long as file summaries have existed.
+            #
+            # One call rather than two, and deliberately NOT gated on `chunk_ids` being
+            # non-empty: a file can have a summary and no chunks (every zero-symbol file
+            # does, and there were 11 of those before the line-window fallback), so a guard
+            # on chunk ids would skip precisely the files whose only vector is the sentinel.
+            vector_store.delete_batch(  # type: ignore[attr-defined]
+                [*self.get_chunk_ids_for_file(file_id), -file_id]
+            )
 
         # The FK-less symbol-derived tables too. `symbols` cascades from `files`, but
         # sub_chunks / def_use_edges / sparse_embeddings have no foreign key to

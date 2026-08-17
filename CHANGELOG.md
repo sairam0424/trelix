@@ -449,6 +449,20 @@ disabling its deletion path for every later test in the session.
 - **`scripts/measure_index_hygiene.py` accepted an invalid `--provider` and exited 0**, and was
   the single file blocking a repo-wide `ruff format` scope widening.
 
+- **Deleting a file left its summary vector behind.** `delete_file_by_path` drove its vector
+  cleanup from `get_chunk_ids_for_file()`, but a file summary's vector lives in the same
+  `chunk_embeddings` table under the `chunk_id = -(file_id)` sentinel — so it was never in
+  that list, while the `file_summaries` row itself cascades away with the `files` row. The
+  result was a vector with neither a summary nor a file behind it. The leak long predates
+  `--prune`: the watcher's delete path has taken it for as long as file summaries have
+  existed.
+
+  Found by the gate widened earlier in this release, the first time a real `--prune` removed
+  a file: `verify-index.sh` reported 482 summary vectors against 481 summaries, the orphan
+  being `-475` for a `file_id` that no longer existed. Both vectors now go in one
+  `delete_batch` call, deliberately not gated on the chunk list being non-empty — a file can
+  have a summary and no chunks, which is exactly what every zero-symbol file was.
+
 - **A standing detector for re-introduced orphan rows.** The sweep that reclaimed 4,768
   `def_use_edges` rows is one-shot — gated on `on_disk < SCHEMA_VERSION`, and the live index is
   now stamped — and the existing gate is a row-count *floor*, which orphans only inflate.

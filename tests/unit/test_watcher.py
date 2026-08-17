@@ -480,7 +480,7 @@ class TestDeleteFileByPath(unittest.TestCase):
             hash="def456",
             size_bytes=200,
         )
-        db.upsert_file(f)
+        file_id = db.upsert_file(f)
 
         mock_vs = MagicMock()
         # Patch get_chunk_ids_for_file to return fake chunk ids
@@ -488,7 +488,11 @@ class TestDeleteFileByPath(unittest.TestCase):
             result = db.delete_file_by_path("/repo/src/utils.py", "src/utils.py", mock_vs)
 
         self.assertTrue(result)
-        mock_vs.delete_batch.assert_called_once_with([10, 20, 30])
+        # The file-summary sentinel `-(file_id)` rides along in the same call. Summary
+        # vectors live in `chunk_embeddings` under a negative chunk_id, so they are absent
+        # from get_chunk_ids_for_file() and a chunk-only delete orphaned them — caught by
+        # verify-index.sh's "summary vectors == summaries" gate after the first real prune.
+        mock_vs.delete_batch.assert_called_once_with([10, 20, 30, -file_id])
         db.close()
 
 

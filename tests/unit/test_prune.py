@@ -286,7 +286,12 @@ class TestThePruneCliActsOnlyWithConsent:
         assert result.exit_code == 0, result.output
         assert db.get_file_hash("gone.py") is None, "prune did not remove the file row"
         assert db.get_file_hash("a.py") is not None, "prune removed a present file"
-        assert store.deleted == [chunk_id], "paid-for vectors were orphaned, not deleted"
+        # The file-summary sentinel `-(file_id)` is deleted in the same call. Summary
+        # vectors live in `chunk_embeddings` under a negative chunk_id, so they are not in
+        # get_chunk_ids_for_file() and a chunk-only delete left them behind — which
+        # verify-index.sh's "summary vectors == summaries" gate caught the first time a real
+        # --prune removed a file (482 vectors against 481 summaries).
+        assert store.deleted == [chunk_id, -file_id], "paid-for vectors were orphaned, not deleted"
 
     def test_yes_without_prune_is_an_error_rather_than_a_no_op(self, tmp_path: Path) -> None:
         """A user who typed --yes consented to something; silently ignoring it is worse."""

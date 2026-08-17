@@ -56,37 +56,40 @@ serious: most queries are fine, and the ones that are not are badly broken.
 `trelix index` via `scripts/self-index.sh`, azure `text-embedding-3-large`,
 1154 s wall clock, exit 0, **zero errors or warnings**.
 
-Two of the three columns below are **recordings, not the current state.** *Before* and
-*After* are what `scripts/measure_index_hygiene.py` captured into
-`docs/reports/index-hygiene-before.json` / `-after.json` at the time of that run, and
-they are frozen there. *Now* is `.trelix/index.db` re-counted while writing this section,
-after the later fixes in this release landed and the tree kept moving — the `.sh` /
-`Dockerfile` / `Makefile` coverage work further down is most of the delta. Regenerating
-the JSON needs another full re-index and another ~2M tokens of embedding spend, so the
-recorded columns are left as recorded rather than quietly overwritten.
+*Before* is what `scripts/measure_index_hygiene.py` captured into
+`docs/reports/index-hygiene-before.json` and is frozen there. *After* is that same
+snapshot's `-after.json` from the original run. *Now* was re-measured at the end of this
+release, after a forced re-index (`TRELIX_INCREMENTAL=false`), and
+`docs/reports/index-hygiene-after.json` has been **regenerated** to match it — so the JSON
+and this table agree again. That re-index cost far less than feared: the cost preview put
+an upper bound of 2,379,047 tokens across 12,003 chunks, and the real run embedded
+**1,626 chunks** because unchanged symbols are diffed by content hash and skipped. 239 s
+wall clock, 0 errors, 143/143 file summaries.
 
 | Dimension | Before (recorded) | After (recorded) | Now (live DB) |
 |---|---|---|---|
 | vec0 declared dimension | `FLOAT[384]` | **`FLOAT[3072]`** | `FLOAT[3072]` |
-| Files | 915 (543 junk) | **454 (0 junk)** | 467 |
+| Files | 915 (543 junk) | **454 (0 junk)** | 495 (0 junk) |
 | `packages/` sub-packages | 0 | **35** | 35 |
-| Symbols / chunks | 32,337 | 10,423 | 10,991 |
-| Chunk vectors | 32,337 | **10,423 (1:1, no orphans)** | 10,991 (1:1, no orphans) |
-| `file_summaries` | **0** | **428** | 442 |
+| Symbols / chunks | 32,337 | 10,423 | 12,160 |
+| Chunk vectors | 32,337 | **10,423 (1:1, no orphans)** | 12,160 (1:1, no orphans) |
+| `file_summaries` | **0** | **428** | 481 |
 | `calls` | 19,107 | 19,558 | 20,313 |
 | `imports` | 2,345 | 2,714 | 2,888 |
-| `def_use_edges` | **0** | **109,902** | 113,046 |
+| `def_use_edges` | **0** | **109,902** | 104,863 (0 orphaned) |
 | `graph_metadata` | table absent | **10,423 rows** | 11,160 rows |
-| Corpus noise | 59.3% files / 73.8% chunks | **0% / 0%** | not re-measured |
-| Mean precision@10 | 95.0% | **100.0%** | not re-measured |
+| Corpus noise | 59.3% files / 73.8% chunks | **0% / 0%** | **0% / 0%** |
+| Mean precision@10 | 95.0% | **100.0%** | **100.0%** (10 queries, azure) |
 
-The two bottom rows are blank on purpose: both come from `measure_index_hygiene.py`,
-which embeds its query set, so re-running them costs money and is the lead's call, not a
-documentation edit's. Every other *Now* figure is a plain `COUNT(*)` and reproducible
+The two bottom rows were blank for most of this release, because both come from
+`measure_index_hygiene.py`, which embeds its query set. They are filled in now: the script
+defaulted to the `local` provider and its own dimension guard correctly refused a 384-dim
+query against a 3072-dim index, warning and reporting zero queries rather than producing
+wrong numbers — so it was re-run with `--provider azure`. Every other *Now* figure is a plain `COUNT(*)` and reproducible
 offline — `sqlite3 .trelix/index.db`, except the vector counts, which need
 `sqlite_vec.load()` first because `chunk_embeddings` is a `vec0` virtual table.
 
-All 22 gates in `scripts/verify-index.sh` pass, including the two integrity gates that
+All 26 gates in `scripts/verify-index.sh` pass, including the two integrity gates that
 matter most: **0 chunks without an embedding**, and chunk-vector count exactly equal to
 chunk count. Both still hold on the live DB: 0 chunks lack a vector, and the 11,433 rows
 in `chunk_embeddings` are 10,991 chunk vectors plus 442 file-summary vectors, which
