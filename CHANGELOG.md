@@ -392,6 +392,20 @@ disabling its deletion path for every later test in the session.
   release had made this more reachable, not less — that commit predicted it and deliberately
   left the mechanism alone.
 
+  **This closed the retrieval regression this release had been carrying.** The 50-query
+  golden set had drifted from a 0.6189 / 0.6312 nDCG@10 baseline to 0.6105 / 0.6063 after ops
+  indexing and 0.6039 / 0.5791 after the filename gate — a cumulative ~0.034 that two runs
+  could not separate from noise, disclosed at the time as unresolved with the short-circuit
+  named as the suspected mechanism. With the breadth floor it reads **0.6189 / 0.6217**, back
+  in the baseline range, and MRR **0.6254 / 0.6332** against a 0.5919 / 0.6142 baseline —
+  above it on both runs. So the suspected mechanism was the actual one.
+
+  The ops queries pay for it in ranking precision, which is the expected direction and worth
+  stating: Recall@10 stays **1.0000** — every target file is still found — while nDCG@10 goes
+  1.0000 to 0.8253, because merged standard results now compete for the top rank on queries
+  where the direct hit had been the only candidate. Perfect recall with slightly diffuse
+  ranking on four queries, in exchange for ~0.03 MRR across fifty, is a trade worth taking.
+
 - **`trelix graph` reported a degenerate community partition as a healthy number.** Community
   detection returns 6,579 single-node communities out of 6,640 (99.1%) on trelix's own index,
   and the command printed only `Communities: 6640`. **Characterised rather than tuned**, which
