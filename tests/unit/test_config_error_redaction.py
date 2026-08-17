@@ -26,9 +26,18 @@ import traceback
 import pytest
 from pydantic import ValidationError
 
-# Fake, but the shape of a real provider key: long enough that the tail survives the
-# 50-character repr truncation pydantic applies to input_value.
-FAKE_KEY = "co-FAKEKEY-Nq7Rv2sX8dLm4Tp1Wz6Yb3Kc9Ae5Gh0J"
+# Long enough that the tail survives the 50-character repr truncation pydantic applies to
+# input_value, which is the property this test needs — that truncation keeps the head AND the
+# tail, so a short value would not demonstrate the leak.
+#
+# It deliberately carries NO vendor prefix. The first version began `co-`, and GitGuardian
+# failed the PR on it — correctly, by its own rules: a high-entropy string with a Cohere-key
+# prefix, committed. The right response is not to allowlist the path. A scanner that has been
+# taught to ignore `tests/` is a scanner that will miss a real key parked there, and this is
+# the one control standing between a typo and a published credential. So the fixture changes
+# instead: the prefix contributed nothing the assertions rely on, since what they need is
+# length and entropy, and the env var name is what makes trelix treat it as a Cohere key.
+FAKE_KEY = "NOT-A-REAL-KEY-Nq7Rv2sX8dLm4Tp1Wz6Yb3Kc9Ae5Gh0J"
 
 _FRAGMENT_WIDTH = 8
 
