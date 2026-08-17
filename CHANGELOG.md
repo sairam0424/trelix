@@ -6,33 +6,311 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [3.1.2] — 2026-08-17
+
 ### Overview
 
-Sixteen defects, found by indexing this repository with trelix and then checking whether
-each dimension of the resulting index was actually populated. Seven were fixed in the
-first pass; the nine that pass documented as "found, not fixed" were then worked through
-in a second pass, each one researched, adversarially reviewed before implementation, and
-audited after.
+Shipping as **3.1.2**. No 3.1.2 was ever tagged or published, so everything below — the
+self-index findings, the features, and the fixes that arrived on branches after the version
+was first stamped — is one release.
 
-The theme is **features that were on and doing nothing**. `.env` enabled file
-summaries, PageRank boosting, adaptive query planning and telemetry. The index had 0
-file summaries; the PageRank boost had never once fired; `taint_flows` was empty on a
-repository semgrep does find flows in; and the query planner was classifying every
-single query as the same one of its eight intents. None of it was visible from the
-outside: each failure path logged at DEBUG while the CLI runs at WARNING, or was
-swallowed by a bare `except`, or was reported as a number nobody had a reason to doubt.
+Sixteen defects were found by indexing this repository with trelix and then checking whether
+each dimension of the resulting index was actually populated. Seven were fixed in the first
+pass; the nine documented as "found, not fixed" were worked through in a second, each
+researched, adversarially reviewed before implementation, and audited after. Re-auditing the
+result then surfaced a further batch, and re-auditing *that* surfaced defects in the fixes
+themselves.
 
-Three were found only by running the real thing rather than reading the code — real
-semgrep output rather than a hand-written fixture, a real sqlite-vec table rather than
-an assumption about what SQL it would accept, and real telemetry rows showing 219
-queries with one intent between them. In the first two the *obvious* fix was also wrong,
-and only measurement showed it.
+The theme is **features that were on and doing nothing**. `.env` enabled file summaries,
+PageRank boosting, adaptive query planning and telemetry. The index had 0 file summaries;
+the PageRank boost had never once fired; `taint_flows` was empty on a repository semgrep
+does find flows in; and the query planner classified every one of 219 recorded queries as
+the same one of its eight intents. None of it was visible from outside: each failure path
+logged at DEBUG while the CLI runs at WARNING, or was swallowed by a bare `except`, or was
+reported as a number nobody had reason to doubt.
 
-A recurring pattern in the test suite is worth naming, because it is why several of
-these survived: **the tests exercised the paths that worked**. The taint parser was
-verified against a fixture invented to match its own misreading. Every planner test
-supplies no credentials, so none could notice credentials being dropped. The eval metric
-tests used unique IDs only, so none could notice a repeated ID scoring twice.
+Several were found only by running the real thing rather than reading the code — real
+semgrep output rather than a hand-written fixture, a real sqlite-vec table rather than an
+assumption about what SQL it would accept, a real pty, a real fastmcp, a real lancedb. In
+the first two the *obvious* fix was also wrong, and only measurement showed it.
+
+A pattern in the test suite is worth naming, because it is why several survived: **the tests
+exercised the paths that worked.** The taint parser was verified against a fixture invented
+to match its own misreading. Every planner test supplies no credentials, so none could
+notice credentials being dropped. The eval metric tests used unique IDs only, so none could
+notice a repeated ID scoring twice. All three MCP prompts failed on use while their 82-test
+package suite was fully green. The walker yielded one file 34 times with no assertion
+noticing. And one test reloaded the module under test inside a `sys.modules` patch, silently
+disabling its deletion path for every later test in the session.
+
+### Added
+
+- **`trelix taint --rules PATH`.** `TaintAnalyzer.run()` always accepted a
+  `rules_path`; the CLI never passed one, so every invocation ran the `p/default`
+  registry pack — network-dependent, and free to change between runs. A missing path is
+  an error rather than a silent fallback, because falling back reports registry findings
+  under the reader's assumption that their own rules produced them.
+
+- **`config/semgrep-taint.yaml`** — six auditable taint rules scoped to source/sink
+  pairs that occur in this codebase. trelix shipped no rules of its own, so there was
+  previously no offline route to a taint scan at all.
+
+- **`scripts/self-index.sh`** — reproducible clean self-index. Needed because
+  `TRELIX_WALKER_*` and `TRELIX_PARSER_*` are process-env-only, and because
+  `EXTRA_IGNORE_DIRS` *replaces* rather than extends the default, so all 30 entries must
+  be restated to drop `"packages"` — present for .NET NuGet output, but it also hides
+  this repo's own `packages/` monorepo and its three shipped sub-packages. Refuses up
+  front on an embedding-dimension mismatch, printing the one remedy that works.
+
+- **`scripts/verify-index.sh`** — asserts that populated dimensions are non-empty *and*
+  that unpopulated ones are still empty, each with its reason recorded.
+
+- **`scripts/measure_index_hygiene.py`** — measures what share of the corpus, and of
+  actual top-10 results, was never source code. Needs no golden set.
+
+- **`eval/README.md`** — the golden-set format, and the two ways to get a silently
+  wrong score from it: paths are compared by exact string equality, and an entry with
+  no `relevant_files` is skipped rather than failed.
+
+- **All seven version sites now agree, so the `verify-version` gate passes 7/7.** It failed
+  3 of 7 when introduced, which was the gate working. The Helm chart *deployed a different
+  trelix than it advertised* — `values.yaml`'s `image.tag` was `2.12.0` while `Chart.yaml`
+  said `appVersion: 3.1.2`, so `helm install` at defaults ran an image five releases behind;
+  `helm template` now renders `:3.1.2`. `packages/trelix-mcp/server.json` carried `2.12.0`
+  in both version fields. A `v3.2.0` control still fails all 7, so the gate is fixed at the
+  sites rather than defanged. `Chart.yaml`'s own chart `version` moves 0.1.0 → 0.2.0: it had
+  not moved across the five releases that bumped `appVersion`, so two structurally different
+  charts were both stamped 0.1.0.
+
+- **`scripts/verify-index.sh` gated 6 of 31 tables; four counters could fall to zero
+  unnoticed.** Proven by injecting all four regressions into a copy of the live index — the
+  old 22-gate script exited **0**. The new 26-gate version fails all four and still passes
+  clean on the real index. Three `EXPECTED_EMPTY` reason strings also documented bugs that
+  are fixed, and one was simply wrong: `generic_edges` is not empty for want of ticket
+  references (the linker's own `_walk_log` matches 13 strings across 9 of 871 commits) — it
+  is empty because **`trelix index` never runs the linker at all.**
+
+- **`packages/trelix-typescript/src/generated/schema.ts` had silently drifted** to 604
+  committed lines against 768 regenerated, hiding shipped server features from the typed
+  client: all of `POST /parse`, the `/search` `intent_hint` and `hyde_snippet_hint` params,
+  the `/graph/communities` caps, and the auth headers on every gated route. `npm run build`
+  and `npm test` both pass against a stale schema, so nothing failed. Regeneration required
+  a human because `codegen.mjs` could only fetch from a running `trelix serve`; it now
+  defaults to an in-process `create_app().openapi()` dump — 1.37 s for the full codegen, no
+  server, no port, no readiness race — which is what makes the new `schema-drift.yml` gate
+  possible.
+
+- **`trelix-langchain` and `trelix-llama-index` published as `License: UNSPECIFIED`.**
+  Neither declared `license`, `classifiers`, `authors` or `keywords`; only `trelix-mcp` did.
+  The LICENSE file was always *in* the wheel, but PyPI renders the field and the classifier —
+  verified live against the PyPI JSON API across all 7 releases up to 2.4.0. Both now mirror
+  `trelix-mcp` exactly. Both also floored on `trelix>=0.4.0`, **a core release that was never
+  published** (the oldest on PyPI is 0.5.0). `workspace-vscode/package.json` had no
+  `license` key at all while `vscode-extension-ci.yml` runs `vsce package`.
+
+- **CI could not see six real type errors and ran 29 tests nowhere.** The `lint` job
+  installed only `[local,sso,dev]`, so voyageai/google-genai/watchdog were absent and every
+  expression touching them degraded to `Any`. The cause was the missing extras, not
+  `--ignore-missing-imports`, which is a no-op because pyproject already sets
+  `ignore_missing_imports = true`. A new `type-check-extras` job installs them and gates the
+  errors as a recorded ceiling keyed on (file, error-code): known debt is green, anything
+  outside it fails, and a mypy *crash* can no longer parse as "zero errors" and pass. `ruff`
+  now covers `scripts/` and all three `packages/*/tests`. The 19 langchain and 10
+  llama-index tests ran nowhere and are now separate invocations — both resolve to module
+  `tests.test_retriever`, so a single combined run would silently skip one.
+
+- **Six inert config knobs were documented as working switches**, marked **Inert.** now
+  following the existing convention. `docs/GLOSSARY.md` went furthest, claiming
+  `TRELIX_FEDERATION_ENABLED=true` "activates federation at retrieval time" — in fact
+  `search-all` builds `FederatedRetriever(registry)` with no arguments, so it federates
+  whether the flag is set or not, the worker pool is permanently the constructor default of
+  4, and `max_repos` stays unbounded so `TRELIX_FEDERATION_MAX_REPOS` never applies on the
+  CLI path at all.
+
+- **`.env.example` documented 27 of ~96 `TRELIX_*` aliases** while `CONTRIBUTING.md`
+  declares it stable public API. Extended to the whole 3.x surface, grouped, with no real
+  secret values.
+
+- **Two governance docs contradicted each other on three rules, and reality matched
+  neither.** `BACKWARDS_COMPATIBILITY.md` and `CONTRIBUTING.md` disagreed on the deprecation
+  grace period (2 minor versions vs one) and on integration-package versioning (core version
+  vs "independent cadence"). Resolved to the stricter grace period — 2 minor versions **and**
+  3 months, whichever is later, since v2.4.0 → v3.0.0 was 40 days and the calendar clock is
+  the one that binds — and to lockstep versioning, because `release.yml` fires only on core
+  `v*` tags and publishes all four dists in one job, so no independent cadence exists to be
+  on. The release checklist listed five of seven version sites and told contributors to grep
+  for the *previous* version, which structurally cannot match a site stranded on 2.x.
+
+- **Docs: five broken relative links and two false claims.** `docs/README.md` linked
+  `../CONFIGURATION.md` and `../CLI_REFERENCE.md` as though both lived at the repo root, and
+  `v3-0-0-breaking-changes.md` was one `../` short on all three of its links. 73 links
+  resolved against the filesystem: 5 broken before, 0 after. `docs/README.md` also claimed
+  to be "a complete index of every documentation file" while omitting `AUDIT.md`, `SSO.md`,
+  `BACKWARDS_COMPATIBILITY.md`, `ROADMAP.md` and all of `docs/reports/` — including the
+  report this release reasons from. And `README.md` advertised `pip install "trelix[all]"`
+  as "every optional extra (voyage, qdrant, lance, rerank, LLM providers, …)" when `[all]`
+  resolves to `local,rerank,voyage,qdrant,watch,sso` — omitting exactly the two things the
+  comment named.
+
+- **A local `python -m build` produced a 928 MB sdist.** hatchling does not honour *nested*
+  `.gitignore` files, and `workspace-vscode/.gitignore` ignores `.vscode-test/`, which
+  `@vscode/test-electron` fills with three ~900 MB VS Code app bundles. CI publishes from a
+  clean checkout so the released sdist was always ~6 MB; the new `[tool.hatch.build.targets.sdist]`
+  excludes make a local build match it.
+
+- **The release path refuses a tag that disagrees with the tree.** `release.yml` fires on
+  `push: tags: v*`, derived nothing from the tree, and sets `skip-existing: true` on all
+  four PyPI publish steps — so tagging `v3.2.0` on a tree stamped `3.1.2` built
+  `trelix-3.1.2`, PyPI skipped it as already present, and the run went **green** with a
+  GitHub Release full of binaries and **zero new packages**. Nothing in the logs said
+  "published nothing". `skip-existing` is kept deliberately (it is what makes a re-run
+  after a partial failure safe), so the guard is a separate `verify-version` job that every
+  build and publish job now depends on.
+
+  It checks **seven** version sites, not the five in `CONTRIBUTING.md`'s checklist. The two
+  extra ones are precisely those the documented procedure cannot find, because it greps for
+  the *previous* version and both were still on `2.x`: `helm/trelix/values.yaml`'s
+  `image.tag` — the chart advertised `appVersion: 3.1.2` while deploying **2.12.0**, having
+  been skipped by all five release commits that did bump `Chart.yaml` — and
+  `packages/trelix-mcp/server.json`, which carries the version twice. Running the gate
+  against the current tree fails 3 of 7, which is the point.
+
+- **The release path runs the test suite.** `ci.yml` triggers on push/PR to
+  `[main, develop]` and never on tags, so the entire gate on four PyPI packages and two
+  container images was `python -m build`, `twine check`, and a `--help` smoke test.
+
+- **`docker-publish.yml` had the same hole and now has the same guard.** It derived the
+  image tag from `${GITHUB_REF_NAME#v}` with nothing comparing it to the tree, so a
+  `v3.2.0` tag published `ghcr.io/…/trelix:3.2.0` containing a binary reporting `3.1.2`.
+  Skipped for `workflow_dispatch`, whose whole purpose is backfilling an older release
+  where the tree legitimately differs. Its `${{ github.event.inputs.version }}` also moved
+  out of the script body into `env:` — a dispatch input interpolated into `run:` is a
+  shell-injection sink.
+
+- **`gitleaks` pre-commit hook.** There was no secret scanning anywhere — not in
+  `.pre-commit-config.yaml`, not in CI — for a project publishing four PyPI packages and
+  two container images. Prefix matching alone would not have sufficed either: the AWS
+  credential pair in a local `.env` is base64-wrapped, so `AKIA…` never appears and every
+  prefix scanner, GitHub push protection included, reads it as clean.
+
+- **`trelix serve` warns when it is reachable off-box with no credential.**
+  `api/app.py`'s `authenticate()` is open by design when neither a static token nor OIDC is
+  configured, which is reasonable for the documented local use where `--host` defaults to
+  `127.0.0.1`. The shipped container overrides exactly that: `Dockerfile` runs
+  `serve /repo --host 0.0.0.0`, which a published port requires, and `docker-compose.yml`
+  published `8765` on every host interface while bind-mounting the user's repository — so
+  `docker compose up` served open, unauthenticated code search over it. Compose now
+  publishes to `127.0.0.1:8765` and lists `TRELIX_API_AUTH_TOKEN` so it is discoverable.
+
+  The warning lives at the bind boundary rather than in compose alone because it also
+  catches `trelix serve --host 0.0.0.0` run directly, which no compose change can reach. It
+  asks `_build_oidc_verifier` rather than reading an env var, so an SSO config that is
+  enabled but unusable still warns — the case where a reader would most wrongly assume they
+  were covered. `.github/SECURITY.md` claimed serve binds to `127.0.0.1`, true of the CLI
+  and inverted by the image; corrected.
+
+- **`config_lookup` no longer drops extensionless config files.** `_retrieve_config`
+  gated every planner hint on six suffixes or the substring `"config"`, and
+  `Path("Dockerfile").suffix` is `""` — so `Dockerfile`, `Makefile`, `Procfile`,
+  `setup.cfg`, `nginx.conf` and every `*.tf` were silently unresolvable, for **every**
+  repository. `find_file_by_path_fragment("Dockerfile")` worked the whole time and was
+  simply never called.
+
+  The gate could not just be deleted: `file_hints` is concatenated with `grep_hints`,
+  documented at `planner/models.py:63` as "exact symbol names", so unfiltered hints would
+  feed path lookups terms like `EXPOSE` and `ports:`. It now tests the filename, not only
+  the suffix — `_looks_like_config` checks a config-filename set, a broadened suffix set,
+  and the `Dockerfile.prod` variant shape.
+
+  Measured on the golden set: the four ops queries went from an **unstable 0.00 / 0.50 /
+  0.75 Recall@10 across identical configs to a stable 1.0000 nDCG@10 / Recall@10 / MRR**,
+  and "what port does the container expose and what is its entrypoint" — which returned a
+  single distinct file and answered confidently without the Dockerfile — now ranks
+  `Dockerfile` first with HyDE disabled for determinism.
+
+  **Caveat, disclosed rather than buried:** the 50-query set reads 0.6039 / 0.5791 against
+  0.6105 / 0.6063 before. The within-config spread is 0.0248, *larger* than that
+  difference, so two runs cannot separate the effect from noise. The plausible mechanism is
+  that `config_lookup` now succeeds more often and `retriever.py`'s `if not results:`
+  returns only the matched file's symbols, suppressing the vector, BM25 and grep legs
+  entirely. That short-circuit is a pre-existing design issue, unchanged here and recorded
+  under Known limitations.
+
+- **`trelix[watch]` can now satisfy `watch-all`.** The extra installed only `watchdog`,
+  while `indexing/multi_watcher.py` uses `watchfiles.awatch()` — so the ImportError at
+  `multi_watcher.py:30-38`, which tells the user to run `pip install 'trelix[watch]'`, did
+  not fix the problem it diagnosed. Masked locally because `uvicorn[standard]`, via the
+  `serve` extra, pulls `watchfiles` in transitively.
+
+- **Index provenance, reported by `trelix stats`.** `index_metadata` held exactly one row
+  — `embedding_dimension` — so nothing recorded *what* an index was a snapshot of. A
+  stale index does not fail loudly; it returns confident, well-ranked answers about code
+  that has since changed. `trelix stats` now reports the commit, branch, worktree
+  cleanliness, timestamp, trelix version and embedder the index was built from, plus how
+  many commits `HEAD` has moved since.
+
+  Captured at the **start** of an index run, not the end. Hashes are computed during the
+  walk, so end-of-run capture would pair a newer commit with older content — recording an
+  index as more current than it is, which is the direction that produces silent wrong
+  answers. Written at the end, so a run that crashed partway leaves no record claiming
+  completeness.
+
+  A pre-v3.1.2 index says provenance was not recorded rather than guessing, and every
+  field degrades independently — a non-git directory or absent `git` binary still records
+  version and embedder rather than failing the index.
+
+- **`trelix stats --drift`** — compares every indexable file on disk against its stored
+  hash, reporting changed / not-yet-indexed / indexed-but-not-found counts. Opt-in
+  because it costs a full walk plus a SHA-256 per file, where the rest of `stats` is a
+  few SQL counts. It reuses `FileWalker` rather than reimplementing discovery: the
+  indexer's own staleness rule is `db.get_file_hash(rel_path) != file.hash`, and a
+  divergent hash would report every file stale on a freshly built index.
+
+  `Indexed but not found` is deliberately **not** presented as a list of deletions. It is
+  "indexed paths this walk did not yield", which has two innocent explanations, and both
+  are surfaced above the counts because acting on the number deletes embeddings that cost
+  money to recompute:
+
+  - an incomplete walk (a directory that could not be read), using the walk-completeness
+    signal added earlier in this release;
+  - **a changed walk config**, which is now detectable because the walk-determining
+    settings are recorded at index time and any difference is named in the output.
+    Measured while building this: a drift check run without `scripts/self-index.sh`'s
+    environment reported **35 present files** under `packages/` as deleted, because
+    `TRELIX_WALKER_*` is process-env-only and `EXTRA_IGNORE_DIRS` replaces the default
+    30-entry list (which contains `packages` for .NET NuGet output) rather than extending
+    it. An index predating the recording reports `missing` as unverified rather than
+    trustworthy.
+
+- **Ops artifacts are indexed: shell, Dockerfile, Makefile, SQL and protobuf** (21 → 26
+  languages). Two independent gaps had to close for this to work, and either alone would
+  have left the files unreachable:
+
+  - `Path("Dockerfile").suffix` is `""`, so no `EXTENSION_MAP` entry could ever match an
+    extensionless artifact. Detection is now filename-aware via `FILENAME_MAP`, behind a
+    shared `detect_language()` — previously each of five call sites (walker, watcher ×2,
+    `api/app.py`, `indexer.py`) did its own `EXTENSION_MAP` lookup and would have needed
+    the same fix five times.
+  - Chunks hang off `symbol_id`, so a file yielding no symbols yields no chunks and is
+    invisible to *every* retrieval leg — vector, BM25, grep, summary and sub-chunk alike.
+    Shell, Dockerfile and Make have tree-sitter grammars but no structural extractor, so
+    being detected was not sufficient.
+
+- **`LineWindowParser`** — makes a file retrievable when nothing can parse its structure,
+  emitting fixed line windows as `SECTION` symbols with honest 1-indexed line numbers. It
+  extracts no calls, names or imports and reports `language_name == "line-window"` so a
+  caller can tell the symbols came from a line split rather than a parse. Windows rather
+  than one symbol per file because `Chunker` **truncates** an over-budget chunk instead of
+  splitting it, so a single 200-line symbol would silently lose its tail.
+
+  Also applied as a fallback in `_parse_one` when a real extractor returns zero symbols
+  from non-empty source: a Go-templated helm manifest the YAML extractor cannot parse went
+  0 → 5 `SECTION` symbols covering lines 1-184.
+
+  Measured: walk 459 → 465 discovered, index 467 files, zero-symbol files 12 → 11.
+  `Makefile` and `scripts/verify-index.sh` now rank 1 for queries about them.
 
 ### Fixed
 
@@ -466,394 +744,6 @@ was proven red first.
   is also the prerequisite for the reconciliation pass `trelix index` still lacks — see
   Known limitations.
 
-### Known limitations
-
-- **`trelix index` still does not remove files deleted from the repository.**
-  `delete_file_by_path` is called only by the watchers, so a deleted file stays indexed
-  and searchable. The reconciliation pass was deliberately NOT added: a prune keyed on
-  "files the walk did not yield" would read a truncated walk as deletions and delete
-  embeddings that cost money to compute, and a percentage-threshold guard cannot defend
-  against it because one unreadable directory falls far below any sane threshold. The
-  walk-completeness signal above is the missing prerequisite. Until then, clear removed
-  files by deleting `.trelix/index.db` and re-indexing.
-- **`TRELIX_PARSER_TAINT` is inert** — declared and read nowhere; taint analysis runs only
-  via `trelix taint`.
-- **SPLADE-Code models cannot be used** as the sparse model until `sparse.py` grows a
-  causal-LM path; the default is a general SPLADE v3 checkpoint instead.
-- **A thin `config_lookup` match still suppresses every other retrieval leg.**
-  `retriever.py`'s `if not results:` only falls back to standard retrieval when the config
-  path found *nothing*. One matched file yielding a handful of symbols therefore returns
-  exclusively those symbols, with no breadth floor and no signal to the synthesizer. Fixing
-  the filename gate above removed today's instance (the Dockerfile query) without touching
-  the mechanism, and is the most likely explanation for the 50-query drift recorded there.
-  A breadth floor needs its own measurement and is deliberately not bundled.
-- **`test_watcher.py` gained a positive case.** The import-guard test previously deleted
-  `watchdog*` from `sys.modules`, which only clears the cache — an installed package
-  re-imports and no `ImportError` is raised. It was therefore the sole failing test
-  wherever `[watch]` was installed, and passed for the wrong reason wherever it was not:
-  against an absent dependency rather than against the guard. Now uses
-  `patch.dict("sys.modules", {"watchdog": None})`, the idiom already used for `trelix_mcp`
-  in the same file, plus a case asserting the guard is silent when watchdog *is* importable
-  — without which an unconditionally-raising guard would still pass.
-- **Provenance is refreshed only by a full `trelix index`.** `trelix update-index` and
-  `trelix watch` go through `index_file()`, which does not touch it, so the recorded commit
-  can name an older tree than the index actually contains. Deliberate rather than
-  overlooked: a per-file update has no single commit to attribute the index to, and
-  stamping the current `HEAD` after touching one file would assert the whole index is
-  current when it is not. `trelix stats --drift` is unaffected — it compares file hashes.
-- **Ops-language ranking weight is an open question, not a tuned value.** The five
-  line-window languages have no `file_type_weights` entry, so `fusion.py` gives them its
-  1.0 fallback — the same weight as parsed Python, despite carrying less structural
-  evidence. The 50-query golden set does read ~0.017 nDCG@10 lower with them present, but
-  that is only ~1.4× measured same-config noise (0.012), and every attempt to tune it made
-  ops files unreachable for queries specifically about them. Target rank moved
-  **non-monotonically** with the multiplier (rank 9 at 1.0, absent at 0.8, rank 2 at 0.4),
-  which means chunk-level near-ties decide it rather than the weight. Needs a ~20-query ops
-  golden set before a value can be chosen honestly; overridable meanwhile with
-  `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_SHELL` and friends.
-- **The 11 remaining zero-symbol files stay unreachable** until they are re-parsed. Both
-  `trelix index` and `trelix update-index` skip them on the content-hash check
-  (`indexer.py:512`), which the line-window fallback cannot get past.
-
-  The remedy is `TRELIX_INCREMENTAL=false trelix index .` — **not** deleting the index.
-  The `else` branch at `indexer.py:514` sets `to_parse = files`, forcing a re-parse of
-  everything, and it costs almost nothing extra: `_insert_one` diffs symbols by
-  qualified-name + content hash, and Phase 2.5 short-circuits on `if not chunks`
-  (`indexer.py:984`), so unchanged files regenerate no chunks and re-buy no embeddings.
-  An earlier revision of this entry implied a from-scratch rebuild was required, which
-  would have meant discarding a 192 MB index and re-paying for ~2M tokens for nothing.
-- **One ops query still fails for an unrelated reason.** "what port does the container
-  expose and what is its entrypoint" returns only a *single* distinct file regardless of
-  language weighting, so `Dockerfile` cannot place. That is retrieval breadth, not
-  detection or parsing, and is untouched here.
-- **The suite has a pre-existing test-isolation defect.** `test_config`,
-  `test_llm_client`, `test_llm_bedrock_backend` and `test_git_linker` assertions about
-  default providers and env precedence pass in isolation and when `tests/unit` runs alone,
-  but fail once `tests/integration` runs in the same session. Minimal reproducer:
-  `pytest tests/integration tests/unit/test_config.py::TestEmbedderConfig::test_default_provider_is_local`.
-
-  `tests/integration/conftest.py::_isolate_beast_mode_flags` neither scrubs
-  `_ENV_PREFIXES_TO_SCRUB` nor applies `_CODE_DEFAULTS`, both of which its `tests/unit`
-  namesake does — so a `.env` present in the working tree reaches tests that assert code
-  defaults.
-
-  Measured rather than assumed: `tests/unit tests/integration` fails **10** at
-  `c79f7c2` (checked in a clean `git worktree` at that commit) and **7** with these
-  changes applied, and the 7 are a strict subset of the 10. Which tests get hit depends on
-  collection order, so adding a test file shuffles the set — the count is not a quality
-  signal in either direction. CI does not surface any of it: `pytest tests/unit/` and
-  `tests/integration/` run as separate jobs.
-
-### Added
-
-- **`trelix taint --rules PATH`.** `TaintAnalyzer.run()` always accepted a
-  `rules_path`; the CLI never passed one, so every invocation ran the `p/default`
-  registry pack — network-dependent, and free to change between runs. A missing path is
-  an error rather than a silent fallback, because falling back reports registry findings
-  under the reader's assumption that their own rules produced them.
-
-- **`config/semgrep-taint.yaml`** — six auditable taint rules scoped to source/sink
-  pairs that occur in this codebase. trelix shipped no rules of its own, so there was
-  previously no offline route to a taint scan at all.
-
-- **`scripts/self-index.sh`** — reproducible clean self-index. Needed because
-  `TRELIX_WALKER_*` and `TRELIX_PARSER_*` are process-env-only, and because
-  `EXTRA_IGNORE_DIRS` *replaces* rather than extends the default, so all 30 entries must
-  be restated to drop `"packages"` — present for .NET NuGet output, but it also hides
-  this repo's own `packages/` monorepo and its three shipped sub-packages. Refuses up
-  front on an embedding-dimension mismatch, printing the one remedy that works.
-
-- **`scripts/verify-index.sh`** — asserts that populated dimensions are non-empty *and*
-  that unpopulated ones are still empty, each with its reason recorded.
-
-- **`scripts/measure_index_hygiene.py`** — measures what share of the corpus, and of
-  actual top-10 results, was never source code. Needs no golden set.
-
-- **`eval/README.md`** — the golden-set format, and the two ways to get a silently
-  wrong score from it: paths are compared by exact string equality, and an entry with
-  no `relevant_files` is skipped rather than failed.
-
-- **All seven version sites now agree, so the `verify-version` gate passes 7/7.** It failed
-  3 of 7 when introduced, which was the gate working. The Helm chart *deployed a different
-  trelix than it advertised* — `values.yaml`'s `image.tag` was `2.12.0` while `Chart.yaml`
-  said `appVersion: 3.1.2`, so `helm install` at defaults ran an image five releases behind;
-  `helm template` now renders `:3.1.2`. `packages/trelix-mcp/server.json` carried `2.12.0`
-  in both version fields. A `v3.2.0` control still fails all 7, so the gate is fixed at the
-  sites rather than defanged. `Chart.yaml`'s own chart `version` moves 0.1.0 → 0.2.0: it had
-  not moved across the five releases that bumped `appVersion`, so two structurally different
-  charts were both stamped 0.1.0.
-
-- **`scripts/verify-index.sh` gated 6 of 31 tables; four counters could fall to zero
-  unnoticed.** Proven by injecting all four regressions into a copy of the live index — the
-  old 22-gate script exited **0**. The new 26-gate version fails all four and still passes
-  clean on the real index. Three `EXPECTED_EMPTY` reason strings also documented bugs that
-  are fixed, and one was simply wrong: `generic_edges` is not empty for want of ticket
-  references (the linker's own `_walk_log` matches 13 strings across 9 of 871 commits) — it
-  is empty because **`trelix index` never runs the linker at all.**
-
-- **`packages/trelix-typescript/src/generated/schema.ts` had silently drifted** to 604
-  committed lines against 768 regenerated, hiding shipped server features from the typed
-  client: all of `POST /parse`, the `/search` `intent_hint` and `hyde_snippet_hint` params,
-  the `/graph/communities` caps, and the auth headers on every gated route. `npm run build`
-  and `npm test` both pass against a stale schema, so nothing failed. Regeneration required
-  a human because `codegen.mjs` could only fetch from a running `trelix serve`; it now
-  defaults to an in-process `create_app().openapi()` dump — 1.37 s for the full codegen, no
-  server, no port, no readiness race — which is what makes the new `schema-drift.yml` gate
-  possible.
-
-- **`trelix-langchain` and `trelix-llama-index` published as `License: UNSPECIFIED`.**
-  Neither declared `license`, `classifiers`, `authors` or `keywords`; only `trelix-mcp` did.
-  The LICENSE file was always *in* the wheel, but PyPI renders the field and the classifier —
-  verified live against the PyPI JSON API across all 7 releases up to 2.4.0. Both now mirror
-  `trelix-mcp` exactly. Both also floored on `trelix>=0.4.0`, **a core release that was never
-  published** (the oldest on PyPI is 0.5.0). `workspace-vscode/package.json` had no
-  `license` key at all while `vscode-extension-ci.yml` runs `vsce package`.
-
-- **CI could not see six real type errors and ran 29 tests nowhere.** The `lint` job
-  installed only `[local,sso,dev]`, so voyageai/google-genai/watchdog were absent and every
-  expression touching them degraded to `Any`. The cause was the missing extras, not
-  `--ignore-missing-imports`, which is a no-op because pyproject already sets
-  `ignore_missing_imports = true`. A new `type-check-extras` job installs them and gates the
-  errors as a recorded ceiling keyed on (file, error-code): known debt is green, anything
-  outside it fails, and a mypy *crash* can no longer parse as "zero errors" and pass. `ruff`
-  now covers `scripts/` and all three `packages/*/tests`. The 19 langchain and 10
-  llama-index tests ran nowhere and are now separate invocations — both resolve to module
-  `tests.test_retriever`, so a single combined run would silently skip one.
-
-- **Six inert config knobs were documented as working switches**, marked **Inert.** now
-  following the existing convention. `docs/GLOSSARY.md` went furthest, claiming
-  `TRELIX_FEDERATION_ENABLED=true` "activates federation at retrieval time" — in fact
-  `search-all` builds `FederatedRetriever(registry)` with no arguments, so it federates
-  whether the flag is set or not, the worker pool is permanently the constructor default of
-  4, and `max_repos` stays unbounded so `TRELIX_FEDERATION_MAX_REPOS` never applies on the
-  CLI path at all.
-
-- **`.env.example` documented 27 of ~96 `TRELIX_*` aliases** while `CONTRIBUTING.md`
-  declares it stable public API. Extended to the whole 3.x surface, grouped, with no real
-  secret values.
-
-- **Two governance docs contradicted each other on three rules, and reality matched
-  neither.** `BACKWARDS_COMPATIBILITY.md` and `CONTRIBUTING.md` disagreed on the deprecation
-  grace period (2 minor versions vs one) and on integration-package versioning (core version
-  vs "independent cadence"). Resolved to the stricter grace period — 2 minor versions **and**
-  3 months, whichever is later, since v2.4.0 → v3.0.0 was 40 days and the calendar clock is
-  the one that binds — and to lockstep versioning, because `release.yml` fires only on core
-  `v*` tags and publishes all four dists in one job, so no independent cadence exists to be
-  on. The release checklist listed five of seven version sites and told contributors to grep
-  for the *previous* version, which structurally cannot match a site stranded on 2.x.
-
-- **Docs: five broken relative links and two false claims.** `docs/README.md` linked
-  `../CONFIGURATION.md` and `../CLI_REFERENCE.md` as though both lived at the repo root, and
-  `v3-0-0-breaking-changes.md` was one `../` short on all three of its links. 73 links
-  resolved against the filesystem: 5 broken before, 0 after. `docs/README.md` also claimed
-  to be "a complete index of every documentation file" while omitting `AUDIT.md`, `SSO.md`,
-  `BACKWARDS_COMPATIBILITY.md`, `ROADMAP.md` and all of `docs/reports/` — including the
-  report this release reasons from. And `README.md` advertised `pip install "trelix[all]"`
-  as "every optional extra (voyage, qdrant, lance, rerank, LLM providers, …)" when `[all]`
-  resolves to `local,rerank,voyage,qdrant,watch,sso` — omitting exactly the two things the
-  comment named.
-
-- **A local `python -m build` produced a 928 MB sdist.** hatchling does not honour *nested*
-  `.gitignore` files, and `workspace-vscode/.gitignore` ignores `.vscode-test/`, which
-  `@vscode/test-electron` fills with three ~900 MB VS Code app bundles. CI publishes from a
-  clean checkout so the released sdist was always ~6 MB; the new `[tool.hatch.build.targets.sdist]`
-  excludes make a local build match it.
-
-- **The release path refuses a tag that disagrees with the tree.** `release.yml` fires on
-  `push: tags: v*`, derived nothing from the tree, and sets `skip-existing: true` on all
-  four PyPI publish steps — so tagging `v3.2.0` on a tree stamped `3.1.2` built
-  `trelix-3.1.2`, PyPI skipped it as already present, and the run went **green** with a
-  GitHub Release full of binaries and **zero new packages**. Nothing in the logs said
-  "published nothing". `skip-existing` is kept deliberately (it is what makes a re-run
-  after a partial failure safe), so the guard is a separate `verify-version` job that every
-  build and publish job now depends on.
-
-  It checks **seven** version sites, not the five in `CONTRIBUTING.md`'s checklist. The two
-  extra ones are precisely those the documented procedure cannot find, because it greps for
-  the *previous* version and both were still on `2.x`: `helm/trelix/values.yaml`'s
-  `image.tag` — the chart advertised `appVersion: 3.1.2` while deploying **2.12.0**, having
-  been skipped by all five release commits that did bump `Chart.yaml` — and
-  `packages/trelix-mcp/server.json`, which carries the version twice. Running the gate
-  against the current tree fails 3 of 7, which is the point.
-
-- **The release path runs the test suite.** `ci.yml` triggers on push/PR to
-  `[main, develop]` and never on tags, so the entire gate on four PyPI packages and two
-  container images was `python -m build`, `twine check`, and a `--help` smoke test.
-
-- **`docker-publish.yml` had the same hole and now has the same guard.** It derived the
-  image tag from `${GITHUB_REF_NAME#v}` with nothing comparing it to the tree, so a
-  `v3.2.0` tag published `ghcr.io/…/trelix:3.2.0` containing a binary reporting `3.1.2`.
-  Skipped for `workflow_dispatch`, whose whole purpose is backfilling an older release
-  where the tree legitimately differs. Its `${{ github.event.inputs.version }}` also moved
-  out of the script body into `env:` — a dispatch input interpolated into `run:` is a
-  shell-injection sink.
-
-- **`gitleaks` pre-commit hook.** There was no secret scanning anywhere — not in
-  `.pre-commit-config.yaml`, not in CI — for a project publishing four PyPI packages and
-  two container images. Prefix matching alone would not have sufficed either: the AWS
-  credential pair in a local `.env` is base64-wrapped, so `AKIA…` never appears and every
-  prefix scanner, GitHub push protection included, reads it as clean.
-
-- **`trelix serve` warns when it is reachable off-box with no credential.**
-  `api/app.py`'s `authenticate()` is open by design when neither a static token nor OIDC is
-  configured, which is reasonable for the documented local use where `--host` defaults to
-  `127.0.0.1`. The shipped container overrides exactly that: `Dockerfile` runs
-  `serve /repo --host 0.0.0.0`, which a published port requires, and `docker-compose.yml`
-  published `8765` on every host interface while bind-mounting the user's repository — so
-  `docker compose up` served open, unauthenticated code search over it. Compose now
-  publishes to `127.0.0.1:8765` and lists `TRELIX_API_AUTH_TOKEN` so it is discoverable.
-
-  The warning lives at the bind boundary rather than in compose alone because it also
-  catches `trelix serve --host 0.0.0.0` run directly, which no compose change can reach. It
-  asks `_build_oidc_verifier` rather than reading an env var, so an SSO config that is
-  enabled but unusable still warns — the case where a reader would most wrongly assume they
-  were covered. `.github/SECURITY.md` claimed serve binds to `127.0.0.1`, true of the CLI
-  and inverted by the image; corrected.
-
-- **`config_lookup` no longer drops extensionless config files.** `_retrieve_config`
-  gated every planner hint on six suffixes or the substring `"config"`, and
-  `Path("Dockerfile").suffix` is `""` — so `Dockerfile`, `Makefile`, `Procfile`,
-  `setup.cfg`, `nginx.conf` and every `*.tf` were silently unresolvable, for **every**
-  repository. `find_file_by_path_fragment("Dockerfile")` worked the whole time and was
-  simply never called.
-
-  The gate could not just be deleted: `file_hints` is concatenated with `grep_hints`,
-  documented at `planner/models.py:63` as "exact symbol names", so unfiltered hints would
-  feed path lookups terms like `EXPOSE` and `ports:`. It now tests the filename, not only
-  the suffix — `_looks_like_config` checks a config-filename set, a broadened suffix set,
-  and the `Dockerfile.prod` variant shape.
-
-  Measured on the golden set: the four ops queries went from an **unstable 0.00 / 0.50 /
-  0.75 Recall@10 across identical configs to a stable 1.0000 nDCG@10 / Recall@10 / MRR**,
-  and "what port does the container expose and what is its entrypoint" — which returned a
-  single distinct file and answered confidently without the Dockerfile — now ranks
-  `Dockerfile` first with HyDE disabled for determinism.
-
-  **Caveat, disclosed rather than buried:** the 50-query set reads 0.6039 / 0.5791 against
-  0.6105 / 0.6063 before. The within-config spread is 0.0248, *larger* than that
-  difference, so two runs cannot separate the effect from noise. The plausible mechanism is
-  that `config_lookup` now succeeds more often and `retriever.py`'s `if not results:`
-  returns only the matched file's symbols, suppressing the vector, BM25 and grep legs
-  entirely. That short-circuit is a pre-existing design issue, unchanged here and recorded
-  under Known limitations.
-
-- **`trelix[watch]` can now satisfy `watch-all`.** The extra installed only `watchdog`,
-  while `indexing/multi_watcher.py` uses `watchfiles.awatch()` — so the ImportError at
-  `multi_watcher.py:30-38`, which tells the user to run `pip install 'trelix[watch]'`, did
-  not fix the problem it diagnosed. Masked locally because `uvicorn[standard]`, via the
-  `serve` extra, pulls `watchfiles` in transitively.
-
-- **Index provenance, reported by `trelix stats`.** `index_metadata` held exactly one row
-  — `embedding_dimension` — so nothing recorded *what* an index was a snapshot of. A
-  stale index does not fail loudly; it returns confident, well-ranked answers about code
-  that has since changed. `trelix stats` now reports the commit, branch, worktree
-  cleanliness, timestamp, trelix version and embedder the index was built from, plus how
-  many commits `HEAD` has moved since.
-
-  Captured at the **start** of an index run, not the end. Hashes are computed during the
-  walk, so end-of-run capture would pair a newer commit with older content — recording an
-  index as more current than it is, which is the direction that produces silent wrong
-  answers. Written at the end, so a run that crashed partway leaves no record claiming
-  completeness.
-
-  A pre-v3.1.2 index says provenance was not recorded rather than guessing, and every
-  field degrades independently — a non-git directory or absent `git` binary still records
-  version and embedder rather than failing the index.
-
-- **`trelix stats --drift`** — compares every indexable file on disk against its stored
-  hash, reporting changed / not-yet-indexed / indexed-but-not-found counts. Opt-in
-  because it costs a full walk plus a SHA-256 per file, where the rest of `stats` is a
-  few SQL counts. It reuses `FileWalker` rather than reimplementing discovery: the
-  indexer's own staleness rule is `db.get_file_hash(rel_path) != file.hash`, and a
-  divergent hash would report every file stale on a freshly built index.
-
-  `Indexed but not found` is deliberately **not** presented as a list of deletions. It is
-  "indexed paths this walk did not yield", which has two innocent explanations, and both
-  are surfaced above the counts because acting on the number deletes embeddings that cost
-  money to recompute:
-
-  - an incomplete walk (a directory that could not be read), using the walk-completeness
-    signal added earlier in this release;
-  - **a changed walk config**, which is now detectable because the walk-determining
-    settings are recorded at index time and any difference is named in the output.
-    Measured while building this: a drift check run without `scripts/self-index.sh`'s
-    environment reported **35 present files** under `packages/` as deleted, because
-    `TRELIX_WALKER_*` is process-env-only and `EXTRA_IGNORE_DIRS` replaces the default
-    30-entry list (which contains `packages` for .NET NuGet output) rather than extending
-    it. An index predating the recording reports `missing` as unverified rather than
-    trustworthy.
-
-- **Ops artifacts are indexed: shell, Dockerfile, Makefile, SQL and protobuf** (21 → 26
-  languages). Two independent gaps had to close for this to work, and either alone would
-  have left the files unreachable:
-
-  - `Path("Dockerfile").suffix` is `""`, so no `EXTENSION_MAP` entry could ever match an
-    extensionless artifact. Detection is now filename-aware via `FILENAME_MAP`, behind a
-    shared `detect_language()` — previously each of five call sites (walker, watcher ×2,
-    `api/app.py`, `indexer.py`) did its own `EXTENSION_MAP` lookup and would have needed
-    the same fix five times.
-  - Chunks hang off `symbol_id`, so a file yielding no symbols yields no chunks and is
-    invisible to *every* retrieval leg — vector, BM25, grep, summary and sub-chunk alike.
-    Shell, Dockerfile and Make have tree-sitter grammars but no structural extractor, so
-    being detected was not sufficient.
-
-- **`LineWindowParser`** — makes a file retrievable when nothing can parse its structure,
-  emitting fixed line windows as `SECTION` symbols with honest 1-indexed line numbers. It
-  extracts no calls, names or imports and reports `language_name == "line-window"` so a
-  caller can tell the symbols came from a line split rather than a parse. Windows rather
-  than one symbol per file because `Chunker` **truncates** an over-budget chunk instead of
-  splitting it, so a single 200-line symbol would silently lose its tail.
-
-  Also applied as a fallback in `_parse_one` when a real extractor returns zero symbols
-  from non-empty source: a Go-templated helm manifest the YAML extractor cannot parse went
-  0 → 5 `SECTION` symbols covering lines 1-184.
-
-  Measured: walk 459 → 465 discovered, index 467 files, zero-symbol files 12 → 11.
-  `Makefile` and `scripts/verify-index.sh` now rank 1 for queries about them.
-
-### Changed
-
-- `Database` gained generic `get_index_metadata` / `set_index_metadata` /
-  `delete_index_metadata` / `get_index_metadata_with_prefix`, and the three
-  `embedding_dimension` helpers now delegate to them instead of carrying their own copy
-  of the upsert. The prefix query escapes `LIKE` wildcards: `_` is a single-character
-  wildcard in SQL, so an unescaped prefix of `a_` also matches `abx`.
-- `docs/GETTING_STARTED.md` no longer claims `trelix stats` prints a language breakdown.
-  It never did — the row also promised "embedder, timestamp", which only became true with
-  provenance above.
-- `TRELIX_PARSER_TAINT` is documented as **inert**. `ParserConfig.taint_enabled` is
-  declared and read nowhere in `src/`; taint analysis happens only when `trelix taint`
-  runs, and that command does not consult it. It had been documented as "Enable
-  taint-flow tracking during parsing".
-- `TRELIX_PARSER_DATAFLOW` now records that it is Python-only in practice, since the
-  extractor requests the Python grammar unconditionally.
-- `TRELIX_WALKER_RESPECT_GITIGNORE`, and the ignore sections of `CONFIGURATION.md`,
-  `TROUBLESHOOTING.md` (two sites) and `MCP_GUIDE.md`, now describe nested-`.gitignore`
-  support. All four correctly documented the old single-file limitation and would
-  otherwise have been left asserting the opposite of the code.
-- The `trelix taint` reference records two behaviours it had omitted: persistence to
-  `taint_flows` is unconditional and happens *before* `--severity` filtering, and
-  `--tier intrafile`/`interfile` both require the Semgrep Pro Engine, which
-  `pip install trelix[taint]` does not provide.
-
-## [3.1.2] — 2026-08-16
-
-### Overview
-
-Three defects, each of which had a passing test suite over it.
-
-The theme is **tests that covered the parts that worked**. All three MCP prompts
-failed on use while their 82-test package suite was fully green; the CLI escaped
-markup brackets but passed raw terminal control bytes straight through; and the
-walker yielded one file 17 times without any assertion noticing. Two of the three
-were found only by running the real thing — a real pty, a real fastmcp — rather
-than by reading code or trusting a green run.
-
-A fourth item is a documentation correctness fix: a deprecation whose removal
-deadline had already passed.
-
-### Fixed
-
 - **Indexed content could drive the user's terminal.** `rich.markup.escape()`
   neutralises `[` markup brackets and nothing else, so ANSI/OSC control bytes
   stored in an indexed file reached the terminal verbatim when rendered by
@@ -936,6 +826,29 @@ deadline had already passed.
 
 ### Changed
 
+- `Database` gained generic `get_index_metadata` / `set_index_metadata` /
+  `delete_index_metadata` / `get_index_metadata_with_prefix`, and the three
+  `embedding_dimension` helpers now delegate to them instead of carrying their own copy
+  of the upsert. The prefix query escapes `LIKE` wildcards: `_` is a single-character
+  wildcard in SQL, so an unescaped prefix of `a_` also matches `abx`.
+- `docs/GETTING_STARTED.md` no longer claims `trelix stats` prints a language breakdown.
+  It never did — the row also promised "embedder, timestamp", which only became true with
+  provenance above.
+- `TRELIX_PARSER_TAINT` is documented as **inert**. `ParserConfig.taint_enabled` is
+  declared and read nowhere in `src/`; taint analysis happens only when `trelix taint`
+  runs, and that command does not consult it. It had been documented as "Enable
+  taint-flow tracking during parsing".
+- `TRELIX_PARSER_DATAFLOW` now records that it is Python-only in practice, since the
+  extractor requests the Python grammar unconditionally.
+- `TRELIX_WALKER_RESPECT_GITIGNORE`, and the ignore sections of `CONFIGURATION.md`,
+  `TROUBLESHOOTING.md` (two sites) and `MCP_GUIDE.md`, now describe nested-`.gitignore`
+  support. All four correctly documented the old single-file limitation and would
+  otherwise have been left asserting the opposite of the code.
+- The `trelix taint` reference records two behaviours it had omitted: persistence to
+  `taint_flows` is unconditional and happens *before* `--severity` filtering, and
+  `--tier intrafile`/`interfile` both require the Semgrep Pro Engine, which
+  `pip install trelix[taint]` does not provide.
+
 - Documentation version stamps advanced to 3.1.2 across 14 files. Historical
   references ("New in v3.0.0", "Fixed in v3.0.0", the shipped-version table) are
   deliberately left alone. `CONTRIBUTING.md` now carries a release checklist naming
@@ -943,6 +856,84 @@ deadline had already passed.
   (the Helm chart's own `version`, and the independently-versioned langchain and
   llama-index packages), and why a blind `sed` over `docs/` corrupts history.
 - `docs/architecture.md` claimed "110+ source modules"; the real count is 140.
+
+### Known limitations
+
+- **`trelix index` still does not remove files deleted from the repository.**
+  `delete_file_by_path` is called only by the watchers, so a deleted file stays indexed
+  and searchable. The reconciliation pass was deliberately NOT added: a prune keyed on
+  "files the walk did not yield" would read a truncated walk as deletions and delete
+  embeddings that cost money to compute, and a percentage-threshold guard cannot defend
+  against it because one unreadable directory falls far below any sane threshold. The
+  walk-completeness signal above is the missing prerequisite. Until then, clear removed
+  files by deleting `.trelix/index.db` and re-indexing.
+- **`TRELIX_PARSER_TAINT` is inert** — declared and read nowhere; taint analysis runs only
+  via `trelix taint`.
+- **SPLADE-Code models cannot be used** as the sparse model until `sparse.py` grows a
+  causal-LM path; the default is a general SPLADE v3 checkpoint instead.
+- **A thin `config_lookup` match still suppresses every other retrieval leg.**
+  `retriever.py`'s `if not results:` only falls back to standard retrieval when the config
+  path found *nothing*. One matched file yielding a handful of symbols therefore returns
+  exclusively those symbols, with no breadth floor and no signal to the synthesizer. Fixing
+  the filename gate above removed today's instance (the Dockerfile query) without touching
+  the mechanism, and is the most likely explanation for the 50-query drift recorded there.
+  A breadth floor needs its own measurement and is deliberately not bundled.
+- **`test_watcher.py` gained a positive case.** The import-guard test previously deleted
+  `watchdog*` from `sys.modules`, which only clears the cache — an installed package
+  re-imports and no `ImportError` is raised. It was therefore the sole failing test
+  wherever `[watch]` was installed, and passed for the wrong reason wherever it was not:
+  against an absent dependency rather than against the guard. Now uses
+  `patch.dict("sys.modules", {"watchdog": None})`, the idiom already used for `trelix_mcp`
+  in the same file, plus a case asserting the guard is silent when watchdog *is* importable
+  — without which an unconditionally-raising guard would still pass.
+- **Provenance is refreshed only by a full `trelix index`.** `trelix update-index` and
+  `trelix watch` go through `index_file()`, which does not touch it, so the recorded commit
+  can name an older tree than the index actually contains. Deliberate rather than
+  overlooked: a per-file update has no single commit to attribute the index to, and
+  stamping the current `HEAD` after touching one file would assert the whole index is
+  current when it is not. `trelix stats --drift` is unaffected — it compares file hashes.
+- **Ops-language ranking weight is an open question, not a tuned value.** The five
+  line-window languages have no `file_type_weights` entry, so `fusion.py` gives them its
+  1.0 fallback — the same weight as parsed Python, despite carrying less structural
+  evidence. The 50-query golden set does read ~0.017 nDCG@10 lower with them present, but
+  that is only ~1.4× measured same-config noise (0.012), and every attempt to tune it made
+  ops files unreachable for queries specifically about them. Target rank moved
+  **non-monotonically** with the multiplier (rank 9 at 1.0, absent at 0.8, rank 2 at 0.4),
+  which means chunk-level near-ties decide it rather than the weight. Needs a ~20-query ops
+  golden set before a value can be chosen honestly; overridable meanwhile with
+  `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_SHELL` and friends.
+- **The 11 remaining zero-symbol files stay unreachable** until they are re-parsed. Both
+  `trelix index` and `trelix update-index` skip them on the content-hash check
+  (`indexer.py:512`), which the line-window fallback cannot get past.
+
+  The remedy is `TRELIX_INCREMENTAL=false trelix index .` — **not** deleting the index.
+  The `else` branch at `indexer.py:514` sets `to_parse = files`, forcing a re-parse of
+  everything, and it costs almost nothing extra: `_insert_one` diffs symbols by
+  qualified-name + content hash, and Phase 2.5 short-circuits on `if not chunks`
+  (`indexer.py:984`), so unchanged files regenerate no chunks and re-buy no embeddings.
+  An earlier revision of this entry implied a from-scratch rebuild was required, which
+  would have meant discarding a 192 MB index and re-paying for ~2M tokens for nothing.
+- **One ops query still fails for an unrelated reason.** "what port does the container
+  expose and what is its entrypoint" returns only a *single* distinct file regardless of
+  language weighting, so `Dockerfile` cannot place. That is retrieval breadth, not
+  detection or parsing, and is untouched here.
+- **The suite has a pre-existing test-isolation defect.** `test_config`,
+  `test_llm_client`, `test_llm_bedrock_backend` and `test_git_linker` assertions about
+  default providers and env precedence pass in isolation and when `tests/unit` runs alone,
+  but fail once `tests/integration` runs in the same session. Minimal reproducer:
+  `pytest tests/integration tests/unit/test_config.py::TestEmbedderConfig::test_default_provider_is_local`.
+
+  `tests/integration/conftest.py::_isolate_beast_mode_flags` neither scrubs
+  `_ENV_PREFIXES_TO_SCRUB` nor applies `_CODE_DEFAULTS`, both of which its `tests/unit`
+  namesake does — so a `.env` present in the working tree reaches tests that assert code
+  defaults.
+
+  Measured rather than assumed: `tests/unit tests/integration` fails **10** at
+  `c79f7c2` (checked in a clean `git worktree` at that commit) and **7** with these
+  changes applied, and the 7 are a strict subset of the 10. Which tests get hit depends on
+  collection order, so adding a test file shuffles the set — the count is not a quality
+  signal in either direction. CI does not surface any of it: `pytest tests/unit/` and
+  `tests/integration/` run as separate jobs.
 
 ### Closed without merging
 
