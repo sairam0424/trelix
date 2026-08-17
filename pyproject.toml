@@ -26,7 +26,7 @@ exclude = [
 
 [project]
 name = "trelix"
-version = "3.1.1"
+version = "3.1.2"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -66,8 +66,17 @@ dependencies = [
     "openai>=1.35.0",
     "tiktoken>=0.7.0",
     # --- Retrieval math ---
+    # scikit-learn was an unconditional core dependency with zero importers.
+    # `rg 'sklearn|scikit_learn|from scipy|import scipy' src/ packages/ tests/
+    # scripts/ eval/` matches nothing, and importing all 142 modules under
+    # src/trelix with sklearn, scipy, joblib and threadpoolctl blocked at
+    # __import__ raises no error. It cost every `pip install trelix` 120 MB
+    # measured in this venv (scipy 82, sklearn 36, joblib 2, threadpoolctl <1).
+    # trelix.spec already lists 'sklearn'/'scipy'/'scikit_learn' in excludes, so
+    # the shipped binary never contained them — the exclusion was the tell.
+    # Users on the local provider still get them transitively:
+    # sentence-transformers requires scikit-learn>=0.22.0 and scipy>=1.0.0.
     "numpy>=1.26.0",
-    "scikit-learn>=1.5.0",
     # --- File walking ---
     "pathspec>=0.12.1",
     # --- CLI ---
@@ -122,6 +131,13 @@ lance = [
 ]
 watch = [
     "watchdog>=4.0.0",               # Filesystem event monitoring for `trelix watch`
+    # `trelix watch-all` uses watchfiles.awatch(), not watchdog — a different library for
+    # the multi-repo path. Without it this extra could not satisfy the very command whose
+    # ImportError tells the user to install `trelix[watch]`
+    # (indexing/multi_watcher.py:30-38), so following the error message did not help.
+    # It went unnoticed locally because uvicorn[standard], via the `serve` extra, pulls
+    # watchfiles in transitively.
+    "watchfiles>=0.21.0",
 ]
 serve = [
     "fastapi>=0.111.0",
@@ -145,7 +161,20 @@ dev = [
     "build>=1.0.0",
     "twine>=5.0.0",
     "pyinstaller>=6.0.0",
-    "httpx2>=0.27",     # FastAPI TestClient (httpx2 replaces httpx for Starlette compatibility)
+    # Kept, but the old comment ("httpx2 replaces httpx") was wrong and the floor
+    # was fiction. httpx2 is pydantic/httpx2 by the httpx author, not a third-party
+    # fork, and it has no 0.x line at all — PyPI lists 0.0.0 then 2.0.0..2.10.0, so
+    # `>=0.27` only worked by accidentally excluding the 0.0.0 placeholder. Starlette
+    # 1.3.1's testclient.py does `import httpx2 as httpx`, falls back to httpx, and
+    # only raises if neither is present; verified by blocking httpx2 at __import__ and
+    # driving a TestClient — requests still pass 200 but emit
+    # "StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is
+    # deprecated". So httpx2 is not required, it is the supported path (Starlette
+    # marks its own httpx fallback `# pragma: no cover`) and it keeps the 45
+    # TestClient(...) constructions in tests/unit off a deprecated branch. Starlette
+    # declares httpx2>=2.0.0, but only under its `full` extra, which trelix does not
+    # install — hence this explicit line. Floor matched to Starlette's.
+    "httpx2>=2.0.0",    # starlette.testclient's preferred client; core httpx stays
     "fastapi>=0.111.0", # REST API tests (tests/unit/test_api.py)
 ]
 binary = [
@@ -162,8 +191,31 @@ litellm   = ["litellm>=1.50.0"]
 llm-all   = ["trelix[anthropic,bedrock,vertex,litellm]"]
 graph-viz = ["pyvis>=0.3.2"]
 knowledge-graph = ["networkx>=3.3.0", "pyvis>=0.3.2"]
+# `all` previously resolved to local,rerank,voyage,qdrant,watch,sso, which silently
+# omitted three shipped, documented features: `trelix serve` (docs/FAQ.md:520 and
+# docs/AUDIT.md:18 both instruct `pip install 'trelix[serve]'`), OTel export
+# (docs/CONFIGURATION.md:293), and the pyvis graph export (CONTRIBUTING.md:97).
+# `pip install trelix[all]` then `trelix serve` was an ImportError.
+#
+# The line drawn here: every runtime extra EXCEPT the four below, each excluded for a
+# reason verified against installed metadata rather than assumed —
+#   plaid      ragatouille requires llama-index, langchain, langchain_core, faiss-cpu,
+#              colbert-ai and onnx; two whole LLM frameworks for one reranker.
+#   bge-code   FlagEmbedding requires torch, transformers, datasets, accelerate and
+#              peft — a fine-tuning stack, not an inference dependency.
+#   taint      semgrep is LGPLv2 (its only License classifier); trelix is MIT, so a
+#              copyleft dep belongs behind an explicit opt-in, not inside `all`.
+#   lance      lancedb requires pyarrow>=16 (~120 MB of Arrow wheels) and is an
+#              alternative to the qdrant backend already here, not an addition.
+# `sparse` IS included: it asks for transformers+torch, both of which `local` already
+# pulls in (sentence-transformers requires torch>=1.11.0 and transformers>=4.41.0),
+# so it adds no new install weight. `dev` and `binary` are test/build tooling and
+# stay out of a runtime aggregate. The LLM backends keep their own `llm-all` aggregate
+# and are not folded in here: openai is a core dependency, so synthesis works without
+# them. Not verified: that this set co-resolves on a clean index — every member is
+# present together in the maintainer venv, which is evidence but not a fresh resolve.
 all = [
-    "trelix[local,rerank,voyage,qdrant,watch,sso]",
+    "trelix[local,rerank,voyage,sparse,qdrant,watch,serve,sso,otel,knowledge-graph]",
 ]
 
 [project.scripts]
@@ -188,7 +240,58 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+# S (flake8-bandit) and B (flake8-bugbear) were both absent, so `ruff check` was
+# blind to the entire security-lint category. Demonstrated on a scratch file:
+# under the old select, `subprocess.run(cmd, shell=True)`, `hashlib.md5()`,
+# `except Exception: pass` and `def f(x: list = [])` produced exactly one
+# diagnostic between them — I001, for the import order.
+#
+# Turning them on surfaces 4,866 pre-existing violations across the paths CI lints
+# (src/ 90, tests/ 4,560, scripts/ 3, packages/ 213). None are fixable from this
+# file, so they are deferred below rather than left to break the build — but every
+# deferral is named, counted, and scoped as narrowly as the violation set allows,
+# and the ~50 other S/B rules that fire nowhere today are now enforced going forward.
+select = ["E", "F", "I", "UP", "S", "B"]
+
+# Tree-wide defers. Each of these fires inside src/trelix, so no per-directory scope
+# would help; counts are for src/ + tests/ + scripts/ + packages/ as CI lints them.
+# Every entry is real debt to be paid down, not a rule we disagree with.
+ignore = [
+    "S110",  # 22 try/except/pass — 13 in core/retry.py alone, the exact "silent
+             # failure" shape this release exists to remove. Highest-value first fix.
+    "S608",  # 15 f-string SQL — 10 in store/db.py, 2 in store/sparse_store.py.
+             # Interpolated identifiers (table/column names), not user values; needs
+             # an allow-list check at each site before the rule can be enforced.
+    "S607",  # 21 partial executable paths ("git", "semgrep") — 19 of them in tests.
+             # Fixing means resolving via shutil.which() in review/diff_parser.py and
+             # store/provenance.py.
+    "B905",  # 18 zip() without strict= — 11 in src (5 in indexing/indexer.py). Each
+             # needs a decision on whether length mismatch is a bug or expected.
+    "B904",  # 10 raise-without-from inside except — 8 in cli/main.py, where it
+             # deliberately hides tracebacks from CLI users; needs `from None`.
+    "S603",  # 9 subprocess calls without shell=False review. All take fixed argv
+             # lists, never a shell string, so this is annotation work.
+    "S324",  # 2 hashlib.md5 — indexing/multi_watcher.py uses it as a change-detection
+             # hash, not a security primitive; needs usedforsecurity=False.
+    "S112",  # 2 try/except/continue — federation/retriever.py, review/diff_embedder.py.
+    "S310",  # 1 urlopen in auth/oidc.py (OIDC JWKS fetch); needs a scheme check.
+    "B007",  # 1 unused loop variable in parser/extractors/css.py.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest rewrites bare `assert`, so S101 in a test file flags the assertion mechanism
+# itself: 4,495 hits in tests/ and 203 in packages/*/tests. This is permanent, not a
+# defer. The other rules here are the same story for test fixtures — deliberately fake
+# credentials, /tmp paths, and `pytest.raises(Exception)` in tests that assert only
+# that *something* failed.
+"tests/**" = ["S101", "S105", "S106", "S107", "S108", "B011", "B017", "B018"]
+"packages/*/tests/**" = ["S101", "S105", "S106", "S107", "S108", "B011", "B017", "B018"]
+# Unlike the above, this one IS a defer: 26 asserts across 20 files under src/trelix
+# (connectors 9, llm/providers 5, parser/extractors 4, retrieval 4, other 4) are used
+# as runtime invariants and vanish under `python -O`. Scoped to src rather than put in
+# the global ignore above so S101 stays enforced in scripts/ and any new top-level
+# code; delete this line once those 26 become explicit raises.
+"src/trelix/**" = ["S101"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -202,8 +305,24 @@ warn_unused_ignores = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "--tb=short"
+# --strict-markers makes `@pytest.mark.<unregistered>` a collection error, so a
+# typo in the name tests/integration/conftest.py applies fails loudly instead of
+# tagging nothing. It does NOT validate `-m` expressions: a typo there still
+# deselects nothing silently, which is why the marker below must stay registered
+# and applied rather than relying on the flag alone.
+addopts = "--tb=short --strict-markers"
 pythonpath = ["src", "."]
+markers = [
+    # This marker did not exist before, and no test carried it, so
+    # CONTRIBUTING.md's documented credential-free run
+    # `pytest -m "not integration"` deselected NOTHING — collection was
+    # byte-identical to bare pytest (2,965 tests, 0 deselected when this was
+    # fixed) and it drove the live Azure/Bedrock calls it claimed to skip.
+    # It is now applied by directory in tests/integration/conftest.py rather
+    # than by hand on each item, so a new file there is credential-gated on
+    # arrival (104 deselected on the same tree).
+    "integration: hits a live service (Azure/Bedrock/network); needs credentials",
+]
 
 [tool.coverage.run]
 source = ["src/trelix"]
@@ -211,7 +330,22 @@ omit = ["tests/*"]
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 75
+# Was 75 while the unit suite measured 80.73% of 15,475 statements — 887 statements
+# of free headroom, more than the whole retrieval package, could rot uncovered
+# without anything failing. ci.yml already passes --cov-fail-under=79 to override
+# this value and its comment asks in so many words for the config to be raised to
+# match ("pyproject's fail_under stays 75 and now disagrees with CI; raise it to 79
+# so a local `pytest --cov` fails for the same reason CI does"). That is done here.
+#
+# 79, not 80: the 1.7-point margin absorbs the one real source of drift, which is
+# extras coverage. The CI unit job installs [local,otel,sso,dev] while the 80.73%
+# was measured with every extra present, so import-guard fallbacks in the optional
+# backends flip sides between the two environments. Going to 80 would gate on which
+# extras happen to be installed. pytest-cov reads this key whenever coverage is
+# collected, so it now also gates a bare local `pytest --cov`; the integration job's
+# --cov-fail-under=0 still deliberately opts out, since unit and integration run on
+# separate runners with no `coverage combine`.
+fail_under = 79
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",

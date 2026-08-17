@@ -1,0 +1,461 @@
+{
+  "queries": [
+    {
+      "query": "Does a .gitignore sitting in a subdirectory actually get honoured during the walk, and can a nested negation re-include a file its parent ignored?",
+      "relevant_files": [
+        "src/trelix/indexing/walker.py",
+        "docs/CONFIGURATION.md"
+      ],
+      "area": "indexing",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "How do markdown heading levels turn into a section's name, and what gets indexed for a doc that has no headings at all?",
+      "relevant_files": [
+        "src/trelix/indexing/parser/extractors/markdown.py"
+      ],
+      "area": "indexing",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "Why does a chunk repeat a function's docstring in a header line above the body when the body already contains it, and when is that line skipped?",
+      "relevant_files": [
+        "src/trelix/indexing/chunker.py"
+      ],
+      "area": "indexing",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "Where does the file-level summary used for broad 'how does this codebase handle X' questions come from, and what happens if that LLM call fails mid-index?",
+      "relevant_files": [
+        "src/trelix/indexing/file_summarizer.py",
+        "src/trelix/indexing/indexer.py"
+      ],
+      "area": "indexing",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "Besides whole functions, is code indexed at a finer grain like individual if/for blocks or single statements, and are tiny ones skipped?",
+      "relevant_files": [
+        "src/trelix/indexing/multi_granularity.py"
+      ],
+      "area": "indexing",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "Does parsing need network access the first time it sees a new language, and how do I pre-download the grammars so indexing never touches the network?",
+      "relevant_files": [
+        "src/trelix/indexing/parser/_grammar.py",
+        "docs/TROUBLESHOOTING.md"
+      ],
+      "area": "indexing",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "In the Python parser, why is the synthetic module-docstring symbol appended before the AST walk instead of inserted at the front of the list afterwards?",
+      "relevant_files": [
+        "src/trelix/indexing/parser/extractors/python.py"
+      ],
+      "area": "indexing",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "When a function's body changes and its row is deleted and re-inserted on re-index, what stops other symbols' parent links and call edges from being silently nulled?",
+      "relevant_files": [
+        "src/trelix/indexing/indexer.py"
+      ],
+      "area": "indexing",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "Why doesn't a ticket saying 'the test suite failed to run and update the process' get linked to functions actually named test, run, update or process?",
+      "relevant_files": [
+        "src/trelix/indexing/artifact_linker.py"
+      ],
+      "area": "indexing",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "In watch mode, what stops a debounce timer that fires at the exact moment it is cancelled from re-indexing the same file twice?",
+      "relevant_files": [
+        "src/trelix/indexing/watcher.py"
+      ],
+      "area": "indexing",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "what happens to reranking if the cross-encoder library isn't installed?",
+      "relevant_files": [
+        "src/trelix/retrieval/reranker.py"
+      ],
+      "area": "retrieval",
+      "difficulty": "obvious"
+    },
+    {
+      "query": "when packing retrieved snippets into the final context, what keeps it from going over the token budget?",
+      "relevant_files": [
+        "src/trelix/retrieval/assembler.py"
+      ],
+      "area": "retrieval",
+      "difficulty": "obvious"
+    },
+    {
+      "query": "for each kind of question, what sets which search legs run and how deep the call-graph expansion goes?",
+      "relevant_files": [
+        "src/trelix/retrieval/planner/models.py"
+      ],
+      "area": "retrieval",
+      "difficulty": "obvious"
+    },
+    {
+      "query": "why would we embed a made-up code snippet instead of the question the user actually typed?",
+      "relevant_files": [
+        "src/trelix/retrieval/query_expansion.py",
+        "src/trelix/retrieval/retriever.py"
+      ],
+      "area": "retrieval",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "what makes it search again after the model has already written an answer that sounds unsure?",
+      "relevant_files": [
+        "src/trelix/retrieval/flare.py"
+      ],
+      "area": "retrieval",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "how does it decide a search query is too short for embeddings to be worth running?",
+      "relevant_files": [
+        "src/trelix/retrieval/bm25.py",
+        "src/trelix/retrieval/planner/agent.py"
+      ],
+      "area": "retrieval",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "which retrieved symbols get their score multiplied for being important hubs, and where in the pipeline does that happen?",
+      "relevant_files": [
+        "src/trelix/retrieval/retriever.py",
+        "src/trelix/graph/persistence.py"
+      ],
+      "area": "retrieval",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "how can a function body that's too big for the remaining budget still be included instead of being dropped?",
+      "relevant_files": [
+        "src/trelix/retrieval/context_compression.py",
+        "src/trelix/compression/extractive.py"
+      ],
+      "area": "retrieval",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "why does call-graph expansion skip the PageRank re-sort on repos with very few resolved call edges?",
+      "relevant_files": [
+        "src/trelix/retrieval/graph.py"
+      ],
+      "area": "retrieval",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "when the same chunk turns up in two different result lists, which one's source label is kept, and why isn't the higher score used to pick?",
+      "relevant_files": [
+        "src/trelix/retrieval/fusion.py"
+      ],
+      "area": "retrieval",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "What tables does trelix create in its SQLite index, and how do files, symbols and chunks relate to each other?",
+      "relevant_files": [
+        "src/trelix/store/db.py"
+      ],
+      "area": "storage",
+      "difficulty": "obvious"
+    },
+    {
+      "query": "Do we need a separate search engine for keyword search, or is BM25 ranking done inside SQLite itself?",
+      "relevant_files": [
+        "src/trelix/store/db.py",
+        "src/trelix/retrieval/bm25.py"
+      ],
+      "area": "storage",
+      "difficulty": "obvious"
+    },
+    {
+      "query": "I switched from a 3072-dimension cloud embedding model to a 384-dimension local one and search started returning garbage \u2014 how does trelix catch that?",
+      "relevant_files": [
+        "src/trelix/store/dimension_guard.py"
+      ],
+      "area": "storage",
+      "difficulty": "obvious"
+    },
+    {
+      "query": "How would we know if someone edited a row in the audit log after it was written?",
+      "relevant_files": [
+        "src/trelix/audit/store.py"
+      ],
+      "area": "storage",
+      "difficulty": "obvious"
+    },
+    {
+      "query": "When the store backend is set to qdrant instead of sqlite, which vector store gets used and how does the Qdrant collection get created on first run?",
+      "relevant_files": [
+        "src/trelix/store/vector.py",
+        "src/trelix/store/vector_qdrant.py"
+      ],
+      "area": "storage",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "Where are the sparse SPLADE token weights persisted, and how is the dot-product score computed against them?",
+      "relevant_files": [
+        "src/trelix/store/sparse_store.py"
+      ],
+      "area": "storage",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "Several threads run keyword searches at once but they seem to serialize \u2014 can FTS5 reads be made to run in parallel?",
+      "relevant_files": [
+        "src/trelix/store/read_pool.py",
+        "src/trelix/store/db.py"
+      ],
+      "area": "storage",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "What happens if the installed sqlite-vec version is too old to support an HNSW index \u2014 does indexing fail?",
+      "relevant_files": [
+        "src/trelix/store/vector.py"
+      ],
+      "area": "storage",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "File-summary and sub-symbol vectors sit in the same table as normal chunk vectors \u2014 how do they avoid stealing slots from the top-k of an ordinary search?",
+      "relevant_files": [
+        "src/trelix/store/vector.py"
+      ],
+      "area": "storage",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "Does the audit trail record the literal text of what users searched for, or is it redacted somehow?",
+      "relevant_files": [
+        "src/trelix/audit/store.py",
+        "src/trelix/audit/events.py"
+      ],
+      "area": "storage",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "how does the agent keep taking turns on its own until it has an answer, and what stops it looping forever?",
+      "relevant_files": [
+        "src/trelix/agent/loop.py"
+      ],
+      "area": "llm-embed",
+      "difficulty": "obvious"
+    },
+    {
+      "query": "when I set the LLM provider in my config, where does trelix turn that string into an actual chat client object, and why is each provider's SDK imported inside its own branch?",
+      "relevant_files": [
+        "src/trelix/llm/factory.py"
+      ],
+      "area": "llm-embed",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "when a model API rate limits us, how long do we wait before trying again, and do we respect the delay the server asks for?",
+      "relevant_files": [
+        "src/trelix/core/retry.py"
+      ],
+      "area": "llm-embed",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "if the Bedrock model I configured is not enabled for on-demand use in my account, does the request just fail?",
+      "relevant_files": [
+        "src/trelix/llm/providers/bedrock_backend.py"
+      ],
+      "area": "llm-embed",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "if I ask the same question twice, does it re-run the embedding model on my query text or reuse a cached vector?",
+      "relevant_files": [
+        "src/trelix/embedder/cache.py"
+      ],
+      "area": "llm-embed",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "does the wording of the answer change depending on what kind of question was asked, or is it one fixed prompt?",
+      "relevant_files": [
+        "src/trelix/retrieval/synthesizer.py"
+      ],
+      "area": "llm-embed",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "when reviewing a pull request, how does it figure out what surrounding code to pull in for a changed block before asking the model?",
+      "relevant_files": [
+        "src/trelix/review/diff_parser.py",
+        "src/trelix/review/reviewer.py"
+      ],
+      "area": "llm-embed",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "what keeps a markdown snippet that itself contains triple backticks from breaking out of the code block we wrap it in for the model?",
+      "relevant_files": [
+        "src/trelix/llm/prompt.py",
+        "src/trelix/agent/history.py"
+      ],
+      "area": "llm-embed",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "why do some OpenAI model names get a different token-limit parameter than others when we call the chat API?",
+      "relevant_files": [
+        "src/trelix/llm/providers/openai_backend.py"
+      ],
+      "area": "llm-embed",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "is the faithfulness number in the answer-quality evaluation a real semantic check, or just word overlap with the retrieved code?",
+      "relevant_files": [
+        "src/trelix/eval/synthesis.py"
+      ],
+      "area": "llm-embed",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "does the HTTP server require an API key on every route, and what happens if I never set the auth token?",
+      "relevant_files": [
+        "src/trelix/api/app.py"
+      ],
+      "area": "cli-config-graph",
+      "difficulty": "obvious"
+    },
+    {
+      "query": "when I search all my registered repos at once, how does each repo's configured weight change the combined ordering, and how are duplicate hits dropped?",
+      "relevant_files": [
+        "src/trelix/federation/retriever.py"
+      ],
+      "area": "cli-config-graph",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "when an MCP client pages through search results with a cursor, is the underlying search re-run for each page?",
+      "relevant_files": [
+        "packages/trelix-mcp/src/trelix_mcp/server.py"
+      ],
+      "area": "cli-config-graph",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "if semgrep isn't installed or prints output we can't read, does taint analysis fail loudly or just come back empty?",
+      "relevant_files": [
+        "src/trelix/analysis/taint.py"
+      ],
+      "area": "cli-config-graph",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "can a caller authenticate with a JWT signed using HS256, or with no signature at all?",
+      "relevant_files": [
+        "src/trelix/auth/oidc.py"
+      ],
+      "area": "cli-config-graph",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "in the LangChain and LlamaIndex wrappers, does the k setting actually make retrieval cheaper or does it only trim the list afterwards?",
+      "relevant_files": [
+        "packages/trelix-langchain/src/trelix_langchain/retriever.py",
+        "packages/trelix-llama-index/src/trelix_llama_index/retriever.py"
+      ],
+      "area": "cli-config-graph",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "where is the list of repositories used for cross-repo search kept on disk, and what happens if that file contains invalid JSON?",
+      "relevant_files": [
+        "src/trelix/federation/registry.py"
+      ],
+      "area": "cli-config-graph",
+      "difficulty": "moderate"
+    },
+    {
+      "query": "why does a code symbol that references a ticket end up with an edge in each direction in the code graph?",
+      "relevant_files": [
+        "src/trelix/graph/code_graph.py"
+      ],
+      "area": "cli-config-graph",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "when I pipe trelix graph --json into jq, what stops the progress spinner from corrupting the JSON on stdout?",
+      "relevant_files": [
+        "src/trelix/cli/main.py"
+      ],
+      "area": "cli-config-graph",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "after a single file changes, does community detection re-run across the whole graph or only over part of it?",
+      "relevant_files": [
+        "src/trelix/graph/updater.py",
+        "src/trelix/graph/community.py"
+      ],
+      "area": "cli-config-graph",
+      "difficulty": "subtle"
+    },
+    {
+      "query": "how do I reproduce a clean self-index of this repository",
+      "relevant_files": [
+        "scripts/self-index.sh"
+      ],
+      "area": "ops",
+      "difficulty": "easy"
+    },
+    {
+      "query": "what make target runs the retrieval evaluation",
+      "relevant_files": [
+        "Makefile"
+      ],
+      "area": "ops",
+      "difficulty": "easy"
+    },
+    {
+      "query": "what port does the container expose and what is its entrypoint",
+      "relevant_files": [
+        "Dockerfile"
+      ],
+      "area": "ops",
+      "difficulty": "easy"
+    },
+    {
+      "query": "which assertions does the index verification script check",
+      "relevant_files": [
+        "scripts/verify-index.sh"
+      ],
+      "area": "ops",
+      "difficulty": "easy"
+    }
+  ],
+  "area_counts": {
+    "indexing": 10,
+    "retrieval": 10,
+    "storage": 10,
+    "llm-embed": 10,
+    "cli-config-graph": 10,
+    "ops": 4
+  },
+  "generated_for": "trelix v3.1.2 self-index",
+  "notes": "The 'ops' queries target files that were absent from the index entirely before filename-aware language detection and the line-window fallback landed. They are too few (4) to score as a subset on their own -- a 4-query Recall@10 moves in 0.25 steps and swung 0.00/0.50/0.75 across identical configs in measurement. Track the full 54-query aggregate, and grow this area to ~20 before tuning anything against it."
+}

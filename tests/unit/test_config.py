@@ -145,7 +145,22 @@ class TestWalkerConfig:
 
 
 class TestEmbedderConfig:
-    def test_default_provider_is_local(self) -> None:
+    def test_default_provider_is_local(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Both halves are needed, for the reason spelled out at
+        # TestContextTokenBudgetCoercion.test_unset_var_keeps_the_12000_default:
+        # _env_file=None silences the ./.env FILE source only, and the process
+        # environment is a SEPARATE, higher-precedence source. This test asserted
+        # a code default while reading whatever the ambient environment said, so
+        # `export TRELIX_EMBEDDER_PROVIDER=azure` in a developer's shell failed it.
+        #
+        # It also failed mid-session with a clean shell: importing `litellm`
+        # anywhere (tests/unit/test_retry.py does, for its error-class checks)
+        # runs load_dotenv() at import time and publishes this repo's root .env
+        # into os.environ for the rest of the process — measured at 32 vars,
+        # among them TRELIX_EMBEDDER_PROVIDER=azure. Under forward collection
+        # order that import lands after this file; reversed, it lands before,
+        # and this assertion saw "azure".
+        monkeypatch.delenv("TRELIX_EMBEDDER_PROVIDER", raising=False)
         cfg = EmbedderConfig(_env_file=None)  # type: ignore[call-arg]
         assert cfg.provider == "local"
 
@@ -200,10 +215,17 @@ class TestRetrievalConfig:
     ) -> None:
         """Regression test: TRELIX_RETRIEVAL_FLARE_MAX_ITER emits DeprecationWarning.
 
-        This test ensures that the old environment variable name triggers
-        a deprecation warning mentioning v3.0.0 removal. The old name should
-        still work (backward compat via AliasChoices) but warn at runtime.
+        This test ensures that the old environment variable name triggers a
+        deprecation warning naming a removal target. The old name should still work
+        (backward compat via AliasChoices) but warn at runtime.
+
+        The target version is matched by SHAPE, not as a literal. This test used to
+        assert the string "v3.0.0"; v3.0.0 then shipped without the removal, the
+        message was retargeted to v4.0.0, and the test broke on a change that was
+        correcting a false statement. What matters is that the warning tells the user
+        *when* the name goes away — not which release that is this quarter.
         """
+        import re
         import warnings
 
         monkeypatch.setenv("TRELIX_RETRIEVAL_FLARE_MAX_ITER", "1")
@@ -224,8 +246,10 @@ class TestRetrievalConfig:
             f"Expected old env var name in warning: {warning_msg}"
         )
 
-        # 3. Warning message mentions v3.0.0 removal target
-        assert "v3.0.0" in warning_msg, f"Expected 'v3.0.0' in warning message: {warning_msg}"
+        # 3. Warning message names SOME removal target version
+        assert re.search(r"removed in v\d+\.\d+\.\d+", warning_msg), (
+            f"Expected the warning to name a removal target version: {warning_msg}"
+        )
 
         # 4. Backward compat worked: the value was parsed correctly
         assert cfg.flare_max_retries == 1
@@ -343,7 +367,12 @@ class TestIndexConfig:
         assert gitignore.exists()
         assert gitignore.read_text() == "*\n"
 
-    def test_default_provider_is_local(self, tmp_path: Path) -> None:
+    def test_default_provider_is_local(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # See TestEmbedderConfig.test_default_provider_is_local: the nested
+        # embedder's _env_file=None silences ./.env, not os.environ.
+        monkeypatch.delenv("TRELIX_EMBEDDER_PROVIDER", raising=False)
         cfg = IndexConfig(repo_path=str(tmp_path), embedder={"_env_file": None})  # type: ignore[arg-type]
         assert cfg.embedder.provider == "local"
 
@@ -773,3 +802,65 @@ class TestPerIntentCompressionRatio:
         """TRELIX_RETRIEVAL_COMPRESSION_RATIO must not leak into any intent."""
         monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_RATIO", "0.99")
         assert compression_ratio_for_intent(IntentType.FEATURE_FLOW) == 0.45
+
+
+class TestSparseModelDefaultIsResolvable:
+    """The default sparse model must be a model that exists and that the loader can load.
+
+    Two independent defects sat behind `sparse_embeddings` staying at 0 rows even with
+    TRELIX_RETRIEVAL_SPARSE=true:
+
+    1. The default id was `naver-splab/splade-code-distil`, which does not exist —
+       HfApi().model_info() raises RepositoryNotFoundError. The org is `naver`, and the
+       name looks like a blend of the real `splade-code-*` family with the `distil`
+       suffix from the v2/v3 line.
+
+    2. Fixing the id alone would not have helped. Both real code-SPLADE releases
+       (`naver/splade-code-8B`, `naver/splade-code-06B`) are `model_type=qwen3`, and
+       qwen3 is not in transformers' MODEL_FOR_MASKED_LM_MAPPING_NAMES, so
+       `AutoModelForMaskedLM.from_pretrained()` in embedder/sparse.py cannot load them.
+       SPLADE-Code is causal-LM based; the loader assumes BERT-family MaskedLM.
+
+    The default is therefore a real BERT-family SPLADE that the existing loader can
+    load. Verified end-to-end: 269 MB, and `SparseEmbedder.embed()` returns 128 and 23
+    non-zero token weights for two code snippets. It is NL-trained rather than
+    code-specialised, which is a documented trade-off — a working NL sparse leg beats a
+    code-specialised one that cannot load.
+
+    The existing default test only asserted `"splade" in model.lower()`, which the
+    nonexistent id also satisfied. That is why this shipped.
+    """
+
+    def test_default_is_not_the_nonexistent_id(self, tmp_path: Path) -> None:
+        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        assert cfg.sparse.model != "naver-splab/splade-code-distil", (
+            "the default still points at a HuggingFace repo that does not exist"
+        )
+
+    def test_default_org_is_spelled_correctly(self, tmp_path: Path) -> None:
+        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        org = cfg.sparse.model.split("/")[0]
+        assert org == "naver", f"unexpected org {org!r}; the SPLADE releases are under 'naver'"
+
+    def test_default_is_loadable_by_the_masked_lm_path(self, tmp_path: Path) -> None:
+        """The architecture must match the loader, which is the second half of the bug.
+
+        Checked against transformers' auto-mapping rather than by downloading weights,
+        so the test stays fast and offline-friendly once the config is cached.
+        """
+        from transformers.models.auto.modeling_auto import MODEL_FOR_MASKED_LM_MAPPING_NAMES
+
+        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        model_id = cfg.sparse.model
+
+        try:
+            from transformers import AutoConfig
+
+            model_type = AutoConfig.from_pretrained(model_id).model_type
+        except Exception as exc:  # pragma: no cover - network/cache dependent
+            pytest.skip(f"cannot resolve {model_id} offline: {exc}")
+
+        assert model_type in MODEL_FOR_MASKED_LM_MAPPING_NAMES, (
+            f"{model_id} is model_type={model_type!r}, which AutoModelForMaskedLM in "
+            "embedder/sparse.py cannot load"
+        )

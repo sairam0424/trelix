@@ -4,6 +4,7 @@
   "description": "Natural language code search and Q&A for your codebase via trelix",
   "version": "0.3.0",
   "publisher": "trelix",
+  "license": "MIT",
   "engines": { "vscode": "^1.90.0" },
   "categories": ["AI", "Other"],
   "activationEvents": ["onStartupFinished"],

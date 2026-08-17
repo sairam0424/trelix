@@ -14,6 +14,7 @@ from pathlib import Path  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
 from fastmcp import Context, FastMCP  # noqa: E402
+from fastmcp.prompts import Message  # noqa: E402
 from mcp.server.lowlevel.server import NotificationOptions  # noqa: E402
 from mcp.types import ServerCapabilities  # noqa: E402
 
@@ -130,10 +131,32 @@ def unsubscribe_resource(subscription_id: str) -> dict[str, Any]:
 def resource_index_stats() -> str:
     """Aggregate statistics for the active trelix index.
 
-    Returns JSON with a usage hint — use the manifest template for repo-specific
-    stats since direct resources cannot receive parameters.
+    A parameterless resource cannot know which repository is meant, so this points at
+    the repo-scoped template below rather than guessing. That template is new: this
+    resource previously returned only this hint while `resources.get_index_stats` — a
+    complete implementation with symbol/file/chunk counts and error handling — was
+    reachable from nothing but its own tests.
     """
-    return json.dumps({"hint": "Use trelix://repo/{repo_path}/manifest for repo-specific stats"})
+    return json.dumps(
+        {
+            "hint": "Use trelix://repo/{repo_path}/stats for index statistics, "
+            "or trelix://repo/{repo_path}/manifest for the file listing"
+        }
+    )
+
+
+@mcp.resource("trelix://repo/{repo_path}/stats")
+def resource_repo_index_stats(repo_path: str) -> str:
+    """Symbol, file and chunk counts for the index at `repo_path`.
+
+    Serves `resources.get_index_stats`, which was fully written and wired to nothing.
+    Cheap by design — three COUNT(*) queries, no embedder and no graph build — so an
+    agent can check whether a repo is indexed at all before committing to a search.
+    """
+    from trelix_mcp.resources import get_index_stats
+
+    _log.info("resource_repo_index_stats repo_path=%r", repo_path)
+    return get_index_stats(repo_path=repo_path)
 
 
 @mcp.resource("trelix://repo/{repo_path}/manifest")
@@ -165,8 +188,48 @@ def resource_symbol_source(repo_path: str, qualified_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _as_prompt_role(role: str) -> Literal["user", "assistant"]:
+    """Narrow a builder's ``role`` string to the two roles the MCP spec allows.
+
+    The builders are typed ``list[dict[str, str]]``, so their ``role`` is an
+    arbitrary ``str`` to a type checker, while fastmcp's ``Message`` accepts only
+    ``Literal["user", "assistant"]``. Branching rather than casting keeps the
+    narrowing honest instead of asserted, and an unexpected role then fails here
+    naming the offending value, rather than surfacing from inside fastmcp's own
+    validation with no indication of which message was wrong.
+
+    All three builders currently emit ``"user"``, so the raise is defensive.
+    """
+    if role == "user":
+        return "user"
+    if role == "assistant":
+        return "assistant"
+    raise ValueError(f"unsupported MCP prompt role {role!r}: expected 'user' or 'assistant'")
+
+
+def _as_prompt_messages(messages: list[dict[str, str]]) -> list[Message]:
+    """Convert the pure builders' message dicts into fastmcp ``Message`` objects.
+
+    This conversion exists at the transport boundary on purpose. ``prompts.py``
+    documents its builders as returning plain dicts and stays free of any fastmcp
+    import, matching how the tool bodies are transport-agnostic pure functions —
+    so the fastmcp-specific type is applied here, not there. Its existing tests
+    call the builders directly and are unaffected.
+
+    Without this, every ``prompts/get`` failed under fastmcp >= 3.4, which
+    validates the return value and accepts only ``Message`` or ``str``:
+
+        TypeError: messages[0] must be Message or str, got dict.
+
+    ``prompts/list`` was unaffected, so all three prompts advertised themselves
+    and then errored on use. The package pins ``fastmcp>=3.4.0``; the pin is now
+    bounded below 4 so the next major cannot silently change this contract again.
+    """
+    return [Message(m["content"], role=_as_prompt_role(m.get("role", "user"))) for m in messages]
+
+
 @mcp.prompt("trelix-search")
-def prompt_search(query: str, repo_path: str) -> list[dict[str, str]]:
+def prompt_search(query: str, repo_path: str) -> list[Message]:
     """Structured prompt for semantic code search using trelix.
 
     Args:
@@ -175,11 +238,11 @@ def prompt_search(query: str, repo_path: str) -> list[dict[str, str]]:
     """
     from trelix_mcp.prompts import build_search_prompt
 
-    return build_search_prompt(query=query, repo_path=repo_path)
+    return _as_prompt_messages(build_search_prompt(query=query, repo_path=repo_path))
 
 
 @mcp.prompt("trelix-explain")
-def prompt_explain(qualified_name: str, repo_path: str) -> list[dict[str, str]]:
+def prompt_explain(qualified_name: str, repo_path: str) -> list[Message]:
     """Structured prompt for explaining a specific code symbol.
 
     Args:
@@ -188,11 +251,13 @@ def prompt_explain(qualified_name: str, repo_path: str) -> list[dict[str, str]]:
     """
     from trelix_mcp.prompts import build_explain_prompt
 
-    return build_explain_prompt(qualified_name=qualified_name, repo_path=repo_path)
+    return _as_prompt_messages(
+        build_explain_prompt(qualified_name=qualified_name, repo_path=repo_path)
+    )
 
 
 @mcp.prompt("trelix-blast-radius")
-def prompt_blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, str]]:
+def prompt_blast_radius(symbol_name: str, repo_path: str) -> list[Message]:
     """Structured prompt for impact analysis before refactoring a symbol.
 
     Args:
@@ -201,7 +266,9 @@ def prompt_blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, str]
     """
     from trelix_mcp.prompts import build_blast_radius_prompt
 
-    return build_blast_radius_prompt(symbol_name=symbol_name, repo_path=repo_path)
+    return _as_prompt_messages(
+        build_blast_radius_prompt(symbol_name=symbol_name, repo_path=repo_path)
+    )
 
 
 @mcp.tool()
@@ -388,37 +455,98 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
         symbol_name: Name or qualified name of the symbol to analyse.
         repo_path: Absolute path to the repository root.
 
+    Answered from the resolved call edges in the index, not by semantic search.
+
+    This used to build `f"blast radius dependencies of {symbol_name}"` and run it
+    through the Retriever, which never touched the `calls` table. Measured on trelix's
+    own index for `AuditStore.append`: a SQL join over `calls` returns 320 caller
+    symbols across 101 files in 128 ms, while the semantic version returned 12 entries
+    in 5,747 ms — precision 0.33, **recall 0.04** — and ranked the queried symbol itself
+    among the results. An agent asking "what breaks if I change this?" was being told
+    about 4 of 101 affected files and acting on it.
+
+    Two deliberate constraints:
+
+    * The response stays a BARE ARRAY. workspace-vscode/src/mcp-client.ts does
+      `(parsed ?? []).map(...)` and its caller swallows the TypeError, so wrapping this
+      in an object envelope would make every "N dependents" CodeLens read 0 forever,
+      silently. Counts and diagnostics belong in a separate tool.
+    * Hydration goes through Database directly rather than Retriever, because
+      `Retriever.__init__` eagerly constructs an embedder and reads its `.dimension`
+      for the DimensionGuard. A graph query should not need an embedding model, and on
+      a dimension mismatch it would not merely be slow — it would raise.
+
     Returns:
         Deduplicated list of dependent-symbol dicts with keys: file, symbol,
-        kind, line_start, language.
+        kind, line_start, language. Empty when the symbol is unknown to the index.
     """
     _log.info("blast_radius symbol_name=%r repo_path=%r", symbol_name, repo_path)
-    query = f"blast radius dependencies of {symbol_name}"
     config = IndexConfig(repo_path=repo_path)
-    retriever = Retriever(config)
-    context = retriever.retrieve(query)
+    db = Database(config.db_path_absolute)
+    try:
+        # A bare name can match several symbols (same method name in different
+        # classes). Union their callers rather than guessing which was meant — for
+        # impact analysis, over-reporting is the safer direction.
+        targets = db.get_symbol_by_name(symbol_name)
+        target_ids = {s.id for s in targets if s.id is not None}
+        if not target_ids:
+            return []
 
-    seen_files: set[str] = set()
-    output: list[dict[str, Any]] = []
-    for r in context.results:
-        file_key = r.file.rel_path
-        if file_key in seen_files:
-            continue
-        seen_files.add(file_key)
-        output.append(
-            {
-                "file": r.file.rel_path,
-                "symbol": r.symbol.qualified_name,
-                "kind": r.symbol.kind,
-                "line_start": r.symbol.line_start,
-                "language": r.file.language,
-            }
-        )
-    return output
+        caller_ids: set[int] = set()
+        for target_id in target_ids:
+            caller_ids.update(db.get_callers(target_id))
+
+        # Files importing the target's file are affected too, even with no direct call
+        # edge. Resolved via file_id: `Retriever.get_importers` matches on
+        # `files.rel_path`, so passing it a SYMBOL name returns nothing.
+        importer_file_ids: set[int] = set()
+        for symbol in targets:
+            if symbol.file_id is not None:
+                importer_file_ids.update(db.get_files_importing(symbol.file_id))
+
+        for file_id in importer_file_ids:
+            caller_ids.update(db.get_symbol_ids_for_file_id(file_id))
+
+        # The symbol is not part of its own blast radius. Self-recursion and
+        # same-name matches would otherwise put the queried symbol in the answer,
+        # which is what the semantic version did as its top hit.
+        caller_ids -= target_ids
+
+        seen_files: set[str] = set()
+        output: list[dict[str, Any]] = []
+        for caller_id in sorted(caller_ids):
+            pair = db.get_symbol_with_file(caller_id)
+            if pair is None:
+                continue
+            symbol, file = pair
+            if file.rel_path in seen_files:
+                continue
+            seen_files.add(file.rel_path)
+            output.append(
+                {
+                    "file": file.rel_path,
+                    "symbol": symbol.qualified_name,
+                    "kind": symbol.kind.value
+                    if hasattr(symbol.kind, "value")
+                    else str(symbol.kind),
+                    "line_start": symbol.line_start,
+                    "language": file.language.value
+                    if hasattr(file.language, "value")
+                    else str(file.language),
+                }
+            )
+        return output
+    finally:
+        db.close()
 
 
 @mcp.tool()
-def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dict[str, Any]:
+def build_knowledge_graph(
+    repo_path: str,
+    extract_concepts: bool = False,
+    min_community_size: int = 2,
+    max_communities: int = 50,
+) -> dict[str, Any]:
     """
     Build a knowledge graph for an indexed codebase.
 
@@ -433,7 +561,25 @@ def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dic
     - node_count: number of symbols in the graph
     - edge_count: number of structural relationships
     - community_count: detected architectural clusters
-    - community_summary: top files + symbols per cluster
+    - community_summary: the largest clusters, size-ordered (see the caps below)
+
+    community_summary used to ship every detected community, unsorted. Measured on
+    trelix's own index that was **1,160,415 bytes — roughly 290,000 tokens** from a
+    single tool call, larger than most context windows. 6,437 of the 6,497 entries
+    (99.1%) were singleton communities carrying no architectural signal, while the five
+    real clusters (514, 477, 393, 279, 277 nodes) accounted for almost none of the bytes.
+
+    min_community_size=2 and max_communities=50 cut that to under 32 KB while keeping
+    every significant cluster. Pass min_community_size=1 and max_communities=0 to
+    restore the old uncapped array.
+
+    singleton_count and communities_omitted are always reported: 6,437 singletons is a
+    community-detection tuning problem, and capping the payload without saying so would
+    hide it.
+
+    NOTE this does not reduce the endpoint's real COST. Both this tool and
+    GET /graph/communities call GraphBuilder(config).build() on every request — a full
+    Louvain pass, a PageRank rebuild and two metadata saves — and that is untouched here.
     """
     from trelix.core.config import IndexConfig
     from trelix.graph.builder import GraphBuilder
@@ -441,13 +587,26 @@ def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dic
     _log.info("build_knowledge_graph repo=%s concepts=%s", repo_path, extract_concepts)
     config = IndexConfig(repo_path=repo_path)
     result = GraphBuilder(config).build(extract_concepts=extract_concepts)
+
+    summary = list(result.community_summary or [])
+    singleton_count = sum(1 for c in summary if int(c.get("size", 0)) <= 1)
+
+    trimmed = [c for c in summary if int(c.get("size", 0)) >= max(1, min_community_size)]
+    trimmed.sort(key=lambda c: int(c.get("size", 0)), reverse=True)
+    if max_communities > 0:
+        trimmed = trimmed[:max_communities]
+
     return {
         "node_count": result.node_count,
         "edge_count": result.edge_count,
+        # The TRUE total, not the number returned — an agent deciding whether to look
+        # closer needs to know how much it is not seeing.
         "community_count": result.community_count,
         "concept_count": result.concept_count,
         "elapsed_seconds": round(result.elapsed_seconds, 3),
-        "community_summary": result.community_summary,
+        "community_summary": trimmed,
+        "singleton_count": singleton_count,
+        "communities_omitted": len(summary) - len(trimmed),
     }
 
 

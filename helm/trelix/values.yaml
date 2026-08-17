@@ -5,10 +5,18 @@
 replicaCount: 1
 
 image:
-  # :2.12.0 is the slim, API-embedder-only tag. Use the "-local" suffix
-  # (e.g. 2.12.0-local) for the variant bundling sentence-transformers/torch.
+  # :3.1.2 is the slim, API-embedder-only tag. Use the "-local" suffix
+  # (e.g. 3.1.2-local) for the variant bundling sentence-transformers/torch.
+  #
+  # This tag MUST equal Chart.yaml's appVersion. It sat on 2.12.0 while
+  # appVersion was bumped by all five releases since, so the chart advertised
+  # 3.1.2 and deployed 2.12.0 — `helm install` at defaults ran an image five
+  # releases behind the version the chart claimed to be.
+  # CONTRIBUTING.md's checklist could not catch it: it greps for the PREVIOUS
+  # version, which never matches a site stranded on 2.x. release.yml's
+  # verify-version job now compares this line against the release tag.
   repository: ghcr.io/sairam0424/trelix
-  tag: "2.12.0"
+  tag: "3.1.2"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

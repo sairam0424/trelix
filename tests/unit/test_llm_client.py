@@ -53,6 +53,30 @@ class TestTrelixChatClientABC:
 
 
 class TestLLMConfig:
+    @pytest.fixture(autouse=True)
+    def _unconfigured_llm_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Scrub the two vars whose ambient presence defeats a "code default" claim.
+
+        `LLMConfig(_env_file=None)` silences the ./.env FILE source only. The
+        process environment is a separate, higher-precedence pydantic-settings
+        source, so the two default assertions below were really asserting
+        "nothing exported TRELIX_LLM_PROVIDER/TRELIX_LLM_MODEL in this process".
+
+        That is not hypothetical. Importing `litellm` — tests/unit/test_retry.py
+        does, for its error-classification checks — runs load_dotenv() at import
+        time and publishes this repo's root .env into os.environ for the whole
+        process. This repo's .env sets TRELIX_LLM_PROVIDER=azure, so
+        test_default_provider_is_openai failed whenever that import landed first
+        (reverse collection order does exactly that); TRELIX_LLM_MODEL=gpt-4o
+        happens to equal the code default, so test_default_model_is_gpt4o passed
+        by coincidence rather than by testing anything.
+
+        The tests below that DO exercise env precedence set these vars themselves
+        via monkeypatch, which runs after this fixture.
+        """
+        monkeypatch.delenv("TRELIX_LLM_PROVIDER", raising=False)
+        monkeypatch.delenv("TRELIX_LLM_MODEL", raising=False)
+
     def test_default_provider_is_openai(self) -> None:
         from trelix.core.config import LLMConfig
 

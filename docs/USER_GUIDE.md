@@ -1,4 +1,4 @@
-# trelix User Guide — v3.0.0
+# trelix User Guide — v3.1.2
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -190,7 +190,7 @@ The practical meaning: a result that appears at rank 3 in the vector leg AND ran
 
 ## 4. The Retrieval Pipeline — All 7 Legs
 
-trelix v3.0.0 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
+trelix v3.1.2 supports up to 7 parallel retrieval legs. Three are always active; four are opt-in. All results are fused via RRF, then graph-expanded, then optionally reranked.
 
 ```
 User Query
@@ -369,7 +369,7 @@ trelix index ./my-repo
 You will see output like this:
 
 ```
-trelix v3.0.0 — indexing ./my-repo
+trelix v3.1.2 — indexing ./my-repo
 ✓ FileWalker: 243 files found (.gitignore applied)
   Phase 1/4 — Parse
     [████████████████████] 243/243 files  3.2s
@@ -468,7 +468,7 @@ trelix stats ./my-repo
 trelix stats — ./my-repo
 
   Index:        ./my-repo/.trelix/index.db
-  Version:      3.0.0
+  Version:      3.1.2
   Last indexed: 2026-07-05 10:32:14 UTC
 
   Files:        243
@@ -1383,6 +1383,16 @@ python -c "import sqlite_vec; print('sqlite-vec loaded successfully')"
 trelix index ./my-repo  # re-index
 ```
 
+Note this catches **added and modified** files only. `trelix index` walks the repository
+and inserts what it finds; it has no reconciliation pass, so a file you DELETED stays
+indexed and keeps appearing in results. Only `trelix watch` removes deleted files, via
+filesystem events. To clear removed files from an existing index, delete
+`.trelix/index.db` and index again.
+
+If a `path(s) could not be read` warning appeared during indexing, some files are missing
+for a different reason — an unreadable directory drops its whole subtree — and re-indexing
+will not help until the permissions are fixed.
+
 *Provider mismatch* — you indexed with one provider and are querying with another:
 ```bash
 # Check which provider was used at index time
@@ -1601,7 +1611,7 @@ built-in default list rather than appending to it.
 Only two flags are processed before a subcommand:
 
 ```bash
-trelix --version        # or -V; prints e.g. "trelix 3.1.1"
+trelix --version        # or -V; prints e.g. "trelix 3.1.2"
 trelix --help           # top-level help
 trelix <command> --help  # per-command help — the ground truth for any flag question
 ```
@@ -1712,7 +1722,7 @@ curl http://localhost:8765/health
 ```
 
 ```json
-{"status": "ok", "version": "3.0.0", "repo": "./my-repo"}
+{"status": "ok", "version": "3.1.2", "repo": "./my-repo"}
 ```
 
 ### Index statistics
@@ -2185,4 +2195,4 @@ Everything below is **additive and off by default** — a v2.12.0 setup keeps be
 
 ---
 
-*trelix v3.0.0 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v3.1.2 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

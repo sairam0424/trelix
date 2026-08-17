@@ -1,6 +1,11 @@
-# trelix v3.0.0 Documentation
+# trelix v3.1.2 Documentation
 
-Welcome to the trelix documentation hub. This page is a complete index of every documentation file in the project.
+Welcome to the trelix documentation hub. This page indexes every file under `docs/` and all five
+top-level Markdown docs, with one deliberate exception: the 35 implementation plans in
+[superpowers/plans/](superpowers/plans/) and the 6 design specs in
+[superpowers/specs/](superpowers/specs/) are linked as directories, not enumerated. They are
+dated working artifacts — a per-file list here would go stale the next time a plan is written.
+Everything else is listed below by name.
 
 ---
 
@@ -32,10 +37,13 @@ Using trelix from Python (LangChain / LlamaIndex)?
   → LANGCHAIN_LLAMAINDEX_GUIDE.md
 
 Confused about config options?
-  → CONFIGURATION.md (root)
+  → CONFIGURATION.md
 
 Connecting multiple trelix instances?
   → FEDERATION_GUIDE.md
+
+Locking down the HTTP API (OIDC bearer auth, audit trail)?
+  → SSO.md, then AUDIT.md
 
 Using a specific provider (OpenAI, Ollama, etc.)?
   → PROVIDERS.md
@@ -53,6 +61,7 @@ Looking for a specific term?
 
 | File | Description | Audience |
 |------|-------------|----------|
+| [../README.md](../README.md) | Project entry point: what trelix is, install one-liners, feature tour | Everyone |
 | [GETTING_STARTED.md](GETTING_STARTED.md) | Five-minute quickstart: install, configure, run your first query | New users |
 | [WHY_TRELIX.md](WHY_TRELIX.md) | Design rationale, architectural decisions, and use-case fit | Evaluators, decision-makers |
 | [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md) | All install paths: pip, Docker, from source, CI environments | All users |
@@ -67,9 +76,22 @@ Looking for a specific term?
 | File | Description | Audience |
 |------|-------------|----------|
 | [architecture.md](architecture.md) | Internal architecture: components, data flow, extension points | Contributors, integrators |
-| [CONFIGURATION.md](../CONFIGURATION.md) | Every config key, environment variable, and default value | Operators, power users |
-| [CLI_REFERENCE.md](../CLI_REFERENCE.md) | Full CLI command reference with flags and examples | CLI users |
+| [CONFIGURATION.md](CONFIGURATION.md) | Every config key, environment variable, and default value | Operators, power users |
+| [CLI_REFERENCE.md](CLI_REFERENCE.md) | Full CLI command reference with flags and examples | CLI users |
 | [OBSERVABILITY.md](OBSERVABILITY.md) | OpenTelemetry tracing: what's traced, how to enable, stability caveats | Operators, SRE |
+
+---
+
+## Security & Operations
+
+Both features below are new in v3.0.0 and fully opt-in: with their enabling env var unset
+(`TRELIX_OIDC_ENABLED`, `TRELIX_AUDIT_ENABLED`) no verifier is built and no middleware is
+registered, and the HTTP API behaves exactly as it did in v2.12.0.
+
+| File | Description | Audience |
+|------|-------------|----------|
+| [SSO.md](SSO.md) | OIDC bearer-token verification for the HTTP API. OIDC only — trelix is a resource server, and SAML is not supported | Operators, platform engineers |
+| [AUDIT.md](AUDIT.md) | Hash-chained append-only audit trail: one entry per API request, backed by stdlib `sqlite3` | Operators, compliance |
 
 ---
 
@@ -111,17 +133,35 @@ Looking for a specific term?
 | File | Description |
 |------|-------------|
 | [../CHANGELOG.md](../CHANGELOG.md) | Full version history with breaking changes and migration notes |
+| [BACKWARDS_COMPATIBILITY.md](BACKWARDS_COMPATIBILITY.md) | SemVer policy: which API surfaces are stable, and the deprecation grace period before removal |
+| [ROADMAP.md](ROADMAP.md) | Living roadmap — what shipped per version, and planned research directions |
 | [v2.4.0-world-release-report.md](v2.4.0-world-release-report.md) | v2.4.0 release readiness audit: what shipped, benchmarks, blockers found before tagging |
+
+---
+
+## Measurement Reports
+
+Everything under `reports/` is measured output from a specific machine and release, kept for
+provenance. These are not guides — do not read a number here as a documented guarantee.
+
+| File | Description |
+|------|-------------|
+| [reports/self-index-v3.1.2.md](reports/self-index-v3.1.2.md) | v3.1.2 self-index run: indexing trelix with trelix, then checking which index dimensions were actually populated. Numbers that could not be measured honestly are marked as such rather than estimated |
+| [reports/index-hygiene-before.json](reports/index-hygiene-before.json) | Raw before-state for that run: 915 files, 59.3% of them `.vscode-test/` noise, indexed with the 384-dim local embedder |
+| [reports/index-hygiene-after.json](reports/index-hygiene-after.json) | Raw after-state: 454 files, 0% noise, indexed with the configured `azure` provider |
 
 ---
 
 ## Internal / Development
 
+Dated working artifacts. These are the only files in `docs/` this index does not enumerate
+per-file — see the note at the top.
+
 | Path | Description |
 |------|-------------|
-| [superpowers/plans/](superpowers/plans/) | Implementation plans for upcoming features |
-| [superpowers/specs/](superpowers/specs/) | Feature specifications |
+| [superpowers/plans/](superpowers/plans/) | 35 implementation plans, one per feature or release |
+| [superpowers/specs/](superpowers/specs/) | 6 design specs backing the earliest plans |
 
 ---
 
-*Last updated: 2026-08-13 — trelix v3.0.0*
+*Last updated: 2026-08-17 — trelix v3.1.2*

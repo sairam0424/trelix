@@ -87,7 +87,16 @@ def load_graph_metadata(db: Database, cg: CodeGraph) -> None:
 
 
 def get_top_central_symbols(db: Database, top_n: int = 100) -> list[int]:
-    """Return symbol_ids sorted by centrality DESC from graph_metadata table."""
+    """Return symbol_ids sorted by centrality DESC from graph_metadata table.
+
+    Returns `[]` on an index where `trelix graph` has never run. `graph_metadata` is
+    created on demand rather than by the base schema, so this needs the same
+    `_ensure_table` its two siblings call — without it the read raised
+    `no such table: graph_metadata`, which the caller in `Retriever` swallowed at DEBUG
+    while the CLI logged at WARNING. An enabled PageRank boost therefore did nothing and
+    said nothing.
+    """
+    _ensure_table(db)
     rows = db._conn.execute(
         "SELECT symbol_id FROM graph_metadata ORDER BY centrality DESC LIMIT ?",
         (top_n,),

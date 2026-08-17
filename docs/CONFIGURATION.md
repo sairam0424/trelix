@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v3.0.0
+# Trelix Configuration Reference — v3.1.2
 
 Complete reference for all configuration options available in trelix.
 
@@ -88,7 +88,7 @@ tuned via the three batching variables above, not by a worker/concurrency count.
 | `TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS` | `120` (min: `0`) | Bodies below this token count are never compressed — the elision markers and per-span headers would cost more than the shrink saves. Such a result is handled exactly as before: kept if it fits, skipped if it does not. |
 | `TRELIX_INDEXER_STREAMING` | `false` | Enable generator-based streaming indexing pipeline (bounded Queue, lazy file iteration). Default off — zero behavior change when unset. |
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | Reranker to apply after fusion. One of: `cross_encoder`, `cohere`, `plaid`, `xtr` (**experimental**). Reranking itself is gated separately by `TRELIX_RETRIEVAL_RERANK` (default `true`) |
-| `TRELIX_RETRIEVAL_XTR_TOKENS` | `100` | Candidate token count for XTR reranker (10–1000). Only applies when `TRELIX_RETRIEVAL_RERANK_PROVIDER=xtr` |
+| `TRELIX_RETRIEVAL_XTR_TOKENS` | `100` | **Inert.** `RetrievalConfig.xtr_candidate_tokens` is declared and range-validated but read nowhere in `src/`, deliberately: the `xtr` provider is degenerate (one synthetic query token, so every output score is bit-identical to its input) and a real candidate-token budget needs the ColBERT-style multi-vector token index trelix does not build. The knob is kept for that future embedder; the provider logs this on every call |
 | `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE re-retrieval. Not the paper's token-log-probability method: after a synthesis completes, the answer is scanned for a fixed list of uncertainty phrases (`"i don't know"`, `"cannot find"`, …) and, on a hit, the query is enriched and re-synthesized. There is no probability threshold setting |
 | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Maximum FLARE iterations per query (min: 1, max: 3) |
 | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Enable HyDE (Hypothetical Document Embeddings) fallback when standard retrieval returns weak results |
@@ -99,6 +99,9 @@ tuned via the three batching variables above, not by a worker/concurrency count.
 | `TRELIX_RETRIEVAL_LEG_WEIGHT_<LEG>` | `1.0` per leg | Per-leg RRF score multiplier applied during fusion, before summing (not after, like file-type weights). `<LEG>` is one of `VECTOR`, `BM25`, `GREP`, `SUMMARY`, `SUB_CHUNK`, `SPARSE`, e.g. `TRELIX_RETRIEVAL_LEG_WEIGHT_BM25=0.7`. All-`1.0` (the default) is a no-op — byte-for-byte identical to unweighted fusion. |
 | `TRELIX_RETRIEVAL_DECLARATION_BOOST` | `false` | Enable FTS5 declaration-boost ranking — boosts BM25 matches on a symbol's `name`/`qualified_name` over incidental matches in `docstring`/`body`/`context_summary`. Fixes cases where a symbol only *mentioning* a term outranks the symbol actually *named* that term. |
 | `TRELIX_RETRIEVAL_DECLARATION_BOOST_WEIGHT` | `1.0` | Declaration-boost multiplier applied to the `name`/`qualified_name` FTS5 columns (range: 1.0–10.0). Default `1.0` is a no-op — byte-for-byte identical to unweighted BM25 ranking. Only takes effect when `TRELIX_RETRIEVAL_DECLARATION_BOOST=true`. |
+| `TRELIX_RETRIEVAL_BREADTH_FLOOR` | `true` | When a direct-lookup intent (`file_overview`, `project_overview`, `config_lookup`) resolves only a thin result, also run standard retrieval and merge instead of returning it as if complete. Set `false` for the pre-3.1.2 all-or-nothing behaviour, where one matched file suppressed the vector, BM25 and grep legs entirely. |
+| `TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_FILES` | `2` | The floor fires when the direct lookup resolves fewer than this many distinct files **and** fewer than `..._MIN_SYMBOLS` symbols — both conditions, so a single file rich in symbols is still treated as a real answer. |
+| `TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_SYMBOLS` | `10` | See above. Chosen against one repository's golden set: the floor restored nDCG@10 to 0.6189/0.6217 from 0.6039/0.5791, at the cost of top-rank precision on exact-filename queries (Recall@10 stays 1.0000, nDCG 1.0000 -> 0.8253). |
 | `TRELIX_TELEMETRY_ENABLED` | `false` | Record every `retrieve()` call to the `query_telemetry` table in the index DB. Zero overhead when disabled. This setting lives on the top-level index config, not on the retrieval config — so it is `TRELIX_TELEMETRY_ENABLED`, **not** `TRELIX_RETRIEVAL_TELEMETRY`, which is not read. For OpenTelemetry spans see `TRELIX_OTEL_ENABLED` under [Observability](#observability-opentelemetry) — a separate, independent switch |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM-powered file summaries at index time (requires a configured LLM provider) |
 
@@ -187,18 +190,18 @@ The agentic loop (`trelix ask --agentic` / `TRELIX_RETRIEVAL_AGENTIC=true`) pers
 ### File walker (which files get indexed)
 
 This is the only mechanism trelix has for including/excluding paths. There is **no
-`.trelixignore` and no ignore section in any config file** — exclusion is `.gitignore` plus
-the three list variables below.
+`.trelixignore` and no ignore section in any config file** — exclusion is `.gitignore`
+(repo-root *and* nested, as of v3.1.2) plus the three list variables below.
 
 > **These variables are read from the process environment only.** `WalkerConfig` does not
 > declare `env_file`, so a `TRELIX_WALKER_*` entry in `.env` is silently ignored.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_WALKER_RESPECT_GITIGNORE` | `true` | Honour the **repo-root** `.gitignore` via `pathspec`. Only `<repo>/.gitignore` is read — a nested `.gitignore` in a subdirectory is ignored, so patterns must be path-qualified in the root file (`pkg/secret.py`, not `secret.py` inside `pkg/.gitignore`). Set `false` to index everything git ignores |
+| `TRELIX_WALKER_RESPECT_GITIGNORE` | `true` | Honour `.gitignore` via `pathspec`. **Since v3.1.2 nested `.gitignore` files are read too**, with git's own semantics: each file's patterns are matched relative to its own directory, and the `.gitignore` closest to a path wins (so a deeper `!keep.log` re-includes what its parent excluded). Before v3.1.2 only `<repo>/.gitignore` was read, which is why patterns previously had to be path-qualified in the root file. Set `false` to index everything git ignores |
 | `TRELIX_WALKER_FOLLOW_SYMLINKS` | `true` | Whether the walk follows symlinks out of `repo_path`. **Default `true` is the historical behaviour**: a symlink whose target lives outside the repository is indexed, and `rel_path` is computed on the unresolved path so it is reported as though it sat inside (`linked_dir/secret.py`). Set `false` to confine the walk by resolved path. Opt-in because confining by default would silently drop files from repos that symlink to shared or vendored directories. Symlinks pointing *inside* the repo are indexed either way |
 | `TRELIX_WALKER_MAX_FILE_SIZE_BYTES` | `500000` | Files larger than this are skipped entirely |
-| `TRELIX_WALKER_LANGUAGES` | 21 languages (Python, JS, TS, TSX, Go, Rust, Java, Kotlin, Ruby, C++, C, C#, Razor, cshtml, csproj, Markdown, JSON, YAML, TOML, HTML, CSS) | JSON array of language names to parse, e.g. `'["python","go"]'` |
+| `TRELIX_WALKER_LANGUAGES` | 26 languages (Python, JS, TS, TSX, Go, Rust, Java, Kotlin, Ruby, C++, C, C#, Razor, cshtml, csproj, Markdown, JSON, YAML, TOML, HTML, CSS, **shell, dockerfile, make, sql, proto**) | JSON array of language names to parse, e.g. `'["python","go"]'`. **This REPLACES the default list rather than adding to it** — pinning it means you do not get languages added in later versions. The five ops languages have no structural extractor yet and are parsed into line windows (see `parser/extractors/line_window.py`) |
 | `TRELIX_WALKER_EXTRA_IGNORE_DIRS` | 30 entries (`.git`, `node_modules`, `__pycache__`, `venv`, `.venv`, `dist`, `build`, `target`, `.next`, `vendor`, `bin`, `obj`, `.trelix`, …) | JSON array of directory names to skip |
 | `TRELIX_WALKER_EXTRA_IGNORE_FILENAMES` | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `angular.json` | JSON array of exact filenames to skip |
 | `TRELIX_WALKER_EXTRA_IGNORE_EXTENSIONS` | 27 entries (`.pyc`, `.so`, `.dll`, `.png`, `.pdf`, `.zip`, `.min.js`, `.lock`, …) | JSON array of file extensions to skip |
@@ -230,9 +233,9 @@ echo "dist/" >> .gitignore
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_FEDERATION_ENABLED` | `false` | Enable federated search across multiple indexed repositories |
-| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | Maximum number of parallel workers when querying federated repos (1–16) |
-| `TRELIX_FEDERATION_MAX_REPOS` | `50` | Maximum number of registered repos actually queried per federated search call (1–500). Registered repos beyond this cap are skipped (reported via `repos_skipped` in the MCP `federation_search_all` response); prevents an unbounded `federation_add_repo` loop from making every subsequent query scale linearly |
+| `TRELIX_FEDERATION_ENABLED` | `false` | **Inert.** `RetrievalConfig.federation_enabled` is declared but read nowhere in `src/`. Federated search is reached by running `trelix search-all`, which federates whether this is set or not; setting it does not make `trelix ask`/`trelix search` federate |
+| `TRELIX_FEDERATION_MAX_WORKERS` | `4` | **Inert.** `RetrievalConfig.federation_max_workers` is declared and range-validated (1–16) but read nowhere in `src/`. `search-all` constructs `FederatedRetriever(registry)` with no arguments, so the `ThreadPoolExecutor` size is always the constructor's own default of 4 — which happens to equal this documented default, so the only observable symptom is that raising it does nothing |
+| `TRELIX_FEDERATION_MAX_REPOS` | `50` | Maximum number of registered repos actually queried per federated search call (1–500). Registered repos beyond this cap are skipped (reported via `repos_skipped` in the MCP `federation_search_all` response); prevents an unbounded `federation_add_repo` loop from making every subsequent query scale linearly. **No effect on `trelix search-all`** — `FederatedRetriever`'s `max_repos` parameter defaults to `None` (unbounded) and the CLI passes nothing, so only the separately-distributed `trelix-mcp` server applies this |
 
 There is no environment variable for the federation registry file path. The registry JSON file location defaults to `~/.config/trelix/repos.json` and can be overridden per-call via the `--config` CLI option (`trelix search-all --config`, `trelix federation add/list/remove --config`) or the `config_path` argument on the corresponding MCP tools. For security, MCP callers may only point `config_path` at `~/.config/trelix/` or `<mcp-server-cwd>/.trelix/` — paths outside those roots are rejected.
 
@@ -243,7 +246,7 @@ Configuration for [`trelix link-tickets`](CLI_REFERENCE.md#trelix-link-tickets),
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_GIT_LINKER_ENABLED` | `false` | Enable git-history ticket linking. Set to `true` automatically by `trelix link-tickets`; not something you typically set directly. |
-| `TRELIX_GIT_LINKER_TICKET_PATTERN` | `[A-Z]+-\d+` | Regex for matching ticket IDs in commit messages. The default matches Jira-style tickets (`PROJ-123`); override for other conventions (GitHub `#123`, Linear `ENG-123`). |
+| `TRELIX_GIT_LINKER_TICKET_PATTERN` | see `TICKET_PATTERN_DEFAULT` in `core/config.py` | Regex for matching ticket IDs in commit messages. Matches Jira/Linear-style keys (`PROJ-123`, `ENG-45`), including inside branch names in merge subjects (`feature/PROJ-456-thing`), while excluding technical constants that share the same shape (`UTF-8`, `SHA-256`, `HTTP-400`). Override for other conventions, e.g. GitHub-issue style (`#\d+`). |
 | `TRELIX_GIT_LINKER_MAX_COMMITS` | `5000` (min: `1`) | Maximum number of commits to walk. Bounds cost on repos with 100k+ commit histories. |
 | `TRELIX_GIT_LINKER_SINCE` | _(none)_ | Only walk commits after this date, e.g. `"90 days ago"`. Passed straight through to `git log --since`. |
 
@@ -305,7 +308,7 @@ relevant to your setup. Lines beginning with `#` are comments and are ignored.
 
 ```dotenv
 # =============================================================================
-# Trelix v3.0.0 — complete .env example
+# Trelix v3.1.2 — complete .env example
 # Copy to .env and fill in values. Never commit this file.
 # =============================================================================
 
@@ -438,8 +441,14 @@ TRELIX_STORE_BACKEND=sqlite
 # Federation
 # ---------------------------------------------------------------------------
 
-TRELIX_FEDERATION_ENABLED=false
-TRELIX_FEDERATION_MAX_WORKERS=4
+# INERT: both are declared in RetrievalConfig but read nowhere in src/. Run
+# `trelix search-all` to federate; the pool size is always FederatedRetriever's
+# own constructor default of 4. Listed only so the names are not mistaken for
+# typos when you see them in config dumps.
+# TRELIX_FEDERATION_ENABLED=false
+# TRELIX_FEDERATION_MAX_WORKERS=4
+# Applied only by the out-of-tree trelix-mcp server — the CLI leaves
+# FederatedRetriever(max_repos=None), i.e. unbounded.
 # TRELIX_FEDERATION_MAX_REPOS=50
 
 # Federation registry file path has no env var override — use --config (CLI)
@@ -450,7 +459,7 @@ TRELIX_FEDERATION_MAX_WORKERS=4
 # ---------------------------------------------------------------------------
 
 # TRELIX_GIT_LINKER_ENABLED=false
-# TRELIX_GIT_LINKER_TICKET_PATTERN=[A-Z]+-\d+
+# TRELIX_GIT_LINKER_TICKET_PATTERN=   # default excludes UTF-8/SHA-256-style noise
 # TRELIX_GIT_LINKER_MAX_COMMITS=5000
 # TRELIX_GIT_LINKER_SINCE=90 days ago
 

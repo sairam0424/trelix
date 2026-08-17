@@ -5,7 +5,7 @@
     "ghcr.io/devcontainers/features/git:1": {},
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
-  "postCreateCommand": "pip install -e '.[local,dev]' && pre-commit install",
+  "postCreateCommand": "pip install -e '.[local,otel,sso,dev]' && pre-commit install",
   "postStartCommand": "git config --global --add safe.directory /workspaces/trelix",
   "customizations": {
     "vscode": {

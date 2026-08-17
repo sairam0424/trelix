@@ -429,3 +429,26 @@ class TestListWeights:
         fused = reciprocal_rank_fusion([[py]], k=60, weights={"python": 2.0}, list_weights=[3.0])
         expected = (3.0 / (60 + 1)) * 2.0
         assert abs(fused[0].score - expected) < 1e-12
+
+    def test_a_language_absent_from_weights_keeps_full_weight(self) -> None:
+        """An unweighted language is ranked level with parsed Python, not penalised.
+
+        This is the fallback in `weights.get(str(lang), 1.0)`, and it is load-bearing:
+        the five line-window languages (shell, dockerfile, make, sql, proto) have no
+        entry in `RetrievalConfig.file_type_weights`, so this branch is what decides how
+        an indexed Dockerfile ranks against a Python function. The NOTE in that config
+        field documents the choice and why it was not tuned; this pins the mechanism the
+        NOTE describes so the two cannot drift apart silently.
+        """
+        shell = _make_result_lang(symbol_id=1, score=0.9, language=Language.SHELL)
+        py = _make_result_lang(symbol_id=2, score=0.9, language=Language.PYTHON)
+
+        fused = reciprocal_rank_fusion(
+            [[shell], [py]], k=60, weights={"python": 1.0, "markdown": 0.3}
+        )
+
+        scores = {r.chunk.symbol_id: r.score for r in fused}
+        assert abs(scores[1] - scores[2]) < 1e-12, (
+            "shell has no weights entry, so it must receive the 1.0 fallback and tie with "
+            f"python at the same rank; got shell={scores[1]} python={scores[2]}"
+        )

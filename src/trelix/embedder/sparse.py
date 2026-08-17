@@ -39,18 +39,24 @@ class SparseEmbedder:
 
     Usage::
 
-        embedder = SparseEmbedder("naver-splab/splade-code-distil", top_k=128)
+        embedder = SparseEmbedder("naver/splade-v3-distilbert", top_k=128)
         sparse_vecs = embedder.embed(["def login(user, pw): ...", "..."])
         # Returns: [{token_id: weight, ...}, ...]
     """
 
     def __init__(
         self,
-        model_name: str = "naver-splab/splade-code-distil",
+        model_name: str = "naver/splade-v3-distilbert",
         top_k: int = 128,
+        batch_size: int = 16,
     ) -> None:
         self._model_name = model_name
         self._top_k = top_k
+        # A MaskedLM emits logits of shape (batch, seq_len, vocab_size), so memory grows
+        # linearly with the batch. Unbatched, this repository's own 10,700 chunks at
+        # max_length=512 against a 30,522-token vocabulary would need a 668 GB tensor;
+        # 200 chunks already needs 12.5 GB. The batch is the only thing bounding it.
+        self._batch_size = max(1, batch_size)
         self._model: Any = None
         self._tokenizer: Any = None
         self._lock = threading.Lock()
@@ -79,6 +85,16 @@ class SparseEmbedder:
                 self._model = AutoModelForMaskedLM.from_pretrained(self._model_name)
                 self._model.eval()
                 logger.info("SparseEmbedder loaded: %s", self._model_name)
+                if self._model_name.startswith("naver/splade"):
+                    # Stated once, on load, because the obligation attaches to whoever
+                    # downloads the weights and nothing else in the pipeline would
+                    # mention it. trelix is MIT and does not redistribute them.
+                    logger.warning(
+                        "%s is published under CC BY-NC-SA-4.0 (non-commercial). "
+                        "Set TRELIX_SPARSE_MODEL to a permissively-licensed model, or "
+                        "leave TRELIX_RETRIEVAL_SPARSE off, for commercial use.",
+                        self._model_name,
+                    )
                 return True
             except Exception as exc:
                 logger.warning("SparseEmbedder failed to load %s: %s", self._model_name, exc)
@@ -100,28 +116,35 @@ class SparseEmbedder:
             import torch
 
             results: list[dict[int, float]] = []
-            inputs = self._tokenizer(
-                texts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=512,
-            )
-            with torch.no_grad():
-                outputs = self._model(**inputs)
+            # Chunked, because a MaskedLM's logits are (batch, seq_len, vocab_size) and
+            # one pass over a whole corpus does not fit in memory — see __init__.
+            # Batches are appended in order, so `results` stays positionally aligned
+            # with `texts`; the indexer zips these against its pending chunks by
+            # position, and a reordering would attach every vector to the wrong chunk.
+            for start in range(0, len(texts), self._batch_size):
+                batch = texts[start : start + self._batch_size]
+                inputs = self._tokenizer(
+                    batch,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                )
+                with torch.no_grad():
+                    outputs = self._model(**inputs)
 
-            # SPLADE aggregation: max over sequence, then log(1 + ReLU(logits))
-            logits = outputs.logits  # (batch, seq_len, vocab_size)
-            agg = torch.log(1 + torch.relu(logits)).max(dim=1).values  # (batch, vocab_size)
+                # SPLADE aggregation: max over sequence, then log(1 + ReLU(logits))
+                logits = outputs.logits  # (batch, seq_len, vocab_size)
+                agg = torch.log(1 + torch.relu(logits)).max(dim=1).values  # (batch, vocab)
 
-            for i in range(len(texts)):
-                scores = agg[i]  # (vocab_size,)
-                topk_vals, topk_ids = torch.topk(scores, k=min(self._top_k, scores.shape[0]))
-                vec: dict[int, float] = {}
-                for tok_id, weight in zip(topk_ids.tolist(), topk_vals.tolist()):
-                    if weight > 0.0:
-                        vec[int(tok_id)] = float(weight)
-                results.append(vec)
+                for i in range(len(batch)):
+                    scores = agg[i]  # (vocab_size,)
+                    topk_vals, topk_ids = torch.topk(scores, k=min(self._top_k, scores.shape[0]))
+                    vec: dict[int, float] = {}
+                    for tok_id, weight in zip(topk_ids.tolist(), topk_vals.tolist()):
+                        if weight > 0.0:
+                            vec[int(tok_id)] = float(weight)
+                    results.append(vec)
             return results
         except Exception as exc:
             logger.debug("SparseEmbedder.embed() failed: %s", exc)

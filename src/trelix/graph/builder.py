@@ -10,7 +10,13 @@ from typing import Any
 
 from trelix.core.config import IndexConfig
 from trelix.graph.code_graph import CodeGraph
-from trelix.graph.community import assign_communities, detect_communities, get_community_summary
+from trelix.graph.community import (
+    PartitionQuality,
+    assess_partition_quality,
+    assign_communities,
+    detect_communities,
+    get_community_summary,
+)
 from trelix.graph.concepts import ConceptExtractor, save_concepts
 from trelix.graph.persistence import save_graph_metadata
 from trelix.store.db import Database
@@ -27,6 +33,9 @@ class GraphBuildResult:
     concept_count: int
     elapsed_seconds: float
     community_summary: list[dict[str, Any]] = field(default_factory=list)
+    # Defaulted so existing constructors (api/app.py, the MCP server's tests)
+    # keep working; None means "not assessed", which is distinct from "healthy".
+    partition_quality: PartitionQuality | None = None
 
 
 class GraphBuilder:
@@ -57,6 +66,16 @@ class GraphBuilder:
         community_count = len(set(communities.values())) if communities else 0
         community_summary = get_community_summary(cg)
         logger.info("Detected %d communities", community_count)
+
+        # A bare community count hid a degenerate partition for several releases:
+        # trelix's own index reports 6640 communities, of which 6579 are single
+        # nodes. WARNING (not INFO) because the CLI's default level is WARNING —
+        # at INFO this stays invisible without -v, which is how it went unnoticed.
+        quality = assess_partition_quality(cg, communities)
+        if quality.is_degenerate:
+            logger.warning("Degenerate community partition. %s", quality.describe())
+        else:
+            logger.info("Community partition: %s", quality.describe())
 
         # Step 3: persist metadata (community assignments)
         save_graph_metadata(self._db, cg)
@@ -104,4 +123,5 @@ class GraphBuilder:
             concept_count=concept_count,
             elapsed_seconds=elapsed,
             community_summary=community_summary,
+            partition_quality=quality,
         )

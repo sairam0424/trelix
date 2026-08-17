@@ -37,9 +37,13 @@ class DimensionMismatchError(Exception):
         super().__init__(
             f"Embedding dimension mismatch: index was built with {stored}-dim vectors "
             f"but the current provider '{provider}' produces {current}-dim vectors.\n\n"
-            f"Fix: run `trelix migrate-vectors --reset ./your-repo` to clear the old "
-            f"embeddings, then re-index: `trelix index ./your-repo`\n\n"
-            f"Note: --reset deletes all stored embeddings. You must re-run trelix index."
+            f"Fix: rebuild the vector store for the new provider, then re-index:\n"
+            f"  trelix migrate-vectors ./your-repo --reset --provider {provider}\n"
+            f"  trelix index ./your-repo\n\n"
+            f"Note: --reset discards every stored embedding and invalidates all file and "
+            f"symbol hashes, so the re-index re-embeds the whole repository. Passing "
+            f"--provider is what decides the new vector width; a vec0 table's dimension "
+            f"is fixed when it is created, so the table is dropped and rebuilt."
         )
 
 

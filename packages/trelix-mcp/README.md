@@ -168,7 +168,7 @@ TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 | `search_code(query, repo_path, k=10, cursor=0)` | Hybrid semantic+BM25 search with cursor pagination |
 | `index_codebase(repo_path, provider="local")` | Index a repo (run once); emits progress notifications |
 | `get_symbol(qualified_name, repo_path)` | Get full source of a symbol by qualified name |
-| `blast_radius(symbol_name, repo_path)` | Find what depends on a symbol |
+| `blast_radius(symbol_name, repo_path)` | Direct callers + importers of a symbol, from the call/import graph (no embedding model, ~60-120 ms) |
 | `ask` | Streaming chat endpoint for conversational code exploration (v2.0.0+) |
 | `build_knowledge_graph(repo_path)` | Build code property graph |
 | `graph_search_mcp(query, repo_path)` | Search via knowledge graph |

@@ -6,8 +6,150 @@ on:
       - "v*"
 
 jobs:
+  # Gate everything on the tag matching what the tree is actually stamped as.
+  #
+  # Without this, tagging v3.2.0 on a tree still stamped 3.1.2 builds `trelix-3.1.2`,
+  # every publish step below sets `skip-existing: true` and therefore SKIPS it as already
+  # present, and the run goes GREEN with a GitHub Release full of binaries and zero new
+  # packages. Nothing in the logs says "published nothing". `skip-existing` is kept — it
+  # is what makes a re-run after a partial failure safe — so the guard has to be here
+  # instead.
+  #
+  # It checks all twelve version stamps, which live across eleven files (server.json carries
+  # two). That covers a class the old release checklist structurally could not: it told
+  # contributors to grep for the PREVIOUS version, which by construction never matches a
+  # stamp already stranded on an older line. Every stamp that had actually drifted was of
+  # exactly that class — helm/trelix/values.yaml's image.tag (the chart advertised
+  # appVersion 3.1.2 while deploying 2.12.0), packages/trelix-mcp/server.json (both fields),
+  # and both adapters, frozen at 2.4.0 while the jobs below shipped them on every core tag.
+  # CONTRIBUTING.md now documents printing every stamp instead of grepping for one.
+  verify-version:
+    name: Verify tag matches the tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare tag against every version site
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag: $tag"
+
+          fail=0
+          check() {  # check <label> <actual> <path>
+            if [ "$2" != "$tag" ]; then
+              echo "::error file=$3::$1 is '$2' but the tag says '$tag'"
+              fail=1
+            else
+              echo "ok: $1 = $2"
+            fi
+          }
+
+          check "pyproject.toml version" \
+            "$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')" \
+            pyproject.toml
+          check "src/trelix/__init__.py __version__" \
+            "$(python -c 'import re;print(re.search(r"__version__ = \"([^\"]+)\"",open("src/trelix/__init__.py").read()).group(1))')" \
+            src/trelix/__init__.py
+          check "helm Chart.yaml appVersion" \
+            "$(python -c 'import re;print(re.search(r"^appVersion:\s*\"?([^\"\s]+)\"?",open("helm/trelix/Chart.yaml").read(),re.M).group(1))')" \
+            helm/trelix/Chart.yaml
+          check "helm values.yaml image.tag" \
+            "$(python -c 'import re;print(re.search(r"^\s+tag:\s*\"?([^\"\s]+)\"?",open("helm/trelix/values.yaml").read(),re.M).group(1))')" \
+            helm/trelix/values.yaml
+          check "trelix-mcp pyproject.toml version" \
+            "$(python -c 'import tomllib;print(tomllib.load(open("packages/trelix-mcp/pyproject.toml","rb"))["project"]["version"])')" \
+            packages/trelix-mcp/pyproject.toml
+          # This one was documented as "the one exception it does not check — verify it by
+          # hand until that check is added". Hand-verification of a stamp that ships is the
+          # same silent-mis-publish risk as the adapters had, so it is checked here instead.
+          check "trelix-mcp __version__" \
+            "$(python -c 'import re;print(re.search(r"__version__ = \"([^\"]+)\"",open("packages/trelix-mcp/src/trelix_mcp/__init__.py").read()).group(1))')" \
+            packages/trelix-mcp/src/trelix_mcp/__init__.py
+
+          # server.json carries the version in two places.
+          check "trelix-mcp server.json (version)" \
+            "$(python -c 'import json;print(json.load(open("packages/trelix-mcp/server.json"))["version"])')" \
+            packages/trelix-mcp/server.json
+          check "trelix-mcp server.json (packages[0].version)" \
+            "$(python -c 'import json;print(json.load(open("packages/trelix-mcp/server.json"))["packages"][0]["version"])')" \
+            packages/trelix-mcp/server.json
+
+          # Both adapters are built and published by the `publish` job below, yet nothing
+          # checked their stamps: they sat at 2.4.0 while core reached 3.1.2, so with
+          # `skip-existing: true` every tag published 2 of 4 packages and still went green.
+          # That is the exact failure this job exists to prevent, and it had a hole for half
+          # the distributions. Each adapter carries the version twice — the dist stamp that
+          # PyPI sees, and the runtime `__version__` an installed package reports.
+          check "trelix-langchain pyproject.toml version" \
+            "$(python -c 'import tomllib;print(tomllib.load(open("packages/trelix-langchain/pyproject.toml","rb"))["project"]["version"])')" \
+            packages/trelix-langchain/pyproject.toml
+          check "trelix-langchain __version__" \
+            "$(python -c 'import re;print(re.search(r"__version__ = \"([^\"]+)\"",open("packages/trelix-langchain/src/trelix_langchain/__init__.py").read()).group(1))')" \
+            packages/trelix-langchain/src/trelix_langchain/__init__.py
+          check "trelix-llama-index pyproject.toml version" \
+            "$(python -c 'import tomllib;print(tomllib.load(open("packages/trelix-llama-index/pyproject.toml","rb"))["project"]["version"])')" \
+            packages/trelix-llama-index/pyproject.toml
+          check "trelix-llama-index __version__" \
+            "$(python -c 'import re;print(re.search(r"__version__ = \"([^\"]+)\"",open("packages/trelix-llama-index/src/trelix_llama_index/__init__.py").read()).group(1))')" \
+            packages/trelix-llama-index/src/trelix_llama_index/__init__.py
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Refusing to release. Bump every site above to $tag, or delete and re-cut the tag."
+            exit 1
+          fi
+
+      - name: CHANGELOG has a section for this version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          grep -qE "^## \[${tag}\]" CHANGELOG.md \
+            || { echo "::error file=CHANGELOG.md::no '## [$tag]' section — is this release still under [Unreleased]?"; exit 1; }
+
+  # The full CI suite has never run on a tag: ci.yml triggers on push/PR to
+  # [main, develop] only, so before this the entire gate on four PyPI packages and two
+  # container images was `python -m build` plus `twine check` plus a --help smoke test.
+  test:
+    name: Test before publishing
+    runs-on: ubuntu-latest
+    needs: [verify-version]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Mirrors ci.yml's install: 'sso' is required by tests, not just by the feature —
+      # test_oidc.py and test_api_audit.py import pyjwt at module scope.
+      - name: Install trelix + dev deps
+        run: pip install -e ".[local,otel,sso,dev]"
+      - name: Install trelix-mcp
+        run: pip install -e packages/trelix-mcp
+      # The publish job builds and uploads both adapters, so the release path has to test
+      # them. It did not: only ci.yml ever ran these suites, and ci.yml never fires on a
+      # tag. Each adapter's suite is the only thing asserting its `__version__` stamp.
+      - name: Install trelix-langchain + trelix-llama-index
+        run: |
+          pip install -e packages/trelix-langchain
+          pip install -e packages/trelix-llama-index
+      - name: Prefetch tree-sitter grammars
+        run: python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
+      - name: Unit tests
+        run: pytest tests/unit/ -q
+      - name: trelix-mcp tests
+        run: pytest packages/trelix-mcp/tests/ -q
+      # Separate invocations, as in ci.yml: both adapter tests/ dirs have an __init__.py and
+      # a test_retriever.py, so they resolve to the same module `tests.test_retriever` and a
+      # single pytest collecting both aborts with "import file mismatch".
+      - name: trelix-langchain tests
+        run: pytest packages/trelix-langchain/tests/ -q
+      - name: trelix-llama-index tests
+        run: pytest packages/trelix-llama-index/tests/ -q
+
   build-binaries:
     name: Build trelix (${{ matrix.os }})
+    needs: [verify-version, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -127,6 +269,7 @@ jobs:
   build-distributions:
     name: Build Python distributions
     runs-on: ubuntu-latest
+    needs: [verify-version, test]
     permissions: {}
 
     steps:

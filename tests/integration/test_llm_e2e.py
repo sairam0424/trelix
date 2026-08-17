@@ -20,10 +20,25 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
-# Load .env from repo root so tests work when run directly (not via CI env injection)
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+# .env from the repo root, so these tests work when run directly (not via CI env
+# injection). READ, NOT LOADED: dotenv_values() returns a dict and leaves
+# os.environ untouched.
+#
+# This was `load_dotenv(...)` at module scope, which published a developer's real
+# credentials into os.environ for the entire pytest process the moment this
+# module was imported — before any fixture could scope them, and with no
+# teardown. Since pydantic-settings reads env vars BEFORE the .env file, that
+# beat every conftest override downstream:
+#   pytest tests/integration/test_llm_e2e.py \
+#          tests/unit/test_config.py::TestEmbedderConfig::test_default_provider_is_local
+# failed with `assert 'azure' == 'local'` purely from the .env's
+# TRELIX_EMBEDDER_PROVIDER=azure. The values now reach os.environ only inside
+# _load_dotenv_into_env below, per test, and monkeypatch undoes them.
+_DOTENV_VALUES: dict[str, str] = {
+    k: v for k, v in dotenv_values(Path(__file__).parent.parent.parent / ".env").items() if v
+}
 
 # ---------------------------------------------------------------------------
 # Credential helpers
@@ -42,11 +57,41 @@ def _decode_credential(value: str) -> str:
 
 
 def _env(key: str) -> str | None:
-    """Return env var value, decoding base64 if needed."""
-    raw = os.environ.get(key)
+    """Return the env var value, falling back to the .env file, base64-decoded.
+
+    Process env wins over the file — the same precedence load_dotenv() applied
+    with its default ``override=False``, so CI's injected secrets still beat a
+    stale local .env.
+    """
+    raw = os.environ.get(key) or _DOTENV_VALUES.get(key)
     if raw is None:
         return None
     return _decode_credential(raw)
+
+
+@pytest.fixture(autouse=True)
+def _load_dotenv_into_env(
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_beast_mode_flags: None,
+) -> None:
+    """Publish the .env values into os.environ for the duration of one test.
+
+    The backends read credentials through pydantic-settings, which resolves
+    ``.env`` itself, but boto3's default session and anything else reading
+    os.environ directly do not — so the values still have to be present. Doing
+    it here instead of at import means they are gone again at teardown and
+    cannot reach tests in other directories.
+
+    Requesting ``_isolate_beast_mode_flags`` (the autouse fixture in this
+    directory's conftest) is an explicit ordering constraint, not a data
+    dependency: it must run FIRST so the vars it pins are already in os.environ
+    and the ``not in os.environ`` guard below leaves them alone. Without that,
+    a dev's .env would win over the isolation and re-contaminate the
+    compression A/B baseline this suite exists to measure.
+    """
+    for key, value in _DOTENV_VALUES.items():
+        if key not in os.environ:
+            monkeypatch.setenv(key, value)
 
 
 # ---------------------------------------------------------------------------

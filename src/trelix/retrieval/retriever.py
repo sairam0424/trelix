@@ -8,7 +8,11 @@ Flow:
   2. Intent-based routing dispatches to the right retrieval path.
   3. Standard path: three retrieval legs -> RRF fusion -> graph expansion
      -> rerank -> assemble.
-     File/project paths: DB-direct lookup -> assemble (no fusion/rerank overhead).
+     File/project/config paths: DB-direct lookup -> assemble (no fusion/rerank
+     overhead) — but see the breadth floor below: a direct lookup that resolves too
+     few files AND too few symbols now ALSO runs the standard path and merges, with
+     direct hits ordered first, instead of returning a thin result as complete.
+     The `breadth_floor` trace section records the decision on every such query.
 
 Debug tracing: every query writes a structured JSON file to .trelix/debug/
 relative to the project root configured in IndexConfig.repo_path.
@@ -62,6 +66,163 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _trace_local = threading.local()
 
 logger = logging.getLogger("trelix.retrieval")
+
+# Suffixes that mark a file as configuration or infrastructure.
+_CONFIG_SUFFIXES = frozenset(
+    {
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".js",
+        ".ts",
+        ".ini",
+        ".cfg",
+        ".cnf",
+        ".conf",
+        ".properties",
+        ".tf",
+        ".hcl",
+        ".gradle",
+        ".mk",
+    }
+)
+
+# Config files that carry NO extension at all, which is the entire bug: a suffix test can
+# never match one, because `Path("Dockerfile").suffix` is `""`. Every ecosystem's most
+# important config file is in this shape by convention.
+_CONFIG_FILENAMES = frozenset(
+    {
+        "dockerfile",
+        "containerfile",
+        "makefile",
+        "gnumakefile",
+        "procfile",
+        "jenkinsfile",
+        "vagrantfile",
+        "rakefile",
+        "gemfile",
+        "brewfile",
+        "justfile",
+        "caddyfile",
+        "cmakelists.txt",
+        ".gitignore",
+        ".dockerignore",
+        ".editorconfig",
+        ".gitattributes",
+        ".nvmrc",
+    }
+)
+
+# Checked BEFORE anything else, and deliberately not just "absent from the sets above".
+#
+# These are the conventional homes for credentials, and `_retrieve_config` resolves a hint
+# straight to a file's symbols, which then go into an LLM prompt verbatim — there is no
+# redaction seam anywhere in retrieval (`grep -rn 'redact|scrub_secret|mask_secret'
+# src/trelix/` finds nothing). Reaching them requires the file to be in `files`, which
+# today it is not because `walker.detect_language` returns UNKNOWN for all of these. That
+# is the only thing standing in the way, it is a coupling rather than a decision, and
+# adding ops artifacts to `EXTENSION_MAP` is exactly what this release just did.
+#
+# A deny-list rather than omission because the `"config" in name` fallback at the end of
+# `_looks_like_config` admits things no allow-list mentions — `kubeconfig` passed on that
+# fallback alone.
+_SECRET_FILENAMES = frozenset({".env", ".envrc", ".npmrc", ".netrc", ".pgpass", "kubeconfig"})
+_SECRET_SUFFIXES = frozenset({".env", ".tfvars", ".pem", ".key", ".p12", ".pfx", ".keystore"})
+
+
+def _looks_like_config(hint: str) -> bool:
+    """Does this planner hint name a configuration or infrastructure file?
+
+    The gate cannot simply be removed. `file_hints` is concatenated with `grep_hints`,
+    which `planner/models.py:63` documents as "exact symbol names", so unfiltered hints
+    like `EXPOSE` or `ports:` would be fed to `find_file_by_path_fragment` and match
+    arbitrary files.
+
+    What it got wrong was testing only six suffixes. `Path("Dockerfile").suffix` is `""`,
+    so the check silently dropped Dockerfile, Makefile, Procfile, setup.cfg, nginx.conf
+    and every `*.tf` — for every repository, not just this one. `eval/golden.jsonl`
+    records the consequence: "what port does the container expose and what is its
+    entrypoint" resolved exactly one file (`docker-compose.yml`) and answered
+    confidently without ever consulting the Dockerfile, whose symbols were indexed and
+    retrievable the whole time.
+
+    Note the trap this function itself fell into on the first pass: `.env` was listed in
+    `_CONFIG_SUFFIXES`, where it could never match, because `Path(".env").suffix` is `""`
+    — a leading dot makes the whole thing a stem. That is the same "a suffix test cannot
+    match this" defect described above, reproduced while fixing it. `.env` now belongs to
+    the deny-list instead, which is where it wanted to be regardless.
+    """
+    name = Path(hint).name.lower()
+
+    # Deny first, so neither the allow-lists nor the `"config" in name` fallback can
+    # route a credential file into a prompt.
+    if name in _SECRET_FILENAMES or Path(name).suffix in _SECRET_SUFFIXES:
+        return False
+    # "prod.env", "staging.env" — a variant name on a secret suffix.
+    if name.rsplit(".", 1)[-1] in {s.lstrip(".") for s in _SECRET_SUFFIXES}:
+        return False
+
+    if name in _CONFIG_FILENAMES:
+        return True
+    if Path(name).suffix in _CONFIG_SUFFIXES:
+        return True
+    # "Dockerfile.prod", "Makefile.local" — a base config name with a variant suffix.
+    stem = name.split(".", 1)[0]
+    if stem in _CONFIG_FILENAMES:
+        return True
+    return "config" in name
+
+
+# --------------------------------------------------------------------------
+# Breadth floor for the three direct-lookup paths
+# --------------------------------------------------------------------------
+#
+# `_retrieve_file_overview`, `_retrieve_project_overview` and `_retrieve_config` each
+# widened to standard retrieval only on `if not results:` — a total miss. One matched
+# file yielding a handful of symbols therefore returned exclusively those symbols and
+# suppressed the vector, BM25 and grep legs completely. Measured on this tree with a
+# mocked DB (1 file, 2 symbols): `_retrieve_standard` was never called and assembly saw
+# 1 result. Widening the config filename gate made that reachable rather than rarer —
+# a query whose only matching hint was `Dockerfile` went from `files_matched=0` plus a
+# full-breadth fallback to short-circuiting on 2 section chunks.
+#
+# MIN_SYMBOLS is `graph_expansion_max_symbols`' default (10): the standard path already
+# calls 10 the number of candidates worth expanding from, so fewer than that from a
+# direct lookup is below the pipeline's own idea of enough material.
+#
+# MIN_FILES is the assembler's `_breadth_first_candidates(max_per_file=2)` premise read
+# the other way round — breadth means covering more than one file, and the measured
+# failure was exactly `files_matched=1`.
+#
+# The two are ANDed, not ORed. A legitimate single-file overview ("what does
+# retriever.py do?") resolves 1 file and ~40 symbols; OR would fire the floor on it and
+# charge the cheapest path in the system three retrieval legs plus a rerank round-trip
+# on every such query. Requiring both counts to be short is what separates it from the
+# Dockerfile case (1 file, 2 symbols). Known gap this leaves: 3 files at 1 symbol each
+# passes the file test and does not fire. The trace records both counts on every query
+# so that gap is measurable rather than assumed.
+#
+# The thresholds live on RetrievalConfig (see core/config.py) rather than being read from
+# os.environ here, which is where they started. Raw os.environ does not see `.env`, so the
+# kill switch the release notes document was silently inert in the one place a user would
+# set it.
+
+
+def _breadth_floor_thresholds(retrieval: Any) -> tuple[bool, int, int]:
+    """Resolve ``(enabled, min_files, min_symbols)`` from RetrievalConfig.
+
+    `TRELIX_RETRIEVAL_BREADTH_FLOOR=false` restores the pre-3.1.2 all-or-nothing
+    short-circuit exactly, which is what makes the floor's effect measurable as a diff;
+    `..._MIN_FILES` / `..._MIN_SYMBOLS` tune it. All three now go through
+    pydantic-settings, so `.env` and the process environment both work and a malformed
+    value is a startup validation error naming the field rather than a silent fallback.
+    """
+    return (
+        bool(retrieval.breadth_floor_enabled),
+        int(retrieval.breadth_floor_min_files),
+        int(retrieval.breadth_floor_min_symbols),
+    )
 
 
 class Retriever:
@@ -135,6 +296,11 @@ class Retriever:
         # Initialised lazily on first use so the import remains optional.
         self._sparse_embedder: object | None = None
         self._sparse_embedder_lock = threading.Lock()
+
+        # Latch for the "graph_metadata is empty" warning in _apply_pagerank_boost:
+        # the condition is a property of the index, not of the query, so it is worth
+        # exactly one line per Retriever instead of one per query.
+        self._pagerank_empty_warned = False
 
         # Resolve effective context budget at startup (memoized for the session)
         self._effective_budget = self._resolve_effective_budget()
@@ -344,6 +510,29 @@ class Retriever:
     # ------------------------------------------------------------------
 
     def _retrieve_standard(self, plan: QueryPlan) -> RetrievedContext:
+        candidates = self._standard_candidates(plan)
+        with pipeline_stage_span(
+            self.config.retrieval, "assembly", {"candidate_count": len(candidates)}
+        ):
+            return self._assemble(
+                plan.raw_query,
+                candidates,
+                intent=plan.intent.value,
+                assembly_mode=plan.strategy.assembly_mode,
+            )
+
+    def _standard_candidates(self, plan: QueryPlan) -> list[SearchResult]:
+        """The standard pipeline up to (but not including) assembly.
+
+        Split out of `_retrieve_standard` so the breadth floor can merge these
+        candidates with high-precision direct hits and pack the union ONCE. Merging
+        `_retrieve_standard`'s RetrievedContext instead would mean assembling twice:
+        the inner pack has already truncated to the token budget without knowing the
+        direct hits exist, so the outer pack would only ever see a pool one budget
+        wide that was chosen against the wrong candidate set — and with compression
+        enabled it would run the compressor over bodies the inner pass had already
+        compressed. Returning the candidate list avoids both.
+        """
         cfg = self.config.retrieval
         strategy = plan.strategy
 
@@ -672,15 +861,84 @@ class Retriever:
         # PageRank boost — applied post-rerank, pre-assemble (no-op internally
         # when cfg.pagerank_boost_enabled is False, so always safe to wrap).
         with pipeline_stage_span(cfg, "pagerank_boost"):
-            candidates = self._apply_pagerank_boost(candidates)
+            return self._apply_pagerank_boost(candidates)
 
-        with pipeline_stage_span(cfg, "assembly", {"candidate_count": len(candidates)}):
-            return self._assemble(
-                plan.raw_query,
-                candidates,
-                intent=plan.intent.value,
-                assembly_mode=plan.strategy.assembly_mode,
+    # ------------------------------------------------------------------
+    # Breadth floor — shared by the three direct-lookup paths
+    # ------------------------------------------------------------------
+
+    def _assemble_direct(
+        self,
+        plan: QueryPlan,
+        direct: list[SearchResult],
+        *,
+        path: str,
+    ) -> RetrievedContext:
+        """Assemble direct-lookup results, widening to standard retrieval when thin.
+
+        `direct` must arrive in its intended presentation order, deduped as its own
+        path requires (project_overview's ids come from one query and are already
+        unique; the other two run `_dedup` first).
+        Direct hits keep that order in the merged list and are NOT rescored: the
+        greedy pack every direct path uses consumes the list in order, so ordering
+        alone gives them precedence, and inventing synthetic scores to express the
+        same thing would push fabricated numbers into the trace and telemetry that
+        record real fusion/rerank scores. Caveat worth naming: under
+        `context_budget_per_source=True` (off by default) the assembler slices the
+        budget per `source`, so `file_direct` gets a slice proportional to its count
+        instead of first refusal — the merge cannot express direct-first there.
+        """
+        enabled, min_files, min_symbols = _breadth_floor_thresholds(self.config.retrieval)
+        files = {r.file.rel_path for r in direct}
+        fired = enabled and len(files) < min_files and len(direct) < min_symbols
+
+        decision: dict[str, Any] = {
+            "path": path,
+            "enabled": enabled,
+            "direct_files": len(files),
+            "direct_symbols": len(direct),
+            "min_files": min_files,
+            "min_symbols": min_symbols,
+            "fired": fired,
+        }
+
+        if not fired:
+            self._trace("breadth_floor", decision)
+            return self._assemble(plan.raw_query, direct, intent=plan.intent.value)
+
+        # Same default_plan() the total-miss fallback below already uses, so the widened
+        # leg is the exact pipeline the pre-floor fallback was measured on.
+        logger.info(
+            "%s: direct lookup thin (files=%d<%d symbols=%d<%d) — also running standard "
+            "retrieval and merging, direct hits first",
+            path,
+            len(files),
+            min_files,
+            len(direct),
+            min_symbols,
+        )
+        try:
+            standard = self._standard_candidates(default_plan(plan.raw_query))
+        except Exception as exc:
+            # Direct-only would have answered this query before the floor existed;
+            # failing it now would be a regression caused by the widening itself. Loud
+            # and recorded, because a floor that silently stops widening is the same
+            # invisible thinness it was added to remove.
+            logger.warning(
+                "%s: breadth-floor standard leg failed — assembling direct only: %s", path, exc
             )
+            decision["standard_error"] = repr(exc)
+            self._trace("breadth_floor", decision)
+            return self._assemble(plan.raw_query, direct, intent=plan.intent.value)
+
+        seen = {r.chunk.symbol_id for r in direct}
+        merged = [*direct, *(r for r in standard if r.chunk.symbol_id not in seen)]
+        decision["standard_candidates"] = len(standard)
+        decision["merged_symbols"] = len(merged)
+        decision["merged_files"] = len({r.file.rel_path for r in merged})
+        self._trace("breadth_floor", decision)
+
+        return self._assemble(plan.raw_query, merged, intent=plan.intent.value)
 
     # ------------------------------------------------------------------
     # File overview (file_overview intent)
@@ -694,10 +952,12 @@ class Retriever:
         """
         file_hints = [h for sq in plan.sub_queries for h in sq.file_hints]
         # Also treat grep_hints that look like filenames (contain a dot) as file hints
+        promoted_grep_hints: list[str] = []
         for sq in plan.sub_queries:
             for hint in sq.grep_hints:
                 if "." in hint and hint not in file_hints:
                     file_hints.append(hint)
+                    promoted_grep_hints.append(hint)
 
         results: list[SearchResult] = []
         visited_file_ids: set[int] = set()
@@ -718,6 +978,12 @@ class Retriever:
             "file_overview",
             {
                 "file_hints": file_hints,
+                # Recorded separately because the "contains a dot" test above is far
+                # looser than _looks_like_config: `self.db` and `os.path` are promoted
+                # to file hints as readily as `retriever.py`. Naming which hints came in
+                # that way makes a thin file_overview traceable to the promotion rule
+                # instead of looking like a genuinely small file.
+                "promoted_grep_hints": promoted_grep_hints,
                 "files_matched": len(visited_file_ids),
                 "symbols_fetched": len(results),
             },
@@ -729,7 +995,7 @@ class Retriever:
             )
             return self._retrieve_standard(default_plan(plan.raw_query))
 
-        return self._assemble(plan.raw_query, self._dedup(results), intent=plan.intent.value)
+        return self._assemble_direct(plan, self._dedup(results), path="file_overview")
 
     # ------------------------------------------------------------------
     # Project overview (project_overview intent)
@@ -760,24 +1026,24 @@ class Retriever:
             logger.info("project_overview: no overview symbols found — falling back to standard")
             return self._retrieve_standard(default_plan(plan.raw_query))
 
-        return self._assemble(plan.raw_query, results, intent=plan.intent.value)
+        return self._assemble_direct(plan, results, path="project_overview")
 
     # ------------------------------------------------------------------
     # Config lookup (config_lookup intent)
     # ------------------------------------------------------------------
+    # See _looks_like_config below for why this gate exists and what it used to miss.
 
     def _retrieve_config(self, plan: QueryPlan) -> RetrievedContext:
         """
         Try file_direct for known config filenames; fall back to standard retrieval.
         """
         file_hints = [h for sq in plan.sub_queries for h in sq.file_hints + sq.grep_hints]
-        config_extensions = {".json", ".yaml", ".yml", ".toml", ".js", ".ts"}
 
         results: list[SearchResult] = []
         visited: set[int] = set()
 
         for hint in file_hints:
-            if any(hint.endswith(ext) for ext in config_extensions) or "config" in hint.lower():
+            if _looks_like_config(hint):
                 for file_id in self.db.find_file_by_path_fragment(hint)[:2]:
                     if file_id in visited:
                         continue
@@ -800,7 +1066,7 @@ class Retriever:
             logger.info("config_lookup: no config file matched — falling back to standard")
             return self._retrieve_standard(default_plan(plan.raw_query))
 
-        return self._assemble(plan.raw_query, self._dedup(results), intent=plan.intent.value)
+        return self._assemble_direct(plan, self._dedup(results), path="config_lookup")
 
     # ------------------------------------------------------------------
     # Sub-query execution — one unit of retrieval per sub-query
@@ -1016,22 +1282,51 @@ class Retriever:
         by `path_filter_oversample`x and post-filters by prefix after
         hydration, then truncates back to `k` — protects recall against the
         filter discarding some of the raw ANN results.
+
+        Without a `path_filter` the fetch is exactly `k`, so every hydration
+        miss is a permanently lost result slot: nothing is left to backfill
+        from. A miss means the ANN index still points at a `chunk_id` whose row
+        is gone from the DB — the two stores have drifted — and the honest
+        response is to name it, not to quietly re-fetch more vectors until the
+        count looks right. Over-fetching would return `k` results from a stale
+        index and leave the drift undiagnosable; the WARNING below is what
+        turns "retrieval feels thin" into "run `trelix index <repo>`".
         """
         fetch_k = k
         if path_filter:
             fetch_k = k * self.config.retrieval.path_filter_oversample
         raw = self.vector_store.search(query_embedding, k=fetch_k)
         results: list[SearchResult] = []
+        dead_chunk_ids: list[int] = []
+        examined = 0
         for rank, (chunk_id, distance) in enumerate(raw, start=1):
+            examined += 1
             score = max(0.0, 1.0 - distance)
             result = self._hydrate_chunk(chunk_id, score=score, rank=rank, source="vector")
             if result is None:
+                dead_chunk_ids.append(chunk_id)
                 continue
             if path_filter and not result.file.rel_path.startswith(path_filter):
                 continue
             results.append(result)
             if len(results) >= k:
                 break
+
+        # Only hydration misses are reported. A prefix reject is expected (it is the
+        # reason path_filter oversamples) and an ANN index smaller than k is not a
+        # defect — neither says anything about store consistency, so neither warns.
+        if dead_chunk_ids:
+            logger.warning(
+                "Vector leg returned %d result(s) for k=%d: %d of %d ANN hit(s) had no "
+                "chunk row in the index DB (chunk_ids %s%s) — the vector store and the "
+                "index DB have drifted; re-run `trelix index <repo>`",
+                len(results),
+                k,
+                len(dead_chunk_ids),
+                examined,
+                ", ".join(str(cid) for cid in dead_chunk_ids[:5]),
+                ", …" if len(dead_chunk_ids) > 5 else "",
+            )
         return results
 
     # ------------------------------------------------------------------
@@ -1201,6 +1496,26 @@ class Retriever:
             from trelix.graph.persistence import get_top_central_symbols
 
             top_ids = set(get_top_central_symbols(self.db, top_n=200))
+            if not top_ids:
+                # The boost is enabled but has nothing to boost with. Saying so once at
+                # WARNING is the difference between "this feature is on" and "this
+                # feature is on and working" — the previous DEBUG-only failure path made
+                # an inert setting indistinguishable from an active one.
+                #
+                # "Once" has to be enforced by a flag: centrality does not change
+                # mid-session, so repeating the line on every query turns the one
+                # actionable warning in the log into the kind of per-query noise
+                # operators filter out — which is the original silence again, wearing
+                # a different hat. Per-instance rather than module-global, so a fresh
+                # Retriever (new process, new index) still reports the state.
+                if not self._pagerank_empty_warned:
+                    self._pagerank_empty_warned = True
+                    logger.warning(
+                        "PageRank boost is enabled but graph_metadata is empty — "
+                        "run `trelix graph <repo>` to populate centrality, "
+                        "or set TRELIX_RETRIEVAL_PAGERANK_BOOST=false"
+                    )
+                return results
             boosted: list[SearchResult] = []
             for r in results:
                 if r.symbol.id is not None and r.symbol.id in top_ids:

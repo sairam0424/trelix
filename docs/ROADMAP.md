@@ -1,13 +1,13 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 3.0.0 (current)
+> **Version:** 3.1.2 (current)
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
 ---
 
-## ✅ Shipped (v2.0 – v2.12.0)
+## ✅ Shipped (v2.0 – v3.1.2)
 
 | Version | Feature |
 |---------|---------|
@@ -29,6 +29,11 @@ This roadmap describes planned features, research directions, and long-term visi
 | v2.11.0 | Connector-fetched artifacts auto-link into `generic_edges` on sync (`ArtifactLinker`, `trelix link-artifacts`), opt-in Personalized PageRank (`TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION`), a unified retry/backoff contract (`tenacity`-based) shared by every LLM backend/embedder/connector/reranker/PR client, structured JSON logging with OTel trace correlation, and two new artifact connectors — Xray Cloud and Linear (`trelix connector sync <repo> xray\|linear`). Plus two real bugs found by live-testing Jira against a production site (ADF descriptions silently dropped to empty bodies; bad credentials silently reported as success) and a `.env`-leakage test-isolation fix. All new surface additive/opt-in — no breaking changes. |
 | v2.11.1 | Fixed a path-containment bug in `/graph/visualize`'s `output` query param: a raw string-prefix check accepted a sibling directory sharing the same prefix as `<repo>/.trelix` (e.g. `<repo>/.trelix-evil`), letting a caller write an arbitrary-named HTML file outside the intended directory. Switched to `Path.is_relative_to()`, mirroring `/parse`'s existing correct check in the same file. Found via a full production dry-run of v2.11.0's REST API surface. |
 | v2.12.0 | Fixed a real call-graph/type-edge resolver bug (same-named methods across classes silently wired to the wrong symbol; ~2,400 provably-wrong edges removed on trelix's own self-index), activated per-leg RRF weight config (`TRELIX_RETRIEVAL_LEG_WEIGHT_<LEG>`) at the primary retrieval call site, clamped an unbounded `Retry-After` header that could crash the retry loop, capped unbounded Jira ADF recursion, documented `trelix eval-synthesis`, and extended CI to lint/type-check `trelix-mcp`/`trelix-langchain`/`trelix-llama-index` — which surfaced and fixed a missing PEP 561 `py.typed` marker on the core `trelix` package and an unresolvable `mcp`/`fastmcp` dependency-floor landmine. |
+| v3.0.0 | Six feature areas, all additive and OFF by default: Anthropic extended thinking as a per-call-site request parameter, a model-aware context budget (`llm/context_windows.py`), an actionable VS Code extension (code lenses + `@trelix` chat participant + hover provider), a hash-chained audit trail in its own `audit.db`, OIDC SSO with an asymmetric-only algorithm allowlist, and SeleCom query-conditioned context compression. Plus opt-in FTS5 declaration-boost ranking. Six classes of live defect fixed, including an `AttributeError` that crashed every Anthropic response containing a thinking block and an unauthenticated `MarkupError` DoS of `trelix audit list`. A major bump for the size of the feature surface, **not** for an incompatibility — the one queued removal was deferred to v4.0.0. |
+| v3.0.1 | The Python extractor's `symbols.insert(0, <module>)` shifted every recorded index by one in any file with a module docstring: **8,815 of 8,815 index references (100%) wrong** on trelix's own source — 7,190 call edges, 1,525 parent links, 100 type edges. Silent in v2.12.0 and v3.0.0 because a pre-insert index always resolved to a valid-but-wrong row. **A forced re-parse is required** — see [migration/v2-to-v3.md](migration/v2-to-v3.md), because a plain `trelix index` skips unchanged hashes and fixes nothing. Also restored 177 byte-identical backcompat assertions that had gone dark and unblocked the integration suite. |
+| v3.1.0 | A correctness release for everything trelix renders — terminal, machine-readable pipe, and LLM prompt. Eight defects in one class; no config, schema, or reindex change, and output byte-identical wherever no bug was tripped (51 new regression tests, 2,394 → 2,445). |
+| v3.1.1 | A security-documentation release. `SECURITY.md` had claimed since v2.x that trelix "does not follow symlinks outside the repo boundary" — `FileWalker` had no symlink handling at all, so an out-of-tree file was indexed and reported as if it sat inside. Adds opt-in `TRELIX_WALKER_FOLLOW_SYMLINKS=false` to make the boundary real, plus three smaller document defects found in the same audit. |
+| v3.1.2 | Self-index findings plus fixes: a symlink cycle that multiplied one file into dozens of copies, all three MCP prompts failing at `prompts/get`, and a deprecation deadline that had already passed (the `TRELIX_RETRIEVAL_FLARE_MAX_ITER` retarget to v4.0.0). Documentation version stamps advanced to 3.1.2 across 14 files, and `CONTRIBUTING.md` gained a release checklist naming the real version sites. Both adapter packages came off 2.4.0 onto the core version line in the same release: `trelix-langchain` and `trelix-llama-index` each carry a `pyproject.toml` version and a runtime `__version__`, and gating all four took `verify-version` in `.github/workflows/release.yml` from seven checks to twelve. The jump encodes no API change — `git diff v2.4.0..HEAD -- packages/trelix-langchain/src packages/trelix-llama-index/src` is 13 insertions and 3 deletions, every one of them a type annotation — so it is a re-alignment to the core line, not eight minors of adapter work. The dependency floor stays `trelix>=3.0.0`: lockstep governs the version stamp, which is identity, not the floor, which is a compatibility contract. |
 
 ---
 
@@ -62,15 +67,34 @@ This roadmap describes planned features, research directions, and long-term visi
 
 ---
 
-## 🌐 v3.0.0 — Breaking Changes & Ecosystem (H1 2027)
+## 🌐 v4.0.0 — Breaking Changes & Ecosystem (H1 2027)
 
 **Goal:** Clean API surface + first-class cloud deployment.
 
-- [ ] **Remove deprecated** — `flare_max_iterations` removed (deprecated in v2.4).
-      The one genuine breaking change reserved for this release — see
-      `docs/superpowers/plans/v3-0-0-breaking-changes.md` for the removal
-      checklist. Everything else originally scoped under v3.0.0 shipped
+- [ ] **Remove deprecated** — the `TRELIX_RETRIEVAL_FLARE_MAX_ITER` **env-var alias**
+      is removed (deprecated in v2.4). Naming precision matters here, because this
+      item previously named `flare_max_iterations`: that *field* was renamed to
+      `flare_max_retries` in v2.4.0 and is already gone — `test_config.py:621`
+      asserts `not hasattr(cfg, "flare_max_iterations")`. What survives, and what
+      v4.0.0 actually removes, is only the legacy env name.
+      Verified live at 3.1.2: the alias is the second entry in the
+      `AliasChoices(...)` on `RetrievalConfig.flare_max_retries` in
+      `src/trelix/core/config.py`, and the warning comes from the
+      `_warn_deprecated_flare_iter_env` model validator directly below it;
+      setting `TRELIX_RETRIEVAL_FLARE_MAX_ITER=3` still yields
+      `flare_max_retries == 3` plus a `DeprecationWarning`.
+      **Grep those two names; do not trust a line number.** `config.py` is 1,564
+      lines and moves every release, and both existing cites for this deprecation
+      are already wrong — the removal checklist in
+      `docs/superpowers/plans/v3-0-0-breaking-changes.md` says `config.py:429-452`
+      and BACKWARDS_COMPATIBILITY.md says `config.py:577`; each now lands on an
+      unrelated field.
+      Everything else originally scoped under v3.0.0 shipped
       additively in v2.9.0/v2.10.0 instead (see the Shipped table above).
+      **This slipped past v3.0.0**, which shipped 2026-08-13 with the alias still
+      live; since removal is only permitted on a MAJOR bump, it moves to v4.0.0.
+      See [BACKWARDS_COMPATIBILITY.md](BACKWARDS_COMPATIBILITY.md) and
+      [migration/v2-to-v3.md](migration/v2-to-v3.md).
 - [ ] **MCP `InputRequiredResult` pattern** — adopt SEP-2322's
       `InputRequiredResult` pattern for `ask_agent`'s input-wait behavior.
       This is a real behavioral/protocol change, not a dependency-floor
@@ -87,14 +111,20 @@ This roadmap describes planned features, research directions, and long-term visi
 
 ---
 
-## 🔭 v3.1.0 — Candidates (not yet committed)
+## 🔭 Candidates (not yet committed)
 
-- [ ] **VS Code chat participant + hover providers** — the original Phase 3 Plan A
+*Nothing is currently queued here.* The one item this section used to track has
+shipped — see below.
+
+- [x] **VS Code chat participant + hover providers** — the original Phase 3 Plan A
   spec (`docs/superpowers/plans/2026-07-08-phase3-vscode-github-app.md`)
-  described a `@trelix` chat participant and hover providers; neither was
-  actually delivered (only the `trelix.search`/`trelix.ask` QuickPick/Webview
-  commands shipped in v2.9.0). This remains unbuilt — a real, once-planned
-  scope cut, not a silently-dropped gap. Revisit as its own PR if/when picked up.
+  described a `@trelix` chat participant and hover providers, and for a while
+  neither was delivered (only the `trelix.search`/`trelix.ask` QuickPick/Webview
+  commands shipped in v2.9.0). **Both shipped in v3.0.0** ✅ —
+  `workspace-vscode/src/chat-participant.ts` + `chat-handler.ts` register the
+  `trelix.chat` participant, and `hover-provider.ts` shows signature/docstring via
+  the `get_symbol` MCP tool. This section described them as unbuilt for three
+  releases after they landed; it was stale, not a scope cut.
 
 ---
 

@@ -1,0 +1,482 @@
+# Supply-chain and static-analysis scanning.
+#
+# Why this file exists
+# --------------------
+# Before it, `grep -riE 'pip-audit|safety|trufflehog|codeql|trivy|grype|snyk|bandit|osv|sbom'
+# .github/ .pre-commit-config.yaml Makefile` returned nothing — zero matches — for a
+# project that publishes four PyPI distributions (trelix, trelix-mcp, trelix-langchain,
+# trelix-llama-index; see release.yml) and two GHCR images (:X.Y.Z and :X.Y.Z-local; see
+# docker-publish.yml). Nothing looked at upstream advisories, nothing looked inside the
+# published image, and config/semgrep-taint.yaml — 6 hand-written taint rules, shipped in
+# the sdist — was invoked by nothing at all despite the `taint` extra pulling semgrep in
+# for exactly this purpose.
+#
+# Where each check blocks, and why it blocks THERE
+# ------------------------------------------------
+# A scanner that fails a PR for a finding the PR's author cannot fix trains everyone to
+# ignore it. So each check below blocks only where the person who receives the red is the
+# person who can act, and that split follows from a measured baseline rather than taste:
+#
+#   taint    BLOCKS on PR.  Measured 2026-08-17: `semgrep --config config/semgrep-taint.yaml`
+#                           over src/ scripts/ packages/*/src reports "Ran 6 rules on 153
+#                           files: 0 findings" on semgrep 1.173.0 (and identically on
+#                           1.79.0). The baseline is empty, so any finding here was
+#                           introduced by the diff, sits in code the author owns, and is
+#                           fixable in the PR. Proven non-vacuous: the same rules on a
+#                           planted `os.environ[...]` -> `subprocess.run(..., shell=True)`
+#                           flow report 2 findings and exit 1.
+#
+#   secrets  BLOCKS on PR.  Scoped to base..head, so its baseline is empty by
+#                           construction. Reports (does not block) on the scheduled
+#                           full-history pass: a credential already committed cannot be
+#                           removed by a later commit, so blocking on it is unwinnable —
+#                           the correct response is rotation, which the report drives.
+#
+#   deps     REPORTS on PR, blocks on schedule/dispatch. Measured 2026-08-17 against
+#                           api.osv.dev: 10 of the 288 installed distributions in this
+#                           repo's dev environment carry advisories (aiohttp, click,
+#                           cryptography, gitpython, h2, langchain, nltk, pyasn1,
+#                           setuptools, torch). Exactly ONE of those ten — `torch>=2.2.0`
+#                           in the `local` extra — is pinned in a pyproject.toml this repo
+#                           owns; the other nine are transitive. A PR author who touched
+#                           one Python file cannot bump pyasn1.
+#
+#   image    REPORTS on PR, blocks on schedule/dispatch, and only on FIXED findings.
+#                           Everything it can find originates upstream — in Debian packages
+#                           inside python:3.11-slim, or in a wheel some extra pulled — so
+#                           the audience argument is the same as `deps`. This baseline was
+#                           NOT measured before merging (it needs a built image, and the
+#                           first scheduled run is what establishes it), which is a second
+#                           reason not to make it a PR blocker on day one. ignore-unfixed is
+#                           what keeps it winnable: a base-image CVE with no patched package
+#                           available cannot be cleared by anyone here.
+#
+# No baseline file, deliberately
+# ------------------------------
+# The two checks that block have a proven-empty baseline, so there is nothing to record.
+# `deps` has a measured non-empty one and `image` has an unmeasured one, and a suppression
+# file for either would have to be curated forever and would silently hide the next finding
+# that landed in an already-listed package. Routing each failure to the audience that can
+# act on it gets the same "no wall of red on unrelated PRs" without hiding anything: every
+# finding is in the PR's job summary and in the Security tab from the first run.
+#
+# Pinning
+# -------
+# A tag is mutable and an unpinned scanner is itself a supply-chain risk, so all 13 `uses:`
+# below are pinned to a full commit SHA (each resolved from its tag via the GitHub API on
+# 2026-08-17). The `# vX.Y.Z` sits AFTER the SHA on the same line, not on the line above,
+# because that trailing position is the one dependabot's github-actions updater rewrites
+# alongside the SHA — a comment above the line would silently rot into a wrong version the
+# first time dependabot bumped the pin.
+#
+# SHA-pinning the action is not always sufficient, and the two scanners differ here:
+#   * trivy-action v0.36.0 pins its own binary (input `version` defaults to v0.70.0), so
+#     the SHA pin covers the scanner as well.
+#   * trufflehog's action defaults `version: latest` and pulls that Docker tag at run time,
+#     so the CLI version is pinned explicitly at each call site below.
+#
+# Two pins here are NOT dependabot-managed and must be refreshed by hand: `semgrep==1.173.0`
+# and `pip-audit==2.10.1` are installed by `run:` steps, which no ecosystem watches. That is
+# the price of an exact pin on a blocking gate; the alternative (pyproject's `semgrep>=1.60.0`
+# floor, which dependabot does see) leaves the gate's engine free to change under it.
+
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main]
+  # Mondays 05:23 UTC, ahead of the "weekly / monday" dependabot runs in
+  # dependabot.yml, so a fresh advisory and the PR that fixes it land together.
+  schedule:
+    - cron: "23 5 * * 1"
+  # On-demand audit. Treated like the scheduled run (blocking) — someone reaching for
+  # this button is asking "is the tree clean right now?", and a green answer that
+  # swallowed findings would be the worst possible reply.
+  workflow_dispatch:
+
+# Least privilege at the top; jobs that need more ask for it themselves.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Every job reads this to decide whether a finding fails the job or is merely
+  # reported. Kept in one place so the four jobs cannot drift apart.
+  ENFORCE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # This repository's own code, against the rules this repository ships.
+  # ---------------------------------------------------------------------------
+  taint:
+    name: Taint analysis (semgrep, blocking)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.11"
+
+      # Exact pin, not the `>=1.60.0` floor in pyproject's `taint` extra: this job is a
+      # blocking gate, and a gate whose engine can change under it is not a gate. 1.173.0
+      # is the version the 0-finding baseline in the header was measured on.
+      - name: Install semgrep
+        run: pip install --quiet "semgrep==1.173.0"
+
+      # --metrics=off: a security job should not phone home, and the rules file's own
+      # header argues for offline reproducibility. No `--error` here — findings must not
+      # abort the job before the SARIF is uploaded; the gate step below decides. semgrep
+      # still exits non-zero if it cannot RUN (bad rules file, parse failure), and that is
+      # deliberately not caught: a scanner that did not run must fail loudly rather than
+      # report clean.
+      - name: Semgrep taint scan
+        run: |
+          set -euo pipefail
+          semgrep scan \
+            --metrics=off \
+            --config config/semgrep-taint.yaml \
+            --sarif --output=taint.sarif \
+            src/ scripts/ \
+            packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src
+
+      # Uploaded before the gate so findings reach the Security tab even on the run that
+      # goes red. `category` must be unique per SARIF producer or the two uploads in this
+      # workflow overwrite each other. Skipped for fork PRs, where GITHUB_TOKEN is
+      # read-only and security-events: write cannot be granted — the job summary written
+      # by the gate step below is the fallback there, and the gate still blocks.
+      - name: Upload SARIF
+        if: always() && hashFiles('taint.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        uses: github/codeql-action/upload-sarif@f3712979fa5f215279b101dd0a2e3bdfb4353324  # v3.37.7
+        with:
+          sarif_file: taint.sarif
+          category: semgrep-taint
+
+      - name: Gate on findings
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+
+          sarif = json.loads(pathlib.Path("taint.sarif").read_text())
+          run = sarif["runs"][0]
+          results = run["results"]
+          rules = len(run["tool"]["driver"]["rules"])
+          summary = pathlib.Path(os.environ["GITHUB_STEP_SUMMARY"])
+
+          # A rules file that silently loaded zero rules would produce zero findings and a
+          # green gate — the exact silent-pass this release is about. 6 is the count in
+          # config/semgrep-taint.yaml; bump it here when a rule is added.
+          if rules != 6:
+              summary.write_text(f"## Taint analysis\n\nExpected 6 rules, semgrep loaded {rules}.\n")
+              print(f"::error file=config/semgrep-taint.yaml::expected 6 rules, semgrep loaded {rules} — the rules file did not load as intended")
+              sys.exit(1)
+
+          if not results:
+              summary.write_text(f"## Taint analysis\n\nNo findings ({rules} rules).\n")
+              sys.exit(0)
+
+          lines = [f"## Taint analysis\n\n{len(results)} finding(s) from {rules} rules:\n"]
+          for r in results:
+              loc = r["locations"][0]["physicalLocation"]
+              path = loc["artifactLocation"]["uri"]
+              line = loc["region"]["startLine"]
+              msg = r["message"]["text"].strip().splitlines()[0]
+              lines.append(f"- `{path}:{line}` — **{r['ruleId']}** — {msg}")
+              print(f"::error file={path},line={line}::{r['ruleId']}: {msg}")
+          summary.write_text("\n".join(lines) + "\n")
+          sys.exit(1)
+          PY
+
+      # config/semgrep-taint.yaml documents `trelix taint . --rules config/semgrep-taint.yaml`
+      # as its usage, and nothing verified that path worked. It is a distinct failure mode
+      # from the scan above: under --json the CLI exits non-zero when the scan did not
+      # COMPLETE (ScanOutcome != OK) rather than printing [] and exiting 0, so this step
+      # is what catches a TaintAnalyzer regression that turns "no analysis" into "no
+      # vulnerabilities". Scoped to src/ rather than `.` because TaintAnalyzer._invoke_semgrep
+      # hard-codes a 120 s subprocess timeout; src/ measures ~5 s, a whole-tree scan is
+      # the kind of thing that trips it for reasons unrelated to the diff.
+      - name: Smoke-test the shipped `trelix taint` path
+        run: |
+          set -euo pipefail
+          pip install --quiet -e ".[taint]"
+          trelix taint src --rules config/semgrep-taint.yaml --json
+
+  # ---------------------------------------------------------------------------
+  # Credentials in the diff.
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: Secret scan (trufflehog)
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: trufflehog diffs commit ranges, so the default shallow clone has
+      # nothing to diff against.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+
+      # PR / push: scan only what this change introduced, which is why this can block —
+      # the baseline is empty by construction and the finding is always the author's to
+      # fix (and to rotate). --results=verified only: trufflehog verified the credential
+      # against the live provider, so the false-positive rate is near zero, which is the
+      # bar for blocking. `version` is pinned because the action's default is `latest`.
+      - name: Scan the diff
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318  # v3.97.0
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha || github.event.before }}
+          head: ${{ github.event.pull_request.head.sha || github.sha }}
+          version: "3.97.0"
+          extra_args: --results=verified
+
+      # Scheduled/dispatch: whole history, and unverified matches included. Report-only —
+      # see the header. continue-on-error is the point here, not a workaround: a
+      # credential in an old commit stays in that commit forever, so a blocking form of
+      # this check could never be made green and would be disabled within a week.
+      - name: Scan full history (report-only)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318  # v3.97.0
+        with:
+          path: ./
+          base: ""
+          version: "3.97.0"
+          extra_args: --results=verified,unknown
+
+  # ---------------------------------------------------------------------------
+  # Upstream advisories against the dependency surface the four PyPI
+  # distributions actually install.
+  # ---------------------------------------------------------------------------
+  deps:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.11"
+
+      # All four published distributions in one environment, because that is how they get
+      # combined in practice (each adapter depends on trelix). Non-editable so each one
+      # lands as a real dist-info that pip-audit can resolve.
+      #
+      # `serve` and `sso` are included: they are what the published images install
+      # (docker-publish.yml builds EXTRAS=serve) and sso is the auth surface — pyjwt[crypto]
+      # pulls cryptography, one of the ten packages currently flagged. `local` is
+      # deliberately excluded: it pulls sentence-transformers/torch, multi-GB, and the
+      # Dockerfile already records that the torch dependency chain "blew past hosted-runner
+      # disk space" on the linux/arm64 -local build. torch is covered by the `image` job
+      # for the -local tag's contents and by dependabot for the pin itself.
+      - name: Install the published dependency surface into an isolated env
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/surface
+          /tmp/surface/bin/python -m pip install --quiet --upgrade pip
+          /tmp/surface/bin/python -m pip install --quiet \
+            ".[serve,sso]" \
+            ./packages/trelix-mcp \
+            ./packages/trelix-langchain \
+            ./packages/trelix-llama-index
+
+      # pip-audit goes in a second venv of its own. Installed alongside the project it
+      # would audit its OWN dependency tree too (cyclonedx-python-lib, packageurl, ...) and
+      # report the scanner's advisories as the product's. A venv rather than pipx so the
+      # step depends on nothing beyond the interpreter setup-python just installed.
+      - name: Install pip-audit
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/auditor
+          /tmp/auditor/bin/python -m pip install --quiet "pip-audit==2.10.1"
+
+      # --vulnerability-service osv: OSV carries both GHSA and PYSEC entries, which is what
+      # produced the 10-of-288 figure in the header; the default `pypi` service sees fewer.
+      # --skip-editable is a no-op given the non-editable install above and is kept as a
+      # guard against that changing. No --strict: a dist pip-audit cannot resolve should
+      # be visible in the report, not an abort.
+      #
+      # No `set -e` and no continue-on-error: this step records pip-audit's exit code as an
+      # output instead of propagating it, because three outcomes have to be told apart and
+      # only two of them are the same kind of event. The next step does the telling.
+      - name: pip-audit
+        id: audit
+        run: |
+          set -uo pipefail
+          SITE_PACKAGES=$(/tmp/surface/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+          /tmp/auditor/bin/pip-audit \
+            --path "$SITE_PACKAGES" \
+            --skip-editable \
+            --vulnerability-service osv \
+            --desc on \
+            --progress-spinner off \
+            --format markdown \
+            --output audit.md >audit.log 2>&1
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          cat audit.log
+
+      # Three outcomes, three responses. The middle one is the trap: pip-audit 2.10.1 does
+      # NOT create its --output file on a clean run (verified — exit 0, "No known
+      # vulnerabilities found" on stdout, no file written), and it DOES create it when it
+      # finds something (exit 1, a markdown table). So "report missing" alone means either
+      # "clean" or "crashed" depending on the exit code, and treating a missing file as
+      # failure would turn every green run red while treating it as success would let a
+      # crashed scan report all-clear. Both are this release's exact failure mode, in
+      # opposite directions.
+      #
+      # AUDIT_STATUS comes through env rather than interpolated into the script body — the
+      # pattern docker-publish.yml's "Extract version" step documents for this repo.
+      - name: Classify and gate
+        env:
+          AUDIT_STATUS: ${{ steps.audit.outputs.status }}
+        run: |
+          set -euo pipefail
+          printf '## Dependency audit\n\n' >> "$GITHUB_STEP_SUMMARY"
+
+          # (1) Clean.
+          if [ "${AUDIT_STATUS}" = "0" ]; then
+            echo "No known vulnerabilities in the installed closure of \`trelix[serve,sso]\` + the three adapter packages." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # (2) Non-zero with no report: the audit did not run. Fails everywhere, PRs
+          # included — a scan that could not execute is not a passing scan.
+          if [ ! -s audit.md ]; then
+            echo "::error::pip-audit exited ${AUDIT_STATUS} without writing a report — the audit did not run"
+            {
+              printf 'pip-audit exited %s without writing a report. Output:\n\n' "${AUDIT_STATUS}"
+              printf '```\n'
+              cat audit.log
+              printf '```\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # (3) Advisories found. On a PR that is information — nine of the ten current
+          # findings are transitive, see the header. On the scheduled run it is a work item
+          # for the maintainer, who can actually move a pin.
+          cat audit.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "${ENFORCE}" = "true" ]; then
+            echo "::error::pip-audit reported known-vulnerable dependencies — see the job summary"
+            exit 1
+          fi
+          echo "::warning::pip-audit reported known-vulnerable dependencies — see the job summary. Not blocking this PR: upstream advisories are not caused by, and usually not fixable in, an unrelated change."
+
+  # ---------------------------------------------------------------------------
+  # The published container image.
+  # ---------------------------------------------------------------------------
+  image:
+    name: Container scan (trivy)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
+
+      # The slim (EXTRAS=serve) variant only. It is the tag docker-publish.yml recommends
+      # as the default, it shares the gha build cache with ci.yml's `docker-build` job so
+      # this build is usually a cache hit, and the -local variant's torch/CUDA chain is
+      # the one the Dockerfile records as exhausting runner disk. The two variants differ
+      # only by that extra, so scanning slim covers the base image and every dependency
+      # both tags share.
+      - name: Build the slim image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
+        with:
+          context: .
+          build-args: EXTRAS=serve
+          tags: trelix:scan
+          push: false
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ONE scan, and the SARIF is the single source of truth for both the Security tab
+      # and the gate below. The obvious alternative — a second `format: table` pass with
+      # `exit-code: 1` — was rejected because it assumes trivy writes its --output file
+      # when it finds nothing, and that assumption is exactly the one that is false for
+      # pip-audit (see the deps job). SARIF is a structured document trivy emits with an
+      # empty `results` array, so the clean case is unambiguous.
+      #
+      # exit-code 0 unconditionally: the gate is the parsing step, and an upload step must
+      # never be skipped by the scan having found something.
+      #
+      # limit-severities-for-sarif: without it trivy's SARIF ignores `severity` and reports
+      # every level, so the Security tab and the gate would disagree about what counts.
+      #
+      # ignore-unfixed — see the header: python:3.11-slim's Debian layer always carries
+      # CVEs with no patched package, and a gate that can never go green gets switched off.
+      # trivy-action v0.36.0 pins trivy v0.70.0 itself, so this SHA pins the scanner too.
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: image
+          image-ref: trelix:scan
+          format: sarif
+          output: trivy.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          limit-severities-for-sarif: true
+          exit-code: "0"
+
+      - name: Upload SARIF
+        if: always() && hashFiles('trivy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        uses: github/codeql-action/upload-sarif@f3712979fa5f215279b101dd0a2e3bdfb4353324  # v3.37.7
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-image
+
+      # A missing trivy.sarif means the scan did not run, and that fails everywhere
+      # including PRs — same reasoning as the deps job's outcome (2). Findings themselves
+      # follow ENFORCE: a fixable HIGH in python:3.11-slim is a base-image rebuild for the
+      # maintainer to schedule, not an unrelated PR's blocker.
+      - name: Report and gate
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+
+          report = pathlib.Path("trivy.sarif")
+          summary = pathlib.Path(os.environ["GITHUB_STEP_SUMMARY"])
+          enforce = os.environ["ENFORCE"] == "true"
+          head = "## Container scan — trelix:scan (EXTRAS=serve), HIGH/CRITICAL, fixed only\n\n"
+
+          if not report.is_file() or not report.stat().st_size:
+              summary.write_text(head + "trivy wrote no SARIF report.\n")
+              print("::error::trivy wrote no SARIF report — the image scan did not run")
+              sys.exit(1)
+
+          run = json.loads(report.read_text())["runs"][0]
+          results = run["results"]
+          if not results:
+              summary.write_text(head + "No fixable HIGH/CRITICAL vulnerabilities.\n")
+              sys.exit(0)
+
+          # Severity lives on the rule, not the result; map it once.
+          sev = {
+              r["id"]: str(r.get("properties", {}).get("tags", ["UNKNOWN"])[-1])
+              for r in run["tool"]["driver"].get("rules", [])
+          }
+          lines = [head, f"{len(results)} fixable HIGH/CRITICAL finding(s):\n"]
+          for r in results:
+              rid = r.get("ruleId", "?")
+              where = r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+              lines.append(f"- **{rid}** ({sev.get(rid, '?')}) in `{where}`")
+          summary.write_text("\n".join(lines) + "\n")
+
+          msg = (f"trivy found {len(results)} fixable HIGH/CRITICAL vulnerabilities in the "
+                 "published image — see the job summary")
+          if enforce:
+              print(f"::error::{msg}")
+              sys.exit(1)
+          print(f"::warning::{msg}. Not blocking this PR.")
+          PY

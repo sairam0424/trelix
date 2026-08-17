@@ -145,18 +145,46 @@ class TestMultiRepoWatcherRun:
 
 class TestRequireWatchfiles:
     def test_import_error_message_is_helpful(self) -> None:
-        """ImportError when watchfiles missing includes install hint."""
+        """ImportError when watchfiles missing includes install hint.
+
+        The reload has to be undone, and this test did not undo it. `multi_watcher` binds
+        `Change` and `awatch` at module scope inside a `try/except ImportError`, so
+        reloading it while `sys.modules["watchfiles"]` is None leaves BOTH set to None —
+        and `patch.dict` restores sys.modules without restoring the module object it
+        poisoned. Every later test in the session then saw `Change is None`, which
+        silently disables the deletion branch of `MultiRepoWatcher.run` (its guard reads
+        `if Change is not None and change_type == Change.deleted`), so a delete event fell
+        through to the ignore filter instead.
+
+        Nothing caught it for as long as no test depended on deletions. The first one that
+        did — `test_multi_watcher_filtering.py::test_deleted_ignored_path_still_purges_index`
+        — failed only in a full-suite run and passed in isolation, with the deleted path
+        logged as "ignored (walker filters)".
+
+        Restored in a `finally` so an assertion failure inside the block cannot leave the
+        module broken either.
+        """
+        import importlib
         import sys
         from unittest.mock import patch
 
-        with patch.dict(sys.modules, {"watchfiles": None}):
-            with pytest.raises(ImportError, match="trelix\\[watch\\]|watchfiles"):
-                import importlib
+        from trelix.indexing import multi_watcher
 
-                from trelix.indexing import multi_watcher
+        try:
+            with patch.dict(sys.modules, {"watchfiles": None}):
+                with pytest.raises(ImportError, match="trelix\\[watch\\]|watchfiles"):
+                    importlib.reload(multi_watcher)
+                    from trelix.indexing.multi_watcher import MultiRepoWatcher
 
-                importlib.reload(multi_watcher)
-                from trelix.indexing.multi_watcher import MultiRepoWatcher
+                    reg = _registry("/fake")
+                    MultiRepoWatcher(reg)._require_watchfiles()
+        finally:
+            # sys.modules["watchfiles"] is real again by here, so this rebinds Change and
+            # awatch to the genuine objects.
+            importlib.reload(multi_watcher)
 
-                reg = _registry("/fake")
-                MultiRepoWatcher(reg)._require_watchfiles()
+        assert multi_watcher.Change is not None, (
+            "reload did not restore watchfiles.Change — the deletion branch of "
+            "MultiRepoWatcher.run is now silently disabled for the rest of this session"
+        )
+        assert multi_watcher.awatch is not None

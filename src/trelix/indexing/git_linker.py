@@ -109,6 +109,19 @@ class GitLinker:
             "log",
             f"--max-count={self._config.max_commits}",
             "--name-only",
+            # git prints no diff at all for a merge commit unless told which parent to
+            # diff against, so without this every merge contributed a subject with an
+            # empty file list and linked to nothing. On a repository that integrates
+            # through pull requests that is the common case, and
+            # "Merge pull request #123 from feature/PROJ-456" is exactly where the ticket
+            # reference lives.
+            #
+            # first-parent rather than the alternatives: `-m` emits one diff section per
+            # parent, so every file in a two-parent merge would be counted twice and
+            # inflate the edge weights derived from it; `--first-parent` is a different
+            # option entirely and would stop the individual commits on the merged branch
+            # from being traversed at all.
+            "--diff-merges=first-parent",
             f"--pretty=format:{_COMMIT_SEP}%s{_FIELD_SEP}%b{_FIELD_SEP}",
         ]
         if self._config.since:
@@ -123,7 +136,15 @@ class GitLinker:
                 timeout=60,
             )
             if result.returncode != 0:
-                logger.debug("git log failed: %s", result.stderr[:200])
+                # WARNING, not DEBUG: this returns [], which means zero ticket links —
+                # a total failure of the feature, indistinguishable from a repository
+                # that simply has no ticket references. `--diff-merges` needs git >= 2.31
+                # and an older git rejects the whole invocation, so there is now a way to
+                # land here on a correctly-configured repo.
+                logger.warning(
+                    "git log failed, no ticket links will be created: %s",
+                    result.stderr[:200].strip() or f"exit code {result.returncode}",
+                )
                 return []
         except Exception as exc:
             logger.debug("GitLinker._walk_log failed: %s", exc)

@@ -15,6 +15,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from trelix.core.config import IndexConfig, WalkerConfig
 from trelix.core.models import Language
 from trelix.indexing.walker import EXTENSION_MAP, FileWalker
@@ -514,3 +516,330 @@ class TestSymlinkContainment:
         rels = self._walk(repo, follow=False)
 
         assert rels == ["main.py"]
+
+
+class TestNestedGitignore:
+    """A `.gitignore` in a subdirectory must apply to that subdirectory.
+
+    `_load_gitignore_spec` read only `repo_root/.gitignore`, while the module
+    docstring advertised "respects nested .gitignore files". Every nested
+    `.gitignore` in every indexed repository was therefore ignored.
+
+    The cost of that gap was measured on trelix's own repository:
+    `workspace-vscode/.gitignore` excludes `.vscode-test/`, which
+    `@vscode/test-electron` fills with a 2.6 GB VS Code application bundle. The
+    walker descended into it and indexed 543 of 915 files (59%) and 23,865 of
+    32,337 chunks (74%) from that bundle — minified single-letter symbols that
+    then competed with real code in search results.
+
+    These tests pin nested-`.gitignore` semantics as git defines them, so the
+    docstring and the code cannot drift apart again.
+    """
+
+    @staticmethod
+    def _repo(base: Path) -> Path:
+        """A repo whose nested .gitignore excludes a build directory.
+
+        Mirrors the shape that caused the bug:
+
+            repo/
+              .gitignore        <- "root_only.py"
+              main.py
+              root_only.py      <- excluded by the ROOT .gitignore
+              sub/
+                .gitignore      <- "harness/" and "local.py"
+                keep.py         <- must survive
+                local.py        <- excluded by the NESTED .gitignore
+                harness/
+                  bundle.js     <- excluded because its DIR is nested-ignored
+        """
+        repo = base / "repo"
+        repo.mkdir()
+        (repo / ".gitignore").write_text("root_only.py\n", encoding="utf-8")
+        (repo / "main.py").write_text("def entry():\n    return 0\n", encoding="utf-8")
+        (repo / "root_only.py").write_text("ROOT = 1\n", encoding="utf-8")
+
+        sub = repo / "sub"
+        sub.mkdir()
+        (sub / ".gitignore").write_text("harness/\nlocal.py\n", encoding="utf-8")
+        (sub / "keep.py").write_text("KEEP = 1\n", encoding="utf-8")
+        (sub / "local.py").write_text("LOCAL = 1\n", encoding="utf-8")
+
+        harness = sub / "harness"
+        harness.mkdir()
+        (harness / "bundle.js").write_text("var a=1;\n", encoding="utf-8")
+        return repo
+
+    def _walk(self, repo: Path, *, respect: bool = True) -> list[str]:
+        return sorted(
+            f.rel_path for f in FileWalker(make_config(repo, respect_gitignore=respect)).walk()
+        )
+
+    def test_nested_gitignore_excludes_directory(self, tmp_path: Path) -> None:
+        """`sub/.gitignore` saying `build/` must exclude `sub/harness/bundle.js`.
+
+        This is the .vscode-test case reduced to its essentials.
+        """
+        rels = self._walk(self._repo(tmp_path))
+        assert "sub/harness/bundle.js" not in rels, (
+            "sub/.gitignore excludes harness/ — the walker descended into it anyway"
+        )
+
+    def test_nested_gitignore_excludes_file(self, tmp_path: Path) -> None:
+        """A plain filename in a nested .gitignore must exclude that file."""
+        rels = self._walk(self._repo(tmp_path))
+        assert "sub/local.py" not in rels, "sub/.gitignore lists local.py — it must be skipped"
+
+    def test_non_ignored_siblings_survive(self, tmp_path: Path) -> None:
+        """Honouring nested files must not over-exclude their siblings."""
+        rels = self._walk(self._repo(tmp_path))
+        assert "sub/keep.py" in rels, "keep.py is not ignored anywhere — it must be indexed"
+        assert "main.py" in rels, "main.py is not ignored anywhere — it must be indexed"
+
+    def test_root_gitignore_still_applies(self, tmp_path: Path) -> None:
+        """Regression: adding nested support must not break root-level patterns."""
+        rels = self._walk(self._repo(tmp_path))
+        assert "root_only.py" not in rels, "the root .gitignore stopped being honoured"
+
+    def test_nested_patterns_are_relative_to_their_own_directory(self, tmp_path: Path) -> None:
+        """A nested pattern must not match the same name at the repo root.
+
+        git anchors each .gitignore's patterns to the directory containing it. A
+        naive implementation that concatenates all pattern files into one spec
+        would wrongly exclude `local.py` at the root too.
+        """
+        repo = self._repo(tmp_path)
+        (repo / "local.py").write_text("ROOT_LOCAL = 1\n", encoding="utf-8")
+
+        rels = self._walk(repo)
+
+        assert "local.py" in rels, (
+            "sub/.gitignore's `local.py` leaked upward and excluded the root local.py"
+        )
+        assert "sub/local.py" not in rels, "sub/local.py must still be excluded"
+
+    def test_nested_patterns_do_not_leak_into_sibling_directories(self, tmp_path: Path) -> None:
+        """`sub/.gitignore` must have no effect on `other/`."""
+        repo = self._repo(tmp_path)
+        other = repo / "other"
+        other.mkdir()
+        (other / "local.py").write_text("OTHER = 1\n", encoding="utf-8")
+        (other / "harness").mkdir()
+        (other / "harness" / "keep.js").write_text("var b=2;\n", encoding="utf-8")
+
+        rels = self._walk(repo)
+
+        assert "other/local.py" in rels, "sub/.gitignore wrongly excluded other/local.py"
+        assert "other/harness/keep.js" in rels, "sub/.gitignore wrongly excluded other/harness/"
+
+    def test_deeper_gitignore_negation_re_includes_a_file(self, tmp_path: Path) -> None:
+        """A deeper .gitignore's `!` rule must override a shallower exclusion.
+
+        git resolves conflicts by proximity: the .gitignore closest to the file
+        wins. Here `sub/.gitignore` excludes `local.py`, and
+        `sub/deep/.gitignore` re-includes it.
+        """
+        repo = self._repo(tmp_path)
+        deep = repo / "sub" / "deep"
+        deep.mkdir()
+        (deep / ".gitignore").write_text("!local.py\n", encoding="utf-8")
+        (deep / "local.py").write_text("DEEP = 1\n", encoding="utf-8")
+
+        rels = self._walk(repo)
+
+        assert "sub/deep/local.py" in rels, (
+            "sub/deep/.gitignore re-includes local.py — the deeper file must win"
+        )
+
+    def test_respect_gitignore_false_disables_nested_files_too(self, tmp_path: Path) -> None:
+        """Opting out of .gitignore must opt out of nested ones as well."""
+        rels = self._walk(self._repo(tmp_path), respect=False)
+
+        for expected in ("root_only.py", "sub/local.py", "sub/harness/bundle.js"):
+            assert expected in rels, f"{expected} was excluded even though respect_gitignore=False"
+
+    def test_gitignore_in_an_unindexed_directory_still_counts(self, tmp_path: Path) -> None:
+        """A .gitignore need not sit beside indexable files to apply.
+
+        workspace-vscode/ contains almost nothing trelix indexes directly, yet
+        its .gitignore is what excludes the 2.6 GB bundle underneath.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("def entry():\n    return 0\n", encoding="utf-8")
+
+        holder = repo / "holder"
+        holder.mkdir()
+        (holder / ".gitignore").write_text(".vscode-test/\n", encoding="utf-8")
+        bundle = holder / ".vscode-test" / "app" / "resources"
+        bundle.mkdir(parents=True)
+        (bundle / "minified.js").write_text("var J=1,j=2;\n", encoding="utf-8")
+
+        rels = self._walk(repo)
+
+        assert rels == ["main.py"], (
+            f"the nested .gitignore's .vscode-test/ exclusion was not honoured: {rels}"
+        )
+
+
+class TestWalkCompleteness:
+    """An unreadable directory must not vanish from the index in silence.
+
+    `_iter_files` catches `PermissionError` from `root.iterdir()` and bare-`return`s,
+    which drops the ENTIRE subtree below it, and catches `OSError` per file with a
+    `continue`. Neither left any trace: the walk simply yielded fewer files and the
+    index reported success over a corpus with a hole in it.
+
+    That matters beyond the missing files. Any future reconciliation pass — deleting
+    index rows for files the walk no longer yields — would read a truncated walk as
+    "these files were deleted" and remove embeddings the user paid to compute. A
+    percentage threshold cannot defend against it either: one unreadable directory is
+    almost always far below any sane threshold, so the guard passes and the data goes.
+
+    `FileWalker.incomplete_paths` records what was skipped, so a caller can refuse to
+    act on a walk that is not trustworthy.
+    """
+
+    @staticmethod
+    def _repo(base: Path) -> Path:
+        repo = base / "repo"
+        repo.mkdir()
+        (repo / "visible.py").write_text("def visible(): pass\n", encoding="utf-8")
+        locked = repo / "locked"
+        locked.mkdir()
+        (locked / "hidden.py").write_text("def hidden(): pass\n", encoding="utf-8")
+        return repo
+
+    def test_a_complete_walk_reports_no_gaps(self, tmp_path: Path) -> None:
+        repo = self._repo(tmp_path)
+        walker = FileWalker(make_config(repo))
+
+        rels = sorted(f.rel_path for f in walker.walk())
+
+        assert rels == ["locked/hidden.py", "visible.py"]
+        assert walker.incomplete_paths == []
+        assert walker.walk_was_complete is True
+
+    def test_an_unreadable_directory_is_recorded(self, tmp_path: Path) -> None:
+        """The headline case: a whole subtree disappears, and now says so."""
+        import os
+        import stat
+
+        repo = self._repo(tmp_path)
+        locked = repo / "locked"
+        os.chmod(locked, 0o000)
+        try:
+            walker = FileWalker(make_config(repo))
+            rels = sorted(f.rel_path for f in walker.walk())
+        finally:
+            os.chmod(locked, stat.S_IRWXU)
+
+        if rels == ["locked/hidden.py", "visible.py"]:
+            pytest.skip("this filesystem/user ignores chmod 000 (root, or a permissive FS)")
+
+        assert rels == ["visible.py"], f"expected the locked subtree to be skipped: {rels}"
+        assert walker.walk_was_complete is False, (
+            "the walk silently dropped a subtree and still claimed to be complete"
+        )
+        assert any("locked" in p for p in walker.incomplete_paths), (
+            f"the skipped path was not recorded: {walker.incomplete_paths}"
+        )
+
+    def test_the_record_resets_between_walks(self, tmp_path: Path) -> None:
+        """A second walk must not inherit the first one's gaps."""
+        repo = self._repo(tmp_path)
+        walker = FileWalker(make_config(repo))
+        walker._incomplete_paths.append("stale/entry")
+
+        list(walker.walk())
+
+        assert walker.incomplete_paths == [], "gaps from a previous walk leaked forward"
+
+
+class TestSymlinkCycles:
+    """A symlink pointing at one of its own ancestors must not re-walk the tree.
+
+    `repo/loop -> repo` made the walk re-enter a directory it was already inside.
+    Measured on v3.1.1: one real file yielded **17 times** at nesting depths up to
+    16, one distinct content hash, bounded only by the OS path limit — 17x the
+    embedding cost and 17 duplicate results for a single file.
+
+    `follow_symlinks=False` does NOT address it: the loop target resolves *inside*
+    the root, so containment correctly permits it. The two features are orthogonal.
+
+    The fix tracks the RESOLVED paths of the current recursion chain, not a global
+    visited-set. That distinction has a test of its own below — a visited-set would
+    also collapse two sibling aliases to the same target, silently dropping one from
+    a legitimate layout.
+    """
+
+    def _walk(self, repo: Path, *, follow: bool = True) -> list[str]:
+        cfg = make_config(repo)
+        cfg.walker.follow_symlinks = follow
+        return sorted(f.rel_path for f in FileWalker(cfg).walk())
+
+    def test_self_referential_symlink_yields_each_file_once(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "loop").symlink_to(repo, target_is_directory=True)
+
+        rels = self._walk(repo)
+
+        assert rels == ["a.py"], f"expected one copy, got {len(rels)}: {rels[:5]}"
+
+    def test_cycle_through_a_subdirectory_is_also_broken(self, tmp_path: Path) -> None:
+        """The loop need not be at the root — `repo/x/back -> repo` is the same defect."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "top.py").write_text("t = 0\n", encoding="utf-8")
+        sub = repo / "x"
+        sub.mkdir()
+        (sub / "deep.py").write_text("z = 3\n", encoding="utf-8")
+        (sub / "back").symlink_to(repo, target_is_directory=True)
+
+        rels = self._walk(repo)
+
+        assert rels == ["top.py", "x/deep.py"]
+
+    def test_two_aliases_to_the_same_target_are_BOTH_walked(self, tmp_path: Path) -> None:
+        """The case a global visited-set would silently break.
+
+        `repo/a` and `repo/b` both point at `repo/shared`. Neither is a cycle —
+        neither is an ancestor of itself — so both must still be indexed. A
+        visited-set keyed on the resolved target would descend into whichever came
+        first and drop the other, losing `b/lib.py` with no error to explain it.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        shared = repo / "shared"
+        shared.mkdir()
+        (shared / "lib.py").write_text("y = 2\n", encoding="utf-8")
+        (repo / "a").symlink_to(shared, target_is_directory=True)
+        (repo / "b").symlink_to(shared, target_is_directory=True)
+
+        rels = self._walk(repo)
+
+        assert "a/lib.py" in rels, "first alias missing"
+        assert "b/lib.py" in rels, "second alias dropped — this is the visited-set bug"
+        assert "shared/lib.py" in rels
+
+    def test_repo_without_symlinks_is_unaffected(self, tmp_path: Path) -> None:
+        """Cycle detection must cost nothing for the ordinary case."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "m.py").write_text("m = 1\n", encoding="utf-8")
+        sub = repo / "sub"
+        sub.mkdir()
+        (sub / "n.py").write_text("n = 1\n", encoding="utf-8")
+
+        assert self._walk(repo) == ["m.py", "sub/n.py"]
+
+    def test_cycle_detection_holds_with_containment_enabled(self, tmp_path: Path) -> None:
+        """Both features on at once: the loop is still broken, in-tree links kept."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "loop").symlink_to(repo, target_is_directory=True)
+
+        assert self._walk(repo, follow=False) == ["a.py"]

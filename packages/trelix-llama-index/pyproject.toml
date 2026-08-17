@@ -7,11 +7,33 @@ packages = ["src/trelix_llama_index"]
 
 [project]
 name = "trelix-llama-index"
-version = "2.4.0"
+version = "3.1.2"
 description = "LlamaIndex retriever for trelix code intelligence"
 readme = "README.md"
+# `license` and the License classifier are what PyPI renders, NOT the shipped file.
+# hatchling has always put LICENSE in the wheel (`License-File: LICENSE` in METADATA),
+# yet with no `license` field and no classifier, pypi.org/project/trelix-llama-index/
+# showed "License: UNSPECIFIED" for all 7 releases up to and including 2.4.0 — the
+# MIT grant was in the artifact but invisible to anyone vetting the dependency.
+license = { file = "LICENSE" }
+authors = [{ name = "Trelix Contributors" }]
 requires-python = ">=3.11"
-dependencies = ["trelix>=0.4.0", "llama-index-core>=0.10.0"]
+keywords = ["llama-index", "llamaindex", "retriever", "rag", "code-search", "code-intelligence", "llm", "ai-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# The floor was `trelix>=0.4.0`, which is unsatisfiable-as-written and far too low:
+# trelix 0.4.0 was never published (the oldest core on PyPI is 0.5.0), so pip silently
+# resolved the floor to 0.5.0 — two majors and 25 releases behind the tree this ships
+# from. Nothing here catches that: retriever.py reads `IndexConfig`/`EmbedderConfig` and
+# `SearchResult`/`RetrievedContext` attributes directly, but tests/test_retriever.py
+# mocks the core wholesale, so the suite passes against a core that isn't installed.
+# 3.0.0 is the lowest published core verified to expose every name used here.
+dependencies = ["trelix>=3.0.0", "llama-index-core>=0.10.0"]
 
 [project.urls]
 Homepage = "https://github.com/sairam0424/trelix"

@@ -1,0 +1,208 @@
+{
+  "repo": "/Users/sairamugge/Desktop/Not-Humans-World/trelix",
+  "provider": "azure",
+  "k": 10,
+  "corpus": {
+    "files_total": 495,
+    "files_noise": 0,
+    "chunks_total": 12154,
+    "chunks_noise": 0,
+    "tokens_total": 2397567,
+    "tokens_noise": 0
+  },
+  "corpus_file_noise_pct": 0.0,
+  "corpus_chunk_noise_pct": 0.0,
+  "queries": [
+    {
+      "query": "how does the file walker filter ignored directories",
+      "k": 10,
+      "noise_hits": 0,
+      "minified_hits": 0,
+      "first_noise_rank": null,
+      "top_paths": [
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/multi_watcher.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_walker_containment.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/provenance.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/cli/main.py"
+      ]
+    },
+    {
+      "query": "reciprocal rank fusion combining vector and keyword results",
+      "k": 10,
+      "noise_hits": 0,
+      "minified_hits": 0,
+      "first_noise_rank": null,
+      "top_paths": [
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/fusion.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/fusion.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/fusion.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_fusion.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/eval/ndcg.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/reranker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/eval/metrics.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/vector_qdrant.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/reranker_xtr.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/vector.py"
+      ]
+    },
+    {
+      "query": "how are chunk embeddings stored in sqlite",
+      "k": 10,
+      "noise_hits": 0,
+      "minified_hits": 0,
+      "first_noise_rank": null,
+      "top_paths": [
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/db.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/core/models.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/vector.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/vector.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/vector.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_phase25_concurrency.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/vector_lance.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/sparse_store.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/vector.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/vector_qdrant.py"
+      ]
+    },
+    {
+      "query": "call graph expansion during retrieval",
+      "k": 10,
+      "noise_hits": 0,
+      "minified_hits": 0,
+      "first_noise_rank": null,
+      "top_paths": [
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/graph.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/graph.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/graph.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/graph/search.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/graph/search.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/graph/code_graph.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/graph/__init__.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/retriever.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_graph_pagerank.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/api/app.py"
+      ]
+    },
+    {
+      "query": "BM25 scoring implementation",
+      "k": 10,
+      "noise_hits": 0,
+      "minified_hits": 0,
+      "first_noise_rank": null,
+      "top_paths": [
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/bm25.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/core/config.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/retrieval/planner/models.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/audit/store.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/core/models.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/core/models.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/db.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/db.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/store/db.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_assembler.py"
+      ]
+    },
+    {
+      "query": "how does the query planner classify retrieval intent",
+      "k": 10,
+      "noise_hits": 0,
+      "minified_hits": 0,
+      "first_noise_rank": null,
+      "top_paths": [
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/README.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/README.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/README.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/README.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/README.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/README.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/README.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/README.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/README.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/README.md"
+      ]
+    },
+    {
+      "query": "incremental indexing skip unchanged files by hash",
+      "k": 10,
+      "noise_hits": 0,
+      "minified_hits": 0,
+      "first_noise_rank": null,
+      "top_paths": [
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/multi_watcher.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_multi_watcher_filtering.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/watcher.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_watcher.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_walker.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/watcher.py"
+      ]
+    },
+    {
+      "query": "tamper evident audit log hash chain",
+      "k": 10,
+      "noise_hits": 0,
+      "minified_hits": 0,
+      "first_noise_rank": null,
+      "top_paths": [
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/audit/store.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/audit/store.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_audit_store.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/audit/events.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/tests/unit/test_api_audit.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/audit/store.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/audit/store.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/audit/store.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/audit/store.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/audit/store.py"
+      ]
+    },
+    {
+      "query": "azure openai embedder configuration",
+      "k": 10,
+      "noise_hits": 0,
+      "minified_hits": 0,
+      "first_noise_rank": null,
+      "top_paths": [
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/docs/CONFIGURATION.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/docs/CONFIGURATION.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/docs/CONFIGURATION.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/docs/CONFIGURATION.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/docs/CONFIGURATION.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/docs/CONFIGURATION.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/docs/CONFIGURATION.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/docs/CONFIGURATION.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/docs/CONFIGURATION.md",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/docs/CONFIGURATION.md"
+      ]
+    },
+    {
+      "query": "tree-sitter parser symbol extraction",
+      "k": 10,
+      "noise_hits": 0,
+      "minified_hits": 0,
+      "first_noise_rank": null,
+      "top_paths": [
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/parser/extractors/javascript.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/parser/extractors/c.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/audit/store.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/core/models.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/parser/registry.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/parser/base.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/core/models.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/parser/extractors/javascript.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/parser/extractors/javascript.py",
+        "/Users/sairamugge/Desktop/Not-Humans-World/trelix/src/trelix/indexing/parser/extractors/javascript.py"
+      ]
+    }
+  ],
+  "mean_precision_at_k": 100.0
+}

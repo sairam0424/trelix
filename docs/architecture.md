@@ -1,6 +1,6 @@
 # trelix Architecture
 
-> **Version:** 3.0.0 | **Python:** 3.11+ | **110+ source modules**
+> **Version:** 3.1.2 | **Python:** 3.11+ | **140 source modules**
 
 This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
 
@@ -272,8 +272,10 @@ class ParserConfig(BaseSettings):
     extract_imports: bool = True
     max_symbol_lines: int = 500        # symbols longer than this are truncated
     dataflow_enabled: bool = False     # TRELIX_PARSER_DATAFLOW — def-use extraction
-    taint_enabled: bool = False        # TRELIX_PARSER_TAINT — requires trelix[taint]
+    taint_enabled: bool = False        # TRELIX_PARSER_TAINT — INERT, see below
 ```
+
+`taint_enabled` is **Inert.** The field is declared here and nowhere else: `rg 'taint_enabled' src/` matches only its own declaration in `core/config.py`, so setting `TRELIX_PARSER_TAINT` neither enables nor disables anything. Taint analysis runs only when you invoke `trelix taint`, which does not consult it. Contrast `dataflow_enabled`, which is read at `indexing/indexer.py:1149` and does gate a phase. Same marking as `docs/CLI_REFERENCE.md` and `docs/PROVIDERS.md`.
 
 ### `ChunkerConfig`
 
@@ -372,6 +374,9 @@ class RetrievalConfig(BaseSettings):
     # File-type RRF weights
     file_type_weighting_enabled: bool = True
     # Defaults: source code=1.0, HTML/CSS=0.4, JSON/YAML/TOML=0.5, Markdown=0.3, Unknown=0.8
+    # A language with no entry falls back to 1.0. The five line-window languages (shell,
+    # dockerfile, make, sql, proto) have no entry, so they rank level with parsed source —
+    # a documented open question, not a tuned value. See the NOTE in the field itself.
     # Override per-language: TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_PYTHON=1.2
 ```
 
@@ -443,7 +448,7 @@ symbols_fts (name, qualified_name, docstring, body, context_summary)
   -- Maintained by 3 triggers: AFTER INSERT/DELETE/UPDATE on symbols
 
 -- Extension tables (all added via idempotent migrations)
-sub_chunks (id PK, parent_symbol_id FK→symbols CASCADE,
+sub_chunks (id PK, parent_symbol_id → symbols.id but NO FK/CASCADE — see note below,
             granularity CHECK('function','block','statement'),
             chunk_text, line_start, line_end, token_count)
 
@@ -492,6 +497,17 @@ idx_def_use_symbol, idx_taint_severity, idx_sparse_token
 2. `decorators`, `is_public`, `context_summary` on symbols
 3. `callee_type_hint` on calls (type-hint-guided resolution)
 4. `file_summaries` table
+> **`sub_chunks.parent_symbol_id` has no foreign key.** Unlike `chunks.symbol_id`, which
+> carries `ON DELETE CASCADE`, deleting a symbol does not remove its sub-chunks — verified
+> with `PRAGMA foreign_key_list(sub_chunks)`, which returns `[]`. `Database` therefore
+> purges them explicitly in `delete_file_symbols` and
+> `delete_symbols_by_qualified_names`, deleting the VECTORS first (via
+> `BaseVectorStore.delete_sub_chunk_embeddings`) because the row id is the only handle on
+> its vector. A cascade could not have done that half in any case: the vectors live in a
+> virtual table a foreign key cannot reach. The constraint is not added retroactively
+> because SQLite cannot `ALTER TABLE` one in, and rebuilding a table that may already
+> hold rows is the larger risk.
+
 5. `sub_chunks` table (MGS3)
 6. `query_telemetry` table (v2.3 observability)
 7. `expansion_used`, `expansion_variants`, `expansion_elapsed_ms` on `query_telemetry` (v2.4.0)
@@ -895,8 +911,8 @@ Wrapped around the underlying embedder in `Retriever.__init__` when `query_cache
 
 ```python
 class SparseEmbedder:
-    def __init__(self, model_name="naver-splab/splade-code-distil",
-                 top_k=128, batch_size=16)
+    def __init__(self, model_name="naver/splade-v3-distilbert",
+                 top_k=128, batch_size=16)   # batch_size is load-bearing, see below
     def embed(self, texts: list[str]) -> list[dict[int, float]]
     def embed_query(self, text: str) -> dict[int, float]
     # Returns sparse dict: {token_id: weight}
@@ -905,8 +921,26 @@ class SparseEmbedder:
 ```
 
 `_TORCH_AVAILABLE` module flag — returns empty `[{}]` gracefully when torch/transformers absent.
+An empty result is also what a failed model load produces, so `Indexer` logs a WARNING
+when the phase yields no vectors rather than finishing silently with 0 rows written.
 
-Research basis: SPLADE-Code (naver-splab) — learned sparse retrieval via transformer vocabulary space, trained specifically on code data.
+**`batch_size` bounds memory, it is not a throughput knob.** A MaskedLM emits logits of
+shape `(batch, seq_len, vocab_size)`, so an unbatched pass over a whole corpus is
+enormous: 10,700 chunks at `max_length=512` against DistilBERT's 30,522-token vocabulary
+is a **668 GB** tensor, and 200 chunks already needs 12.5 GB. Until v3.1.2 `embed()` ran
+exactly one forward pass over every text it was given and `SparseConfig.batch_size` was
+referenced nowhere in `src/`, so the phase could not complete on any real repository.
+
+**The model must be a BERT-family MaskedLM checkpoint.** `_load()` uses
+`AutoModelForMaskedLM`, so the SPLADE-Code releases (`naver/splade-code-8B`,
+`naver/splade-code-06B`) cannot be used as-is: they are `model_type=qwen3`, which is
+causal-LM and absent from transformers' MaskedLM auto-mapping. Supporting them requires
+a causal-LM path in `sparse.py`.
+
+Research basis: SPLADE (naver) — learned sparse retrieval via transformer vocabulary
+space. The original design targeted the code-specialised SPLADE-Code variant, but the
+default is a general SPLADE v3 checkpoint because that is what this loader can load; the
+earlier default `naver-splab/splade-code-distil` did not exist on the Hub.
 
 ---
 
@@ -1527,8 +1561,11 @@ class RepoRegistry:
     def add(self, alias, path, weight=1.0, max_repos: int | None = None) -> None
     # ValueError on duplicate alias
     # ValueError if max_repos is set and registry is at capacity
-    # max_repos=None (default) is unbounded — CLI path
-    # MCP path passes config.retrieval.federation_max_repos (default 50)
+    # max_repos=None (default) is unbounded, and `trelix federation add`
+    # (cli/main.py) passes nothing — so the registry itself is uncapped there.
+    # MCP's federation_add_repo passes config.retrieval.federation_max_repos
+    # (default 50). Query time is capped on both paths — see FederatedRetriever
+    # below — so an oversized registry costs storage, not fan-out.
     
     def remove(self, alias) -> None                  # no-op if not found
     def list(self) -> list[RepoEntry]
@@ -1546,8 +1583,11 @@ class FederatedRetriever:
                  cache_ttl: float = 120.0,
                  max_repos: int | None = None) -> None
     # max_repos caps how many registered repos are actually queried per call
-    # (the first N in registry order). None (default) is unbounded — CLI path.
-    # MCP path passes config.retrieval.federation_max_repos (default 50).
+    # (the first N in registry order). None (default) is unbounded.
+    # BOTH callers pass config.retrieval.federation_max_repos (default 50):
+    # `trelix search-all` in cli/main.py and federation_search_all in
+    # packages/trelix-mcp. The CLI names the skipped count on stderr, because a
+    # truncated fan-out otherwise renders identically to a complete one.
     
     def retrieve(self, query: str, k: int = 10) -> list[SearchResult]
     def _query_repos(self, query, k) -> list[SearchResult]  # fan-out, no cache
@@ -2246,4 +2286,4 @@ That's it — no changes to `Retriever` needed.
 
 ---
 
-*trelix v3.0.0 — last updated 2026-08-13*
+*trelix v3.1.2 — last updated 2026-08-16*

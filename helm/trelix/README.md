@@ -59,7 +59,7 @@ See `values.yaml` for the full list with defaults and comments. Highlights:
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `2.12.0` | Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
+| `image.tag` | `3.1.2` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
 | `store.backend` | `sqlite` | `sqlite` \| `qdrant` \| `lance` |
 | `persistence.enabled` | `true` | Shared multi-repo PVC — see "Repo model" above |
 | `persistence.mountPath` | `/data` | |
@@ -72,6 +72,20 @@ Each of `store.qdrant`, `embedder.openai`, `embedder.voyage`,
 convenience — the chart creates one Secret from it) or
 `existingSecretName`/`existingSecretKey` pointing at a Secret you manage
 yourself. Set at most one of the two per credential.
+
+## The two versions in `Chart.yaml`
+
+`appVersion` is trelix's version and must equal `image.tag` and the release
+tag — `release.yml`'s `verify-version` job fails the release if it does not.
+`version` is the *chart's* version and moves independently, on its own SemVer
+track, whenever the chart's templates or defaults change; nothing checks it,
+because there is no chart to check against: the chart is installed from this
+tree (`helm install my-trelix helm/trelix`, as above) and CI only lints and
+templates it — `helm-lint.yml` never `helm package`s or pushes it to a repo.
+
+The two are not, and should not become, lockstep. Bumping `version` in step
+with `appVersion` would announce a chart change on every trelix release,
+including the releases that do not touch `helm/` at all.
 
 ## Linting and rendering locally
 

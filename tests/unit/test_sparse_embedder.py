@@ -130,3 +130,112 @@ class TestSparseEmbedderThreadSafety:
             f"Expected exactly 1 tokenizer load, got {call_count['tokenizer']}"
         )
         assert call_count["model"] == 1, f"Expected exactly 1 model load, got {call_count['model']}"
+
+
+class TestSparseEmbedderBatches:
+    """`embed()` must not put the whole corpus through one forward pass.
+
+    It tokenized the entire `texts` list into a single tensor and ran one
+    `model(**inputs)`, producing logits of shape (batch, seq_len, vocab_size). With
+    max_length=512 and DistilBERT's 30522-token vocabulary that is
+
+        10,700 chunks x 512 x 30522 x 4 bytes = 668.8 GB
+
+    for this repository's own index — and 12.5 GB at just 200 chunks. The phase could
+    not run on any real corpus regardless of which model was configured.
+
+    `SparseConfig.batch_size` existed for this and was referenced NOWHERE in src/; the
+    embedder's constructor did not even accept it, although docs/architecture.md
+    documented `batch_size=16` as part of the signature.
+    """
+
+    @staticmethod
+    def _embedder_with_counting_model(batch_size: int):  # type: ignore[no-untyped-def]
+        """A SparseEmbedder whose model records the batch size of every call."""
+        from unittest.mock import MagicMock
+
+        import torch
+
+        from trelix.embedder.sparse import SparseEmbedder
+
+        emb = SparseEmbedder(model_name="stub", top_k=4, batch_size=batch_size)
+        calls: list[int] = []
+
+        def tokenizer(texts, **kwargs):  # type: ignore[no-untyped-def]
+            n = len(texts)
+            calls.append(n)
+            return {
+                "input_ids": torch.ones((n, 6), dtype=torch.long),
+                "attention_mask": torch.ones((n, 6), dtype=torch.long),
+            }
+
+        def model(**inputs):  # type: ignore[no-untyped-def]
+            n = inputs["input_ids"].shape[0]
+            return MagicMock(logits=torch.rand((n, 6, 50)))
+
+        emb._tokenizer = tokenizer
+        emb._model = model
+        return emb, calls
+
+    def test_a_large_batch_is_split(self) -> None:
+        emb, calls = self._embedder_with_counting_model(batch_size=4)
+        texts = [f"def f{i}(): pass" for i in range(10)]
+
+        vecs = emb.embed(texts)
+
+        assert len(vecs) == 10, "every input must still get a vector back"
+        assert calls == [4, 4, 2], f"expected three batches of 4/4/2, got {calls}"
+
+    def test_batch_size_of_one_still_works(self) -> None:
+        emb, calls = self._embedder_with_counting_model(batch_size=1)
+        vecs = emb.embed(["a", "b", "c"])
+
+        assert len(vecs) == 3
+        assert calls == [1, 1, 1]
+
+    def test_a_small_input_is_a_single_batch(self) -> None:
+        emb, calls = self._embedder_with_counting_model(batch_size=16)
+        emb.embed(["only one"])
+        assert calls == [1]
+
+    def test_results_stay_in_input_order(self) -> None:
+        """Batching must not permute the results relative to their chunk ids.
+
+        The indexer zips these vectors against `pending` positionally, so a reordering
+        would attach every sparse vector to the wrong chunk.
+        """
+        from unittest.mock import MagicMock
+
+        import torch
+
+        from trelix.embedder.sparse import SparseEmbedder
+
+        emb = SparseEmbedder(model_name="stub", top_k=1, batch_size=2)
+
+        def tokenizer(texts, **kwargs):  # type: ignore[no-untyped-def]
+            # Encode each text's index in the input_ids so the model can echo it back.
+            ids = torch.tensor([[int(t)] * 3 for t in texts], dtype=torch.long)
+            return {"input_ids": ids, "attention_mask": torch.ones_like(ids)}
+
+        def model(**inputs):  # type: ignore[no-untyped-def]
+            n = inputs["input_ids"].shape[0]
+            logits = torch.zeros((n, 3, 50))
+            for row in range(n):
+                # Make the argmax token equal to that text's index.
+                logits[row, :, int(inputs["input_ids"][row][0])] = 5.0
+            return MagicMock(logits=logits)
+
+        emb._tokenizer = tokenizer
+        emb._model = model
+
+        vecs = emb.embed([str(i) for i in range(6)])
+
+        top_tokens = [max(v, key=v.get) for v in vecs]
+        assert top_tokens == list(range(6)), f"results were reordered: {top_tokens}"
+
+    def test_default_batch_size_is_bounded(self) -> None:
+        """The default must be small enough that one batch cannot exhaust memory."""
+        from trelix.embedder.sparse import SparseEmbedder
+
+        emb = SparseEmbedder(model_name="stub")
+        assert 1 <= emb._batch_size <= 64
