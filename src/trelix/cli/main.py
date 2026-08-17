@@ -362,6 +362,16 @@ def index(
     t0 = time.perf_counter()
     try:
         indexer = Indexer(config)
+
+        # Read BEFORE index() runs. index() writes provenance at the end of the run, so a
+        # record read after it describes the run that just finished — and a prune guard fed
+        # that record compares this walk config against a copy of itself. Captured here even
+        # when --prune was not passed: it is one cheap key-value read, and making it
+        # conditional invites the next caller to reach for the post-run value.
+        from trelix.store.provenance import read_provenance
+
+        provenance_before = read_provenance(indexer.db)
+
         stats = indexer.index()
     except KeyboardInterrupt:
         err_console.print("[yellow]Indexing cancelled.[/yellow]")
@@ -386,16 +396,21 @@ def index(
     console.print(table)
 
     if prune:
-        # After the index, never before: a prune is only ever licensed by provenance that
-        # matches this version and this walk config, and a full index run is what writes
-        # it. The drift check below therefore pays for a second walk — which is why --prune
+        # The DELETIONS run after the index — a prune wants the freshest possible view of
+        # what is on disk, and the drift check pays for a second walk, which is why --prune
         # is opt-in rather than part of every run.
+        #
+        # But the GUARD is evaluated against `provenance_before`, captured above before
+        # `index()` ran. index() writes provenance at the end of the run, so reading it here
+        # would compare this run's walk config against a copy of itself and disarm three of
+        # the five conditions. See _run_prune's docstring for the reproduction.
         _run_prune(
             config,
             indexer.db,
             indexer.vector_store,
             confirmed=yes,
             max_fraction=prune_max_percent / 100.0,
+            provenance=provenance_before,
         )
 
 
@@ -416,18 +431,44 @@ def _run_prune(
     *,
     confirmed: bool,
     max_fraction: float,
+    provenance: IndexProvenance,
 ) -> None:
     """Plan a prune, print it, and delete only when every guard licenses it.
 
     Exits nonzero on a refusal. A refused prune that exited 0 would tell a script that the
     deletions happened, which is the failure mode this whole feature was withheld over.
-    """
-    from trelix.store.provenance import compute_drift, plan_prune, read_provenance
 
-    report = compute_drift(config, db)
+    `provenance` MUST be the record as it stood BEFORE the index run that precedes this
+    call, and is therefore passed in rather than read here. Reading it here is what the
+    first version did, and it silently disarmed three of the five guards:
+
+    `Indexer.index()` writes provenance at the END of the run, and this prune executes
+    after that — so a locally-read record describes the run that just finished, and
+    `walk_config_comparable`, `walk_config_changed` and the `trelix_version` check all
+    compare the current walk config against a copy of itself. They could only ever pass.
+
+    Reproduced end to end with a real Indexer over a temp repo: index three files, then
+    re-run with one file edited and `vendored/` newly ignored. The two `vendored/` files
+    are still on disk, and the plan came back with 2 candidates and **zero refusals**.
+    On this repository that is the 35 files under `packages/`.
+
+    It looked correct under test because `index()` returns early when nothing changed
+    (`if not to_parse`), never reaching the provenance write — so with an unmodified tree
+    the stale record is still there and the guard fires. One edited file removes that
+    accident. The question the guard asks — "was the index I am about to prune built with
+    the walk config I am pruning it with?" — is about the state before the run, so the
+    pre-run snapshot is not a workaround, it is the correct input.
+    """
+    from trelix.store.provenance import compute_drift, plan_prune
+
+    # The snapshot goes to BOTH. Two of the five guards (`walk_config_comparable`,
+    # `walk_config_changed`) are read off the report, not off this argument, so passing it
+    # only to plan_prune left them comparing the post-run record against itself — measured,
+    # and it is what made the first version of this feature delete live files.
+    report = compute_drift(config, db, provenance=provenance)
     plan = plan_prune(
         report,
-        read_provenance(db),
+        provenance,
         len(db.get_all_file_rel_paths()),
         max_fraction=max_fraction,
     )
@@ -471,10 +512,19 @@ def _prune_from_index(config: IndexConfig, *, confirmed: bool, max_fraction: flo
     """Plan a prune against the index as it already stands, without indexing first.
 
     Only reachable from `--dry-run`, so nothing is deleted and no vector store is needed.
-    Opening the Database does run its idempotent schema migrations, which is a write — the
-    embeddings are untouched, but this is why the delete path is never reached from here.
+
+    Opened `read_only=True`, which is load-bearing rather than tidy. A normal `Database(...)`
+    runs `init_schema()` — DDL, migrations, and a `PRAGMA user_version` stamp — so on any
+    pre-3.1.2 index this path used to commit a `DELETE` and a schema write while telling the
+    user it was a dry run. The cost-preview path in this same file already opened
+    `file:…?mode=ro` for exactly this reason; the two disagreed. SQLite now enforces it: a
+    stray write raises instead of succeeding.
+
+    The provenance record is read here rather than snapshotted, and that is correct on this
+    path: no index run precedes it, so what is in the database IS the pre-run state.
     """
     from trelix.store.db import Database as _Database
+    from trelix.store.provenance import read_provenance
 
     db_path = config.db_path_absolute
     if not db_path.exists():
@@ -484,8 +534,15 @@ def _prune_from_index(config: IndexConfig, *, confirmed: bool, max_fraction: flo
         )
         return
 
-    with _Database(db_path) as db:
-        _run_prune(config, db, None, confirmed=confirmed, max_fraction=max_fraction)
+    with _Database(db_path, read_only=True) as db:
+        _run_prune(
+            config,
+            db,
+            None,
+            confirmed=confirmed,
+            max_fraction=max_fraction,
+            provenance=read_provenance(db),
+        )
 
 
 def _print_prune_plan(plan: PrunePlan, *, will_act: bool) -> None:

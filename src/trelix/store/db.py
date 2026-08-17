@@ -278,7 +278,35 @@ class Database:
         db.close()
     """
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, read_only: bool = False) -> None:
+        """Open the index. `read_only=True` opens it without being able to write to it.
+
+        The default path runs `init_schema()`, which is a WRITE — it applies DDL, runs
+        migrations and stamps `user_version`. That is correct for every normal caller and
+        wrong for exactly one: `trelix index --dry-run`, whose entire promise is that it
+        changes nothing. Before this flag existed, `--dry-run --prune` opened the index
+        normally and committed a `DELETE` plus a `PRAGMA user_version` write on any
+        pre-3.1.2 index, while the cost-preview path twenty lines away deliberately used a
+        `mode=ro` URI "because a cost preview must not be able to modify the index it
+        prices". Same promise, two answers.
+
+        Enforced by SQLite rather than by discipline: a `mode=ro` URI makes a stray write
+        raise `sqlite3.OperationalError` instead of silently succeeding, so a future caller
+        cannot quietly reintroduce the write. Schema init is skipped, which is why this must
+        not be used for anything that needs a current schema — reads that touch a table a
+        migration would have added will fail, loudly, which is the right outcome.
+        """
+        self._read_only = read_only
+        if read_only:
+            self._db_path = db_path
+            self._conn = sqlite3.connect(
+                f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
+            )
+            self._conn.row_factory = sqlite3.Row
+            self._bm25_read_pool = None
+            self._conn_lock = threading.Lock()
+            return
+
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)

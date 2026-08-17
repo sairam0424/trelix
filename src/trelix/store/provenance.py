@@ -451,11 +451,26 @@ def commits_since(config: IndexConfig, indexed_commit: str | None) -> int | None
         return None
 
 
-def compute_drift(config: IndexConfig, db: Database) -> DriftReport:
+def compute_drift(
+    config: IndexConfig, db: Database, *, provenance: IndexProvenance | None = None
+) -> DriftReport:
     """Compare every indexable file on disk against its stored hash.
 
     Costs a full walk plus a SHA-256 of every file — on this repository ~470 files, well
     under a second, but it is proportional to repo size and so is opt-in at the CLI.
+
+    `provenance` overrides the record this reads from `db`, and a caller that runs an INDEX
+    before a drift check must supply it. `Indexer.index()` writes provenance at the end of
+    the run, so a record read here afterwards describes the run that just finished — and
+    `walk_config_comparable` / `walk_config_diff` then compare the current walk config
+    against a copy of itself and can only ever come back "unchanged".
+
+    That is not hypothetical: it disarmed the `--prune` guard. Reproduced with a real
+    Indexer over a temp repo — index three files, re-run with one file edited and
+    `vendored/` newly ignored, and `walk_config_differences(pre_run_record, config)`
+    correctly returns `['extra_ignore_dirs']` while this function returned
+    `walk_config_diff = ()`. Two of the five prune guards read the report rather than the
+    provenance, so threading a pre-run snapshot into `plan_prune` alone was not enough.
     """
     from trelix.indexing.walker import FileWalker
 
@@ -481,11 +496,14 @@ def compute_drift(config: IndexConfig, db: Database) -> DriftReport:
     # now excludes. The two flags below are what let a caller tell those apart.
     missing = sorted(set(db.get_all_file_rel_paths()) - seen)
 
-    provenance = read_provenance(db)
-    diff = walk_config_differences(provenance, config)
+    # `provenance if provenance is not None` rather than `provenance or ...`: an all-None
+    # IndexProvenance is falsy-looking but meaningful — it says "this index recorded
+    # nothing", which must stay distinguishable from "the caller did not pass one".
+    record = provenance if provenance is not None else read_provenance(db)
+    diff = walk_config_differences(record, config)
 
     return DriftReport(
-        walk_config_comparable=provenance.walk_config is not None,
+        walk_config_comparable=record.walk_config is not None,
         walk_config_diff=tuple(
             (name, repr(recorded), repr(current))
             for name, (recorded, current) in sorted(diff.items())

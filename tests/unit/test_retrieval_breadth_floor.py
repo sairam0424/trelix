@@ -30,8 +30,6 @@ from trelix.retrieval.planner.models import (
     SubQuery,
 )
 from trelix.retrieval.retriever import (
-    _BREADTH_FLOOR_MIN_FILES,
-    _BREADTH_FLOOR_MIN_SYMBOLS,
     _breadth_floor_thresholds,
 )
 
@@ -126,18 +124,45 @@ def _file_overview_plan(hint: str, query: str = "what does this file do") -> Que
 # ---------------------------------------------------------------------------
 
 
+# Sourced from the config rather than restated: these were module constants in retriever.py
+# before the knobs were promoted to RetrievalConfig, and a hardcoded copy here would silently
+# stop matching the code the day a default changes.
+def _default(field: str) -> int:
+    from trelix.core.config import RetrievalConfig
+
+    return int(RetrievalConfig.model_fields[field].default)
+
+
+_BREADTH_FLOOR_MIN_FILES = _default("breadth_floor_min_files")
+_BREADTH_FLOOR_MIN_SYMBOLS = _default("breadth_floor_min_symbols")
+
+
 class TestBreadthFloorThresholds:
+    """The knobs resolve through RetrievalConfig, not through raw os.environ.
+
+    They started as `os.environ.get` reads, with the stated intent to "promote to
+    RetrievalConfig once the numbers are settled". They are settled — the floor restored
+    nDCG@10 to 0.6189/0.6217 on the 50-query set — and the raw reads had a defect worth
+    naming: `os.environ` does not see `.env`, so the kill switch documented in the release
+    notes was silently inert in the one place a user would set it. `CONTRIBUTING.md` also
+    makes every `TRELIX_*` name in `.env.example` stable public API, which an os.environ
+    read cannot participate in.
+    """
+
+    @staticmethod
+    def _resolve() -> tuple[bool, int, int]:
+        from trelix.core.config import RetrievalConfig
+
+        return _breadth_floor_thresholds(RetrievalConfig())
+
     def test_defaults_when_env_unset(self) -> None:
-        assert _breadth_floor_thresholds() == (
-            True,
-            _BREADTH_FLOOR_MIN_FILES,
-            _BREADTH_FLOOR_MIN_SYMBOLS,
-        )
+        assert self._resolve() == (True, 2, 10)
 
     @pytest.mark.parametrize("value", ["false", "FALSE", "0", "no", "off"])
     def test_kill_switch_recognised(self, value: str) -> None:
+        """pydantic's bool parsing must accept the same spellings the old reader did."""
         with patch.dict(os.environ, {"TRELIX_RETRIEVAL_BREADTH_FLOOR": value}):
-            assert _breadth_floor_thresholds()[0] is False
+            assert self._resolve()[0] is False
 
     def test_thresholds_overridable(self) -> None:
         with patch.dict(
@@ -147,17 +172,42 @@ class TestBreadthFloorThresholds:
                 "TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_SYMBOLS": "42",
             },
         ):
-            assert _breadth_floor_thresholds() == (True, 5, 42)
+            assert self._resolve() == (True, 5, 42)
 
-    def test_garbage_override_falls_back_to_default_and_warns(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A malformed env var must not take retrieval down — but must not be silent."""
+    def test_a_malformed_override_now_fails_fast_naming_the_field(self) -> None:
+        """DELIBERATE BEHAVIOUR CHANGE, for consistency inside this release.
+
+        The os.environ version fell back to the default and logged a warning, reasoning that
+        "a malformed env var must not take retrieval down". The retrieval-weight parser in
+        this same release made the opposite call, and gave the reason: a silently ignored
+        override leaves you measuring the default while believing you measured your value —
+        which is the exact failure class this whole release is about. Two knobs in one config
+        should not disagree about it.
+
+        pydantic reports the field and the bad value, which is strictly better than the
+        warning was: the old message named the env var but the run continued, so a CI job
+        tuning the floor would have recorded numbers for the default.
+        """
+        from pydantic import ValidationError
+
+        from trelix.core.config import RetrievalConfig
+
         with patch.dict(os.environ, {"TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_FILES": "lots"}):
-            with caplog.at_level("WARNING", logger="trelix.retrieval"):
-                _, min_files, _ = _breadth_floor_thresholds()
-        assert min_files == _BREADTH_FLOOR_MIN_FILES
-        assert "not an integer" in caplog.text
+            with pytest.raises(ValidationError) as excinfo:
+                RetrievalConfig()
+
+        rendered = str(excinfo.value)
+        assert "breadth_floor_min_files" in rendered or "MIN_FILES" in rendered.upper(), rendered
+
+    def test_a_negative_threshold_is_rejected(self) -> None:
+        """`ge=0` — a negative floor would make the condition unsatisfiable, silently."""
+        from pydantic import ValidationError
+
+        from trelix.core.config import RetrievalConfig
+
+        with patch.dict(os.environ, {"TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_SYMBOLS": "-1"}):
+            with pytest.raises(ValidationError):
+                RetrievalConfig()
 
 
 # ---------------------------------------------------------------------------
@@ -236,16 +286,23 @@ class TestConfigLookupBreadthFloor:
         mock_std.assert_not_called()
 
     def test_kill_switch_restores_short_circuit(self, tmp_path: Path) -> None:
-        """TRELIX_RETRIEVAL_BREADTH_FLOOR=false reproduces the pre-3.1.2 behaviour."""
-        retriever = _build_retriever(str(tmp_path))
-        _mock_direct_lookup(retriever, file_ids=[1], symbols_per_file=2)
+        """TRELIX_RETRIEVAL_BREADTH_FLOOR=false reproduces the pre-3.1.2 behaviour.
 
-        with (
-            patch.dict(os.environ, {"TRELIX_RETRIEVAL_BREADTH_FLOOR": "false"}),
-            patch.object(retriever, "_standard_candidates") as mock_std,
-            patch.object(retriever, "_assemble", return_value=_make_retrieved_context()) as asm,
-        ):
-            retriever._retrieve_config(_config_plan())
+        The env var is set BEFORE the Retriever is built, which is now load-bearing. The
+        knob moved from a per-call `os.environ.get` to a RetrievalConfig field, so it is
+        resolved once when the config is constructed — the same as every other
+        `TRELIX_RETRIEVAL_*` setting. Patching the environment around the call alone has no
+        effect, which is exactly what this test caught when the promotion landed.
+        """
+        with patch.dict(os.environ, {"TRELIX_RETRIEVAL_BREADTH_FLOOR": "false"}):
+            retriever = _build_retriever(str(tmp_path))
+            _mock_direct_lookup(retriever, file_ids=[1], symbols_per_file=2)
+
+            with (
+                patch.object(retriever, "_standard_candidates") as mock_std,
+                patch.object(retriever, "_assemble", return_value=_make_retrieved_context()) as asm,
+            ):
+                retriever._retrieve_config(_config_plan())
 
         mock_std.assert_not_called()
         assert len(asm.call_args[0][1]) == 2

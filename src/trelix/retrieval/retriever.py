@@ -203,45 +203,25 @@ def _looks_like_config(hint: str) -> bool:
 # passes the file test and does not fire. The trace records both counts on every query
 # so that gap is measurable rather than assumed.
 #
-# Read from the environment rather than RetrievalConfig so the floor can be tuned and
-# A/B'd against the golden set without a config migration; promote to RetrievalConfig
-# once the numbers are settled.
-_BREADTH_FLOOR_MIN_FILES = 2
-_BREADTH_FLOOR_MIN_SYMBOLS = 10
+# The thresholds live on RetrievalConfig (see core/config.py) rather than being read from
+# os.environ here, which is where they started. Raw os.environ does not see `.env`, so the
+# kill switch the release notes document was silently inert in the one place a user would
+# set it.
 
 
-def _breadth_floor_thresholds() -> tuple[bool, int, int]:
-    """Resolve ``(enabled, min_files, min_symbols)`` from the environment.
+def _breadth_floor_thresholds(retrieval: Any) -> tuple[bool, int, int]:
+    """Resolve ``(enabled, min_files, min_symbols)`` from RetrievalConfig.
 
-    Env: TRELIX_RETRIEVAL_BREADTH_FLOOR=false restores the pre-3.1.2 all-or-nothing
-    short-circuit exactly, which is what makes the floor's effect measurable as a diff.
-    TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_FILES / _MIN_SYMBOLS override the thresholds.
-    Unparseable values fall back to the defaults with a warning rather than raising —
-    a malformed env var must not take retrieval down.
+    `TRELIX_RETRIEVAL_BREADTH_FLOOR=false` restores the pre-3.1.2 all-or-nothing
+    short-circuit exactly, which is what makes the floor's effect measurable as a diff;
+    `..._MIN_FILES` / `..._MIN_SYMBOLS` tune it. All three now go through
+    pydantic-settings, so `.env` and the process environment both work and a malformed
+    value is a startup validation error naming the field rather than a silent fallback.
     """
-    import os
-
-    enabled = os.environ.get("TRELIX_RETRIEVAL_BREADTH_FLOOR", "true").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
-
-    def _int(name: str, default: int) -> int:
-        raw = os.environ.get(name)
-        if raw is None or not raw.strip():
-            return default
-        try:
-            return max(0, int(raw))
-        except ValueError:
-            logger.warning("%s=%r is not an integer — using default %d", name, raw, default)
-            return default
-
     return (
-        enabled,
-        _int("TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_FILES", _BREADTH_FLOOR_MIN_FILES),
-        _int("TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_SYMBOLS", _BREADTH_FLOOR_MIN_SYMBOLS),
+        bool(retrieval.breadth_floor_enabled),
+        int(retrieval.breadth_floor_min_files),
+        int(retrieval.breadth_floor_min_symbols),
     )
 
 
@@ -908,7 +888,7 @@ class Retriever:
         budget per `source`, so `file_direct` gets a slice proportional to its count
         instead of first refusal — the merge cannot express direct-first there.
         """
-        enabled, min_files, min_symbols = _breadth_floor_thresholds()
+        enabled, min_files, min_symbols = _breadth_floor_thresholds(self.config.retrieval)
         files = {r.file.rel_path for r in direct}
         fired = enabled and len(files) < min_files and len(direct) < min_symbols
 

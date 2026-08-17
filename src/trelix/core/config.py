@@ -742,6 +742,32 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_DECLARATION_BOOST_WEIGHT",
     )
 
+    # Breadth floor for the three direct-lookup intents (file_overview, project_overview,
+    # config_lookup). Without it, one matched file yielding a handful of symbols returned
+    # exclusively those symbols and suppressed the vector, BM25 and grep legs entirely.
+    #
+    # Declared here rather than read from os.environ, which is where they started. The
+    # original comment said "promote to RetrievalConfig once the numbers are settled" — they
+    # are (0.6189/0.6217 nDCG@10 on the 50-query set, back in the pre-regression range) — and
+    # raw os.environ reads do NOT see `.env`, so the kill switch documented in the release
+    # notes silently did nothing in the one place a user would set it. `CONTRIBUTING.md` also
+    # declares every `TRELIX_*` name in `.env.example` to be stable public API, which an
+    # os.environ read cannot participate in.
+    breadth_floor_enabled: bool = Field(
+        default=True,
+        alias="TRELIX_RETRIEVAL_BREADTH_FLOOR",
+    )
+    breadth_floor_min_files: int = Field(
+        default=2,
+        ge=0,
+        alias="TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_FILES",
+    )
+    breadth_floor_min_symbols: int = Field(
+        default=10,
+        ge=0,
+        alias="TRELIX_RETRIEVAL_BREADTH_FLOOR_MIN_SYMBOLS",
+    )
+
     # Personalized PageRank — teleport mass concentrated on symbols with a
     # cross-source generic_edge (ticket/artifact reference) instead of the
     # uniform 1/n default. Off by default: nx.pagerank() is called exactly

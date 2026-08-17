@@ -982,25 +982,23 @@ was proven red first.
 
 ### Known limitations
 
-- **`trelix index` still does not remove files deleted from the repository.**
-  `delete_file_by_path` is called only by the watchers, so a deleted file stays indexed
-  and searchable. The reconciliation pass was deliberately NOT added: a prune keyed on
-  "files the walk did not yield" would read a truncated walk as deletions and delete
-  embeddings that cost money to compute, and a percentage-threshold guard cannot defend
-  against it because one unreadable directory falls far below any sane threshold. The
-  walk-completeness signal above is the missing prerequisite. Until then, clear removed
-  files by deleting `.trelix/index.db` and re-indexing.
+- **`trelix index --prune` needs provenance, so it refuses on an index built before this
+  release.** The reconciliation pass shipped (see Added), but its guard requires a recorded
+  walk config and version, and an index written by an earlier trelix has neither — so the
+  first prune after upgrading refuses and says so. `trelix index` writes provenance, and a
+  prune after that works. Deleting `.trelix/index.db` is **not** the remedy: it discards a
+  paid-for index, and `TRELIX_INCREMENTAL=false trelix index .` re-parses everything without
+  re-buying embeddings for unchanged files.
 - **`TRELIX_PARSER_TAINT` is inert** — declared and read nowhere; taint analysis runs only
   via `trelix taint`.
 - **SPLADE-Code models cannot be used** as the sparse model until `sparse.py` grows a
   causal-LM path; the default is a general SPLADE v3 checkpoint instead.
-- **A thin `config_lookup` match still suppresses every other retrieval leg.**
-  `retriever.py`'s `if not results:` only falls back to standard retrieval when the config
-  path found *nothing*. One matched file yielding a handful of symbols therefore returns
-  exclusively those symbols, with no breadth floor and no signal to the synthesizer. Fixing
-  the filename gate above removed today's instance (the Dockerfile query) without touching
-  the mechanism, and is the most likely explanation for the 50-query drift recorded there.
-  A breadth floor needs its own measurement and is deliberately not bundled.
+- **The breadth floor changes which results a thin direct lookup returns**, and its
+  thresholds (fewer than 2 distinct files **and** fewer than 10 symbols) were chosen against
+  one repository's golden set. `TRELIX_RETRIEVAL_BREADTH_FLOOR=false` restores the previous
+  all-or-nothing behaviour; `..._MIN_FILES` and `..._MIN_SYMBOLS` tune it. The four ops
+  queries keep Recall@10 = 1.0000 but lose top-rank precision (nDCG 1.0000 -> 0.8253), so a
+  workload dominated by exact-filename questions may prefer it off.
 - **`test_watcher.py` gained a positive case.** The import-guard test previously deleted
   `watchdog*` from `sys.modules`, which only clears the cache — an installed package
   re-imports and no `ImportError` is raised. It was therefore the sole failing test

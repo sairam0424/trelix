@@ -90,10 +90,30 @@ class TestDisabledIsNoOp:
             assert not any(k.startswith("opentelemetry") for k in sys.modules)
         finally:
             sys.modules.update(purged)
-            if retriever_mod is not None:
-                sys.modules["trelix.retrieval.retriever"] = retriever_mod
-            if otel_tracing_mod is not None:
-                sys.modules["trelix.retrieval.otel_tracing"] = otel_tracing_mod
+            # Restoring sys.modules is NOT enough, and the difference is a real bug this
+            # test used to cause. The fresh `import trelix.retrieval.retriever` above pulls
+            # in a NEW otel_tracing module object and binds it as the PACKAGE ATTRIBUTE
+            # `trelix.retrieval.otel_tracing`. Putting the original back in sys.modules
+            # leaves that attribute pointing at the orphan, so any later
+            # `from trelix.retrieval import otel_tracing` — or a helper that resets
+            # module-level metric state — operates on a different object than the code under
+            # test. Measured: `pytest test_otel_metrics.py` alone passed 12/12, while
+            # `pytest test_otel_tracing.py test_otel_metrics.py` failed 5, purely on
+            # alphabetical ordering.
+            #
+            # Same defect class as the `watchfiles` reload earlier in this release, where a
+            # module left half-restored silently disabled the deletion path for every
+            # subsequent test in the session.
+            package = sys.modules.get("trelix.retrieval")
+            for name, module in (
+                ("retriever", retriever_mod),
+                ("otel_tracing", otel_tracing_mod),
+            ):
+                if module is None:
+                    continue
+                sys.modules[f"trelix.retrieval.{name}"] = module
+                if package is not None:
+                    setattr(package, name, module)
 
 
 # ---------------------------------------------------------------------------
