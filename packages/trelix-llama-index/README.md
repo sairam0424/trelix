@@ -86,11 +86,10 @@ trelix v2.2.0 adds four intelligence upgrades. The TrelixIndexRetriever interfac
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider: `local` \| `openai` \| `azure` \| `bedrock-cohere` \| `bedrock-titan` \| `huggingface` \| `voyage` |
+| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider: `local` \| `local-code` \| `bge-code` \| `nomic-code` \| `openai` \| `azure` \| `bedrock-cohere` \| `bedrock-titan` \| `voyage` |
 | `OPENAI_API_KEY` | — | Required for `openai` provider |
 | `AZURE_API_KEY` | — | Required for `azure` provider |
 | `AWS_ACCESS_KEY_ID` | — | Required for Bedrock providers |
-| `HUGGINGFACE_API_KEY` | — | Required for `huggingface` provider |
 | `VOYAGE_API_KEY` | — | Required for `voyage` provider |
 
 ## Provider switching (v2.0.0+)
@@ -99,8 +98,8 @@ trelix v2.2.0 adds four intelligence upgrades. The TrelixIndexRetriever interfac
 # Use Bedrock Cohere embeddings (best retrieval, reuses AWS creds)
 TRELIX_EMBEDDER_PROVIDER=bedrock-cohere trelix index /path/to/repo
 
-# Use HuggingFace embeddings (open-source alternatives)
-TRELIX_EMBEDDER_PROVIDER=huggingface HUGGINGFACE_API_KEY=hf_... trelix index /path/to/repo
+# Use a self-hosted code embedder (no API key, downloads the model once)
+TRELIX_EMBEDDER_PROVIDER=bge-code trelix index /path/to/repo
 
 # Use Voyage embeddings (specialized for code search)
 TRELIX_EMBEDDER_PROVIDER=voyage VOYAGE_API_KEY=pa-... trelix index /path/to/repo
@@ -127,7 +126,7 @@ retriever = TrelixIndexRetriever(
 
 nodes = retriever.retrieve("how does the auth module interact with the DB layer?")
 for node in nodes:
-    print(node.node.metadata.get("source"))  # file path
+    print(node.node.metadata["file"])         # file path
     print(node.score)                         # combined RRF + graph score
 ```
 
