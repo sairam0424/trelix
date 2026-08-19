@@ -547,7 +547,7 @@ def index(
         # But the GUARD is evaluated against `provenance_before`, captured above before
         # `index()` ran. index() writes provenance at the end of the run, so reading it here
         # would compare this run's walk config against a copy of itself and disarm three of
-        # the five conditions. See _run_prune's docstring for the reproduction.
+        # the six conditions. See _run_prune's docstring for the reproduction.
         _run_prune(
             config,
             indexer.db,
@@ -579,12 +579,15 @@ def _run_prune(
 ) -> None:
     """Plan a prune, print it, and delete only when every guard licenses it.
 
-    Exits nonzero on a refusal. A refused prune that exited 0 would tell a script that the
-    deletions happened, which is the failure mode this whole feature was withheld over.
+    Exits nonzero on a refusal that BLOCKED something. A refused prune that exited 0 would
+    tell a script that the deletions happened, which is the failure mode this whole feature
+    was withheld over; but a refusal with an empty candidate list blocked nothing, and
+    exiting 1 there made the first `--prune` on every index — the case with no provenance
+    yet and nothing to delete — look like a failure.
 
     `provenance` MUST be the record as it stood BEFORE the index run that precedes this
     call, and is therefore passed in rather than read here. Reading it here is what the
-    first version did, and it silently disarmed three of the five guards:
+    first version did, and it silently disarmed three of the six guards:
 
     `Indexer.index()` writes provenance at the END of the run, and this prune executes
     after that — so a locally-read record describes the run that just finished, and
@@ -605,7 +608,7 @@ def _run_prune(
     """
     from trelix.store.provenance import compute_drift, plan_prune
 
-    # The snapshot goes to BOTH. Two of the five guards (`walk_config_comparable`,
+    # The snapshot goes to BOTH. Two of the six guards (`walk_config_comparable`,
     # `walk_config_changed`) are read off the report, not off this argument, so passing it
     # only to plan_prune left them comparing the post-run record against itself — measured,
     # and it is what made the first version of this feature delete live files.
@@ -619,9 +622,16 @@ def _run_prune(
 
     _print_prune_plan(plan, will_act=confirmed and not plan.is_refused)
 
+    # An empty candidate list is checked BEFORE the refusals, and the order is the fix.
+    # A refusal blocks a proposed deletion; with nothing proposed, nothing was blocked, and
+    # exiting nonzero reports a failure for the ordinary outcome of the FIRST `--prune` on
+    # any index — which records no provenance yet, so two guards have something to say about
+    # a deletion that does not exist. A CI job reading the exit code fails on a healthy repo.
+    if not plan.candidates:
+        return
     if plan.is_refused:
         raise typer.Exit(1)
-    if not plan.candidates or not confirmed:
+    if not confirmed:
         return
 
     repo_root = Path(config.repo_path)
@@ -721,10 +731,14 @@ def _print_prune_plan(plan: PrunePlan, *, will_act: bool) -> None:
             f"({plan.fraction_of_index:.1%} of the index)."
         )
 
-    for refusal in plan.refusals:
-        # Escaped as a whole: these sentences carry repo-controlled paths and setting
-        # values interpolated by plan_prune.
-        err_console.print(f"[red]Prune refused:[/red] {_safe_text(refusal)}")
+    # Only when something was proposed. Every refusal is a sentence about deleting files, so
+    # printing them under "Nothing to prune" describes a deletion that was never on the
+    # table — and "Prune refused" on a healthy index is how a user learns to stop reading it.
+    if plan.candidates:
+        for refusal in plan.refusals:
+            # Escaped as a whole: these sentences carry repo-controlled paths and setting
+            # values interpolated by plan_prune.
+            err_console.print(f"[red]Prune refused:[/red] {_safe_text(refusal)}")
 
     if plan.candidates and not plan.refusals and not will_act:
         console.print(

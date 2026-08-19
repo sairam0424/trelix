@@ -106,9 +106,13 @@ import sys
 
 from trelix.core.config import EmbedderConfig
 from trelix.embedder import make_embedder
+from trelix.store.db import read_only_uri
 
 db_path = sys.argv[1]
-conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+# read_only_uri percent-encodes the path: a repo checked out under a directory whose
+# name contains `#` or `?` would otherwise have mode=ro parsed away, so this guard
+# would read an empty database it just created and wave a mismatched index through.
+conn = sqlite3.connect(read_only_uri(db_path), uri=True)
 try:
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE name = 'chunk_embeddings'"

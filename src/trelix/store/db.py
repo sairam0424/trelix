@@ -34,6 +34,7 @@ import logging
 import re
 import sqlite3
 import threading
+import urllib.request
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -267,6 +268,26 @@ END;
 """
 
 
+def read_only_uri(db_path: Path | str) -> str:
+    """Build the `mode=ro` SQLite URI for `db_path`, percent-encoding the path.
+
+    A path is not a URI. Interpolating one raw — `f"file:{db_path}?mode=ro"` — hands the
+    path's own metacharacters to SQLite's URI parser: `#` ends the filename as a fragment
+    and `?` opens a query section of its own, so `mode=ro` is discarded and SQLite opens
+    the *truncated* path in the default read-write mode, creating an empty database there
+    if none exists. The result is the exact inverse of what the caller asked for: a handle
+    that accepts writes and cannot see the index's tables. `trelix index --dry-run
+    --prune` hit both halves — it left a stray database in the parent directory of any
+    index whose absolute path contained `#`, from a command whose promise is that it
+    changes nothing.
+
+    `pathname2url` rather than `Path.as_uri()`: `as_uri()` raises on a relative path, and
+    the documented constructor call is `Database(Path(".trelix/index.db"))`. SQLite accepts
+    a relative URI filename, so encoding in place keeps both path kinds working.
+    """
+    return f"file:{urllib.request.pathname2url(str(db_path))}?mode=ro"
+
+
 class Database:
     """
     Thin wrapper around sqlite3 with typed methods for each table.
@@ -313,9 +334,7 @@ class Database:
         self._conn_lock = threading.Lock()
 
         if read_only:
-            self._conn = sqlite3.connect(
-                f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
-            )
+            self._conn = sqlite3.connect(read_only_uri(db_path), uri=True, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             return
 
