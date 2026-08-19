@@ -8,7 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
-## [3.1.3] — 2026-08-20
+## [3.1.3] — 2026-08-19
 
 Correctness and security. Four paths returned confident wrong answers, one could delete a
 user's files, and four were reachable by an attacker. **Upgrade if you run `trelix serve`, if
