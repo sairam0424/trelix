@@ -13,7 +13,7 @@ type: application
 # index. verify-version does not check this line — appVersion is the site that
 # has to match the tag.
 version: 0.2.0
-appVersion: "3.1.2"
+appVersion: "3.1.3"
 home: https://github.com/sairam0424/trelix
 sources:
   - https://github.com/sairam0424/trelix
