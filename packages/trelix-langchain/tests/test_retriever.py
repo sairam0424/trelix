@@ -77,10 +77,25 @@ def test_import_trelix_retriever():
 
 
 def test_version_exposed():
+    """The dunder must agree with this package's own pyproject.toml.
+
+    This asserted the literal "3.1.2", which quietly made it a version stamp the
+    release gate does not police: bumping the eleven stamps it *does* check left
+    this one behind, so CI would have gone red only after the bump was committed.
+    The file is read rather than queried through importlib.metadata because an
+    editable install freezes its METADATA at install time -- that would fail for
+    anyone who bumps the version without reinstalling.
+    """
+    import re
+    from pathlib import Path
+
     import trelix_langchain
 
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    packaged = re.search(r'^version = "(.+?)"', pyproject.read_text(), re.M)
+    assert packaged is not None, f"no version field found in {pyproject}"
     assert hasattr(trelix_langchain, "__version__")
-    assert trelix_langchain.__version__ == "3.1.2"
+    assert trelix_langchain.__version__ == packaged.group(1)
 
 
 # ---------------------------------------------------------------------------

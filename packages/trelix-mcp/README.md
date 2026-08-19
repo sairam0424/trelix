@@ -24,22 +24,27 @@ for r in response["results"]:  # now dict with pagination
 ## Install
 
 ```bash
-pip install trelix-mcp==2.12.0
+pip install trelix-mcp
 ```
+
+Unpinned on purpose. `trelix-mcp` carries the core version stamp and is published only by a
+core `v*` tag, so the newest `trelix-mcp` is always the one built alongside the newest
+`trelix`. To pin in your own `requirements.txt`, pin all four distributions to the same
+version — see [the FAQ](../../docs/FAQ.md#is-trelix-suitable-for-production-use).
 
 To use Bedrock embeddings or synthesis (no extra API key beyond AWS credentials):
 
 ```bash
-pip install "trelix-mcp==2.12.0" "trelix[bedrock]"
+pip install trelix-mcp "trelix[bedrock]"
 ```
 
 Other optional LLM provider extras:
 
 ```bash
-pip install "trelix-mcp==2.12.0" "trelix[anthropic]"   # Anthropic Claude direct
-pip install "trelix-mcp==2.12.0" "trelix[vertex]"       # Google Vertex AI / Gemini
-pip install "trelix-mcp==2.12.0" "trelix[litellm]"      # 100+ providers via LiteLLM
-pip install "trelix-mcp==2.12.0" "trelix[llm-all]"      # all LLM providers
+pip install trelix-mcp "trelix[anthropic]"   # Anthropic Claude direct
+pip install trelix-mcp "trelix[vertex]"      # Google Vertex AI / Gemini
+pip install trelix-mcp "trelix[litellm]"     # 100+ providers via LiteLLM
+pip install trelix-mcp "trelix[llm-all]"     # all LLM providers
 ```
 
 ## Usage
@@ -169,7 +174,6 @@ TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 | `index_codebase(repo_path, provider="local")` | Index a repo (run once); emits progress notifications |
 | `get_symbol(qualified_name, repo_path)` | Get full source of a symbol by qualified name |
 | `blast_radius(symbol_name, repo_path)` | Direct callers + importers of a symbol, from the call/import graph (no embedding model, ~60-120 ms) |
-| `ask` | Streaming chat endpoint for conversational code exploration (v2.0.0+) |
 | `build_knowledge_graph(repo_path)` | Build code property graph |
 | `graph_search_mcp(query, repo_path)` | Search via knowledge graph |
 | `subscribe_resource(uri, subscription_id)` | Subscribe to change notifications for a trelix:// resource URI (v2.5.0+) |
@@ -261,7 +265,7 @@ graph_search_mcp(query="how does auth relate to the user model?", repo_path="/pa
 Install the knowledge graph extra for full functionality:
 
 ```bash
-pip install 'trelix-mcp==2.12.0' 'trelix[knowledge-graph]'
+pip install trelix-mcp 'trelix[knowledge-graph]'
 ```
 
 ## Watch Bridge (v2.7.0)
@@ -276,10 +280,13 @@ trelix-mcp
 trelix watch /path/to/repo
 ```
 
-Clients can subscribe to file changes via `subscribe_resource` with glob patterns:
+Clients subscribe to a repository's manifest URI via `subscribe_resource`, which takes two
+required strings. There is no glob support:
 
 ```
-subscribe_resource(["src/**/*.ts", "tests/**/*.test.ts"])
+subscribe_resource(uri="trelix://repo//path/to/repo/manifest", subscription_id="my-sub-001")
 ```
 
-After each re-index, all clients receive `notifications/resources/updated` containing changed file paths and re-index stats.
+After each re-index, subscribed clients receive `notifications/resources/updated` carrying only
+`{"uri": ..., "_meta": {"subscriptionId": ...}}` — no file paths and no stats. Call
+`resources/read` on that URI to see what changed.

@@ -13,10 +13,23 @@ import pytest
 
 
 def test_import_package():
+    """The dunder is compared to this package's pyproject.toml, not to a literal.
+
+    A pinned literal here is a version stamp the release gate never checks, so it
+    silently outlives every bump. Reading the sibling pyproject keeps the real
+    invariant under test; importlib.metadata would go stale under an editable
+    install, whose METADATA is frozen when it is installed.
+    """
+    import re
+    from pathlib import Path
+
     import trelix_llama_index
 
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    packaged = re.search(r'^version = "(.+?)"', pyproject.read_text(), re.M)
+    assert packaged is not None, f"no version field found in {pyproject}"
     assert hasattr(trelix_llama_index, "TrelixIndexRetriever")
-    assert trelix_llama_index.__version__ == "3.1.2"
+    assert trelix_llama_index.__version__ == packaged.group(1)
 
 
 def test_import_retriever_class():

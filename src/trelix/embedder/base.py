@@ -39,7 +39,9 @@ Cost metrics (opt-in, TRELIX_OTEL_ENABLED=true):
 from __future__ import annotations
 
 import asyncio
+import os
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -97,6 +99,63 @@ def _usage_tokens(response: Any) -> int | None:
         else getattr(response, "total_tokens", None)
     )
     return int(total) if isinstance(total, int | float) and not isinstance(total, bool) else None
+
+
+# ---------------------------------------------------------------------------
+# Remote model code gate
+# ---------------------------------------------------------------------------
+
+# Opt-in that unlocks trusted remote model code. Read from os.environ ONLY —
+# deliberately not a pydantic-settings field on EmbedderConfig, and never read
+# through any class carrying `env_file`. A dotenv key never becomes a process
+# environment variable (nothing in trelix calls load_dotenv), so this lookup is
+# the one input a `.env` inside an indexed repository cannot reach. That
+# asymmetry is the whole containment: without it, a committed `.env` selecting
+# `local-code` and naming its own model turned `trelix index` into arbitrary
+# code execution, because a trusted-remote-code load runs the model repository's
+# Python in this process.
+REMOTE_MODEL_CODE_ENV_VAR = "TRELIX_ALLOW_REMOTE_MODEL_CODE"
+_REMOTE_MODEL_CODE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+class RemoteModelCodeNotAllowedError(ValueError):
+    """A provider that executes model-repository Python was selected without the opt-in.
+
+    A ValueError, not a RuntimeError: this is a misconfiguration, and every command
+    in cli/main.py already pairs its handler with `except (ValueError, ...)`. A
+    RuntimeError would reach the user as a traceback instead of the message above.
+    """
+
+
+def remote_model_code_allowed() -> bool:
+    """True when the operator has opted in via the real process environment."""
+    return (
+        os.environ.get(REMOTE_MODEL_CODE_ENV_VAR, "").strip().lower() in _REMOTE_MODEL_CODE_TRUTHY
+    )
+
+
+def load_remote_code_model(model_name: str, *, provider: str, factory: Callable[..., Any]) -> Any:
+    """Load *model_name* trusting its repository's code, or refuse.
+
+    The package's only trusted-remote-code load — both providers that need one
+    route through here, so the gate cannot be present at one site and missing at
+    the other, which is how this class of fix usually fails.
+    `retrieval/reranker.py` keeps its own `trust_remote_code=False` instead of
+    calling this: the cross-encoder needs no remote code, and routing it through
+    here would hand it a capability it never asked for.
+
+    Raises RemoteModelCodeNotAllowedError *before* touching *factory*, so a
+    refusal never reaches the model hub.
+    """
+    if not remote_model_code_allowed():
+        raise RemoteModelCodeNotAllowedError(
+            f"embedder provider {provider!r} loads {model_name!r} with remote code "
+            "trusted, which executes that model repository's own Python inside this "
+            "process. Refusing, because the model name can come from configuration "
+            f"trelix does not own. To allow it, set {REMOTE_MODEL_CODE_ENV_VAR}=1 in "
+            "the process environment — a .env file cannot enable it, by design."
+        )
+    return factory(model_name, trust_remote_code=True)
 
 
 class BaseEmbedder(ABC):
@@ -399,7 +458,10 @@ class LocalCodeEmbedder(BaseEmbedder):
     Dimensions: 4096 by default (model.get_embedding_dimension()).
 
     NOTE: This model requires approximately 8 GB RAM / GPU memory (2B parameters).
-    trust_remote_code=True is required for the SFR model architecture.
+    trust_remote_code=True is required for the SFR model architecture — it is not
+    optional here, so it is GATED rather than removed: the load goes through
+    load_remote_code_model(), which refuses unless the operator set
+    TRELIX_ALLOW_REMOTE_MODEL_CODE in the process environment.
 
     Requires the optional 'local' extra:
         pip install 'trelix[local]'
@@ -413,7 +475,9 @@ class LocalCodeEmbedder(BaseEmbedder):
                 "sentence-transformers is required for the local-code embedder. "
                 "Install it with: pip install 'trelix[local]'"
             ) from exc
-        self._model = SentenceTransformer(config.local_code_model, trust_remote_code=True)
+        self._model = load_remote_code_model(
+            config.local_code_model, provider="local-code", factory=SentenceTransformer
+        )
         self._model_name = config.local_code_model
         self._batch_size = config.batch_size
 

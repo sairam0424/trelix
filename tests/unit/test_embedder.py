@@ -11,6 +11,7 @@ import pytest
 
 from trelix.core.config import EmbedderConfig
 from trelix.embedder.base import (
+    REMOTE_MODEL_CODE_ENV_VAR,
     AzureOpenAIEmbedder,
     BaseEmbedder,
     BedrockCohereEmbedder,
@@ -473,6 +474,19 @@ class TestVoyageMatryoshka:
 class TestLocalCodeEmbedder:
     """Tests for the SFR-Embedding-Code-2B_R local code embedder."""
 
+    @pytest.fixture(autouse=True)
+    def _remote_model_code_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Grant SEC-03c's opt-in for this class only.
+
+        local-code loads its model with remote code trusted, which the gate in
+        embedder/base.py refuses unless the operator set the variable in the real
+        process environment. Every construction below therefore has to opt in.
+        Scoped to this class deliberately: an autouse fixture in conftest.py would
+        mean no test in the suite could ever observe the gate regressing. The
+        refusal side lives in tests/unit/test_remote_model_code_gate.py.
+        """
+        monkeypatch.setenv(REMOTE_MODEL_CODE_ENV_VAR, "1")
+
     def test_factory_returns_local_code_embedder(self) -> None:
         pytest.importorskip(
             "sentence_transformers",
@@ -536,7 +550,13 @@ class TestLocalCodeEmbedder:
                 LocalCodeEmbedder(config)
 
     def test_trust_remote_code_true(self) -> None:
-        """SentenceTransformer must be called with trust_remote_code=True."""
+        """With SEC-03c's opt-in granted (class fixture), the kwarg must still arrive.
+
+        The SFR architecture does not load without it, so the gate is an opt-in and
+        not a removal — this is the half that proves the provider still works. Before
+        the gate this test passed with no opt-in anywhere, which is what made a
+        `.env` in an indexed repository sufficient to run its own Python here.
+        """
         pytest.importorskip(
             "sentence_transformers",
             reason="sentence-transformers not installed; skipping local-code provider test",

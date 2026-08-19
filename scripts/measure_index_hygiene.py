@@ -31,6 +31,7 @@ import json
 import re
 import sqlite3
 import sys
+import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast, get_args
@@ -132,7 +133,12 @@ def measure_corpus(db_path: Path) -> CorpusStats:
     ordinary SQL, and requiring vec0 would make the check fail on machines that can
     read the index but cannot load the extension.
     """
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    # Percent-encode the path before it becomes a URI: a `#` in it would end the URI as a
+    # fragment and a `?` would open a second query section, dropping mode=ro and opening —
+    # or creating — an empty database at the truncated path, which reads as "contains no
+    # indexed files" below. Inlined rather than imported from trelix.store.db because
+    # --corpus-only is documented (and verified) to run where trelix is not installed.
+    conn = sqlite3.connect(f"file:{urllib.request.pathname2url(str(db_path))}?mode=ro", uri=True)
     try:
         predicate, params = _noise_sql_predicate("f.path")
 

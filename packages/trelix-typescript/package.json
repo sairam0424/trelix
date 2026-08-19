@@ -33,7 +33,7 @@
     "codegen": "node scripts/codegen.mjs"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.2.0",
     "openapi-typescript": "^7.13.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.10"

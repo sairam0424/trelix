@@ -24,20 +24,59 @@ trelix eval . --golden eval/golden.jsonl
 
 Reports nDCG@10, Recall@10 and MRR over the top-10 **distinct files**.
 
-### The remaining way to get a silently wrong score
+### Freeze the plans, or the score is not repeatable
 
-**Repeating a query in one process measures it once.** `query_cache_size` (default 256)
-memoises `embed_query`, and `plan_cache_size` (default 128) memoises the `QueryPlan` —
-both keyed on `query.strip().lower()`, both living as long as the `Retriever`, and
-`EvalHarness` builds one `Retriever` and reuses it for every query. A repeat loop
-therefore replays the first run's plan (HyDE snippet included) and the first run's
-embedding, and reports a stability it never measured: three identical ranks in-process
-were one sample echoed twice, while the same query in three separate processes put
+**The LLM query planner is the variance source, and freezing it is the only fix.**
+Measured on this golden set: nDCG@10 run-to-run **sd 0.02202** (live planner, both
+caches off, n=5) and **sd 0.02872** (shipped CLI, n=3), against **sd exactly
+0.000000** for the same pipeline replayed from frozen plans — 0.6332934265749293 on
+all six runs. The cause is direct: **0 of 54 plans reproduce byte-for-byte** at
+`temperature=0.0`, with `bm25_tokens` differing on 53-54 of 54 queries and
+`semantic_query` on 39-50 of 54. Different plans mean different `bm25_tokens`,
+different embedded text and different grep hints, so 22-40 of 54 per-query scores
+move between two runs of an identical configuration.
+
+Record the plans once, then replay them:
+
+```bash
+# First run draws every plan and writes one JSONL record per distinct query.
+trelix eval . --golden eval/golden.jsonl --plan-cache-file /tmp/plans.jsonl
+wc -l /tmp/plans.jsonl        # expect 54 — one line per query in this golden set
+
+# Every later run replays them: no planner LLM call, byte-identical plans.
+trelix eval . --golden eval/golden.jsonl --plan-cache-file /tmp/plans.jsonl
+
+# Same mechanism without the flag, for any caller that builds a RetrievalConfig:
+TRELIX_RETRIEVAL_PLAN_CACHE_FILE=/tmp/plans.jsonl trelix eval . --golden eval/golden.jsonl
+```
+
+A query the file does not contain **raises** rather than drawing a fresh plan. That is
+deliberate: a cache that silently re-draws on a miss leaves the run half frozen and
+half re-planned while still looking frozen. Delete the file to re-record it, and
+re-record whenever the golden set changes.
+
+`TRELIX_RETRIEVAL_PLAN_SEED` forwards a provider sampling seed where the backend
+supports one. It narrows the drift; it does not remove it, and `temperature=0.0`
+already demonstrates that a sampling control is not a reproducibility guarantee. Use
+the plan cache for any number you intend to compare.
+
+**The two in-memory caches are not the control, and never were.** `plan_cache_size`
+(default 128) keys the `QueryPlan` on `query.strip().lower()`, and all 54 queries in
+`golden.jsonl` are distinct under exactly that key — so a pass has **zero** possible
+plan-cache hits and `TRELIX_RETRIEVAL_PLAN_CACHE_SIZE=0` is a strict no-op here.
+`query_cache_size` (default 256) keys `embed_query` on the text handed to it, which is
+the plan's `semantic_query` or `hyde_snippet`. Both caches return the value computed
+for that exact key, so a hit is indistinguishable from a recompute: a cache cannot
+make a score move. What they do change is **repeating a query inside one process** —
+`EvalHarness` builds one `Retriever` and reuses it, so a repeat loop replays the first
+draw and reports a stability it never sampled. Three identical in-process ranks were
+one sample echoed twice, while the same query in three separate processes put
 `scripts/self-index.sh` at rank 2, 8 and 13 (`docs/reports/self-index-v3.1.2.md`).
-Repeat across processes, or set both `TRELIX_RETRIEVAL_QUERY_CACHE_SIZE=0` and
-`TRELIX_RETRIEVAL_PLAN_CACHE_SIZE=0`. HyDE's LLM rewrite is the underlying source of
-that variance, and has to be disabled rather than averaged over — see "Scores move
-between runs".
+Repeat across processes — or freeze the plans and stop needing to.
+
+Earlier revisions of this file named HyDE's LLM rewrite as the underlying source.
+Disabling HyDE moves nDCG@10 by **−0.000033**, i.e. wrong by a factor of at least 660,
+and pointed every reader at a flag instead of at the planner.
 
 ### What the harness refuses outright
 
@@ -112,12 +151,33 @@ Before v3.1.2 they did not: a relevant file appearing five times in the top ten 
 `recall@10 = 5.0` and `nDCG@10 = 2.52`, against a documented range of `[0, 1]`. **Scores
 produced before v3.1.2 are not comparable with scores produced after it.**
 
-### Scores move between runs
+### What a difference has to be before it means anything
 
-Retrieval is not deterministic when the LLM-dependent legs are on. With
-`TRELIX_RETRIEVAL_HYDE_FALLBACK` and `TRELIX_RETRIEVAL_FLARE` enabled, two consecutive
-runs over an identical index measured mean precision@10 of 94.0% and 95.0%. Treat small
-differences as noise, and disable those flags when you need a repeatable number.
+With a **live planner** — i.e. no `--plan-cache-file` and no
+`TRELIX_RETRIEVAL_PLAN_CACHE_FILE` — this is the noise floor of the instrument on the
+54-query set:
+
+| Quantity | Value |
+|---|---|
+| run-to-run sd on nDCG@10 (`sd_d`) | 0.022 (planner live, caches off, n=5) — 0.029 (shipped CLI, n=3) |
+| one-run 95% detection band | ±0.061 |
+| MDD at 80% power, one run per arm | 0.087 – 0.114 |
+| passes per arm to resolve 0.01 | ~105 – 113 |
+
+So a single-run delta below ~0.087 is not evidence. Two readings of the same
+configuration are not a range and do not establish a level: two values 0.0028 apart
+differ by 4.6% of the detection band. Quote **N**, a confidence interval, and the MDD
+at that N, or quote nothing. And "the interval includes 0" is not an equivalence
+result — an equivalence margin has to be chosen before the run, not read off it.
+
+Two consecutive live-planner runs over an identical index measured mean precision@10 of
+94.0% and 95.0%; that 1-point spread is this floor, not a change in retrieval.
+
+With the plan cache in place the floor is **sd 0.000000** over six runs, so the honest
+sequence is: freeze the plans first, then measure. `TRELIX_RETRIEVAL_HYDE_FALLBACK` and
+`TRELIX_RETRIEVAL_FLARE` add LLM calls at retrieval time and are worth disabling for
+speed, but disabling HyDE moves nDCG@10 by −0.000033 and is not what makes a run
+repeatable.
 
 ## `golden_synthesis_sample.jsonl` — synthesis quality
 
