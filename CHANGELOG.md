@@ -31,8 +31,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `packages/*/README.md`. A grep with a blind spot reads as coverage, so the properties are
   additionally asserted in CI by `tests/unit/test_readme_install_commands.py`: every extra a
   README advertises must exist in the owning `pyproject.toml`, and no README may hard-pin a
-  trelix version. Proven against the defects — 9 failures before the fix, 24 passing after,
-  and re-introducing either defect turns it red again.
+  trelix version. Proven against the defects — 3 failures before the fix (the two nonexistent
+  extras, plus the whole-set pin assertion whose single message names all seven pins), 24
+  passing after, and re-introducing either defect turns it red again.
 
 - **Fourteen more published assertions the code contradicts.** A five-dimension audit of
   every documented config value, CLI flag, packaging claim, API/MCP surface element and
@@ -348,8 +349,9 @@ disabling its deletion path for every later test in the session.
   twelve times and exits 0; a `v3.2.0` control emits twelve `::error file=` annotations and
   exits 1.
 
-  `tests/unit/test_release_version_gate.py` additionally asserts that every stamp agrees
-  with root `pyproject.toml` *before* any tag exists. `verify-version` compares each stamp to
+  `tests/unit/test_release_version_gate.py` additionally asserts that eleven of the twelve
+  stamps agree with root `pyproject.toml` *before* any tag exists — its `SITES` map is keyed
+  by path, so `server.json`'s second version field is not separately representable in it. `verify-version` compares each stamp to
   the tag, so it can only fail once someone has cut one — by which point a wrong artifact may
   already be public. Stamps disagreeing with each other is the same defect, needs no tag to
   detect, and is what actually happened: nothing in the tree contradicted `2.4.0` across the
@@ -533,7 +535,11 @@ disabling its deletion path for every later test in the session.
   helper: `get_metrics_data()` returns `None`, not an empty container, on a reader that has
   collected nothing — so taking a baseline before any recording raised `AttributeError`.
 
-  **Reverse-order result: 3068 passed, 0 failed.** The suite is now order-independent.
+  **Reverse-order result: 3114 passed, 0 failed.** The suite is now order-independent.
+    (This line first read 3068. That figure could not have been right: reversing collection
+    order permutes the tests, it cannot change how many there are, so a reverse run must
+    report the same count as a forward one. Corrected here rather than left standing, since a
+    wrong measurement is not history.)
 
 - **The eval harness could report a better score than reality.** It skipped a golden entry
   whose `relevant_files` was empty, which shrinks the denominator — so a malformed golden file

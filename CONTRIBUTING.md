@@ -39,8 +39,8 @@ cp .env.example .env
 ## Running Tests
 
 ```bash
-make test           # unit + MCP: 2,861 unit + 102 MCP = 2,963 tests (no coverage)
-make test-fast      # unit tests only, 2,861 (no API calls, fast)
+make test           # unit + MCP: 3,114 unit + 102 MCP = 3,216 tests (no coverage)
+make test-fast      # unit tests only, 3,114 (no API calls, fast)
 make test-cov       # unit tests with the coverage report
 make lint           # ruff check + ruff format (auto-formats before diff-check, cross-platform safe)
 make format         # ruff format
@@ -53,7 +53,7 @@ make typecheck      # mypy
 
 ```bash
 # Unit tests only — no credentials needed
-# Collects 2,861 of 2,965 and deselects the 104 integration tests.
+# Collects 3,114 of 3,220 and deselects the 106 integration tests.
 pytest -m "not integration"
 
 # Live integration tests — require Azure or AWS credentials (104 tests)
@@ -422,7 +422,8 @@ has always put all three integration packages on the core version; both adapters
 `2.4.0` anyway, across the seventeen releases that shipped after it, and nothing in CI
 noticed. Read the jump as a
 re-alignment to that line rather than as adapter change:
-`git diff v2.4.0..HEAD -- packages/trelix-*/src` is 13 insertions and 3 deletions, all
+`git diff v2.4.0..HEAD -- 'packages/trelix-*/src/*/retriever.py'` is 13 insertions and 3
+deletions, all
 type annotations, so `3.1.2` adds no feature and breaks nothing the adapters exposed at
 `2.4.0`.
 

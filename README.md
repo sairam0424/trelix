@@ -662,7 +662,7 @@ make install-dev
 make test        # full unit + MCP suite
 make lint
 make eval        # recall eval on mini_repo
-make eval-full   # full 50-query MRR/NDCG eval (requires Azure/OpenAI)
+make eval-full   # full golden-set nDCG@10/Recall@10/MRR eval (requires Azure/OpenAI)
 make binary      # build dist/trelix standalone binary via PyInstaller
 ```
 
