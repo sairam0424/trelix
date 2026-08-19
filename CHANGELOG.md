@@ -6,7 +6,72 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **Two README install commands that could never have worked, both live on PyPI.** Each
+  distribution's `pyproject.toml` sets `readme = "README.md"`, so those files are the **PyPI
+  long description** — the project page a reader copies commands from, not internal notes.
+  - `packages/trelix-langchain/README.md` advertised `pip install "trelix-langchain[bedrock]"`
+    and `"trelix-langchain[code-embeddings]"`. That `pyproject.toml` has no
+    `[project.optional-dependencies]` table at all — PyPI reports `provides_extra: None` — and
+    pip treats an unknown extra as a warning rather than an error, so a reader following the
+    page silently received the base package. `code-embeddings` does not exist on core either;
+    the three real backends are `bge-code`, `nomic-code` and `lance`. Both commands now use
+    the two-package form the same file already used correctly six lines below:
+    `pip install trelix-langchain "trelix[bedrock]"`.
+  - `packages/trelix-mcp/README.md` hard-pinned `trelix-mcp==2.12.0` in **seven** places,
+    including the primary command under its own `## Install` heading, while the package
+    shipped `3.1.2` — five releases stale. Now unpinned, with the reason stated: all four
+    distributions ship on one core tag, so an unpinned install resolves a working pair by
+    construction, and pinning belongs in a reader's own `requirements.txt`.
+
+- **The doc-stamp grep had a blind spot exactly where the worst rot was.**
+  `CONTRIBUTING.md`'s procedure was scoped `docs/*.md *.md`, which never descends into
+  `packages/`, so it could not see any of the seven stale pins above. Scope now includes
+  `packages/*/README.md`. A grep with a blind spot reads as coverage, so the properties are
+  additionally asserted in CI by `tests/unit/test_readme_install_commands.py`: every extra a
+  README advertises must exist in the owning `pyproject.toml`, and no README may hard-pin a
+  trelix version. Proven against the defects — 3 failures before the fix (the two nonexistent
+  extras, plus the whole-set pin assertion whose single message names all seven pins), 24
+  passing after, and re-introducing either defect turns it red again.
+
+- **Fourteen more published assertions the code contradicts.** A five-dimension audit of
+  every documented config value, CLI flag, packaging claim, API/MCP surface element and
+  provider claim against the code that defines it found **129 contradictions** (132 raised, 3
+  refuted on review): 31 that break at runtime, 68 wrong but silent, 30 merely stale. Thirty
+  are both published and user-facing. This entry fixes the subset that needs no API decision;
+  the rest is tracked separately. Each was confirmed by reading both the claim and the
+  contradicting code line, and the replacement values were confirmed by running them.
+  - `README.md` — the golden-set schema was published as `expected_file`; the harness reads
+    only `relevant_files` and raises `ValueError` on the *whole run*, uncaught by the CLI, so
+    a reader following the README got a traceback and no metrics. `expected_file` appears
+    nowhere in the codebase.
+  - `README.md` — `[all]` was described as resolving to six extras with "the other 17"
+    installing separately, and named `serve`, `otel`, `sparse` and `knowledge-graph` as
+    outside it. It resolves to **ten**, including all four of those, leaving **13** outside.
+    `pyproject.toml:194` documents the widening the README never absorbed.
+  - `README.md` — telemetry was documented as writing to `.trelix/telemetry.db`, a file that
+    is never created; the rows go to the `query_telemetry` table inside `.trelix/index.db`.
+    "Leg hit rates and token usage" are not recorded or rendered at all, and `trelix eval`
+    reports Recall@10 only, not `Recall@1/5/10`.
+  - `packages/trelix-langchain/README.md` — advertised `lance` as a `TRELIX_EMBEDDER_PROVIDER`
+    value, which pydantic rejects at startup; `lance` is a `TRELIX_STORE_BACKEND` value that
+    merely shares the name. Also documented `AWS_DEFAULT_REGION` (the real alias is
+    `AWS_REGION`, and boto3's own fallback never applies because the region is passed
+    explicitly), `TRELIX_RETRIEVAL_TELEMETRY` (no such variable; it is
+    `TRELIX_TELEMETRY_ENABLED` on a different settings class), and a FLARE default of `3`
+    when `3` is the `le=` ceiling and the default is `1`.
+  - `packages/trelix-llama-index/README.md` — advertised a `huggingface` embedder provider,
+    a `HUGGINGFACE_API_KEY`, and a runnable command using both. No such provider member,
+    field or alias exists; the only `huggingface` string in the tree is a warnings filter.
+    Its result example also read `metadata.get("source")`, which is always `None` — this
+    adapter writes `"file"` and `"symbol"`, and `"source"` is the *langchain* adapter's key.
+  - `packages/trelix-mcp/README.md` — the Tools table listed a tool named `ask`; the server
+    registers 15 tools and none is `ask` (`ask_agent` is documented separately, and the
+    streaming surface is REST `GET /ask`). `subscribe_resource` was shown taking a list of
+    globs; it takes two required strings and has no glob support. And the change notification
+    was described as carrying changed file paths and re-index stats when it carries only
+    `{uri, _meta.subscriptionId}` — its own docstring says so.
 
 ## [3.1.2] — 2026-08-17
 
@@ -284,8 +349,9 @@ disabling its deletion path for every later test in the session.
   twelve times and exits 0; a `v3.2.0` control emits twelve `::error file=` annotations and
   exits 1.
 
-  `tests/unit/test_release_version_gate.py` additionally asserts that every stamp agrees
-  with root `pyproject.toml` *before* any tag exists. `verify-version` compares each stamp to
+  `tests/unit/test_release_version_gate.py` additionally asserts that eleven of the twelve
+  stamps agree with root `pyproject.toml` *before* any tag exists — its `SITES` map is keyed
+  by path, so `server.json`'s second version field is not separately representable in it. `verify-version` compares each stamp to
   the tag, so it can only fail once someone has cut one — by which point a wrong artifact may
   already be public. Stamps disagreeing with each other is the same defect, needs no tag to
   detect, and is what actually happened: nothing in the tree contradicted `2.4.0` across the
@@ -469,7 +535,11 @@ disabling its deletion path for every later test in the session.
   helper: `get_metrics_data()` returns `None`, not an empty container, on a reader that has
   collected nothing — so taking a baseline before any recording raised `AttributeError`.
 
-  **Reverse-order result: 3068 passed, 0 failed.** The suite is now order-independent.
+  **Reverse-order result: 3114 passed, 0 failed.** The suite is now order-independent.
+    (This line first read 3068. That figure could not have been right: reversing collection
+    order permutes the tests, it cannot change how many there are, so a reverse run must
+    report the same count as a forward one. Corrected here rather than left standing, since a
+    wrong measurement is not history.)
 
 - **The eval harness could report a better score than reality.** It skipped a golden entry
   whose `relevant_files` was empty, which shrinks the denominator — so a malformed golden file
