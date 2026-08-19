@@ -2214,7 +2214,11 @@ def serve(
 
     setup_json_logging()
 
-    api_app = create_app()
+    # repo_path is the scope, not a label. It used to reach only the banner
+    # below, so `serve /one/repo` left every route willing to read any absolute
+    # path the caller named; passing it here makes it the containment allow-list
+    # root (see api/app.py's "Containment" section).
+    api_app = create_app(served_root=repo_path)
 
     _warn_if_exposed_without_auth(host)
 
@@ -2582,22 +2586,32 @@ def taint(
         scan_result = analyzer.scan(rules_path=rules_path)
     flows = scan_result.flows
 
-    if not flows:
-        # Two defects lived in this one message. It printed prose to STDOUT even
-        # under --json, so `trelix taint --json | jq` failed on the empty path —
-        # the most common path in CI, and the one a no-semgrep install always
-        # takes. And "trelix[taint]" was unescaped, so Rich read "[taint]" as an
-        # opening tag and swallowed it, rendering the fix instruction as
-        # "pip install 'trelix'" — telling the reader to install the package they
-        # already have. That is the same swallow _print_error() documents.
-        from trelix.analysis.taint import ScanOutcome
+    from trelix.analysis.taint import ScanOutcome
 
-        # A third defect lived in this one message: it reported a CLEAN SCAN as a
-        # possible missing install, because run() collapses four different outcomes into
-        # an empty list. An earlier attempt at fixing it branched on `shutil.which`
-        # alone, which made one case worse — a scan that FAILED (for example --tier
-        # intrafile without the Semgrep Pro Engine, which exits 2 with empty stdout)
-        # then printed a confident "semgrep ran and reported nothing" at exit 0.
+    # Whether the scan can be BELIEVED is decided here, above the flow count — not
+    # inside `if not flows:`, where every outcome branch used to live. `scan()` carries
+    # flows through on the failed path on purpose, so a semgrep run that errored fatally
+    # and still emitted one finding matched no branch at all: no diagnostic, no non-zero
+    # exit, and `--json` stdout that parses exactly like a healthy scan. A CI step gating
+    # on this command read "no vulnerabilities" when what happened was "no analysis".
+    # `ScanResult.is_trustworthy` was written for this decision and had no caller.
+    #
+    # Ordering is the whole fix: an untrustworthy result also never reaches the DB write
+    # below, because partial output from a broken scan is not an index of the repository.
+    if not scan_result.is_trustworthy:
+        # Three earlier defects in these messages, recorded because each is a mistake a
+        # later edit can make again. (1) The no-flows message printed prose to STDOUT even
+        # under --json, so `trelix taint --json | jq` failed on the most common path in CI
+        # — the one a no-semgrep install always takes; that message now sits in the
+        # `if not flows:` block below and stays `[]` under --json. (2) "trelix[taint]" was
+        # unescaped, so Rich read "[taint]" as an opening tag and swallowed it, rendering
+        # the instruction as "pip install 'trelix'" — telling the reader to install the
+        # package they already have. That is the same swallow _print_error() documents.
+        # (3) A CLEAN SCAN was reported as a possible missing install, because run()
+        # collapses four outcomes into an empty list; an earlier attempt at fixing that
+        # branched on `shutil.which` alone, which made one case worse — a scan that FAILED
+        # (--tier intrafile without the Semgrep Pro Engine exits 2 with empty stdout) then
+        # printed a confident "semgrep ran and reported nothing" at exit 0.
         if json_output:
             # The payload stays `[]` so `| jq` keeps working, but the EXIT CODE must
             # still distinguish a clean scan from one that never ran. Printing [] and
@@ -2606,13 +2620,10 @@ def taint(
             # false all-clear does the most damage. Diagnostics go to stderr so stdout
             # remains byte-compatible.
             _print_json([])
-            if scan_result.outcome is not ScanOutcome.OK:
-                err_console.print(
-                    f"[red]Taint analysis did not complete ({scan_result.outcome}):[/red] "
-                    f"{_safe_text(scan_result.detail or 'no detail')}"
-                )
-                if scan_result.outcome is not ScanOutcome.SEMGREP_MISSING:
-                    raise typer.Exit(1)
+            err_console.print(
+                f"[red]Taint analysis did not complete ({scan_result.outcome}):[/red] "
+                f"{_safe_text(scan_result.detail or 'no detail')}"
+            )
         elif scan_result.outcome is ScanOutcome.SEMGREP_MISSING:
             console.print(
                 "[yellow]semgrep is not installed, so no taint analysis ran: "
@@ -2628,13 +2639,30 @@ def taint(
                     f"[dim]--tier {_safe_text(tier)} requires the Semgrep Pro Engine, which "
                     f"pip install {_safe_text('trelix[taint]')} does not include.[/dim]"
                 )
-            raise typer.Exit(1)
         elif scan_result.outcome is ScanOutcome.SCANNED_NOTHING:
             _print_error(
                 "Taint analysis examined 0 files — this is NOT a clean result",
                 scan_result.detail or "check the target path and the rules' languages",
             )
+        else:
+            # Reached only if a new ScanOutcome is added without a branch here. Naming
+            # the outcome beats the old fallthrough, which was the green "reported
+            # nothing" message.
+            _print_error(
+                f"Taint analysis did not complete ({scan_result.outcome})",
+                scan_result.detail or "no detail",
+            )
+        # The one carve-out, and it is not a scan failure: an optional dependency that
+        # was never installed must not turn every CI run into a red one.
+        if scan_result.outcome is not ScanOutcome.SEMGREP_MISSING:
             raise typer.Exit(1)
+        return
+
+    # Reached only for a trustworthy scan, so this is now the one place that may say the
+    # word "clean". Under --json the payload stays `[]` rather than prose: see note (1).
+    if not flows:
+        if json_output:
+            _print_json([])
         else:
             console.print(
                 f"[green]No taint flows found.[/green] semgrep examined "
