@@ -107,10 +107,12 @@ The first result is the function definition with its signature and docstring. Th
 You are the new tech lead. You need to present the system architecture to the team. You need to understand how the ten microservices relate to each other, which service owns which data model, and what the request lifecycle looks like for the main user-facing API.
 
 ```bash
-TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "explain the overall architecture: which services exist, what each one does, and how they communicate"
+trelix ask ./my-repo "explain the overall architecture: which services exist, what each one does, and how they communicate"
 ```
 
-With the knowledge graph layer active, trelix builds a Code Property Graph from all call, import, and type edges, runs Louvain community detection to identify architectural modules, and synthesizes a high-level description with specific file references. You have a working architecture narrative in under a minute.
+`trelix ask` retrieves across the legs its query planner selects for an overview question and synthesizes a high-level description with specific file references. You have a working architecture narrative in under a minute.
+
+Earlier revisions of this guide prefixed that command with `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` set true. **Do not.** That flag is measured at **−0.208 / −0.232 nDCG@10** on trelix's own 54-query golden set — see **Leg 5 — CodeGraph BFS** in section 4 for the numbers. The module/community view it was recommended for does not come from retrieval at all: nothing under `src/trelix/retrieval/` reads Louvain communities. That view is what `trelix graph --visualize` and the `/graph/communities` endpoint produce, and neither needs the leg.
 
 ---
 
@@ -285,21 +287,26 @@ TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true trelix ask ./my-repo "what does the auth 
 
 **When it leads:** Project overview queries, architecture questions, onboarding questions about what a module does.
 
-### Leg 5 — CodeGraph BFS (opt-in, `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true`)
+### Leg 5 — CodeGraph BFS (opt-in, `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED`) — measured harmful, leave off
 
 **What it does:** After the first three legs produce seed results, BFS (breadth-first search) traverses the Code Property Graph starting from those seeds. Nodes one hop away get score `0.5`, two hops get `0.25`, etc. This surfaces callers, callees, imported modules, and type ancestors that no text or embedding search would find.
 
-**Why it matters:** Imagine you search for `process_payment` and get the function body. But you also need to know what calls it, and what that caller depends on. Graph BFS surfaces this structural neighborhood automatically. It finds code that is *related by structure* rather than by text or meaning.
+**Do not enable this leg.** Measured on trelix's own 54-query golden set, turning it on costs **−0.2084 nDCG@10** on one query-plan draw and **−0.2322** on a second, independent draw, with **MRR −0.28 / −0.31**. That is **3.4–3.8x** the ±0.061–0.080 run-to-run detection band of this harness, it replicates in sign and magnitude across both draws, and **34–35 of the 54 queries move**. It is the largest single retrieval effect measured anywhere in the pipeline, and its sign is negative.
 
-**Prerequisite:** Requires `trelix graph ./my-repo` to be run once to build the Code Property Graph.
+**Why it hurts, mechanically:** the graph leg scores hits `0.5^hop` — `0.5` at one hop — while measured post-fusion retrieval scores land between **0.016 and 0.029**. The merge that unions the fused, expansion and graph result sets sorts them by **raw score**, so every graph hit outranks every retrieved result: with the leg on, graph hits take **411 of 540** top-10 slots. RRF exists precisely because scores from different systems are not comparable; that merge compares them anyway. The shipped reranker cannot undo it, because it only truncates the candidate list.
+
+The flag therefore defaults off in code (`graph_search_enabled: bool = False` in `RetrievalConfig`) and should stay off until the merge fuses in rank space instead of raw-score space. Earlier revisions of this guide gave the enable command here; it has been removed rather than reworded.
+
+**What to use instead:** for the questions this leg was recommended for — feature flow, blast radius, "what else would I have to change" — use the intents and tools that read the call and import edges directly:
 
 ```bash
 pip install trelix[knowledge-graph]
-trelix graph ./my-repo
-TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "how does checkout work?"
+trelix graph ./my-repo              # builds the Code Property Graph
+trelix call-graph ./my-repo process_payment
+trelix ask ./my-repo "how does checkout work?"
 ```
 
-**When it leads:** Feature flow questions, blast radius queries, any question requiring a chain of related symbols.
+Call-graph expansion is already active for the `symbol_lookup` and `feature_flow` intents without this flag, and the `blast_radius` MCP tool reads the edge tables rather than going through retrieval.
 
 ### Leg 6 — Sparse (opt-in, `TRELIX_RETRIEVAL_SPARSE=true`)
 
@@ -742,12 +749,14 @@ trelix: blast_radius(symbol_name="get_by_email", repo_path="./my-repo")
 
 Returns a JSON list of all symbols that directly or indirectly depend on the target symbol.
 
-**Step 4 — Enable graph search for deeper traversal:**
+**Step 4 — Ask for the impact surface in prose:**
 ```bash
-TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true trelix ask ./my-repo "blast radius of UserRepository.get_by_email — what would need to change?"
+trelix ask ./my-repo "blast radius of UserRepository.get_by_email — what would need to change?"
 ```
 
-With the knowledge graph active, graph BFS from `get_by_email` surfaces callers, their callers, and imported helpers — the full impact surface.
+The `blast_radius` intent seeds from grep matches and then walks imports in reverse, so callers, their callers, and imported helpers reach the answer without any extra flag.
+
+**Do not set `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` on this step.** Earlier revisions of this guide did. On trelix's own 54-query golden set that flag costs **−0.2084 / −0.2322 nDCG@10** across two independent query-plan draws — 3.4–3.8x the harness's detection band — because graph hits are scored `0.5^hop` against post-fusion scores of 0.016–0.029 and then compared by raw score, taking **411 of 540** top-10 slots. See **Leg 5 — CodeGraph BFS** in section 4. For a structural walk, `trelix call-graph` and the `blast_radius` MCP tool read the call and import edges directly instead of competing with retrieval for slots.
 
 **What good output looks like:**
 ```
@@ -1006,7 +1015,7 @@ Watching for changes... (Ctrl+C to stop)
 **Key behaviors:**
 - **Debounce:** 500ms debounce prevents index cascades when your IDE auto-formats a file on save.
 - **Incremental:** Only the changed file is re-processed; the rest of the index is untouched.
-- **Graph sync:** When `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true` and the graph has been built, `trelix watch` also patches the Code Property Graph on every file change. You do not need to re-run `trelix graph` manually.
+- **Graph sync:** When `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` is set and the graph has been built, `trelix watch` also patches the Code Property Graph on every file change, so you do not need to re-run `trelix graph` manually. This is a description of the flag's side effects, **not** a reason to set it — the flag is measured at −0.208 / −0.232 nDCG@10 and should stay off (see **Leg 5 — CodeGraph BFS** in section 4).
 - **Delete handling:** When a file is deleted, trelix removes its symbols, chunks, vectors, and call edges from the index atomically.
 
 **Step 2 — Query while watching:**
@@ -1305,7 +1314,7 @@ trelix telemetry — ./my-repo — last 10 queries
 
 **`legs_used`** — The JSON array of retrieval legs that contributed results to this query.
 
-*What to look for:* If a query consistently uses only one leg (e.g., `vector` only), check that your BM25 and graph legs are enabled and populated. A query hitting all three primary legs typically produces better results.
+*What to look for:* If a query consistently uses only one leg (e.g., `vector` only), check that the three always-active legs — grep, BM25, vector — are populated; a query hitting all three typically produces better results. Do **not** read a missing `graph` leg as something to fix: the graph leg is measured at −0.208 / −0.232 nDCG@10 and is off by default on purpose (see **Leg 5 — CodeGraph BFS** in section 4).
 
 **`rrf_score_p50`** — The median RRF score across all fused results, before reranking.
 
@@ -1660,8 +1669,8 @@ stats` command. `trelix --help` lists the real 23 top-level commands.
 | `TRELIX_RETRIEVAL_RERANK` | `true` | Reranking on/off |
 | `TRELIX_RETRIEVAL_RERANK_TOP_N` | `15` | Results kept after reranking |
 | `TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET` | `12000` | Max context tokens to LLM |
-| `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` | `false` | Enable CodeGraph BFS leg |
-| `TRELIX_RETRIEVAL_GRAPH_SEARCH_DEPTH` | `2` | BFS depth from seed nodes |
+| `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` | `false` | CodeGraph BFS leg. **Leave off** — measured −0.208 / −0.232 nDCG@10 on the project's own golden set (see Leg 5, section 4) |
+| `TRELIX_RETRIEVAL_GRAPH_SEARCH_DEPTH` | `2` | BFS depth from seed nodes (inert while the leg is off) |
 | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable file-summary retrieval leg |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM summaries at index time |
 | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Enable HyDE query expansion |

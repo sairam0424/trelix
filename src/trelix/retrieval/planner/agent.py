@@ -13,15 +13,24 @@ AdaptiveRouter wraps QueryPlanner with 3-tier routing:
   Tier 1 (DIRECT)  — trivial factual queries, skip retrieval
   Tier 2 (SINGLE)  — default single-step plan (existing LLM call)
   Tier 3 (MULTI)   — complex multi-part queries, LLM decomposes into 2-3 sub-queries
+
+Determinism: when RetrievalConfig.plan_cache_file is set, QueryPlanner.plan() records
+every plan to that JSONL file on the first pass and replays it byte-for-byte on later
+passes, making the whole retrieval pipeline reproducible. See _FrozenPlanCache.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
+import threading
+from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from trelix.llm.client import seed_kwargs
 from trelix.retrieval.bm25 import is_short_query
 from trelix.retrieval.planner.models import (
     INTENT_STRATEGIES,
@@ -45,6 +54,190 @@ logger = logging.getLogger(__name__)
 # Chat model to use for the planner (cheap + fast — we only need structured output)
 _PLANNER_MODEL_OPENAI = "gpt-4o-mini"
 _PLANNER_MODEL_AZURE = "gpt-4o"  # deployment name; caller can override via config
+
+
+class PlanCacheMissError(RuntimeError):
+    """A frozen plan cache was asked for a query it does not contain.
+
+    Deliberately a hard failure. Falling back to a live draw would leave the run
+    partly frozen and partly re-planned while every surface still reported "plans
+    replayed from <file>" — the exact shape of a number that looks reproducible and
+    is not.
+    """
+
+
+class _FrozenPlanCache:
+    """One JSONL file of recorded QueryPlans: record on the first pass, replay after.
+
+    Record layout, one object per line::
+
+        {"query": "...", "project_context": null, "plan": {...}}
+
+    The lookup key is derived from `query` and `project_context` rather than stored,
+    so the file stays hand-editable and cannot carry a key that disagrees with its
+    own query text.
+
+    `strategy` is deliberately NOT serialised: it is a pure function of `intent` via
+    INTENT_STRATEGIES, so persisting it would let a months-old cache silently
+    override today's tuned retrieval defaults. The cache freezes the LLM's output,
+    which is the only non-reproducible part of planning.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._plans: dict[str, QueryPlan] = {}
+        # Replay mode is decided ONCE, from the file as it was found. Deciding it per
+        # lookup would make the first recorded query flip the mode and turn every
+        # later miss into a raise mid-recording.
+        raw = self._read_records()
+        self._replaying = bool(raw)
+        for record in raw:
+            self._plans[_plan_cache_key(record["query"], record.get("project_context"))] = (
+                _plan_from_record(record)
+            )
+        if self._replaying:
+            logger.info("Frozen plans: replaying %d plan(s) from %s", len(self._plans), path)
+        else:
+            logger.info("Frozen plans: recording to %s (no plans found there)", path)
+
+    def _read_records(self) -> list[dict[str, Any]]:
+        if not self._path.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        for line_no, line in enumerate(
+            self._path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{self._path}:{line_no}: not valid JSON ({exc.msg})") from exc
+            if not isinstance(record, dict) or not isinstance(record.get("query"), str):
+                raise ValueError(
+                    f'{self._path}:{line_no}: expected an object with a "query" string'
+                )
+            records.append(record)
+        return records
+
+    def plan(
+        self,
+        query: str,
+        project_context: dict[str, Any] | None,
+        draw: Callable[[], QueryPlan],
+    ) -> QueryPlan:
+        """Return the recorded plan for *query*, or record what `draw()` returns.
+
+        `draw` is called at most once per distinct key, and never at all in replay
+        mode — a replay that reaches the LLM is not a replay.
+        """
+        key = _plan_cache_key(query, project_context)
+        with self._lock:
+            cached = self._plans.get(key)
+        if cached is not None:
+            return cached
+
+        if self._replaying:
+            raise PlanCacheMissError(
+                f"{self._path} holds {len(self._plans)} frozen plan(s) but none for "
+                f"query {query!r}. Refusing to draw a fresh plan: half of this run "
+                "would be replayed and half re-planned, and the score would look "
+                "reproducible while it is not. Delete the file to re-record it, or "
+                "run the same golden set the file was recorded from."
+            )
+
+        plan = draw()
+        with self._lock:
+            # A concurrent draw may have recorded this key already; keep the first so
+            # the file has exactly one line per distinct query and both callers get
+            # the same plan.
+            existing = self._plans.get(key)
+            if existing is not None:
+                return existing
+            self._plans[key] = plan
+            self._append(query, project_context, plan)
+        return plan
+
+    def _append(self, query: str, project_context: dict[str, Any] | None, plan: QueryPlan) -> None:
+        record = {
+            "query": query,
+            "project_context": project_context,
+            "plan": _plan_to_record(plan),
+        }
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with self._path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
+
+
+def _plan_cache_key(query: str, project_context: dict[str, Any] | None) -> str:
+    """Key on the same normalisation CachingPlanner uses, plus the context.
+
+    `query.strip().lower()` matches plan_cache.py so a query that hits the in-memory
+    LRU also hits the file cache. project_context is part of the key because it is
+    part of the prompt: two contexts produce two different plans, and collapsing them
+    would replay the wrong one.
+    """
+    return json.dumps([query.strip().lower(), project_context], sort_keys=True)
+
+
+def _plan_to_record(plan: QueryPlan) -> dict[str, Any]:
+    """Serialise the parts of a plan the LLM decided. See _FrozenPlanCache."""
+    return {
+        "intent": str(plan.intent),
+        "execution_mode": plan.execution_mode,
+        "routing_tier": int(plan.routing_tier),
+        "raw_query": plan.raw_query,
+        "sub_queries": [dataclasses.asdict(sq) for sq in plan.sub_queries],
+    }
+
+
+def _plan_from_record(record: dict[str, Any]) -> QueryPlan:
+    """Rebuild a QueryPlan from a recorded line, raising on anything unusable.
+
+    Every branch here raises rather than substituting a default. A cache that
+    tolerates a malformed record scores a run against a plan nobody wrote.
+    """
+    plan_raw = record.get("plan")
+    if not isinstance(plan_raw, dict):
+        raise ValueError(f'frozen plan for query {record["query"]!r}: "plan" must be an object')
+    try:
+        intent = IntentType(plan_raw["intent"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError(
+            f"frozen plan for query {record['query']!r}: unusable intent {plan_raw.get('intent')!r}"
+        ) from exc
+    if intent not in INTENT_STRATEGIES:
+        raise ValueError(f"frozen plan intent {intent!r} not in INTENT_STRATEGIES")
+
+    sub_raw = plan_raw.get("sub_queries")
+    if not isinstance(sub_raw, list) or not sub_raw:
+        raise ValueError(
+            f'frozen plan for query {record["query"]!r}: "sub_queries" must be a '
+            "non-empty list — an empty plan retrieves nothing and would score 0.0, "
+            "indistinguishable from a genuine retrieval failure"
+        )
+    sub_queries = [
+        SubQuery(
+            semantic_query=sq["semantic_query"],
+            hyde_snippet=sq["hyde_snippet"],
+            bm25_tokens=list(sq["bm25_tokens"]),
+            grep_hints=list(sq["grep_hints"]),
+            file_hints=list(sq["file_hints"]),
+            depends_on=list(sq.get("depends_on", [])),
+            lexical_only=bool(sq.get("lexical_only", False)),
+            path_filter=sq.get("path_filter"),
+        )
+        for sq in sub_raw
+    ]
+    return QueryPlan(
+        intent=intent,
+        execution_mode=plan_raw.get("execution_mode", "parallel"),
+        strategy=INTENT_STRATEGIES[intent],
+        sub_queries=sub_queries,
+        raw_query=plan_raw.get("raw_query", record["query"]),
+        routing_tier=RoutingTier(int(plan_raw.get("routing_tier", RoutingTier.TIER_2_SINGLE))),
+    )
 
 
 class AdaptiveRouter:
@@ -286,11 +479,17 @@ class AdaptiveRouter:
         )
         _use_raw = planner._client is not None and planner._client is not _backend_internal
 
+        # Seed both decomposition paths, not just the one a reader happens to read:
+        # they are alternatives on the same query, so seeding one and not the other
+        # would make determinism depend on whether a raw client was injected.
+        seed = getattr(self._retrieval_config, "plan_seed", None)
+
         if isinstance(planner._llm_client, TrelixChatClient) and not _use_raw:
             response = planner._llm_client.complete(
                 messages=[ChatMessage(role="user", content=prompt)],
                 max_tokens=256,
                 temperature=0.0,
+                **seed_kwargs(planner._llm_client.complete, seed),
             )
             raw = response.content
         else:
@@ -307,6 +506,10 @@ class AdaptiveRouter:
                 ],
                 temperature=0.0,
                 timeout=15.0,
+                # The OpenAI/Azure wire API takes `seed` directly, so this path is the
+                # one place a seed reaches a provider today; the ABC backends in
+                # llm/providers/ do not forward one yet.
+                **({"seed": seed} if seed is not None else {}),
             )
             raw = legacy_response.choices[0].message.content or ""
         # Strip markdown fences if the model wraps the JSON
@@ -331,9 +534,15 @@ class AdaptiveRouter:
     # ------------------------------------------------------------------
 
     def _get_planner(self) -> QueryPlanner:
-        """Lazily create the QueryPlanner (builds the LLM client once)."""
+        """Lazily create the QueryPlanner (builds the LLM client once).
+
+        The retrieval config is passed through deliberately. Without it the inner
+        planner rebuilds one from the environment, so `plan_seed` supplied
+        programmatically never reached the Tier-2 draw — the same silent-ignore bug
+        the router's own `retrieval_config` parameter was added to fix, one level down.
+        """
         if self._planner is None:
-            self._planner = QueryPlanner(self._config)
+            self._planner = QueryPlanner(self._config, retrieval_config=self._retrieval_config)
         return self._planner
 
 
@@ -399,6 +608,9 @@ class QueryPlanner:
         # AdaptiveRouter is initialised lazily on first plan() call to avoid
         # circular reference issues during __init__ of the router itself.
         self._router: AdaptiveRouter | None = None
+        # Frozen plan cache, built on first plan() call so an unconfigured planner
+        # never touches the filesystem.
+        self._plan_cache: _FrozenPlanCache | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -416,11 +628,34 @@ class QueryPlanner:
 
         Returns:
             A fully populated QueryPlan with routing_tier set.
-            Never raises — falls back to default_plan() on any error.
+            Never raises — falls back to default_plan() on any error, EXCEPT when a
+            frozen plan cache is configured and misses; see below.
         """
         if self._router is None:
             self._router = AdaptiveRouter(self._config, retrieval_config=self._retrieval_config)
-        return self._router.route(query, project_context)
+        router = self._router  # bound locally so the closure below is narrowed
+
+        cache = self._frozen_plans()
+        if cache is None:
+            return router.route(query, project_context)
+        # The freeze sits OUTSIDE route(), whose blanket `except Exception` returns
+        # default_plan(). A PlanCacheMissError raised inside route() would come back
+        # as a valid-looking FEATURE_FLOW plan for every missing query — identical
+        # across runs and identically wrong, i.e. reproducible nonsense.
+        return cache.plan(query, project_context, lambda: router.route(query, project_context))
+
+    def _frozen_plans(self) -> _FrozenPlanCache | None:
+        """The plan cache for this planner, built once, or None when unconfigured."""
+        path = getattr(self._retrieval_config, "plan_cache_file", None)
+        if path is None:
+            return None
+        if self._plan_cache is None:
+            self._plan_cache = _FrozenPlanCache(Path(path))
+        return self._plan_cache
+
+    def _plan_seed(self) -> int | None:
+        """The configured provider seed, or None."""
+        return getattr(self._retrieval_config, "plan_seed", None)
 
     # ------------------------------------------------------------------
     # Direct LLM call (used internally by AdaptiveRouter for Tier 2)
@@ -463,6 +698,10 @@ class QueryPlanner:
         """
         from trelix.llm.client import ChatMessage
 
+        # This is the Tier-2 draw — the one that plans ~90% of queries, and the site
+        # the seed matters most at. `tool_call` sends temperature=0.0 inside the
+        # backend and still produced 0 of 54 byte-identical plans, so the seed is a
+        # narrowing measure, not the freeze.
         result = self._llm_client.tool_call(
             messages=[
                 ChatMessage(role="system", content=SYSTEM_PROMPT),
@@ -471,6 +710,7 @@ class QueryPlanner:
             tools=[PLANNER_TOOL_SCHEMA],
             force_tool="produce_query_plan",
             max_tokens=512,
+            **seed_kwargs(self._llm_client.tool_call, self._plan_seed()),
         )
         return self._parse_tool_response(result.tool_arguments, query)
 

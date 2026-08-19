@@ -13,13 +13,15 @@ Commands:
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
+import os
 import sys
 import time
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, cast
 
 import typer
 from rich.console import Console
@@ -57,15 +59,157 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="tree_sitter")
 warnings.filterwarnings("ignore", message=".*HF_TOKEN.*")
 warnings.filterwarnings("ignore", message=".*huggingface.*")
 
-app = typer.Typer(
+# ---------------------------------------------------------------------------
+# A vanished reader is not an error — READ THIS BEFORE SIMPLIFYING IT AWAY
+# ---------------------------------------------------------------------------
+#
+# `trelix stats <repo> | grep -q "Symbols"` is the binary smoke test in
+# build-binaries.yml. `grep -q` exits the instant it matches — before stats has
+# written the provenance block that now follows the table — so every later write
+# lands on a pipe with no reader. Three layers each call that a failure, and none
+# of them agrees with the other two:
+#
+#   * rich's Console.on_broken_pipe raises SystemExit(1);
+#   * click's Command.main exits 1, but only when errno is EPIPE;
+#   * nothing handles errno EINVAL, and EINVAL is what Windows reports for a
+#     reader-less pipe (WriteFile -> ERROR_NO_DATA), not BrokenPipeError.
+#
+# So the step failed two different ways. On POSIX, silently with exit 1 — GitHub
+# Actions runs `shell: bash` as `bash -e -o pipefail`, which fails the pipeline on
+# the LEFT side's status even though grep matched. On Windows, the OSError escaped
+# entirely: a rich traceback plus PyInstaller's "Failed to execute script main".
+# Both were filed as CI flakiness, twice, across two days — the specific cost of a
+# red that does not look like the bug it is.
+#
+# What status to report when the reader walks away is the application's policy, not
+# rich's and not click's, so it is decided here once for every command instead of
+# inside stats. A fix inside stats would have left search/telemetry/graph — which
+# share the consoles below — failing exactly the same way.
+
+# EINVAL is in this set because of Windows and only because of Windows. Keeping the
+# set to these two is the point: ENOSPC or EACCES on stdout is a real failure a
+# caller must still be able to detect, and a blanket `except OSError` would hide it.
+_CLOSED_CONSUMER_ERRNOS = frozenset({errno.EPIPE, errno.EINVAL})
+
+
+def _is_closed_consumer_error(exc: OSError) -> bool:
+    """True when `exc` means "nothing is reading our output any more"."""
+    return exc.errno in _CLOSED_CONSUMER_ERRNOS
+
+
+class _PacifiedStream:
+    """Hold a broken stream so its *final* flush cannot raise.
+
+    CPython flushes sys.stdout/sys.stderr during interpreter shutdown, long after
+    any handler has returned. If the stream is still broken, that flush raises with
+    nowhere to report it: Python prints "Exception ignored in: ..." and the process
+    exits **120**. That is a second, different red replacing the one just handled,
+    which is why silencing the stream is part of the fix and not tidy-up.
+
+    Same job as click's PacifyFlushWrapper, kept local so a click internal is not
+    load-bearing. Wrapping (rather than replacing) also keeps the original stream
+    referenced, so it is not finalised — and cannot raise from __del__ — early.
+    """
+
+    def __init__(self, wrapped: Any) -> None:  # noqa: ANN401 - any text stream
+        self._wrapped = wrapped
+
+    def flush(self) -> None:
+        try:
+            self._wrapped.flush()
+        except OSError:
+            pass
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - passthrough
+        return getattr(self._wrapped, name)
+
+
+def _exit_quietly_after_closed_consumer(stream: Any = None) -> NoReturn:  # noqa: ANN401
+    """Stop writing to `stream`, leave no traceback, exit 0."""
+    target = sys.stdout if stream is None else stream
+
+    # Point the file descriptor at the null device first. This is the half that
+    # works when the bytes are already buffered inside a real TextIOWrapper: the
+    # shutdown flush still happens, it just lands in /dev/null (NUL on Windows).
+    try:
+        fd = target.fileno()
+    except (AttributeError, OSError, ValueError):
+        fd = None
+    if fd is not None:
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(devnull, fd)
+            finally:
+                os.close(devnull)
+        except OSError:
+            pass
+
+    # Then pacify the Python object, for the streams where the descriptor swap is
+    # not enough or not available: a frozen build with no console, a stream replaced
+    # by a test harness, or a wrapper whose flush() fails independently of the fd.
+    if target is sys.stdout:
+        sys.stdout = cast("Any", _PacifiedStream(sys.stdout))
+    elif target is sys.stderr:
+        sys.stderr = cast("Any", _PacifiedStream(sys.stderr))
+
+    raise SystemExit(0)
+
+
+class _PipeSafeConsole(Console):
+    """A rich Console whose broken-pipe policy is exit 0, not rich's exit 1.
+
+    Applied to `console`/`err_console` below, so the EPIPE half is fixed once for
+    every command that renders through them — stats, telemetry, graph, review,
+    search's table output — rather than per command.
+
+    NOT covered, because they bypass these consoles entirely: the three
+    `print(json.dumps(...))` sites (`search --json`, `update-index`,
+    `audit export`). Those go to click's own EPIPE handler, which exits 1 silently
+    with no traceback. Their *crash* exposure — Windows errno EINVAL — is covered by
+    _PipeSafeTyper below; only the POSIX exit code differs, and no CI step pipes them.
+    """
+
+    def on_broken_pipe(self) -> None:
+        _exit_quietly_after_closed_consumer(self.file)
+
+
+class _PipeSafeTyper(typer.Typer):
+    """The entry point, which is where the process exit status is actually decided.
+
+    Catches the case neither rich nor click recognises: OSError(EINVAL), i.e. every
+    Windows closed-pipe write, raised by *any* writer in the process — including
+    typer's own help renderer and Indexer's private Console, neither of which goes
+    through the consoles below. This is the layer that turns "Failed to execute
+    script main" into a clean exit, and it covers both entry paths: the console
+    script (`trelix.cli.main:app`) and the frozen binary, whose PyInstaller spec
+    runs this module as __main__.
+
+    Known residual, deliberately not papered over: on POSIX, `--help`/`--version`
+    still exit 1 on EPIPE, because rich/click convert that errno to SystemExit(1)
+    inside code this class cannot see the errno from. It is silent and
+    traceback-free, and no CI step pipes those. Catching SystemExit(1) here to
+    "fix" it would swallow every genuine exit 1 in the CLI.
+    """
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - typer's own
+        try:
+            return super().__call__(*args, **kwargs)
+        except OSError as exc:
+            if not _is_closed_consumer_error(exc):
+                raise
+            _exit_quietly_after_closed_consumer()
+
+
+app = _PipeSafeTyper(
     name="trelix",
     help="Fast, reliable code indexing and retrieval.",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
 
-console = Console()
-err_console = Console(stderr=True)
+console = _PipeSafeConsole()
+err_console = _PipeSafeConsole(stderr=True)
 
 logger = logging.getLogger("trelix.cli")
 
@@ -2286,12 +2430,34 @@ def eval(
     golden: Annotated[
         str, typer.Option("--golden", "-g", help="Path to golden JSONL file.")
     ] = ".trelix/golden.jsonl",
+    plan_cache_file: Annotated[
+        str | None,
+        typer.Option(
+            "--plan-cache-file",
+            help=(
+                "JSONL file of frozen query plans. Written on the first run, replayed "
+                "byte-for-byte afterwards. Without it the LLM planner re-plans every "
+                "query and nDCG@10 moves by sd 0.022-0.029 between identical runs."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Evaluate retrieval quality against a golden query set (nDCG@10, Recall@10, MRR)."""
     from trelix.core.config import IndexConfig
     from trelix.eval.harness import EvalHarness
 
     config = IndexConfig(repo_path=repo)
+    if plan_cache_file is not None:
+        # Rebuild rather than mutate, so the flag cannot half-apply if validation
+        # rejects it. Equivalent to TRELIX_RETRIEVAL_PLAN_CACHE_FILE; the flag exists
+        # because a measurement people are asked to repeat should be one argument away.
+        config = config.model_copy(
+            update={
+                "retrieval": config.retrieval.model_copy(
+                    update={"plan_cache_file": Path(plan_cache_file)}
+                )
+            }
+        )
     harness = EvalHarness(config)
     try:
         metrics = harness.run(golden)

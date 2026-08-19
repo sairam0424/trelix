@@ -2,7 +2,10 @@
 FederatedRetriever — fan-out search across multiple independently-indexed repos.
 
 Strategy: parallel query fan-out (one thread per repo) -> collect SearchResult
-lists -> RRF merge with per-repo weight -> deduplicate by (file_path, symbol_id).
+lists -> RRF merge with per-repo weight. Dedupe happens once, inside
+reciprocal_rank_fusion(), keyed on (absolute file path, symbol_id); this module
+must NOT add a second pass keyed on rel_path, which is repo-relative and erases
+whole repos (see _query_repos).
 
 Cache: TTL-based in-memory cache keyed by SHA-256(query+sorted_repo_paths+k).
 cache_ttl=0 disables caching. Thread-safe via threading.Lock.
@@ -234,15 +237,22 @@ class FederatedRetriever:
         if not per_repo_results:
             return []
 
+        # No second dedupe pass here. There used to be one keyed on
+        # f"{r.file.rel_path}:{r.chunk.symbol_id}", and it was the SECOND half of
+        # the same EXE-02 defect as fusion's old bare-symbol_id key: `rel_path` is
+        # repo-RELATIVE, so two repos with the same layout both report
+        # "src/app.py", and `symbol_id` is a per-database AUTOINCREMENT rowid, so
+        # both report 1. The pair collided on every cross-repo hit and first-seen
+        # deleted the loser — so even after fusion was fixed to key on the
+        # absolute path, this loop erased the second repo again.
+        #
+        # It could never have done anything else useful: reciprocal_rank_fusion()
+        # already emits exactly one row per (absolute file path, symbol_id), and
+        # within one repo absolute path is repo_root + rel_path, so rel_path
+        # uniqueness follows. This pass was therefore a no-op within a repo and a
+        # data-loss bug across repos. One dedupe, one key, one place to be right.
         merged = reciprocal_rank_fusion(per_repo_results, list_weights=per_repo_weights)
-        seen: set[str] = set()
-        deduped: list[SearchResult] = []
-        for r in merged:
-            dedup_key = f"{r.file.rel_path}:{r.chunk.symbol_id}"
-            if dedup_key not in seen:
-                seen.add(dedup_key)
-                deduped.append(r)
-        return deduped[:k]
+        return merged[:k]
 
     def retrieve(self, query: str, k: int = 10) -> list[SearchResult]:
         """

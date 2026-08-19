@@ -123,7 +123,10 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict]:
             for r in ctx.results]
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
+    # Loopback, not every interface: these tools read the indexed repository and
+    # carry no auth of their own, so a non-loopback bind hands code search to
+    # anything that can reach the box. Widen it only behind a credential.
+    mcp.run(transport="streamable-http", host="127.0.0.1", port=8000)
 ```
 
 **pyproject.toml additions:**
@@ -376,8 +379,13 @@ CMD ["uvicorn", "trelix_server:app", "--host", "0.0.0.0", "--port", "8000"]
 
 **Usage:**
 ```bash
-docker run -v /your/repo:/repo -p 8000:8000 sairam0424/trelix
+docker run -v /your/repo:/repo -p 127.0.0.1:8000:8000 sairam0424/trelix
 ```
+
+`--host 0.0.0.0` in the `CMD` above is the container's bind, which a published
+port needs to reach the process. The `-p` mapping is the exposure decision, and
+it is loopback here because the REST API is open by design when no token is set
+— drop the `127.0.0.1:` prefix only together with `TRELIX_API_AUTH_TOKEN`.
 
 ---
 
@@ -508,14 +516,23 @@ pip install 'trelix[knowledge-graph]'   # pyvis>=0.3.2, networkx>=3.3.0
 # Alias
 pip install 'trelix[graph-viz]'         # same deps
 
-# Opt-in config (zero impact when off)
-graph_search_enabled: bool = False      # set True to activate 4th retrieval leg
-graph_search_depth: int = 2
-graph_search_max_results: int = 15
-
-# Or via env var (note the TRELIX_RETRIEVAL_ prefix — TRELIX_GRAPH_SEARCH_ENABLED is not read)
-TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true
+# Opt-in config. Zero impact when off — and it must STAY off: enabling the 4th
+# retrieval leg measures at -0.2084/-0.2322 nDCG@10 on trelix's own 54-query
+# golden set (two independent query-plan draws, 3.4-3.8x the detection band).
+# The flag name is recorded here so it can be found and left alone; the env var
+# takes the TRELIX_RETRIEVAL_ prefix (TRELIX_GRAPH_SEARCH_ENABLED is not read).
+graph_search_enabled: bool = False      # leave False — see the note above
+graph_search_depth: int = 2             # inert while the leg is off
+graph_search_max_results: int = 15      # inert while the leg is off
 ```
+
+The graph is still worth building — `trelix graph` powers the Pyvis
+visualization, the `/graph/*` endpoints and the two MCP tools above, none of
+which route through the retrieval leg. It is only the *retrieval* leg that is
+measured harmful, and the cause is in the merge step rather than in the graph:
+graph hits are scored `0.5^hop` against post-fusion retrieval scores of
+0.016–0.029 and then compared by raw score, so they take 411 of 540 top-10
+slots.
 
 ### Breaking change note (v2.0.0)
 
@@ -528,7 +545,7 @@ Proposed outline for a technical blog post targeting senior engineers and AI age
 1. **The problem**: vector search finds semantically similar symbols but misses structural relationships — a function called by 438 other symbols is not inherently more "relevant" by embedding alone.
 2. **The approach**: build a NetworkX MultiDiGraph from Tree-sitter AST call/import/type edges, run Louvain community detection, persist to SQLite.
 3. **The numbers**: 4,599 nodes, 4,945 edges, 2,409 communities, 0.34s build on trelix itself.
-4. **The retrieval impact**: with `graph_search_enabled=True`, the retriever fuses graph BFS results with vector and BM25 hits — 30 results across 4 legs vs. the baseline.
+4. **The retrieval impact — and this is the honest version, so write it that way**: wiring the graph in as a 4th leg does not fuse, it dominates. `graph_search_enabled=True` measures **−0.2084 / −0.2322 nDCG@10** on trelix's own 54-query golden set across two independent query-plan draws (MRR −0.28 / −0.31, 34–35 of 54 queries moving), because graph hits scored `0.5^hop` are compared by raw score against post-fusion scores of 0.016–0.029 and take 411 of 540 top-10 slots. A post that claims a graph-leg quality win would be contradicted by the project's own eval; the publishable finding is the negative result and the rank-space fix it points to.
 5. **MCP integration**: two new tools (`build_knowledge_graph`, `graph_search_mcp`) let Claude Code and Cursor agents query the graph directly.
 6. **Visualization**: Pyvis HTML — paste the generated file into a browser for an interactive exploration of your codebase.
 

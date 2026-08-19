@@ -8,8 +8,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from trelix.core.models import (
+    Chunk,
+    IndexedFile,
+    Language,
+    SearchResult,
+    Symbol,
+    SymbolKind,
+)
 from trelix.federation.registry import RepoEntry, RepoRegistry
 from trelix.federation.retriever import FederatedRetriever
+from trelix.retrieval.fusion import reciprocal_rank_fusion
 
 # ---------------------------------------------------------------------------
 # Helpers for cache tests
@@ -31,6 +40,64 @@ def _mock_retriever_results(n: int = 3):
         r.symbol_id = f"sym_{i}"
         results.append(r)
     return results
+
+
+def _repo_result(
+    repo_root: str,
+    rel_path: str,
+    symbol_id: int,
+    source: str,
+    rank: int = 1,
+) -> SearchResult:
+    """Build a SearchResult exactly as a repo's own Retriever hydrates one.
+
+    Real objects, not MagicMocks, because the thing under test IS the identity
+    fusion derives from these fields — a MagicMock would hand every result a
+    distinct auto-created `file.path` and make the dedupe look correct for a
+    reason that has nothing to do with the code.
+
+    `symbol_id` is caller-chosen and callers deliberately reuse it across
+    repos: `symbols.id` is `INTEGER PRIMARY KEY AUTOINCREMENT` in each repo's
+    own `.trelix/index.db`, so every repo numbers its first symbol 1. Two repos
+    sharing a symbol_id is the normal case, not an edge case.
+
+    `rel_path` is deliberately shareable too: it is repo-relative, so two repos
+    with the same layout both report `src/app.py`. Only `IndexedFile.path` —
+    absolute, from the resolved repo root — separates the two databases.
+    """
+    chunk = Chunk(
+        id=symbol_id,
+        symbol_id=symbol_id,
+        chunk_text=f"def login(): ...  # {repo_root}",
+        token_count=8,
+    )
+    symbol = Symbol(
+        id=symbol_id,
+        file_id=1,
+        name="login",
+        qualified_name="login",
+        kind=SymbolKind.FUNCTION,
+        line_start=1,
+        line_end=4,
+        signature="def login()",
+        body="def login(): ...",
+    )
+    file = IndexedFile(
+        id=1,
+        path=f"{repo_root}/{rel_path}",
+        rel_path=rel_path,
+        language=Language.PYTHON,
+        hash="deadbeef",
+        size_bytes=64,
+    )
+    return SearchResult(chunk=chunk, symbol=symbol, file=file, score=0.9, rank=rank, source=source)
+
+
+def _ctx_for(repo_root: str, symbol_id: int, rel_path: str = "src/app.py") -> MagicMock:
+    """A RetrievedContext stand-in holding one real SearchResult from `repo_root`."""
+    ctx = MagicMock()
+    ctx.results = [_repo_result(repo_root, rel_path, symbol_id, "vector")]
+    return ctx
 
 
 class TestRepoEntry:
@@ -241,29 +308,28 @@ class TestFederatedRetriever:
         assert results[0].source == "myrepo:vector"
 
     def test_weight_forwarded_to_rrf(self, tmp_path: Path) -> None:
-        """Regression test: RepoEntry.weight must actually influence fused ranking."""
+        """Regression test: RepoEntry.weight must actually influence fused ranking.
+
+        Both repos return symbol_id 1, which is what independently indexed repos
+        always do (per-database AUTOINCREMENT rowids). This test used to hand the
+        two repos symbol_ids 1 and 2 — the one input distribution in which
+        EXE-02's fusion collision cannot fire — so it certified weighted ranking
+        while an entire repo was being erased upstream of the ranking.
+        """
         from trelix.federation.retriever import FederatedRetriever
 
         registry = RepoRegistry.load(str(tmp_path / "repos.json"))
         registry.add("low", str(tmp_path / "low"), weight=1.0)
         registry.add("high", str(tmp_path / "high"), weight=5.0)
 
-        def _make_ctx(symbol_id: int) -> MagicMock:
-            r = MagicMock()
-            r.chunk.symbol_id = symbol_id
-            r.score = 0.9
-            r.rank = 1
-            r.source = "vector"
-            ctx = MagicMock()
-            ctx.results = [r]
-            return ctx
-
-        # Each repo's retriever returns one distinct result at rank 1.
-        contexts = {"low": _make_ctx(1), "high": _make_ctx(2)}
+        contexts = {
+            "low": _ctx_for(str(tmp_path / "low"), symbol_id=1),
+            "high": _ctx_for(str(tmp_path / "high"), symbol_id=1),
+        }
 
         # Patch Retriever's constructor to inspect the repo_path baked into the
         # IndexConfig it receives, and return a mock whose retrieve() yields
-        # that repo's distinct result.
+        # that repo's own result.
         def _retriever_side_effect(config):
             retriever = MagicMock()
             if str(tmp_path / "high") in str(config.repo_path):
@@ -276,10 +342,10 @@ class TestFederatedRetriever:
             fed = FederatedRetriever(registry, max_workers=2)
             results = fed.retrieve("query", k=5)
 
-        assert len(results) == 2
+        assert len(results) == 2, "both repos' results must survive fusion"
         # The weight-5.0 repo's result must rank first (higher fused score).
-        assert results[0].chunk.symbol_id == 2
         assert results[0].source == "high:vector"
+        assert results[1].source == "low:vector"
 
     def test_query_repos_pairs_weight_with_correct_repo_deterministically(
         self, tmp_path: Path
@@ -307,17 +373,14 @@ class TestFederatedRetriever:
         registry.add("low", str(tmp_path / "low"), weight=1.0)
         registry.add("high", str(tmp_path / "high"), weight=5.0)
 
-        def _make_ctx(symbol_id: int) -> MagicMock:
-            r = MagicMock()
-            r.chunk.symbol_id = symbol_id
-            r.score = 0.9
-            r.rank = 1
-            r.source = "vector"
-            ctx = MagicMock()
-            ctx.results = [r]
-            return ctx
-
-        contexts = {"low": _make_ctx(1), "high": _make_ctx(2)}
+        # Same symbol_id in both repos — the real-world case. Keyed by source
+        # rather than symbol_id below, because symbol_id is NOT a cross-repo
+        # identity and a test that indexes results by it cannot even express
+        # "one row per repo".
+        contexts = {
+            "low": _ctx_for(str(tmp_path / "low"), symbol_id=1),
+            "high": _ctx_for(str(tmp_path / "high"), symbol_id=1),
+        }
 
         def _retriever_side_effect(config):
             retriever = MagicMock()
@@ -338,13 +401,111 @@ class TestFederatedRetriever:
         expected_low_score = 1.0 / (k + 1)  # weight 1.0, rank 1
         expected_high_score = 5.0 / (k + 1)  # weight 5.0, rank 1
 
-        scores_by_symbol = {r.chunk.symbol_id: r.score for r in results}
-        assert abs(scores_by_symbol[1] - expected_low_score) < 1e-12, (
+        scores_by_source = {r.source: r.score for r in results}
+        assert set(scores_by_source) == {"low:vector", "high:vector"}, (
+            f"both repos must be represented, got {sorted(scores_by_source)}"
+        )
+        assert abs(scores_by_source["low:vector"] - expected_low_score) < 1e-12, (
             "low-weight repo's fused score must exactly match weight=1.0 applied to its own list"
         )
-        assert abs(scores_by_symbol[2] - expected_high_score) < 1e-12, (
+        assert abs(scores_by_source["high:vector"] - expected_high_score) < 1e-12, (
             "high-weight repo's fused score must exactly match weight=5.0 applied to its own "
             "list, not accidentally swapped with the low-weight repo's contribution"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EXE-02 — colliding per-database symbol_ids across federated repos
+# ---------------------------------------------------------------------------
+
+
+class TestCollidingSymbolIdsAcrossRepos:
+    """`symbols.id` is `INTEGER PRIMARY KEY AUTOINCREMENT` per repo database.
+
+    Every repo therefore numbers its first symbol 1, and colliding symbol_ids
+    across repos are the rule, not the exception. reciprocal_rank_fusion()
+    deduped on `result.chunk.symbol_id` alone and kept first-seen, so repo B's
+    symbol 1 was discarded as a duplicate of repo A's symbol 1 — and which repo
+    was "first" was whichever ThreadPoolExecutor future completed first. One
+    query, five runs, gave per_repo={sample-a: 17} on one run and
+    {sample-b: 5, sample-a: 12} on another, while the search_all envelope
+    reported repos_searched=2, repos_skipped=0 every time.
+
+    The federation layer has its own `{rel_path}:{symbol_id}` dedupe downstream,
+    but it runs on fusion's OUTPUT — the rows are already gone by then, and
+    `rel_path` is repo-relative so it could not have separated the repos anyway.
+    """
+
+    def test_colliding_symbol_ids_from_two_repos_both_survive_fusion(self) -> None:
+        repo_a = [_repo_result("/repos/sample-a", "src/app.py", 1, "sample-a:vector")]
+        repo_b = [_repo_result("/repos/sample-b", "src/app.py", 1, "sample-b:vector")]
+
+        fused = reciprocal_rank_fusion([repo_a, repo_b])
+
+        assert len(fused) == 2, "one repo's row was silently discarded as a duplicate"
+        assert {r.source for r in fused} == {"sample-a:vector", "sample-b:vector"}
+        assert {r.file.path for r in fused} == {
+            "/repos/sample-a/src/app.py",
+            "/repos/sample-b/src/app.py",
+        }
+
+    def test_colliding_symbol_ids_survive_in_either_list_order(self) -> None:
+        """First-seen-wins made the survivor a function of list order, and under
+        federation's `as_completed()` loop list order IS thread completion order.
+        Both orders must yield both repos."""
+        repo_a = [_repo_result("/repos/sample-a", "src/app.py", 1, "sample-a:vector")]
+        repo_b = [_repo_result("/repos/sample-b", "src/app.py", 1, "sample-b:vector")]
+        expected = {"sample-a:vector", "sample-b:vector"}
+
+        assert {r.source for r in reciprocal_rank_fusion([repo_a, repo_b])} == expected
+        assert {r.source for r in reciprocal_rank_fusion([repo_b, repo_a])} == expected
+
+    def test_colliding_symbol_id_within_one_repo_still_dedupes(self) -> None:
+        """The other half of the fix: widening the key must NOT stop the vector
+        and BM25 legs of the SAME repo from collapsing onto one row. Identity is
+        per-database, not per-result — same absolute file, same symbol_id, one row,
+        with both legs' rank contributions summed."""
+        vector_leg = [_repo_result("/repos/sample-a", "src/app.py", 1, "vector")]
+        bm25_leg = [_repo_result("/repos/sample-a", "src/app.py", 1, "bm25")]
+
+        fused = reciprocal_rank_fusion([vector_leg, bm25_leg])
+
+        assert len(fused) == 1
+        assert fused[0].source == "vector", "first-seen leg keeps provenance"
+        assert fused[0].score == pytest.approx(2 / 61), "both legs must contribute 1/(60+1)"
+
+    def test_colliding_symbol_ids_not_erased_across_repeated_fan_outs(self, tmp_path: Path) -> None:
+        """End-to-end through the real ThreadPoolExecutor, five times.
+
+        The erasure was nondeterministic in WHICH repo survived but deterministic
+        in that only one did, so `len(...) == 2` on every run is a stable
+        assertion rather than a flaky one.
+        """
+        from trelix.federation.retriever import FederatedRetriever
+
+        registry = RepoRegistry.load(str(tmp_path / "repos.json"))
+        registry.add("sample-a", str(tmp_path / "sample-a"))
+        registry.add("sample-b", str(tmp_path / "sample-b"))
+
+        def _retriever_side_effect(config):
+            retriever = MagicMock()
+            root = (
+                str(tmp_path / "sample-b")
+                if str(tmp_path / "sample-b") in str(config.repo_path)
+                else str(tmp_path / "sample-a")
+            )
+            # Both repos hand back symbol_id 1 at the same rel_path.
+            retriever.retrieve.return_value = _ctx_for(root, symbol_id=1)
+            return retriever
+
+        seen_per_run: list[set[str]] = []
+        with patch("trelix.federation.retriever.Retriever", side_effect=_retriever_side_effect):
+            for _ in range(5):
+                fed = FederatedRetriever(registry, max_workers=2, cache_ttl=0)
+                seen_per_run.append({r.source for r in fed.retrieve("how does login work", k=10)})
+
+        assert seen_per_run == [{"sample-a:vector", "sample-b:vector"}] * 5, (
+            f"per-run repo coverage varied with thread completion order: {seen_per_run}"
         )
 
 
