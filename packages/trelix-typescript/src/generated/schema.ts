@@ -284,6 +284,20 @@ export interface components {
             version: string;
         };
         /**
+         * IndexRequest
+         * @description ``POST /index``'s body.
+         *
+         *     This used to be a bare ``dict[str, str]``, which gave FastAPI no schema:
+         *     a body omitting ``repo_path`` reached ``body["repo_path"]`` and became an
+         *     unauthenticated 500 with a logged traceback instead of a 422, and
+         *     ``/openapi.json`` advertised an untyped object for the one route that
+         *     spends the operator's embedding budget.
+         */
+        IndexRequest: {
+            /** Repo Path */
+            repo_path: string;
+        };
+        /**
          * IndexResponse
          * @description Matches Indexer.index()'s return dict exactly (both the batch and
          *     streaming code paths return this same shape — see indexer.py).
@@ -528,9 +542,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    [key: string]: string;
-                };
+                "application/json": components["schemas"]["IndexRequest"];
             };
         };
         responses: {

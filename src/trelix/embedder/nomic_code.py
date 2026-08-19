@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from trelix.embedder.base import BaseEmbedder
+from trelix.embedder.base import BaseEmbedder, load_remote_code_model
 
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig
@@ -50,9 +50,14 @@ class NomicCodeEmbedder(BaseEmbedder):
                 "Install it with: pip install 'trelix[local]'"
             )
 
-        self._model = SentenceTransformer(
+        # CodeRankEmbed needs trust_remote_code, i.e. Python from the model repo
+        # runs here — so the load is gated on TRELIX_ALLOW_REMOTE_MODEL_CODE, which
+        # a `.env` in an indexed repository structurally cannot set. Same helper as
+        # local-code: one gate, not one per provider.
+        self._model = load_remote_code_model(
             config.nomic_code_model,
-            trust_remote_code=True,
+            provider="nomic-code",
+            factory=SentenceTransformer,
         )
         self._dimensions = config.nomic_code_dimensions
 

@@ -293,10 +293,22 @@ def plan_from_intent_hint(
     raw_query: str, intent_hint: str, hyde_snippet_hint: str | None = None
 ) -> QueryPlan | None:
     """
-    Build a QueryPlan directly from a caller-supplied intent hint, mirroring
-    AdaptiveRouter._tier1_plan()'s construction — skips the internal LLM
-    intent-classification call entirely when the caller already knows the
+    Build a QueryPlan directly from a caller-supplied intent hint — skips the
+    internal LLM intent-classification call when the caller already knows the
     intent (e.g. an agent that already classified the query itself).
+
+    Skipping the CLASSIFIER is not skipping RETRIEVAL. This function used to
+    stamp routing_tier=TIER_1_DIRECT on every intent while also resolving
+    strategy=INTENT_STRATEGIES[intent], and Retriever._execute_plan() tests the
+    tier BEFORE the intent — so it returned _retrieve_project_overview(plan) and
+    the strategy was never read. Measured on this repo: all eight IntentType
+    values returned byte-identical output (40 README sections, 0 code files, 0
+    overlap with the correct result set, 0.02s because no leg ran), on both the
+    REST route and the MCP tool, which share this one function. The tier is
+    therefore paired the way AdaptiveRouter._tier1_plan() pairs it — TIER_1_DIRECT
+    ONLY with PROJECT_OVERVIEW, whose strategy really is a single file_direct
+    lookup. Every other hint carries its legs through to execution as
+    TIER_2_SINGLE, the tier _single_step_plan() stamps for the same pipeline.
 
     Returns None on an invalid/unrecognized intent_hint value — callers
     MUST fall through to normal server-side classification in that case,
@@ -316,7 +328,11 @@ def plan_from_intent_hint(
 
     return QueryPlan(
         intent=intent,
-        routing_tier=RoutingTier.TIER_1_DIRECT,
+        routing_tier=(
+            RoutingTier.TIER_1_DIRECT
+            if intent is IntentType.PROJECT_OVERVIEW
+            else RoutingTier.TIER_2_SINGLE
+        ),
         execution_mode="parallel",
         strategy=INTENT_STRATEGIES[intent],
         sub_queries=[

@@ -490,7 +490,25 @@ class Retriever:
     def _execute_plan(self, plan: QueryPlan) -> RetrievedContext:
         # Tier 1 DIRECT: skip all retrieval legs — answer from project overview only.
         # The router has already classified this as a trivial factual query.
+        #
+        # This check reads the tier and IGNORES plan.strategy, so a TIER_1_DIRECT stamp
+        # on any other intent silently discards the legs that intent resolved. That is
+        # not hypothetical: plan_from_intent_hint() stamped it on all eight intents and
+        # every intent_hint on both the REST route and the MCP tool returned the same
+        # project-overview chunks with 0 code files. The invariant the two plan builders
+        # now hold — AdaptiveRouter._tier1_plan() and plan_from_intent_hint() — is that
+        # TIER_1_DIRECT is only ever paired with PROJECT_OVERVIEW. A mismatch here means
+        # a third builder broke that pairing, so it is logged at WARNING rather than
+        # being absorbed the way the last one was.
         if getattr(plan, "routing_tier", None) == RoutingTier.TIER_1_DIRECT:
+            if plan.intent is not IntentType.PROJECT_OVERVIEW:
+                logger.warning(
+                    "Tier 1 DIRECT plan carries intent=%s, not project_overview: its "
+                    "strategy legs %s will NOT run. Whoever built this plan broke the "
+                    "TIER_1_DIRECT/PROJECT_OVERVIEW pairing.",
+                    plan.intent.value,
+                    plan.strategy.legs,
+                )
             logger.info("Tier 1 DIRECT path: skipping retrieval legs for query=%r", plan.raw_query)
             return self._retrieve_project_overview(plan)
 

@@ -129,7 +129,7 @@ trelix combines three complementary retrieval legs and merges their results with
 Results from all three legs are merged by RRF before optional reranking. The adaptive query router decides which legs to activate based on the classified intent of the query.
 
 Optional additional legs available via feature flags:
-- **4th leg** — Knowledge Graph BFS (`TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true`)
+- **4th leg** — Knowledge Graph BFS (`TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED`). **Leave this one off.** Measured on trelix's own 54-query golden set it costs **−0.2084 / −0.2322 nDCG@10** across two independent query-plan draws (MRR −0.28 / −0.31) — 3.4–3.8x the harness's ±0.061–0.080 detection band, with 34–35 of 54 queries moving. Graph hits are scored `0.5^hop` against post-fusion scores of 0.016–0.029 and then merged by raw score, so they take **411 of 540** top-10 slots. It defaults off in code and should stay off until that merge fuses in rank space. `docs/USER_GUIDE.md` section 4, Leg 5 carries the detail
 - **5th leg** — File-summary semantic search (`TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true`)
 - **6th leg** — SPLADE-Code sparse vectors (`TRELIX_RETRIEVAL_SPARSE=true`)
 - **7th leg** — Multi-granularity block+statement indexing (`TRELIX_CHUNKER_MULTI_GRANULARITY=true`)
@@ -555,12 +555,23 @@ For production:
 ```bash
 # With gunicorn (recommended)
 pip install gunicorn
-gunicorn -w 4 -k uvicorn.workers.UvicornWorker "trelix.server:create_app(repo_path='./my-repo')" --bind 0.0.0.0:8765
+gunicorn -w 4 -k uvicorn.workers.UvicornWorker "trelix.server:create_app(repo_path='./my-repo')" --bind 127.0.0.1:8765
 
 # With Docker
 docker run -v $(pwd)/my-repo:/repo -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  -p 8765:8765 trelix serve /repo --port 8765
+  -p 127.0.0.1:8765:8765 trelix serve /repo --host 0.0.0.0 --port 8765
 ```
+
+Both forms bind loopback on the **host** deliberately. The API is **open by
+design when no token is set**, so binding a non-loopback interface serves
+unauthenticated code search over the indexed repository to anything that can
+reach the box. Reach a wider interface — a different `--bind` address for
+gunicorn, or a `-p` mapping without the `127.0.0.1:` prefix for Docker — only
+together with `TRELIX_API_AUTH_TOKEN`, which makes every route require an
+`X-Trelix-Api-Key` header. (`--host 0.0.0.0` in the Docker command is the
+*container's* bind, which a published port needs in order to reach the process;
+the `-p` mapping is the exposure decision, and `docker-compose.yml` at the repo
+root carries the same split.)
 
 Available endpoints:
 

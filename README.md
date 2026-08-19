@@ -198,7 +198,7 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **Streaming synthesis** — `trelix ask` streams tokens live; `GET /ask` SSE endpoint
 - **REST API** — `trelix serve ./repo --port 8765` exposes `/search`, `/ask`, `/index`, `/health`
 - **LanceDB backend** — 3–5× faster vector insert at 100k+ chunks (`TRELIX_STORE_BACKEND=lance`)
-- **Knowledge Graph** — `trelix graph ./repo` builds a Code Property Graph (calls + imports + type hierarchy) as a NetworkX MultiDiGraph; Louvain community detection clusters the codebase into architectural modules; Pyvis interactive HTML visualization; graph-aware BFS as 4th retrieval leg (`TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true`); `pip install 'trelix[knowledge-graph]'`
+- **Knowledge Graph** — `trelix graph ./repo` builds a Code Property Graph (calls + imports + type hierarchy) as a NetworkX MultiDiGraph; Louvain community detection clusters the codebase into architectural modules; Pyvis interactive HTML visualization; graph-aware BFS is available as an opt-in retrieval leg but is **measured harmful** on this project's own golden set (nDCG@10 -0.208/-0.232, replicated across two independent plan draws) — leave `TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED` off; `pip install 'trelix[knowledge-graph]'`
 - **File-summary 5th retrieval leg** — semantic search over LLM file summaries surfaces high-level architecture answers (`TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true`)
 - **HyDE query expansion** — synthesizes a hypothetical code answer as the ANN query vector, improving recall on abstract questions (`TRELIX_RETRIEVAL_HYDE_FALLBACK=true`)
 - **FLARE confidence-gated re-retrieval** — detects low-confidence synthesis spans and re-queries before finalising the answer (`TRELIX_RETRIEVAL_FLARE=true`)
@@ -206,8 +206,8 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **Personalized PageRank** — teleport mass weighted toward ticket/artifact-linked symbols instead of uniform, opt-in (`TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION=true`)
 - **Cross-source connectors** — `trelix connector sync ./repo <jira|testrail|xray|linear>` fetches tickets/tests and auto-links them into the code graph via `ArtifactLinker`
 - **Incremental graph updater** — `trelix watch` automatically patches the Code Property Graph on every file save (no manual `trelix graph` re-run needed)
-- **Query telemetry** — per-query latency breakdown, retrieval leg hit rates, and token usage via `trelix telemetry` CLI or `TRELIX_TELEMETRY_ENABLED=true`
-- **CoIR eval harness** — `trelix eval ./repo --golden <path>` measures Recall@1/5/10, MRR, and NDCG against a JSONL golden set
+- **Query telemetry** — per-query latency, intent and result count via `trelix telemetry` CLI or `TRELIX_TELEMETRY_ENABLED=true`
+- **CoIR eval harness** — `trelix eval ./repo --golden <path>` measures nDCG@10, Recall@10, and MRR against a JSONL golden set
 
 ---
 
@@ -244,7 +244,7 @@ Enable every retrieval enhancement at once. Copy this block into your `.env` and
 
 ```bash
 # .env — beast-mode flags
-TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true          # 4th leg: graph BFS
+# TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true        # 4th leg: graph BFS — measured harmful, leave off (nDCG@10 -0.21)
 TRELIX_RETRIEVAL_FILE_SUMMARY_LEG=true    # 5th leg: file-summary semantic search
 TRELIX_RETRIEVAL_HYDE_FALLBACK=true       # HyDE query expansion
 TRELIX_RETRIEVAL_FLARE=true               # FLARE confidence-gated re-retrieval
@@ -287,16 +287,16 @@ Common issues: sqlite-vec load failures on macOS, Bedrock `ValidationException`s
 ```bash
 pip install "trelix[local]"   # minimal, offline, no API key
 pip install trelix            # + OpenAI planner & synthesis
-pip install "trelix[all]"     # + local embedder, voyage, cohere rerank, qdrant, watch, sso
+pip install "trelix[all]"     # + local embedder, voyage, cohere rerank, sparse, qdrant, watch, serve, sso, otel, knowledge-graph
 ```
 
-`[all]` is not every extra. It resolves to `local,rerank,voyage,qdrant,watch,sso` — six of the
-23 optional extras — so installing it and expecting the rest will fail at import. The other 17
-install separately, including LanceDB (`lance`), the non-OpenAI LLM providers (`anthropic`,
-`bedrock`, `vertex`, `litellm`, or `llm-all` for all four), the REST API (`serve`),
-OpenTelemetry (`otel`), SPLADE sparse retrieval (`sparse`), the alternative embedders
-(`bge-code`, `nomic-code`), PLAID (`plaid`), Semgrep taint analysis (`taint`), and the graph
-visualisers (`graph-viz`, `knowledge-graph`).
+`[all]` is not every extra. It resolves to
+`local,rerank,voyage,sparse,qdrant,watch,serve,sso,otel,knowledge-graph` — ten of the 23
+optional extras — so installing it and expecting the rest will fail at import. The other 13
+install separately: LanceDB (`lance`), the non-OpenAI LLM providers (`anthropic`, `bedrock`,
+`vertex`, `litellm`, or `llm-all` for all four), the alternative embedders (`bge-code`,
+`nomic-code`), PLAID (`plaid`), Semgrep taint analysis (`taint`), the graph visualiser
+(`graph-viz`), and the packaging extras (`binary`, `dev`).
 
 For every other install path — the extras above, standalone binaries, Docker, uv, or upgrading from an older version — see [docs/INSTALLATION_GUIDE.md](docs/INSTALLATION_GUIDE.md).
 
@@ -404,7 +404,7 @@ TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_TELEMETRY_ENABLED` | `false` | Record per-query latency, leg hit rates, and token usage to `.trelix/telemetry.db` |
+| `TRELIX_TELEMETRY_ENABLED` | `false` | Record per-query latency, intent and result count to the `query_telemetry` table in `.trelix/index.db` |
 
 ```bash
 # CLI — inspect stored telemetry
@@ -480,7 +480,7 @@ Full endpoint reference with curl/JSON examples: [docs/USER_GUIDE.md](docs/USER_
 ```bash
 pip install 'trelix[knowledge-graph]'
 trelix graph ./repo --visualize                          # build + export interactive HTML
-TRELIX_RETRIEVAL_GRAPH_SEARCH_ENABLED=true trelix ask ./repo "how does auth relate to the data layer?"
+trelix ask ./repo "how does auth relate to the data layer?"   # graph BFS leg deliberately NOT enabled
 ```
 
 Full guide (REST endpoints, MCP tools, config vars, community detection internals): [docs/USER_GUIDE.md](docs/USER_GUIDE.md) and [docs/architecture.md §11](docs/architecture.md).
@@ -614,11 +614,11 @@ Single SQLite file (`.trelix/index.db`) — zero external infrastructure by defa
 # Quick eval (mini_repo, 10 queries)
 make eval
 
-# Full eval (trelix-self, 50 queries, MRR + Recall@1/5/10 + NDCG@10)
+# Full eval (trelix-self, whole golden set — nDCG@10 + Recall@10 + MRR)
 make eval-full
 
 # CoIR eval harness (v2.1.0) — run against your own golden set
-# golden.jsonl format: {"query": "...", "expected_file": "path/to/file.py"}
+# golden.jsonl format: {"query": "...", "relevant_files": ["path/to/file.py"]}
 trelix eval ./my-repo --golden eval/golden.jsonl
 ```
 
@@ -662,7 +662,7 @@ make install-dev
 make test        # full unit + MCP suite
 make lint
 make eval        # recall eval on mini_repo
-make eval-full   # full 50-query MRR/NDCG eval (requires Azure/OpenAI)
+make eval-full   # full golden-set nDCG@10/Recall@10/MRR eval (requires Azure/OpenAI)
 make binary      # build dist/trelix standalone binary via PyInstaller
 ```
 

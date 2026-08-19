@@ -8,6 +8,207 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.1.3] — 2026-08-20
+
+Correctness and security. Four paths returned confident wrong answers, one could delete a
+user's files, and four were reachable by an attacker. **Upgrade if you run `trelix serve`, if
+you index a repository you do not fully control, or if you have ever passed `intent_hint` or
+used `search-all`.**
+
+### Security
+
+- **The REST API's containment check was validated against the caller's own input.** A handler
+  resolved a containment root from the request body and then verified the requested path was
+  inside it, so a request naming the filesystem root satisfied the check for every file the
+  server could read. Setting `TRELIX_API_AUTH_TOKEN` did not close it: there is no
+  authorization layer, so any token holder had the same reach. `create_app()` also took no
+  parameters, so `trelix serve <repo_path>` could not constrain the application — `repo_path`
+  reached only the startup banner. Fixed with one shared dependency validating every
+  caller-supplied path against an allow-list captured at application construction, applied to
+  every gated route; the test counts live routes programmatically so an ungated route added
+  later fails it. Shipped defaults bind loopback, so reaching this required an operator to have
+  widened the binding — which `docs/INSTALLATION_GUIDE.md` told them to do, also fixed here.
+- **A repository-local `.env` was a live configuration source.** Fifteen settings models
+  resolved `env_file=".env"` against the process working directory, in a tool whose input is an
+  untrusted directory — so the repository being indexed could supply configuration, including
+  the model identifier handed to a loader that executes code from the model repository. The
+  loader is now **gated, not removed** (it is required for one shipped model architecture, and
+  `local-code` and `nomic-code` remain available), and the gate is read from the process
+  environment only. Nothing in trelix calls `load_dotenv()`, so a settings file cannot reach it.
+  The CI review workflow, which indexes a pull request's own checkout, no longer does so from
+  inside the checkout.
+- **Stored XSS in the generated graph HTML.** A markdown heading or a filename in an indexed
+  repository became a symbol name or a relative path verbatim and was assigned into
+  `innerHTML`. The adversary is any repository trelix indexes that an attacker can write to;
+  the victim is whoever opens the generated page. Escaped at every sink, including edge
+  endpoints and a second sink that fixing the obvious one would have missed.
+- **`trelix taint` reported success for a failed scan.** It exited 0 whenever the scan had
+  failed but produced at least one flow. `ScanResult.is_trustworthy` existed with zero call
+  sites anywhere in the tree — written and never wired. It now gates the exit code regardless
+  of flow count, keeping the carve-out for a missing scanner, since an absent tool is not a
+  failed scan.
+- **A read route created state.** `/stats` left an index database and its sidecars behind on a
+  directory it had merely been asked about, because the absolute-path property called `mkdir`
+  as a side effect of being read.
+
+### Fixed — data loss
+
+- **`--prune` could authorise deleting files that exist on disk.** An earlier fix corrected the
+  ordering — the guard had compared a run's walk configuration against a copy that same run had
+  just written — and left the unsound premise: one global walk-config row was certifying a
+  per-file property. Rows written under a wider configuration survive a re-index that narrows
+  it, because a re-index deletes no rows, while the provenance write overwrites with the
+  current configuration at the end of the run. Snapshot and current then agree, no drift is
+  detected, and the surviving rows are indistinguishable from files genuinely deleted. The old
+  refusal message advised "re-index, then prune", which is exactly the sequence that creates
+  the unsound state. Reproduced before the fix at 12 candidates, all 12 present on disk, under
+  the 10% cap, with zero refusals. Now the index retains the set of distinct walk-config
+  digests it has been written under and refuses while that set has more than one member —
+  chosen over stamping a digest on every row, which would need a schema migration for every
+  index already on disk, on the one path where being wrong destroys a user's work.
+- **The documented backup ritual poisoned drift detection.** `cp -a .trelix .trelix.bak-*`
+  permanently altered the recorded walk configuration, so drift silently stopped working
+  afterwards. A backup must not be indistinguishable from a configuration change.
+- **`--prune` exited 1 while printing "Nothing to prune"** — the default outcome of the first
+  `--prune` on any index. The nonzero exit is now kept only where a refusal actually blocked
+  candidates.
+- **`read_only=True` was neither read-only nor necessarily the right database.** The SQLite URI
+  was built by raw f-string interpolation, so a `#` in the path truncated it as a fragment and
+  a `?` opened a second query section: the `mode=ro` parameter was lost and SQLite opened — or
+  created — a different file. A write through such a handle succeeded. Now percent-encoded at
+  every site. `pytest`'s `tmp_path` never contains a URI metacharacter, which is exactly why
+  the existing tests could not fail.
+
+### Fixed — silently wrong answers
+
+- **`intent_hint` disabled retrieval on every intent, over both REST and MCP.** The hint
+  builder stamped the direct-answer routing tier onto all eight intents while also setting the
+  correct leg strategy; the executor checks the tier first, so the strategy was never read.
+  Measured on this project's own codebase: all eight values returned byte-identical output —
+  40 README sections, zero code files, no overlap with the correct result set. The tier is now
+  paired only with the project-overview intent. **A unit test asserted the defect as correct**
+  and has been deleted and replaced with assertions on the retrieval outcome.
+- **Federated `search-all` erased an entire repository's results, nondeterministically, while
+  reporting `repos_skipped: 0`.** Fusion deduped on a per-database autoincrement rowid, so
+  every repository's identifiers start at 1 and always collide; first-seen won, and "first" was
+  thread-pool completion order. Now keyed on a globally unique identity. **The existing test
+  passed for the wrong reason** — it used distinct identifiers, the one input distribution where
+  the bug cannot fire.
+- **Python relative imports never resolved.** The resolver split a joined path on `/` while
+  Python specifiers are dot-separated. Measured on this repository's own index: JS-style
+  specifiers resolved 34 of 34, Python-style 0 of 40, with import rows present and correct but
+  unlinked. A direct cause of the low overall call-resolution rate.
+- **`trelix stats | head` crashed** rather than exiting quietly when the pipe consumer left
+  early. Five CI failures over two days were attributed to flakiness before this was understood
+  as deterministic.
+
+### Fixed — measurement
+
+- **`trelix eval` was not repeatable, and the documented cause was wrong.** Measured
+  run-to-run noise was sd 0.022–0.029, against sd exactly 0.000000 when planner output is
+  replayed from frozen plans — the same score reproduced to sixteen significant figures. So no
+  difference below roughly 0.06 nDCG was distinguishable at one run per arm, which is larger
+  than the entire measured effect of most retrieval legs and larger than the upper bound on
+  repairing the largest known retrieval defect. `eval/README.md` blamed the query and plan
+  caches; that was verified false — the golden set's entries are all distinct, so a pass has
+  zero possible cache hits. The cause is the planner, which rewrites every query and reproduced
+  none of them byte-for-byte. New: `--plan-cache-file` records then replays plans, and a cache
+  miss raises rather than silently re-drawing.
+- **Two figures in `core/config.py` licensed decisions and were wrong in the same direction.**
+  A comment reasoned that a measured gap was "only ~1.4× the measured same-config run-to-run
+  noise (0.012)"; the real floor is two to three times that, so the gap is below it —
+  indistinguishable, not small-but-real. And a pair of numbers presented as a settled range
+  differ by less than 5% of the detection band: one number measured twice.
+- **The knowledge-graph BFS retrieval leg is measured harmful** — nDCG@10 −0.208/−0.232 on this
+  project's own golden set, replicated across two independent plan draws, several times the
+  detection band. Six documentation sites recommended enabling it, including a runnable command
+  in the README. They now state the measured effect. The leg remains opt-in and off by default;
+  the ranking cause is a raw-score comparison across incomparable scales and is not fixed here.
+
+### Fixed — documentation that did not match the code
+
+- Sixteen published, user-facing claims across the four PyPI long descriptions and the README,
+  from an audit that compared every documented config value, CLI flag, packaging claim,
+  API/MCP surface element and provider claim against the code defining it: 129 contradictions
+  across 119 sites, of which 31 break at runtime. Includes extras that install nothing, a
+  provider value pydantic rejects, an MCP tool that is not registered, a golden-set schema key
+  the harness never reads, and `[all]` described as half the extras it actually resolves to.
+- The doc-stamp procedure in `CONTRIBUTING.md` was scoped so that it never descended into
+  `packages/`, which is where the worst rot was. `tests/unit/test_readme_install_commands.py`
+  now asserts in CI that every extra a README advertises exists in the owning `pyproject.toml`
+  and that no README hard-pins a version.
+- Eight figures published by this release's own earlier commits that did not reproduce,
+  including a copy-pasteable `git diff` whose glob matched two more packages than the number
+  beside it, and a reverse-order test count that could never have been right because reversing
+  collection order cannot change how many tests exist.
+
+### Fixed
+
+- **Two README install commands that could never have worked, both live on PyPI.** Each
+  distribution's `pyproject.toml` sets `readme = "README.md"`, so those files are the **PyPI
+  long description** — the project page a reader copies commands from, not internal notes.
+  - `packages/trelix-langchain/README.md` advertised `pip install "trelix-langchain[bedrock]"`
+    and `"trelix-langchain[code-embeddings]"`. That `pyproject.toml` has no
+    `[project.optional-dependencies]` table at all — PyPI reports `provides_extra: None` — and
+    pip treats an unknown extra as a warning rather than an error, so a reader following the
+    page silently received the base package. `code-embeddings` does not exist on core either;
+    the three real backends are `bge-code`, `nomic-code` and `lance`. Both commands now use
+    the two-package form the same file already used correctly six lines below:
+    `pip install trelix-langchain "trelix[bedrock]"`.
+  - `packages/trelix-mcp/README.md` hard-pinned `trelix-mcp==2.12.0` in **seven** places,
+    including the primary command under its own `## Install` heading, while the package
+    shipped `3.1.2` — five releases stale. Now unpinned, with the reason stated: all four
+    distributions ship on one core tag, so an unpinned install resolves a working pair by
+    construction, and pinning belongs in a reader's own `requirements.txt`.
+
+- **The doc-stamp grep had a blind spot exactly where the worst rot was.**
+  `CONTRIBUTING.md`'s procedure was scoped `docs/*.md *.md`, which never descends into
+  `packages/`, so it could not see any of the seven stale pins above. Scope now includes
+  `packages/*/README.md`. A grep with a blind spot reads as coverage, so the properties are
+  additionally asserted in CI by `tests/unit/test_readme_install_commands.py`: every extra a
+  README advertises must exist in the owning `pyproject.toml`, and no README may hard-pin a
+  trelix version. Proven against the defects — 3 failures before the fix (the two nonexistent
+  extras, plus the whole-set pin assertion whose single message names all seven pins), 24
+  passing after, and re-introducing either defect turns it red again.
+
+- **Fourteen more published assertions the code contradicts.** A five-dimension audit of
+  every documented config value, CLI flag, packaging claim, API/MCP surface element and
+  provider claim against the code that defines it found **129 contradictions** (132 raised, 3
+  refuted on review): 31 that break at runtime, 68 wrong but silent, 30 merely stale. Thirty
+  are both published and user-facing. This entry fixes the subset that needs no API decision;
+  the rest is tracked separately. Each was confirmed by reading both the claim and the
+  contradicting code line, and the replacement values were confirmed by running them.
+  - `README.md` — the golden-set schema was published as `expected_file`; the harness reads
+    only `relevant_files` and raises `ValueError` on the *whole run*, uncaught by the CLI, so
+    a reader following the README got a traceback and no metrics. `expected_file` appears
+    nowhere in the codebase.
+  - `README.md` — `[all]` was described as resolving to six extras with "the other 17"
+    installing separately, and named `serve`, `otel`, `sparse` and `knowledge-graph` as
+    outside it. It resolves to **ten**, including all four of those, leaving **13** outside.
+    `pyproject.toml:194` documents the widening the README never absorbed.
+  - `README.md` — telemetry was documented as writing to `.trelix/telemetry.db`, a file that
+    is never created; the rows go to the `query_telemetry` table inside `.trelix/index.db`.
+    "Leg hit rates and token usage" are not recorded or rendered at all, and `trelix eval`
+    reports Recall@10 only, not `Recall@1/5/10`.
+  - `packages/trelix-langchain/README.md` — advertised `lance` as a `TRELIX_EMBEDDER_PROVIDER`
+    value, which pydantic rejects at startup; `lance` is a `TRELIX_STORE_BACKEND` value that
+    merely shares the name. Also documented `AWS_DEFAULT_REGION` (the real alias is
+    `AWS_REGION`, and boto3's own fallback never applies because the region is passed
+    explicitly), `TRELIX_RETRIEVAL_TELEMETRY` (no such variable; it is
+    `TRELIX_TELEMETRY_ENABLED` on a different settings class), and a FLARE default of `3`
+    when `3` is the `le=` ceiling and the default is `1`.
+  - `packages/trelix-llama-index/README.md` — advertised a `huggingface` embedder provider,
+    a `HUGGINGFACE_API_KEY`, and a runnable command using both. No such provider member,
+    field or alias exists; the only `huggingface` string in the tree is a warnings filter.
+    Its result example also read `metadata.get("source")`, which is always `None` — this
+    adapter writes `"file"` and `"symbol"`, and `"source"` is the *langchain* adapter's key.
+  - `packages/trelix-mcp/README.md` — the Tools table listed a tool named `ask`; the server
+    registers 15 tools and none is `ask` (`ask_agent` is documented separately, and the
+    streaming surface is REST `GET /ask`). `subscribe_resource` was shown taking a list of
+    globs; it takes two required strings and has no glob support. And the change notification
+    was described as carrying changed file paths and re-index stats when it carries only
+    `{uri, _meta.subscriptionId}` — its own docstring says so.
+
 ## [3.1.2] — 2026-08-17
 
 ### Overview
@@ -284,8 +485,9 @@ disabling its deletion path for every later test in the session.
   twelve times and exits 0; a `v3.2.0` control emits twelve `::error file=` annotations and
   exits 1.
 
-  `tests/unit/test_release_version_gate.py` additionally asserts that every stamp agrees
-  with root `pyproject.toml` *before* any tag exists. `verify-version` compares each stamp to
+  `tests/unit/test_release_version_gate.py` additionally asserts that eleven of the twelve
+  stamps agree with root `pyproject.toml` *before* any tag exists — its `SITES` map is keyed
+  by path, so `server.json`'s second version field is not separately representable in it. `verify-version` compares each stamp to
   the tag, so it can only fail once someone has cut one — by which point a wrong artifact may
   already be public. Stamps disagreeing with each other is the same defect, needs no tag to
   detect, and is what actually happened: nothing in the tree contradicted `2.4.0` across the
@@ -469,7 +671,11 @@ disabling its deletion path for every later test in the session.
   helper: `get_metrics_data()` returns `None`, not an empty container, on a reader that has
   collected nothing — so taking a baseline before any recording raised `AttributeError`.
 
-  **Reverse-order result: 3068 passed, 0 failed.** The suite is now order-independent.
+  **Reverse-order result: 3114 passed, 0 failed.** The suite is now order-independent.
+    (This line first read 3068. That figure could not have been right: reversing collection
+    order permutes the tests, it cannot change how many there are, so a reverse run must
+    report the same count as a forward one. Corrected here rather than left standing, since a
+    wrong measurement is not history.)
 
 - **The eval harness could report a better score than reality.** It skipped a golden entry
   whose `relevant_files` was empty, which shrinks the denominator — so a malformed golden file

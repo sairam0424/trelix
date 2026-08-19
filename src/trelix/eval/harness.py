@@ -210,11 +210,27 @@ class EvalHarness:
         shrink the denominator deliberately, and `n_queries` reports what was
         actually scored — always check it against the run you meant to make.
 
-        Calling this twice in one process does not sample twice: `query_cache_size`
-        (256) and `plan_cache_size` (128) memoise `embed_query` and the `QueryPlan`
-        for the life of the Retriever, so the second run replays the first's HyDE
-        snippet and embedding. Repeat across processes, or zero both caches.
+        Two runs of this method are NOT two samples, for two different reasons that
+        used to be conflated:
+
+        * In one process, `query_cache_size` (256) and `plan_cache_size` (128) memoise
+          `embed_query` and the `QueryPlan` for the life of the Retriever, so a second
+          call replays the first's plan and embedding. That makes an in-process repeat
+          report a stability it never sampled — but it cannot move a score, because
+          both caches are keyed on the exact text they computed from.
+        * Across processes, the LLM planner re-plans every query: 0 of 54 golden plans
+          reproduce byte-for-byte at temperature=0.0, which put nDCG@10 at sd
+          0.022-0.029 between identical configurations. Zeroing the caches does not
+          touch this, and on a golden set whose queries are all distinct under
+          `query.strip().lower()` it cannot even produce a cache hit to zero.
+
+        Set `RetrievalConfig.plan_cache_file` (`TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, or
+        `trelix eval --plan-cache-file`) to record the plans once and replay them: the
+        same pipeline then reproduced nDCG@10 at sd exactly 0.000000 over six runs.
+        See `eval/README.md`.
         """
+        from trelix.retrieval.planner.agent import PlanCacheMissError
+
         path = Path(golden_path)
         if not path.exists():
             raise FileNotFoundError(f"Golden file not found: {golden_path}")
@@ -234,6 +250,13 @@ class EvalHarness:
         for entry in entries:
             try:
                 ctx = self._retriever.retrieve(entry.query)
+            except PlanCacheMissError:
+                # Never scored as a miss. A frozen-plan run whose cache does not cover
+                # the golden set must fail loudly: scoring 0.0 here would report a
+                # retrieval failure that never happened AND hand back a mean computed
+                # over a mixture of replayed and unplanned queries, which is precisely
+                # the "looks reproducible, is not" number the freeze exists to prevent.
+                raise
             except Exception as exc:
                 logger.warning("Query %r failed: %s", entry.query[:60], exc)
                 ndcg_scores.append(0.0)

@@ -39,8 +39,8 @@ cp .env.example .env
 ## Running Tests
 
 ```bash
-make test           # unit + MCP: 2,861 unit + 102 MCP = 2,963 tests (no coverage)
-make test-fast      # unit tests only, 2,861 (no API calls, fast)
+make test           # unit + MCP: 3,114 unit + 102 MCP = 3,216 tests (no coverage)
+make test-fast      # unit tests only, 3,114 (no API calls, fast)
 make test-cov       # unit tests with the coverage report
 make lint           # ruff check + ruff format (auto-formats before diff-check, cross-platform safe)
 make format         # ruff format
@@ -53,7 +53,7 @@ make typecheck      # mypy
 
 ```bash
 # Unit tests only — no credentials needed
-# Collects 2,861 of 2,965 and deselects the 104 integration tests.
+# Collects 3,114 of 3,220 and deselects the 106 integration tests.
 pytest -m "not integration"
 
 # Live integration tests — require Azure or AWS credentials (104 tests)
@@ -422,7 +422,8 @@ has always put all three integration packages on the core version; both adapters
 `2.4.0` anyway, across the seventeen releases that shipped after it, and nothing in CI
 noticed. Read the jump as a
 re-alignment to that line rather than as adapter change:
-`git diff v2.4.0..HEAD -- packages/trelix-*/src` is 13 insertions and 3 deletions, all
+`git diff v2.4.0..HEAD -- 'packages/trelix-*/src/*/retriever.py'` is 13 insertions and 3
+deletions, all
 type annotations, so `3.1.2` adds no feature and breaks nothing the adapters exposed at
 `2.4.0`.
 
@@ -508,12 +509,12 @@ must name the current version, whatever number they currently hold:
 
 ```bash
 grep -rnE '[Cc]urrent version|trelix(-mcp|-langchain|-llama-index)?==|^\*\*Version|image: .*trelix:' \
-    docs/*.md *.md \
+    docs/*.md *.md packages/*/README.md \
   | grep -v '^CHANGELOG.md' \
   | grep -viE "new in|fixed in|added in|since v|what's new|removed in|deprecated in"
 ```
 
-That returns 14 readable lines — a few of which are this section quoting its own
+That returns 15 readable lines — several of which are this section quoting its own
 pattern — rather than the 251 that "every semver-shaped token that isn't the current
 version" produces over the same files. It catches the stamps a previous-version grep
 cannot: `docs/CLI_REFERENCE.md`'s `**Version:**` header, the adapter `==` install pins in
@@ -524,6 +525,16 @@ longer has any: its install lines are deliberately unpinned, since a version har
 a doc's own install command is what rotted them last time.
 `CHANGELOG.md` is excluded on purpose — it is an append-only historical record, never a
 stamp to bump.
+
+`packages/*/README.md` is in scope because each distribution's `pyproject.toml` sets
+`readme = "README.md"`, making those files the **PyPI long description** — the project page
+readers copy commands from. The glob was `docs/*.md *.md` until this release, which never
+descended into `packages/`, and that blind spot is exactly where the worst rot was:
+`packages/trelix-mcp/README.md` hard-pinned `trelix-mcp==2.12.0` in seven places, including
+the primary command under its own `## Install` heading, while the package shipped `3.1.2`.
+A grep with a blind spot reads as coverage. `tests/unit/test_readme_install_commands.py`
+now asserts the same properties in CI, so this does not depend on anyone remembering to run
+the grep.
 
 Read every hit before editing. A blind `sed` over `docs/` will silently rewrite
 "New in v3.0.0" and the shipped-version table in `ROADMAP.md`, turning accurate

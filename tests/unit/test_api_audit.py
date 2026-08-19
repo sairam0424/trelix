@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import jwt
+import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from trelix.audit.events import (
@@ -35,6 +36,20 @@ _OIDC_ISSUER = "https://idp.example.com"
 _OIDC_AUDIENCE = "trelix-api"
 
 
+@pytest.fixture
+def allow_repo_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Register this test's ``tmp_path`` as an allowed repository root.
+
+    Requested by name from the tests that expect a route to actually run.
+    Opt-in, never autouse — see the twin fixture in ``test_api.py``. The two
+    401 tests here deliberately do NOT request it: they assert that a missing
+    or wrong credential is answered 401 before containment is consulted, so a
+    caller with no credential learns nothing about which roots are served.
+    """
+    monkeypatch.setenv("TRELIX_ALLOWED_REPO_ROOTS", str(tmp_path))
+    return tmp_path
+
+
 def _read_events(db_path: Path) -> list[dict]:  # type: ignore[type-arg]
     """Open a fresh AuditStore over db_path and return every entry, oldest first."""
     from trelix.audit.store import AuditStore
@@ -46,7 +61,7 @@ def _read_events(db_path: Path) -> list[dict]:  # type: ignore[type-arg]
         store.close()
 
 
-def test_authed_search_emits_one_success_event(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_authed_search_emits_one_success_event(tmp_path, monkeypatch, allow_repo_root) -> None:  # type: ignore[no-untyped-def]
     from fastapi.testclient import TestClient
 
     from trelix.api.app import create_app
@@ -103,7 +118,7 @@ def test_bad_key_emits_deny_event_and_still_401(tmp_path, monkeypatch) -> None: 
     assert ev["status_code"] == 401
 
 
-def test_disabled_emits_nothing(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_disabled_emits_nothing(tmp_path, monkeypatch, allow_repo_root) -> None:  # type: ignore[no-untyped-def]
     from fastapi.testclient import TestClient
 
     from trelix.api.app import create_app
@@ -125,7 +140,7 @@ def test_disabled_emits_nothing(tmp_path, monkeypatch) -> None:  # type: ignore[
     assert not db_path.exists()
 
 
-def test_unhandled_500_emits_error_outcome(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_unhandled_500_emits_error_outcome(tmp_path, monkeypatch, allow_repo_root) -> None:  # type: ignore[no-untyped-def]
     from fastapi.testclient import TestClient
 
     from trelix.api.app import create_app
@@ -150,7 +165,7 @@ def test_unhandled_500_emits_error_outcome(tmp_path, monkeypatch) -> None:  # ty
     assert ev["status_code"] == 500
 
 
-def test_fail_open_unwritable_db_still_succeeds(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_fail_open_unwritable_db_still_succeeds(tmp_path, monkeypatch, allow_repo_root) -> None:  # type: ignore[no-untyped-def]
     from fastapi.testclient import TestClient
 
     from trelix.api.app import create_app
@@ -218,7 +233,7 @@ def _sign(private_key, **overrides) -> str:  # type: ignore[no-untyped-def]
 
 
 def test_oidc_valid_bearer_records_sub_iss_principal_and_jit_provisions(  # type: ignore[no-untyped-def]
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, allow_repo_root
 ) -> None:
     from fastapi.testclient import TestClient
 
@@ -267,7 +282,9 @@ def test_oidc_valid_bearer_records_sub_iss_principal_and_jit_provisions(  # type
         pstore.close()
 
 
-def test_static_token_still_works_with_oidc_available(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_static_token_still_works_with_oidc_available(
+    tmp_path, monkeypatch, allow_repo_root
+) -> None:  # type: ignore[no-untyped-def]
     """With SSO enabled but no bearer supplied, a valid X-Trelix-Api-Key still
     authenticates and audits under the local ``static-token`` principal."""
     from fastapi.testclient import TestClient
