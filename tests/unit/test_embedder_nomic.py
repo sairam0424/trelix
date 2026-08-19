@@ -4,10 +4,25 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from trelix.core.config import EmbedderConfig
+from trelix.embedder.base import REMOTE_MODEL_CODE_ENV_VAR
 
 
 class TestNomicCodeEmbedder:
+    @pytest.fixture(autouse=True)
+    def _remote_model_code_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Grant SEC-03c's opt-in for this class only.
+
+        nomic-code loads CodeRankEmbed with remote code trusted, which the gate in
+        embedder/base.py refuses unless the operator set the variable in the real
+        process environment. Scoped to this class deliberately: in conftest.py it
+        would blind the whole suite to the gate regressing. The refusal side lives
+        in tests/unit/test_remote_model_code_gate.py.
+        """
+        monkeypatch.setenv(REMOTE_MODEL_CODE_ENV_VAR, "1")
+
     def test_importable(self) -> None:
         from trelix.embedder.nomic_code import NomicCodeEmbedder
 

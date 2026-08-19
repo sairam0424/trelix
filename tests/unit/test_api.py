@@ -2,11 +2,39 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
+
+from trelix.api.app import create_app
 
 
+@pytest.fixture
+def allow_repo_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Register this test's ``tmp_path`` as an allowed repository root.
+
+    Every test below hands the API an arbitrary absolute ``tmp_path`` and
+    expects 200. That used to work because no route checked whether the path
+    was one the server had been pointed at — the same reason ``POST /parse``
+    was an arbitrary-file read. Now a root has to be declared, so the tests
+    that exercise a *legitimate* repo declare theirs here.
+
+    DELIBERATELY NOT ``autouse``, and deliberately not in ``conftest.py``.
+    An autouse fixture allow-listing every test's ``tmp_path`` would make the
+    whole suite structurally incapable of ever noticing a containment
+    regression again: the closing "0 failed" would stay green straight through
+    one. Requested per class, so a class that has not asked for a root is a
+    live negative control — see
+    ``TestContainmentWithoutTheAllowlistFixture`` at the bottom of this file,
+    which asserts the refusal from exactly that position.
+    """
+    monkeypatch.setenv("TRELIX_ALLOWED_REPO_ROOTS", str(tmp_path))
+    return tmp_path
+
+
+@pytest.mark.usefixtures("allow_repo_root")
 class TestTrelixAPI:
     def test_app_importable(self) -> None:
         from trelix.api.app import create_app
@@ -99,6 +127,7 @@ class TestTrelixAPI:
             assert "text/event-stream" in resp.headers["content-type"]
 
 
+@pytest.mark.usefixtures("allow_repo_root")
 class TestSearchPagination:
     """GET /search's cursor/next_cursor/total_available contract, matching
     the MCP search_code tool's envelope exactly (server.py's search_code)."""
@@ -194,6 +223,7 @@ class TestSearchPagination:
             assert data["total_available"] == 3
 
 
+@pytest.mark.usefixtures("allow_repo_root")
 class TestSearchIntentHint:
     """GET /search's optional intent_hint/hyde_snippet_hint params — a caller
     that already classified the query's intent can skip trelix's internal
@@ -295,6 +325,7 @@ class TestSearchIntentHint:
             assert "authenticate" in passed_plan.sub_queries[0].hyde_snippet
 
 
+@pytest.mark.usefixtures("allow_repo_root")
 class TestParseEndpoint:
     """POST /parse — dry-run single-file parse, never persisted to the index."""
 
@@ -405,9 +436,23 @@ class TestParseEndpoint:
         assert resp.status_code == 400
 
     def test_absolute_file_path_outside_repo_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        """Regression test for a real path-traversal vulnerability: an
-        absolute file_path pointing anywhere on the host (ignoring
-        repo_path entirely) must be rejected, not silently read and parsed."""
+        """The repo-RELATIVE layer, isolated.
+
+        Rewritten. This used to be labelled "regression test for a real
+        path-traversal vulnerability", and it passed against a tree in which
+        ``POST /parse`` was an unauthenticated arbitrary-file read — because
+        the containment root was ``Path(body.repo_path).resolve()``, i.e. the
+        caller's own input, so a caller who simply widened ``repo_path`` was
+        never refused. What it actually proves is narrower and still worth
+        keeping: given a repo root you are *entitled to*, ``file_path`` cannot
+        wander outside it. Both directories here are inside the allow-listed
+        root, so the allow-list is satisfied and the 400 comes from the
+        repo-relative check alone.
+
+        The claim this test never made — that a repo_path the server was never
+        pointed at is refused — lives in ``test_api_containment.py``, asserted
+        from the attacker's position with a planted canary.
+        """
         from fastapi.testclient import TestClient
 
         from trelix.api.app import create_app
@@ -424,10 +469,17 @@ class TestParseEndpoint:
         resp = client.post("/parse", json={"repo_path": str(repo), "file_path": str(secret)})
         assert resp.status_code == 400
         assert "inside repo_path" in resp.json()["detail"]
+        assert "SHOULD_NEVER_BE_READABLE" not in resp.text
 
     def test_relative_file_path_dot_dot_escape_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        """Regression test: a relative file_path with ../ segments must not
-        be able to escape repo_path either."""
+        """A relative file_path with ../ segments must not escape repo_path.
+
+        Rewritten alongside the test above: same caveat, and this one is the
+        case the allow-list genuinely cannot cover on its own. ``../secret.py``
+        is relative, so it is resolved against repo_root inside the route and
+        can land anywhere below an allow-listed root — the repo-relative check
+        is the only thing that refuses it, which is why it stays.
+        """
         from fastapi.testclient import TestClient
 
         from trelix.api.app import create_app
@@ -442,10 +494,11 @@ class TestParseEndpoint:
         resp = client.post("/parse", json={"repo_path": str(repo), "file_path": "../secret.py"})
         assert resp.status_code == 400
         assert "inside repo_path" in resp.json()["detail"]
+        assert "SHOULD_NEVER_BE_READABLE" not in resp.text
 
     def test_relative_file_path_inside_a_subdirectory_still_works(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        """The containment fix must not break the legitimate case: a
-        relative path into a subdirectory that IS inside repo_path."""
+        """Containment must gate the feature, not delete it: a relative path
+        into a subdirectory that IS inside an allow-listed repo_path works."""
         from fastapi.testclient import TestClient
 
         from trelix.api.app import create_app
@@ -462,10 +515,18 @@ class TestParseEndpoint:
         assert [s["name"] for s in resp.json()["symbols"]] == ["nested_fn"]
 
 
+@pytest.mark.usefixtures("allow_repo_root")
 class TestApiAuth:
     """TRELIX_API_AUTH_TOKEN gates every route except /health. Unset (the
-    conftest default) must leave every route open — the compatibility
-    requirement that made every other test class above pass unmodified."""
+    conftest default) must leave every route open.
+
+    "Open" here means open to *callers*, not open to *paths*. These tests
+    declare an allowed repo root because authentication and containment are
+    two independent gates on the same routes: there is one shared secret and
+    no authorization layer, so a valid token buys exactly the same filesystem
+    reach an anonymous caller has. Whichever gate is under test, the other one
+    still has to be satisfied.
+    """
 
     def test_no_token_configured_allows_unauthenticated_requests(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         from fastapi.testclient import TestClient
@@ -587,3 +648,29 @@ class TestOpenApiSchema:
                     assert response_schema.get("properties"), (
                         f"{method.upper()} {path} has an untyped response schema"
                     )
+
+
+class TestContainmentWithoutTheAllowlistFixture:
+    """The negative control for this file's opt-in fixture.
+
+    Every class above declares an allowed repo root, which is what lets them
+    hand the API an arbitrary ``tmp_path`` and expect 200. This class
+    deliberately does NOT, so it fails the moment that fixture becomes
+    autouse, moves into ``conftest.py``, or gets applied blanket — any of
+    which would leave the suite unable to detect a containment regression while
+    still reporting "0 failed".
+    """
+
+    def test_containment_holds_without_the_allowlist_fixture(self, tmp_path: Path) -> None:
+        repo = tmp_path / "never_served"
+        repo.mkdir()
+        (repo / "creds.py").write_text("def load_creds():\n    return 'canary'\n")
+
+        client = TestClient(create_app())
+
+        assert client.get(f"/stats?repo={repo}").status_code == 403
+        parsed = client.post(
+            "/parse", json={"repo_path": str(repo), "file_path": str(repo / "creds.py")}
+        )
+        assert parsed.status_code == 403
+        assert "canary" not in parsed.text

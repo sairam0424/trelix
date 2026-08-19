@@ -28,9 +28,33 @@ jobs:
       - name: Install trelix
         run: pip install "trelix[local]" --quiet
 
+      # Every step below runs with its cwd inside the PR head — i.e. inside
+      # content the PR author controls. A `.env` committed by that author used to
+      # be a live configuration source for all of trelix's settings models
+      # (cwd-relative `env_file`), which let it repoint providers/endpoints and
+      # name the model whose Python a trusted-remote-code load executes here.
+      # src/trelix/core/config.py now anchors the dotenv source to an
+      # operator-owned path, and this step is the belt-and-braces half so the CI
+      # leg is safe even against a trelix build that predates that fix.
+      #
+      # Scope, stated precisely rather than inflated: the trigger is
+      # `pull_request`, not `pull_request_target`, so a FORK PR runs with a
+      # read-only token and no repository secrets. A same-repo BRANCH PR is the
+      # one that matters — it gets the `pull-requests: write` and `checks: write`
+      # declared above.
+      - name: Remove untrusted dotenv from the PR checkout
+        run: rm -f .env
+
       - name: Index repository
-        run: trelix index .
-        continue-on-error: true  # indexing may fail in restricted CI (model downloads, OOM)
+        # No `continue-on-error` here: this step executes repository content, and
+        # `continue-on-error: true` reported success no matter what happened
+        # inside it — an exploit, or a crash, looked identical to a clean run.
+        # Indexing genuinely can fail in restricted CI (model download, OOM), so
+        # the failure is tolerated but SURFACED as a run annotation.
+        run: |
+          if ! trelix index .; then
+            echo "::warning title=trelix index failed::review findings are from a partial or empty index"
+          fi
 
       - name: Run trelix review
         id: review

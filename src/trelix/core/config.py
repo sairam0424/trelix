@@ -1,7 +1,10 @@
 """
 Validated configuration for every stage of the pipeline.
 Uses pydantic-settings so values are overridable via environment variables
-or a .env file — no hardcoded secrets.
+or a dotenv file — no hardcoded secrets. The dotenv file is the OPERATOR's
+(TRELIX_CONFIG_FILE or ~/.config/trelix/env), never one found in the cwd:
+see `resolve_operator_env_file` for why a cwd-relative `.env` was a live
+configuration source for anyone who could commit a file to an indexed repo.
 
 Default embedding provider is `local` (sentence-transformers, no API key).
 Set TRELIX_EMBEDDER_PROVIDER=openai and OPENAI_API_KEY for higher quality.
@@ -9,6 +12,7 @@ Set TRELIX_EMBEDDER_PROVIDER=openai and OPENAI_API_KEY for higher quality.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,6 +20,64 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Language
+
+# ---------------------------------------------------------------------------
+# Dotenv anchoring
+# ---------------------------------------------------------------------------
+
+# Environment variable naming the one dotenv file trelix is allowed to read.
+CONFIG_FILE_ENV_VAR = "TRELIX_CONFIG_FILE"
+
+
+def resolve_operator_env_file() -> Path | None:
+    """Return the operator-owned dotenv path, or None when there is none.
+
+    Prevents a repo-local ``.env`` from being configuration. Every settings model
+    here used to declare ``env_file=".env"``, which pydantic-settings resolves
+    against the **process cwd** — and trelix's cwd is routinely inside a
+    repository trelix does not own: ``trelix index .`` in a PR checkout, ``trelix
+    review`` on a fork branch, a cloned dependency. A ``.env`` committed by
+    whoever wrote that repository therefore reached all fifteen models, letting it
+    repoint providers, endpoints and credential fields, and name the model whose
+    Python ``SentenceTransformer(..., trust_remote_code=True)`` executes in this
+    process (see ``embedder/base.py``'s gate, which relies on the same asymmetry).
+
+    Resolution order — an explicit file wins, then the operator's config
+    directory. The cwd is never consulted:
+
+    1. ``TRELIX_CONFIG_FILE``, so an operator can still point at a project
+       ``.env`` deliberately (including this repo's own during development).
+    2. ``$XDG_CONFIG_HOME/trelix/env``, else ``~/.config/trelix/env``.
+
+    Read from ``os.environ`` only, never as a settings field: a dotenv key never
+    becomes a process environment variable, because nothing in trelix calls
+    ``load_dotenv()``. That is what stops a planted ``.env`` from nominating
+    itself via ``TRELIX_CONFIG_FILE``.
+
+    Both forms are made absolute here: a relative override would be resolved
+    against the cwd all over again, which is the thing being fixed.
+    """
+    explicit = os.environ.get(CONFIG_FILE_ENV_VAR, "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    try:
+        config_home = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    except RuntimeError:
+        # Path.home() raises when there is no HOME *and* no passwd entry — the
+        # shipped container running under an arbitrary UID (OpenShift-style) hits
+        # this. "no operator config" is the right answer there; raising would make
+        # `import trelix.core.config` fail outright.
+        return None
+    candidate = (config_home / "trelix" / "env").resolve()
+    return candidate if candidate.is_file() else None
+
+
+# Resolved once, at import. pydantic-settings re-reads ``model_config["env_file"]``
+# on every instantiation, so a per-instantiation resolve would make the answer
+# depend on wherever the process has since chdir()'d to — which is the defect
+# itself. An absolute path here is inert against a later chdir.
+OPERATOR_ENV_FILE: Path | None = resolve_operator_env_file()
 
 # ---------------------------------------------------------------------------
 # Sub-configs
@@ -240,7 +302,7 @@ class EmbedderConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_EMBEDDER_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -348,7 +410,7 @@ class EmbedderConfig(BaseSettings):
 class StoreConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_STORE_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -494,7 +556,7 @@ class RetrievalConfig(BaseSettings):
     #     are stuck with if you do not.
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_RETRIEVAL_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1193,7 +1255,7 @@ class LLMConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_LLM_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1260,7 +1322,7 @@ class IndexerConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_INDEXER_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1363,7 +1425,7 @@ class GitLinkerConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_GIT_LINKER_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1398,7 +1460,7 @@ class ArtifactLinkerConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_ARTIFACT_LINKER_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1418,7 +1480,7 @@ class JiraConnectorConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_JIRA_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1438,7 +1500,7 @@ class TestRailConnectorConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_TESTRAIL_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1466,7 +1528,7 @@ class XrayConnectorConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_XRAY_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1498,7 +1560,7 @@ class LinearConnectorConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_LINEAR_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1529,7 +1591,7 @@ class IndexConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1606,7 +1668,7 @@ class AuditConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_AUDIT_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1647,7 +1709,7 @@ class SSOConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_OIDC_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
