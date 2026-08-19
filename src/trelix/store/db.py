@@ -34,6 +34,7 @@ import logging
 import re
 import sqlite3
 import threading
+import urllib.request
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -267,6 +268,26 @@ END;
 """
 
 
+def read_only_uri(db_path: Path | str) -> str:
+    """Build the `mode=ro` SQLite URI for `db_path`, percent-encoding the path.
+
+    A path is not a URI. Interpolating one raw — `f"file:{db_path}?mode=ro"` — hands the
+    path's own metacharacters to SQLite's URI parser: `#` ends the filename as a fragment
+    and `?` opens a query section of its own, so `mode=ro` is discarded and SQLite opens
+    the *truncated* path in the default read-write mode, creating an empty database there
+    if none exists. The result is the exact inverse of what the caller asked for: a handle
+    that accepts writes and cannot see the index's tables. `trelix index --dry-run
+    --prune` hit both halves — it left a stray database in the parent directory of any
+    index whose absolute path contained `#`, from a command whose promise is that it
+    changes nothing.
+
+    `pathname2url` rather than `Path.as_uri()`: `as_uri()` raises on a relative path, and
+    the documented constructor call is `Database(Path(".trelix/index.db"))`. SQLite accepts
+    a relative URI filename, so encoding in place keeps both path kinds working.
+    """
+    return f"file:{urllib.request.pathname2url(str(db_path))}?mode=ro"
+
+
 class Database:
     """
     Thin wrapper around sqlite3 with typed methods for each table.
@@ -313,9 +334,7 @@ class Database:
         self._conn_lock = threading.Lock()
 
         if read_only:
-            self._conn = sqlite3.connect(
-                f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
-            )
+            self._conn = sqlite3.connect(read_only_uri(db_path), uri=True, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             return
 
@@ -1538,15 +1557,22 @@ class Database:
         path_lookup: dict[str, int] = {}
         for fid, rel in all_files.items():
             no_ext = rel
+            stripped_ext = ""
             for ext in (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".go", ".rs", ".java"):
                 if no_ext.endswith(ext):
                     no_ext = no_ext[: -len(ext)]
+                    stripped_ext = ext
                     break
-            # Handle Go package files and Rust module files
-            no_ext = no_ext.removesuffix("/mod")  # Rust: store/db/mod.rs → store/db
-            no_ext = no_ext.removesuffix(
-                "/index"
-            )  # JS: components/Button/index.ts → components/Button
+            # "a directory IS a module" filename conventions — each gated on the
+            # extension that owns it. Applying them language-blind made a Python
+            # "pkg/mod.py" register under the key "pkg", so it masqueraded as its
+            # own package directory and absorbed every "from . import x" and
+            # "from ..pkg import y" aimed at pkg/__init__.py.
+            if stripped_ext == ".rs":
+                no_ext = no_ext.removesuffix("/mod")  # Rust: store/db/mod.rs → store/db
+            if stripped_ext in (".ts", ".tsx", ".js", ".jsx", ".mjs"):
+                # JS: components/Button/index.ts → components/Button
+                no_ext = no_ext.removesuffix("/index")
 
             # Full path without extension
             path_lookup[no_ext] = fid
@@ -1556,6 +1582,22 @@ class Database:
                 if no_ext.startswith(prefix):
                     path_lookup[no_ext[len(prefix) :]] = fid
                     break
+
+            # Python's own "a directory IS a module" convention: pkg/__init__.py
+            # *is* the module "pkg", so both "import a.pkg" and a relative
+            # ".pkg" name the directory. Registered under the directory key with
+            # setdefault so a real module file that already claimed the key keeps
+            # it, and deliberately NOT under the bare last component — that would
+            # be the directory name, and _resolve_module_to_file's Go/Java branch
+            # matches a single trailing segment, which would mint cross-language
+            # edges into unrelated __init__.py files.
+            package_key = no_ext.removesuffix("/__init__")
+            if package_key != no_ext:
+                path_lookup.setdefault(package_key, fid)
+                for prefix in ("src/", "lib/", "app/"):
+                    if package_key.startswith(prefix):
+                        path_lookup.setdefault(package_key[len(prefix) :], fid)
+                        break
 
             # Last component only — used as fallback for single-segment matches
             last = no_ext.split("/")[-1]
@@ -1592,13 +1634,46 @@ class Database:
     ) -> int | None:
         """
         Resolve a single import path to a file_id using language-aware heuristics.
-        Handles: Python dotted paths, JS/TS relative, Go/Java slash paths, Rust :: paths.
+        Handles: Python dotted paths, Python dot-separated relatives (".x", "..x.y"),
+        JS/TS slash-separated relatives, Go/Java slash paths, Rust :: paths.
         """
         # --- Relative imports (JS/TS, Python in-package) ---
         if module_path.startswith("."):
             importer_rel = all_files.get(importer_file_id, "")
-            importer_dir = "/".join(importer_rel.split("/")[:-1])
-            joined = (importer_dir + "/" + module_path) if importer_dir else module_path
+            importer_dirs = importer_rel.split("/")[:-1]
+
+            # Two conventions share the leading dot and they are NOT
+            # interchangeable. Python separates with dots ("..store.db"); JS/TS,
+            # Go, CSS and friends separate with slashes ("../store/db"). This
+            # branch only ever did the slash split, so a Python specifier stayed
+            # one indivisible component: ".cache" matched neither ".." nor "."
+            # and was appended verbatim, yielding the nonexistent candidate
+            # "pkg/.cache". Measured on trelix's own index: slash-style resolved
+            # 34/34, dot-style 0/40, every row naming its target correctly and
+            # carrying imported_file_id = NULL.
+            #
+            # The dot COUNT also means different things, so a single shared
+            # algorithm would break whichever convention it was not written for:
+            #     ".x"  Python = this package (up 0)   "./x"  JS = this dir
+            #     "..x" Python = parent pkg   (up 1)   "../x" JS = parent dir
+            # i.e. Python ascends (dots - 1); a slash path ascends once per "..".
+            # A specifier with no "/" at all cannot be a slash path, and the
+            # degenerate "." / ".." agree under both readings (this dir / parent
+            # dir), so the presence of "/" is a safe discriminator.
+            if "/" not in module_path:
+                leading_dots = len(module_path) - len(module_path.lstrip("."))
+                ascend = leading_dots - 1
+                if ascend > len(importer_dirs):
+                    return None  # climbs past the repo root — nothing to point at
+                base = importer_dirs[: len(importer_dirs) - ascend]
+                tail = [p for p in module_path[leading_dots:].split(".") if p]
+                candidate = "/".join(base + tail)
+                # No suffix fallback on purpose: a relative import names an exact
+                # module, so a near-miss here means the target is outside the
+                # index. A wrong edge is worse than a missing one.
+                return path_lookup.get(candidate)
+
+            joined = "/".join(importer_dirs) + "/" + module_path if importer_dirs else module_path
             parts: list[str] = []
             for component in joined.split("/"):
                 if component == "..":

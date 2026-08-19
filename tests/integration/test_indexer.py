@@ -281,7 +281,7 @@ class TestPruneGuardAgainstARealIndexRun:
     Every one of the 131 unit tests covering `--prune` passed against a guard that could
     not fire, because their `_FakeIndexer.index()` never calls `_record_provenance()` and
     their fixture writes provenance *before* the run. That inverts the production ordering
-    and makes three of the five guard conditions unfalsifiable.
+    and makes three of the six guard conditions unfalsifiable.
 
     The real ordering: `index()` writes provenance at the END of the run, and the CLI prunes
     after that. So a drift check that reads provenance itself compares the current walk
@@ -347,6 +347,58 @@ class TestPruneGuardAgainstARealIndexRun:
             f"{list(plan.candidates)}, which are still on disk"
         )
         assert any("walk settings changed" in r for r in plan.refusals), plan.refusals
+
+    def test_rows_written_under_a_wider_walk_are_refused_after_the_record_moves(
+        self, tmp_path: Path
+    ) -> None:
+        """`AUD-01`: the ordering fix left the premise — ONE walk_config row for ALL rows.
+
+        Three real runs, which is what it takes to reach the state the refusals themselves
+        prescribe ("re-index, then prune"):
+
+          1. wide walk — `vendored/` is indexed;
+          2. narrowed walk — `vendored/` is ignored. A re-index deletes no rows, so the
+             vendored rows survive, but the record now describes the NARROW walk;
+          3. the same narrow walk again — so the pre-run snapshot and the current config are
+             identical, `walk_config_changed` is False, the version matches, and 2 of 132
+             candidates is under the cap.
+
+        Every one of the four original guards passes here. The probe measured this exact
+        shape at 12 candidates, all 12 on disk, zero refusals.
+        """
+        import os
+
+        repo = tmp_path / "repo"
+        (repo / "keep").mkdir(parents=True)
+        (repo / "vendored").mkdir()
+        (repo / "keep" / "a.py").write_text("def a(): pass\n")
+        (repo / "vendored" / "b.py").write_text("def b(): pass\n")
+
+        Indexer(_make_config(repo), quiet=True).index()
+
+        os.environ["TRELIX_WALKER_EXTRA_IGNORE_DIRS"] = '[".git", ".trelix", "vendored"]'
+        try:
+            # Run 2: the narrowing re-index. One edited file so it reaches the provenance
+            # write rather than returning early at `if not to_parse`.
+            (repo / "keep" / "a.py").write_text("def a():\n    return 1\n")
+            Indexer(_make_config(repo), quiet=True).index()
+
+            # Run 3: same config as the record, so nothing the four older guards read differs.
+            (repo / "keep" / "a.py").write_text("def a():\n    return 2\n")
+            before, plan = self._snapshot_then_index(_make_config(repo), repo)
+        finally:
+            os.environ.pop("TRELIX_WALKER_EXTRA_IGNORE_DIRS", None)
+
+        assert (repo / "vendored" / "b.py").is_file(), "the file never left disk"
+        assert plan.candidates == ("vendored/b.py",), plan.candidates
+        assert not plan.is_refused or any("digest" in r for r in plan.refusals), plan.refusals
+        assert plan.is_refused, (
+            "the guard did not fire: it would delete the index row for vendored/b.py, which "
+            "is on disk. The record describes run 3's walk; the row came from run 1's."
+        )
+        assert len(before.walk_config_history) == 2, (
+            f"the index does not record that two walks wrote it: {before.walk_config_history}"
+        )
 
     def test_a_genuinely_deleted_file_is_still_prunable(self, tmp_path: Path) -> None:
         """The guard must not refuse everything — that would be a different bug.

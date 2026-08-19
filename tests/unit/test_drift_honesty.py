@@ -249,7 +249,7 @@ class TestGitignoreContentsAreFingerprinted:
         those would report drift for edits that cannot change a single indexed file.
         """
         from trelix.indexing.walker import FileWalker
-        from trelix.store.provenance import _gitignore_digest
+        from trelix.store.provenance import _DIGEST_SCHEME, _gitignore_digest
 
         repo = self._repo(tmp_path, "pruned/\n")
         (repo / "sub" / ".gitignore").write_text("nothing\n")
@@ -266,10 +266,13 @@ class TestGitignoreContentsAreFingerprinted:
         assert consulted == {repo, repo / "sub"}
         digest = _gitignore_digest(cfg)
         assert digest is not None
-        assert digest.startswith(f"{len(consulted)} file(s),"), (
-            f"digest counted a different set of .gitignore files than the walk reads: "
+        # Membership, not only the count: two chains of the same size over different
+        # directories are a different walk, and the count cannot tell them apart.
+        assert digest.startswith(f"{_DIGEST_SCHEME}:{len(consulted)} file(s) [., sub],"), (
+            f"digest covered a different set of .gitignore files than the walk reads: "
             f"{digest} vs {sorted(str(d) for d in consulted)}"
         )
+        assert "pruned" not in digest and "node_modules" not in digest
 
     def test_an_edit_under_a_pruned_directory_does_not_report_drift(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         """An ignore file the walk never reads cannot change which files are indexable, so
@@ -305,6 +308,153 @@ class TestGitignoreContentsAreFingerprinted:
         assert (repo / "sub" / "b.py").is_file(), "the file never left disk"
         assert not report.missing_is_trustworthy, (
             "a --prune reading this would delete the embedding for a present file"
+        )
+
+
+class TestMoreThanOneWalkConfigMakesMissingUnverified:
+    """The reporting half of `AUD-01`. `--prune` refuses on it; the count must disclaim it.
+
+    Fixing only `plan_prune` would leave `trelix stats --drift` announcing those same rows
+    as deletions with no "unverified" marker — the identical false confidence, one command
+    away from the destructive one, and the number a human reads before typing `--yes`.
+    """
+
+    def test_a_second_walk_config_makes_the_missing_count_unverified(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from trelix.indexing.walker import FileWalker
+        from trelix.store.provenance import read_provenance, write_provenance
+
+        repo = tmp_path
+        (repo / "keep").mkdir()
+        (repo / "vendored").mkdir()
+        (repo / "keep" / "a.py").write_text("x = 1\n")
+        (repo / "vendored" / "b.py").write_text("y = 2\n")
+
+        wide = _config(repo)
+        narrow = _config(repo, extra_ignore_dirs=[".git", ".trelix", "vendored"])
+
+        with Database(repo / ".trelix" / "index.db") as db:
+            for walked in FileWalker(wide).walk():
+                db.upsert_file(walked)
+            write_provenance(db, IndexProvenance(walk_config=_walk_config_json(wide)))
+            # The narrowing re-index: no row is deleted, and the record now describes the
+            # narrow walk. Both the snapshot and the current config are `narrow` from here.
+            write_provenance(db, IndexProvenance(walk_config=_walk_config_json(narrow)))
+            db._conn.commit()
+
+            report = compute_drift(narrow, db, provenance=read_provenance(db))
+
+        assert "vendored/b.py" in report.missing
+        assert (repo / "vendored" / "b.py").is_file(), "the file never left disk"
+        assert report.walk_config_comparable, "not the comparability guard's doing"
+        assert not report.walk_config_changed, "not the changed-settings guard's doing"
+        assert not report.missing_is_trustworthy, (
+            "the count is presented as verified while a present file sits in `missing` — "
+            "one walk_config row was read as describing every row in the index"
+        )
+        assert report.actionable_drifted_count == len(report.stale) + len(report.new)
+
+
+class TestTheDigestSchemeIsVersioned:
+    """`DOG-12` leg 6: changing WHAT the digest hashes must not read as "the walk narrowed".
+
+    Every index already on disk carries a digest computed the old way. Without a scheme
+    tag the first run after such a change reports `walk_config_changed = True` for every
+    existing user — a false positive that says "your ignore rules moved" when nothing moved
+    but trelix's own arithmetic, and that trains users to force past the one refusal that
+    matters. There is in-tree precedent: v3.1.2 started reading nested `.gitignore` chains
+    and moved this project's own index by 74% without a single config field changing.
+
+    "Recorded under an older scheme, cannot compare" is the honest verdict, and it is the
+    one that keeps `--prune` refusing (`missing_is_trustworthy` is False either way).
+    """
+
+    def _record_under_the_old_scheme(self, cfg) -> IndexProvenance:  # type: ignore[no-untyped-def]
+        """The record a pre-fix trelix would have written: a digest with no scheme tag."""
+        import json
+
+        from trelix.store.provenance import _DIGEST_SCHEME, _GITIGNORE_KEY
+
+        payload = json.loads(_walk_config_json(cfg) or "{}")
+        assert payload[_GITIGNORE_KEY].startswith(f"{_DIGEST_SCHEME}:")
+        payload[_GITIGNORE_KEY] = payload[_GITIGNORE_KEY].split(":", 1)[1]
+        return IndexProvenance(walk_config=json.dumps(payload, sort_keys=True))
+
+    def test_the_current_digest_carries_its_scheme(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from trelix.store.provenance import _DIGEST_SCHEME, _gitignore_digest
+
+        (tmp_path / "a.py").write_text("x = 1\n")
+        (tmp_path / ".gitignore").write_text("nothing\n")
+        digest = _gitignore_digest(_config(tmp_path))
+        assert digest is not None
+        assert digest.startswith(f"{_DIGEST_SCHEME}:")
+
+    def test_an_older_scheme_is_incomparable_rather_than_changed(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from trelix.store.provenance import is_walk_config_comparable
+
+        (tmp_path / "a.py").write_text("x = 1\n")
+        (tmp_path / ".gitignore").write_text("nothing\n")
+        cfg = _config(tmp_path)
+        recorded = self._record_under_the_old_scheme(cfg)
+
+        assert not is_walk_config_comparable(recorded)
+        assert walk_config_differences(recorded, cfg) == {}, (
+            "an old-scheme record was diffed against a new-scheme one, so every existing "
+            "index reports a walk-config change that never happened"
+        )
+
+    def test_compute_drift_reports_it_as_incomparable_end_to_end(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        (tmp_path / "a.py").write_text("x = 1\n")
+        (tmp_path / ".gitignore").write_text("nothing\n")
+        cfg = _config(tmp_path)
+        recorded = self._record_under_the_old_scheme(cfg)
+
+        with Database(tmp_path / ".trelix" / "index.db") as db:
+            report = compute_drift(cfg, db, provenance=recorded)
+
+        assert not report.walk_config_comparable
+        assert not report.walk_config_changed, "'cannot compare' was rendered as 'changed'"
+        assert not report.missing_is_trustworthy
+
+    def test_an_index_that_never_consulted_gitignore_stays_comparable(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """With `respect_gitignore=False` there is no digest to tag, so the old and new
+        schemes record the same thing — refusing to compare those would be crying wolf."""
+        from trelix.store.provenance import is_walk_config_comparable
+
+        cfg = _config(tmp_path, respect_gitignore=False)
+        assert is_walk_config_comparable(IndexProvenance(walk_config=_walk_config_json(cfg)))
+
+
+class TestTheDigestNamesWhatChanged:
+    """`DOG-12`: "N file(s)" can read identically on both sides while membership changed.
+
+    The project's own documented backup ritual is `cp -a .trelix .trelix.bak-<name>`. The
+    default ignore list contains `.trelix` and nothing matching `.trelix.bak-*`, so the
+    backup puts a copy of `.trelix/.gitignore` INTO the walk and moves the digest — and the
+    remediation trelix prints ("re-run with the environment that built the index") cannot
+    work, because the poisoning is a filesystem fact, not an environment one. A comparison
+    that shows only two hex strings and a count cannot tell the user that.
+    """
+
+    def test_a_trelix_backup_sibling_is_named_in_the_comparison(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        (tmp_path / "a.py").write_text("x = 1\n")
+        (tmp_path / ".gitignore").write_text("nothing\n")
+        cfg = _config(tmp_path)
+        recorded = IndexProvenance(walk_config=_walk_config_json(cfg))
+
+        # `cp -a .trelix .trelix.bak-selfindex`, as scripts/self-index.sh's own safety step
+        # prescribes. `.trelix` is ignored by default; its copy is not.
+        backup = tmp_path / ".trelix.bak-selfindex"
+        backup.mkdir()
+        (backup / ".gitignore").write_text("*\n")
+
+        diff = walk_config_differences(recorded, cfg)
+
+        assert "gitignore_chain" in diff, "a copy of .trelix changed the walk unnoticed"
+        _before, after = diff["gitignore_chain"]
+        assert ".trelix.bak-selfindex" in str(after), (
+            "the comparison names no member, so a user cannot tell a backup directory from "
+            "a real ignore-rule change and the printed remediation cannot help them: "
+            f"{after}"
         )
 
 

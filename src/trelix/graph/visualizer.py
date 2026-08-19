@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 from pathlib import Path
@@ -34,6 +35,36 @@ _EDGE_COLORS: dict[str, str] = {
     "TRAIT_IMPL": "#f59e0b",
     "EMBEDDED": "#ef4444",
 }
+
+
+def _html_safe(value: object) -> str:
+    """Escape one repo-controlled value on its way into the generated page.
+
+    Node attrs are indexed content, not trusted strings: a markdown heading becomes a
+    `qualified_name`, a filename becomes `file`. pyvis builds the page with a Jinja
+    `Environment` that has NO autoescape, so whatever is handed to it is what the
+    browser parses. `html.escape` rather than a hand-rolled `.replace()` chain because
+    the escaping has to be right for two contexts at once — element content and a
+    double-quoted attribute value — which is what `quote=True` covers.
+    """
+    return html.escape(str(value), quote=True)
+
+
+def _html_safe_node_id(node_id: Any) -> Any:
+    """Return a node id that cannot break out of pyvis's select menu.
+
+    The tooltip is not the only sink. With `select_menu=True` pyvis emits
+    `<option value="{{node.id}}">{{node.id}}</option>` — raw Jinja, no JSON encoder in
+    front of it, no hover required, and completely untouched by escaping the tooltip.
+    Symbol ids are ints, but `generic_edges.source_ref` becomes a STRING node id that
+    the Jira/Linear connectors copy verbatim out of an HTTP response, so a `">` in a
+    ticket key closes the attribute and then the element.
+
+    Ints pass through unchanged, so the export of an ordinary code graph is unaffected;
+    only the string ids are escaped. Applied to edge endpoints too — escape one side
+    only and every edge silently detaches from its node.
+    """
+    return node_id if isinstance(node_id, int) else _html_safe(node_id)
 
 
 class GraphVisualizer:
@@ -86,14 +117,26 @@ class GraphVisualizer:
             degree = g.degree(node_id)
             size = max(10, min(50, 10 + degree * 3))
             label = attrs.get("name", str(node_id))
+            # `<b>` and `<br>` below are the only markup this exporter authors; every
+            # hole in the f-string is repo text. pyvis switches its whole template to a
+            # custom popup that does `popup.innerHTML = nodeData[0].title` as soon as ANY
+            # node title contains the substring "href" (network.py:449-460) — a rendering
+            # branch selected by attacker bytes, which a payload supplies for itself. So
+            # an unescaped `<` here is a script tag in the developer's browser, not text
+            # in a tooltip. Escaped once per value on the way in.
             title = (
-                f"<b>{attrs.get('qualified_name', label)}</b><br>"
-                f"Kind: {attrs.get('kind', '?')}<br>"
-                f"File: {attrs.get('file', '?')}<br>"
-                f"Community: {community}"
+                f"<b>{_html_safe(attrs.get('qualified_name', label))}</b><br>"
+                f"Kind: {_html_safe(attrs.get('kind', '?'))}<br>"
+                f"File: {_html_safe(attrs.get('file', '?'))}<br>"
+                f"Community: {_html_safe(community)}"
             )
             net.add_node(
-                node_id,
+                _html_safe_node_id(node_id),
+                # `label` is deliberately NOT escaped: vis-network draws it with canvas
+                # text and never puts it in the DOM, so it is not an HTML sink, and
+                # escaping it would render a legitimate `Vec<T>` as `Vec&lt;T&gt;` on the
+                # graph. That stops being true the day this exporter sets
+                # `font: {multi: "html"}`, which turns labels into a DOM sink.
                 label=label[:25],
                 title=title,
                 color=color,
@@ -104,7 +147,13 @@ class GraphVisualizer:
         for src, dst, edge_attrs in g.edges(data=True):
             label = edge_attrs.get("label", "")
             color = _EDGE_COLORS.get(label, "#666666")
-            net.add_edge(src, dst, title=label, color=color, width=1.5)
+            net.add_edge(
+                _html_safe_node_id(src),
+                _html_safe_node_id(dst),
+                title=label,
+                color=color,
+                width=1.5,
+            )
 
         net.force_atlas_2based(central_gravity=0.015, gravity=-31)
         net.save_graph(output_path)

@@ -83,23 +83,47 @@ class TestDefaultPlan:
 
 
 class TestPlanFromIntentHint:
-    def test_valid_intent_returns_matching_plan(self) -> None:
-        plan = plan_from_intent_hint("how does auth work?", "symbol_lookup")
-        assert plan is not None
-        assert plan.intent == IntentType.SYMBOL_LOOKUP
-        assert plan.strategy is INTENT_STRATEGIES[IntentType.SYMBOL_LOOKUP]
+    def test_tier1_direct_is_paired_only_with_project_overview(self) -> None:
+        """The strategy is only real if the tier lets the retriever read it.
+
+        This replaces the two tests that asserted the opposite — one asserting a
+        TIER_1_DIRECT stamp on any intent was correct because it "skips the LLM
+        entirely, same as AdaptiveRouter._tier1_plan()", the other asserting the
+        resolved strategy on a plan whose tier guaranteed the strategy would
+        never be read. The first conflates skipping the intent CLASSIFIER with
+        skipping every RETRIEVAL LEG: Retriever._execute_plan() tests the tier
+        BEFORE the intent, so the stamp sent all eight intents to
+        _retrieve_project_overview. Both passed while intent_hint returned
+        byte-identical overview chunks for every intent and deleted the correct
+        answer. Their names are recorded in tests/unit/test_intent_hint_outcome.py
+        so a grep for either one in THIS file stays at zero.
+
+        The pairing below is AdaptiveRouter._tier1_plan()'s: TIER_1_DIRECT is
+        only ever stamped alongside PROJECT_OVERVIEW, whose strategy genuinely
+        is one file_direct lookup. The retrieval-outcome proof lives in
+        tests/unit/test_intent_hint_outcome.py — a plan field is evidence of
+        nothing on its own, which is what this file learned the hard way.
+        """
+        for intent in IntentType:
+            plan = plan_from_intent_hint("how does auth work?", intent.value)
+            assert plan is not None
+            assert plan.intent == intent
+            assert plan.strategy is INTENT_STRATEGIES[intent]
+            expected_tier = (
+                RoutingTier.TIER_1_DIRECT
+                if intent is IntentType.PROJECT_OVERVIEW
+                else RoutingTier.TIER_2_SINGLE
+            )
+            assert plan.routing_tier == expected_tier, (
+                f"intent_hint={intent.value!r} carries {plan.routing_tier!r}; "
+                f"expected {expected_tier!r}"
+            )
 
     def test_invalid_intent_returns_none(self) -> None:
         assert plan_from_intent_hint("some query", "not_a_real_intent") is None
 
     def test_empty_string_intent_returns_none(self) -> None:
         assert plan_from_intent_hint("some query", "") is None
-
-    def test_valid_intent_stamps_tier1_direct(self) -> None:
-        """Skips the LLM entirely, same as AdaptiveRouter._tier1_plan()."""
-        plan = plan_from_intent_hint("q", "file_overview")
-        assert plan is not None
-        assert plan.routing_tier == RoutingTier.TIER_1_DIRECT
 
     def test_hyde_snippet_hint_is_used_when_provided(self) -> None:
         plan = plan_from_intent_hint("q", "symbol_lookup", "def foo(): ...")

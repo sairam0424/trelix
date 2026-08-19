@@ -14,6 +14,7 @@ every one was present, because `extra_ignore_dirs` REPLACES the default 30-entry
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from trelix.core.config import IndexConfig, WalkerConfig
 from trelix.core.models import IndexedFile, Language
@@ -110,7 +111,14 @@ class TestProvenanceRoundTrip:
         )
         with Database(tmp_path / "index.db") as db:
             write_provenance(db, original)
-            assert read_provenance(db) == original
+            stored = read_provenance(db)
+
+        # `walk_config_history` is DERIVED at write time from what the index already held,
+        # not carried in by the caller, so it is compared separately rather than expected to
+        # round-trip: a record that arrived claiming its own history could assert "one walk
+        # config wrote every row" about an index it had never seen.
+        assert replace(stored, walk_config_history=()) == original
+        assert len(stored.walk_config_history) == 1
 
     def test_dirty_false_survives_the_round_trip(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         """A bool stored as a string is the classic place False becomes True."""
@@ -136,6 +144,81 @@ class TestProvenanceRoundTrip:
             db.set_embedding_dimension(3072)
             write_provenance(db, IndexProvenance(git_commit="abc"))
             assert db.get_embedding_dimension() == 3072
+
+
+class TestWalkConfigHistoryIsMonotonic:
+    """`AUD-01`: the record has to describe the ROWS, not just the last run.
+
+    `walk_config` is overwritten by every run, and a re-index deletes no rows — so an index
+    can hold rows written under a wide walk while its record describes a narrow one. Nothing
+    in that state is detectable from a single row, which is why the set of distinct walk
+    configs that have written this index accumulates and never shrinks.
+    """
+
+    def test_a_first_write_records_exactly_one_walk_config(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        cfg = _config(tmp_path)
+        with Database(tmp_path / "index.db") as db:
+            write_provenance(db, IndexProvenance(walk_config=_walk_config_json(cfg)))
+            assert len(read_provenance(db).walk_config_history) == 1
+
+    def test_re_indexing_with_the_same_config_stays_at_one(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The ordinary case. A guard that fired on every second index run would be noise."""
+        cfg = _config(tmp_path)
+        with Database(tmp_path / "index.db") as db:
+            for _ in range(3):
+                write_provenance(db, IndexProvenance(walk_config=_walk_config_json(cfg)))
+            assert len(read_provenance(db).walk_config_history) == 1
+
+    def test_a_second_walk_config_is_retained_alongside_the_first(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The narrowing re-index: the record moves, the rows it did not write stay."""
+        wide = _config(tmp_path, extra_ignore_dirs=["node_modules"])
+        narrow = _config(tmp_path, extra_ignore_dirs=["node_modules", "vendored"])
+        with Database(tmp_path / "index.db") as db:
+            write_provenance(db, IndexProvenance(walk_config=_walk_config_json(wide)))
+            write_provenance(db, IndexProvenance(walk_config=_walk_config_json(narrow)))
+            assert len(read_provenance(db).walk_config_history) == 2
+
+    def test_a_record_written_before_history_existed_counts_as_one_unknown(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The migration case, and the reason this is fail-safe rather than fail-quiet.
+
+        An index on disk today has a `walk_config` row and no history. How many walks wrote
+        its rows is unknowable, so the first write under this version records that ignorance
+        as a distinct member instead of asserting "one" — otherwise a single re-index would
+        launder a pre-fix index into a prunable one.
+        """
+        from trelix.store.provenance import _HISTORY_KEY, _PREFIX, _UNKNOWN_DIGEST
+
+        cfg = _config(tmp_path)
+        with Database(tmp_path / "index.db") as db:
+            # Exactly what a pre-fix trelix left behind: the field, none of the history.
+            db.set_index_metadata(_PREFIX + "walk_config", _walk_config_json(cfg) or "{}")
+            assert db.get_index_metadata(_PREFIX + _HISTORY_KEY) is None
+
+            write_provenance(db, IndexProvenance(walk_config=_walk_config_json(cfg)))
+
+            history = read_provenance(db).walk_config_history
+            assert _UNKNOWN_DIGEST in history
+            assert len(history) == 2
+
+    def test_a_run_that_recorded_no_walk_config_counts_as_unknown(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from trelix.store.provenance import _UNKNOWN_DIGEST
+
+        with Database(tmp_path / "index.db") as db:
+            write_provenance(db, IndexProvenance(walk_config=None, git_commit="abc"))
+            assert read_provenance(db).walk_config_history == (_UNKNOWN_DIGEST,)
+
+    def test_an_index_with_no_provenance_has_no_history(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        with Database(tmp_path / "index.db") as db:
+            assert read_provenance(db).walk_config_history == ()
+
+    def test_a_corrupt_history_row_reads_as_unknown_rather_than_raising(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """`read_provenance` is on the path of every `trelix stats`; a hand-edited or
+        truncated row must degrade to "cannot certify", never take the command down."""
+        from trelix.store.provenance import _HISTORY_KEY, _PREFIX, _UNKNOWN_DIGEST
+
+        with Database(tmp_path / "index.db") as db:
+            db.set_index_metadata(_PREFIX + _HISTORY_KEY, "not json")
+            assert read_provenance(db).walk_config_history == (_UNKNOWN_DIGEST,)
 
 
 class TestWalkConfigFingerprint:

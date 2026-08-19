@@ -1,7 +1,10 @@
 """
 Validated configuration for every stage of the pipeline.
 Uses pydantic-settings so values are overridable via environment variables
-or a .env file — no hardcoded secrets.
+or a dotenv file — no hardcoded secrets. The dotenv file is the OPERATOR's
+(TRELIX_CONFIG_FILE or ~/.config/trelix/env), never one found in the cwd:
+see `resolve_operator_env_file` for why a cwd-relative `.env` was a live
+configuration source for anyone who could commit a file to an indexed repo.
 
 Default embedding provider is `local` (sentence-transformers, no API key).
 Set TRELIX_EMBEDDER_PROVIDER=openai and OPENAI_API_KEY for higher quality.
@@ -9,6 +12,7 @@ Set TRELIX_EMBEDDER_PROVIDER=openai and OPENAI_API_KEY for higher quality.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,6 +20,64 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Language
+
+# ---------------------------------------------------------------------------
+# Dotenv anchoring
+# ---------------------------------------------------------------------------
+
+# Environment variable naming the one dotenv file trelix is allowed to read.
+CONFIG_FILE_ENV_VAR = "TRELIX_CONFIG_FILE"
+
+
+def resolve_operator_env_file() -> Path | None:
+    """Return the operator-owned dotenv path, or None when there is none.
+
+    Prevents a repo-local ``.env`` from being configuration. Every settings model
+    here used to declare ``env_file=".env"``, which pydantic-settings resolves
+    against the **process cwd** — and trelix's cwd is routinely inside a
+    repository trelix does not own: ``trelix index .`` in a PR checkout, ``trelix
+    review`` on a fork branch, a cloned dependency. A ``.env`` committed by
+    whoever wrote that repository therefore reached all fifteen models, letting it
+    repoint providers, endpoints and credential fields, and name the model whose
+    Python ``SentenceTransformer(..., trust_remote_code=True)`` executes in this
+    process (see ``embedder/base.py``'s gate, which relies on the same asymmetry).
+
+    Resolution order — an explicit file wins, then the operator's config
+    directory. The cwd is never consulted:
+
+    1. ``TRELIX_CONFIG_FILE``, so an operator can still point at a project
+       ``.env`` deliberately (including this repo's own during development).
+    2. ``$XDG_CONFIG_HOME/trelix/env``, else ``~/.config/trelix/env``.
+
+    Read from ``os.environ`` only, never as a settings field: a dotenv key never
+    becomes a process environment variable, because nothing in trelix calls
+    ``load_dotenv()``. That is what stops a planted ``.env`` from nominating
+    itself via ``TRELIX_CONFIG_FILE``.
+
+    Both forms are made absolute here: a relative override would be resolved
+    against the cwd all over again, which is the thing being fixed.
+    """
+    explicit = os.environ.get(CONFIG_FILE_ENV_VAR, "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    try:
+        config_home = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    except RuntimeError:
+        # Path.home() raises when there is no HOME *and* no passwd entry — the
+        # shipped container running under an arbitrary UID (OpenShift-style) hits
+        # this. "no operator config" is the right answer there; raising would make
+        # `import trelix.core.config` fail outright.
+        return None
+    candidate = (config_home / "trelix" / "env").resolve()
+    return candidate if candidate.is_file() else None
+
+
+# Resolved once, at import. pydantic-settings re-reads ``model_config["env_file"]``
+# on every instantiation, so a per-instantiation resolve would make the answer
+# depend on wherever the process has since chdir()'d to — which is the defect
+# itself. An absolute path here is inert against a later chdir.
+OPERATOR_ENV_FILE: Path | None = resolve_operator_env_file()
 
 # ---------------------------------------------------------------------------
 # Sub-configs
@@ -240,7 +302,7 @@ class EmbedderConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_EMBEDDER_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -348,7 +410,7 @@ class EmbedderConfig(BaseSettings):
 class StoreConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_STORE_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -468,9 +530,33 @@ def _prefixed_weight_overrides(prefix: str) -> dict[str, float]:
 
 
 class RetrievalConfig(BaseSettings):
+    # ── THE MEASURED NOISE FLOOR — read before quoting a retrieval delta ─────────
+    # This is the measured noise floor of `trelix eval`, and every tuning comment in
+    # this class that cites an nDCG@10 movement is judged against it. It is stated
+    # once, here, because two comments below used to carry their own numbers and both
+    # were wrong in the same direction — a false measured constant in the file
+    # everyone tunes against silently sets the bar for every future "is this movement
+    # real?" argument.
+    #
+    #   run-to-run sd on nDCG@10 ...... 0.022 (live planner, caches off, n=5)
+    #                                   0.029 (shipped CLI, n=3)
+    #   one-run 95% detection band .... +/-0.061
+    #   MDD at 80% power, one run ..... 0.087-0.114
+    #
+    # Consequences, and they are not optional:
+    #   * A single-run delta below ~0.087 is not evidence of anything. Resolving a
+    #     0.01 difference needs roughly 105-113 passes of the 54-query set per arm.
+    #   * Two readings of the SAME configuration are not a range and do not establish
+    #     a level. Two values 0.0028 apart differ by 4.6% of the detection band.
+    #   * These figures describe the instrument with a LIVE planner. Set
+    #     TRELIX_RETRIEVAL_PLAN_CACHE_FILE (see plan_cache_file) and the same
+    #     pipeline reproduced nDCG@10 at sd exactly 0.000000 over six runs, because
+    #     the planner's per-query rewrite is the whole variance source. Freeze the
+    #     plans before spending a run on a comparison; the floor above is what you
+    #     are stuck with if you do not.
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_RETRIEVAL_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -746,13 +832,20 @@ class RetrievalConfig(BaseSettings):
     # config_lookup). Without it, one matched file yielding a handful of symbols returned
     # exclusively those symbols and suppressed the vector, BM25 and grep legs entirely.
     #
-    # Declared here rather than read from os.environ, which is where they started. The
-    # original comment said "promote to RetrievalConfig once the numbers are settled" — they
-    # are (0.6189/0.6217 nDCG@10 on the 50-query set, back in the pre-regression range) — and
-    # raw os.environ reads do NOT see `.env`, so the kill switch documented in the release
-    # notes silently did nothing in the one place a user would set it. `CONTRIBUTING.md` also
-    # declares every `TRELIX_*` name in `.env.example` to be stable public API, which an
-    # os.environ read cannot participate in.
+    # Declared here rather than read from os.environ, which is where they started. That
+    # move stands on its own: raw os.environ reads do NOT see `.env`, so the kill switch
+    # documented in the release notes silently did nothing in the one place a user would
+    # set it, and `CONTRIBUTING.md` declares every `TRELIX_*` name in `.env.example` to be
+    # stable public API, which an os.environ read cannot participate in.
+    #
+    # What does NOT stand is the reason this comment used to give for it. It said the
+    # original "promote once the numbers are settled" condition had been met, citing two
+    # nDCG@10 readings 0.0028 apart on the 50-query set. Against the band recorded at the
+    # top of this class that pair is one number measured twice — 4.6% of +/-0.061 — so it
+    # establishes no level and settles nothing. The thresholds below (fewer than 2 files
+    # AND fewer than 10 symbols) were also tuned against ONE repository's golden set and
+    # have never been validated on another. Treat them as a working default whose effect
+    # is smaller than this instrument can resolve, not as a measured optimum.
     breadth_floor_enabled: bool = Field(
         default=True,
         alias="TRELIX_RETRIEVAL_BREADTH_FLOOR",
@@ -918,6 +1011,38 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_PLAN_CACHE_SIZE",
     )
 
+    # ── Frozen query plans: the only thing that makes an eval run repeatable ──
+    # A JSONL file of one recorded QueryPlan per query. Absent or empty -> the file
+    # is RECORDED from live draws; present -> plans are REPLAYED from it and the
+    # planner makes no LLM call at all.
+    #
+    # Why this exists rather than a seed: the LLM planner rewrites every query, and
+    # at temperature=0.0 with no seed, 0 of 54 golden plans reproduced byte-for-byte
+    # (bm25_tokens differed on 53-54 of 54, semantic_query on 39-50 of 54). That put
+    # nDCG@10 run-to-run at sd 0.02202 (live planner, caches off, n=5) and sd 0.02872
+    # (shipped CLI, n=3), against sd EXACTLY 0.000000 for the same pipeline replayed
+    # from frozen plans over six runs. Every retrieval effect this repo has measured
+    # is smaller than the live-planner band, so a delta measured without the freeze
+    # is a statement about the planner, not about the change under test.
+    #
+    # A miss RAISES (PlanCacheMissError). It must never fall back to a live draw: a
+    # cache that silently re-draws reproduces the entire defect while presenting as
+    # frozen, which is the failure mode this field was added to remove.
+    plan_cache_file: Path | None = Field(
+        default=None,
+        alias="TRELIX_RETRIEVAL_PLAN_CACHE_FILE",
+    )
+
+    # Provider sampling seed forwarded to the planner's LLM calls when the backend
+    # accepts one (see seed_kwargs() in llm/client.py). Best-effort by construction:
+    # no provider guarantees bit-identical sampling, and temperature=0.0 already
+    # failed to reproduce. Use plan_cache_file when the run has to be repeatable;
+    # this only narrows the drift for providers that honour a seed.
+    plan_seed: int | None = Field(
+        default=None,
+        alias="TRELIX_RETRIEVAL_PLAN_SEED",
+    )
+
     # ── File-type weighting ──────────────────────────────────────────────────
     # Applies a per-language multiplier to RRF scores after fusion.
     # Env: TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTING=false to disable entirely.
@@ -959,10 +1084,18 @@ class RetrievalConfig(BaseSettings):
             # which means `fusion.py` gives them its 1.0 fallback: the same weight as
             # parsed source. That is arguably too generous, since LineWindowParser
             # retrieves them as fixed line windows rather than parsed symbols, and the
-            # 50-query golden set does read ~0.017 nDCG@10 lower with them present than
-            # without. It is left alone anyway because that gap is only ~1.4x the
-            # measured same-config run-to-run noise (0.012), and every attempt to tune it
-            # made things worse in a way that could not be measured honestly:
+            # 50-query golden set did read ~0.017 nDCG@10 lower with them present than
+            # without. It is left alone anyway because that ~0.017 sits BELOW this
+            # instrument's noise floor — see the band at the top of RetrievalConfig:
+            # sd 0.022-0.029, so the gap is 0.6-0.8x the run-to-run sd and cannot be
+            # distinguished from zero. An earlier version of this comment
+            # called it "only ~1.4x" the noise, against a figure roughly half the real
+            # one; the conclusion survives, but for the opposite reason. "Small but
+            # real" and "indistinguishable" license different follow-ups, and only the
+            # second one is supported.
+            #
+            # Every attempt to tune it also made things worse in a way that could not
+            # be measured honestly:
             # down-weighting to 0.4-0.6 or to 0.8 both dropped ops files out of the top 10
             # for queries specifically about them, and target rank responded
             # NON-monotonically to the weight (rank 9 at 1.0, absent at 0.8, rank 2 at
@@ -1122,7 +1255,7 @@ class LLMConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_LLM_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1189,7 +1322,7 @@ class IndexerConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_INDEXER_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1292,7 +1425,7 @@ class GitLinkerConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_GIT_LINKER_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1327,7 +1460,7 @@ class ArtifactLinkerConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_ARTIFACT_LINKER_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1347,7 +1480,7 @@ class JiraConnectorConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_JIRA_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1367,7 +1500,7 @@ class TestRailConnectorConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_TESTRAIL_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1395,7 +1528,7 @@ class XrayConnectorConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_XRAY_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1427,7 +1560,7 @@ class LinearConnectorConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_LINEAR_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1458,7 +1591,7 @@ class IndexConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1535,7 +1668,7 @@ class AuditConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_AUDIT_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -1576,7 +1709,7 @@ class SSOConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TRELIX_OIDC_",
-        env_file=".env",
+        env_file=OPERATOR_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,

@@ -575,3 +575,114 @@ class TestScanOutcomeRobustness:
                 patch("subprocess.run", return_value=completed),
             ):
                 assert TaintAnalyzer("/tmp").run() == [], f"raised or non-list for {payload!r}"
+
+
+class TestTaintCliTrustsTheOutcomeNotTheFlowCount:
+    """AUD-03 — a FAILED scan must exit non-zero even when it found something.
+
+    Every `scan_result.outcome` branch in the `taint` command sat inside `if not flows:`,
+    so the one state the CLI never examined was the state `scan()` deliberately produces:
+    semgrep errored fatally AND still emitted a finding (`ScanResult(flows=flows,
+    outcome=SEMGREP_FAILED, ...)`). In that state the command took no diagnostic branch,
+    raised no `typer.Exit`, and under `--json` printed stdout that parses exactly like a
+    healthy scan — a CI step gating on `trelix taint` reads "no vulnerabilities" when what
+    happened was "no analysis". That is the worst failure mode this command has.
+
+    `ScanResult.is_trustworthy` was written for exactly this decision and had zero call
+    sites in `src/`, `tests/` or `packages/`. All five pre-existing CLI fixtures pass
+    `flows=[]`, which is why the whole flows>0 half of the state space was untested.
+
+    Nothing here needs semgrep or a network: `TaintAnalyzer.scan` is patched, which is the
+    method the command actually calls. `repo` is always a tmp_path, because the flows>0
+    path persists to `<repo>/.trelix/index.db`.
+    """
+
+    _FLOW = TaintFlow(
+        source_file="src/a.py",
+        source_line=3,
+        sink_file="src/b.py",
+        sink_line=9,
+        rule_id="python.lang.security.audit.dangerous-exec",
+        severity="ERROR",
+    )
+
+    @classmethod
+    def _invoke(cls, tmp_path: Path, outcome, *extra_args: str, flows=None):  # type: ignore[no-untyped-def]
+        from typer.testing import CliRunner
+
+        from trelix.analysis.taint import ScanResult
+        from trelix.cli.main import app
+
+        result = ScanResult(
+            flows=[cls._FLOW] if flows is None else flows,
+            outcome=outcome,
+            detail="semgrep exited 2: Semgrep Pro is uninstalled",
+            files_scanned=0,
+        )
+        with patch("trelix.analysis.taint.TaintAnalyzer.scan", return_value=result):
+            return CliRunner().invoke(app, ["taint", str(tmp_path), *extra_args])
+
+    def test_failed_scan_carrying_a_flow_exits_nonzero(self, tmp_path: Path) -> None:
+        from trelix.analysis.taint import ScanOutcome
+
+        res = self._invoke(tmp_path, ScanOutcome.SEMGREP_FAILED)
+        assert res.exit_code != 0, (
+            f"a FAILED scan that found 1 flow exited {res.exit_code} — a broken scan "
+            f"reported as a successful one. Output: {res.output!r}"
+        )
+        assert "NOT a clean result" in res.output, (
+            f"the failure was not named for the reader: {res.output!r}"
+        )
+
+    def test_failed_scan_carrying_a_flow_exits_nonzero_under_json(self, tmp_path: Path) -> None:
+        """The path CI uses, and therefore the one where a false all-clear costs most."""
+        from trelix.analysis.taint import ScanOutcome
+
+        res = self._invoke(tmp_path, ScanOutcome.SEMGREP_FAILED, "--json")
+        assert res.exit_code != 0, (
+            f"a FAILED scan that found 1 flow exited {res.exit_code} under --json"
+        )
+        assert json.loads(res.stdout) == [], (
+            f"--json stdout must stay parseable so `| jq` keeps working: {res.stdout!r}"
+        )
+
+    def test_vacuous_scan_carrying_a_flow_exits_nonzero(self, tmp_path: Path) -> None:
+        """The sibling untrustworthy outcome — fixing only SEMGREP_FAILED is half a fix."""
+        from trelix.analysis.taint import ScanOutcome
+
+        res = self._invoke(tmp_path, ScanOutcome.SCANNED_NOTHING)
+        assert res.exit_code != 0, (
+            f"a scan that examined 0 files but reported 1 flow exited {res.exit_code}"
+        )
+
+    def test_missing_semgrep_is_still_not_a_failed_scan(self, tmp_path: Path) -> None:
+        """The carve-out: an absent optional dependency must not fail anyone's build.
+
+        `is_trustworthy` is False for SEMGREP_MISSING too, so a bare
+        `if not is_trustworthy: Exit(1)` would turn every install without the [taint]
+        extra into a red CI run.
+        """
+        from trelix.analysis.taint import ScanOutcome
+
+        res = self._invoke(tmp_path, ScanOutcome.SEMGREP_MISSING, flows=[])
+        assert res.exit_code == 0, f"a missing semgrep failed the build: {res.output!r}"
+        assert "trelix[taint]" in res.output, (
+            f"the install instruction was swallowed by Rich markup: {res.output!r}"
+        )
+
+    def test_a_healthy_scan_with_findings_still_reports_them_at_exit_zero(
+        self, tmp_path: Path
+    ) -> None:
+        """The other half of the fix: findings from a scan that RAN must still be reported.
+
+        Gating on the outcome must not turn every finding into a scan failure — that is
+        the "cries wolf" mirror of the defect and is equally ignorable.
+        """
+        from trelix.analysis.taint import ScanOutcome
+
+        res = self._invoke(tmp_path, ScanOutcome.OK, "--json")
+        assert res.exit_code == 0, f"a healthy scan with 1 finding exited {res.exit_code}"
+        payload = json.loads(res.stdout)
+        assert [row["rule"] for row in payload] == [self._FLOW.rule_id], (
+            f"the finding was dropped from the report: {res.stdout!r}"
+        )

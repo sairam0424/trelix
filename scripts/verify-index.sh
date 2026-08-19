@@ -29,11 +29,17 @@ PYTHON=".venv/bin/python"
 exec "$PYTHON" - "$DB" <<'PY'
 import sqlite3
 import sys
+import urllib.request
 
 import sqlite_vec
 
 db_path = sys.argv[1]
-conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+# Percent-encode the path before interpolating it into the URI. Raw, a `#` in the path
+# ends the URI as a fragment and a `?` opens a second query section, so mode=ro is
+# dropped and SQLite creates an empty database at the truncated path — every gate below
+# would then report 0 and this script would call a healthy index broken. Inlined rather
+# than imported from trelix.store.db to keep this verifier pure-sqlite3.
+conn = sqlite3.connect(f"file:{urllib.request.pathname2url(db_path)}?mode=ro", uri=True)
 conn.enable_load_extension(True)
 sqlite_vec.load(conn)
 conn.enable_load_extension(False)

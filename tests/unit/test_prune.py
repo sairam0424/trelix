@@ -12,10 +12,14 @@ facts on this repository, not hypotheticals:
   (walker.py:11-13), so an edit to the ignore chain alone can make most of the index
   look deleted.
 
-So the guard is a conjunction of four independent facts, and this file pins each one
-failing on its own — a guard that is right three times out of four still deletes the
+So the guard is a conjunction of five independent facts, and this file pins each one
+failing on its own — a guard that is right four times out of five still deletes the
 index. It also pins the two things that make a wrong decision survivable: the default is
-a dry run, and a prune above a share of the index refuses whatever the other four say.
+a dry run, and a prune above a share of the index refuses whatever the other five say.
+
+The fifth fact — one walk config for every ROW, not just for the last run — is `AUD-01`,
+and it is the one the other four cannot see: they compare one recorded walk config against
+now, while a prune deletes per file.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from trelix.store.provenance import (
     PrunePlan,
     capture_provenance,
     plan_prune,
+    read_provenance,
     write_provenance,
 )
 
@@ -64,7 +69,18 @@ def _trustworthy_report(**overrides: object) -> DriftReport:
 
 
 def _current_provenance() -> IndexProvenance:
-    return IndexProvenance(trelix_version=__version__, walk_config="{}")
+    """The only prunable provenance shape: this version, a comparable walk config, and a
+    history saying every row in the index was written under exactly ONE walk config.
+
+    The one-element history is not scenery. `walk_config` records the walk of the run that
+    wrote it and nothing about the rows earlier runs wrote, so a single row cannot certify
+    the per-file property a prune acts on — see `TestRowsWrittenUnderMoreThanOneWalkConfig`.
+    """
+    return IndexProvenance(
+        trelix_version=__version__,
+        walk_config="{}",
+        walk_config_history=("0" * 16,),
+    )
 
 
 class TestEachGuardRefusesOnItsOwn:
@@ -108,15 +124,37 @@ class TestEachGuardRefusesOnItsOwn:
         )
         assert plan.is_refused
 
+    def test_rows_written_under_two_walk_configs_refuse(self) -> None:
+        """The cause `AUD-01` names: ONE global walk_config row certifying a PER-FILE
+        property. `walk_config` describes the run that wrote it; rows an earlier run wrote
+        under a wider walk are still in `files`, and the walk that no longer reaches them
+        reports them as deleted while they sit on disk."""
+        two = IndexProvenance(
+            trelix_version=__version__,
+            walk_config="{}",
+            walk_config_history=("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"),
+        )
+        plan = plan_prune(_trustworthy_report(), two, indexed_count=10)
+        assert plan.is_refused
+        assert any("digest" in r for r in plan.refusals), plan.refusals
+
+    def test_an_index_that_recorded_no_walk_config_history_refuses(self) -> None:
+        """ "Only the last run's walk config was recorded" is not "every row shares it"."""
+        no_history = IndexProvenance(trelix_version=__version__, walk_config="{}")
+        plan = plan_prune(_trustworthy_report(), no_history, indexed_count=10)
+        assert plan.is_refused
+
     def test_no_refusal_implies_the_whole_conjunction_held(self) -> None:
         """Pins the guard as a conjunction: no single flag may license a prune."""
         report = _trustworthy_report()
-        plan = plan_prune(report, _current_provenance(), indexed_count=10)
+        provenance = _current_provenance()
+        plan = plan_prune(report, provenance, indexed_count=10)
         assert not plan.is_refused
         assert report.missing_is_trustworthy
         assert report.walk_was_complete
         assert report.walk_config_comparable
         assert not report.walk_config_changed
+        assert len(provenance.walk_config_history) == 1
 
 
 class TestTheRefusalCap:
@@ -203,6 +241,13 @@ def fake_indexer(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-de
     The real Indexer loads an embedding model in __init__, which a unit test cannot pay
     for. Everything under test here — the drift walk, the guard, the delete — runs on the
     real Database and the real walker.
+
+    `index()` WRITES PROVENANCE, because `Indexer.index()` does (indexer.py:621, :828) and
+    the whole guard is about the ordering of that write against the prune. A fake that
+    skipped it made the CLI half of the fix unfalsifiable: with the pre-run snapshot read
+    reverted, `_run_prune` re-read a record no run had touched, so the stale fixture value
+    was still there and every guard fired by accident. All 19 tests in this file passed
+    against the reverted wiring (`AUD-16`) — a suite that cannot fail is not evidence.
     """
 
     def _install(db: Database, store: _RecordingVectorStore) -> None:
@@ -213,6 +258,9 @@ def fake_indexer(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-de
                 self.vector_store = store
 
             def index(self) -> dict[str, object]:
+                # End of the run, exactly where the real one records it — so anything that
+                # reads provenance after this point is reading THIS run's walk config.
+                write_provenance(self.db, capture_provenance(self.config))
                 return {"files_found": 0, "files_indexed": 0}
 
         import trelix.indexing.indexer as indexer_mod
@@ -332,6 +380,96 @@ class TestTheGuardSeesRealWalkConfigDrift:
         assert result.exit_code != 0, result.output
         assert "extra_ignore_dirs" in _flat(result.output)
         assert db.get_file_hash("gone.py") is not None
+
+
+class TestRowsWrittenUnderMoreThanOneWalkConfig:
+    """`AUD-01`: the prune guard's premise, not its ordering.
+
+    `536ed75` fixed the ordering — the guard was comparing a run against itself. The
+    premise it left standing is that ONE global `walk_config` row certifies a PER-FILE
+    property. It does not: a re-index deletes no rows, so rows written under a wider walk
+    survive a run that narrows it, while `write_provenance` overwrites the record with the
+    NARROWER config. Snapshot and current then agree, every guard passes, and the stale
+    rows read as deletions.
+
+    This is the scenario the refusal messages themselves steer users into ("re-index, then
+    prune"), and it is what `scratch-pad/audit_prune_guard_probe.py` reproduces: 12
+    candidates, all 12 on disk, 9.1% of the index, zero refusals.
+    """
+
+    def test_the_cli_refuses_when_rows_predate_the_recorded_walk_config(
+        self, tmp_path: Path, fake_indexer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The probe, through the CLI, with every one of the older guards satisfied.
+
+        `vendored/v0.py` is on disk the whole time. The pre-run snapshot and the current
+        config are the SAME narrow config, so `walk_config_changed` is False and the
+        version matches — exactly the shape the old guard licensed.
+        """
+        (tmp_path / "vendored").mkdir()
+        db = _seed_index(tmp_path, present=["a.py", "vendored/v0.py"], deleted=[])
+
+        # The wide run that wrote the vendored/ rows.
+        _write_current_provenance(tmp_path, db)
+        # The narrowing re-index the refusal told them to do: rows survive, the record does
+        # not. From here on `vendored` is ignored, and it is ignored at prune time too.
+        monkeypatch.setenv("TRELIX_WALKER_EXTRA_IGNORE_DIRS", '[".git", ".trelix", "vendored"]')
+        _write_current_provenance(tmp_path, db)
+
+        snapshot = read_provenance(db)
+        fake_indexer(db, _RecordingVectorStore())
+
+        from trelix.cli.main import app
+
+        result = runner.invoke(app, ["index", str(tmp_path), "--prune", "--yes"])
+
+        assert (tmp_path / "vendored" / "v0.py").is_file(), "the file never left disk"
+        assert snapshot.trelix_version == __version__, "not the version guard's doing"
+        assert result.exit_code != 0, result.output
+        assert "digest" in _flat(result.output), result.output
+        assert db.get_file_hash("vendored/v0.py") is not None, (
+            "a file present on disk was pruned: one walk_config row was read as certifying "
+            "every row in the index"
+        )
+
+
+class TestNothingToPruneIsNotAFailure:
+    """`AUD-05`: the default outcome of the FIRST `--prune` on any index exited 1.
+
+    A refusal names what to fix about a proposed deletion. With no candidates there is no
+    proposal, so nothing was blocked — printing "Prune refused" under "Nothing to prune"
+    and exiting nonzero reports a failure for the ordinary case, and a CI job that treats
+    the exit code as authoritative fails on a healthy index.
+    """
+
+    def test_a_dry_run_with_no_candidates_exits_zero_even_without_provenance(
+        self, tmp_path: Path
+    ) -> None:
+        """Schema-only index, no provenance — every walk-config guard has something to say
+        and none of it is about a deletion, because there is no deletion."""
+        (tmp_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+        config = IndexConfig(repo_path=str(tmp_path))
+        Database(config.db_path_absolute).close()
+
+        from trelix.cli.main import app
+
+        result = runner.invoke(app, ["index", str(tmp_path), "--dry-run", "--prune"])
+
+        assert result.exit_code == 0, result.output
+        assert "Nothing to prune" in _flat(result.output)
+        assert "Prune refused" not in _flat(result.output), result.output
+
+    def test_an_index_run_with_no_candidates_exits_zero(self, tmp_path: Path, fake_indexer) -> None:  # type: ignore[no-untyped-def]
+        db = _seed_index(tmp_path, present=["a.py"], deleted=[])
+        fake_indexer(db, _RecordingVectorStore())
+
+        from trelix.cli.main import app
+
+        result = runner.invoke(app, ["index", str(tmp_path), "--prune", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert "Nothing to prune" in _flat(result.output)
+        assert "Prune refused" not in _flat(result.output), result.output
 
 
 class TestRenderingIsMarkupSafe:

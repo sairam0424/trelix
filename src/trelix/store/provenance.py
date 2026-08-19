@@ -70,7 +70,20 @@ class IndexProvenance:
     # named fields rather than one hash so a mismatch can name the offending setting
     # instead of only announcing that one exists — only the gitignore chain is reduced to
     # a digest, because its contents are unbounded.
+    #
+    # Describes the run that WROTE it, and nothing about the rows earlier runs wrote.
     walk_config: str | None = None
+    # Every distinct `walk_config` that has ever written this index, as digests. Accumulated
+    # by `write_provenance` rather than captured, because it is a property of the index on
+    # disk and not of the current process.
+    #
+    # This is the field `walk_config` cannot be: a prune deletes PER-FILE, and one global
+    # row cannot certify a per-file property. A re-index deletes no rows, so rows written
+    # under a wide walk survive a run that narrows it — while the record is overwritten with
+    # the narrow one. Snapshot and current then agree and the surviving rows read as
+    # deletions. More than one member here means the index cannot certify that, and while it
+    # holds `--prune` refuses.
+    walk_config_history: tuple[str, ...] = ()
 
     _FIELDS = (
         "git_commit",
@@ -104,10 +117,14 @@ class DriftReport:
       at 35 phantom deletions on this repository from `extra_ignore_dirs` alone. Since
       `_gitignore_digest` this also covers edits to the `.gitignore` chain's *contents*,
       not merely to the config that switches it on.
+    * `rows_share_one_walk_config` is False — more than one walk config has written this
+      index, so a row may have come from a walk this one does not reproduce even when the
+      recorded config matches the current one exactly. The two flags above compare ONE
+      recorded config against now; this one is about the rows.
 
-    Acting on `missing` in either case deletes embeddings that cost money to recompute,
-    so `actionable_drifted_count` — not `drifted_count` — is what a renderer should lead
-    with.
+    Acting on `missing` in any of those cases deletes embeddings that cost money to
+    recompute, so `actionable_drifted_count` — not `drifted_count` — is what a renderer
+    should lead with.
     """
 
     stale: tuple[str, ...] = ()
@@ -120,6 +137,10 @@ class DriftReport:
     # index predates walk-config recording. `walk_config_comparable` separates those.
     walk_config_diff: tuple[tuple[str, str, str], ...] = ()
     walk_config_comparable: bool = True
+    # False when the index records more than one distinct walk config, or records no
+    # history of them at all. Defaults True like the two flags above: a report built by
+    # hand asserts its own preconditions, and only `compute_drift` can know this one.
+    rows_share_one_walk_config: bool = True
 
     @property
     def walk_config_changed(self) -> bool:
@@ -129,7 +150,10 @@ class DriftReport:
     def missing_is_trustworthy(self) -> bool:
         """False when `missing` has an innocent explanation that was not ruled out."""
         return (
-            self.walk_was_complete and self.walk_config_comparable and not self.walk_config_changed
+            self.walk_was_complete
+            and self.walk_config_comparable
+            and not self.walk_config_changed
+            and self.rows_share_one_walk_config
         )
 
     @property
@@ -226,6 +250,28 @@ _WALK_FIELDS = (
 # is derived from the worktree rather than from a config field.
 _GITIGNORE_KEY = "gitignore_chain"
 
+# Version of the `.gitignore` digest's OWN arithmetic, carried in the recorded value.
+#
+# Without it, any change to what the digest hashes reads as "the ignore rules moved" on
+# every index already on disk — a false `walk_config_changed` for every existing user,
+# announcing a narrowed walk when nothing narrowed but trelix's own hashing. That is a
+# false positive on the one warning that must be believed, and it is not hypothetical:
+# v3.1.2 started reading nested `.gitignore` chains and moved this project's own index by
+# 74% without a single config field changing.
+#
+# A tagged digest lets `is_walk_config_comparable` say "recorded under an older scheme,
+# cannot compare" instead. Both verdicts keep `missing_is_trustworthy` False and both keep
+# `--prune` refusing, but only one of them is true. Bump this whenever the digest's inputs
+# or format change.
+_DIGEST_SCHEME = "v2"
+
+# How many `.gitignore` directories the digest names before summarising the rest. Membership
+# is the part a human can act on: `cp -a .trelix .trelix.bak-<name>` — this project's own
+# documented backup step — copies `.trelix/.gitignore` into the walk, and a value reading
+# only "4 file(s), sha256:…" cannot distinguish that from an edited ignore rule. Worse, the
+# count can read IDENTICALLY on both sides while membership changed completely.
+_GITIGNORE_MEMBERS_SHOWN = 8
+
 
 def _gitignore_digest(config: IndexConfig) -> str | None:
     """Fingerprint the WHOLE `.gitignore` chain — which files exist and what is in them.
@@ -263,6 +309,7 @@ def _gitignore_digest(config: IndexConfig) -> str | None:
 
     root = Path(config.repo_path)
     entries: list[str] = []
+    anchors: list[str] = []
     try:
         walker = FileWalker(config)
         for path in walker._iter_files(root):
@@ -276,6 +323,7 @@ def _gitignore_digest(config: IndexConfig) -> str | None:
             anchor = path.parent.relative_to(root).as_posix()
             patterns = "\n".join(str(getattr(p, "pattern", p)) for p in spec.patterns)
             entries.append(f"{anchor}\n{patterns}")
+            anchors.append(anchor)
     except Exception as exc:
         # Runs inside `capture_provenance`, which must never fail an index — the
         # embeddings are the expensive artefact. Returning None costs one stats line and
@@ -285,9 +333,15 @@ def _gitignore_digest(config: IndexConfig) -> str | None:
 
     entries.sort()
     digest = hashlib.sha256("\0".join(entries).encode("utf-8")).hexdigest()
-    # Count is carried in the value, not just the hash, so `trelix stats --drift`'s diff
-    # table shows a mismatch a human can interpret instead of two opaque hex strings.
-    return f"{len(entries)} file(s), sha256:{digest[:16]}"
+    # Count, MEMBERSHIP and scheme are carried in the value, not just the hash, so the diff
+    # table names what moved instead of showing two opaque hex strings. The count alone was
+    # not enough: a `.trelix.bak-*` backup adds a member without changing anything a user
+    # edited, and a swap of one chain file for another leaves the count untouched.
+    anchors.sort()
+    shown = ", ".join(anchors[:_GITIGNORE_MEMBERS_SHOWN])
+    if len(anchors) > _GITIGNORE_MEMBERS_SHOWN:
+        shown += f", +{len(anchors) - _GITIGNORE_MEMBERS_SHOWN} more"
+    return f"{_DIGEST_SCHEME}:{len(entries)} file(s) [{shown}], sha256:{digest[:16]}"
 
 
 def _walk_config_json(config: IndexConfig) -> str | None:
@@ -321,18 +375,48 @@ def _walk_config_json(config: IndexConfig) -> str | None:
         return None
 
 
+def is_walk_config_comparable(provenance: IndexProvenance) -> bool:
+    """Whether the recorded walk config can be compared against one captured now.
+
+    False for an index that recorded none, and false for one whose `.gitignore` digest was
+    computed by an older scheme — those two digests are different arithmetic over the same
+    tree, so comparing them reports a change no user made. "Cannot compare" is the honest
+    verdict and it fails the same way (`missing_is_trustworthy` False, `--prune` refuses);
+    the difference is that it does not train users past the warning.
+
+    A record with no digest at all (`respect_gitignore=False`) stays comparable: with the
+    chain switched off, every scheme records the same nothing.
+    """
+    import json
+
+    if not provenance.walk_config:
+        return False
+
+    try:
+        recorded = json.loads(provenance.walk_config)
+    except (TypeError, ValueError) as exc:
+        logger.debug("Recorded walk config is not readable JSON: %s", exc)
+        return False
+
+    chain = recorded.get(_GITIGNORE_KEY) if isinstance(recorded, dict) else None
+    if isinstance(chain, str) and not chain.startswith(f"{_DIGEST_SCHEME}:"):
+        return False
+    return True
+
+
 def walk_config_differences(
     provenance: IndexProvenance, config: IndexConfig
 ) -> dict[str, tuple[object, object]]:
     """Settings that differ between index time and now, as {name: (recorded, current)}.
 
     An empty dict means either "identical" or "cannot tell" — the caller distinguishes
-    those via `provenance.walk_config is None`, because an index predating this field
-    cannot be compared and must not be reported as matching.
+    those via `is_walk_config_comparable`, because an index predating this field, or one
+    whose digest scheme predates this build, cannot be compared and must not be reported
+    as either matching or changed.
     """
     import json
 
-    if not provenance.walk_config:
+    if not is_walk_config_comparable(provenance) or not provenance.walk_config:
         return {}
 
     current_raw = _walk_config_json(config)
@@ -380,6 +464,56 @@ def capture_provenance(config: IndexConfig) -> IndexProvenance:
     )
 
 
+# Key under which the accumulated set of walk-config digests lives. Namespaced under
+# `_PREFIX` with the rest, but not one of `IndexProvenance`'s written fields: it is derived
+# from what is already in the database plus the incoming record, so it is computed here.
+_HISTORY_KEY = "walk_config_digests"
+
+# Stands in for a walk config that cannot be identified — a run that recorded none, or rows
+# written before history was recorded at all. A distinct member rather than an omission,
+# because "unknown" must not be silently unified with the config that happens to be current:
+# that is exactly how a single re-index would launder a pre-fix index into a prunable one.
+_UNKNOWN_DIGEST = "unrecorded"
+
+
+def _walk_config_digest(walk_config: str | None) -> str:
+    """Short, stable identity for one walk config. Full text is already stored separately."""
+    if walk_config is None:
+        return _UNKNOWN_DIGEST
+    return hashlib.sha256(walk_config.encode("utf-8")).hexdigest()[:16]
+
+
+def _extend_walk_config_history(db: Database, provenance: IndexProvenance) -> None:
+    """Add this run's walk config to the set of configs that have written this index.
+
+    Monotonic: members are only ever added. The set is a claim about ROWS, and a row written
+    under a walk config that is no longer current does not stop existing because a later run
+    used a different one — which is precisely the mistake that let `--prune` propose deleting
+    12 files that were present on disk with zero refusals.
+
+    MUST be called before the fields are overwritten, because it reads the previous
+    `walk_config` row to detect an index that predates history recording.
+    """
+    import json
+
+    stored = db.get_index_metadata(_PREFIX + _HISTORY_KEY)
+    known: set[str] = set()
+    if stored:
+        try:
+            known = {str(d) for d in json.loads(stored)}
+        except (TypeError, ValueError):
+            # A truncated or hand-edited row is not evidence of anything, and treating it as
+            # an empty history would read as "one config wrote everything".
+            known = {_UNKNOWN_DIGEST}
+    elif db.get_index_metadata(_PREFIX + "walk_config") is not None:
+        # An index written by a trelix that recorded no history. How many walks wrote its
+        # rows is unknowable from here, so record the ignorance instead of asserting "one".
+        known.add(_UNKNOWN_DIGEST)
+
+    known.add(_walk_config_digest(provenance.walk_config))
+    db.set_index_metadata(_PREFIX + _HISTORY_KEY, json.dumps(sorted(known)))
+
+
 def write_provenance(db: Database, provenance: IndexProvenance) -> None:
     """Persist provenance to `index_metadata`. Never raises.
 
@@ -387,6 +521,16 @@ def write_provenance(db: Database, provenance: IndexProvenance) -> None:
     otherwise succeeded — the embeddings are the expensive artefact and they are already
     committed by this point; losing the provenance row costs a `trelix stats` line.
     """
+    try:
+        # First, and reading the row this call is about to replace.
+        _extend_walk_config_history(db, provenance)
+    except Exception as exc:
+        logger.warning(
+            "Could not record the walk-config history (--prune will refuse until an index "
+            "run records it): %s",
+            exc,
+        )
+
     fields = {
         "git_commit": provenance.git_commit,
         "git_branch": provenance.git_branch,
@@ -430,7 +574,25 @@ def read_provenance(db: Database) -> IndexProvenance:
         embedder_provider=stored.get("embedder_provider"),
         embedder_model=stored.get("embedder_model"),
         walk_config=stored.get("walk_config"),
+        walk_config_history=_parse_history(stored.get(_HISTORY_KEY)),
     )
+
+
+def _parse_history(raw: str | None) -> tuple[str, ...]:
+    """Read the accumulated digest set. Degrades to "unknown", never to "one".
+
+    An unreadable row is not evidence that a single walk config wrote every row, and this
+    runs on the path of every `trelix stats`, so it must not raise either.
+    """
+    import json
+
+    if not raw:
+        return ()
+    try:
+        return tuple(sorted(str(d) for d in json.loads(raw)))
+    except (TypeError, ValueError) as exc:
+        logger.debug("Walk-config history is not readable JSON: %s", exc)
+        return (_UNKNOWN_DIGEST,)
 
 
 def commits_since(config: IndexConfig, indexed_commit: str | None) -> int | None:
@@ -469,7 +631,7 @@ def compute_drift(
     Indexer over a temp repo — index three files, re-run with one file edited and
     `vendored/` newly ignored, and `walk_config_differences(pre_run_record, config)`
     correctly returns `['extra_ignore_dirs']` while this function returned
-    `walk_config_diff = ()`. Two of the five prune guards read the report rather than the
+    `walk_config_diff = ()`. Two of the six prune guards read the report rather than the
     provenance, so threading a pre-run snapshot into `plan_prune` alone was not enough.
     """
     from trelix.indexing.walker import FileWalker
@@ -503,7 +665,10 @@ def compute_drift(
     diff = walk_config_differences(record, config)
 
     return DriftReport(
-        walk_config_comparable=record.walk_config is not None,
+        walk_config_comparable=is_walk_config_comparable(record),
+        # One member means every row in this index was written under the same walk config.
+        # Zero means nothing recorded it, which is not evidence that they were.
+        rows_share_one_walk_config=len(record.walk_config_history) == 1,
         walk_config_diff=tuple(
             (name, repr(recorded), repr(current))
             for name, (recorded, current) in sorted(diff.items())
@@ -585,19 +750,29 @@ def plan_prune(
     Pure by design: it takes an already-computed `DriftReport` instead of computing one, so
     a prune costs exactly one walk and every refusal is testable without a repository.
 
-    The licence to delete is a conjunction of four independent facts, each of which has
+    The licence to delete is a conjunction of five independent facts, each of which has
     made `missing` lie in production:
 
     * `walk_was_complete` — an unreadable directory drops its whole subtree, and every
       file under it then reads as deleted while being present.
-    * `walk_config_comparable` — an index with no recorded walk config cannot be compared
-      at all, and "cannot tell" must not resolve to "same".
+    * `walk_config_comparable` — an index with no recorded walk config, or one recorded
+      under an older digest scheme, cannot be compared at all, and "cannot tell" must not
+      resolve to "same".
     * not `walk_config_changed` — measured at 35 phantom deletions here from
       `extra_ignore_dirs`, which REPLACES rather than extends the default list.
     * `provenance.trelix_version == __version__` — the version is checked separately from
       the other three because an older trelix can have walked differently in ways no
       `_WALK_FIELDS` entry describes: v3.1.2 started reading nested `.gitignore` chains and
       moved this project's own index by 74% without a single config field changing.
+    * exactly one member in `provenance.walk_config_history` — the four above compare the
+      walk config of ONE run against now, and a prune acts per FILE. Rows written by an
+      earlier run under a wider walk survive a re-index that narrows it (a re-index deletes
+      nothing), while the record is overwritten with the narrow config. The three
+      walk-config conditions then all pass on a comparison of the narrow config with itself,
+      and the surviving rows are proposed for deletion. Measured by
+      `scratch-pad/audit_prune_guard_probe.py`: 12 candidates, all 12 on disk, 9.1% of the
+      index, and ZERO refusals — the scenario the refusals themselves prescribe
+      ("re-index, then prune").
 
     The first three are exactly `DriftReport.missing_is_trustworthy`; it is re-derived
     field by field here so a refusal can name which one failed.
@@ -623,11 +798,48 @@ def plan_prune(
         )
     elif report.walk_config_changed:
         names = ", ".join(name for name, _recorded, _current in report.walk_config_diff)
-        refusals.append(
+        message = (
             f"the walk settings changed since this index was built ({names}), so files the "
             "walk no longer reaches are indistinguishable from files that were deleted. "
             "Re-run with the environment that built the index — `scripts/self-index.sh` is "
             "the reference — then prune."
+        )
+        # Naming the environment is not enough when the chain itself moved: the walk can
+        # narrow with no env change at all, because `cp -a .trelix .trelix.bak-<name>` — this
+        # project's own documented backup step — puts a copy of `.trelix/.gitignore` into the
+        # walk. Both values name their members, so the offending directory is readable here
+        # instead of the user being sent to reproduce an environment that was never wrong.
+        chain = [(rec, cur) for name, rec, cur in report.walk_config_diff if name == _GITIGNORE_KEY]
+        if chain:
+            recorded, current = chain[0]
+            message += (
+                f" The `.gitignore` chain itself differs (recorded {recorded}, now "
+                f"{current}) — a copy of `.trelix`, e.g. a `.trelix.bak-*` backup, adds a "
+                "member to it. Delete or rename it, or re-index."
+            )
+        refusals.append(message)
+
+    # `walk_config` describes one run; `walk_config_history` describes the rows. The three
+    # conditions above cannot see a row written by a run whose record has since been
+    # overwritten, and that row is exactly what a prune would delete.
+    if len(provenance.walk_config_history) > 1:
+        digests = ", ".join(provenance.walk_config_history)
+        refusals.append(
+            f"this index's rows were written under {len(provenance.walk_config_history)} "
+            f"different walk configurations (digests {digests}), so rows written under a "
+            "wider walk are indistinguishable from files that were deleted — the recorded "
+            "walk config describes only the run that wrote it, and a re-index deletes no "
+            "rows. Rebuild the index from one walk config (delete "
+            "`<repo>/.trelix/index.db`, then `trelix index <repo>`), then prune."
+        )
+    elif not provenance.walk_config_history:
+        refusals.append(
+            "this index does not record which walk configurations wrote its rows, so "
+            "whether every row was written under the walk config being compared cannot be "
+            "established — one recorded walk config describes the LAST run only. A full "
+            "`trelix index <repo>` with this version records it; an index built before it "
+            "did must be rebuilt (delete `<repo>/.trelix/index.db`) before its rows can be "
+            "certified."
         )
 
     if provenance.trelix_version != __version__:

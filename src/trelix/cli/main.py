@@ -13,13 +13,15 @@ Commands:
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
+import os
 import sys
 import time
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, cast
 
 import typer
 from rich.console import Console
@@ -57,15 +59,157 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="tree_sitter")
 warnings.filterwarnings("ignore", message=".*HF_TOKEN.*")
 warnings.filterwarnings("ignore", message=".*huggingface.*")
 
-app = typer.Typer(
+# ---------------------------------------------------------------------------
+# A vanished reader is not an error — READ THIS BEFORE SIMPLIFYING IT AWAY
+# ---------------------------------------------------------------------------
+#
+# `trelix stats <repo> | grep -q "Symbols"` is the binary smoke test in
+# build-binaries.yml. `grep -q` exits the instant it matches — before stats has
+# written the provenance block that now follows the table — so every later write
+# lands on a pipe with no reader. Three layers each call that a failure, and none
+# of them agrees with the other two:
+#
+#   * rich's Console.on_broken_pipe raises SystemExit(1);
+#   * click's Command.main exits 1, but only when errno is EPIPE;
+#   * nothing handles errno EINVAL, and EINVAL is what Windows reports for a
+#     reader-less pipe (WriteFile -> ERROR_NO_DATA), not BrokenPipeError.
+#
+# So the step failed two different ways. On POSIX, silently with exit 1 — GitHub
+# Actions runs `shell: bash` as `bash -e -o pipefail`, which fails the pipeline on
+# the LEFT side's status even though grep matched. On Windows, the OSError escaped
+# entirely: a rich traceback plus PyInstaller's "Failed to execute script main".
+# Both were filed as CI flakiness, twice, across two days — the specific cost of a
+# red that does not look like the bug it is.
+#
+# What status to report when the reader walks away is the application's policy, not
+# rich's and not click's, so it is decided here once for every command instead of
+# inside stats. A fix inside stats would have left search/telemetry/graph — which
+# share the consoles below — failing exactly the same way.
+
+# EINVAL is in this set because of Windows and only because of Windows. Keeping the
+# set to these two is the point: ENOSPC or EACCES on stdout is a real failure a
+# caller must still be able to detect, and a blanket `except OSError` would hide it.
+_CLOSED_CONSUMER_ERRNOS = frozenset({errno.EPIPE, errno.EINVAL})
+
+
+def _is_closed_consumer_error(exc: OSError) -> bool:
+    """True when `exc` means "nothing is reading our output any more"."""
+    return exc.errno in _CLOSED_CONSUMER_ERRNOS
+
+
+class _PacifiedStream:
+    """Hold a broken stream so its *final* flush cannot raise.
+
+    CPython flushes sys.stdout/sys.stderr during interpreter shutdown, long after
+    any handler has returned. If the stream is still broken, that flush raises with
+    nowhere to report it: Python prints "Exception ignored in: ..." and the process
+    exits **120**. That is a second, different red replacing the one just handled,
+    which is why silencing the stream is part of the fix and not tidy-up.
+
+    Same job as click's PacifyFlushWrapper, kept local so a click internal is not
+    load-bearing. Wrapping (rather than replacing) also keeps the original stream
+    referenced, so it is not finalised — and cannot raise from __del__ — early.
+    """
+
+    def __init__(self, wrapped: Any) -> None:  # noqa: ANN401 - any text stream
+        self._wrapped = wrapped
+
+    def flush(self) -> None:
+        try:
+            self._wrapped.flush()
+        except OSError:
+            pass
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - passthrough
+        return getattr(self._wrapped, name)
+
+
+def _exit_quietly_after_closed_consumer(stream: Any = None) -> NoReturn:  # noqa: ANN401
+    """Stop writing to `stream`, leave no traceback, exit 0."""
+    target = sys.stdout if stream is None else stream
+
+    # Point the file descriptor at the null device first. This is the half that
+    # works when the bytes are already buffered inside a real TextIOWrapper: the
+    # shutdown flush still happens, it just lands in /dev/null (NUL on Windows).
+    try:
+        fd = target.fileno()
+    except (AttributeError, OSError, ValueError):
+        fd = None
+    if fd is not None:
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(devnull, fd)
+            finally:
+                os.close(devnull)
+        except OSError:
+            pass
+
+    # Then pacify the Python object, for the streams where the descriptor swap is
+    # not enough or not available: a frozen build with no console, a stream replaced
+    # by a test harness, or a wrapper whose flush() fails independently of the fd.
+    if target is sys.stdout:
+        sys.stdout = cast("Any", _PacifiedStream(sys.stdout))
+    elif target is sys.stderr:
+        sys.stderr = cast("Any", _PacifiedStream(sys.stderr))
+
+    raise SystemExit(0)
+
+
+class _PipeSafeConsole(Console):
+    """A rich Console whose broken-pipe policy is exit 0, not rich's exit 1.
+
+    Applied to `console`/`err_console` below, so the EPIPE half is fixed once for
+    every command that renders through them — stats, telemetry, graph, review,
+    search's table output — rather than per command.
+
+    NOT covered, because they bypass these consoles entirely: the three
+    `print(json.dumps(...))` sites (`search --json`, `update-index`,
+    `audit export`). Those go to click's own EPIPE handler, which exits 1 silently
+    with no traceback. Their *crash* exposure — Windows errno EINVAL — is covered by
+    _PipeSafeTyper below; only the POSIX exit code differs, and no CI step pipes them.
+    """
+
+    def on_broken_pipe(self) -> None:
+        _exit_quietly_after_closed_consumer(self.file)
+
+
+class _PipeSafeTyper(typer.Typer):
+    """The entry point, which is where the process exit status is actually decided.
+
+    Catches the case neither rich nor click recognises: OSError(EINVAL), i.e. every
+    Windows closed-pipe write, raised by *any* writer in the process — including
+    typer's own help renderer and Indexer's private Console, neither of which goes
+    through the consoles below. This is the layer that turns "Failed to execute
+    script main" into a clean exit, and it covers both entry paths: the console
+    script (`trelix.cli.main:app`) and the frozen binary, whose PyInstaller spec
+    runs this module as __main__.
+
+    Known residual, deliberately not papered over: on POSIX, `--help`/`--version`
+    still exit 1 on EPIPE, because rich/click convert that errno to SystemExit(1)
+    inside code this class cannot see the errno from. It is silent and
+    traceback-free, and no CI step pipes those. Catching SystemExit(1) here to
+    "fix" it would swallow every genuine exit 1 in the CLI.
+    """
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - typer's own
+        try:
+            return super().__call__(*args, **kwargs)
+        except OSError as exc:
+            if not _is_closed_consumer_error(exc):
+                raise
+            _exit_quietly_after_closed_consumer()
+
+
+app = _PipeSafeTyper(
     name="trelix",
     help="Fast, reliable code indexing and retrieval.",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
 
-console = Console()
-err_console = Console(stderr=True)
+console = _PipeSafeConsole()
+err_console = _PipeSafeConsole(stderr=True)
 
 logger = logging.getLogger("trelix.cli")
 
@@ -403,7 +547,7 @@ def index(
         # But the GUARD is evaluated against `provenance_before`, captured above before
         # `index()` ran. index() writes provenance at the end of the run, so reading it here
         # would compare this run's walk config against a copy of itself and disarm three of
-        # the five conditions. See _run_prune's docstring for the reproduction.
+        # the six conditions. See _run_prune's docstring for the reproduction.
         _run_prune(
             config,
             indexer.db,
@@ -435,12 +579,15 @@ def _run_prune(
 ) -> None:
     """Plan a prune, print it, and delete only when every guard licenses it.
 
-    Exits nonzero on a refusal. A refused prune that exited 0 would tell a script that the
-    deletions happened, which is the failure mode this whole feature was withheld over.
+    Exits nonzero on a refusal that BLOCKED something. A refused prune that exited 0 would
+    tell a script that the deletions happened, which is the failure mode this whole feature
+    was withheld over; but a refusal with an empty candidate list blocked nothing, and
+    exiting 1 there made the first `--prune` on every index — the case with no provenance
+    yet and nothing to delete — look like a failure.
 
     `provenance` MUST be the record as it stood BEFORE the index run that precedes this
     call, and is therefore passed in rather than read here. Reading it here is what the
-    first version did, and it silently disarmed three of the five guards:
+    first version did, and it silently disarmed three of the six guards:
 
     `Indexer.index()` writes provenance at the END of the run, and this prune executes
     after that — so a locally-read record describes the run that just finished, and
@@ -461,7 +608,7 @@ def _run_prune(
     """
     from trelix.store.provenance import compute_drift, plan_prune
 
-    # The snapshot goes to BOTH. Two of the five guards (`walk_config_comparable`,
+    # The snapshot goes to BOTH. Two of the six guards (`walk_config_comparable`,
     # `walk_config_changed`) are read off the report, not off this argument, so passing it
     # only to plan_prune left them comparing the post-run record against itself — measured,
     # and it is what made the first version of this feature delete live files.
@@ -475,9 +622,16 @@ def _run_prune(
 
     _print_prune_plan(plan, will_act=confirmed and not plan.is_refused)
 
+    # An empty candidate list is checked BEFORE the refusals, and the order is the fix.
+    # A refusal blocks a proposed deletion; with nothing proposed, nothing was blocked, and
+    # exiting nonzero reports a failure for the ordinary outcome of the FIRST `--prune` on
+    # any index — which records no provenance yet, so two guards have something to say about
+    # a deletion that does not exist. A CI job reading the exit code fails on a healthy repo.
+    if not plan.candidates:
+        return
     if plan.is_refused:
         raise typer.Exit(1)
-    if not plan.candidates or not confirmed:
+    if not confirmed:
         return
 
     repo_root = Path(config.repo_path)
@@ -577,10 +731,14 @@ def _print_prune_plan(plan: PrunePlan, *, will_act: bool) -> None:
             f"({plan.fraction_of_index:.1%} of the index)."
         )
 
-    for refusal in plan.refusals:
-        # Escaped as a whole: these sentences carry repo-controlled paths and setting
-        # values interpolated by plan_prune.
-        err_console.print(f"[red]Prune refused:[/red] {_safe_text(refusal)}")
+    # Only when something was proposed. Every refusal is a sentence about deleting files, so
+    # printing them under "Nothing to prune" describes a deletion that was never on the
+    # table — and "Prune refused" on a healthy index is how a user learns to stop reading it.
+    if plan.candidates:
+        for refusal in plan.refusals:
+            # Escaped as a whole: these sentences carry repo-controlled paths and setting
+            # values interpolated by plan_prune.
+            err_console.print(f"[red]Prune refused:[/red] {_safe_text(refusal)}")
 
     if plan.candidates and not plan.refusals and not will_act:
         console.print(
@@ -2056,7 +2214,11 @@ def serve(
 
     setup_json_logging()
 
-    api_app = create_app()
+    # repo_path is the scope, not a label. It used to reach only the banner
+    # below, so `serve /one/repo` left every route willing to read any absolute
+    # path the caller named; passing it here makes it the containment allow-list
+    # root (see api/app.py's "Containment" section).
+    api_app = create_app(served_root=repo_path)
 
     _warn_if_exposed_without_auth(host)
 
@@ -2286,12 +2448,34 @@ def eval(
     golden: Annotated[
         str, typer.Option("--golden", "-g", help="Path to golden JSONL file.")
     ] = ".trelix/golden.jsonl",
+    plan_cache_file: Annotated[
+        str | None,
+        typer.Option(
+            "--plan-cache-file",
+            help=(
+                "JSONL file of frozen query plans. Written on the first run, replayed "
+                "byte-for-byte afterwards. Without it the LLM planner re-plans every "
+                "query and nDCG@10 moves by sd 0.022-0.029 between identical runs."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Evaluate retrieval quality against a golden query set (nDCG@10, Recall@10, MRR)."""
     from trelix.core.config import IndexConfig
     from trelix.eval.harness import EvalHarness
 
     config = IndexConfig(repo_path=repo)
+    if plan_cache_file is not None:
+        # Rebuild rather than mutate, so the flag cannot half-apply if validation
+        # rejects it. Equivalent to TRELIX_RETRIEVAL_PLAN_CACHE_FILE; the flag exists
+        # because a measurement people are asked to repeat should be one argument away.
+        config = config.model_copy(
+            update={
+                "retrieval": config.retrieval.model_copy(
+                    update={"plan_cache_file": Path(plan_cache_file)}
+                )
+            }
+        )
     harness = EvalHarness(config)
     try:
         metrics = harness.run(golden)
@@ -2402,22 +2586,32 @@ def taint(
         scan_result = analyzer.scan(rules_path=rules_path)
     flows = scan_result.flows
 
-    if not flows:
-        # Two defects lived in this one message. It printed prose to STDOUT even
-        # under --json, so `trelix taint --json | jq` failed on the empty path —
-        # the most common path in CI, and the one a no-semgrep install always
-        # takes. And "trelix[taint]" was unescaped, so Rich read "[taint]" as an
-        # opening tag and swallowed it, rendering the fix instruction as
-        # "pip install 'trelix'" — telling the reader to install the package they
-        # already have. That is the same swallow _print_error() documents.
-        from trelix.analysis.taint import ScanOutcome
+    from trelix.analysis.taint import ScanOutcome
 
-        # A third defect lived in this one message: it reported a CLEAN SCAN as a
-        # possible missing install, because run() collapses four different outcomes into
-        # an empty list. An earlier attempt at fixing it branched on `shutil.which`
-        # alone, which made one case worse — a scan that FAILED (for example --tier
-        # intrafile without the Semgrep Pro Engine, which exits 2 with empty stdout)
-        # then printed a confident "semgrep ran and reported nothing" at exit 0.
+    # Whether the scan can be BELIEVED is decided here, above the flow count — not
+    # inside `if not flows:`, where every outcome branch used to live. `scan()` carries
+    # flows through on the failed path on purpose, so a semgrep run that errored fatally
+    # and still emitted one finding matched no branch at all: no diagnostic, no non-zero
+    # exit, and `--json` stdout that parses exactly like a healthy scan. A CI step gating
+    # on this command read "no vulnerabilities" when what happened was "no analysis".
+    # `ScanResult.is_trustworthy` was written for this decision and had no caller.
+    #
+    # Ordering is the whole fix: an untrustworthy result also never reaches the DB write
+    # below, because partial output from a broken scan is not an index of the repository.
+    if not scan_result.is_trustworthy:
+        # Three earlier defects in these messages, recorded because each is a mistake a
+        # later edit can make again. (1) The no-flows message printed prose to STDOUT even
+        # under --json, so `trelix taint --json | jq` failed on the most common path in CI
+        # — the one a no-semgrep install always takes; that message now sits in the
+        # `if not flows:` block below and stays `[]` under --json. (2) "trelix[taint]" was
+        # unescaped, so Rich read "[taint]" as an opening tag and swallowed it, rendering
+        # the instruction as "pip install 'trelix'" — telling the reader to install the
+        # package they already have. That is the same swallow _print_error() documents.
+        # (3) A CLEAN SCAN was reported as a possible missing install, because run()
+        # collapses four outcomes into an empty list; an earlier attempt at fixing that
+        # branched on `shutil.which` alone, which made one case worse — a scan that FAILED
+        # (--tier intrafile without the Semgrep Pro Engine exits 2 with empty stdout) then
+        # printed a confident "semgrep ran and reported nothing" at exit 0.
         if json_output:
             # The payload stays `[]` so `| jq` keeps working, but the EXIT CODE must
             # still distinguish a clean scan from one that never ran. Printing [] and
@@ -2426,13 +2620,10 @@ def taint(
             # false all-clear does the most damage. Diagnostics go to stderr so stdout
             # remains byte-compatible.
             _print_json([])
-            if scan_result.outcome is not ScanOutcome.OK:
-                err_console.print(
-                    f"[red]Taint analysis did not complete ({scan_result.outcome}):[/red] "
-                    f"{_safe_text(scan_result.detail or 'no detail')}"
-                )
-                if scan_result.outcome is not ScanOutcome.SEMGREP_MISSING:
-                    raise typer.Exit(1)
+            err_console.print(
+                f"[red]Taint analysis did not complete ({scan_result.outcome}):[/red] "
+                f"{_safe_text(scan_result.detail or 'no detail')}"
+            )
         elif scan_result.outcome is ScanOutcome.SEMGREP_MISSING:
             console.print(
                 "[yellow]semgrep is not installed, so no taint analysis ran: "
@@ -2448,13 +2639,30 @@ def taint(
                     f"[dim]--tier {_safe_text(tier)} requires the Semgrep Pro Engine, which "
                     f"pip install {_safe_text('trelix[taint]')} does not include.[/dim]"
                 )
-            raise typer.Exit(1)
         elif scan_result.outcome is ScanOutcome.SCANNED_NOTHING:
             _print_error(
                 "Taint analysis examined 0 files — this is NOT a clean result",
                 scan_result.detail or "check the target path and the rules' languages",
             )
+        else:
+            # Reached only if a new ScanOutcome is added without a branch here. Naming
+            # the outcome beats the old fallthrough, which was the green "reported
+            # nothing" message.
+            _print_error(
+                f"Taint analysis did not complete ({scan_result.outcome})",
+                scan_result.detail or "no detail",
+            )
+        # The one carve-out, and it is not a scan failure: an optional dependency that
+        # was never installed must not turn every CI run into a red one.
+        if scan_result.outcome is not ScanOutcome.SEMGREP_MISSING:
             raise typer.Exit(1)
+        return
+
+    # Reached only for a trustworthy scan, so this is now the one place that may say the
+    # word "clean". Under --json the payload stays `[]` rather than prose: see note (1).
+    if not flows:
+        if json_output:
+            _print_json([])
         else:
             console.print(
                 f"[green]No taint flows found.[/green] semgrep examined "

@@ -320,13 +320,23 @@ The index is written to `/repo/.trelix/` inside the container (which maps to
 ### Start the REST server
 
 ```bash
-docker run --rm -p 8765:8765 \
+docker run --rm -p 127.0.0.1:8765:8765 \
   -v "$(pwd):/repo" \
   ghcr.io/sairam0424/trelix:latest \
   serve /repo --host 0.0.0.0 --port 8765
 ```
 
 Then open `http://localhost:8765/docs` for the interactive API reference.
+
+`--host 0.0.0.0` is required *inside* the container for a published port to
+reach the process; it is not the exposure decision. The `-p` mapping is, and it
+is bound to loopback deliberately. Dropping the `127.0.0.1:` prefix publishes
+the API on every host interface, and the API is **open by design when no token
+is set** — so the unprefixed mapping serves unauthenticated code search over the
+repository you just bind-mounted to anything that can reach the host. Widen the
+mapping only together with `-e TRELIX_API_AUTH_TOKEN=<secret>`, which makes every
+route require an `X-Trelix-Api-Key` header. The `docker-compose.yml` at the repo
+root carries the same loopback binding for the same reason.
 
 ### Use with OpenAI embeddings
 

@@ -125,20 +125,26 @@ class TestMalformedWeightDoesNotLeakKeys:
     def test_dotenv_secret_is_not_rendered(
         self, isolated_env, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """.env is the other input route: every key in the file lands in the input dict.
+        """A dotenv file is the other input route: every key in it lands in the input dict.
 
         pydantic-settings' DotEnvSettingsSource copies unmatched dotenv keys into the
         settings input verbatim, so OPENAI_API_KEY reached RetrievalConfig even though
         RetrievalConfig has no such field.
+
+        The file is named explicitly via ``_env_file``. Since SEC-03a the models no
+        longer read the cwd's ``.env`` at all, so writing one here would leave this
+        test passing while exercising nothing — the redaction path under test is the
+        dotenv source, not the location trelix picks it up from.
         """
         from trelix.core.config import RetrievalConfig
 
         monkeypatch.delenv("COHERE_API_KEY")
-        (isolated_env / ".env").write_text(f"OPENAI_API_KEY={FAKE_KEY}\n", encoding="utf-8")
+        dotenv = isolated_env / ".env"
+        dotenv.write_text(f"OPENAI_API_KEY={FAKE_KEY}\n", encoding="utf-8")
         monkeypatch.setenv("TRELIX_RETRIEVAL_LEG_WEIGHT_BM25", "abc")
 
         with pytest.raises(ValueError) as exc_info:
-            RetrievalConfig()
+            RetrievalConfig(_env_file=str(dotenv))  # type: ignore[call-arg]
 
         _assert_no_key(exc_info.value)
 
