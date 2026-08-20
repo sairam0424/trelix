@@ -40,6 +40,7 @@ import pytest
 
 from trelix.audit.events import ACTION_AUTH, OUTCOME_SUCCESS, AuditEvent
 from trelix.audit.store import (
+    _CONTENT_COLUMNS,
     _META_COUNT,
     _META_HEAD,
     REASON_ANCHOR_CORRUPT,
@@ -47,8 +48,10 @@ from trelix.audit.store import (
     REASON_COUNT_MISMATCH,
     REASON_HEAD_MISMATCH,
     REASON_ID_GAP,
+    REASON_ROW_MISLINKED,
     REASON_ROW_MUTATED,
     AuditStore,
+    _canonical_hash,
 )
 
 
@@ -150,6 +153,78 @@ def test_control_deleted_middle_row_is_still_detected(tmp_path: Path) -> None:
     _raw_exec(db, "DELETE FROM audit_log WHERE id = 2")
 
     assert _verify(db) == (2, REASON_ID_GAP)
+
+
+def test_control_two_swapped_rows_are_detected_as_a_mislinked_row(tmp_path: Path) -> None:
+    """CONTROL — reordering breaks the ``prev_hash`` linkage, not any row's own hash.
+
+    Pinned because the module docstring lists reordering as detected, and this is
+    the only shape that reaches the ``row_mislinked`` branch: each row's stored
+    hashes still match its own content, so only the link to the running head is
+    wrong.
+    """
+    db = tmp_path / "audit.db"
+    _seed(db, 4)
+
+    # Swap the whole payload of rows 2 and 3, hashes included, so both rows remain
+    # internally consistent and only their order is wrong.
+    _raw_exec(
+        db,
+        "CREATE TEMP TABLE swap AS SELECT * FROM audit_log WHERE id IN (2, 3)",
+        "UPDATE audit_log SET (ts, principal, action, resource, outcome, status_code, "
+        "client_ip, request_id, trace_id, duration_ms, detail, prev_hash, entry_hash) = "
+        "(SELECT ts, principal, action, resource, outcome, status_code, client_ip, "
+        "request_id, trace_id, duration_ms, detail, prev_hash, entry_hash FROM swap "
+        "WHERE id = 3) WHERE id = 2",
+        "UPDATE audit_log SET (ts, principal, action, resource, outcome, status_code, "
+        "client_ip, request_id, trace_id, duration_ms, detail, prev_hash, entry_hash) = "
+        "(SELECT ts, principal, action, resource, outcome, status_code, client_ip, "
+        "request_id, trace_id, duration_ms, detail, prev_hash, entry_hash FROM swap "
+        "WHERE id = 2) WHERE id = 3",
+    )
+
+    assert _verify(db) == (2, REASON_ROW_MISLINKED)
+
+
+def test_control_a_row_appended_without_advancing_the_anchor_is_detected(
+    tmp_path: Path,
+) -> None:
+    """CONTROL — the count anchor catches growth as well as truncation.
+
+    Pinned because the module docstring lists "a row appended without the anchor
+    being advanced" as detected, and every other count-anchor test moves the row
+    count *down*. The planted row is internally valid — its ``prev_hash`` is the
+    genuine head and its ``entry_hash`` is correctly computed — so the chain walk
+    passes it and only the anchor knows the log grew. Advancing the anchor as well
+    makes this shape invisible; that is pinned as a limitation in
+    tests/unit/test_audit_undetectable.py.
+    """
+    db = tmp_path / "audit.db"
+    _seed(db, 4)
+
+    conn = sqlite3.connect(str(db), timeout=5)
+    try:
+        head = conn.execute("SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()[
+            0
+        ]
+        content = {col: _event(9).__getattribute__(col) for col in _CONTENT_COLUMNS}
+        conn.execute(
+            "INSERT INTO audit_log (ts, principal, action, resource, outcome, status_code, "
+            "client_ip, request_id, trace_id, duration_ms, detail, prev_hash, entry_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                *[content[col] for col in _CONTENT_COLUMNS],
+                head,
+                _canonical_hash(head, content),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    tampered_id, reason = _verify(db)
+    assert reason == REASON_COUNT_MISMATCH
+    assert tampered_id == 5
 
 
 # --- THE BUG: an absent anchor is a fault, not an absence of information ----

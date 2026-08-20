@@ -1615,9 +1615,10 @@ trelix audit list --db /var/log/trelix/audit.db
 #### Notes
 
 - Prints `No audit entries.` and exits 0 when the log is empty.
-- Opening a path that does not exist **creates** an empty `audit.db` (parent
-  directories included), so a typo in `--db` yields an empty table rather than
-  an error.
+- A `--db` path that does not exist **exits 2 and creates nothing** — the
+  existence check runs before the store is constructed, precisely because
+  constructing it would create the file and make a typo look like an empty log.
+  This applies to `list`, `verify` and `export` alike.
 - Long values are truncated to fit the terminal, and the two hash columns are
   not shown at all. Use [`trelix audit export`](#trelix-audit-export) when you
   need full values.
@@ -1640,8 +1641,21 @@ trelix audit verify [--db PATH]
 Walks the whole hash chain and reports whether the audit log is intact. Detects
 a mutated row (its recomputed `entry_hash` no longer matches), a
 deleted/reordered row (the next row's `prev_hash` no longer links, or the `id`
-sequence has a gap), and a deleted tail (the live row count / head hash no
-longer match the in-DB anchor).
+sequence has a gap), a deleted tail (the live row count / head hash no longer
+match the in-DB anchor), and an in-DB anchor that is **missing or malformed** —
+`append` writes both anchor rows in the same transaction as the entry, so a
+non-empty log without them is a state normal operation cannot produce.
+
+The rows and the anchor are read inside one SQLite read transaction, so running
+this against a live `audit.db` while a `trelix serve` process is appending does
+not produce a false tamper report. It never writes to the database it reads.
+
+**It does not detect everything, and the gaps are not obscure.** An in-DB anchor
+can only ever catch *incomplete* tampering; five shapes — including a total wipe
+and a truncation with both anchor values realigned — are undetectable, three of
+them without computing a single hash. Read
+[AUDIT.md](AUDIT.md#exactly-what-is-and-is-not-detected) before wiring this into a
+compliance control.
 
 #### Options
 
@@ -1665,19 +1679,33 @@ trelix audit verify --db /var/log/trelix/audit.db || echo "AUDIT TAMPERED"
 # intact (exit 0)
 Audit chain intact.
 
-# tampered (exit 1, on stderr)
-Audit chain TAMPERED — first divergent entry id: 3
+# a row is present and wrong (exit 1, on stderr)
+Audit chain TAMPERED (row_mutated) — first divergent entry id: 3
+
+# the anchor itself is gone (exit 1, on stderr)
+Audit chain TAMPERED (anchor_missing) — no surviving entry diverged; first unprovable entry id: 5
 ```
 
 #### Notes
 
-- **Exit code `0`** = chain intact, **`1`** = tamper detected. The failure
-  message names the id of the *first* divergent entry, which is where to start
-  an investigation — entries before it verified cleanly.
-- An empty log verifies as intact (exit 0).
+- **Exit code `0`** = chain intact, **`1`** = tamper detected, **`2`** = could not
+  check (see [`audit list`](#trelix-audit-list) for the shared path guard).
+- The parenthesized **reason code** is the stable token to match on in an alert:
+  `row_mutated`, `row_mislinked`, `id_gap`, `count_mismatch`, `head_mismatch`,
+  `anchor_missing`, `anchor_corrupt`.
+- The two sentences are two different facts. For a row fault the named id is a row
+  that is present and wrong, and entries before it verified cleanly — that is where
+  to start. For an anchor or count fault **every surviving row verified**; the named
+  id is the first entry whose *existence* can no longer be proven, so there is no
+  row there to inspect.
+- A malformed anchor value is reported as `anchor_corrupt`, not raised: the command
+  cannot be made to exit on a traceback by editing the data it checks.
+- An empty log verifies as intact (exit 0) — a brand-new `audit.db` has no entries
+  and no anchor rows, which is also why a total wipe cannot be distinguished from
+  one.
 - This is tamper **evidence**, not tamper **proofing** — see
-  [AUDIT.md](AUDIT.md#integrity-model--tamper-evident-not-tamper-proof) for
-  exactly what it does and does not protect against.
+  [AUDIT.md](AUDIT.md#exactly-what-is-and-is-not-detected) for the full
+  detected/undetected table.
 
 ---
 

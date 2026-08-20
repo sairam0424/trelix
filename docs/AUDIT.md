@@ -52,13 +52,15 @@ gated by auth but is still audited.
 ## Integrity model — tamper-EVIDENT, not tamper-PROOF
 
 > **The chain detects corruption. It does not prevent it.** The hash chain *and*
-> the anchor it is checked against both live inside the same `audit.db`. Anyone
-> with write access to that file can rewrite a row, recompute every subsequent
-> `entry_hash`, and update the anchor in the same transaction — after which
-> `trelix audit verify` reports the chain as intact. What this protects against
-> is *accidental or naive* damage: a stray `UPDATE`, a truncated file, a deleted
-> row, a dropped tail. It is not a defence against a determined attacker who
-> already has write access to the host.
+> the anchor it is checked against both live inside the same `audit.db`. An in-DB
+> anchor can therefore only ever detect *incomplete* tampering: anyone with write
+> access who updates the anchor **consistently** passes, and for the case that
+> matters most — erasing recent activity — that costs no hash computation at all,
+> because the value the anchor then needs is already sitting in a surviving row.
+> What this protects against is damage that leaves the anchor behind: a stray
+> `UPDATE`, a truncated file, a deleted row, a dropped tail, a deleted anchor. It
+> is **not** a defence against a writer who knows the scheme. See
+> [exactly what is and is not detected](#exactly-what-is-and-is-not-detected).
 
 Two gates make that detection work:
 
@@ -67,18 +69,64 @@ Two gates make that detection work:
    `entry_hash = sha256(prev_hash || canonical_json(content))`, where `content`
    is the eleven logical columns (everything except `id`, `prev_hash` and
    `entry_hash`) serialized with sorted keys and compact separators. Mutating a
-   row breaks its own recomputed hash; deleting or reordering a middle row
-   breaks the next row's `prev_hash` linkage and leaves an `id` gap.
+   row breaks its own recomputed hash; deleting a middle row leaves an `id` gap;
+   swapping or reordering rows breaks the following row's `prev_hash` linkage.
 2. **In-DB count/head anchor.** A chain alone cannot detect a deleted *tail* —
    the survivors still form a valid chain. So an `audit_meta` table holds
-   `count` and `head_hash`, updated atomically with every append, and
-   `verify` compares the live row count and head against it. This is
-   bookkeeping, not an external root of trust: it lives in the same file.
+   `count` and `head_hash`, updated atomically with every append, and `verify`
+   requires **both values to be present and well-formed** before comparing the
+   live row count and head against them. Presence is part of the check, not a
+   precondition for it: `append` writes the entry and both anchor rows in one
+   transaction, so a non-empty log with a missing anchor row is a state normal
+   operation cannot produce, and treating it as "no information available" made
+   deleting the anchor a complete bypass of this gate. A malformed value —
+   non-numeric, negative, absurdly long, or a `head_hash` that is not 64
+   lowercase hex — is likewise reported rather than trusted, and never raises out
+   of the verifier. This is bookkeeping, not an external root of trust: it lives
+   in the same file.
+
+### Exactly what is and is not detected
+
+Every row here is pinned by a test, including the "no" rows — see
+`tests/unit/test_audit_anchor_presence.py`, `tests/unit/test_audit_store.py` and
+`tests/unit/test_audit_undetectable.py`. The hashing column is the attacker's
+cost, and it is listed to make one point: cheapness is *not* what separates the
+two halves of this table.
+
+| Damage | Hashing needed | Detected |
+|---|---|---|
+| A row's content edited | none | **yes** |
+| A middle row deleted, or two rows swapped | none | **yes** |
+| The tail truncated, anchor untouched | none | **yes** |
+| Either `audit_meta` row deleted, or both | none | **yes** |
+| An anchor value malformed, out of range, or the wrong storage type | none | **yes** |
+| A valid row appended without the anchor advanced | one | **yes** |
+| Both tables emptied | none | **no** |
+| The tail truncated with both anchor values realigned | none | **no** |
+| A row appended with `prev_hash` set to the real head, anchor advanced | one | **no** |
+| The whole log rebuilt with a recomputed chain | one per row | **no** |
+| The file deleted, or replaced by another valid chain | none | **no** |
+
+Reading the "no" rows plainly: **in-DB hashing cannot detect a writer who knows
+the scheme.** Three of those five need no hashing whatsoever. An emptied
+`audit.db` is indistinguishable from a legitimately new one — zero entries and no
+anchor is exactly what `AuditStore` creates on first open, which is also why that
+state has to verify clean. And nothing inside the file records *which* chain it is
+supposed to be, so a substituted file verifies perfectly.
+
+What closes those rows is an anchor the attacker cannot write: **export the head
+hash and count off-box, somewhere the attacker does not control, and compare it
+later.** A CI artifact, a syslog/SIEM record, an object-lock (WORM) bucket, a
+different host, a transparency log. Then a wipe, a realigned truncation and a
+substituted file all show up as a divergence from the copy you hold. None of that
+ships in trelix and this document is not proposing to build it here; it is the
+boundary you are working inside.
 
 **Hardening path** (none of this ships today — it is what you would add):
 
 - Sign the head hash with a key held **outside** the DB (HMAC or asymmetric) and
-  verify the signature independently, so recomputing the chain is not enough.
+  verify the signature independently, so a self-consistent rewrite of the file is
+  not enough.
 - Anchor the head hash to append-only/WORM storage — an object-lock bucket, a
   write-once log service, or a transparency log.
 - Ship entries off-box continuously (see
@@ -182,19 +230,35 @@ trelix audit verify --db /var/log/trelix/audit.db
 ```
 
 - Exit **0** — `Audit chain intact.`
-- Exit **1** — `Audit chain TAMPERED — first divergent entry id: <id>` on stderr.
-  Entries *before* that id verified cleanly, so it is the exact place to start
-  an investigation.
+- Exit **1** — a `TAMPERED` line on stderr, carrying a machine-matchable reason
+  code and an id. Two different sentences, because they state two different facts:
+  - `... (row_mutated) — first divergent entry id: 2` — a row that is **present
+    and wrong**. Entries before it verified cleanly, so it is the exact place to
+    start an investigation.
+  - `... (anchor_missing) — no surviving entry diverged; first unprovable entry
+    id: 5` — every surviving row verified. What was destroyed is the ability to
+    prove whether an entry 5 ever existed, so there is no row at that id to go
+    and look at.
 
 What each failure mode looks like:
 
-| Damage | How it is caught | Reported id |
-|---|---|---|
-| A row's content was edited | Recomputed `entry_hash` ≠ stored | that row's id |
-| A middle row was deleted or reordered | `prev_hash` no longer links / `id` gap | the first id out of sequence |
-| The tail was truncated | Live count/head ≠ `audit_meta` anchor | the first missing id |
+| Damage | Reason code | How it is caught | Reported id |
+|---|---|---|---|
+| A row's content was edited | `row_mutated` | Recomputed `entry_hash` ≠ stored | that row's id |
+| Two rows swapped or reordered | `row_mislinked` | `prev_hash` no longer links | that row's id |
+| A middle row was deleted | `id_gap` | `id` sequence has a hole | the first id out of sequence |
+| The tail was truncated, or a row planted | `count_mismatch` | Live count ≠ anchor `count` | the first unprovable id |
+| The head no longer matches | `head_mismatch` | Live head ≠ anchor `head_hash` | the last surviving id |
+| An `audit_meta` row is gone | `anchor_missing` | Entries present, an anchor row absent | `n + 1` |
+| An anchor value is not what `append` writes | `anchor_corrupt` | Fails a shape check before being parsed | `n + 1` |
 
-An empty log verifies as intact (exit 0).
+The last two report `n + 1` — one past the last surviving entry — deliberately.
+No surviving row is divergent in those shapes, so naming a present row would be a
+false statement about a row that is fine.
+
+An empty log verifies as intact (exit 0), because a brand-new `audit.db` has no
+entries and no anchor rows. That is the one legitimate state with no anchor, and
+it is also why a total wipe is undetectable.
 
 **One honest caveat about exit 0:** if the DB cannot be *opened* at all (path is
 a directory, permissions denied), `AuditStore` logs
@@ -202,6 +266,14 @@ a directory, permissions denied), `AuditStore` logs
 `verify` then prints `Audit chain intact.` and exits 0 — it verified nothing.
 When you wire `verify` into CI or a cron job, alert on that WARNING too; the
 exit code alone is not sufficient proof that a chain was read.
+
+**Verifying while a writer is running is safe.** `verify` reads the rows and the
+anchor inside one SQLite read transaction, so both come from the same committed
+state. Before that they were two separate statements, and an append landing
+between them made the anchor describe one more entry than the rows did —
+reported as a truncated tail. On one writer doing 2,870 appends with 30 verify
+runs going past, 24 of the 30 said TAMPERED about an undamaged database. Running
+`trelix audit verify` against a live `audit.db` no longer does that.
 
 **Single writer per `audit.db`.** The head-hash read and the append are guarded
 by an in-process `threading.Lock` only. SQLite will keep the *file* consistent
@@ -375,7 +447,11 @@ The one place they join: when OTel tracing is enabled, an audit row carries the
 
 ## Known limitations, in one place
 
-1. **Tamper-evident, not tamper-proof** — chain and anchor share `audit.db`.
+1. **Tamper-evident, not tamper-proof** — chain and anchor share `audit.db`, so
+   only *incomplete* tampering is detectable. Five shapes are not detected at all,
+   three of them needing no hashing at all:
+   [the full table is above](#exactly-what-is-and-is-not-detected). Closing them
+   requires exporting the head hash off-box; nothing in trelix does that.
 2. **HTTP API surface only** — MCP tool calls, the internal agent loop, CLI
    commands and direct library use are not audited.
 3. **`TRELIX_AUDIT_RETENTION_DAYS` is not implemented** — nothing prunes; the DB

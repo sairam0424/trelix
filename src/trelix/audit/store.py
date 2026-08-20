@@ -7,13 +7,8 @@ the audit trail must survive re-indexing. It uses the same idempotent-DDL
 style as :mod:`trelix.store.db` (``CREATE TABLE IF NOT EXISTS`` +
 ``CREATE INDEX IF NOT EXISTS``) so opening an existing DB is a safe no-op.
 
-Integrity model — tamper-EVIDENT, not tamper-PROOF. This detects naive or
-accidental corruption (a stray ``UPDATE``, a truncated file, a dropped tail).
-It does NOT stop a determined attacker with write access to ``audit.db``, who
-could rewrite a row *and* recompute every subsequent ``entry_hash`` plus the
-``audit_meta`` anchor in the same transaction — ``verify_chain`` would then
-pass. For a stronger guarantee, sign the head hash with a key held OUTSIDE the
-DB (HMAC/asymmetric) and/or anchor it to an append-only/WORM sink. Two gates:
+Integrity model — tamper-EVIDENT, not tamper-PROOF. Two gates, and both of them
+live inside the same file as the thing they check:
   1. **Hash chain.** Each row stores ``prev_hash`` (the previous row's
      ``entry_hash``; genesis = 64 zeros) and ``entry_hash =
      sha256(prev_hash || canonical_json(content))``. Mutating a row's content
@@ -30,6 +25,48 @@ DB (HMAC/asymmetric) and/or anchor it to an append-only/WORM sink. Two gates:
      check, not a precondition for it: an absent anchor is a fault, because
      ``append`` writes the entry and both anchor rows in one transaction and so
      cannot produce a non-empty log without them.
+
+What is and is not detected. Every shape below is pinned by a test —
+tests/unit/test_audit_anchor_presence.py and tests/unit/test_audit_store.py for
+the detected ones, tests/unit/test_audit_undetectable.py for the rest. The
+attacker's hashing cost is stated for each because cheapness is *not* what
+separates the two lists — most of the detected shapes are free too:
+
+DETECTED:
+  - a row's content edited — none;
+  - a middle row deleted, or two rows swapped — none;
+  - the tail truncated with the anchor left untouched — none;
+  - either ``audit_meta`` row deleted, or both — none;
+  - an anchor value malformed, out of range, or the wrong storage type — none;
+  - a row appended with a valid ``prev_hash`` and ``entry_hash``, without the
+    anchor being advanced — one sha256.
+
+NOT DETECTED:
+  - both tables emptied — no hashing; an emptied file is indistinguishable from
+    a legitimately new one, which is the same state that must verify clean;
+  - the tail truncated with BOTH anchor values realigned — no hashing, because
+    the new head is copied out of a surviving row and the new count is
+    ``COUNT(*)``;
+  - a row appended with ``prev_hash`` set to the real head and the anchor
+    advanced — one sha256, and no rehashing of anything already in the table;
+  - the whole log rebuilt with a recomputed chain — one sha256 per forged row;
+  - the file deleted, or replaced by another valid chain — no hashing; nothing
+    inside the file says which chain it is supposed to be.
+
+**An in-DB anchor can only ever detect *incomplete* tampering.** A writer who
+updates the anchor consistently passes, and for the truncation case that costs no
+hashing at all, because the value the anchor then needs is already sitting in a
+surviving row. The claim this paragraph replaced — that an attack must "recompute
+every subsequent ``entry_hash``" — was true only of a content rewrite and
+materially overstated the cost of erasing recent activity.
+
+What would close the undetected shapes is an anchor the attacker cannot write:
+export ``(count, head_hash)`` off-box — a CI artifact, syslog/SIEM, an object-lock
+(WORM) bucket, another host, a transparency log — and compare it on every run,
+and/or sign the head with a key held outside the DB. **None of that ships today**,
+and nothing inside a single SQLite file can substitute for it. This module makes
+destruction loud when it is sloppy; it does not make the trail trustworthy against
+a determined writer. See docs/AUDIT.md.
 
 Failure contract (mirrors retrieval/telemetry.py's swallow-and-log, but at
 WARNING): a write failure never raises by default — ``append`` logs a WARNING

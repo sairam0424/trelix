@@ -6,6 +6,60 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Security
+
+- **`trelix audit verify` treated a missing integrity anchor as an absence of
+  information rather than as a fault.** The audit chain is checked against a `count`
+  and `head_hash` pair in `audit_meta`, and both comparisons were skipped when the
+  value was not there — so a log whose anchor had been removed reported *intact* and
+  exited 0, and removing the anchor required no hash computation. `append` writes the
+  entry and both anchor rows in one transaction, which makes a non-empty log with an
+  incomplete anchor a state normal operation cannot reach: `git log` on
+  `src/trelix/audit/store.py` is a single commit and both anchor keys are in that
+  first version, so this has no legitimate producer and no false-positive surface,
+  legacy databases included. Verification now requires **both** values to be present
+  and well-formed. A malformed value is reported as a finding rather than trusted or
+  raised — parsing lived in the read path, so one edited character used to end the
+  command in an unhandled traceback, denying an incident responder the tool they
+  reach for first. A brand-new, empty `audit.db` has no anchor rows and still
+  verifies clean at exit 0.
+- **The audit documentation overstated what an attack costs, and now states the
+  boundary.** `docs/AUDIT.md` and the `trelix.audit.store` docstring claimed tampering
+  required recomputing every subsequent `entry_hash`. That is true only of a content
+  rewrite. Both now carry a per-shape table of what is and is not detected, with the
+  attacker's hashing cost for each: five shapes are **not** detectable in-DB, three of
+  them without computing a single hash. An in-DB anchor can only ever detect
+  *incomplete* tampering, and closing the gap needs the head hash exported off-box,
+  somewhere the attacker does not control, and compared later. **Nothing in trelix
+  does that**, and this release does not add it. Every row of the table — including
+  every "not detected" row — is pinned by a test, so a claim cannot quietly stop
+  being true.
+
+### Fixed
+
+- **Verifying a live `audit.db` reported tamper on undamaged data.** `verify` read the
+  rows and then the anchor as two separate statements outside any transaction, and the
+  store's `threading.Lock` is per-instance, so it serialized nothing against the
+  serving process doing the appending. A legitimate append landing between the two
+  reads made the anchor describe one more entry than the rows did — reported as a
+  truncated tail. Measured on one writer doing 2,870 appends past 30 verify runs: **24
+  of 30 said TAMPERED** about a database an independent walk found perfectly intact.
+  Both reads now happen inside one DEFERRED read transaction, so they come from one
+  committed state: 0 of 30 after the change, with no append lost and no write to the
+  file being audited. This predated the anchor bug above and was the worse of the two —
+  an operational condition reported as an attack teaches operators to distrust exit 1.
+
+### Changed
+
+- **`trelix audit verify` now prints a reason code, and two different sentences.**
+  Every tamper verdict used to read "first divergent entry id: `<id>`". That is true of
+  a row that is present and wrong, and false of an anchor or count fault, where every
+  surviving row verifies and the reported id is the first entry whose *existence* can
+  no longer be proven. The second case now says so, and both carry a stable reason
+  token (`row_mutated`, `row_mislinked`, `id_gap`, `count_mismatch`, `head_mismatch`,
+  `anchor_missing`, `anchor_corrupt`) for alerting. `AuditStore.verify()` returns that
+  verdict; `verify_chain()` keeps its signature and return type unchanged.
+
 ### Added
 
 - **Python 3.14 is tested and advertised.** `requires-python` has always been an open
