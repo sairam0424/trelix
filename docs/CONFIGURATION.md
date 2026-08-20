@@ -216,21 +216,38 @@ Those three defaults are .NET build output (`packages/` is a NuGet restore, `bin
 are MSBuild). Two of them are also *source* directories elsewhere: every pnpm/npm/yarn/lerna
 monorepo keeps first-party code under `packages/`, and a Node CLI keeps real executables in
 `bin/`. Because directory exclusion is enforced during traversal, the walk never descends and
-the index simply contains none of it — while the run still reports `errors: 0`. Measured on one
-workspace: 584 source files under one repo's `packages/` on disk, **0 indexed**; another repo
-finished with 31 of 212 tracked files, 1 code chunk and 0 call edges.
+the index simply contains none of it — while the run still reports `errors: 0`.
+
+Measured across six repositories in one workspace, counted in **walk-units** — files trelix
+would actually index, after the language, size, filename and `.gitignore` filters:
+
+| repo | dir | first-party source hidden | indexed today | if that entry is removed |
+|---|---|---|---|---|
+| repo A | `packages` | 36 | 598 | 634 (+6%) |
+| repo B | `packages` | 168 | 31 | 199 |
+| repo C | `packages` | 137 | 200 | 337 |
+| repo D | `packages` | 104 | 510 | 614 |
+| repo E | `bin` | 189 (183 `.js`) | 2765 | 2954 |
+
+Repo B is the extreme case: 31 of 212 tracked files indexed, with exactly one file in a code
+language and 0 call edges. The right-hand column is what removing the entry costs — size it
+with `--dry-run` first.
 
 As of this release trelix **detects and reports** the case instead of hiding it. When a
 `packages/` sits beside a workspace manifest (`pnpm-workspace.yaml`, `lerna.json`, `nx.json`,
 `rush.json`, or a `package.json` with a `workspaces` key), or a `bin/` sits beside a
 `package.json` whose `bin` field points into it, the walk logs one WARNING naming the
 directory and the evidence file. **The walk itself is unchanged, so this release costs nothing
-extra to run.** A sibling `*.sln`/`*.csproj`/`Directory.Build.props`/`packages.config` keeps
-the directory excluded regardless — the .NET case wins any tie.
+extra to run.** A sibling `*.sln`/`*.slnf`/`*.csproj`/`*.vcxproj`/`Directory.Build.props`/
+`Directory.Build.targets`/`packages.config`/`packages.lock.json`/`NuGet.config` keeps the
+directory excluded regardless — the .NET case wins any tie, and these are matched
+case-insensitively (MSBuild and NuGet resolve them that way).
 
-To index it today, restate the list without that entry (remember: the variable replaces all 30
-defaults, a comma-separated value is rejected, and `scripts/self-index.sh` is a working
-reference), then check the size of the change **before** paying for it:
+Customising the list does not silence the warning; only removing the name does — which is also
+what stops the directory being hidden. So restate the list without that entry (remember: the
+variable replaces all 30 defaults, a comma-separated value is rejected, and
+`scripts/self-index.sh` is a working reference), then check the size of the change **before**
+paying for it:
 
 ```bash
 trelix index . --dry-run   # files walked + token estimate, no embedding calls

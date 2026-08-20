@@ -40,21 +40,46 @@ logger = logging.getLogger("trelix.indexing.walker")
 # keeps its own code under `packages/`, and a Node CLI keeps its real executables in
 # `bin/`. Because `extra_ignore_dirs` is enforced during traversal, the walk never descends
 # and the index simply contains none of it — while the run still reports `errors: 0`.
-# Measured across six repositories in one workspace: 584 source files under Graph-Forge's
-# `packages/` on disk -> 0 indexed (its `services/` 265, `apps/` 125, `proto/` 34 and
-# `docs/` 51 ARE indexed, so the exclusion is the only difference); CommandVault 142 -> 0,
-# whole-repo 31 of 212 tracked files indexed with 1 code chunk and 0 call edges;
-# ContextOS 131 -> 0; Tombstone 36 -> 0; MindForge 183 `.js` under `bin/` -> 0.
 #
-# `obj` is NOT here: it is genuinely .NET-only, and it added 0 files in all six repos.
+# Measured across six repositories in one workspace. Every figure here is a WALK-UNIT count —
+# files a bare `FileWalker.walk()` yields, i.e. what trelix would actually index after the
+# language, size, filename and `.gitignore` filters — because that is the unit the controls
+# beside it are in, and the only unit a Stage-2 plan can be sized from:
+#
+#   repo          dir       hidden   default walk -> Stage-2 walk
+#   Graph-Forge   packages      36     598 -> 634   (+6%)
+#   CommandVault  packages     168      31 -> 199
+#   ContextOS     packages     137     200 -> 337
+#   Tombstone     packages     104     510 -> 614
+#   MindForge     bin          189    2765 -> 2954  (183 of the 189 are `.js`)
+#
+# Graph-Forge was previously published here as "584 source files", an on-disk count in a
+# different unit from the controls printed beside it — and 16x the number a plan needs. Its
+# `packages/` holds 909 files on disk, but 830 of those are a vendored `.venv` or
+# `node_modules` that trelix excludes twice over (both are in `extra_ignore_dirs` AND
+# gitignored, via the nested `.gitignore` support added in v3.1.2); 558 of its 569 `.py` files
+# are one virtualenv. The controls ARE walk-units and do reproduce exactly: `services/` 265,
+# `apps/` 125, `proto/` 34 and `docs/` 51 are indexed, so the exclusion is the only
+# difference. CommandVault finishes at 31 of 212 tracked files with exactly ONE file in a code
+# language (typescript — the other 30 are 13 yaml, 10 markdown, 7 json) and 0 call edges.
+#
+# `obj` is NOT here: it is genuinely .NET-only. Dropping it from the list re-admits 0 files in
+# all six repos — but only because none of them HAS a reachable .NET `obj/`. The workspace's
+# only two `obj` directories are a gitignored Go toolchain cache and one inside
+# `node_modules`, so that 0 means "untested here", not "measured harmless".
+#
+# The sixth repository is trelix itself, and it is the honest limit of requiring proof: its own
+# `packages/` (four SDK packages, 41 files on disk) has no root workspace manifest, so the
+# probe finds no evidence, nothing is reported, and Stage-2 would not widen into it either.
 _CONDITIONAL_IGNORE_DIRS = frozenset({"packages", "bin"})
 
 # Files whose mere PRESENCE beside a `packages/` directory proves a JS workspace, read for
 # free out of the parent's already-materialised `iterdir()` listing.
 #
 # Both this and the `workspaces` key below are load-bearing, measured: CommandVault has no
-# `workspaces` key (markers are its only signal) while Graph-Forge and Tombstone have no
-# marker file (the key is theirs). A single-branch probe misses half the population.
+# `workspaces` key (its `pnpm-workspace.yaml` is the only signal) while Graph-Forge, ContextOS
+# and Tombstone — three of the four, not two — have no marker file at all and are carried
+# entirely by the key. A single-branch probe misses most of the measured population.
 # `turbo.json` is deliberately absent — it appears in non-workspace repos too.
 _WORKSPACE_MARKER_FILES = frozenset(
     {
@@ -69,10 +94,40 @@ _WORKSPACE_MARKER_FILES = frozenset(
 # .NET evidence. Present beside a conditional directory, it wins any tie and the directory
 # stays ignored — the cheap, safe direction, since re-including a NuGet `packages/` tree is
 # thousands of files of third-party code priced per token.
+#
+# Stored LOWERCASED and compared against `name.lower()`, exactly as the suffix tuple already
+# was. MSBuild and NuGet resolve these names case-insensitively, and .NET is developed on
+# Windows and macOS where the filesystem does too — so `Directory.build.props` and
+# `Packages.config` are the same files to the toolchain, and an exact-case comparison let a
+# real solution through the veto. Measured on a 25-package restore beside an npm-workspace
+# `package.json` (the ASP.NET-plus-SPA shape, where the veto is the only thing holding the
+# restore out): `Directory.Build.props` warn=0 junk=+0, but `Directory.build.props`,
+# `directory.packages.props` and `Packages.config` each warn=1 junk=+50.
+#
+# `NuGet.config` is here because it is the file that declares `repositoryPath` and therefore
+# MAKES a root `packages/` a restore directory — the single most direct proof of the shape
+# these entries exist for, and it was not a marker at any casing (warn=1 junk=+50).
+# `packages.lock.json` and `Directory.Build.targets` measured the same way, as did `.slnf`
+# (a solution filter) and `.vcxproj` (C++ MSBuild) against the suffix tuple.
 _DOTNET_MARKER_FILES = frozenset(
-    {"Directory.Build.props", "Directory.Packages.props", "packages.config"}
+    {
+        "directory.build.props",
+        "directory.build.targets",
+        "directory.packages.props",
+        "packages.config",
+        "packages.lock.json",
+        "nuget.config",
+    }
 )
-_DOTNET_MARKER_SUFFIXES = (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj")
+_DOTNET_MARKER_SUFFIXES = (
+    ".sln",
+    ".slnx",
+    ".slnf",
+    ".csproj",
+    ".fsproj",
+    ".vbproj",
+    ".vcxproj",
+)
 
 # A conditional directory is NEVER reclassified when one of these is an ancestor segment.
 # Package stores contain complete copies of other projects — including their workspace
@@ -81,52 +136,6 @@ _DOTNET_MARKER_SUFFIXES = (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj")
 # added to remove in v3.1.2. `.pnpm-store` in particular is NOT in `extra_ignore_dirs`, so
 # the walk really does reach inside it; this rule is the only thing stopping it.
 _STORE_PATH_SEGMENTS = frozenset({"node_modules", ".pnpm-store", ".yarn", ".npm", ".pnp", ".git"})
-
-# Frozen snapshots of trelix's own shipped `extra_ignore_dirs`, newest last.
-#
-# Used ONLY to decide whether the effective list is still trelix's default. A user who
-# hand-wrote an override made a choice and must not be lectured about it (this is why
-# `scripts/self-index.sh`, which drops `packages`, keeps `bin` and adds `.claude-flow`,
-# stays silent). Deliberately a copy rather than a reference to `WalkerConfig`: its job is
-# to remember what SHIPPED, which is exactly what a live reference cannot do.
-# `test_shipped_default_snapshot_is_current` fails if the default moves without an entry
-# being appended here.
-_HISTORICAL_DEFAULT_IGNORE_DIRS: tuple[frozenset[str], ...] = (
-    frozenset(
-        {
-            ".git",
-            ".hg",
-            ".svn",
-            "node_modules",
-            "__pycache__",
-            ".mypy_cache",
-            ".ruff_cache",
-            "venv",
-            ".venv",
-            "env",
-            "dist",
-            "build",
-            "target",
-            "out",
-            ".next",
-            ".nuxt",
-            "coverage",
-            ".coverage",
-            "vendor",
-            "Pods",
-            ".gradle",
-            ".idea",
-            ".vscode",
-            ".angular",
-            "bin",
-            "obj",
-            "packages",
-            ".vs",
-            ".rider",
-            ".trelix",
-        }
-    ),
-)
 
 # Map file extension → Language
 EXTENSION_MAP: dict[str, Language] = {
@@ -275,11 +284,6 @@ class FileWalker:
         # directory rather than once per verdict (`_is_ignored_dir` is also called by both
         # watchers' ancestor loops, once per event, for the same path).
         self._reported_conditional: set[str] = set()
-        # Warn only while the effective list is still trelix's own shipped default —
-        # see `_HISTORICAL_DEFAULT_IGNORE_DIRS`.
-        self._ignore_list_is_shipped_default = (
-            frozenset(config.walker.extra_ignore_dirs) in _HISTORICAL_DEFAULT_IGNORE_DIRS
-        )
 
     @property
     def incomplete_paths(self) -> list[str]:
@@ -470,7 +474,9 @@ class FileWalker:
             return {}
 
         names = sorted(entry.name for entry in entries)
-        if any(name in _DOTNET_MARKER_FILES for name in names) or any(
+        # Both branches case-fold. See `_DOTNET_MARKER_FILES` for the measurement that put
+        # the marker-file branch here rather than leaving it exact-case.
+        if any(name.lower() in _DOTNET_MARKER_FILES for name in names) or any(
             name.lower().endswith(_DOTNET_MARKER_SUFFIXES) for name in names
         ):
             # Applied to `bin` as well as `packages`, even though a .NET `bin/` could never
@@ -528,9 +534,25 @@ class FileWalker:
         return memo.get(dir_path.name.lower())
 
     def _report_conditional(self, dir_path: Path, evidence: str) -> None:
-        """Say once, at WARNING, that a directory holding source is not being indexed."""
-        if not self._ignore_list_is_shipped_default:
-            return
+        """Say once, at WARNING, that a directory holding source is not being indexed.
+
+        Reported for any effective `extra_ignore_dirs` that STILL LISTS the name — not only
+        for a list byte-identical to trelix's shipped default. The old gate meant that
+        following docs/CONFIGURATION.md's own instruction ("to add one entry you must restate
+        the whole list") silenced the fix: default + `".cache"` still excluded
+        `packages/core/index.ts`, now with zero signal. Worse, it ate its own tail — a repo
+        with both a workspace `packages/` and a declared `bin/` warned about both on the
+        defaults, and warned about NEITHER once the user removed `packages` as instructed,
+        hiding `bin/cli.js` in silence.
+
+        The "a hand-written override is a choice" rationale survives without a gate, because
+        it never needed one: dropping a name leaves it out of `_conditional_names`, so no probe
+        runs, and out of `exact`, so `_is_ignored_dir` never calls this. Removing an entry is
+        therefore still the way to make the report stop, and it is the only way — which is the
+        property that makes the report trustworthy. `scripts/self-index.sh` drops `packages`
+        and keeps `bin`, so it can only ever be told about `bin`, and only in a repo whose root
+        `package.json` declares one (trelix has no root `package.json`, so it stays silent).
+        """
         try:
             rel = str(dir_path.relative_to(self.repo_root))
         except ValueError:
@@ -539,18 +561,18 @@ class FileWalker:
             return
         self._reported_conditional.add(rel)
         logger.warning(
-            "%s is NOT being indexed: %r is in trelix's default extra_ignore_dirs (added "
-            "for .NET build output), but %s beside it declares this directory as "
-            "first-party source. To index it, set TRELIX_WALKER_EXTRA_IGNORE_DIRS to the "
-            "full default list minus %r — the variable REPLACES all %d entries rather than "
-            "extending them, and a comma-separated value is rejected, so pass JSON "
+            "%s is NOT being indexed: %r is in this run's extra_ignore_dirs (one of "
+            "trelix's .NET build-output defaults), but %s beside it declares this directory "
+            "as first-party source. To index it, set TRELIX_WALKER_EXTRA_IGNORE_DIRS to the "
+            "%d entries this run is using minus %r — the variable REPLACES the list rather "
+            "than extending it, and a comma-separated value is rejected, so pass JSON "
             "(scripts/self-index.sh is a working reference). Run `trelix index --dry-run` "
             "for the file and token count before spending.",
             rel,
             dir_path.name,
             evidence,
-            dir_path.name,
             len(self.config.walker.extra_ignore_dirs),
+            dir_path.name,
         )
 
     def _is_ignored_dir(self, dir_path: Path) -> bool:
@@ -567,10 +589,20 @@ class FileWalker:
             if self._index_conditional_dirs:
                 if evidence is not None:
                     return self._is_gitignored(dir_path, is_dir=True)
-                # Ambiguous: no workspace manifest, no `bin` declaration. Stays ignored,
-                # is reported, and is one environment variable away — see
+                # Ambiguous: no workspace manifest, no `bin` declaration. Keeps whatever
+                # verdict the UNCONDITIONAL tier already gave it — see
                 # `_classify_conditional_dirs` for why proof is required.
-                return True
+                #
+                # `if exact` rather than a bare `return True`, and that is the whole point:
+                # the conditional tier is case-INSENSITIVE while the unconditional tier is
+                # byte-exact, so `Bin/` and `Packages/` enter this block without ever having
+                # been excluded. A bare `return True` therefore NARROWED the walk — it
+                # dropped a capitalised `Bin/` full of first-party shell scripts (measured:
+                # 7 files -> 1, six `Bin/deploy*.sh` lost) with no warning at all, because
+                # the report below is guarded on `exact` too. This tier may only ever WIDEN
+                # what the unconditional tier excluded, never narrow it; a silent
+                # contraction is the exact defect class this whole change exists to remove.
+                return True if exact else self._is_gitignored(dir_path, is_dir=True)
             if evidence is not None and exact:
                 self._report_conditional(dir_path, evidence)
 
