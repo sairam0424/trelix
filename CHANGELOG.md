@@ -60,9 +60,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   it under the table as a sentence rather than a priced row, because there is nothing to price.
 - **The id-space remedy in `trelix stats` was backend-blind.** It said to remove the index file
   to renumber `chunks` from 1; on lance/qdrant the vectors do not live there, so following it
-  trades one failure direction for the other (`Vectors with no chunk row`) with the id-space row
-  still red. It now names the vector store's own location too, the way `PartialIndexError`
-  already did.
+  clears the id-space row but strands every vector the old ids carried. Reproduced on lancedb
+  0.33.0: `Vectors with no chunk row` goes 0 → 4 on a four-chunk fixture whose ids had climbed —
+  the entire former vector set on a real index — and nothing reclaims those rows. It now names
+  the vector store's own location too, the way `PartialIndexError` already did.
 - **Chunk rows whose id reached the vector store's sub-chunk offset are no longer treated as
   holes.** Every backend's `stored_chunk_ids()` excludes ids at or above 10,000,000 because
   that is where sub-chunk vectors live, so diffing a flat set of `chunks.id` against it

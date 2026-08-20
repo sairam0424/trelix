@@ -1721,8 +1721,11 @@ def _vector_store_locations(config: IndexConfig) -> list[str]:
 
     `Indexer._partial_index_error` names the same set for the same reason: on lance and
     qdrant the vectors do not live in the index file, so "remove the index file" renumbers
-    `chunks` from 1 and leaves every old vector behind — which turns one failure direction
-    into the other, `Vectors with no chunk row`, with the id-space row still red.
+    `chunks` from 1 and leaves every old vector behind. That does clear the id-space row —
+    a fresh file has no `sqlite_sequence`, so AUTOINCREMENT restarts at 1 — but it strands
+    every vector the old ids carried as a `Vectors with no chunk row` orphan that nothing
+    reclaims. Reproduced on lancedb 0.33.0: 0 -> 4 orphans on a four-chunk fixture whose
+    ids had climbed, which on a real index is the entire former vector set.
     """
     backend = str(getattr(config.store, "backend", "sqlite"))
     locations = [f"the index database ({config.db_path_absolute})"]

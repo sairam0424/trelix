@@ -258,9 +258,9 @@ class TestTheRenderer:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """ "Remove the index file" renumbers `chunks` from 1, which is the point — but on
-        lance/qdrant the vectors do not live in that file, so a user who follows it keeps
-        every old vector and lands in the other failure direction (`Vectors with no chunk
-        row`) with the id-space row still red. `_partial_index_error` already names both."""
+        lance/qdrant the vectors do not live in that file, so a user who follows it clears
+        the id-space row and strands every old vector as a `Vectors with no chunk row`
+        orphan that nothing reclaims. `_partial_index_error` already names both."""
         from trelix.cli.main import _VectorCoverage
 
         output = " ".join(
