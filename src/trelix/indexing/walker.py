@@ -560,6 +560,31 @@ class FileWalker:
         if rel in self._reported_conditional:
             return
         self._reported_conditional.add(rel)
+
+        # Whether the advice below would actually work. `.gitignore` is checked SECOND in
+        # `_is_ignored_dir`, so a directory can be excluded by BOTH tiers — and then dropping
+        # the `extra_ignore_dirs` entry changes nothing, because the gitignore tier still
+        # excludes it. Telling a user to edit a variable that cannot have the effect promised
+        # is the same defect this whole report exists to remove, one level up: the old code
+        # was silent about a hidden directory, and getting that wrong here would replace the
+        # silence with a confident lie. So name the real blocker instead.
+        also_gitignored = self._is_gitignored(dir_path, is_dir=True)
+        if also_gitignored:
+            logger.warning(
+                "%s is NOT being indexed: %r is in this run's extra_ignore_dirs (one of "
+                "trelix's .NET build-output defaults), but %s beside it declares this "
+                "directory as first-party source. It is ALSO excluded by a .gitignore rule, "
+                "so removing the extra_ignore_dirs entry alone will not index it — the "
+                ".gitignore has to stop matching it too, or set "
+                "TRELIX_WALKER_RESPECT_GITIGNORE=false (which drops every other .gitignore "
+                "exclusion in the repo as well). Run `trelix index --dry-run` afterwards for "
+                "the file and token count before spending.",
+                rel,
+                dir_path.name,
+                evidence,
+            )
+            return
+
         logger.warning(
             "%s is NOT being indexed: %r is in this run's extra_ignore_dirs (one of "
             "trelix's .NET build-output defaults), but %s beside it declares this directory "

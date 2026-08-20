@@ -98,6 +98,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ### Fixed
 
+- **The new report told users to edit a variable that could not have the effect it promised.**
+  A directory can be excluded by both tiers — `extra_ignore_dirs` is consulted first and
+  `.gitignore` second — so a `packages/` that is listed *and* gitignored is excluded twice.
+  The message advised removing the `extra_ignore_dirs` entry regardless, and doing that alone
+  changes nothing, because the gitignore tier still excludes it (asserted, not assumed: a test
+  now walks that case with the entry dropped and the file is still absent). It now names
+  `.gitignore` as the real blocker and offers `TRELIX_WALKER_RESPECT_GITIGNORE=false`, with the
+  caveat that this drops every other `.gitignore` exclusion in the repo too. This report exists
+  to replace silence about a hidden directory; replacing it with a confident lie would have been
+  worse than the silence.
 - **`trelix watch` ignored `extra_ignore_dirs` entirely, so it indexed files the batch walk
   cannot reach.** `FileWatcher._should_index` checked `.gitignore`, extensions, filenames,
   size and language — under a comment claiming "Gitignore / directory ignore" — but never the

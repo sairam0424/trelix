@@ -518,6 +518,54 @@ class TestReportOnlyModeIsFree:
 # ---------------------------------------------------------------------------
 
 
+class TestTheAdviceIsOnlyGivenWhenItWouldWork:
+    """A directory can be excluded by BOTH tiers, and then the advice cannot have its effect.
+
+    `_is_ignored_dir` consults `extra_ignore_dirs` first and `.gitignore` second, so a
+    `packages/` that is listed AND gitignored is excluded twice. Telling that user to edit
+    `TRELIX_WALKER_EXTRA_IGNORE_DIRS` promises an outcome the edit cannot deliver — the
+    gitignore tier still excludes it. This report exists to replace silence about a hidden
+    directory; replacing it with a confident lie would be worse than the silence.
+    """
+
+    def test_a_gitignored_directory_is_told_the_real_blocker(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Both tiers exclude it, so the message must name .gitignore, not just the variable."""
+        _pnpm_workspace_no_key(tmp_path)
+        _write(tmp_path / ".gitignore", "packages/\n")
+        with caplog.at_level(logging.WARNING, logger="trelix.indexing.walker"):
+            found = _walk_today(tmp_path)
+
+        assert "packages/core/index.ts" not in found
+        assert "packages" in _reported(caplog)
+        message = " ".join(r.getMessage() for r in caplog.records)
+        assert ".gitignore" in message
+        assert "TRELIX_WALKER_RESPECT_GITIGNORE" in message
+        # The variable-only advice must NOT be the instruction here: on its own it does nothing.
+        assert "minus" not in message
+
+    def test_dropping_the_entry_really_does_not_help_when_gitignored(self, tmp_path: Path) -> None:
+        """The premise of the message above, asserted rather than assumed."""
+        _pnpm_workspace_no_key(tmp_path)
+        _write(tmp_path / ".gitignore", "packages/\n")
+        without = [d for d in _SHIPPED_IGNORE_DIRS if d != "packages"]
+        assert "packages/core/index.ts" not in _walk_today(tmp_path, extra_ignore_dirs=without)
+
+    def test_a_directory_only_the_ignore_list_hides_still_gets_the_variable_advice(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Control. With no .gitignore rule the original advice is correct and must survive."""
+        _pnpm_workspace_no_key(tmp_path)
+        with caplog.at_level(logging.WARNING, logger="trelix.indexing.walker"):
+            _walk_today(tmp_path)
+
+        message = " ".join(r.getMessage() for r in caplog.records)
+        assert "TRELIX_WALKER_EXTRA_IGNORE_DIRS" in message
+        assert "minus" in message
+        assert "TRELIX_WALKER_RESPECT_GITIGNORE" not in message
+
+
 class TestTheReportFollowsTheEffectiveList:
     """Reported per NAME STILL LISTED, not per "the list is byte-identical to the default".
 

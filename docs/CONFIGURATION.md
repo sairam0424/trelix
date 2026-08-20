@@ -221,17 +221,27 @@ the index simply contains none of it — while the run still reports `errors: 0`
 Measured across six repositories in one workspace, counted in **walk-units** — files trelix
 would actually index, after the language, size, filename and `.gitignore` filters:
 
-| repo | dir | first-party source hidden | indexed today | if that entry is removed |
+| repo | dir | declared first-party source hidden | indexed today | if that entry is removed |
 |---|---|---|---|---|
 | repo A | `packages` | 36 | 598 | 634 (+6%) |
 | repo B | `packages` | 168 | 31 | 199 |
 | repo C | `packages` | 137 | 200 | 337 |
 | repo D | `packages` | 104 | 510 | 614 |
-| repo E | `bin` | 189 (183 `.js`) | 2765 | 2954 |
+| repo E | `bin` | 189 (183 `.js`) | 2765 | 2972 |
 
 Repo B is the extreme case: 31 of 212 tracked files indexed, with exactly one file in a code
 language and 0 call edges. The right-hand column is what removing the entry costs — size it
 with `--dry-run` first.
+
+Two operations that are easy to conflate, because on four of these repos they coincide. Removing
+the entry admits **every** directory of that name; flipping `index_conditional_dirs` admits only
+the ones the probe can **prove**. Repos A–D measure the same either way. Repo E is where they
+diverge: it holds a second `bin/` with no `package.json` beside it, so flipping the default admits
+2954 while removing the entry admits 2972 — 18 more files of hand-written, git-tracked `.cjs`
+tooling the probe cannot prove is first-party. **Removing the entry is always the wider of the
+two**, which is why the column above is the removal figure: it is the action this section tells
+you to take. `declared` in the third column carries the same caveat — repo E hides 207 first-party
+files, of which 189 are ones the probe can demonstrate.
 
 As of this release trelix **detects and reports** the case instead of hiding it. When a
 `packages/` sits beside a workspace manifest (`pnpm-workspace.yaml`, `lerna.json`, `nx.json`,
