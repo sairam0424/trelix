@@ -178,12 +178,20 @@ class QdrantVectorStore(BaseVectorStore):
         pre-existing bug, and this method would simply find no negative ids to exclude.
         """
         seen: set[int] = set()
+        # `object | None` because the cursor is opaque to us: we only ever hand back what
+        # scroll() returned. Both ignore codes are load-bearing across the mypy range
+        # pyproject allows (>=1.10.0). Older mypy rejects `object | None` against scroll's
+        # declared `int | str | UUID | PointId | None`, so `arg-type` is required; mypy 2.3
+        # accepts it and then flags the ignore itself as unnecessary, so `unused-ignore` is
+        # required too. Verified both directions: on 2.1.0, dropping `arg-type` fails; on
+        # CI's 2.3.1, keeping only `arg-type` fails. Listing both is the only form that
+        # passes the whole supported range.
         offset: object | None = None
         while True:
             records, offset = self._client.scroll(
                 collection_name=self._collection,
                 limit=_SCROLL_PAGE_SIZE,
-                offset=offset,  # type: ignore[arg-type]
+                offset=offset,  # type: ignore[arg-type, unused-ignore]
                 with_payload=False,
                 with_vectors=False,
             )
