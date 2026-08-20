@@ -638,6 +638,7 @@ class Indexer:
                 for cid, text, tokens in self.db.get_chunk_text_and_tokens(repair_ids)
             ]
             if repaired:
+                self._log_repair_intent(len(repaired))
                 try:
                     self._batch_embed_and_store(repaired, results)
                     results["chunks_reconciled"] = len(repaired)
@@ -811,14 +812,29 @@ class Indexer:
                 len(partition.id_space_exhausted),
                 BaseVectorStore._SUB_CHUNK_OFFSET,
             )
-        if missing:
-            logger.warning(
-                "%d chunk(s) have no vector — an earlier run was interrupted after their "
-                "chunk rows and file hashes were committed but before they were embedded. "
-                "Re-embedding them in this run.",
-                len(missing),
-            )
+        # Deliberately silent about the holes themselves: this function observes, it does
+        # not decide. It used to announce "Re-embedding them in this run." here, which the
+        # streaming caller then contradicted three lines later with "not repairing now" —
+        # two WARNINGs back to back, the first one false, and the first one is what a user
+        # reading top-to-bottom believes. Each caller now states its own outcome; see
+        # `_log_repair_intent` and the skip branch in `_index_streaming`.
         return missing, len(missing)
+
+    def _log_repair_intent(self, count: int) -> None:
+        """Announce a repair that is about to happen, from the caller that will do it.
+
+        Shared by both pipelines so the sentence cannot drift between them. Only ever
+        called where the chunks really are about to be re-embedded, and only from a point
+        where every hole predates this run: `index()` reconciles before Phase 1, and
+        `_index_streaming` reconciles after its walk but skips the repair outright if any
+        file failed in the same run.
+        """
+        logger.warning(
+            "%d chunk(s) have no vector — an earlier run was interrupted after their "
+            "chunk rows and file hashes were committed but before they were embedded. "
+            "Re-embedding them in this run.",
+            count,
+        )
 
     def index(self) -> dict[str, Any]:
         # Captured before the routing below so both pipelines record it, and before any
@@ -937,6 +953,8 @@ class Indexer:
                 for cid, text, tokens in self.db.get_chunk_text_and_tokens(repair_ids)
                 if cid not in already_queued
             ]
+            if repaired:
+                self._log_repair_intent(len(repaired))
             pending.extend(repaired)
             stats["chunks_reconciled"] = len(repaired)
 
@@ -944,13 +962,23 @@ class Indexer:
         stats["chunks_total"] = len(pending)
 
         # Recorded BEFORE the embed when — and ONLY when — the store holds nothing yet.
-        # Recording early is what re-arms the guard on a fresh index whose Phase 3 dies
-        # before it can write anything: `DimensionGuard.check` early-returns on a non-int
-        # stored value, so an index with no recorded dimension has no protection against
-        # mixed-width vectors at all. Over an EMPTY store the early stamp costs nothing to
-        # be wrong about — no stored vector carries the other width, and the worst case is
-        # one loud `DimensionMismatchError` whose `migrate-vectors --reset` remedy discards
-        # zero embeddings.
+        # Recording early is what re-arms the guard on an index whose store is still empty
+        # when Phase 3 dies: `DimensionGuard.check` early-returns on a non-int stored value,
+        # so an index with no recorded dimension has no protection against mixed-width
+        # vectors at all. Over an EMPTY store the early stamp costs nothing to be wrong
+        # about — no stored vector carries the other width, and the worst case is one loud
+        # `DimensionMismatchError` whose `migrate-vectors --reset` remedy discards zero
+        # embeddings.
+        #
+        # "Empty" is `_vector_store_is_empty()`, i.e. a sentinel-INCLUSIVE `count()`, and
+        # that narrows this claim in one reachable case: Phase 2.5 above writes file-summary
+        # vectors at `-file_id` BEFORE this phase, so on a fresh index with
+        # `file_summaries_enabled` (opt-in, default False) a single summary makes the store
+        # non-empty and the early stamp does not fire — that run's dying Phase 3 leaves the
+        # guard disarmed. Left as is deliberately: the count is sentinel-inclusive because a
+        # row somebody paid for is a row, and loosening it to "no chunk vectors" would stamp
+        # over a store that already holds paid-for embeddings of another width, which is the
+        # more expensive of the two mistakes.
         #
         # Over a NON-EMPTY store it is not free, and the `if pending` version of this was a
         # trap: a repair run against a pre-existing index would stamp the new provider's
@@ -1706,17 +1734,30 @@ class Indexer:
         `{"status": "error", "error": str(exc)}`. There is no second, more detailed
         channel.
 
-        Two claims in the text are load-bearing and both are properties of this file:
+        Three claims in the text are load-bearing and all three are properties of this
+        file:
 
-          * "does not heal on the next run" — `_insert_one` commits `upsert_file`
-            (which writes files.hash) and the chunk rows in Phase 2, BEFORE this
-            phase. On a re-run the incremental pre-filter in `index()` skips the file
-            on a matching hash; and with `incremental=False` the file is re-parsed but
-            `_insert_one` only chunks `changed_or_new_symbols`, i.e. symbols whose
-            signature+body hash differs. Neither route re-embeds a chunk whose symbol
-            is byte-identical, so the missing vectors stay missing.
+          * "PARTIAL right now" — `_insert_one` commits `upsert_file` (which writes
+            files.hash) and the chunk rows in Phase 2, BEFORE this phase, and nothing
+            here rolls either back. Re-parsing alone would not find the damage: the
+            incremental pre-filter in `index()` skips the file on a matching hash, and
+            with `incremental=False` the file is re-parsed but `_insert_one` only chunks
+            `changed_or_new_symbols`, i.e. symbols whose signature+body hash differs.
+          * "run `trelix index` again … re-embeds exactly the chunks left without a
+            vector" — `_chunks_missing_vectors` diffs the store against the `chunks`
+            table once per run and both pipelines fold the result into this same Phase 3.
+            That is why the text names `trelix index` and not `trelix watch`, which
+            deliberately never reconciles, and why it says to fix the failure FIRST: the
+            streaming pipeline repairs after its walk and skips the repair entirely while
+            any file is still failing, so a re-run that fails the same way repairs
+            nothing. It replaced advice to DELETE the index database, which this branch
+            made both unnecessary and expensive — that throws away every embedding this
+            run did land (61,652 of them on the index this was reproduced against) to
+            recover holes the reconcile refills for the price of the holes alone.
           * "counted as indexed" — `trelix stats` reads `SELECT COUNT(*) FROM chunks`;
-            the chunk rows exist. Nothing compares that count against the vector store.
+            the chunk rows exist. It now also reports coverage against the vector store,
+            which is what makes "keeps counting them as indexed" a pointer rather than a
+            dead end.
         """
         failed_batches = len(failures)
         written_batches = total_batches - failed_batches - skipped_batches
@@ -1752,13 +1793,15 @@ class Indexer:
             f"  first failure (batch {first_index + 1}): "
             f"{type(first_exc).__name__}: {first_exc}\n"
             f"{skip_note}"
-            f"This index is PARTIAL and does not heal on the next run — the chunk rows "
-            f"and the files' content hashes were committed before this phase, and a "
-            f"re-index only re-embeds a symbol whose own content hash changed "
-            f"(incremental or not). Those chunks stay unsearchable while `trelix stats` "
-            f"keeps counting them as indexed.\n"
-            f"To recover, delete {' and '.join(locations)} and index again, or edit the "
-            f"affected files so their symbols hash differently."
+            f"This index is PARTIAL right now — the chunk rows and the files' content "
+            f"hashes were committed before this phase, so the chunks this run failed to "
+            f"embed stay unsearchable while `trelix stats` keeps counting them as "
+            f"indexed.\n"
+            f"To recover, fix the failure above and run `trelix index` again: it "
+            f"reconciles the vector store against the `chunks` table once per run and "
+            f"re-embeds exactly the chunks left without a vector, so nothing that already "
+            f"landed is paid for twice. `trelix watch` will not do it — only `trelix "
+            f"index` reconciles. The partial state is in {' and '.join(locations)}."
         )
 
     def _batch_embed_and_store(self, pending: list[_PendingChunk], stats: dict[str, int]) -> None:

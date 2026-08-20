@@ -22,14 +22,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `trelix index` now reconciles the vector store against the `chunks` table once per run and
   folds any vector-less chunks into the existing Phase 3, re-embedding **only** the holes —
   not the whole file, which would cost strictly more. This is the crash-recovery counterpart
-  to `PartialIndexError`, which covers the case where Phase 3 *raises* and is unchanged. Both
-  pipelines heal, at different points in the run: the batch pipeline reconciles before Phase 1
+  to `PartialIndexError`, which covers the case where Phase 3 *raises*; that abort's own
+  recovery text is corrected in the next entry, because this reconcile is what made it false.
+  Both pipelines heal, at different points in the run: the batch pipeline reconciles before Phase 1
   (which is what withholds the "Nothing to index" claim), while the streaming pipeline has no
   such pre-pass and reconciles after the walk instead — and skips the repair entirely when any
   file failed in the same run, since a chunk this run just failed to embed would otherwise be
   re-sent to the provider that refused it and paid for twice. Watch mode deliberately does not
   heal (a save event on one file is the wrong trigger for a repo-wide scan), which
-  `trelix stats` now states rather than leaving to be discovered.
+  `trelix stats` now states under its remedy rather than leaving to be discovered by waiting.
+- **`PartialIndexError` told users to delete an index that now repairs itself.** That abort's
+  text predates the reconcile above, and it is the only channel there is: `cli/main.py` prints
+  `str(exc)` and exits 1, and `index_file()` returns it verbatim as `error`. It still said the
+  index "does not heal on the next run" and that the way out was to delete the index database.
+  Reproduced end to end: run 1 aborts saying exactly that, and run 2 — a plain `trelix index`,
+  nothing else changed — reconciles the holes and leaves none. Following the stale advice
+  destroys every embedding that DID land (61,652 of them on the real index) to recover holes
+  the re-run refills for the price of the holes alone. The message now keeps the part that is
+  still true — this index is PARTIAL *right now*, and `trelix stats` keeps counting those
+  chunks as indexed — and points at re-running `trelix index` once the cause is fixed, naming
+  `trelix watch` as the command that will not do it and the store location where the partial
+  state lives. The docstring's list of load-bearing claims is corrected with it, as is
+  `docs/PROVIDERS.md`, which stated the same "does not repair itself" conclusion and the same
+  delete-both-stores recovery for the LanceDB backend.
+- **The streaming pipeline printed two contradictory WARNINGs back to back.** The coverage
+  check announced "Re-embedding them in this run." before either caller had decided anything,
+  and the streaming caller then logged "not repairing now, because a chunk this run just failed
+  to embed would be re-sent to the provider that refused it" immediately after. The first line
+  was false on that path and is the one a user reading top-to-bottom believes. The promise now
+  comes from the two callers that actually repair, so each path emits exactly one warning and
+  it describes what that run does.
+- **`trelix index --dry-run` was silent about id-space exhaustion while `trelix stats` printed
+  it in red.** `_repair_cost` excluded ids at or above the sub-chunk offset from the bill,
+  which is correct — no real run will embed them — and then excluded them from the output too,
+  so the preview rendered "Chunks missing vectors 0 / Repair tokens 0": a clean bill of health
+  for chunks that cannot be retrieved at all. It now returns that count and the preview states
+  it under the table as a sentence rather than a priced row, because there is nothing to price.
+- **The id-space remedy in `trelix stats` was backend-blind.** It said to remove the index file
+  to renumber `chunks` from 1; on lance/qdrant the vectors do not live there, so following it
+  trades one failure direction for the other (`Vectors with no chunk row`) with the id-space row
+  still red. It now names the vector store's own location too, the way `PartialIndexError`
+  already did.
 - **Chunk rows whose id reached the vector store's sub-chunk offset are no longer treated as
   holes.** Every backend's `stored_chunk_ids()` excludes ids at or above 10,000,000 because
   that is where sub-chunk vectors live, so diffing a flat set of `chunks.id` against it
@@ -44,8 +77,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   their vectors out through `_is_chunk_id` — so they need a re-key, not a re-embed.
 - **The embedding dimension is recorded before Phase 3 only when the vector store is empty,**
   and after a successful embed otherwise. Recording early is what re-arms the dimension guard
-  on a fresh index whose Phase 3 dies before writing anything, and over an empty store a wrong
-  stamp costs nothing: no stored vector carries the other width and the `migrate-vectors
+  on an index whose store is still empty when its Phase 3 dies — "empty" being a
+  sentinel-inclusive `count()`, so one Phase 2.5 file-summary vector is enough to make the
+  stamp late instead — and over an empty store a wrong stamp costs nothing: no stored vector carries the other width and the `migrate-vectors
   --reset` remedy would discard zero embeddings. Over a store that already holds vectors it
   costs plenty — a repair run whose Phase 3 raised would stamp the new provider's width while
   the vec0 table kept its own (`CREATE VIRTUAL TABLE IF NOT EXISTS` can neither widen nor

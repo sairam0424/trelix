@@ -116,15 +116,31 @@ def _seeded_repo(tmp_path: Path, *, chunks: int, embedded: int, record_dim: bool
     return repo
 
 
-def _rendered(coverage: object, monkeypatch: pytest.MonkeyPatch, repo: str = "/tmp/r") -> str:
+def _rendered(
+    coverage: object,
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str = "/tmp/r",
+    backend: str = "sqlite",
+) -> str:
     """The coverage rows plus any remedy line, as plain text.
 
     Width pinned wide because rich falls back to 80 columns off a terminal and would
     ellipsize the sentence under the table — a width failure would look exactly like the
     defect under test.
-    """
-    from trelix.cli import main as cli_main
 
+    `backend` reaches the remedy through a real `IndexConfig`: the id-space remedy names
+    where the vectors live, and on lance/qdrant that is not the index file. Its `repo_path`
+    is the temp dir rather than `repo`, because `IndexConfig` validates that the path exists
+    and nothing here opens the store — only the rendered sentence is under test.
+    """
+    import tempfile
+
+    from trelix.cli import main as cli_main
+    from trelix.core.config import IndexConfig, StoreConfig
+
+    config = IndexConfig(  # type: ignore[arg-type]
+        repo_path=tempfile.gettempdir(), store=StoreConfig(backend=backend)
+    )
     recorder = Console(record=True, width=400, no_color=True, legacy_windows=False)
     monkeypatch.setattr(cli_main, "console", recorder)
     table = Table(show_header=True)
@@ -132,7 +148,7 @@ def _rendered(coverage: object, monkeypatch: pytest.MonkeyPatch, repo: str = "/t
     table.add_column("Value", justify="right")
     cli_main._add_coverage_rows(table, coverage)  # type: ignore[arg-type]
     recorder.print(table)
-    cli_main._print_coverage_remedy(coverage, repo)  # type: ignore[arg-type]
+    cli_main._print_coverage_remedy(coverage, repo, config)  # type: ignore[arg-type]
     return recorder.export_text()
 
 
@@ -208,6 +224,56 @@ class TestTheRenderer:
         )
         assert "will not re-embed anything else" not in output, output
         assert "on top of anything that changed since the last run" in output, output
+
+    def test_the_remedy_says_watch_mode_will_not_repair_the_holes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Watch mode deliberately does not heal — a save event on one file is the wrong
+        trigger for a repo-wide store scan — and this is the command the CHANGELOG says
+        states it. It was stated only in a source comment, so the one user who runs
+        `trelix watch` and waits for the holes to clear waits forever."""
+        from trelix.cli.main import _VectorCoverage
+
+        output = " ".join(
+            _rendered(
+                _VectorCoverage(missing=7, orphaned=0, with_vectors=61, dimension=4), monkeypatch
+            ).split()
+        )
+        assert "trelix watch" in output, output
+        assert "will not repair" in output, output
+
+    def test_a_healthy_index_is_not_told_about_watch_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """It belongs to the remedy, not to the table: with no holes there is nothing for
+        watch mode to fail to repair."""
+        from trelix.cli.main import _VectorCoverage
+
+        output = _rendered(
+            _VectorCoverage(missing=0, orphaned=0, with_vectors=68, dimension=4), monkeypatch
+        )
+        assert "trelix watch" not in output, output
+
+    def test_the_id_space_remedy_names_the_vector_store_not_just_the_index_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ "Remove the index file" renumbers `chunks` from 1, which is the point — but on
+        lance/qdrant the vectors do not live in that file, so a user who follows it keeps
+        every old vector and lands in the other failure direction (`Vectors with no chunk
+        row`) with the id-space row still red. `_partial_index_error` already names both."""
+        from trelix.cli.main import _VectorCoverage
+
+        output = " ".join(
+            _rendered(
+                _VectorCoverage(
+                    missing=0, orphaned=0, with_vectors=61, dimension=4, id_space_exhausted=2
+                ),
+                monkeypatch,
+                backend="lance",
+            ).split()
+        )
+        assert ".trelix/lance" in output, output
+        assert "index.db" in output, output
 
     def test_id_space_exhaustion_gets_its_own_row_and_its_own_remedy(
         self, monkeypatch: pytest.MonkeyPatch
@@ -295,6 +361,19 @@ class TestTheCommand:
         assert _number(collapsed, "Chunks missing vectors") == 3, collapsed
         assert _number(collapsed, "Vectors with no chunk row") == 0, collapsed
         assert "can never be retrieved" in collapsed, collapsed
+
+    def test_the_command_says_watch_mode_will_not_repair(self, tmp_path: Path) -> None:
+        """End to end on the fixture shape the real damaged index had — `index_metadata`
+        emptied, so no recorded dimension — because that is the index whose owner is most
+        likely to leave `trelix watch` running and expect the holes to close."""
+        from trelix.cli.main import app
+
+        repo = _seeded_repo(tmp_path, chunks=4, embedded=1, record_dim=False)
+        result = runner.invoke(app, ["stats", str(repo)])
+        assert result.exit_code == 0, result.output
+        collapsed = " ".join(result.output.split())
+        assert "trelix watch" in collapsed, collapsed
+        assert "will not repair" in collapsed, collapsed
 
     def test_a_healthy_index_with_no_recorded_dimension_reports_zero_holes(
         self, tmp_path: Path

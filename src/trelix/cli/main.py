@@ -829,7 +829,7 @@ def _print_cost_preview(config: IndexConfig) -> None:
         )
 
     to_embed, index_read_error = _files_needing_embedding(config, files)
-    repair_count, repair_tokens, repair_note = _repair_cost(config)
+    repair_count, repair_tokens, repair_exhausted, repair_note = _repair_cost(config)
 
     chunker = Chunker(config.chunker)
     chunk_count = 0
@@ -918,6 +918,20 @@ def _print_cost_preview(config: IndexConfig) -> None:
             "[yellow]The repair could not be priced[/yellow] "
             f"({_safe_text(repair_note)}), so the estimate below is a LOWER BOUND — a real "
             "run may also re-embed chunks left without a vector by an interrupted one."
+        )
+
+    if repair_exhausted:
+        # A sentence rather than a table row, because there is nothing to price: no real run
+        # will embed these, so a priced row would quote a spend that cannot happen. Silence
+        # was the wrong answer though — the rows above then read as a clean bill of health
+        # for chunks `trelix stats` reports in red, and the two commands answer the same
+        # question.
+        console.print(
+            f"[red]{repair_exhausted:,} chunk(s) are past the id-space limit[/red] and are "
+            "NOT in the figures above — their `chunks.id` reached the vector store's "
+            "sub-chunk sentinel offset, so any vector stored for them is filtered out of "
+            "every search. No real run will embed them either: they need a re-key, not a "
+            "re-embed. Run [bold]trelix stats[/bold] for the count and the remedy."
         )
 
     _print_cost_estimate(config, token_count + repair_tokens)
@@ -1019,12 +1033,19 @@ def _stored_chunk_ids_sql(conn: sqlite3.Connection) -> set[int]:
     }
 
 
-def _repair_cost(config: IndexConfig) -> tuple[int, int, str | None]:
+def _repair_cost(config: IndexConfig) -> tuple[int, int, int, str | None]:
     """Price the chunks a real run would re-embed to repair an interrupted one.
 
-    Returns (chunk count, token count, reason it could not be checked). The reason is
-    non-None exactly when the two numbers are meaningless, so the caller renders a
-    sentence instead of a zero — "no holes" and "never looked" must not print the same.
+    Returns (chunk count, token count, id-space-exhausted count, reason it could not be
+    checked). The reason is non-None exactly when the numbers are meaningless, so the
+    caller renders a sentence instead of a zero — "no holes" and "never looked" must not
+    print the same.
+
+    The exhausted count is returned SEPARATELY rather than dropped, which is what this used
+    to do: those ids are excluded from the bill (see below) and were then excluded from the
+    output too, so the preview printed "Chunks missing vectors 0 / Repair tokens 0" — a
+    clean bill of health — for an index `trelix stats` reports in red. It is not a priced
+    row because there is nothing to price; the caller states it under the table.
 
     STRICTLY READ-ONLY via `_readonly_vec_conn` — a cost preview must not be able to modify
     the index it prices. lance / qdrant are reported as not checked rather than opened:
@@ -1042,11 +1063,11 @@ def _repair_cost(config: IndexConfig) -> tuple[int, int, str | None]:
 
     backend = str(getattr(config.store, "backend", "sqlite"))
     if backend != "sqlite":
-        return 0, 0, f"not checked ({backend} backend)"
+        return 0, 0, 0, f"not checked ({backend} backend)"
 
     db_path = config.db_path_absolute
     if not db_path.exists():
-        return 0, 0, None  # No index at all: nothing indexed, so nothing half-indexed.
+        return 0, 0, 0, None  # No index at all: nothing indexed, so nothing half-indexed.
 
     try:
         conn = _readonly_vec_conn(db_path)
@@ -1056,13 +1077,14 @@ def _repair_cost(config: IndexConfig) -> tuple[int, int, str | None]:
         finally:
             conn.close()
     except Exception as exc:
-        return 0, 0, f"not checked ({type(exc).__name__})"
+        return 0, 0, 0, f"not checked ({type(exc).__name__})"
 
     offset = BaseVectorStore._SUB_CHUNK_OFFSET
     missing = [
         (int(r[0]), int(r[1])) for r in rows if int(r[0]) < offset and int(r[0]) not in stored
     ]
-    return len(missing), sum(t for _, t in missing), None
+    exhausted = sum(1 for r in rows if int(r[0]) >= offset)
+    return len(missing), sum(t for _, t in missing), exhausted, None
 
 
 def _print_cost_estimate(config: IndexConfig, token_count: int) -> None:
@@ -1558,7 +1580,7 @@ def stats(
     _add_coverage_rows(table, coverage)
     table.add_row("DB size", f"{db_size_kb:.1f} KB")
     console.print(table)
-    _print_coverage_remedy(coverage, repo)
+    _print_coverage_remedy(coverage, repo, config)
 
     _print_provenance(provenance, commits_since(config, provenance.git_commit))
     if drift_report is not None:
@@ -1694,7 +1716,26 @@ def _add_coverage_rows(table: Table, coverage: _VectorCoverage) -> None:
         table.add_row("Embedding dimension", str(coverage.dimension))
 
 
-def _print_coverage_remedy(coverage: _VectorCoverage, repo: str) -> None:
+def _vector_store_locations(config: IndexConfig) -> list[str]:
+    """Every place a from-scratch rebuild has to clear, named per backend.
+
+    `Indexer._partial_index_error` names the same set for the same reason: on lance and
+    qdrant the vectors do not live in the index file, so "remove the index file" renumbers
+    `chunks` from 1 and leaves every old vector behind — which turns one failure direction
+    into the other, `Vectors with no chunk row`, with the id-space row still red.
+    """
+    backend = str(getattr(config.store, "backend", "sqlite"))
+    locations = [f"the index database ({config.db_path_absolute})"]
+    if backend == "lance":
+        locations.append(f"the LanceDB directory ({config.store.lance_uri})")
+    elif backend == "qdrant":
+        locations.append(
+            f"the Qdrant collection {config.store.qdrant_collection} at {config.store.qdrant_url}"
+        )
+    return locations
+
+
+def _print_coverage_remedy(coverage: _VectorCoverage, repo: str, config: IndexConfig) -> None:
     """Name the way out, but only when there is something to fix.
 
     Deliberately does not change the exit code. A non-zero status here would break every
@@ -1716,6 +1757,15 @@ def _print_coverage_remedy(coverage: _VectorCoverage, repo: str) -> None:
             f"(on top of anything that changed since the last run), or "
             f"[bold]trelix index {_safe_text(repo)} --dry-run[/bold] to price it first."
         )
+        # Stated because the alternative is discovering it by waiting. `trelix watch` never
+        # reconciles — a save event on one file is the wrong trigger for a repo-wide store
+        # scan, and an unbounded scan per filesystem event is the wrong cost profile for a
+        # long-lived process — so someone who leaves watch running expects these to close
+        # and they never do.
+        console.print(
+            "[dim]  `trelix watch` will not repair them: it only re-indexes files as they "
+            "change, and never scans the store for holes.[/dim]"
+        )
 
     if coverage.id_space_exhausted:
         from trelix.store.vector import BaseVectorStore
@@ -1726,8 +1776,8 @@ def _print_coverage_remedy(coverage: _VectorCoverage, repo: str) -> None:
             f"offset ({BaseVectorStore._SUB_CHUNK_OFFSET:,}), so any vector stored for them "
             f"is filtered out of every search as a sentinel. Re-indexing CANNOT fix this and "
             f"will not try: they need a re-key, not a re-embed. Rebuild the index from "
-            f"scratch (remove the index file, then "
-            f"[bold]trelix index {_safe_text(repo)}[/bold]) to renumber `chunks` from 1."
+            f"scratch — remove {' and '.join(_vector_store_locations(config))}, then "
+            f"[bold]trelix index {_safe_text(repo)}[/bold] — to renumber `chunks` from 1."
         )
 
 

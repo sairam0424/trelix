@@ -74,7 +74,13 @@ def _patch_rich_progress():  # type: ignore[no-untyped-def]
         yield mock_progress
 
 
-def _make_indexer(tmp_dir: str, fake_embedder: _FakeEmbedder, *, streaming: bool = False) -> Any:
+def _make_indexer(
+    tmp_dir: str,
+    fake_embedder: _FakeEmbedder,
+    *,
+    streaming: bool = False,
+    max_tokens_per_batch: int | None = None,
+) -> Any:
     """`test_indexer_incremental_symbols._make_indexer` with exactly two changes.
 
     1. `incremental=True` — that fixture forces False, which disables the very skip
@@ -84,6 +90,10 @@ def _make_indexer(tmp_dir: str, fake_embedder: _FakeEmbedder, *, streaming: bool
 
     The real parser is kept (no `get_parser` patch): genuine `content_hash` values are
     the point, since the whole failure mode is a hash that says "already done".
+
+    `max_tokens_per_batch` exists for the abort tests: at 1 every chunk becomes its own
+    Phase 3 batch, so one refused chunk aborts the run while its siblings land — the
+    partially-embedded state `PartialIndexError` describes.
     """
     from trelix.indexing.indexer import Indexer
     from trelix.store.vector import VectorStore
@@ -96,6 +106,8 @@ def _make_indexer(tmp_dir: str, fake_embedder: _FakeEmbedder, *, streaming: bool
     )
     if streaming:
         cfg.indexer.streaming_enabled = True
+    if max_tokens_per_batch is not None:
+        cfg.embedder.embed_max_tokens_per_batch = max_tokens_per_batch
 
     real_store = VectorStore(cfg.db_path_absolute, dimension=_DIM)
     with (
@@ -418,6 +430,63 @@ class TestTheKilledRunHeals:
             assert dead_id not in vectors_after
 
 
+class TestTheAbortTextMatchesWhatARerunDoes:
+    """`PartialIndexError` must not send a user to throw away an index that now repairs.
+
+    Its text predates the repair in this file and still claimed the index "does not heal on
+    the next run", offering "delete the index database" as the way out. The repair made both
+    false in the same branch, and the message is the ONLY channel: `cli/main.py` prints
+    `str(exc)` and exits 1, and `index_file()` returns it verbatim as `error`. Following the
+    stale advice discards every embedding that DID land — 61,652 of them on the real index —
+    to recover holes the next plain run refills for the price of the holes alone.
+    """
+
+    def test_the_abort_points_at_a_re_run_and_the_re_run_delivers(self, repo: pathlib.Path) -> None:
+        """Both halves in one test on purpose: the text is only honest if the run it
+        recommends actually heals the index it just aborted."""
+        from trelix.indexing.indexer import PartialIndexError
+
+        class _RefusesOneChunk(_FakeEmbedder):
+            """Refuses exactly one chunk's text, so some batches land and some do not."""
+
+            def embed(self, texts: list[str]) -> list[list[float]]:
+                if any("b_two" in text for text in texts):
+                    raise RuntimeError("429 rate limited")
+                return super().embed(texts)
+
+            async def embed_async(self, texts: list[str]) -> list[list[float]]:
+                return self.embed(texts)
+
+        indexer = _make_indexer(str(repo), _RefusesOneChunk(), max_tokens_per_batch=1)
+        with _patch_rich_progress(), pytest.raises(PartialIndexError) as excinfo:
+            indexer.index()
+
+        message = str(excinfo.value)
+        db_path = indexer.config.db_path_absolute
+        chunks, vectors = _coverage(db_path)
+        holes = chunks - vectors
+        assert holes, "the abort left no hole, so the recovery advice is untested"
+
+        # The two claims the repair falsified.
+        assert "does not heal" not in message, message
+        assert "delet" not in message.lower(), message
+        # The one it did NOT falsify: this index really is partial right now.
+        assert "PARTIAL" in message, message
+        assert "trelix index" in message, message
+        # Still names where the damage lives, per backend — a lance/qdrant user cannot act
+        # on "the index database" alone.
+        assert str(db_path) in message, message
+
+        embedder2 = _FakeEmbedder()
+        with _patch_rich_progress():
+            stats = _make_indexer(str(repo), embedder2).index()
+
+        chunks_after, vectors_after = _coverage(db_path)
+        assert vectors_after == chunks_after, "the run the message recommends did not heal"
+        assert stats["chunks_reconciled"] == len(holes)
+        assert len(embedder2.embed_call_texts) == len(holes)
+
+
 class TestChunkIdsPastTheSentinelOffset:
     """A chunk row whose id reached `_SUB_CHUNK_OFFSET` must not be billed as a hole.
 
@@ -567,6 +636,37 @@ class TestTheDimensionStampFollowsTheStore:
 
         assert indexer.db.get_embedding_dimension() == _DIM
 
+    def test_one_summary_sentinel_already_counts_as_a_populated_store(
+        self, repo: pathlib.Path
+    ) -> None:
+        """The caveat on the early stamp, pinned so the comment beside it cannot drift back.
+
+        `_vector_store_is_empty()` asks `count()`, which is sentinel-INCLUSIVE by design: a
+        row somebody paid for is a row. Phase 2.5 writes file-summary vectors at `-file_id`
+        BEFORE Phase 3, so on a genuinely fresh index with `file_summaries_enabled` (opt-in,
+        default False) a single summary makes the store non-empty and the early stamp never
+        fires — the guard is NOT re-armed when that run's Phase 3 dies.
+
+        This passes against the pre-change code too, and that is the point: it documents
+        behaviour deliberately left alone, next to a comment that used to claim the early
+        record re-arms the guard on "a fresh index whose Phase 3 dies" with no caveat at all.
+        """
+
+        class _BrokenEmbedder(_FakeEmbedder):
+            def embed(self, texts: list[str]) -> list[list[float]]:
+                raise RuntimeError("401 Unauthorized")
+
+        indexer = _make_indexer(str(repo), _BrokenEmbedder())
+        assert indexer.vector_store.count() == 0, "fixture store is not fresh"
+        # One file-summary sentinel, exactly as Phase 2.5 would have written it.
+        indexer.vector_store.upsert(chunk_id=-1, embedding=[0.1] * _DIM)
+        assert indexer.vector_store.count() == 1
+
+        with _patch_rich_progress(), pytest.raises(Exception):
+            indexer.index()
+
+        assert indexer.db.get_embedding_dimension() is None
+
     def test_a_successful_repair_run_still_re_arms_the_guard(self, repo: pathlib.Path) -> None:
         """The late record covers the case the early one no longer does. This is the real
         Ag-Bash shape: a populated store, no recorded dimension, correct provider."""
@@ -611,6 +711,87 @@ class TestFailureToCheckDoesNotBlockTheRun:
             "missing vectors" in record.message or "missing vectors" in record.getMessage()
             for record in caplog.records
         ), [r.getMessage() for r in caplog.records]
+
+
+class TestTheRepairWarningSaysWhatWillHappen:
+    """One warning per run, and it must describe what THIS run does about the holes.
+
+    "Re-embedding them in this run." used to be part of the coverage check itself, which
+    runs before either caller has decided anything. On the streaming pipeline's skip path
+    that produced two WARNINGs back to back — the first promising a repair, the second
+    declining it — and the first is the one a user reading top-to-bottom believes.
+    """
+
+    _PROMISE = "Re-embedding them in this run."
+
+    def _warnings(self, records: list[logging.LogRecord]) -> list[str]:
+        return [r.getMessage() for r in records if r.levelno >= logging.WARNING]
+
+    def test_the_batch_pipeline_promises_the_repair_it_performs(
+        self, repo: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        embedder = _FakeEmbedder()
+        indexer = _make_indexer(str(repo), embedder)
+        with _patch_rich_progress():
+            indexer.index()
+
+        db_path = indexer.config.db_path_absolute
+        chunks, _ = _coverage(db_path)
+        _simulate_kill_during_embedding(db_path, sorted(chunks)[:2])
+
+        caplog.clear()
+        with _patch_rich_progress(), caplog.at_level(logging.WARNING, logger="trelix.indexing"):
+            stats = _make_indexer(str(repo), _FakeEmbedder()).index()
+
+        assert stats["chunks_reconciled"] == 2
+        promises = [m for m in self._warnings(caplog.records) if self._PROMISE in m]
+        assert len(promises) == 1, self._warnings(caplog.records)
+
+    def test_the_streaming_repair_path_promises_it_too(
+        self, repo: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        embedder = _FakeEmbedder()
+        indexer = _make_indexer(str(repo), embedder, streaming=True)
+        with _patch_rich_progress():
+            indexer.index()
+
+        db_path = indexer.config.db_path_absolute
+        chunks, _ = _coverage(db_path)
+        _simulate_kill_during_embedding(db_path, sorted(chunks)[:2])
+
+        caplog.clear()
+        with _patch_rich_progress(), caplog.at_level(logging.WARNING, logger="trelix.indexing"):
+            stats = _make_indexer(str(repo), _FakeEmbedder(), streaming=True).index()
+
+        assert stats["chunks_reconciled"] == 2
+        promises = [m for m in self._warnings(caplog.records) if self._PROMISE in m]
+        assert len(promises) == 1, self._warnings(caplog.records)
+
+    def test_the_streaming_skip_path_emits_exactly_one_and_promises_nothing(
+        self, repo: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The contradiction, pinned: this run declines the repair, so nothing may say it
+        is performing one, and the hole count is stated once rather than twice."""
+        calls: list[int] = []
+
+        def _fail_after_first(texts: list[str]) -> list[list[float]]:
+            calls.append(len(texts))
+            if len(calls) > 1:
+                raise RuntimeError("429 rate limited")
+            return [[0.1] * _DIM for _ in texts]
+
+        indexer = _make_indexer(str(repo), _FakeEmbedder(), streaming=True)
+        indexer.embedder.embed = _fail_after_first  # type: ignore[method-assign]
+
+        with _patch_rich_progress(), caplog.at_level(logging.WARNING, logger="trelix.indexing"):
+            stats = indexer.index()
+
+        assert stats["chunks_missing_vectors"] and stats["chunks_reconciled"] == 0, stats
+        warnings = self._warnings(caplog.records)
+        assert not any(self._PROMISE in m for m in warnings), warnings
+        holes = [m for m in warnings if "have no vector" in m]
+        assert len(holes) == 1, warnings
+        assert "not repairing now" in holes[0], holes
 
 
 class TestStreamingPipeline:

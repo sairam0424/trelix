@@ -242,6 +242,43 @@ class TestItPricesTheRepairOfAnInterruptedRun:
         assert _number(output, "Chunks missing vectors") == 0, output
         assert _number(output, "Repair tokens") == 0, output
 
+    def test_a_chunk_past_the_sentinel_offset_is_reported_even_though_it_is_not_priced(
+        self, repo: Path
+    ) -> None:
+        """Not billed is not the same as not mentioned.
+
+        `trelix stats` prints this condition in red with its own remedy, while the preview
+        dropped those ids on the floor and rendered "Chunks missing vectors 0 / Repair tokens
+        0" — a clean bill of health for an index that cannot retrieve those chunks at all.
+        The two commands answer the same question and must not disagree about whether there
+        is anything wrong. It stays out of the table because there is nothing to price: no
+        real run will embed them, so a priced row would quote a spend that cannot happen.
+        """
+        import sqlite3
+
+        from trelix.store.vector import BaseVectorStore
+
+        self._seed(repo, embed_all=True)
+        db_path = IndexConfig(repo_path=str(repo)).db_path_absolute
+        conn = sqlite3.connect(str(db_path))
+        try:
+            symbol_id = int(conn.execute("SELECT id FROM symbols LIMIT 1").fetchone()[0])
+            conn.execute(
+                "INSERT INTO chunks (id, symbol_id, chunk_text, token_count) VALUES (?, ?, ?, ?)",
+                (BaseVectorStore._SUB_CHUNK_OFFSET, symbol_id, "past the offset", 999),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        output = _run(repo)
+        assert _number(output, "Chunks missing vectors") == 0, output
+        assert _number(output, "Repair tokens") == 0, output
+        assert "id-space" in output, output
+        assert "re-key" in output, output
+        # Still not in the bill: 999 tokens for a chunk no run will send.
+        assert "999" not in output, output
+
     def test_a_non_sqlite_backend_says_not_checked_rather_than_zero(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
