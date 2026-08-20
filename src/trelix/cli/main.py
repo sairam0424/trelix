@@ -3392,6 +3392,22 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
         )
         raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
     if not store.is_open:
+        if getattr(store, "needs_journal_recovery", False):
+            # Named separately because the generic message below is actively wrong
+            # here: the path IS a readable file, and telling an operator to check
+            # that sends them looking for a problem that does not exist. This is
+            # also the moment the command matters most — a writer was just killed
+            # and the question is whether entries were lost.
+            err_console.print(
+                f"[red]Audit database needs journal recovery[/red] at "
+                f"{_safe_text(str(path))} — a writer was interrupted and left a "
+                "rollback journal beside it. The read commands open read-only and "
+                "cannot replay one, so nothing was read and no verdict is possible. "
+                "One read-write open recovers it: restart the audited service, or "
+                f"run `sqlite3 {_safe_text(str(path))} .tables` once, then re-run "
+                "this command. The file is intact; it has not been modified here."
+            )
+            raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
         err_console.print(
             f"[red]Could not open audit database[/red] at {_safe_text(str(path))} — "
             "nothing was read. Check the path (it must be a file, not a directory) "

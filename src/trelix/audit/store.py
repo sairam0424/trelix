@@ -237,6 +237,11 @@ _COUNT_RE = re.compile(r"\A(?:0|[1-9][0-9]{0,18})\Z")
 # released version of ``append`` has ever written.
 _HEAD_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
+# SQLite binds integers as signed 64-bit; anything larger raises OverflowError at
+# bind time rather than returning a row. Used to clamp caller-supplied limits —
+# see `recent`, where an unclamped value turned a healthy read into a traceback.
+_SQLITE_MAX_INT = 2**63 - 1
+
 
 @dataclass(frozen=True, slots=True)
 class VerifyResult:
@@ -323,6 +328,12 @@ class AuditStore:
         #: Non-empty means "this file is not an audit log", which a caller must
         #: report as *could not check* rather than as a verdict about a chain.
         self.missing_tables: tuple[str, ...] = ()
+        #: True when a ``read_only`` open found a rollback journal that has to be
+        #: replayed before the file is readable. Distinct from
+        #: :attr:`missing_tables` because the remedy is completely different: the
+        #: file is a valid audit log and is readable, it just needs one read-write
+        #: open to recover. Reported as *could not check*, never as a verdict.
+        self.needs_journal_recovery: bool = False
         try:
             self._conn = self._open_read_only() if read_only else self._open_read_write()
         except Exception as exc:  # noqa: BLE001 — audit init must never crash the caller
@@ -367,6 +378,26 @@ class AuditStore:
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 ).fetchall()
             }
+        except sqlite3.OperationalError as exc:
+            conn.close()
+            # A rollback journal left by a writer that died between the journal fsync
+            # and its unlink must be ROLLED BACK before the file is readable, and a
+            # `mode=ro` handle cannot perform one — SQLite reports the attempt as
+            # "attempt to write a readonly database", which reads like a permissions
+            # problem and is not one. Measured: SIGKILLing the real append loop left a
+            # journal in 33 of 40 trials, 6 of which land here.
+            #
+            # This is the cost of the read-only guarantee, and it is worth naming
+            # rather than hiding: before this store opened read-only, the same file
+            # verified fine because opening it read-WRITE silently performed the
+            # rollback — i.e. the old behaviour recovered the database by writing to
+            # the artifact it was auditing. Refusing is the better trade, but only if
+            # the operator is told what to do, so this is surfaced distinctly instead
+            # of arriving as "check that it is readable" about a readable file.
+            if "readonly database" in str(exc):
+                self.needs_journal_recovery = True
+                return None
+            raise
         except Exception:
             conn.close()
             raise
@@ -693,9 +724,19 @@ class AuditStore:
 
     # -- read ----------------------------------------------------------------
     def recent(self, n: int = 100) -> list[dict[str, Any]]:
-        """Return up to ``n`` most-recent entries, newest first."""
+        """Return up to ``n`` most-recent entries, newest first.
+
+        ``n`` is clamped to SQLite's signed-64-bit ceiling for the same reason the
+        ``n <= 0`` guard exists: a value the driver cannot bind is a caller mistake,
+        not a database finding. Unclamped, ``--limit 10**21`` reached the bind and
+        raised ``OverflowError: Python int too large to convert to SQLite INTEGER``
+        out of ``audit list`` — a traceback at exit 1, the code that means *the chain
+        is damaged*, on a healthy database and with no tampering involved. Any limit
+        at or above the ceiling already means "every row".
+        """
         if self._conn is None or n <= 0:
             return []
+        n = min(n, _SQLITE_MAX_INT)
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (n,)

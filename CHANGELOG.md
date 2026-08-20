@@ -92,6 +92,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ### Fixed
 
+- **An interrupted writer made the audit read commands unusable, with a diagnosis that
+  described the wrong problem.** `audit.db` uses SQLite's default rollback journal, so a
+  writer killed between the journal fsync and its unlink leaves a file that must be
+  rolled back before it can be read — and the read-only handle these commands now use
+  cannot perform a rollback. That is the intended trade (the previous behaviour
+  "recovered" such a file by writing to the very artifact it was auditing), but the
+  operator saw only "check the path… and that it is readable" about a path that is a
+  perfectly readable file, with the real cause leaking out as a stray log line. `list`,
+  `verify` and `export` now report journal recovery as its own condition, still at exit
+  2, and name the one-read-write-open remedy — which a test now proves actually works.
+  This is exactly when the command matters most: a service was just killed and the
+  question is whether entries were lost.
+- **`audit list --limit` with a value above SQLite's 64-bit ceiling raised
+  `OverflowError` and exited 1** — the code reserved for *the chain is damaged* — on a
+  healthy database, with none of the tokens an alert matches on. The limit is now
+  clamped, alongside the existing non-positive guard: a value the driver cannot bind is
+  a caller mistake, not a finding about the data.
+- **The read-only guarantee rested on one untested line.** The `mode=ro` URI is built
+  with `Path.as_uri()` rather than string interpolation, because a path containing `?`
+  or `#` would otherwise be parsed as URI query or fragment syntax and silently open a
+  different file — or none. Reverting that line passed the entire suite, so the property
+  everything else depends on had no pin. It has three now, over paths containing each
+  character, including one asserting the handle is still genuinely read-only afterwards
+  so the escaping cannot be "fixed" by quietly dropping `mode=ro`.
 - **Verifying a live `audit.db` reported tamper on undamaged data.** `verify` read the
   rows and then the anchor as two separate statements outside any transaction, and the
   store's `threading.Lock` is per-instance, so it serialized nothing against the

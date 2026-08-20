@@ -99,6 +99,21 @@ the thing they check:
 DDL, and they refuse to report anything at all unless `audit_log` **and**
 `audit_meta` already exist — exit 2, "not an audit database".
 
+**The cost of that guarantee, stated up front.** `audit.db` uses SQLite's default
+rollback journal. A writer killed between the journal fsync and its unlink leaves a
+database that must be rolled back before it can be read, and a read-only handle
+cannot perform a rollback — so the read commands exit 2 with "needs journal
+recovery" rather than a verdict. One read-write open fixes it: restart the audited
+service, or run `sqlite3 <path> .tables` once, then re-run.
+
+This is a deliberate trade, and it is worth understanding which way it cuts. Before
+these commands opened read-only, the same file verified cleanly — because opening it
+read-write silently performed the rollback. That is, the reader repaired the database
+it was auditing, writing to the artifact whose integrity it was reporting on.
+Refusing and saying so is the weaker-looking behaviour and the more honest one. Note
+also that a WAL-mode database has no such gap: the read commands handle a killed WAL
+writer without touching the file at all.
+
 Until v3.0.1 they used the same constructor as the writer, which meant they ran
 `CREATE TABLE IF NOT EXISTS`. Pointed at any other SQLite file, `trelix audit
 verify` **added the audit schema to it** — one measured case went from 8 KB and
@@ -149,20 +164,26 @@ the scheme.** Four of those six need no hashing whatsoever, and nothing inside t
 file records *which* chain it is supposed to be, so a substituted file verifies
 perfectly.
 
-**On the wipe row, precisely.** What is detected is the wipe that stops at
-`DELETE FROM audit_log; DELETE FROM audit_meta`. Four defeats are known and all
-four succeed today:
+**On the wipe row, precisely.** What is detected is the wipe that empties both
+tables and stops there. Four defeats are known and all four succeed today, all of
+them reachable by anyone who can already write to the file:
 
-1. `DELETE FROM sqlite_sequence WHERE name='audit_log'` — one more statement.
-2. `UPDATE sqlite_sequence SET seq = 0` (or a negative value, or a BLOB).
-3. `UPDATE sqlite_sequence SET seq = <n>` on a log that still has rows — matched
-   to a partial truncation, or set *below* the real row count. The check is scoped
-   to an *empty* log, so neither fires. `seq < COUNT(*)` is impossible for a
-   legitimate writer and could be closed; widening the check has its own
+1. Deleting SQLite's `sqlite_sequence` bookkeeping row for `audit_log` — one more
+   statement than the wipe itself.
+2. Zeroing that row's `seq`, or setting it to a negative value or a non-integer.
+3. Forging `seq` on a log that still has rows — matched to a partial truncation,
+   or set *below* the real row count. The check is scoped to an *empty* log, so
+   neither fires. A `seq` below the live row count is impossible for a legitimate
+   writer and could therefore be closed; widening the check has its own
    false-positive surface to establish first, and that is a separate change.
-4. `PRAGMA writable_schema=ON; DELETE FROM sqlite_master WHERE
-   name='sqlite_sequence'`. Plain `DROP TABLE sqlite_sequence` is refused by
-   SQLite ("may not be dropped"), but this route needs no extra privilege.
+4. Removing the `sqlite_sequence` table itself through writable-schema access. A
+   plain `DROP TABLE` is refused by SQLite ("may not be dropped"), but that route
+   needs no extra privilege.
+
+Named rather than spelled out on purpose: this is a known-unpatched weakness in a
+public repository, and an operator needs to know the boundary without the file
+handing anyone a recipe. Each of the four is pinned by a test, so the boundary is
+enforced rather than merely described.
 
 All four end in the same place: no usable `seq`, which is exactly what a database
 that was never appended to looks like — and that state has to verify clean. So
