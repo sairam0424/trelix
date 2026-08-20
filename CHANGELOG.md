@@ -6,8 +6,54 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+
+- **An interrupted index run left permanent holes that re-indexing refused to fill.** Files
+  are hash-tracked whole, and a file's content hash is committed in Phase 2 — the sequential
+  DB write — before Phase 3 embeds its chunks. Any interruption in between (SIGKILL, laptop
+  sleep, a CI timeout, OOM, embedding-quota exhaustion) therefore left chunk rows whose
+  vectors were never written, and every later incremental run skipped those files as up to
+  date. Measured on a real index: 68,880 chunk rows against 61,652 vectors, so 7,228 chunks
+  (10.5% of the index) could never be retrieved, while a re-index reported "Files walked
+  3,136 / Unchanged since last index 3,136 / Files to embed 0" and printed "Nothing to index
+  — all files up to date." `index_metadata` was emptied by the same kill, which disarmed the
+  dimension guard as a side effect: `DimensionGuard.check` early-returns when the stored
+  value is not an int, so that index would also have accepted mixed-width vectors.
+  `trelix index` now reconciles the vector store against the `chunks` table at the start of
+  every run and folds any vector-less chunks into the existing Phase 3, re-embedding **only**
+  the holes — not the whole file, which would cost strictly more. This is the crash-recovery
+  counterpart to `PartialIndexError`, which covers the case where Phase 3 *raises* and is
+  unchanged. Both the batch and streaming pipelines heal; watch mode deliberately does not
+  (a save event on one file is the wrong trigger for a repo-wide scan), which `trelix stats`
+  now states rather than leaving to be discovered.
+- **The embedding dimension is now recorded before Phase 3 rather than after,** so a repair
+  run re-arms the dimension guard on an index whose `index_metadata` a kill emptied. For the
+  default backend this records a fact already committed to disk: `SQLiteVectorStore` creates
+  its vec0 table at `FLOAT[dim]`, and that declared width cannot be changed by deleting rows.
+- **`SQLiteVectorStore.count()` now takes the connection lock** like every other read on
+  that connection. It was the one that did not, against a connection opened
+  `check_same_thread=False`.
+
 ### Added
 
+- **`trelix stats` reports vector coverage in both directions** — chunks with vectors, chunks
+  missing vectors, and vectors with no chunk row — and never nets them, because a single
+  netted number is what let a 10.5%-blind index read as healthy. It also reports
+  `Embedding dimension: not recorded — dimension guard disabled` instead of guessing, which
+  makes the second half of the failure above visible before any hole is counted. Exit code is
+  unchanged at 0 in every case, so scripts that pipe `stats` keep working.
+- **`trelix index --dry-run` prices the repair.** New `Chunks missing vectors` and
+  `Repair tokens` rows, with the repair tokens included in the dollar estimate — a preview
+  that under-quotes the run it is pricing is the same class of defect as the bug above. The
+  check is strictly read-only (`mode=ro` plus `PRAGMA query_only`), and reports
+  "not checked (lance backend)" rather than opening a Lance or Qdrant handle, since both
+  create on open.
+- **`BaseVectorStore.stored_chunk_ids()`**, implemented for all three backends
+  (sqlite-vec, LanceDB, Qdrant). Returns real chunk ids with summary and sub-chunk sentinels
+  excluded. `count()` cannot answer this question — it is sentinel-inclusive, so
+  `count_chunks() - count()` returns holes minus sentinels (405 against a true 500 on a
+  fixture, and negative once sentinels outnumber holes); both `count()` docstrings that
+  claimed otherwise are corrected.
 - **Python 3.14 is tested and advertised.** `requires-python` has always been an open
   `>=3.11`, so pip was already willing to install trelix on 3.14 — but nothing verified it
   and the classifiers stopped at 3.13, so the honest answer to "does this work on 3.14" was

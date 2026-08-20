@@ -121,6 +121,110 @@ class TestItCountsWhatWouldBeEmbedded:
         assert _number(output, "Embedding tokens") > 0, output
 
 
+class TestItPricesTheRepairOfAnInterruptedRun:
+    """A run killed mid-Phase-3 leaves chunk rows with no vector, and the next
+    `trelix index` re-embeds exactly those. The preview must show that work and, crucially,
+    include it in the dollar figure — otherwise it under-quotes the very run it is pricing,
+    which is the same class of dishonesty as an index reporting itself complete while 10.5%
+    of it is unretrievable.
+
+    A repair test can live in this file even though the autouse fixture forbids building an
+    Indexer: the dry run builds none, and the prior state is seeded through `Database` and
+    `VectorStore` directly, as the tests above already do.
+    """
+
+    def _seed(self, repo: Path, *, embed_all: bool) -> None:
+        """Index the fixture's chunk rows, giving vectors to all of them or to none."""
+        from trelix.indexing.chunker import Chunker
+        from trelix.indexing.indexer import Indexer
+        from trelix.store.vector import VectorStore
+
+        config = IndexConfig(repo_path=str(repo))
+        chunker = Chunker(config.chunker)
+        chunk_ids: list[int] = []
+        with Database(config.db_path_absolute) as db:
+            for file in FileWalker(config).walk():
+                file_id = db.upsert_file(file)
+                parsed = Indexer._parse_one(None, file)  # type: ignore[arg-type]
+                assert parsed.parse_result is not None
+                for symbol in parsed.parse_result.symbols:
+                    symbol.file_id = file_id
+                    symbol.id = db.insert_symbol(symbol)
+                for chunk in chunker.build_chunks(
+                    symbols=parsed.parse_result.symbols,
+                    imports=[],
+                    file_rel_path=file.rel_path,
+                    language=file.language.value,
+                    parent_symbols={s.id: s for s in parsed.parse_result.symbols if s.id},
+                ):
+                    chunk_ids.append(db.insert_chunk(chunk))
+            db.set_embedding_dimension(4)
+        assert chunk_ids, "fixture produced no chunks"
+
+        store = VectorStore(config.db_path_absolute, dimension=4)
+        if embed_all:
+            store.upsert_batch([(cid, [0.1, 0.2, 0.3, 0.4]) for cid in chunk_ids])
+        store.close()
+
+    def test_vector_less_chunks_are_counted_and_their_tokens_priced(self, repo: Path) -> None:
+        self._seed(repo, embed_all=False)
+        output = _run(repo)
+        # Every file is unchanged on hash, so the from-scratch rows are zero — and the
+        # preview still has work to report. That combination is the bug: it used to print
+        # only the zeros.
+        assert _number(output, "Files to embed") == 0, output
+        assert _number(output, "Chunks to embed") == 0, output
+        assert _number(output, "Chunks missing vectors") >= 2, output
+        assert _number(output, "Repair tokens") > 0, output
+
+    def test_a_fully_covered_index_reports_no_repair(self, repo: Path) -> None:
+        self._seed(repo, embed_all=True)
+        output = _run(repo)
+        assert _number(output, "Chunks missing vectors") == 0, output
+        assert _number(output, "Repair tokens") == 0, output
+
+    def test_the_priced_total_includes_the_repair_tokens(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A preview that prices only the from-scratch tokens quotes $0 for a run that
+        will spend money."""
+        monkeypatch.setenv("TRELIX_EMBEDDER_PROVIDER", "openai")
+        monkeypatch.setenv("TRELIX_EMBEDDER_OPENAI_MODEL", "text-embedding-3-large")
+        self._seed(repo, embed_all=False)
+        output = _run(repo)
+
+        repair_tokens = _number(output, "Repair tokens")
+        assert repair_tokens > 0, output
+        assert _number(output, "Embedding tokens") == 0, output
+
+        # The load-bearing assertion: the token count the estimate is BUILT ON, not the
+        # rounded dollar string. At fixture scale 124 tokens prices below $0.0001 and
+        # formats as $0.0000, so asserting on the dollars would test rich's float format
+        # rather than whether the repair reached the estimate at all — which before this
+        # change it did not.
+        priced = re.search(r"Estimated cost.*?([\d,]+) tokens at", output)
+        assert priced, output
+        assert int(priced.group(1).replace(",", "")) == repair_tokens, output
+
+        rate = re.search(r"\$([\d.]+) per 1M tokens", output)
+        assert rate, output
+        cost = re.search(r"Estimated cost\s+\$([\d.]+)", output)
+        assert cost, output
+        expected = repair_tokens / 1_000_000 * float(rate.group(1))
+        assert abs(float(cost.group(1)) - expected) < 0.005, output
+
+    def test_a_non_sqlite_backend_says_not_checked_rather_than_zero(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opening a Lance or Qdrant handle is a WRITE — `_get_or_create_table` creates on
+        open failure and `_ensure_collection` creates a collection — and a cost preview must
+        not be able to modify the index it prices. So it declines, visibly."""
+        monkeypatch.setenv("TRELIX_STORE_BACKEND", "lance")
+        output = _run(repo)
+        assert "not checked" in output, output
+        assert "lance" in output, output
+
+
 class TestPricingIsHonest:
     def test_a_known_openai_model_is_priced_from_the_token_count(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch

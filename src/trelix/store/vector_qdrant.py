@@ -28,6 +28,11 @@ _QDRANT_MISSING_MSG = (
 
 _BATCH_SIZE = 100  # Qdrant upsert batch size
 
+# Ids per scroll page in stored_chunk_ids(). Larger than _BATCH_SIZE because a scroll page
+# carries ids only (with_payload / with_vectors both off), not vectors, so the request-size
+# ceiling _BATCH_SIZE exists for does not apply.
+_SCROLL_PAGE_SIZE = 1000
+
 
 class QdrantVectorStore(BaseVectorStore):
     """
@@ -144,9 +149,47 @@ class QdrantVectorStore(BaseVectorStore):
         )
 
     def count(self) -> int:
-        """Return the number of vectors stored in the collection."""
+        """Points in the collection, sentinels included — see `BaseVectorStore.count`.
+
+        Not comparable against the SQLite `chunks` table for that reason; use
+        `stored_chunk_ids()`.
+        """
         info = self._client.get_collection(self._collection)
         return info.points_count or 0
+
+    def stored_chunk_ids(self) -> set[int]:
+        """Every real chunk_id with a vector in this collection. See the base method.
+
+        Pages through `scroll()` on its own `next_offset` cursor, which is the only way to
+        enumerate: Qdrant has no "select ids" primitive, and `count()` cannot distinguish a
+        sentinel from a chunk. `with_payload=False, with_vectors=False` keeps each page to
+        ids — the vectors are the expensive part and nothing here needs them.
+
+        Filtered in Python via `_is_chunk_id` rather than with a server-side `Filter`: the
+        sentinel encoding lives in the point ID, and Qdrant filters on payload fields, which
+        `upsert_batch` does not populate (it writes `payload={}`).
+
+        Exercised end-to-end against qdrant-client 1.18.0's local mode, which runs the real
+        client and pagination path with no server: 184 ids over 4 pages of 50, sentinels
+        excluded, holes recovered exactly. NOT verified against a Qdrant *server*, and one
+        difference is known to matter: `upsert_file_summary_embedding` writes `id=-(file_id)`,
+        local mode accepts it, but the server requires unsigned 64-bit numeric ids. If it
+        rejects them, file-summary vectors never land on this backend at all — a separate
+        pre-existing bug, and this method would simply find no negative ids to exclude.
+        """
+        seen: set[int] = set()
+        offset: object | None = None
+        while True:
+            records, offset = self._client.scroll(
+                collection_name=self._collection,
+                limit=_SCROLL_PAGE_SIZE,
+                offset=offset,  # type: ignore[arg-type]
+                with_payload=False,
+                with_vectors=False,
+            )
+            seen.update(int(r.id) for r in records if self._is_chunk_id(int(r.id)))
+            if offset is None:
+                return seen
 
     def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
         """
@@ -178,10 +221,12 @@ class QdrantVectorStore(BaseVectorStore):
         results = self.search(query_embedding, k=k * 5)
         return [(-cid, score) for cid, score in results if cid < 0][:k]
 
-    _SUB_CHUNK_OFFSET = 10_000_000
-
     def upsert_sub_chunk_embedding(self, sub_chunk_id: int, embedding: list[float]) -> None:
-        """Store sub-chunk embedding using point_id = sub_chunk_id + _SUB_CHUNK_OFFSET."""
+        """Store sub-chunk embedding using point_id = sub_chunk_id + _SUB_CHUNK_OFFSET.
+
+        Offset inherited from `BaseVectorStore` — the identical copy that shadowed it here
+        is gone, because `stored_chunk_ids()` above now keys its sentinel filter off it.
+        """
         self.upsert_batch([(sub_chunk_id + self._SUB_CHUNK_OFFSET, embedding)])
 
     def search_sub_chunks(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:

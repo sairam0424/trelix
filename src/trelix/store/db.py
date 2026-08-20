@@ -35,7 +35,7 @@ import re
 import sqlite3
 import threading
 import urllib.request
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -62,6 +62,14 @@ if TYPE_CHECKING:
     from trelix.analysis.taint import TaintFlow
 
 logger = logging.getLogger("trelix.store.db")
+
+# Placeholders per statement in the id-batched reads below. SQLite caps this at
+# SQLITE_LIMIT_VARIABLE_NUMBER, which measured 32,766 on this build — but it is a
+# compile-time option that was 999 for years, so a repo-wide id set in one `IN (…)` is a
+# portability landmine, not a theoretical one. Set far under every plausible ceiling; the
+# cost of an extra round trip on the same in-process connection is not measurable next to
+# the embedding calls these reads feed.
+_MAX_SQL_PARAMS = 500
 
 # Schema generation stamped into `pragma user_version`. Before this existed the
 # live index read 0 across 30 user tables built by an unversioned linear chain of
@@ -1415,6 +1423,57 @@ class Database:
     # ------------------------------------------------------------------
     # Incremental cleanup
     # ------------------------------------------------------------------
+
+    def all_chunk_ids(self) -> set[int]:
+        """Every chunk row id in this index.
+
+        Diffed against `BaseVectorStore.stored_chunk_ids()` to find drift in both
+        directions: chunk rows with no vector (unretrievable, and skipped as up to date by
+        every later incremental run) and vectors with no chunk row (orphans). The two are
+        reported separately and never netted — a single netted number is what let a
+        10.5%-blind index read as healthy.
+
+        The difference is taken in Python rather than as a SQL anti-join for two reasons.
+        It is the only shape all three vector backends can express: Lance and Qdrant cannot
+        join this table at all. And it sidesteps a planner cliff that no test can catch —
+        `LEFT JOIN` / `NOT EXISTS` against a vec0 table degrade to one point lookup per
+        chunk row (21-28 s on a 68,880-chunk 3072-dim index) while being FASTER than the
+        alternative at fixture scale, so a unit test would pass on the wrong
+        implementation. Costs roughly 3 MB of ids at that size; page by id range if that
+        ever binds, but never fall back to a join.
+        """
+        return {int(r[0]) for r in self._conn.execute("SELECT id FROM chunks")}
+
+    def get_chunk_text_and_tokens(self, chunk_ids: Iterable[int]) -> list[tuple[int, str, int]]:
+        """(id, chunk_text, token_count) for those of `chunk_ids` whose row still exists.
+
+        The three columns are exactly `Indexer._PendingChunk`'s fields, so a repair rebuilds
+        a Phase 3 work item straight from the DB — no re-parse, no chunker call, no file read.
+
+        Ids whose row is gone simply do not come back, and that filtering is load-bearing
+        rather than defensive: Phase 2 deletes and re-inserts the chunk rows of every changed
+        symbol (`chunks.symbol_id` is `ON DELETE CASCADE`), so an id collected before Phase 2
+        ran can be dead by the time the repair is serviced. Embedding a dead id would write a
+        vector with no chunk row — a fresh orphan, i.e. the opposite direction of the bug
+        being fixed.
+
+        Batched over `_MAX_SQL_PARAMS`: unlike `get_chunk_ids_for_symbols` below, which is
+        called with one file's symbol list, this is called with a repo-wide id set — 7,228 on
+        the index this exists for.
+        """
+        ids = list(chunk_ids)
+        rows: list[tuple[int, str, int]] = []
+        for start in range(0, len(ids), _MAX_SQL_PARAMS):
+            batch = ids[start : start + _MAX_SQL_PARAMS]
+            placeholders = ",".join("?" for _ in batch)
+            rows.extend(
+                (int(r[0]), str(r[1]), int(r[2]))
+                for r in self._conn.execute(
+                    f"SELECT id, chunk_text, token_count FROM chunks WHERE id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+            )
+        return rows
 
     def get_chunk_ids_for_file(self, file_id: int) -> list[int]:
         """Return all chunk ids for a file. Called before re-indexing to clean the vector store."""
