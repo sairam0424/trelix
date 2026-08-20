@@ -8,6 +8,61 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ### Security
 
+- **The `trelix audit` read commands wrote to the databases they read, and could
+  report an intact chain about a file that was not an audit log.** `list`, `verify`
+  and `export` used the same store constructor as the writer, which runs
+  `CREATE TABLE IF NOT EXISTS`. Pointed at any other SQLite file they *added the
+  audit schema to it* — one measured case went from 8 KB and one table to 32 KB and
+  five — and then reported `Audit chain intact.` at exit 0, because the chain they
+  had just created was empty and therefore consistent. A zero-byte file went from 0
+  to 28 KB the same way. A CI integrity gate aimed at the wrong path passed green
+  and mutated the file it was aimed at. All three commands now open
+  `file:<path>?mode=ro`, run no DDL, and exit 2 unless `audit_log` and `audit_meta`
+  are already present. Pinned byte-for-byte — file sha256, `user_version`, every
+  `sqlite_master` name, and the absence of sidecar journal files — on a clean log, a
+  tampered log and a foreign database. The claim is narrow on purpose: `trelix
+  serve` with auditing enabled still creates `audit.db`, runs its DDL and holds a
+  write lock. Only the read commands cannot.
+- **Anything that could write the audit log could crash every command that reads
+  it.** `CAST(x'FFFE41' AS TEXT)` keeps TEXT storage class while holding bytes
+  sqlite3 cannot decode, so the exception fired inside `fetchall()` — one layer
+  *below* the anchor validation written to judge exactly this. The validation was
+  right and in the wrong place; the plain-BLOB case was already handled correctly,
+  which is what made it a placement bug rather than a logic bug. Measured: 61
+  tracebacks across 648 real CLI invocations, and 114 raises across 226 direct
+  `verify()` calls, all one root cause. Reads now go through a `text_factory` that
+  hands back raw `bytes` for an undecodable cell, so the value reaches the checks
+  that exist: `anchor_corrupt` in `audit_meta`, a row fault in `audit_log`. Legitimate
+  values are byte-for-byte unaffected. `export` separately died on any BLOB with
+  `TypeError: Object of type bytes is not JSON serializable`, mid-stream, losing the
+  rows it had already written; it now serializes with `default=str`, mirroring
+  `_canonical_hash`. **No audit command can be made to exit on a traceback by
+  editing the data it checks.**
+- **A total wipe of the audit log is now detected — the sloppy one.** Four places
+  claimed an emptied `audit.db` was "byte-indistinguishable" from a legitimately new
+  one. It is not: `audit_log.id` is `AUTOINCREMENT`, so SQLite keeps a
+  `sqlite_sequence` high-water mark and `DELETE` does not reset it. Zero rows with
+  `seq > 0` is a state normal operation cannot produce, and `verify` now reports it
+  as `log_emptied`. Nothing is written to achieve this and no schema is added — the
+  row was already in the file; this is not a genesis or origin marker. **It closes
+  carelessness and nothing else, and the docs now name the four defeats that all
+  still work**: clearing `sqlite_sequence`, zeroing or forging `seq`, setting `seq`
+  below the real row count, and removing the table via `PRAGMA writable_schema=ON`
+  (plain `DROP TABLE sqlite_sequence` is refused by SQLite). Absence of the row is
+  deliberately *not* a finding, because it is exactly what a never-appended database
+  looks like. Two look-alikes are pinned as clean: a rolled-back append leaves no
+  `seq` row, and a restored `sqlite3 .dump` legitimately carries a **duplicate**
+  `sqlite_sequence` row, which a check written as "exactly one row and
+  `seq == COUNT(*)`" would have called tamper. This **will** become a false positive
+  when retention pruning lands — `TRELIX_AUDIT_RETENTION_DAYS` is accepted but
+  unimplemented and nothing in `src/` deletes audit rows today, a premise now pinned
+  by a test — so whoever implements pruning has to revisit the check.
+- **A damaged audit database was reported as a tampered one.** A corrupted b-tree
+  page leaves the file openable and makes the first row read raise
+  `sqlite3.DatabaseError`; that surfaced as a Python traceback and exit **1**, which
+  is the tamper exit code, with none of the tokens an alert matches on. Restoring
+  from backup and hunting an intruder are different first moves. All three commands
+  now exit **2** with `Could not read audit database` and name what SQLite reported.
 - **`trelix audit verify` treated a missing integrity anchor as an absence of
   information rather than as a fault.** The audit chain is checked against a `count`
   and `head_hash` pair in `audit_meta`, and both comparisons were skipped when the
@@ -57,8 +112,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   surviving row verifies and the reported id is the first entry whose *existence* can
   no longer be proven. The second case now says so, and both carry a stable reason
   token (`row_mutated`, `row_mislinked`, `id_gap`, `count_mismatch`, `head_mismatch`,
-  `anchor_missing`, `anchor_corrupt`) for alerting. `AuditStore.verify()` returns that
-  verdict; `verify_chain()` keeps its signature and return type unchanged.
+  `anchor_missing`, `anchor_corrupt`, `log_emptied`) for alerting. `AuditStore.verify()`
+  returns that verdict; `verify_chain()` keeps its signature and return type unchanged.
+- **`AuditStore` takes a keyword-only `read_only` flag, and exposes `missing_tables`.**
+  `AuditStore(path, read_only=True)` opens `mode=ro`, runs no DDL, creates no parent
+  directory, and leaves `is_open` false with `missing_tables` populated when the file
+  does not already contain both audit tables. The default is unchanged and remains
+  read-write, so no existing caller behaves differently.
 
 ### Added
 

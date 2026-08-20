@@ -18,8 +18,12 @@ What would close these is an anchor the attacker cannot write: export
 bucket, another host — and compare on every run. None of that ships in trelix, and
 this file is not a plan to build it; it is the honest boundary of what does ship.
 
-Detected shapes are pinned in tests/unit/test_audit_anchor_presence.py and
-tests/unit/test_audit_store.py.
+Detected shapes are pinned in tests/unit/test_audit_anchor_presence.py,
+tests/unit/test_audit_store.py and tests/unit/test_audit_read_hardening.py — the
+last of which took one shape off this list: a *sloppy* total wipe (two DELETEs and
+nothing else) is now detected via SQLite's ``sqlite_sequence`` high-water mark. The
+first test below is what survives of that shape, and the file it points at pins the
+other three ways to get back here.
 """
 
 from __future__ import annotations
@@ -83,18 +87,30 @@ def _rows(db: Path) -> int:
         conn.close()
 
 
-def test_a_total_wipe_of_both_tables_is_not_detected(tmp_path: Path) -> None:
-    """NOT DETECTED: two DELETEs, no hashing.
+def test_a_total_wipe_that_also_clears_sqlite_sequence_is_not_detected(tmp_path: Path) -> None:
+    """NOT DETECTED: three DELETEs, no hashing.
 
-    An emptied database is byte-indistinguishable from a legitimately new one:
-    zero entries and no anchor is exactly the state ``AuditStore(path)`` creates,
-    which is also why that state has to verify clean. Nothing inside the file
-    records that a chain ever began.
+    The two-DELETE version of this IS now detected — see
+    tests/unit/test_audit_read_hardening.py. The claim that used to live here, that
+    an emptied database is "byte-indistinguishable" from a legitimately new one,
+    was simply false: ``audit_log`` is AUTOINCREMENT, so SQLite keeps a
+    ``sqlite_sequence`` high-water mark that ``DELETE`` does not reset.
+
+    One more DELETE removes it, and then the file really is indistinguishable from
+    one that was never appended to — which is the state that must verify clean, so
+    absence cannot be a finding. Three other routes to the same place (zeroing
+    ``seq``, forging it, removing the table via ``PRAGMA writable_schema``) are
+    pinned alongside the detected case.
     """
     db = tmp_path / "audit.db"
     _seed(db, 4)
 
-    _raw_exec(db, "DELETE FROM audit_log", "DELETE FROM audit_meta")
+    _raw_exec(
+        db,
+        "DELETE FROM audit_log",
+        "DELETE FROM audit_meta",
+        "DELETE FROM sqlite_sequence WHERE name = 'audit_log'",
+    )
 
     assert _rows(db) == 0
     assert _verify(db) == (None, None)

@@ -3351,6 +3351,15 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
     all-clear from a read-only command, and exactly the failure the paragraph
     above says this function exists to prevent. A CI integrity gate pointed at a
     not-yet-created or misspelled path passed green.
+
+    Opened ``read_only=True``, which is what makes "these commands never write the
+    database they read" true rather than intended. The existence check above stopped
+    an *absent* path from being created; it said nothing about a path that exists and
+    is some other SQLite file. Pointed at, say, a customers database, the old
+    read-write open ran the writer's DDL and grew an 8 KB one-table file into a
+    32 KB five-table one, then reported "Audit chain intact." — a green integrity
+    verdict on a database that is not an audit log. A read-only handle cannot do
+    that, and the ``missing_tables`` gate turns the verdict itself into exit 2.
     """
     from trelix.audit.store import AuditStore
     from trelix.core.config import AuditConfig
@@ -3369,7 +3378,19 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
         )
         raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
 
-    store = AuditStore(path)
+    store = AuditStore(path, read_only=True)
+    # Reported BEFORE the generic is_open check, and with its own wording, because
+    # "this file is not an audit log" and "this file would not open" send an
+    # operator to different places. Nothing here may resemble a verdict about a
+    # chain: there is no chain to have a verdict about.
+    if store.missing_tables:
+        err_console.print(
+            f"[red]Not an audit database[/red] at {_safe_text(str(path))} — no "
+            f"{_safe_text(', '.join(store.missing_tables))} table. Nothing was read and "
+            "nothing was created, and no verdict about a chain is possible here. Check "
+            "the path, or enable auditing (TRELIX_AUDIT_ENABLED=true) to start a chain."
+        )
+        raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
     if not store.is_open:
         err_console.print(
             f"[red]Could not open audit database[/red] at {_safe_text(str(path))} — "
@@ -3380,14 +3401,37 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
     return store, path
 
 
+def _audit_db_unreadable(path: Path, exc: Exception) -> NoReturn:
+    """Report a damaged audit database as *could not check*, never as tamper.
+
+    A corrupted b-tree page — 256 bytes of garbage over page 2 is enough — leaves
+    the file openable and makes the first row read raise ``sqlite3.DatabaseError``.
+    That surfaced as a traceback and exit 1, which is the tamper exit code: a
+    damaged disk was being reported as an attack, and the tokens an alert matches on
+    ("TAMPERED", a reason code) were absent, so the alert saw only a nonzero exit.
+    Restoring from backup and hunting an intruder are different first moves.
+    """
+    err_console.print(
+        f"[red]Could not read audit database[/red] at {_safe_text(str(path))} — "
+        f"SQLite reports: {_safe_text(str(exc))}. That is a damaged or truncated "
+        "file, not a tamper verdict; nothing about the chain was determined."
+    )
+    raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
+
+
 @audit_app.command("list")
 def audit_list(
     db: Annotated[str | None, typer.Option("--db", help="Path to audit.db")] = None,
     limit: Annotated[int, typer.Option("--limit", "-n", help="Rows to show")] = 50,
 ) -> None:
     """Show the most recent audit entries (newest first)."""
+    import sqlite3
+
     store, path = _open_audit_store(db)
-    rows = store.recent(limit)
+    try:
+        rows = store.recent(limit)
+    except sqlite3.DatabaseError as exc:
+        _audit_db_unreadable(path, exc)
     if not rows:
         console.print("[yellow]No audit entries.[/yellow]")
         return
@@ -3428,10 +3472,15 @@ def audit_verify(
     db: Annotated[str | None, typer.Option("--db", help="Path to audit.db")] = None,
 ) -> None:
     """Verify the hash chain. Exits nonzero and names the first divergent id on tamper."""
+    import sqlite3
+
     from trelix.audit.store import UNPROVABLE_ID_REASONS
 
-    store, _ = _open_audit_store(db)
-    result = store.verify()
+    store, path = _open_audit_store(db)
+    try:
+        result = store.verify()
+    except sqlite3.DatabaseError as exc:
+        _audit_db_unreadable(path, exc)
     if result.tampered_id is None:
         console.print("[green]Audit chain intact.[/green]")
         return
@@ -3462,12 +3511,22 @@ def audit_export(
     ] = "ndjson",
 ) -> None:
     """Export every audit entry (oldest first) to stdout as NDJSON."""
+    import sqlite3
+
     if export_format != "ndjson":
         _print_error("Unsupported format", f"{export_format!r} (only 'ndjson' is supported)")
         raise typer.Exit(1)
-    store, _ = _open_audit_store(db)
-    for row in store.iter_for_export():
-        print(json.dumps(row))
+    store, path = _open_audit_store(db)
+    # `default=str`, mirroring `_canonical_hash`, because a column's declared type
+    # does not constrain what is stored: SQLite accepts a BLOB in any of them, and
+    # `json.dumps` raised "Object of type bytes is not JSON serializable" — export
+    # was the only command a single planted BLOB could kill outright, which is the
+    # command an offline verifier and every SIEM shipper depend on.
+    try:
+        for row in store.iter_for_export():
+            print(json.dumps(row, default=str))
+    except sqlite3.DatabaseError as exc:
+        _audit_db_unreadable(path, exc)
 
 
 # ---------------------------------------------------------------------------

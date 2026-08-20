@@ -1619,6 +1619,14 @@ trelix audit list --db /var/log/trelix/audit.db
   existence check runs before the store is constructed, precisely because
   constructing it would create the file and make a typo look like an empty log.
   This applies to `list`, `verify` and `export` alike.
+- A `--db` path that exists but is **not an audit database** also exits 2, and is
+  not modified in any way. All three commands open the file read-only
+  (`mode=ro`) and require `audit_log` and `audit_meta` to already be there.
+  Until v3.0.1 they ran the writer's `CREATE TABLE IF NOT EXISTS` script, so
+  pointing them at an unrelated SQLite file added the audit schema to it.
+- A **damaged** database — a corrupted page that SQLite can open but not read —
+  exits 2 with `Could not read audit database`, never 1. Tamper and disk damage
+  are different findings with different first moves.
 - Long values are truncated to fit the terminal, and the two hash columns are
   not shown at all. Use [`trelix audit export`](#trelix-audit-export) when you
   need full values.
@@ -1642,20 +1650,30 @@ Walks the whole hash chain and reports whether the audit log is intact. Detects
 a mutated row (its recomputed `entry_hash` no longer matches), a
 deleted/reordered row (the next row's `prev_hash` no longer links, or the `id`
 sequence has a gap), a deleted tail (the live row count / head hash no longer
-match the in-DB anchor), and an in-DB anchor that is **missing or malformed** —
+match the in-DB anchor), an in-DB anchor that is **missing or malformed** —
 `append` writes both anchor rows in the same transaction as the entry, so a
-non-empty log without them is a state normal operation cannot produce.
+non-empty log without them is a state normal operation cannot produce — and a log
+**emptied** after ids had been handed out, which SQLite's own `sqlite_sequence`
+high-water mark reveals.
 
 The rows and the anchor are read inside one SQLite read transaction, so running
 this against a live `audit.db` while a `trelix serve` process is appending does
-not produce a false tamper report. It never writes to the database it reads.
+not produce a false tamper report.
+
+**It does not write the database it reads.** The connection is opened
+`file:<path>?mode=ro` and no DDL runs, so SQLite refuses every write on the
+handle — verified byte-for-byte, including `user_version`, `sqlite_master` and the
+absence of sidecar journal files, on a clean log, a tampered log and a foreign
+database. Note the scope: `trelix serve` with auditing **enabled** does create
+`audit.db`, run its DDL and take a write lock to append. It is the three `audit`
+read commands that cannot.
 
 **It does not detect everything, and the gaps are not obscure.** An in-DB anchor
-can only ever catch *incomplete* tampering; five shapes — including a total wipe
-and a truncation with both anchor values realigned — are undetectable, three of
-them without computing a single hash. Read
-[AUDIT.md](AUDIT.md#exactly-what-is-and-is-not-detected) before wiring this into a
-compliance control.
+can only ever catch *incomplete* tampering; six shapes — including a truncation
+with both anchor values realigned, and a wipe that also neutralises
+`sqlite_sequence` — are undetectable, four of them without computing a single
+hash. Read [AUDIT.md](AUDIT.md#exactly-what-is-and-is-not-detected) before wiring
+this into a compliance control.
 
 #### Options
 
@@ -1684,6 +1702,12 @@ Audit chain TAMPERED (row_mutated) — first divergent entry id: 3
 
 # the anchor itself is gone (exit 1, on stderr)
 Audit chain TAMPERED (anchor_missing) — no surviving entry diverged; first unprovable entry id: 5
+
+# the log was emptied (exit 1, on stderr)
+Audit chain TAMPERED (log_emptied) — no surviving entry diverged; first unprovable entry id: 1
+
+# the file is damaged, not tampered (exit 2, on stderr)
+Could not read audit database at /var/log/trelix/audit.db — SQLite reports: database disk image is malformed. …
 ```
 
 #### Notes
@@ -1692,17 +1716,23 @@ Audit chain TAMPERED (anchor_missing) — no surviving entry diverged; first unp
   check (see [`audit list`](#trelix-audit-list) for the shared path guard).
 - The parenthesized **reason code** is the stable token to match on in an alert:
   `row_mutated`, `row_mislinked`, `id_gap`, `count_mismatch`, `head_mismatch`,
-  `anchor_missing`, `anchor_corrupt`.
+  `anchor_missing`, `anchor_corrupt`, `log_emptied`.
 - The two sentences are two different facts. For a row fault the named id is a row
   that is present and wrong, and entries before it verified cleanly — that is where
   to start. For an anchor or count fault **every surviving row verified**; the named
   id is the first entry whose *existence* can no longer be proven, so there is no
   row there to inspect.
 - A malformed anchor value is reported as `anchor_corrupt`, not raised: the command
-  cannot be made to exit on a traceback by editing the data it checks.
-- An empty log verifies as intact (exit 0) — a brand-new `audit.db` has no entries
-  and no anchor rows, which is also why a total wipe cannot be distinguished from
-  one.
+  cannot be made to exit on a traceback by editing the data it checks. That now
+  includes a TEXT cell holding **undecodable UTF-8**, which used to raise inside
+  sqlite3's own row decoding — upstream of the check written to judge it — and
+  ended the command in a traceback.
+- A **brand-new, never-appended** `audit.db` verifies as intact (exit 0): no
+  entries, no anchor rows, and no `sqlite_sequence` row. A log that once had
+  entries and was emptied is a different state and is reported as `log_emptied` —
+  but only if the wipe stopped at the two `DELETE`s. See
+  [AUDIT.md](AUDIT.md#exactly-what-is-and-is-not-detected) for the four ways to
+  defeat that, all of which still work.
 - This is tamper **evidence**, not tamper **proofing** — see
   [AUDIT.md](AUDIT.md#exactly-what-is-and-is-not-detected) for the full
   detected/undetected table.
@@ -1760,6 +1790,11 @@ trelix audit export | jq -r '.principal' | sort | uniq -c
   fine for the operational sizes this log is meant for, but it is not a
   streaming cursor over a multi-GB log.
 - The export is a snapshot: entries appended while it runs are not included.
+- A cell that is **not text** — a BLOB, or a TEXT cell holding undecodable UTF-8 —
+  is rendered with `str()` (e.g. `"b'\\xde\\xad\\xbe\\xef'"`) rather than dropped or
+  raised on. SQLite's declared column types do not constrain what is stored, and a
+  single such cell used to end the command in `TypeError: Object of type bytes is
+  not JSON serializable`, mid-stream, taking the rows already written with it.
 
 ---
 

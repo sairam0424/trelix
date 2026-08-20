@@ -84,11 +84,44 @@ Two gates make that detection work:
    lowercase hex — is likewise reported rather than trusted, and never raises out
    of the verifier. This is bookkeeping, not an external root of trust: it lives
    in the same file.
+3. **SQLite's own `sqlite_sequence` high-water mark**, read-only, for one shape
+   the two gates above cannot see: a log emptied completely. `audit_log.id` is
+   `AUTOINCREMENT`, so SQLite records the highest id it ever handed out and
+   `DELETE` does **not** reset it. Zero rows with `seq > 0` is a state normal
+   operation cannot produce. Nothing is written to record this — the row is
+   already in the file. **This closes the sloppy wipe and nothing more**; four
+   ways to defeat it are named below and all four still work.
+
+### Reading never writes
+
+`trelix audit list`, `verify` and `export` open `file:<path>?mode=ro` and run no
+DDL, and they refuse to report anything at all unless `audit_log` **and**
+`audit_meta` already exist — exit 2, "not an audit database".
+
+Until v3.0.1 they used the same constructor as the writer, which meant they ran
+`CREATE TABLE IF NOT EXISTS`. Pointed at any other SQLite file, `trelix audit
+verify` **added the audit schema to it** — one measured case went from 8 KB and
+one table to 32 KB and five — and then reported `Audit chain intact.` at exit 0:
+a green integrity verdict on a database that is not an audit log. A zero-byte
+file went from 0 to 28 KB the same way.
+
+The claim is deliberately narrow. **The serving path still writes**: `trelix
+serve` with auditing enabled creates `audit.db`, runs its DDL and holds a write
+lock to append. What is true is that the three read commands cannot, even by
+mistake — SQLite refuses every write on a `mode=ro` handle.
+
+A damaged file is also not a tamper verdict. A corrupted b-tree page makes the
+first row read raise, and that now exits **2** ("could not read audit database"),
+not 1 with a traceback. And no stored value can crash a read: a TEXT cell holding
+undecodable UTF-8 (`CAST(x'FFFE41' AS TEXT)` keeps TEXT storage class while
+holding invalid bytes) is reported as `anchor_corrupt` or as a row fault instead
+of raising out of `fetchall()`.
 
 ### Exactly what is and is not detected
 
 Every row here is pinned by a test, including the "no" rows — see
-`tests/unit/test_audit_anchor_presence.py`, `tests/unit/test_audit_store.py` and
+`tests/unit/test_audit_anchor_presence.py`, `tests/unit/test_audit_store.py`,
+`tests/unit/test_audit_read_hardening.py` and
 `tests/unit/test_audit_undetectable.py`. The hashing column is the attacker's
 cost, and it is listed to make one point: cheapness is *not* what separates the
 two halves of this table.
@@ -99,20 +132,52 @@ two halves of this table.
 | A middle row deleted, or two rows swapped | none | **yes** |
 | The tail truncated, anchor untouched | none | **yes** |
 | Either `audit_meta` row deleted, or both | none | **yes** |
-| An anchor value malformed, out of range, or the wrong storage type | none | **yes** |
+| An anchor value malformed, out of range, the wrong storage type, or not valid UTF-8 | none | **yes** |
 | A valid row appended without the anchor advanced | one | **yes** |
-| Both tables emptied | none | **no** |
+| Both tables emptied, and nothing else — the *sloppy* wipe | none | **yes** (`log_emptied`) |
+| A wipe that also clears, zeroes or forges `sqlite_sequence.seq` | none | **no** |
+| A wipe that removes `sqlite_sequence` via `PRAGMA writable_schema` | none | **no** |
 | The tail truncated with both anchor values realigned | none | **no** |
 | A row appended with `prev_hash` set to the real head, anchor advanced | one | **no** |
 | The whole log rebuilt with a recomputed chain | one per row | **no** |
 | The file deleted, or replaced by another valid chain | none | **no** |
 
 Reading the "no" rows plainly: **in-DB hashing cannot detect a writer who knows
-the scheme.** Three of those five need no hashing whatsoever. An emptied
-`audit.db` is indistinguishable from a legitimately new one — zero entries and no
-anchor is exactly what `AuditStore` creates on first open, which is also why that
-state has to verify clean. And nothing inside the file records *which* chain it is
-supposed to be, so a substituted file verifies perfectly.
+the scheme.** Four of those six need no hashing whatsoever, and nothing inside the
+file records *which* chain it is supposed to be, so a substituted file verifies
+perfectly.
+
+**On the wipe row, precisely.** What is detected is the wipe that stops at
+`DELETE FROM audit_log; DELETE FROM audit_meta`. Four defeats are known and all
+four succeed today:
+
+1. `DELETE FROM sqlite_sequence WHERE name='audit_log'` — one more statement.
+2. `UPDATE sqlite_sequence SET seq = 0` (or a negative value, or a BLOB).
+3. `UPDATE sqlite_sequence SET seq = <surviving row count>` after a partial
+   truncation — the check only fires on an *empty* log, so this adds nothing to
+   detect that was not already undetectable.
+4. `PRAGMA writable_schema=ON; DELETE FROM sqlite_master WHERE
+   name='sqlite_sequence'`. Plain `DROP TABLE sqlite_sequence` is refused by
+   SQLite ("may not be dropped"), but this route needs no extra privilege.
+
+All four end in the same place: no usable `seq`, which is exactly what a database
+that was never appended to looks like — and that state has to verify clean. So
+**absence is deliberately not a finding**, and the only thing this closes is
+carelessness.
+
+Two things that look like a wipe and are not, both pinned: a rolled-back append
+leaves no `seq` row at all, and a restored `sqlite3 .dump` legitimately carries a
+**duplicate** `sqlite_sequence` row (`.dump` emits an `INSERT` *and*
+`AUTOINCREMENT` recreates the row on first insert), so a check written as "exactly
+one row and `seq == COUNT(*)`" would call every restored dump tamper. `VACUUM`,
+`VACUUM INTO` and `.backup()` all preserve `seq` exactly.
+
+> **This check will become a false positive when retention pruning lands.**
+> `TRELIX_AUDIT_RETENTION_DAYS` is accepted but unimplemented and nothing in
+> `src/` issues `DELETE FROM audit_log` today — a fact pinned by a test — which is
+> the only reason a legitimately empty-but-used log cannot occur. Whoever
+> implements pruning must update `AuditStore._max_audit_log_seq_locked` and this
+> section, or every fully-pruned log will report `log_emptied`.
 
 What closes those rows is an anchor the attacker cannot write: **export the head
 hash and count off-box, somewhere the attacker does not control, and compare it
@@ -121,6 +186,11 @@ different host, a transparency log. Then a wipe, a realigned truncation and a
 substituted file all show up as a divergence from the copy you hold. None of that
 ships in trelix and this document is not proposing to build it here; it is the
 boundary you are working inside.
+
+Note what the `sqlite_sequence` check is *not*: it is not a genesis or origin
+marker, and it writes nothing — no schema, no `user_version`, no new row. It reads
+bookkeeping SQLite was already keeping. An anchor an attacker cannot write has to
+live outside the file, and nothing inside a single SQLite file substitutes for it.
 
 **Hardening path** (none of this ships today — it is what you would add):
 
@@ -165,7 +235,7 @@ belong together and must survive re-indexing. See [SSO.md](SSO.md).
 | `TRELIX_AUDIT_DB_PATH` | _(none)_ → `<cwd>/.trelix/audit.db` | Path to the separate audit DB. Parent directories are created on first open. |
 | `TRELIX_AUDIT_LOG_QUERIES` | `false` | Store raw query text for `search`/`ask` actions instead of `sha256:<hex>` of it. **Currently has no observable effect through the HTTP API** — see [Query text](#query-text-and-log_queries). |
 | `TRELIX_AUDIT_FAIL_CLOSED` | `false` | `true` re-raises an audit-write failure into the request; `false` logs a WARNING and lets the request proceed. See [Failure contract](#failure-contract). |
-| `TRELIX_AUDIT_RETENTION_DAYS` | `365` | **Not implemented.** Accepted and validated-free (a negative value is accepted), but nothing in trelix reads it — there is no pruning job. Rotate or prune `audit.db` yourself. |
+| `TRELIX_AUDIT_RETENTION_DAYS` | `365` | **Not implemented.** Accepted and validated-free (a negative value is accepted), but nothing in trelix reads it — there is no pruning job. Rotate or prune `audit.db` yourself, and read the `log_emptied` caveat in [what is and is not detected](#exactly-what-is-and-is-not-detected) first: pruning a log all the way to zero rows is currently reported as a wipe. |
 
 ---
 
