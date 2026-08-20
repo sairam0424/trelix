@@ -139,7 +139,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        # 3.14 is here because Dockerfile's base image moves to python:3.14-slim (#165).
+        # Without this leg the shipped container would run a Python the suite has never
+        # been exercised against: the Docker smoke test only builds the image and runs
+        # `--help`, which cannot detect a behavioural difference in the stdlib or a
+        # dependency. Verified before adding, on 3.14.6 with every extra installed:
+        # 3256 collected (identical to 3.11), 3256 passed, 0 skipped, 0 failed, plus
+        # 102/19/10 in the three packages.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       # fetch-tags is load-bearing, not hygiene: tests/unit/test_assembler_backcompat_golden.py
       # builds its baseline from `git show v2.12.0:src/trelix/retrieval/assembler.py` to prove
@@ -196,8 +203,9 @@ jobs:
       # of drift: this job installs [local,otel,sso,dev] whereas the measurement was
       # taken with every extra present, so import-guard fallbacks in the optional
       # backends are covered on the other side here. src/trelix contains no
-      # sys.version_info branches (verified: 0 occurrences), so the 3.11/3.12/3.13
-      # matrix legs do not diverge and the same number holds on all three.
+      # sys.version_info branches (still 0 occurrences, re-verified when 3.14 was added,
+      # and 0 in packages/*/src too), so the 3.11/3.12/3.13/3.14 matrix legs do not
+      # diverge and the same number holds on all four.
       #
       # pyproject's fail_under stays 75 and now disagrees with CI; raise it to 79 so a
       # local `pytest --cov` fails for the same reason CI does.

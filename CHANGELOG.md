@@ -6,9 +6,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
 
-## [3.1.3] — 2026-08-20
+- **Python 3.14 is tested and advertised.** `requires-python` has always been an open
+  `>=3.11`, so pip was already willing to install trelix on 3.14 — but nothing verified it
+  and the classifiers stopped at 3.13, so the honest answer to "does this work on 3.14" was
+  "nobody has checked". It does: on 3.14.6 with every extra installed, the unit suite
+  collects 3256 tests — identical to 3.11 — and all 3256 pass with zero skips, alongside
+  102 in `trelix-mcp` and 19 and 10 in the two adapters. The whole dependency tree installs,
+  including the four compiled ones that mattered: torch 2.13.0, tree-sitter 0.26.0,
+  numpy 2.5.2 and tiktoken 0.14.0 ship cp314 wheels, `tree-sitter-language-pack` ships
+  `cp310-abi3` (the stable ABI, so it covers every later version), and `sqlite-vec` ships
+  `py3-none-manylinux` because it is a precompiled SQLite extension loaded through ctypes
+  rather than a CPython C extension.
+- **CI now runs the suite on 3.14** as a fourth matrix leg. This is what makes the
+  `python:3.14-slim` base image safe to adopt: the Docker job only builds the image and runs
+  `--help`, which cannot detect a stdlib or dependency behaviour change, so without a real
+  matrix leg the shipped container would run a Python the suite had never touched.
+
+## [3.1.3] — 2026-08-19
 
 Correctness and security. Four paths returned confident wrong answers, one could delete a
 user's files, and four were reachable by an attacker. **Upgrade if you run `trelix serve`, if
