@@ -19,17 +19,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   — all files up to date." `index_metadata` was emptied by the same kill, which disarmed the
   dimension guard as a side effect: `DimensionGuard.check` early-returns when the stored
   value is not an int, so that index would also have accepted mixed-width vectors.
-  `trelix index` now reconciles the vector store against the `chunks` table at the start of
-  every run and folds any vector-less chunks into the existing Phase 3, re-embedding **only**
-  the holes — not the whole file, which would cost strictly more. This is the crash-recovery
-  counterpart to `PartialIndexError`, which covers the case where Phase 3 *raises* and is
-  unchanged. Both the batch and streaming pipelines heal; watch mode deliberately does not
-  (a save event on one file is the wrong trigger for a repo-wide scan), which `trelix stats`
-  now states rather than leaving to be discovered.
-- **The embedding dimension is now recorded before Phase 3 rather than after,** so a repair
-  run re-arms the dimension guard on an index whose `index_metadata` a kill emptied. For the
-  default backend this records a fact already committed to disk: `SQLiteVectorStore` creates
-  its vec0 table at `FLOAT[dim]`, and that declared width cannot be changed by deleting rows.
+  `trelix index` now reconciles the vector store against the `chunks` table once per run and
+  folds any vector-less chunks into the existing Phase 3, re-embedding **only** the holes —
+  not the whole file, which would cost strictly more. This is the crash-recovery counterpart
+  to `PartialIndexError`, which covers the case where Phase 3 *raises* and is unchanged. Both
+  pipelines heal, at different points in the run: the batch pipeline reconciles before Phase 1
+  (which is what withholds the "Nothing to index" claim), while the streaming pipeline has no
+  such pre-pass and reconciles after the walk instead — and skips the repair entirely when any
+  file failed in the same run, since a chunk this run just failed to embed would otherwise be
+  re-sent to the provider that refused it and paid for twice. Watch mode deliberately does not
+  heal (a save event on one file is the wrong trigger for a repo-wide scan), which
+  `trelix stats` now states rather than leaving to be discovered.
+- **Chunk rows whose id reached the vector store's sub-chunk offset are no longer treated as
+  holes.** Every backend's `stored_chunk_ids()` excludes ids at or above 10,000,000 because
+  that is where sub-chunk vectors live, so diffing a flat set of `chunks.id` against it
+  reported every row past the offset as missing a vector *forever* — and the repair above then
+  re-embedded them on every single run, for money, on a tree with nothing to do. This is
+  reachable rather than theoretical: `chunks.id` is `INTEGER PRIMARY KEY AUTOINCREMENT` and
+  Phase 2 deletes then re-inserts the chunk rows of every changed symbol, so the counter only
+  climbs — roughly 145 full re-chunks of a 68,880-chunk index. `Database.all_chunk_ids()` now
+  returns the two id classes separately; the repair services only the ids below the offset,
+  and the rest are reported at error level (and as their own `trelix stats` row and remedy)
+  as id-space exhaustion. Re-embedding cannot help them in any case — `search()` filters
+  their vectors out through `_is_chunk_id` — so they need a re-key, not a re-embed.
+- **The embedding dimension is recorded before Phase 3 only when the vector store is empty,**
+  and after a successful embed otherwise. Recording early is what re-arms the dimension guard
+  on a fresh index whose Phase 3 dies before writing anything, and over an empty store a wrong
+  stamp costs nothing: no stored vector carries the other width and the `migrate-vectors
+  --reset` remedy would discard zero embeddings. Over a store that already holds vectors it
+  costs plenty — a repair run whose Phase 3 raised would stamp the new provider's width while
+  the vec0 table kept its own (`CREATE VIRTUAL TABLE IF NOT EXISTS` can neither widen nor
+  narrow a pre-existing table), locking the *correct* provider out of its own index behind a
+  `DimensionMismatchError` whose remedy discards every paid-for embedding. The re-arming
+  property survives where it is needed: on a populated index with the correct provider the
+  embed succeeds and the late record fires.
 - **`SQLiteVectorStore.count()` now takes the connection lock** like every other read on
   that connection. It was the one that did not, against a connection opened
   `check_same_thread=False`.
@@ -40,14 +63,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   missing vectors, and vectors with no chunk row — and never nets them, because a single
   netted number is what let a 10.5%-blind index read as healthy. It also reports
   `Embedding dimension: not recorded — dimension guard disabled` instead of guessing, which
-  makes the second half of the failure above visible before any hole is counted. Exit code is
-  unchanged at 0 in every case, so scripts that pipe `stats` keep working.
+  makes the second half of the failure above visible before any hole is counted — and reports
+  the coverage anyway in that case, on the sqlite backend, through the same read-only
+  dimension-free projection `--dry-run` uses. (A missing dimension used to suppress the whole
+  coverage block, which is precisely the state a killed run leaves, so the command that exists
+  to reveal the holes was blind on the only index that had them. What must never be guessed is
+  the vec0 *width* — a projection of `chunk_id` needs none and creates nothing.) lance and
+  qdrant still report "not checked" without a recorded dimension: both create on open. Exit
+  code is unchanged at 0 in every case, so scripts that pipe `stats` keep working.
 - **`trelix index --dry-run` prices the repair.** New `Chunks missing vectors` and
   `Repair tokens` rows, with the repair tokens included in the dollar estimate — a preview
-  that under-quotes the run it is pricing is the same class of defect as the bug above. The
-  check is strictly read-only (`mode=ro` plus `PRAGMA query_only`), and reports
-  "not checked (lance backend)" rather than opening a Lance or Qdrant handle, since both
-  create on open.
+  that under-quotes the run it is pricing is the same class of defect as the bug above. It
+  quotes the same set the run will embed, ids past the sub-chunk offset excluded, so it does
+  not over-quote either. The check is strictly read-only (`mode=ro` plus `PRAGMA query_only`),
+  and reports "not checked (lance backend)" rather than opening a Lance or Qdrant handle, since
+  both create on open — which also means the dollar figure is a **lower bound** on those two
+  backends, where the repair is not priced at all.
 - **`BaseVectorStore.stored_chunk_ids()`**, implemented for all three backends
   (sqlite-vec, LanceDB, Qdrant). Returns real chunk ids with summary and sub-chunk sentinels
   excluded. `count()` cannot answer this question — it is sentinel-inclusive, so

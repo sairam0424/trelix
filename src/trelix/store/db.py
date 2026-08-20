@@ -38,7 +38,7 @@ import urllib.request
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from trelix.indexing.multi_granularity import SubSymbolChunk
@@ -93,6 +93,18 @@ _MAX_SQL_PARAMS = 500
 # unstamped (user_version = 0) indexes already hold. 0 therefore means
 # "written before versioning", NOT corrupt — see _guard_schema_version().
 SCHEMA_VERSION = 1
+
+
+class ChunkIdPartition(NamedTuple):
+    """`chunks.id` values split by whether a vector store can hold a vector for them.
+
+    Two fields rather than one set because the answers are not the same kind of thing and
+    must not be summed: `repairable` is work `trelix index` should pay for, while
+    `id_space_exhausted` is work no amount of paying can fix. See `Database.all_chunk_ids`.
+    """
+
+    repairable: set[int]
+    id_space_exhausted: set[int]
 
 
 class SchemaVersionError(Exception):
@@ -1424,14 +1436,30 @@ class Database:
     # Incremental cleanup
     # ------------------------------------------------------------------
 
-    def all_chunk_ids(self) -> set[int]:
-        """Every chunk row id in this index.
+    def all_chunk_ids(self) -> ChunkIdPartition:
+        """Every chunk row id in this index, split at the vector store's sentinel offset.
 
-        Diffed against `BaseVectorStore.stored_chunk_ids()` to find drift in both
-        directions: chunk rows with no vector (unretrievable, and skipped as up to date by
-        every later incremental run) and vectors with no chunk row (orphans). The two are
+        `repairable` is diffed against `BaseVectorStore.stored_chunk_ids()` to find drift in
+        both directions: chunk rows with no vector (unretrievable, and skipped as up to date
+        by every later incremental run) and vectors with no chunk row (orphans). The two are
         reported separately and never netted — a single netted number is what let a
         10.5%-blind index read as healthy.
+
+        `id_space_exhausted` is returned SEPARATELY rather than as part of that diff, and
+        that split is the whole point of this signature. `stored_chunk_ids()` excludes ids at
+        or above `BaseVectorStore._SUB_CHUNK_OFFSET` on every backend, because that is where
+        sub-chunk vectors live; a flat set of chunk ids therefore reports every chunk row
+        that crossed the offset as a hole FOREVER, and each `trelix index` re-embeds it for
+        money on a tree with nothing to do. Reaching the offset is not hypothetical: `chunks
+        .id` is `INTEGER PRIMARY KEY AUTOINCREMENT` and Phase 2 deletes then re-inserts the
+        chunk rows of every changed symbol, so the counter only climbs — roughly 145 full
+        re-chunks of a 68,880-chunk index.
+
+        Re-embedding those rows cannot help them, which is why they are not offered as
+        repair work: `SQLiteVectorStore.search()` filters its results through
+        `_is_chunk_id`, so a vector written at such an id is dropped from every search
+        regardless of how many times it is paid for. They need a re-key (renumber the
+        `chunks` table, or widen the offset), not a re-embed.
 
         The difference is taken in Python rather than as a SQL anti-join for two reasons.
         It is the only shape all three vector backends can express: Lance and Qdrant cannot
@@ -1442,7 +1470,18 @@ class Database:
         implementation. Costs roughly 3 MB of ids at that size; page by id range if that
         ever binds, but never fall back to a join.
         """
-        return {int(r[0]) for r in self._conn.execute("SELECT id FROM chunks")}
+        # Local import, matching every other cross-module import in this file: `store.vector`
+        # loads the sqlite-vec extension at import time and no plain `Database` user should
+        # pay for that. Reading the class attribute constructs no store.
+        from trelix.store.vector import BaseVectorStore
+
+        offset = BaseVectorStore._SUB_CHUNK_OFFSET
+        repairable: set[int] = set()
+        exhausted: set[int] = set()
+        for row in self._conn.execute("SELECT id FROM chunks"):
+            chunk_id = int(row[0])
+            (repairable if chunk_id < offset else exhausted).add(chunk_id)
+        return ChunkIdPartition(repairable=repairable, id_space_exhausted=exhausted)
 
     def get_chunk_text_and_tokens(self, chunk_ids: Iterable[int]) -> list[tuple[int, str, int]]:
         """(id, chunk_text, token_count) for those of `chunk_ids` whose row still exists.

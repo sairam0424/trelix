@@ -613,8 +613,26 @@ class Indexer:
         # so nothing further deletes chunk rows before these ids are embedded. The rows are
         # read for their text regardless. Embeds through the sync path because this pipeline
         # has no async phase of its own.
+        #
+        # Skipped entirely when any file errored IN THIS RUN, and that guard is a cost guard
+        # rather than a tidiness one. This repair runs AFTER the walk, unlike index()'s which
+        # runs before it, so a file whose own Phase 3 just failed — embedding already paid
+        # for, `index_file` having swallowed the failure into `status=error` — is now sitting
+        # in the store as a hole. Repairing it here re-sends the identical text to the same
+        # provider that just refused it: paid twice, failed twice. The holes do not go
+        # anywhere; the next `trelix index` repairs them once the cause is fixed, which is
+        # the same deal the batch pipeline offers.
         repair_ids, results["chunks_missing_vectors"] = self._chunks_missing_vectors()
-        if repair_ids:
+        if repair_ids and results["errors"]:
+            logger.warning(
+                "%d chunk(s) have no vector, but %d file(s) failed in this run — not "
+                "repairing now, because a chunk this run just failed to embed would be "
+                "re-sent to the provider that refused it and paid for twice. Fix the "
+                "failures and re-run `trelix index` to repair.",
+                len(repair_ids),
+                results["errors"],
+            )
+        elif repair_ids:
             repaired = [
                 _PendingChunk(chunk_id=cid, chunk_text=text, token_count=tokens)
                 for cid, text, tokens in self.db.get_chunk_text_and_tokens(repair_ids)
@@ -692,6 +710,43 @@ class Indexer:
     # Crash recovery: chunk rows a killed run left with no vector
     # ──────────────────────────────────────────────────────────────────────
 
+    def _vector_store_is_empty(self) -> bool:
+        """True only when the store demonstrably holds nothing — see the Phase 3 caller.
+
+        `count()` is sentinel-inclusive, which is what this wants: a summary or sub-chunk
+        row is still a row somebody paid for, so the store is not fresh.
+
+        A store that cannot be counted answers False, not True. Everything gated on this
+        becomes more cautious when the answer is unknown; guessing "empty" would stamp a
+        dimension over an index that may already hold vectors of another width.
+        """
+        try:
+            return self.vector_store.count() == 0
+        except Exception as exc:
+            logger.debug(
+                "Could not count the vector store (%s: %s) — treating it as non-empty",
+                type(exc).__name__,
+                exc,
+            )
+            return False
+
+    def _record_embedding_dimension(self) -> None:
+        """Stamp `index_metadata` with the embedder's advertised width. Never fatal.
+
+        Non-fatal because it protects future runs rather than this one: a run that embedded
+        successfully must not be reported as failed because a metadata write did not land.
+        """
+        try:
+            from trelix.store.dimension_guard import DimensionGuard
+
+            DimensionGuard.record(
+                self.db,
+                dimension=self.embedder.dimension,
+                provider=self.config.embedder.provider,
+            )
+        except Exception as exc:
+            logger.debug("DimensionGuard.record failed (non-fatal): %s", exc)
+
     def _chunks_missing_vectors(self) -> tuple[list[int], int | None]:
         """Chunk rows this index holds no vector for. Returns (ids to repair, count).
 
@@ -723,7 +778,8 @@ class Indexer:
         """
         try:
             stored = self.vector_store.stored_chunk_ids()
-            missing = sorted(self.db.all_chunk_ids() - stored)
+            partition = self.db.all_chunk_ids()
+            missing = sorted(partition.repairable - stored)
         except Exception as exc:
             # WARNING, not DEBUG, following the sparse phase below: the CLI runs at
             # WARNING, and a coverage check that silently produced nothing is how the
@@ -737,6 +793,24 @@ class Indexer:
                 exc,
             )
             return [], None
+        if partition.id_space_exhausted:
+            # ERROR, not WARNING: unlike a hole, this one does not clear. Every backend's
+            # `stored_chunk_ids()` treats ids at or above the offset as sub-chunk sentinels
+            # and `search()` filters them out through `_is_chunk_id`, so a vector written
+            # at such an id is unreachable no matter how often it is paid for. Reported and
+            # then EXCLUDED from `missing` deliberately: counting these as holes is what
+            # turns a permanently-unretrievable chunk into an unbounded recurring embedding
+            # bill, one full re-embed of them per `trelix index` on a tree with nothing to
+            # do. The fix is a re-key (renumber `chunks`, or raise the offset), not a
+            # re-embed, so this run does not offer to spend on them.
+            logger.error(
+                "%d chunk(s) have an id at or above the vector store's sub-chunk offset "
+                "(%d) — the chunk id space is exhausted. Their vectors would be filtered "
+                "out of every search as sub-chunk sentinels, so re-embedding them cannot "
+                "help and this run will not: they need a re-key, not a re-embed.",
+                len(partition.id_space_exhausted),
+                BaseVectorStore._SUB_CHUNK_OFFSET,
+            )
         if missing:
             logger.warning(
                 "%d chunk(s) have no vector — an earlier run was interrupted after their "
@@ -869,36 +943,35 @@ class Indexer:
         # ── Phase 3: async concurrent batch embed ───────────────────────────
         stats["chunks_total"] = len(pending)
 
-        # Recorded BEFORE the embed, not after, which is what heals an index whose
-        # `index_metadata` a kill emptied: one plain `trelix index` now refills the missing
-        # vectors AND re-arms the guard, because a repair-only run satisfies `if pending`.
-        # Previously `DimensionGuard.check` early-returns on a non-int stored value, so such
-        # an index had no dimension protection either and would accept mixed-width vectors.
+        # Recorded BEFORE the embed when — and ONLY when — the store holds nothing yet.
+        # Recording early is what re-arms the guard on a fresh index whose Phase 3 dies
+        # before it can write anything: `DimensionGuard.check` early-returns on a non-int
+        # stored value, so an index with no recorded dimension has no protection against
+        # mixed-width vectors at all. Over an EMPTY store the early stamp costs nothing to
+        # be wrong about — no stored vector carries the other width, and the worst case is
+        # one loud `DimensionMismatchError` whose `migrate-vectors --reset` remedy discards
+        # zero embeddings.
         #
-        # The risk of recording early is real and accepted: if Phase 3 fails wholesale (bad
-        # API key on batch 1) a dimension is stored over an empty store, and a later
-        # narrower provider then raises DimensionMismatchError over nothing. That is the
-        # safe direction — one loud actionable error against `check()`'s silent
-        # mixed-width corruption — and for the default backend it is not even a new claim:
-        # `SQLiteVectorStore.__init__` has ALREADY created the vec0 table at
-        # `FLOAT[{dim}]`, and that declared width is the real, immovable constraint. So
-        # recording early makes `index_metadata` agree with a fact already on disk rather
-        # than inventing one.
+        # Over a NON-EMPTY store it is not free, and the `if pending` version of this was a
+        # trap: a repair run against a pre-existing index would stamp the new provider's
+        # width, Phase 3 would then raise `PartialIndexError`, and the correct provider was
+        # locked out of its own index on the next run — with `migrate-vectors --reset`, i.e.
+        # discard every paid-for embedding, offered as the way out. The comment that used to
+        # justify it claimed `SQLiteVectorStore.__init__` had already created the vec0 table
+        # at this width; that is true only for a table it actually created, and
+        # `CREATE VIRTUAL TABLE IF NOT EXISTS` can neither widen nor narrow a pre-existing
+        # one — which is exactly the crash-recovery case this path exists for. So a
+        # populated store records LATE, after the embed, and a failed Phase 3 leaves the
+        # stored width alone. The re-arming property survives where it is needed: on a
+        # 61,652-vector index with the correct provider the embed succeeds and the late
+        # record fires.
         #
         # Note `record()` stores `self.embedder.dimension` — the ADVERTISED width, not an
-        # observed vector length. Late recording had the identical property, so this is not
-        # a regression, but nothing here verifies it against what actually landed.
-        if pending:
-            try:
-                from trelix.store.dimension_guard import DimensionGuard
-
-                DimensionGuard.record(
-                    self.db,
-                    dimension=self.embedder.dimension,
-                    provider=self.config.embedder.provider,
-                )
-            except Exception as exc:
-                logger.debug("DimensionGuard.record failed (non-fatal): %s", exc)
+        # observed vector length. Late recording has the identical property, so neither
+        # branch verifies it against what actually landed.
+        record_early = bool(pending) and self._vector_store_is_empty()
+        if record_early:
+            self._record_embedding_dimension()
 
         if pending:
             total_tokens = sum(p.token_count for p in pending)
@@ -908,6 +981,11 @@ class Indexer:
             )
             self._report_progress(3, "Embedding chunks…", 0.0, stats)
             asyncio.run(self._batch_embed_and_store_async(pending, stats))
+
+        # The late record, for every store that already held vectors. Unreachable when the
+        # embed above raised, which is the point.
+        if pending and not record_early:
+            self._record_embedding_dimension()
 
         # ── Sparse embedding phase (SPLADE-Code) — runs when sparse_enabled=True ──
         if self.config.retrieval.sparse_enabled and pending:

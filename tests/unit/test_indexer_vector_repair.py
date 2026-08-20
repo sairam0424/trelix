@@ -135,6 +135,37 @@ def _simulate_kill_during_embedding(
         conn.close()
 
 
+def _seed_chunk_at_id(db_path: pathlib.Path, chunk_id: int, *, with_vector: bool) -> None:
+    """Add one chunk row at an exact id, optionally with its vector already stored.
+
+    Written as raw SQL because `Database.insert_chunk` cannot choose an id — the column is
+    `INTEGER PRIMARY KEY AUTOINCREMENT`. Reaching 10,000,000 for real needs ~145 full
+    re-chunks of a 68,880-chunk index (Phase 2 deletes and re-inserts the chunk rows of
+    every changed symbol, so the counter only climbs), which is a fixture nobody can afford
+    to build honestly. Seeding the id is the same state, arrived at cheaply.
+
+    `with_vector=True` is the state that reads as HEALTHY on disk — the chunk row and its
+    vector both present — and still counts as a hole to any caller that diffs a flat chunk-id
+    set against `stored_chunk_ids()`, because every backend excludes ids at or above the
+    offset as sub-chunk sentinels.
+    """
+    conn = _raw_conn(db_path)
+    try:
+        symbol_id = int(conn.execute("SELECT id FROM symbols LIMIT 1").fetchone()[0])
+        conn.execute(
+            "INSERT INTO chunks (id, symbol_id, chunk_text, token_count) VALUES (?, ?, ?, ?)",
+            (chunk_id, symbol_id, "def past_the_offset(): return 0", 7),
+        )
+        if with_vector:
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedding) VALUES (?, ?)",
+                (chunk_id, sqlite_vec.serialize_float32([0.1] * _DIM)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _coverage(db_path: pathlib.Path) -> tuple[set[int], set[int]]:
     """(chunk row ids, real vector ids) read straight from disk, not through the indexer."""
     conn = _raw_conn(db_path)
@@ -387,6 +418,174 @@ class TestTheKilledRunHeals:
             assert dead_id not in vectors_after
 
 
+class TestChunkIdsPastTheSentinelOffset:
+    """A chunk row whose id reached `_SUB_CHUNK_OFFSET` must not be billed as a hole.
+
+    `stored_chunk_ids()` excludes ids at or above the offset on all three backends, because
+    that is where sub-chunk vectors live. Diffing a FLAT set of chunk ids against it therefore
+    reports every such row as missing a vector forever, and the repair above then re-embeds
+    them on every single `trelix index` — for money, on a tree with nothing to do. That is a
+    recurring charge, not a one-off, and it is worse than the state it replaced: before the
+    repair existed these chunks were merely unretrievable.
+
+    Re-embedding cannot help them either way: `SQLiteVectorStore.search()` filters results
+    through `_is_chunk_id`, so a vector at such an id is dropped from every search no matter
+    how often it is paid for. They need a re-key, not a re-embed.
+    """
+
+    def test_a_chunk_past_the_offset_is_never_billed_across_two_runs(
+        self, repo: pathlib.Path
+    ) -> None:
+        """The exact symptom: run after run of `chunks_reconciled=2` on a healthy tree.
+
+        Two consecutive runs, because one is not enough to distinguish a one-off charge from
+        a recurring one — the reproduction showed run3 and run4 each paying for the same two
+        chunks.
+        """
+        from trelix.store.vector import BaseVectorStore
+
+        offset = BaseVectorStore._SUB_CHUNK_OFFSET
+        embedder = _FakeEmbedder()
+        indexer = _make_indexer(str(repo), embedder)
+        with _patch_rich_progress():
+            indexer.index()
+
+        db_path = indexer.config.db_path_absolute
+        chunks, vectors = _coverage(db_path)
+        assert chunks == vectors, "first run did not fully embed — fixture is broken"
+
+        # Both rows have their vector on disk, so nothing here is actually damaged.
+        _seed_chunk_at_id(db_path, offset, with_vector=True)
+        _seed_chunk_at_id(db_path, offset + 1, with_vector=True)
+
+        for run in (1, 2):
+            again = _FakeEmbedder()
+            with _patch_rich_progress():
+                stats = _make_indexer(str(repo), again).index()
+            assert again.embed_call_texts == [], f"run {run} paid to re-embed"
+            assert stats["chunks_reconciled"] == 0, f"run {run} reconciled"
+            assert stats["chunks_missing_vectors"] == 0, f"run {run} saw a hole"
+
+    def test_the_exhaustion_is_reported_at_error_level_naming_the_offset(
+        self, repo: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Excluded from the repair, but never silent: it is permanent and needs a re-key."""
+        from trelix.store.vector import BaseVectorStore
+
+        embedder = _FakeEmbedder()
+        indexer = _make_indexer(str(repo), embedder)
+        with _patch_rich_progress():
+            indexer.index()
+
+        db_path = indexer.config.db_path_absolute
+        _seed_chunk_at_id(db_path, BaseVectorStore._SUB_CHUNK_OFFSET, with_vector=True)
+
+        caplog.clear()
+        with _patch_rich_progress(), caplog.at_level(logging.ERROR, logger="trelix.indexing"):
+            _make_indexer(str(repo), _FakeEmbedder()).index()
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors, [r.getMessage() for r in caplog.records]
+        assert any("re-key" in message for message in errors), errors
+        assert any(str(BaseVectorStore._SUB_CHUNK_OFFSET) in message for message in errors), errors
+
+    def test_a_real_hole_below_the_offset_is_still_repaired_alongside_one(
+        self, repo: pathlib.Path
+    ) -> None:
+        """The partition must not become a blanket excuse to skip the repair."""
+        from trelix.store.vector import BaseVectorStore
+
+        embedder = _FakeEmbedder()
+        indexer = _make_indexer(str(repo), embedder)
+        with _patch_rich_progress():
+            indexer.index()
+
+        db_path = indexer.config.db_path_absolute
+        chunks, _ = _coverage(db_path)
+        holed = sorted(chunks)[:2]
+        _simulate_kill_during_embedding(db_path, holed)
+        _seed_chunk_at_id(db_path, BaseVectorStore._SUB_CHUNK_OFFSET, with_vector=False)
+
+        embedder2 = _FakeEmbedder()
+        with _patch_rich_progress():
+            stats = _make_indexer(str(repo), embedder2).index()
+
+        assert stats["chunks_reconciled"] == 2
+        assert stats["chunks_missing_vectors"] == 2
+        assert len(embedder2.embed_call_texts) == 2
+        assert not any("past_the_offset" in text for text in embedder2.embed_call_texts)
+
+
+class TestTheDimensionStampFollowsTheStore:
+    """`index_metadata` must never claim a width the vec0 table on disk contradicts.
+
+    Recording BEFORE Phase 3 is what re-arms the guard on a fresh index whose embed dies, and
+    that is worth keeping. Doing it unconditionally is not: `CREATE VIRTUAL TABLE IF NOT
+    EXISTS … FLOAT[dim]` cannot widen or narrow a PRE-EXISTING table, so on the crash-recovery
+    case this whole file is about, an early stamp records a width the table does not have. The
+    next run with the CORRECT provider then dies with `DimensionMismatchError`, whose own
+    remedy is `migrate-vectors --reset` — i.e. discard every paid-for embedding.
+    """
+
+    def test_a_failed_phase_3_does_not_restamp_a_populated_store(self, repo: pathlib.Path) -> None:
+        embedder = _FakeEmbedder()
+        indexer = _make_indexer(str(repo), embedder)
+        with _patch_rich_progress():
+            indexer.index()
+
+        db_path = indexer.config.db_path_absolute
+        chunks, _ = _coverage(db_path)
+        # The state a kill leaves: holes to repair AND no recorded dimension.
+        _simulate_kill_during_embedding(db_path, sorted(chunks)[:2], drop_metadata=True)
+
+        class _BrokenEmbedder(_FakeEmbedder):
+            def embed(self, texts: list[str]) -> list[list[float]]:
+                raise RuntimeError("401 Unauthorized")
+
+        indexer2 = _make_indexer(str(repo), _BrokenEmbedder())
+        assert indexer2.db.get_embedding_dimension() is None, "fixture did not disarm the guard"
+        with _patch_rich_progress(), pytest.raises(Exception):
+            indexer2.index()
+
+        # Still None: the store already held 61,652-vectors-worth of one width in the real
+        # case, and nothing in this failed run learned anything new about it.
+        assert indexer2.db.get_embedding_dimension() is None
+
+    def test_a_fresh_store_is_still_stamped_before_the_embed(self, repo: pathlib.Path) -> None:
+        """The property the early record exists for, kept: an index that has never stored a
+        vector arms the guard even when Phase 3 dies, because there is no width on disk for
+        the stamp to contradict and `--reset` would discard nothing."""
+
+        class _BrokenEmbedder(_FakeEmbedder):
+            def embed(self, texts: list[str]) -> list[list[float]]:
+                raise RuntimeError("401 Unauthorized")
+
+        indexer = _make_indexer(str(repo), _BrokenEmbedder())
+        assert indexer.vector_store.count() == 0, "fixture store is not fresh"
+        with _patch_rich_progress(), pytest.raises(Exception):
+            indexer.index()
+
+        assert indexer.db.get_embedding_dimension() == _DIM
+
+    def test_a_successful_repair_run_still_re_arms_the_guard(self, repo: pathlib.Path) -> None:
+        """The late record covers the case the early one no longer does. This is the real
+        Ag-Bash shape: a populated store, no recorded dimension, correct provider."""
+        embedder = _FakeEmbedder()
+        indexer = _make_indexer(str(repo), embedder)
+        with _patch_rich_progress():
+            indexer.index()
+
+        db_path = indexer.config.db_path_absolute
+        chunks, _ = _coverage(db_path)
+        _simulate_kill_during_embedding(db_path, sorted(chunks)[:2], drop_metadata=True)
+
+        indexer2 = _make_indexer(str(repo), _FakeEmbedder())
+        with _patch_rich_progress():
+            indexer2.index()
+
+        assert indexer2.db.get_embedding_dimension() == _DIM
+
+
 class TestFailureToCheckDoesNotBlockTheRun:
     def test_a_store_that_cannot_enumerate_still_indexes_and_says_so(
         self, repo: pathlib.Path, caplog: pytest.LogCaptureFixture
@@ -441,3 +640,33 @@ class TestStreamingPipeline:
         assert stats["chunks_reconciled"] == 2
         assert stats["chunks_missing_vectors"] == 2
         assert len(embedder2.embed_call_texts) == 2
+
+    def test_a_run_that_had_errors_does_not_repair_what_it_just_failed_to_embed(
+        self, repo: pathlib.Path
+    ) -> None:
+        """This pipeline repairs AFTER the walk, so a file whose own embed just failed is
+        sitting in the store as a fresh hole — `index_file` swallowed the failure into
+        `status=error`. Repairing it here re-sends the identical text to the provider that
+        just refused it: paid twice, failed twice. The holes stay; the next run heals them.
+        """
+        embedder = _FakeEmbedder()
+        calls: list[int] = []
+
+        def _fail_after_first(texts: list[str]) -> list[list[float]]:
+            calls.append(len(texts))
+            if len(calls) > 1:
+                raise RuntimeError("429 rate limited")
+            return [[0.1] * _DIM for _ in texts]
+
+        indexer = _make_indexer(str(repo), embedder, streaming=True)
+        indexer.embedder.embed = _fail_after_first  # type: ignore[method-assign]
+
+        with _patch_rich_progress():
+            stats = indexer.index()
+
+        assert stats["errors"] >= 1, stats
+        # The failed file's chunks are holes now, and they are REPORTED …
+        assert stats["chunks_missing_vectors"], stats
+        # … but nothing was paid to repair them in the same run that just failed on them.
+        assert stats["chunks_reconciled"] == 0, stats
+        assert len(calls) == 2, calls

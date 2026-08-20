@@ -12,6 +12,14 @@ Two things are asserted that a single "coverage" number would break:
   * "not recorded" is distinct from 0. An index whose `index_metadata` a kill emptied has
     no dimension AND no working `DimensionGuard`; printing 0 there would assert health
     that nothing checked.
+  * a missing dimension suppresses NEITHER number. That state is exactly what a kill
+    leaves, so gating the coverage block on a recorded dimension made this command blind
+    on the only index that ever needed it. The width must not be guessed; a read-only
+    projection of `chunk_id` needs no width and creates nothing.
+  * id-space exhaustion is its own answer, with its own remedy. A chunk row past the
+    sub-chunk offset is unretrievable but is NOT a hole `trelix index` can fill, and
+    counting it as one printed a remedy that could never clear while charging for it
+    every run.
 
 Exit code stays 0 in every case. `tests/unit/test_cli_closed_stdout.py` exists because a
 non-zero status on this command broke CI twice, and any script that pipes `stats` would
@@ -95,6 +103,11 @@ def _seeded_repo(tmp_path: Path, *, chunks: int, embedded: int, record_dim: bool
             )
         if record_dim:
             db.set_embedding_dimension(_DIM)
+        # Explicit, because `insert_symbol` / `insert_chunk` do not commit and neither does
+        # `close()` — only `set_index_metadata` did, so `record_dim=False` used to leave a
+        # fixture with ZERO chunk rows on disk. That went unnoticed while the only assertion
+        # on that branch was a string match; the coverage numbers below depend on the rows.
+        db._conn.commit()
 
     store = VectorStore(db_path, dimension=_DIM)
     for chunk_id in chunk_ids[:embedded]:
@@ -180,6 +193,55 @@ class TestTheRenderer:
         )
         assert "can never be retrieved" not in healthy
 
+    def test_the_remedy_does_not_promise_that_nothing_else_is_re_embedded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A plain `trelix index` also embeds every file whose content hash moved, which is
+        its job. Promising it "will not re-embed anything else" under-quotes the run the
+        line is recommending."""
+        from trelix.cli.main import _VectorCoverage
+
+        output = " ".join(
+            _rendered(
+                _VectorCoverage(missing=7, orphaned=0, with_vectors=61, dimension=4), monkeypatch
+            ).split()
+        )
+        assert "will not re-embed anything else" not in output, output
+        assert "on top of anything that changed since the last run" in output, output
+
+    def test_id_space_exhaustion_gets_its_own_row_and_its_own_remedy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Never merged into the hole count, and never sent to `trelix index`: re-embedding
+        an id past the sub-chunk offset is money for a vector `search()` filters out."""
+        from trelix.cli.main import _VectorCoverage
+
+        output = " ".join(
+            _rendered(
+                _VectorCoverage(
+                    missing=0, orphaned=0, with_vectors=61, dimension=4, id_space_exhausted=2
+                ),
+                monkeypatch,
+            ).split()
+        )
+        assert _number(output, "Chunks missing vectors") == 0, output
+        assert _number(output, "Chunks past the id-space limit") == 2, output
+        assert "re-key" in output, output
+        assert "can never be retrieved" not in output, output
+
+    def test_a_healthy_index_shows_no_id_space_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A permanent `0` row for a condition no normal index is in invites it to be read
+        as a hole count."""
+        from trelix.cli.main import _VectorCoverage
+
+        output = _rendered(
+            _VectorCoverage(
+                missing=0, orphaned=0, with_vectors=68, dimension=4, id_space_exhausted=0
+            ),
+            monkeypatch,
+        )
+        assert "id-space" not in output, output
+
 
 class TestTheCommand:
     def test_a_half_embedded_index_reports_its_holes(self, tmp_path: Path) -> None:
@@ -205,11 +267,21 @@ class TestTheCommand:
         assert _number(collapsed, "Chunks missing vectors") == 0, collapsed
         assert "can never be retrieved" not in collapsed, collapsed
 
-    def test_an_index_with_no_recorded_dimension_says_so_and_still_exits_zero(
+    def test_an_index_with_no_recorded_dimension_still_reports_its_coverage(
         self, tmp_path: Path
     ) -> None:
-        """The exact state the SIGKILLed index was in: index_metadata empty, so the
-        store cannot be opened at a known width and the dimension guard is disarmed."""
+        """The exact state the SIGKILLed index was in — `index_metadata` with 0 rows — and
+        therefore the one state this reporting has to work in.
+
+        It previously answered "not checked — no embedding dimension recorded" here, so on
+        the very index the coverage feature exists for, `stats` reported neither the holes
+        nor the remedy. The gate was right that a width must never be GUESSED (a vec0 table's
+        dimension is fixed at creation), but a read-only projection of `chunk_id` needs no
+        width and creates nothing — `--dry-run` prices the identical question that way.
+
+        The disarmed-guard row still prints: it is a second, independent finding, not a
+        substitute for the coverage numbers.
+        """
         from trelix.cli.main import app
 
         repo = _seeded_repo(tmp_path, chunks=4, embedded=1, record_dim=False)
@@ -218,3 +290,56 @@ class TestTheCommand:
         collapsed = " ".join(result.output.split())
         assert "not recorded" in collapsed, collapsed
         assert "dimension guard disabled" in collapsed, collapsed
+        assert "not checked" not in collapsed, collapsed
+        assert _number(collapsed, "Chunks with vectors") == 1, collapsed
+        assert _number(collapsed, "Chunks missing vectors") == 3, collapsed
+        assert _number(collapsed, "Vectors with no chunk row") == 0, collapsed
+        assert "can never be retrieved" in collapsed, collapsed
+
+    def test_a_healthy_index_with_no_recorded_dimension_reports_zero_holes(
+        self, tmp_path: Path
+    ) -> None:
+        """The other half: the dimension-free path must not report a fully embedded index as
+        holed, or the remedy it prints is a bill for nothing."""
+        from trelix.cli.main import app
+
+        repo = _seeded_repo(tmp_path, chunks=4, embedded=4, record_dim=False)
+        result = runner.invoke(app, ["stats", str(repo)])
+        assert result.exit_code == 0, result.output
+        collapsed = " ".join(result.output.split())
+        assert _number(collapsed, "Chunks with vectors") == 4, collapsed
+        assert _number(collapsed, "Chunks missing vectors") == 0, collapsed
+        assert "can never be retrieved" not in collapsed, collapsed
+
+    def test_a_chunk_past_the_id_space_limit_is_not_counted_as_a_hole(self, tmp_path: Path) -> None:
+        """End to end: `all_chunk_ids()`'s partition reaching the rendered table.
+
+        Without it, `stats` prints "N chunk(s) can never be retrieved" with a `trelix index`
+        remedy that can never clear it — and `trelix index` charges for it every run.
+        """
+        import sqlite3
+
+        from trelix.cli.main import app
+        from trelix.core.config import IndexConfig
+        from trelix.store.vector import BaseVectorStore
+
+        repo = _seeded_repo(tmp_path, chunks=3, embedded=3, record_dim=True)
+        db_path = IndexConfig(repo_path=str(repo)).db_path_absolute
+        conn = sqlite3.connect(str(db_path))
+        try:
+            symbol_id = int(conn.execute("SELECT id FROM symbols LIMIT 1").fetchone()[0])
+            conn.execute(
+                "INSERT INTO chunks (id, symbol_id, chunk_text, token_count) VALUES (?, ?, ?, ?)",
+                (BaseVectorStore._SUB_CHUNK_OFFSET, symbol_id, "past the offset", 4),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = runner.invoke(app, ["stats", str(repo)])
+        assert result.exit_code == 0, result.output
+        collapsed = " ".join(result.output.split())
+        assert _number(collapsed, "Chunks missing vectors") == 0, collapsed
+        assert _number(collapsed, "Chunks past the id-space limit") == 1, collapsed
+        assert "can never be retrieved" not in collapsed, collapsed
+        assert "re-key" in collapsed, collapsed

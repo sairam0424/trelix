@@ -213,6 +213,35 @@ class TestItPricesTheRepairOfAnInterruptedRun:
         expected = repair_tokens / 1_000_000 * float(rate.group(1))
         assert abs(float(cost.group(1)) - expected) < 0.005, output
 
+    def test_a_chunk_past_the_sentinel_offset_is_not_billed(self, repo: Path) -> None:
+        """No real run will ever embed it, so quoting it quotes a spend that cannot happen.
+
+        `Indexer._chunks_missing_vectors` excludes ids at or above the sub-chunk offset from
+        the repair — every backend's `stored_chunk_ids()` filters them out as sentinels and
+        `search()` drops their vectors regardless — and this preview has to agree with the run
+        it is pricing, in both directions.
+        """
+        import sqlite3
+
+        from trelix.store.vector import BaseVectorStore
+
+        self._seed(repo, embed_all=True)
+        db_path = IndexConfig(repo_path=str(repo)).db_path_absolute
+        conn = sqlite3.connect(str(db_path))
+        try:
+            symbol_id = int(conn.execute("SELECT id FROM symbols LIMIT 1").fetchone()[0])
+            conn.execute(
+                "INSERT INTO chunks (id, symbol_id, chunk_text, token_count) VALUES (?, ?, ?, ?)",
+                (BaseVectorStore._SUB_CHUNK_OFFSET, symbol_id, "past the offset", 999),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        output = _run(repo)
+        assert _number(output, "Chunks missing vectors") == 0, output
+        assert _number(output, "Repair tokens") == 0, output
+
     def test_a_non_sqlite_backend_says_not_checked_rather_than_zero(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -223,6 +252,9 @@ class TestItPricesTheRepairOfAnInterruptedRun:
         output = _run(repo)
         assert "not checked" in output, output
         assert "lance" in output, output
+        # And the dollar figure says which direction it is wrong in. Declining to price the
+        # repair does not mean the run will decline to perform it.
+        assert "LOWER BOUND" in " ".join(output.split()), output
 
 
 class TestPricingIsHonest:
