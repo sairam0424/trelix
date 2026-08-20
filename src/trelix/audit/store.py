@@ -3,11 +3,14 @@ Tamper-evident audit log storage (hash-chained, append-only).
 
 AuditStore owns a SEPARATE ``audit.db`` — deliberately NOT the disposable
 index DB (``.trelix/index.db``), because the index is rebuilt at will while
-the audit trail must survive re-indexing. It uses the same idempotent-DDL
-style as :mod:`trelix.store.db` (``CREATE TABLE IF NOT EXISTS`` +
-``CREATE INDEX IF NOT EXISTS``) so opening an existing DB is a safe no-op.
+the audit trail must survive re-indexing. The *writing* path uses the same
+idempotent-DDL style as :mod:`trelix.store.db` (``CREATE TABLE IF NOT EXISTS`` +
+``CREATE INDEX IF NOT EXISTS``) so reopening an existing DB is a safe no-op. The
+*reading* path runs no DDL at all — see ``read_only`` below; idempotent DDL is a
+no-op only on a file that already has the schema, and on any other file it is a
+schema change.
 
-Integrity model — tamper-EVIDENT, not tamper-PROOF. Two gates, and both of them
+Integrity model — tamper-EVIDENT, not tamper-PROOF. Three gates, and all three
 live inside the same file as the thing they check:
   1. **Hash chain.** Each row stores ``prev_hash`` (the previous row's
      ``entry_hash``; genesis = 64 zeros) and ``entry_hash =
@@ -25,10 +28,16 @@ live inside the same file as the thing they check:
      check, not a precondition for it: an absent anchor is a fault, because
      ``append`` writes the entry and both anchor rows in one transaction and so
      cannot produce a non-empty log without them.
+  3. **SQLite's own ``sqlite_sequence`` high-water mark**, read only, for the one
+     shape neither gate above can see: a log emptied completely. See
+     :meth:`AuditStore._max_audit_log_seq_locked` — including the four ways to
+     defeat it, all of which still work, and the false positive it will become
+     when retention pruning lands.
 
 What is and is not detected. Every shape below is pinned by a test —
-tests/unit/test_audit_anchor_presence.py and tests/unit/test_audit_store.py for
-the detected ones, tests/unit/test_audit_undetectable.py for the rest. The
+tests/unit/test_audit_anchor_presence.py, tests/unit/test_audit_store.py and
+tests/unit/test_audit_wipe_detection.py for the detected ones,
+tests/unit/test_audit_undetectable.py for the rest. The
 attacker's hashing cost is stated for each because cheapness is *not* what
 separates the two lists — most of the detected shapes are free too:
 

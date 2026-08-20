@@ -19,7 +19,7 @@ bucket, another host — and compare on every run. None of that ships in trelix,
 this file is not a plan to build it; it is the honest boundary of what does ship.
 
 Detected shapes are pinned in tests/unit/test_audit_anchor_presence.py,
-tests/unit/test_audit_store.py and tests/unit/test_audit_read_hardening.py — the
+tests/unit/test_audit_store.py and tests/unit/test_audit_wipe_detection.py — the
 last of which took one shape off this list: a *sloppy* total wipe (two DELETEs and
 nothing else) is now detected via SQLite's ``sqlite_sequence`` high-water mark. The
 first test below is what survives of that shape, and the file it points at pins the
@@ -91,7 +91,7 @@ def test_a_total_wipe_that_also_clears_sqlite_sequence_is_not_detected(tmp_path:
     """NOT DETECTED: three DELETEs, no hashing.
 
     The two-DELETE version of this IS now detected — see
-    tests/unit/test_audit_read_hardening.py. The claim that used to live here, that
+    tests/unit/test_audit_wipe_detection.py. The claim that used to live here, that
     an emptied database is "byte-indistinguishable" from a legitimately new one,
     was simply false: ``audit_log`` is AUTOINCREMENT, so SQLite keeps a
     ``sqlite_sequence`` high-water mark that ``DELETE`` does not reset.

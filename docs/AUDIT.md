@@ -62,7 +62,8 @@ gated by auth but is still audited.
 > is **not** a defence against a writer who knows the scheme. See
 > [exactly what is and is not detected](#exactly-what-is-and-is-not-detected).
 
-Two gates make that detection work:
+Three gates make that detection work, and all three live inside the same file as
+the thing they check:
 
 1. **Hash chain.** Each row stores `prev_hash` (the previous row's `entry_hash`;
    the genesis value is 64 zeros) and
@@ -121,7 +122,8 @@ of raising out of `fetchall()`.
 
 Every row here is pinned by a test, including the "no" rows — see
 `tests/unit/test_audit_anchor_presence.py`, `tests/unit/test_audit_store.py`,
-`tests/unit/test_audit_read_hardening.py` and
+`tests/unit/test_audit_read_hardening.py`,
+`tests/unit/test_audit_wipe_detection.py` and
 `tests/unit/test_audit_undetectable.py`. The hashing column is the attacker's
 cost, and it is listed to make one point: cheapness is *not* what separates the
 two halves of this table.
@@ -153,9 +155,11 @@ four succeed today:
 
 1. `DELETE FROM sqlite_sequence WHERE name='audit_log'` — one more statement.
 2. `UPDATE sqlite_sequence SET seq = 0` (or a negative value, or a BLOB).
-3. `UPDATE sqlite_sequence SET seq = <surviving row count>` after a partial
-   truncation — the check only fires on an *empty* log, so this adds nothing to
-   detect that was not already undetectable.
+3. `UPDATE sqlite_sequence SET seq = <n>` on a log that still has rows — matched
+   to a partial truncation, or set *below* the real row count. The check is scoped
+   to an *empty* log, so neither fires. `seq < COUNT(*)` is impossible for a
+   legitimate writer and could be closed; widening the check has its own
+   false-positive surface to establish first, and that is a separate change.
 4. `PRAGMA writable_schema=ON; DELETE FROM sqlite_master WHERE
    name='sqlite_sequence'`. Plain `DROP TABLE sqlite_sequence` is refused by
    SQLite ("may not be dropped"), but this route needs no extra privilege.

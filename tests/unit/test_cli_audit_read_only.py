@@ -22,7 +22,8 @@ Four things are pinned here that the store-level tests cannot see.
 The exit-code contract and markup-safety pins live in tests/unit/test_cli_audit.py,
 which is deliberately left untouched; anchor-fault messages live in
 tests/unit/test_cli_audit_anchor.py; store-level verdicts in
-tests/unit/test_audit_read_hardening.py.
+tests/unit/test_audit_read_hardening.py and
+tests/unit/test_audit_wipe_detection.py.
 """
 
 from __future__ import annotations
