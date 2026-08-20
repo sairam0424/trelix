@@ -24,8 +24,12 @@ DB (HMAC/asymmetric) and/or anchor it to an append-only/WORM sink. Two gates:
      external root of trust). The chain alone cannot detect a deleted *tail*
      (the survivors still form a valid chain), so an ``audit_meta`` row records
      the running entry ``count`` and current ``head_hash``, updated atomically
-     with every append. ``verify_chain`` compares the live row count / head
-     against this anchor and also checks ids are gapless.
+     with every append. ``verify_chain`` requires both anchor values to be
+     **present and well-formed** and then compares the live row count / head
+     against them; it also checks ids are gapless. Presence is part of the
+     check, not a precondition for it: an absent anchor is a fault, because
+     ``append`` writes the entry and both anchor rows in one transaction and so
+     cannot produce a non-empty log without them.
 
 Failure contract (mirrors retrieval/telemetry.py's swallow-and-log, but at
 WARNING): a write failure never raises by default — ``append`` logs a WARNING
@@ -40,9 +44,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import threading
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +102,78 @@ CREATE TABLE IF NOT EXISTS audit_meta (
 
 _META_COUNT = "count"
 _META_HEAD = "head_hash"
+
+# -- verdict vocabulary ------------------------------------------------------
+# `verify` names WHICH fault it found, because two families of fault ask an
+# operator for different first moves and the id alone cannot tell them apart: a
+# row fault names a row that is present and wrong, while an anchor/count fault
+# names an id whose EXISTENCE can no longer be proven, where there is nothing to
+# go and look at.
+REASON_ID_GAP = "id_gap"
+REASON_ROW_MISLINKED = "row_mislinked"
+REASON_ROW_MUTATED = "row_mutated"
+REASON_COUNT_MISMATCH = "count_mismatch"
+REASON_HEAD_MISMATCH = "head_mismatch"
+REASON_ANCHOR_MISSING = "anchor_missing"
+REASON_ANCHOR_CORRUPT = "anchor_corrupt"
+
+#: Reasons whose reported id is the first entry whose existence can no longer be
+#: proven, rather than a divergent row. Reporting one of these as "the first
+#: divergent entry" would send an investigator to inspect a row that is not in
+#: the table.
+UNPROVABLE_ID_REASONS = frozenset(
+    {
+        REASON_ID_GAP,
+        REASON_COUNT_MISMATCH,
+        REASON_HEAD_MISMATCH,
+        REASON_ANCHOR_MISSING,
+        REASON_ANCHOR_CORRUPT,
+    }
+)
+
+# Anchor value shapes, checked BEFORE any parsing. Both patterns are fully
+# anchored with ``\A``/``\Z`` — not ``$``, which would accept a trailing newline
+# — because the question asked is "is this byte-for-byte what append() writes",
+# and a value with anything appended is not.
+#
+# `count` is bounded to 19 digits, the widest a SQLite INTEGER can be, so an
+# absurd value is rejected on shape and never reaches ``int()``: CPython raises
+# ValueError above 4300 digits, which turned a one-cell UPDATE into an unhandled
+# traceback out of `trelix audit verify`. Leading '+'/'-'/whitespace, leading
+# zeros and underscores are all refused — ``int()`` accepts several of them and
+# this writer produces none of them. Refusing '-1' here is also what makes a
+# negative count a finding.
+_COUNT_RE = re.compile(r"\A(?:0|[1-9][0-9]{0,18})\Z")
+
+# `head_hash` is always ``hashlib.sha256(...).hexdigest()`` — exactly 64
+# LOWERCASE hex digits. An uppercased or wrong-length digest is a value no
+# released version of ``append`` has ever written.
+_HEAD_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class VerifyResult:
+    """One verification verdict: the id to report, and which fault was found.
+
+    ``tampered_id is None`` means no fault was found. That is NOT proof of
+    integrity — the chain is checked against an anchor stored in the same file,
+    so a writer who updates both consistently passes. See the module docstring
+    for the shapes that are and are not detected.
+    """
+
+    tampered_id: int | None
+    reason: str | None = None
+
+
+def _anchor_value_is_wellformed(value: Any, pattern: re.Pattern[str]) -> bool:
+    """Whether an ``audit_meta`` value is exactly what ``append`` would write.
+
+    ``isinstance`` comes first because ``audit_meta.value`` is declared TEXT but
+    SQLite is dynamically typed: TEXT affinity converts an assigned INTEGER to
+    text, yet an assigned BLOB is stored as a BLOB and arrives here as ``bytes``,
+    which used to reach ``int()`` and raise out of the verifier.
+    """
+    return isinstance(value, str) and pattern.match(value) is not None
 
 
 def _canonical_hash(prev_hash: str, content: dict[str, Any]) -> str:
@@ -230,18 +308,34 @@ class AuditStore:
 
     # -- verify --------------------------------------------------------------
     def verify_chain(self) -> int | None:
-        """Verify the whole chain. Returns ``None`` if intact, otherwise the
-        id of the first divergent entry (a mutated/mislinked row), or the id
-        of the first missing entry when the tail was truncated/deleted.
+        """Verify the whole chain, returning only the id :meth:`verify` reports.
+
+        ``None`` means no fault was found — which is not proof of integrity; see
+        :meth:`verify` for what that verdict does and does not cover, and for the
+        reason code that says which fault was found.
+        """
+        return self.verify().tampered_id
+
+    def verify(self) -> VerifyResult:
+        """Verify the whole chain and name the fault found, if any.
 
         Detection:
-          - recomputed ``entry_hash`` != stored  -> mutated content.
+          - recomputed ``entry_hash`` != stored   -> mutated content.
           - stored ``prev_hash`` != running head  -> deleted/reordered row.
-          - id gap                                 -> deleted middle row.
-          - live count/head != meta anchor         -> truncated/deleted tail.
+          - id gap                                -> deleted middle row.
+          - an anchor row absent, with entries    -> the anchor itself is gone.
+          - an anchor value malformed             -> the anchor is unusable.
+          - live count/head != meta anchor        -> truncated/deleted tail.
+
+        Never raises on the *content* of ``audit_meta``: a value this method
+        exists to judge must be reported as a finding, not allowed to abort the
+        one command an incident responder reaches for first.
         """
         if self._conn is None:
-            return None
+            # Disabled store: nothing was read, and this deliberately still
+            # reads as "no fault". See `is_open` — callers that REPORT integrity
+            # have to gate on it, because this method cannot tell them apart.
+            return VerifyResult(None)
         with self._lock:
             rows = self._conn.execute(
                 "SELECT id, ts, principal, action, resource, outcome, status_code, "
@@ -254,35 +348,76 @@ class AuditStore:
         expected_id = 1
         for row in rows:
             if row["id"] != expected_id:  # gapless check catches middle deletes
-                return expected_id
+                return VerifyResult(expected_id, REASON_ID_GAP)
             content = {col: row[col] for col in _CONTENT_COLUMNS}
             if row["prev_hash"] != prev:
-                return int(row["id"])
+                return VerifyResult(int(row["id"]), REASON_ROW_MISLINKED)
             if row["entry_hash"] != _canonical_hash(prev, content):
-                return int(row["id"])
+                return VerifyResult(int(row["id"]), REASON_ROW_MUTATED)
             prev = row["entry_hash"]
             expected_id += 1
 
-        # External anchor: detect a truncated/deleted tail the chain can't see.
         actual_count = len(rows)
-        meta_count = meta.get(_META_COUNT)
-        if meta_count is not None and actual_count != meta_count:
-            # first missing id (ids are gapless 1..actual_count at this point)
-            return int(min(actual_count, meta_count)) + 1
-        meta_head = meta.get(_META_HEAD)
-        if meta_head is not None and prev != meta_head:
-            return actual_count if actual_count > 0 else 1
-        return None
+        raw_count = meta.get(_META_COUNT)
+        raw_head = meta.get(_META_HEAD)
+
+        # The id every anchor fault reports. No surviving row is divergent in
+        # these shapes — the walk above just passed on all of them — so naming
+        # row 1, or any present row, would be a false statement about a row that
+        # is fine. What is no longer provable is whether an entry n+1 ever
+        # existed, which is the id the count-mismatch branch below has always
+        # returned for the same reason.
+        first_unprovable = actual_count + 1
+
+        # PRESENCE, not merely consistency. `append` writes the entry and BOTH
+        # anchor rows in one transaction, so "entries present, an anchor row
+        # absent" is a state no writer can reach: this file has a single commit
+        # in its history and `audit_meta` plus both keys are in that first
+        # version, so no released version has ever written an entry without them
+        # — legacy databases included. Reading an absent anchor as "no
+        # information available" therefore made deleting it a total bypass of
+        # gate 2 (one extra DELETE, no hashing), and a log whose tail had been
+        # cut verified INTACT.
+        #
+        # BOTH must be present, not either: with one row dropped, the surviving
+        # one can be realigned to a value already in the file — also with no
+        # hashing — and that combination verified clean too.
+        if actual_count > 0 and (raw_count is None or raw_head is None):
+            return VerifyResult(first_unprovable, REASON_ANCHOR_MISSING)
+
+        # Shape before parse, and a bad shape is a finding rather than an
+        # exception. Parsing used to live in the read path, so one edited
+        # character ended `trelix audit verify` in an unhandled ValueError: an
+        # integrity checker that the data it checks can crash is a denial of the
+        # tooling, not merely a rough edge.
+        if raw_count is not None and not _anchor_value_is_wellformed(raw_count, _COUNT_RE):
+            return VerifyResult(first_unprovable, REASON_ANCHOR_CORRUPT)
+        if raw_head is not None and not _anchor_value_is_wellformed(raw_head, _HEAD_RE):
+            return VerifyResult(first_unprovable, REASON_ANCHOR_CORRUPT)
+
+        # External anchor: detect a truncated/deleted tail the chain can't see.
+        # `raw_count` matched _COUNT_RE above, so int() here cannot raise.
+        if raw_count is not None:
+            meta_count = int(raw_count)
+            if actual_count != meta_count:
+                # first missing id (ids are gapless 1..actual_count at this point)
+                return VerifyResult(min(actual_count, meta_count) + 1, REASON_COUNT_MISMATCH)
+        if raw_head is not None and prev != raw_head:
+            return VerifyResult(actual_count if actual_count > 0 else 1, REASON_HEAD_MISMATCH)
+        return VerifyResult(None)
 
     def _read_meta_locked(self) -> dict[str, Any]:
+        """Return the ``audit_meta`` rows as RAW, unparsed values.
+
+        Parsing deliberately does not happen here. This used to ``int()`` the
+        count while reading it, which let a value the verifier exists to judge
+        raise out of the verifier instead of being reported by it.
+        """
         assert self._conn is not None
-        out: dict[str, Any] = {}
-        for row in self._conn.execute("SELECT key, value FROM audit_meta").fetchall():
-            if row["key"] == _META_COUNT:
-                out[_META_COUNT] = int(row["value"])
-            else:
-                out[row["key"]] = row["value"]
-        return out
+        return {
+            row["key"]: row["value"]
+            for row in self._conn.execute("SELECT key, value FROM audit_meta").fetchall()
+        }
 
     # -- read ----------------------------------------------------------------
     def recent(self, n: int = 100) -> list[dict[str, Any]]:

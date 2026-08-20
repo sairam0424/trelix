@@ -3428,14 +3428,29 @@ def audit_verify(
     db: Annotated[str | None, typer.Option("--db", help="Path to audit.db")] = None,
 ) -> None:
     """Verify the hash chain. Exits nonzero and names the first divergent id on tamper."""
+    from trelix.audit.store import UNPROVABLE_ID_REASONS
+
     store, _ = _open_audit_store(db)
-    divergent = store.verify_chain()
-    if divergent is None:
+    result = store.verify()
+    if result.tampered_id is None:
         console.print("[green]Audit chain intact.[/green]")
         return
-    err_console.print(
-        f"[red]Audit chain TAMPERED[/red] — first divergent entry id: [bold]{divergent}[/bold]"
-    )
+    # Two sentences because these are two different facts, and the id alone does
+    # not distinguish them. A row fault names a row that is present and wrong. An
+    # anchor or count fault names the first id whose EXISTENCE can no longer be
+    # proven — every surviving row verified — so calling that "the first divergent
+    # entry" would send a responder to inspect a row that is not in the table.
+    # The reason code is printed for both so an alert can match on it.
+    if result.reason in UNPROVABLE_ID_REASONS:
+        err_console.print(
+            f"[red]Audit chain TAMPERED[/red] ({result.reason}) — no surviving entry diverged; "
+            f"first unprovable entry id: [bold]{result.tampered_id}[/bold]"
+        )
+    else:
+        err_console.print(
+            f"[red]Audit chain TAMPERED[/red] ({result.reason}) — "
+            f"first divergent entry id: [bold]{result.tampered_id}[/bold]"
+        )
     raise typer.Exit(1)
 
 
