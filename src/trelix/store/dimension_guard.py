@@ -6,7 +6,11 @@ the existing HNSW index contains vectors of the wrong dimension. trelix would
 silently return wrong results or crash with a cryptic sqlite-vec error.
 
 DimensionGuard:
-1. Records the dimension at the end of a successful index run (DimensionGuard.record)
+1. Records the dimension around Phase 3 of an index run (DimensionGuard.record) — before
+   the embed when the vector store is still empty, so that a run whose Phase 3 dies still
+   leaves the guard armed, and after a successful embed for every store that already held
+   vectors, so that a failed embed cannot restamp an index it did not change. See the call
+   site in `Indexer.index` for why the two cases differ.
 2. Checks stored vs current dimension at Retriever/Indexer startup (DimensionGuard.check)
 3. Raises DimensionMismatchError with a clear migration hint if they differ
 4. Provides reset() to clear stored dimension when the user re-indexes
@@ -78,7 +82,14 @@ class DimensionGuard:
 
     @staticmethod
     def record(db: Database, dimension: int, provider: str) -> None:
-        """Record the embedding dimension after a successful index run."""
+        """Record the embedding dimension for an index run.
+
+        Unconditional by design: WHEN it is safe to call is the caller's decision, not
+        this method's, and `Indexer.index` makes it explicitly (see `_record_embedding_
+        dimension` and its call site). This writes `dimension` whether or not any vector
+        of that width ever landed, so calling it before an embed asserts the advertised
+        width rather than an observed one.
+        """
         db.set_embedding_dimension(dimension)
         logger.debug("DimensionGuard: recorded %d-dim (%s)", dimension, provider)
 

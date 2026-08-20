@@ -6,8 +6,120 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+
+- **An interrupted index run left permanent holes that re-indexing refused to fill.** Files
+  are hash-tracked whole, and a file's content hash is committed in Phase 2 — the sequential
+  DB write — before Phase 3 embeds its chunks. Any interruption in between (SIGKILL, laptop
+  sleep, a CI timeout, OOM, embedding-quota exhaustion) therefore left chunk rows whose
+  vectors were never written, and every later incremental run skipped those files as up to
+  date. Measured on a real index: 68,880 chunk rows against 61,652 vectors, so 7,228 chunks
+  (10.5% of the index) could never be retrieved, while a re-index reported "Files walked
+  3,136 / Unchanged since last index 3,136 / Files to embed 0" and printed "Nothing to index
+  — all files up to date." `index_metadata` was emptied by the same kill, which disarmed the
+  dimension guard as a side effect: `DimensionGuard.check` early-returns when the stored
+  value is not an int, so that index would also have accepted mixed-width vectors.
+  `trelix index` now reconciles the vector store against the `chunks` table once per run and
+  folds any vector-less chunks into the existing Phase 3, re-embedding **only** the holes —
+  not the whole file, which would cost strictly more. This is the crash-recovery counterpart
+  to `PartialIndexError`, which covers the case where Phase 3 *raises*; that abort's own
+  recovery text is corrected in the next entry, because this reconcile is what made it false.
+  Both pipelines heal, at different points in the run: the batch pipeline reconciles before Phase 1
+  (which is what withholds the "Nothing to index" claim), while the streaming pipeline has no
+  such pre-pass and reconciles after the walk instead — and skips the repair entirely when any
+  file failed in the same run, since a chunk this run just failed to embed would otherwise be
+  re-sent to the provider that refused it and paid for twice. Watch mode deliberately does not
+  heal (a save event on one file is the wrong trigger for a repo-wide scan), which
+  `trelix stats` now states under its remedy rather than leaving to be discovered by waiting.
+- **`PartialIndexError` told users to delete an index that now repairs itself.** That abort's
+  text predates the reconcile above, and it is the only channel there is: `cli/main.py` prints
+  `str(exc)` and exits 1, and `index_file()` returns it verbatim as `error`. It still said the
+  index "does not heal on the next run" and that the way out was to delete the index database.
+  Reproduced end to end: run 1 aborts saying exactly that, and run 2 — a plain `trelix index`,
+  nothing else changed — reconciles the holes and leaves none. Following the stale advice
+  destroys every embedding that DID land (61,652 of them on the real index) to recover holes
+  the re-run refills for the price of the holes alone. The message now keeps the part that is
+  still true — this index is PARTIAL *right now*, and `trelix stats` keeps counting those
+  chunks as indexed — and points at re-running `trelix index` once the cause is fixed, naming
+  `trelix watch` as the command that will not do it and the store location where the partial
+  state lives. The docstring's list of load-bearing claims is corrected with it, as is
+  `docs/PROVIDERS.md`, which stated the same "does not repair itself" conclusion and the same
+  delete-both-stores recovery for the LanceDB backend.
+- **The streaming pipeline printed two contradictory WARNINGs back to back.** The coverage
+  check announced "Re-embedding them in this run." before either caller had decided anything,
+  and the streaming caller then logged "not repairing now, because a chunk this run just failed
+  to embed would be re-sent to the provider that refused it" immediately after. The first line
+  was false on that path and is the one a user reading top-to-bottom believes. The promise now
+  comes from the two callers that actually repair, so each path emits exactly one warning and
+  it describes what that run does.
+- **`trelix index --dry-run` was silent about id-space exhaustion while `trelix stats` printed
+  it in red.** `_repair_cost` excluded ids at or above the sub-chunk offset from the bill,
+  which is correct — no real run will embed them — and then excluded them from the output too,
+  so the preview rendered "Chunks missing vectors 0 / Repair tokens 0": a clean bill of health
+  for chunks that cannot be retrieved at all. It now returns that count and the preview states
+  it under the table as a sentence rather than a priced row, because there is nothing to price.
+- **The id-space remedy in `trelix stats` was backend-blind.** It said to remove the index file
+  to renumber `chunks` from 1; on lance/qdrant the vectors do not live there, so following it
+  clears the id-space row but strands every vector the old ids carried. Reproduced on lancedb
+  0.33.0: `Vectors with no chunk row` goes 0 → 4 on a four-chunk fixture whose ids had climbed —
+  the entire former vector set on a real index — and nothing reclaims those rows. It now names
+  the vector store's own location too, the way `PartialIndexError` already did.
+- **Chunk rows whose id reached the vector store's sub-chunk offset are no longer treated as
+  holes.** Every backend's `stored_chunk_ids()` excludes ids at or above 10,000,000 because
+  that is where sub-chunk vectors live, so diffing a flat set of `chunks.id` against it
+  reported every row past the offset as missing a vector *forever* — and the repair above then
+  re-embedded them on every single run, for money, on a tree with nothing to do. This is
+  reachable rather than theoretical: `chunks.id` is `INTEGER PRIMARY KEY AUTOINCREMENT` and
+  Phase 2 deletes then re-inserts the chunk rows of every changed symbol, so the counter only
+  climbs — roughly 145 full re-chunks of a 68,880-chunk index. `Database.all_chunk_ids()` now
+  returns the two id classes separately; the repair services only the ids below the offset,
+  and the rest are reported at error level (and as their own `trelix stats` row and remedy)
+  as id-space exhaustion. Re-embedding cannot help them in any case — `search()` filters
+  their vectors out through `_is_chunk_id` — so they need a re-key, not a re-embed.
+- **The embedding dimension is recorded before Phase 3 only when the vector store is empty,**
+  and after a successful embed otherwise. Recording early is what re-arms the dimension guard
+  on an index whose store is still empty when its Phase 3 dies — "empty" being a
+  sentinel-inclusive `count()`, so one Phase 2.5 file-summary vector is enough to make the
+  stamp late instead — and over an empty store a wrong stamp costs nothing: no stored vector carries the other width and the `migrate-vectors
+  --reset` remedy would discard zero embeddings. Over a store that already holds vectors it
+  costs plenty — a repair run whose Phase 3 raised would stamp the new provider's width while
+  the vec0 table kept its own (`CREATE VIRTUAL TABLE IF NOT EXISTS` can neither widen nor
+  narrow a pre-existing table), locking the *correct* provider out of its own index behind a
+  `DimensionMismatchError` whose remedy discards every paid-for embedding. The re-arming
+  property survives where it is needed: on a populated index with the correct provider the
+  embed succeeds and the late record fires.
+- **`SQLiteVectorStore.count()` now takes the connection lock** like every other read on
+  that connection. It was the one that did not, against a connection opened
+  `check_same_thread=False`.
+
 ### Added
 
+- **`trelix stats` reports vector coverage in both directions** — chunks with vectors, chunks
+  missing vectors, and vectors with no chunk row — and never nets them, because a single
+  netted number is what let a 10.5%-blind index read as healthy. It also reports
+  `Embedding dimension: not recorded — dimension guard disabled` instead of guessing, which
+  makes the second half of the failure above visible before any hole is counted — and reports
+  the coverage anyway in that case, on the sqlite backend, through the same read-only
+  dimension-free projection `--dry-run` uses. (A missing dimension used to suppress the whole
+  coverage block, which is precisely the state a killed run leaves, so the command that exists
+  to reveal the holes was blind on the only index that had them. What must never be guessed is
+  the vec0 *width* — a projection of `chunk_id` needs none and creates nothing.) lance and
+  qdrant still report "not checked" without a recorded dimension: both create on open. Exit
+  code is unchanged at 0 in every case, so scripts that pipe `stats` keep working.
+- **`trelix index --dry-run` prices the repair.** New `Chunks missing vectors` and
+  `Repair tokens` rows, with the repair tokens included in the dollar estimate — a preview
+  that under-quotes the run it is pricing is the same class of defect as the bug above. It
+  quotes the same set the run will embed, ids past the sub-chunk offset excluded, so it does
+  not over-quote either. The check is strictly read-only (`mode=ro` plus `PRAGMA query_only`),
+  and reports "not checked (lance backend)" rather than opening a Lance or Qdrant handle, since
+  both create on open — which also means the dollar figure is a **lower bound** on those two
+  backends, where the repair is not priced at all.
+- **`BaseVectorStore.stored_chunk_ids()`**, implemented for all three backends
+  (sqlite-vec, LanceDB, Qdrant). Returns real chunk ids with summary and sub-chunk sentinels
+  excluded. `count()` cannot answer this question — it is sentinel-inclusive, so
+  `count_chunks() - count()` returns holes minus sentinels (405 against a true 500 on a
+  fixture, and negative once sentinels outnumber holes); both `count()` docstrings that
+  claimed otherwise are corrected.
 - **Python 3.14 is tested and advertised.** `requires-python` has always been an open
   `>=3.11`, so pip was already willing to install trelix on 3.14 — but nothing verified it
   and the classifiers stopped at 3.13, so the honest answer to "does this work on 3.14" was

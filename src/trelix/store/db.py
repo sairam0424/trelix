@@ -35,10 +35,10 @@ import re
 import sqlite3
 import threading
 import urllib.request
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from trelix.indexing.multi_granularity import SubSymbolChunk
@@ -63,6 +63,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("trelix.store.db")
 
+# Placeholders per statement in the id-batched reads below. SQLite caps this at
+# SQLITE_LIMIT_VARIABLE_NUMBER, which measured 32,766 on this build — but it is a
+# compile-time option that was 999 for years, so a repo-wide id set in one `IN (…)` is a
+# portability landmine, not a theoretical one. Set far under every plausible ceiling; the
+# cost of an extra round trip on the same in-process connection is not measurable next to
+# the embedding calls these reads feed.
+_MAX_SQL_PARAMS = 500
+
 # Schema generation stamped into `pragma user_version`. Before this existed the
 # live index read 0 across 30 user tables built by an unversioned linear chain of
 # ~17 `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE` blocks whose comments name
@@ -85,6 +93,18 @@ logger = logging.getLogger("trelix.store.db")
 # unstamped (user_version = 0) indexes already hold. 0 therefore means
 # "written before versioning", NOT corrupt — see _guard_schema_version().
 SCHEMA_VERSION = 1
+
+
+class ChunkIdPartition(NamedTuple):
+    """`chunks.id` values split by whether a vector store can hold a vector for them.
+
+    Two fields rather than one set because the answers are not the same kind of thing and
+    must not be summed: `repairable` is work `trelix index` should pay for, while
+    `id_space_exhausted` is work no amount of paying can fix. See `Database.all_chunk_ids`.
+    """
+
+    repairable: set[int]
+    id_space_exhausted: set[int]
 
 
 class SchemaVersionError(Exception):
@@ -1415,6 +1435,84 @@ class Database:
     # ------------------------------------------------------------------
     # Incremental cleanup
     # ------------------------------------------------------------------
+
+    def all_chunk_ids(self) -> ChunkIdPartition:
+        """Every chunk row id in this index, split at the vector store's sentinel offset.
+
+        `repairable` is diffed against `BaseVectorStore.stored_chunk_ids()` to find drift in
+        both directions: chunk rows with no vector (unretrievable, and skipped as up to date
+        by every later incremental run) and vectors with no chunk row (orphans). The two are
+        reported separately and never netted — a single netted number is what let a
+        10.5%-blind index read as healthy.
+
+        `id_space_exhausted` is returned SEPARATELY rather than as part of that diff, and
+        that split is the whole point of this signature. `stored_chunk_ids()` excludes ids at
+        or above `BaseVectorStore._SUB_CHUNK_OFFSET` on every backend, because that is where
+        sub-chunk vectors live; a flat set of chunk ids therefore reports every chunk row
+        that crossed the offset as a hole FOREVER, and each `trelix index` re-embeds it for
+        money on a tree with nothing to do. Reaching the offset is not hypothetical: `chunks
+        .id` is `INTEGER PRIMARY KEY AUTOINCREMENT` and Phase 2 deletes then re-inserts the
+        chunk rows of every changed symbol, so the counter only climbs — roughly 145 full
+        re-chunks of a 68,880-chunk index.
+
+        Re-embedding those rows cannot help them, which is why they are not offered as
+        repair work: `SQLiteVectorStore.search()` filters its results through
+        `_is_chunk_id`, so a vector written at such an id is dropped from every search
+        regardless of how many times it is paid for. They need a re-key (renumber the
+        `chunks` table, or widen the offset), not a re-embed.
+
+        The difference is taken in Python rather than as a SQL anti-join for two reasons.
+        It is the only shape all three vector backends can express: Lance and Qdrant cannot
+        join this table at all. And it sidesteps a planner cliff that no test can catch —
+        `LEFT JOIN` / `NOT EXISTS` against a vec0 table degrade to one point lookup per
+        chunk row (21-28 s on a 68,880-chunk 3072-dim index) while being FASTER than the
+        alternative at fixture scale, so a unit test would pass on the wrong
+        implementation. Costs roughly 3 MB of ids at that size; page by id range if that
+        ever binds, but never fall back to a join.
+        """
+        # Local import, matching every other cross-module import in this file: `store.vector`
+        # loads the sqlite-vec extension at import time and no plain `Database` user should
+        # pay for that. Reading the class attribute constructs no store.
+        from trelix.store.vector import BaseVectorStore
+
+        offset = BaseVectorStore._SUB_CHUNK_OFFSET
+        repairable: set[int] = set()
+        exhausted: set[int] = set()
+        for row in self._conn.execute("SELECT id FROM chunks"):
+            chunk_id = int(row[0])
+            (repairable if chunk_id < offset else exhausted).add(chunk_id)
+        return ChunkIdPartition(repairable=repairable, id_space_exhausted=exhausted)
+
+    def get_chunk_text_and_tokens(self, chunk_ids: Iterable[int]) -> list[tuple[int, str, int]]:
+        """(id, chunk_text, token_count) for those of `chunk_ids` whose row still exists.
+
+        The three columns are exactly `Indexer._PendingChunk`'s fields, so a repair rebuilds
+        a Phase 3 work item straight from the DB — no re-parse, no chunker call, no file read.
+
+        Ids whose row is gone simply do not come back, and that filtering is load-bearing
+        rather than defensive: Phase 2 deletes and re-inserts the chunk rows of every changed
+        symbol (`chunks.symbol_id` is `ON DELETE CASCADE`), so an id collected before Phase 2
+        ran can be dead by the time the repair is serviced. Embedding a dead id would write a
+        vector with no chunk row — a fresh orphan, i.e. the opposite direction of the bug
+        being fixed.
+
+        Batched over `_MAX_SQL_PARAMS`: unlike `get_chunk_ids_for_symbols` below, which is
+        called with one file's symbol list, this is called with a repo-wide id set — 7,228 on
+        the index this exists for.
+        """
+        ids = list(chunk_ids)
+        rows: list[tuple[int, str, int]] = []
+        for start in range(0, len(ids), _MAX_SQL_PARAMS):
+            batch = ids[start : start + _MAX_SQL_PARAMS]
+            placeholders = ",".join("?" for _ in batch)
+            rows.extend(
+                (int(r[0]), str(r[1]), int(r[2]))
+                for r in self._conn.execute(
+                    f"SELECT id, chunk_text, token_count FROM chunks WHERE id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+            )
+        return rows
 
     def get_chunk_ids_for_file(self, file_id: int) -> list[int]:
         """Return all chunk ids for a file. Called before re-indexing to clean the vector store."""

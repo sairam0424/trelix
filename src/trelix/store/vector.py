@@ -58,7 +58,20 @@ class BaseVectorStore(ABC):
 
     @abstractmethod
     def count(self) -> int:
-        """Return the total number of stored embeddings."""
+        """Return the total number of stored embeddings.
+
+        SENTINEL-INCLUSIVE: file-summary rows (at `-file_id`) and sub-chunk rows (at
+        `sub_chunk_id + _SUB_CHUNK_OFFSET`) live in the same store and are counted here.
+        So this must NOT be compared against `Database.count_chunks()` to find chunks
+        missing a vector — the difference is holes minus sentinels, which understates the
+        holes and inverts sign once sentinels outnumber them. Measured on a fixture with
+        5,000 chunks, 500 deliberate holes and 95 sentinels: 405 against a true 500. Use
+        `stored_chunk_ids()` and take the set difference.
+
+        Still the right primitive for the question it does answer: rows written. That is
+        what `LanceVectorStore._report_duplicate_rows` needs, because a set of ids cannot
+        see a duplicate row (verified: 4,501 Lance rows collapse to 4,500 distinct ids).
+        """
 
     # Sub-chunk vectors are stored at `sub_chunk_id + _SUB_CHUNK_OFFSET` by every
     # backend. Deleting them is defined here, concretely, so callers never have to know
@@ -66,11 +79,49 @@ class BaseVectorStore(ABC):
     # a foreign key cannot reach a vector store at all.
     _SUB_CHUNK_OFFSET = 10_000_000
 
+    @classmethod
+    def _is_chunk_id(cls, chunk_id: int) -> bool:
+        """True for a real chunk vector, false for a summary or sub-chunk sentinel.
+
+        Defined here beside `_SUB_CHUNK_OFFSET` rather than per backend: all three now
+        key their sentinel filter off it, and three copies of "what counts as a real
+        chunk" are three places for it to drift.
+        """
+        return 0 < chunk_id < cls._SUB_CHUNK_OFFSET
+
     def delete_sub_chunk_embeddings(self, sub_chunk_ids: list[int]) -> None:
         """Delete the vectors belonging to the given sub_chunk row ids."""
         if not sub_chunk_ids:
             return
         self.delete_batch([sid + self._SUB_CHUNK_OFFSET for sid in sub_chunk_ids])
+
+    def stored_chunk_ids(self) -> set[int]:
+        """Every real chunk_id this store holds a vector for (sentinels excluded).
+
+        Exists so a caller can diff it against the `chunks` table and find the chunks a
+        crashed indexing run left with no vector. Those holes are otherwise permanent:
+        `Indexer._insert_one` commits a file's content hash and its chunk rows in Phase 2,
+        BEFORE Phase 3 embeds them, so any interruption in between — SIGKILL, laptop
+        sleep, CI timeout, OOM, quota exhaustion — leaves rows that every later
+        incremental run declares up to date. Reproduced on a real 68,880-chunk index
+        holding 61,652 vectors: 7,228 chunks (10.5%) unretrievable, and a re-index
+        reported "Files to embed 0".
+
+        Returns ids, not a count, deliberately — see `count()` for why a count cannot
+        answer this. One direction only: chunk rows lacking a vector. The reverse
+        (vectors whose chunk row is gone) is the caller's set difference the other way
+        and is reported, never acted on; deleting is `--prune`'s job.
+
+        Default implementation raises, following `recreate()` above, so a backend that
+        cannot enumerate says so rather than returning an empty set — which a caller
+        would read as "every chunk is a hole" and act on by re-embedding the entire
+        repository. Deliberately not an `@abstractmethod`: that turns a missing
+        capability into a construction-time TypeError, i.e. trelix does not start.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot enumerate its stored chunk_ids, so trelix "
+            "cannot tell which chunks are missing a vector on this backend"
+        )
 
     def recreate(self) -> None:
         """Discard every stored vector and rebuild the store at this store's dimension.
@@ -328,10 +379,23 @@ class SQLiteVectorStore(BaseVectorStore):
 
         return real[:k]
 
-    @classmethod
-    def _is_chunk_id(cls, chunk_id: int) -> bool:
-        """True for a real chunk vector, false for a summary or sub-chunk sentinel."""
-        return 0 < chunk_id < cls._SUB_CHUNK_OFFSET
+    def stored_chunk_ids(self) -> set[int]:
+        """Every real chunk_id with a vector in this store. See the base method.
+
+        A plain projection is safe here even though `search()` above records that vec0
+        rejects a `chunk_id > 0` predicate: that restriction applies only ALONGSIDE
+        `embedding MATCH`, and `_count_sentinels()` already runs this predicate shape in
+        production. Measured 2.6 ms over 4,595 rows on a 4-dim fixture.
+
+        A missing `chunk_embeddings` table raises `sqlite3.OperationalError` rather than
+        returning an empty set, for the reason given on the base method.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT chunk_id FROM chunk_embeddings WHERE chunk_id > 0 AND chunk_id < ?",
+                (self._SUB_CHUNK_OFFSET,),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
 
     def _knn(self, packed: bytes, k: int) -> list[tuple[int, float]]:
         """Raw ANN query — returns sentinel rows as well as real chunks."""
@@ -370,12 +434,25 @@ class SQLiteVectorStore(BaseVectorStore):
         self._conn.commit()
 
     def count(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()
+        """Rows in the store, sentinels included — see `BaseVectorStore.count`.
+
+        Takes `_lock` like every other read on this connection (`_knn`,
+        `_count_sentinels`, `search_file_summaries`, `search_sub_chunks`,
+        `stored_chunk_ids`). It was the one that did not, against a connection opened
+        `check_same_thread=False` whose own comment says the lock "serialises all
+        execute() calls so the connection's internal state stays consistent".
+        """
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()
         return row[0] if row else 0
 
     def info(self) -> dict[str, Any]:
         """
-        Return a summary dict suitable for ``trelix stats``.
+        Return a summary dict for ``trelix stats``.
+
+        `count` here is sentinel-inclusive (see `count()`), so it is a "rows written"
+        figure and NOT a chunk-coverage figure. `trelix stats` reports coverage from
+        `stored_chunk_ids()` against the `chunks` table instead, in both directions.
 
         Returns:
             {
@@ -446,12 +523,14 @@ class SQLiteVectorStore(BaseVectorStore):
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:k]
 
-    # Sub-chunk sentinel: stored as chunk_id + _SUB_CHUNK_OFFSET to avoid collision
-    # with regular chunk IDs (positive small ints) and summary IDs (negative ints).
-    _SUB_CHUNK_OFFSET = 10_000_000
-
     def upsert_sub_chunk_embedding(self, sub_chunk_id: int, embedding: list[float]) -> None:
-        """Store sub-chunk embedding using chunk_id = sub_chunk_id + _SUB_CHUNK_OFFSET."""
+        """Store sub-chunk embedding using chunk_id = sub_chunk_id + _SUB_CHUNK_OFFSET.
+
+        The offset is inherited from `BaseVectorStore`; the identical copy that used to
+        shadow it here is gone, along with the two in the Lance and Qdrant backends. All
+        three now filter sentinels off the one definition, which is exactly the kind of
+        shared constant a local copy drifts from.
+        """
         self.upsert(chunk_id=sub_chunk_id + self._SUB_CHUNK_OFFSET, embedding=embedding)
 
     def search_sub_chunks(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:
