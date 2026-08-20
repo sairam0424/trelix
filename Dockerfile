@@ -5,7 +5,7 @@
 #   docker build --build-arg EXTRAS=serve,local    -> ghcr.io/sairam0424/trelix:X.Y.Z-local  (bundles sentence-transformers/torch)
 # See .github/workflows/docker-publish.yml for the release-time build matrix.
 
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 
 ARG EXTRAS=serve
 
@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir --prefix=/install \
         --extra-index-url https://download.pytorch.org/whl/cpu \
         ".[${EXTRAS}]"
 
-FROM python:3.11-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 RUN groupadd --system trelix \
     && useradd --system --gid trelix --home-dir /home/trelix --create-home trelix
