@@ -48,6 +48,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -306,6 +307,40 @@ class AuditStore:
         ).fetchone()
         return row["entry_hash"] if row is not None else GENESIS_HASH
 
+    @contextmanager
+    def _read_snapshot_locked(self) -> Iterator[sqlite3.Connection]:
+        """Run several reads as ONE SQLite read transaction — one snapshot.
+
+        ``verify`` compares the ``audit_log`` rows against the ``audit_meta``
+        anchor. Read outside a transaction those are two separate snapshots, and
+        ``self._lock`` cannot close the gap: it is a per-INSTANCE
+        ``threading.Lock``, so it serializes nothing against the other connection
+        or the other process that is actually appending. A legitimate append
+        landing between the two reads made the anchor describe one more entry
+        than the rows did, and ``verify`` reported that as a truncated tail.
+
+        Measured on the shape api/app.py builds — one legitimate writer doing
+        2,870 appends, 30 CLI-shaped verify runs — 24 of 30 reported TAMPERED on
+        an undamaged database (independent post-hoc walk: rows=2870, count and
+        head both match, no broken link). An operational condition reported as an
+        attack is the worst failure a tamper detector has: it teaches operators
+        that exit 1 means "try again".
+
+        DEFERRED, not IMMEDIATE: this must not take a write lock on a file it is
+        only reading. The extra contention is negligible because SQLite already
+        holds the SHARED lock for the whole of the long ``audit_log`` scan; the
+        transaction only extends it across the tiny ``audit_meta`` read. And it
+        ends in ROLLBACK, on the success path too — a read transaction has
+        nothing to commit, and ``verify`` must never write the file it audits.
+        """
+        assert self._conn is not None
+        conn = self._conn
+        conn.execute("BEGIN DEFERRED")
+        try:
+            yield conn
+        finally:
+            conn.rollback()
+
     # -- verify --------------------------------------------------------------
     def verify_chain(self) -> int | None:
         """Verify the whole chain, returning only the id :meth:`verify` reports.
@@ -336,8 +371,11 @@ class AuditStore:
             # reads as "no fault". See `is_open` — callers that REPORT integrity
             # have to gate on it, because this method cannot tell them apart.
             return VerifyResult(None)
-        with self._lock:
-            rows = self._conn.execute(
+        # Both reads inside ONE transaction: the rows and the anchor they are
+        # compared against have to come from the same committed state, or a
+        # concurrent legitimate append is indistinguishable from a deleted tail.
+        with self._lock, self._read_snapshot_locked() as conn:
+            rows = conn.execute(
                 "SELECT id, ts, principal, action, resource, outcome, status_code, "
                 "client_ip, request_id, trace_id, duration_ms, detail, prev_hash, entry_hash "
                 "FROM audit_log ORDER BY id ASC"
