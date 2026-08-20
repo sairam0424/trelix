@@ -202,13 +202,39 @@ This is the only mechanism trelix has for including/excluding paths. There is **
 | `TRELIX_WALKER_FOLLOW_SYMLINKS` | `true` | Whether the walk follows symlinks out of `repo_path`. **Default `true` is the historical behaviour**: a symlink whose target lives outside the repository is indexed, and `rel_path` is computed on the unresolved path so it is reported as though it sat inside (`linked_dir/secret.py`). Set `false` to confine the walk by resolved path. Opt-in because confining by default would silently drop files from repos that symlink to shared or vendored directories. Symlinks pointing *inside* the repo are indexed either way |
 | `TRELIX_WALKER_MAX_FILE_SIZE_BYTES` | `500000` | Files larger than this are skipped entirely |
 | `TRELIX_WALKER_LANGUAGES` | 26 languages (Python, JS, TS, TSX, Go, Rust, Java, Kotlin, Ruby, C++, C, C#, Razor, cshtml, csproj, Markdown, JSON, YAML, TOML, HTML, CSS, **shell, dockerfile, make, sql, proto**) | JSON array of language names to parse, e.g. `'["python","go"]'`. **This REPLACES the default list rather than adding to it** — pinning it means you do not get languages added in later versions. The five ops languages have no structural extractor yet and are parsed into line windows (see `parser/extractors/line_window.py`) |
-| `TRELIX_WALKER_EXTRA_IGNORE_DIRS` | 30 entries (`.git`, `node_modules`, `__pycache__`, `venv`, `.venv`, `dist`, `build`, `target`, `.next`, `vendor`, `bin`, `obj`, `.trelix`, …) | JSON array of directory names to skip |
+| `TRELIX_WALKER_EXTRA_IGNORE_DIRS` | 30 entries (`.git`, `node_modules`, `__pycache__`, `venv`, `.venv`, `dist`, `build`, `target`, `.next`, `vendor`, `bin`, `obj`, `packages`, `.trelix`, …) | JSON array of directory names to skip. Matched on the exact directory basename — `Bin/` and `OBJ/` are **not** caught |
 | `TRELIX_WALKER_EXTRA_IGNORE_FILENAMES` | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `angular.json` | JSON array of exact filenames to skip |
 | `TRELIX_WALKER_EXTRA_IGNORE_EXTENSIONS` | 27 entries (`.pyc`, `.so`, `.dll`, `.png`, `.pdf`, `.zip`, `.min.js`, `.lock`, …) | JSON array of file extensions to skip |
 
 > **Setting a list REPLACES the default, it does not append.** `TRELIX_WALKER_EXTRA_IGNORE_DIRS='["dist"]'`
 > stops skipping `node_modules`, `.venv`, `.git`, and the other 27 defaults. To add one entry
 > you must restate the whole list.
+
+#### `bin`, `obj` and `packages` — and why your monorepo's source may be missing
+
+Those three defaults are .NET build output (`packages/` is a NuGet restore, `bin/` and `obj/`
+are MSBuild). Two of them are also *source* directories elsewhere: every pnpm/npm/yarn/lerna
+monorepo keeps first-party code under `packages/`, and a Node CLI keeps real executables in
+`bin/`. Because directory exclusion is enforced during traversal, the walk never descends and
+the index simply contains none of it — while the run still reports `errors: 0`. Measured on one
+workspace: 584 source files under one repo's `packages/` on disk, **0 indexed**; another repo
+finished with 31 of 212 tracked files, 1 code chunk and 0 call edges.
+
+As of this release trelix **detects and reports** the case instead of hiding it. When a
+`packages/` sits beside a workspace manifest (`pnpm-workspace.yaml`, `lerna.json`, `nx.json`,
+`rush.json`, or a `package.json` with a `workspaces` key), or a `bin/` sits beside a
+`package.json` whose `bin` field points into it, the walk logs one WARNING naming the
+directory and the evidence file. **The walk itself is unchanged, so this release costs nothing
+extra to run.** A sibling `*.sln`/`*.csproj`/`Directory.Build.props`/`packages.config` keeps
+the directory excluded regardless — the .NET case wins any tie.
+
+To index it today, restate the list without that entry (remember: the variable replaces all 30
+defaults, a comma-separated value is rejected, and `scripts/self-index.sh` is a working
+reference), then check the size of the change **before** paying for it:
+
+```bash
+trelix index . --dry-run   # files walked + token estimate, no embedding calls
+```
 
 To exclude a path, the simplest route is `.gitignore` — it is honoured by default and needs
 no env var:

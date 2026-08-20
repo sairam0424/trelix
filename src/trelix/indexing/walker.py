@@ -11,14 +11,19 @@ matched relative to its own directory, and the file closest to a path decides it
 Until v3.1.2 only `repo_root/.gitignore` was read despite this docstring claiming
 otherwise, which is how a 2.6 GB `.vscode-test/` bundle — excluded by
 `workspace-vscode/.gitignore` — ended up as 74% of this project's own index.
+
+Directory exclusion has two tiers (see `_CONDITIONAL_IGNORE_DIRS`): most
+`extra_ignore_dirs` entries are unconditional, while `packages` and `bin` are ignored
+only when the directory beside them fails to prove it holds first-party source.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from collections.abc import Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pathspec
 
@@ -26,6 +31,102 @@ from trelix.core.config import IndexConfig
 from trelix.core.models import IndexedFile, Language
 
 logger = logging.getLogger("trelix.indexing.walker")
+
+# Names in `extra_ignore_dirs` that are only *sometimes* build output.
+#
+# `bin`, `obj` and `packages` were added together for .NET (NuGet restores into
+# `packages/`, MSBuild writes `bin/` and `obj/`). Two of those three names are also
+# first-party SOURCE directories elsewhere: every pnpm/npm/yarn/lerna/turborepo monorepo
+# keeps its own code under `packages/`, and a Node CLI keeps its real executables in
+# `bin/`. Because `extra_ignore_dirs` is enforced during traversal, the walk never descends
+# and the index simply contains none of it — while the run still reports `errors: 0`.
+# Measured across six repositories in one workspace: 584 source files under Graph-Forge's
+# `packages/` on disk -> 0 indexed (its `services/` 265, `apps/` 125, `proto/` 34 and
+# `docs/` 51 ARE indexed, so the exclusion is the only difference); CommandVault 142 -> 0,
+# whole-repo 31 of 212 tracked files indexed with 1 code chunk and 0 call edges;
+# ContextOS 131 -> 0; Tombstone 36 -> 0; MindForge 183 `.js` under `bin/` -> 0.
+#
+# `obj` is NOT here: it is genuinely .NET-only, and it added 0 files in all six repos.
+_CONDITIONAL_IGNORE_DIRS = frozenset({"packages", "bin"})
+
+# Files whose mere PRESENCE beside a `packages/` directory proves a JS workspace, read for
+# free out of the parent's already-materialised `iterdir()` listing.
+#
+# Both this and the `workspaces` key below are load-bearing, measured: CommandVault has no
+# `workspaces` key (markers are its only signal) while Graph-Forge and Tombstone have no
+# marker file (the key is theirs). A single-branch probe misses half the population.
+# `turbo.json` is deliberately absent — it appears in non-workspace repos too.
+_WORKSPACE_MARKER_FILES = frozenset(
+    {
+        "pnpm-workspace.yaml",
+        "pnpm-workspace.yml",
+        "lerna.json",
+        "nx.json",
+        "rush.json",
+    }
+)
+
+# .NET evidence. Present beside a conditional directory, it wins any tie and the directory
+# stays ignored — the cheap, safe direction, since re-including a NuGet `packages/` tree is
+# thousands of files of third-party code priced per token.
+_DOTNET_MARKER_FILES = frozenset(
+    {"Directory.Build.props", "Directory.Packages.props", "packages.config"}
+)
+_DOTNET_MARKER_SUFFIXES = (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj")
+
+# A conditional directory is NEVER reclassified when one of these is an ancestor segment.
+# Package stores contain complete copies of other projects — including their workspace
+# manifests — so evidence found inside one proves nothing about first-party source and
+# would re-admit the exact duplicate-content shape that nested `.gitignore` support was
+# added to remove in v3.1.2. `.pnpm-store` in particular is NOT in `extra_ignore_dirs`, so
+# the walk really does reach inside it; this rule is the only thing stopping it.
+_STORE_PATH_SEGMENTS = frozenset({"node_modules", ".pnpm-store", ".yarn", ".npm", ".pnp", ".git"})
+
+# Frozen snapshots of trelix's own shipped `extra_ignore_dirs`, newest last.
+#
+# Used ONLY to decide whether the effective list is still trelix's default. A user who
+# hand-wrote an override made a choice and must not be lectured about it (this is why
+# `scripts/self-index.sh`, which drops `packages`, keeps `bin` and adds `.claude-flow`,
+# stays silent). Deliberately a copy rather than a reference to `WalkerConfig`: its job is
+# to remember what SHIPPED, which is exactly what a live reference cannot do.
+# `test_shipped_default_snapshot_is_current` fails if the default moves without an entry
+# being appended here.
+_HISTORICAL_DEFAULT_IGNORE_DIRS: tuple[frozenset[str], ...] = (
+    frozenset(
+        {
+            ".git",
+            ".hg",
+            ".svn",
+            "node_modules",
+            "__pycache__",
+            ".mypy_cache",
+            ".ruff_cache",
+            "venv",
+            ".venv",
+            "env",
+            "dist",
+            "build",
+            "target",
+            "out",
+            ".next",
+            ".nuxt",
+            "coverage",
+            ".coverage",
+            "vendor",
+            "Pods",
+            ".gradle",
+            ".idea",
+            ".vscode",
+            ".angular",
+            "bin",
+            "obj",
+            "packages",
+            ".vs",
+            ".rider",
+            ".trelix",
+        }
+    ),
+)
 
 # Map file extension → Language
 EXTENSION_MAP: dict[str, Language] = {
@@ -117,7 +218,23 @@ class FileWalker:
             ...
     """
 
-    def __init__(self, config: IndexConfig) -> None:
+    def __init__(self, config: IndexConfig, *, index_conditional_dirs: bool = False) -> None:
+        """`index_conditional_dirs=False` walks exactly what every existing index walked.
+
+        With it False the conditional tier is REPORT-ONLY: the probe runs, a reclassified
+        directory is named at WARNING, and the walk yields the same files it always did. So
+        this release costs nothing — no extra embedding, and no change to the walk-config
+        fingerprint that `--prune` compares (`_WALK_FIELDS` in store/provenance.py), which
+        is why it needs no migration.
+
+        With it True a conditional directory that PROVES it holds first-party source is
+        walked. It is deliberately not reachable from the CLI or the environment yet, and
+        that is the point: it is not a `WalkerConfig` field, so provenance cannot record it,
+        and an index built with it True would contain rows a later default walk cannot reach
+        — which `compute_drift` reads as deletions and `--prune` reads as candidates. It
+        becomes the DEFAULT in the release that also splits the field and ships the history
+        collapse, so the widening is recorded, comparable and refusable in one move.
+        """
         self.config = config
         self.repo_root = Path(config.repo_path)
         # Resolved once, and only consulted when containment is enabled.
@@ -141,6 +258,28 @@ class FileWalker:
         # silence, so the walk simply returned fewer files and every caller treated the
         # result as the complete contents of the repository.
         self._incomplete_paths: list[str] = []
+
+        self._index_conditional_dirs = index_conditional_dirs
+        # Only names the effective list actually ignores are conditional. A user who
+        # dropped `packages` from their override (as `scripts/self-index.sh` does) has
+        # already said "index it" — the probe must not put it back under a rule.
+        self._conditional_names = _CONDITIONAL_IGNORE_DIRS & {
+            entry.lower() for entry in config.walker.extra_ignore_dirs
+        }
+        # parent directory -> {conditional dir name (lowercased): evidence filename}.
+        # Shaped exactly like `_spec_cache` above and populated the same way: once per
+        # parent, from the entry listing `_iter_files` already has. A directory absent from
+        # the inner dict has no evidence and stays ignored.
+        self._conditional_cache: dict[Path, dict[str, str]] = {}
+        # Reclassified directories already reported, so the warning fires once per
+        # directory rather than once per verdict (`_is_ignored_dir` is also called by both
+        # watchers' ancestor loops, once per event, for the same path).
+        self._reported_conditional: set[str] = set()
+        # Warn only while the effective list is still trelix's own shipped default —
+        # see `_HISTORICAL_DEFAULT_IGNORE_DIRS`.
+        self._ignore_list_is_shipped_default = (
+            frozenset(config.walker.extra_ignore_dirs) in _HISTORICAL_DEFAULT_IGNORE_DIRS
+        )
 
     @property
     def incomplete_paths(self) -> list[str]:
@@ -244,8 +383,198 @@ class FileWalker:
                 ignored = verdict
         return ignored
 
+    # ------------------------------------------------------------------
+    # Conditional ignore tier (`packages`, `bin`)
+    # ------------------------------------------------------------------
+
+    def _under_store_path(self, path: Path) -> bool:
+        """True if any segment below the repo root is a package store.
+
+        See `_STORE_PATH_SEGMENTS` for why evidence found inside one proves nothing.
+        """
+        try:
+            rel = path.relative_to(self.repo_root)
+        except ValueError:
+            # Outside the repo: judged by the same rule on whatever segments it has, rather
+            # than trusted, because a walk can only get here through a symlink.
+            rel = path
+        return any(part.lower() in _STORE_PATH_SEGMENTS for part in rel.parts)
+
+    @staticmethod
+    def _read_package_json(path: Path) -> dict[str, object] | None:
+        """Parse `package.json`, or None if it cannot be read or is not a JSON object.
+
+        A malformed manifest degrades to "no key evidence" — the marker-file branch can
+        still fire — and never propagates. Failing an index because one `package.json` in
+        one directory has a trailing comma would be a far worse outcome than not indexing
+        that directory.
+        """
+        try:
+            data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, ValueError) as exc:
+            logger.debug("Could not read %s for workspace detection: %s", path, exc)
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _bin_points_into(declared: object, dir_name: str) -> bool:
+        """True if a `package.json` `bin` declaration targets something inside `dir_name`.
+
+        npm allows both `"bin": "bin/cli.js"` and `"bin": {"tool": "bin/cli.js"}`, so both
+        are accepted. The target must point INTO the directory: `{"tool": "dist/cli.js"}`
+        beside a `bin/` says nothing about `bin/` and must not admit it.
+        """
+        targets: list[object]
+        if isinstance(declared, str):
+            targets = [declared]
+        elif isinstance(declared, dict):
+            targets = list(declared.values())
+        else:
+            return False
+
+        for target in targets:
+            if not isinstance(target, str):
+                continue
+            # Only a leading "./" is stripped, never with `lstrip("./")`: that strips any
+            # run of both characters, turning "../bin/x" and "/abs/bin/x" into "bin/x" and
+            # admitting a directory the declaration never pointed at.
+            normalized = target[2:] if target.startswith("./") else target
+            parts = PurePosixPath(normalized).parts
+            if len(parts) > 1 and parts[0].lower() == dir_name.lower():
+                return True
+        return False
+
+    def _classify_conditional_dirs(self, parent: Path, entries: list[Path]) -> dict[str, str]:
+        """Decide, once per parent, which conditional dirs inside it hold first-party source.
+
+        Returns `{lowercased dir name: evidence filename}`; a name absent from the result
+        has no positive evidence and stays ignored.
+
+        Positive evidence is REQUIRED, which inverts the tempting rule "ignore `bin/` only
+        when .NET markers are present". The absence of .NET evidence is not evidence of
+        source: absent-means-index would silently expand the walk into every virtualenv
+        `bin/`, every Go `bin/` and every compiled-output `bin/` in the wild, priced at
+        whatever that repo happens to contain. Requiring proof can only UNDER-include, and
+        under-inclusion is now loud (the directory is named at WARNING) while
+        over-inclusion is silent money. That asymmetry is the entire defect being fixed
+        here, so it is not repeated in the fix.
+        """
+        candidates = {
+            entry.name.lower(): entry.name
+            for entry in entries
+            if entry.name.lower() in _CONDITIONAL_IGNORE_DIRS and entry.is_dir()
+        }
+        if not candidates:
+            return {}
+        if self._under_store_path(parent):
+            return {}
+
+        names = sorted(entry.name for entry in entries)
+        if any(name in _DOTNET_MARKER_FILES for name in names) or any(
+            name.lower().endswith(_DOTNET_MARKER_SUFFIXES) for name in names
+        ):
+            # Applied to `bin` as well as `packages`, even though a .NET `bin/` could never
+            # produce the `package.json` evidence below anyway. Restating it costs one
+            # comparison and makes the .NET regression these three entries exist to prevent
+            # independent of how the positive rules later change.
+            return {}
+
+        manifest = (
+            self._read_package_json(parent / "package.json") if "package.json" in names else None
+        )
+
+        verdicts: dict[str, str] = {}
+        if "packages" in candidates:
+            marker = next((name for name in names if name.lower() in _WORKSPACE_MARKER_FILES), None)
+            if marker is not None:
+                verdicts["packages"] = marker
+            elif manifest is not None and "workspaces" in manifest:
+                verdicts["packages"] = "package.json"
+        if "bin" in candidates and manifest is not None:
+            if self._bin_points_into(manifest.get("bin"), candidates["bin"]):
+                verdicts["bin"] = "package.json"
+        return verdicts
+
+    def _prime_conditional_cache(self, parent: Path, entries: list[Path]) -> None:
+        """Classify `parent`'s conditional dirs from a listing the caller already has.
+
+        Called once per directory from `_iter_files`, so the walk pays zero extra syscalls
+        for the probe: marker names come out of `entries`, and the single `package.json`
+        read only happens in a directory that actually contains a `packages/` or `bin/`.
+        """
+        if parent not in self._conditional_cache:
+            self._conditional_cache[parent] = self._classify_conditional_dirs(parent, entries)
+
+    def _conditional_evidence(self, dir_path: Path) -> str | None:
+        """The evidence file admitting `dir_path`, or None if it stays ignored.
+
+        On the watcher paths there is no preceding `_iter_files`, so the memo is cold and
+        the parent is listed here — the one place the probe costs a real syscall, bounded to
+        once per parent for the walker's lifetime (`MultiRepoWatcher` builds its walkers
+        once per repo, not once per event).
+        """
+        parent = dir_path.parent
+        memo = self._conditional_cache.get(parent)
+        if memo is None:
+            try:
+                entries = sorted(parent.iterdir())
+            except OSError:
+                # Unreadable parent: no evidence, so the directory keeps today's verdict.
+                # NOT recorded as incomplete — the traversal itself records that when it
+                # fails to list the same directory, and it is not a gap in the index here.
+                entries = []
+            memo = self._classify_conditional_dirs(parent, entries)
+            self._conditional_cache[parent] = memo
+        return memo.get(dir_path.name.lower())
+
+    def _report_conditional(self, dir_path: Path, evidence: str) -> None:
+        """Say once, at WARNING, that a directory holding source is not being indexed."""
+        if not self._ignore_list_is_shipped_default:
+            return
+        try:
+            rel = str(dir_path.relative_to(self.repo_root))
+        except ValueError:
+            rel = str(dir_path)
+        if rel in self._reported_conditional:
+            return
+        self._reported_conditional.add(rel)
+        logger.warning(
+            "%s is NOT being indexed: %r is in trelix's default extra_ignore_dirs (added "
+            "for .NET build output), but %s beside it declares this directory as "
+            "first-party source. To index it, set TRELIX_WALKER_EXTRA_IGNORE_DIRS to the "
+            "full default list minus %r — the variable REPLACES all %d entries rather than "
+            "extending them, and a comma-separated value is rejected, so pass JSON "
+            "(scripts/self-index.sh is a working reference). Run `trelix index --dry-run` "
+            "for the file and token count before spending.",
+            rel,
+            dir_path.name,
+            evidence,
+            dir_path.name,
+            len(self.config.walker.extra_ignore_dirs),
+        )
+
     def _is_ignored_dir(self, dir_path: Path) -> bool:
-        if dir_path.name in self.config.walker.extra_ignore_dirs:
+        name = dir_path.name
+        # The unconditional tier is byte-exact, as it has always been: `Bin/` and `OBJ/`
+        # are NOT caught. Left alone deliberately — case-folding it would newly exclude
+        # directories every existing index contains. The conditional tier below IS
+        # case-insensitive, because `Packages/` on a case-insensitive filesystem is the
+        # same directory as `packages/` and the probe answers for the real one.
+        exact = name in self.config.walker.extra_ignore_dirs
+
+        if name.lower() in self._conditional_names:
+            evidence = self._conditional_evidence(dir_path)
+            if self._index_conditional_dirs:
+                if evidence is not None:
+                    return self._is_gitignored(dir_path, is_dir=True)
+                # Ambiguous: no workspace manifest, no `bin` declaration. Stays ignored,
+                # is reported, and is one environment variable away — see
+                # `_classify_conditional_dirs` for why proof is required.
+                return True
+            if evidence is not None and exact:
+                self._report_conditional(dir_path, evidence)
+
+        if exact:
             return True
         return self._is_gitignored(dir_path, is_dir=True)
 
@@ -402,6 +731,10 @@ class FileWalker:
                 # simply is not a cycle candidate, and detection resumes one level
                 # down — so this is not recorded as a gap.
                 _chain = frozenset()
+
+        # Classify this directory's conditional children before the entry loop asks about
+        # them, so the probe reads `entries` instead of listing the directory a second time.
+        self._prime_conditional_cache(root, entries)
 
         for entry in entries:
             if not self._is_within_root(entry):
