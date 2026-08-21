@@ -3,7 +3,8 @@ Phase 3 embed/store failures must abort as a named, explained PartialIndexError.
 
 Covers what a bare exception escaping `asyncio.gather` did not:
   - the raised error names the failing batch count, the landed chunk count and the
-    recovery path (a partial index does NOT heal on the next run);
+    recovery path (re-run `trelix index`, which reconciles the store against the
+    `chunks` table and re-embeds only the holes — see `TestTheRecoveryAdvice`);
   - batches that have not started embedding when the first failure lands are
     skipped, so a store that is rejecting writes does not keep buying embeddings
     it cannot store;
@@ -85,8 +86,8 @@ class TestAsyncPartialAbort:
         # str(exc) as its only output (cli/main.py _print_error).
         assert "0 of 4 chunk(s)" in message  # nothing landed
         assert "delete failed" in message  # the underlying store error
-        assert "does not heal on the next run" in message
-        assert ".trelix/lance" in message  # what to delete to rebuild
+        assert "PARTIAL" in message  # the state it leaves, which is still true
+        assert ".trelix/lance" in message  # where that state lives, per backend
         assert "/tmp/repo/.trelix/index.db" in message
         assert stats["chunks_embedded"] == 0
         assert stats["errors"] >= 1
@@ -228,4 +229,54 @@ class TestSyncPartialAbort:
             result = indexer.index_file(__file__)
 
         assert result["status"] == "error"
-        assert "does not heal on the next run" in result["error"]
+        assert "PARTIAL" in result["error"]
+        assert "trelix index" in result["error"]
+
+
+class TestTheRecoveryAdvice:
+    """The advice in the message must be the advice the code can actually honour.
+
+    This text is the whole channel: `cli/main.py` prints `str(exc)` and exits 1, and
+    `index_file()` returns it as `error`. It used to say the index "does not heal on the
+    next run" and to delete the index database — true when it was written, made false by
+    the crash-recovery reconcile that now runs once per `trelix index`. A user who followed
+    it destroyed every embedding that HAD landed (61,652 on the real index) to recover the
+    holes a plain re-run refills for the price of the holes alone.
+
+    `tests/unit/test_indexer_vector_repair.py::TestTheAbortTextMatchesWhatARerunDoes`
+    is the other half: it aborts a real fixture index and proves the re-run heals it.
+    """
+
+    def _abort_message(self) -> str:
+        """The underlying error deliberately avoids the word "delete", unlike the store
+        failure the tests above use: the message echoes it, so a "delete failed" cause
+        would satisfy the substring check below no matter what the advice says."""
+        pending = [_make_chunk(i) for i in range(3)]
+        indexer = _build_indexer()
+        indexer.embedder.embed.side_effect = lambda texts: [[0.0, 1.0] for _ in texts]
+        indexer.vector_store.upsert_batch.side_effect = RuntimeError("io error 5")
+
+        with _patch_rich_progress(), pytest.raises(PartialIndexError) as excinfo:
+            indexer._batch_embed_and_store(pending, {"chunks_embedded": 0})
+        return str(excinfo.value)
+
+    def test_it_does_not_claim_the_index_will_not_heal(self) -> None:
+        assert "does not heal" not in self._abort_message()
+
+    def test_it_does_not_advise_deleting_a_repairable_index(self) -> None:
+        """No form of the word: "delete the index database" was the specific instruction,
+        and a softer "you could also remove …" is the same money on the floor."""
+        message = self._abort_message()
+        assert "delet" not in message.lower(), message
+
+    def test_it_points_at_re_running_the_index(self) -> None:
+        message = self._abort_message()
+        assert "trelix index" in message, message
+        assert "re-embed" in message.lower(), message
+
+    def test_it_still_says_the_index_is_partial_right_now(self) -> None:
+        """The part that did NOT become false: until that re-run happens these chunks are
+        unsearchable while `trelix stats` counts them as indexed."""
+        message = self._abort_message()
+        assert "PARTIAL" in message, message
+        assert "counting them as indexed" in message, message
