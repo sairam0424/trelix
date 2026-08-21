@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 
 from trelix.core.config import RetrievalConfig
-from trelix.core.models import SearchResult
+from trelix.core.models import RerankOutcome, SearchResult
 from trelix.core.retry import with_retry
 from trelix.retrieval.reranker_xtr import (
     xtr_score_documents,  # noqa: F401 — imported for mock patching
@@ -47,15 +47,46 @@ def rerank(
 
     Falls back gracefully (warning, no raise) when the required library is
     not installed for the configured provider.
-    """
-    if not results:
-        return []
 
-    match config.rerank_provider:
+    Unchanged contract, kept because every existing caller and 22 test call sites
+    want only the results. Use `rerank_with_outcome` when you need to report which
+    pipeline actually ran — a warning in a log is not a record.
+    """
+    return rerank_with_outcome(query, results, config, top_n)[0]
+
+
+def rerank_with_outcome(
+    query: str,
+    results: list[SearchResult],
+    config: RetrievalConfig,
+    top_n: int = 10,
+) -> tuple[list[SearchResult], RerankOutcome]:
+    """Rerank, and also report whether reranking actually happened.
+
+    Every provider below degrades to "return the unranked head" on a missing
+    library, a missing credential or an internal error, logging a warning and
+    nothing more. That is the right runtime behaviour — a rerank failure should
+    not fail a query — but it leaves no record, so a caller reporting a
+    measurement cannot say which pipeline produced it. This returns that record.
+
+    One honest limitation: for `plaid`, `applied=True` means *dispatched*, not
+    *definitely reranked*. PlaidReranker has three internal fallbacks of its own
+    that return the input unchanged, and they are not visible from here.
+    """
+    provider = config.rerank_provider
+
+    if not results:
+        return [], RerankOutcome(provider, applied=False, skipped_because="no candidates")
+
+    match provider:
         case "plaid":
             from trelix.retrieval.reranker_plaid import PlaidReranker
 
-            return PlaidReranker(config).rerank(query, results, top_n=top_n)
+            # See the docstring: dispatched, not verified.
+            return (
+                PlaidReranker(config).rerank(query, results, top_n=top_n),
+                RerankOutcome(provider, applied=True),
+            )
         case "cross_encoder":
             return _cross_encoder_rerank(query, results, config.rerank_model, top_n)
         case "cohere":
@@ -70,7 +101,9 @@ def rerank(
         case "xtr":
             return _xtr_rerank(query, results, top_n)
         case _:
-            return results[:top_n]
+            return results[:top_n], RerankOutcome(
+                provider, applied=False, skipped_because=f"unknown provider {provider!r}"
+            )
 
 
 def _cross_encoder_rerank(
@@ -78,12 +111,15 @@ def _cross_encoder_rerank(
     results: list[SearchResult],
     model_name: str,
     top_n: int,
-) -> list[SearchResult]:
+) -> tuple[list[SearchResult], RerankOutcome]:
     """Local cross-encoder reranking (no API key needed).
 
     Requires: pip install trelix[local]
     When sentence-transformers is not installed, logs a warning and returns
     the original top-N results unchanged.
+
+    Reports its own outcome rather than letting the caller re-derive the skip
+    condition: the import is attempted here, so only here knows whether it worked.
     """
     try:
         import contextlib
@@ -96,7 +132,11 @@ def _cross_encoder_rerank(
             "sentence-transformers is not installed; skipping cross-encoder reranking. "
             "Install it with: pip install trelix[local]"
         )
-        return results[:top_n]
+        return results[:top_n], RerankOutcome(
+            "cross_encoder",
+            applied=False,
+            skipped_because="sentence-transformers is not installed",
+        )
 
     # Suppress noisy model-loading output (progress bars, weight load reports)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -130,7 +170,7 @@ def _cross_encoder_rerank(
     for i, r in enumerate(reranked, start=1):
         r.rank = i
 
-    return reranked[:top_n]
+    return reranked[:top_n], RerankOutcome("cross_encoder", applied=True)
 
 
 def _cohere_rerank(
@@ -141,7 +181,7 @@ def _cohere_rerank(
     endpoint: str | None = None,
     model: str = "Cohere-rerank-v4.0-pro",
     max_retries: int = 3,
-) -> list[SearchResult]:
+) -> tuple[list[SearchResult], RerankOutcome]:
     """Cohere Rerank via HTTP endpoint.
 
     Requires: pip install trelix[rerank]
@@ -163,14 +203,16 @@ def _cohere_rerank(
             "requests is not installed; skipping Cohere reranking. "
             "Install it with: pip install trelix[rerank]"
         )
-        return results[:top_n]
+        return results[:top_n], RerankOutcome(
+            "cohere", applied=False, skipped_because="requests is not installed"
+        )
 
     if not api_key:
         log.warning(
             "COHERE_API_KEY is not set; skipping Cohere reranking. "
             "Set it with: export COHERE_API_KEY=<your-key>"
         )
-        return results[:top_n]
+        return results[:top_n], RerankOutcome("cohere", applied=False, skipped_because="no API key")
 
     url = endpoint  # full URL including path (e.g. .../providers/cohere/v2/rerank)
     headers = {
@@ -202,7 +244,11 @@ def _cohere_rerank(
         fallback = results[:top_n]
         for i, r in enumerate(fallback, start=1):
             r.rank = i
-        return fallback
+        return fallback, RerankOutcome(
+            "cohere",
+            applied=False,
+            skipped_because=f"API call failed after {max_retries} attempt(s)",
+        )
 
     reranked: list[SearchResult] = []
     for item in data["results"]:
@@ -217,15 +263,19 @@ def _cohere_rerank(
                 source=result.source,
             )
         )
-    return reranked
+    return reranked, RerankOutcome("cohere", applied=True)
 
 
 def _xtr_rerank(
     query: str,
     results: list[SearchResult],
     top_n: int,
-) -> list[SearchResult]:
+) -> tuple[list[SearchResult], RerankOutcome]:
     """XTR late-interaction reranking (experimental, arXiv:2304.01982).
+
+    Reports `applied=False` even on its success path, because the success path does
+    not rerank. Saying `applied=True` here would be the exact misreport this
+    outcome type exists to prevent — see the DEGENERATE note below.
 
     DEGENERATE: this provider currently reranks NOTHING. It builds a
     query_token_scores dict with exactly one synthetic token whose retrieved
@@ -292,7 +342,13 @@ def _xtr_rerank(
                 source=results[idx].source,
             )
             for i, idx in enumerate(order[:top_n], start=1)
-        ]
+        ], RerankOutcome(
+            "xtr",
+            applied=False,
+            skipped_because="the single-token approximation is an identity function",
+        )
     except Exception as exc:
         log.warning("XTR reranker failed, returning unranked results: %s", exc)
-        return results[:top_n]
+        return results[:top_n], RerankOutcome(
+            "xtr", applied=False, skipped_because=f"scoring failed: {exc}"
+        )

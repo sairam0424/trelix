@@ -8,6 +8,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ### Fixed
 
+- **`trelix eval` reported retrieval scores without saying which pipeline produced
+  them, so the same golden set against the same index scored differently depending on
+  whether a credential happened to be exported.** `rerank` defaults to `true` and
+  `rerank_provider` to `cohere`; with no `COHERE_API_KEY` the reranker logs a warning
+  and hands back the unranked head. The results table showed nDCG@10 / Recall@10 / MRR
+  and nothing else, so a reader attributed the number to a Cohere-reranked pipeline that
+  had not run. Measured on the 10-query `mini_repo` fixture: nDCG@10 **0.9631** un-reranked
+  against **0.9131** reranked, MRR 0.9500 against 0.8833 — a gap larger than most changes
+  anyone measures with `trelix eval`, and `docs/WHY_TRELIX.md` tells readers to validate
+  feature flags with exactly this command. Two of those runs printed **identical scores**
+  with no way to tell them apart. Every provider now reports whether it actually applied
+  and why not, the verdict rides back on `RetrievedContext.rerank`, and the table carries
+  a `Rerank` row: `cross_encoder`, `disabled`, `cohere (skipped: no API key)`, or
+  `MIXED across queries — 3/10 applied: …` when a run used more than one pipeline, which
+  is deliberately not collapsed to a single name. `xtr` reports `applied=False` even on
+  its success path, because that path re-sorts by the score each result already had and
+  never reads the query. `rerank()`'s existing contract is unchanged — it still returns a
+  bare list for all 22 existing call sites; the outcome is available via the new
+  `rerank_with_outcome()`. One limit stated rather than glossed: for `plaid`,
+  `applied=True` means *dispatched*, since `PlaidReranker` has three internal fallbacks
+  of its own that are not visible from outside. Pinned by 15 tests, each verified by
+  mutation — including one that closed a real hole, since deleting the line that attaches
+  the verdict to the context previously passed all 186 tests in the touched suites.
+
 - **Three docs promised that `trelix query` and `trelix search` make no LLM calls; with a
   chat credential set they make one per distinct query.** `docs/FAQ.md` told readers the
   command runs "without calling an LLM", "works fully offline", "returns deterministic

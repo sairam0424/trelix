@@ -2850,6 +2850,20 @@ def eval(
     table.add_row("Recall@10", f"{metrics['recall@10']:.4f}")
     table.add_row("MRR", f"{metrics['mrr']:.4f}")
     table.add_row("Queries evaluated", str(int(metrics["n_queries"])))
+    # Which pipeline produced those numbers, not which one was configured. `rerank`
+    # defaults True with provider `cohere`, and a missing COHERE_API_KEY makes the
+    # reranker warn and hand back the unranked head — so two runs of the same golden
+    # set against the same index print different scores depending only on whether a
+    # credential happened to be exported. Measured on a 10-query fixture: nDCG@10
+    # 0.9631 unranked against 0.9131 reranked. The warning was already logged; what
+    # was missing was a record attached to the number anyone would paste into a PR.
+    rerank_state = harness.rerank_summary()
+    table.add_row(
+        "Rerank",
+        rerank_state
+        if "skipped" not in rerank_state and "MIXED" not in rerank_state
+        else f"[yellow]{rerank_state}[/yellow]",
+    )
     console.print(table)
 
 

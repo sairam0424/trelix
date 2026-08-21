@@ -310,6 +310,31 @@ class SearchResult:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class RerankOutcome:
+    """Whether reranking actually ran on a query, and if not, why not.
+
+    Configuration is not outcome. ``rerank_provider`` defaults to ``"cohere"`` and
+    ``rerank`` defaults to ``True``, but a missing ``COHERE_API_KEY`` makes the
+    reranker log a warning and hand back the unranked head — so a score that a
+    config would describe as "cohere-reranked" may have had no reranking at all.
+    On a 10-query fixture that difference was nDCG@10 0.9631 unranked against
+    0.9131 reranked, which is larger than most changes anyone measures with
+    ``trelix eval``. Recording what happened is what lets a reported number
+    describe the pipeline that produced it instead of the one that was requested.
+    """
+
+    provider: str
+    applied: bool
+    skipped_because: str | None = None
+
+    def describe(self) -> str:
+        """One-line human summary, e.g. ``cohere (skipped: no API key)``."""
+        if self.applied:
+            return self.provider
+        return f"{self.provider} (skipped: {self.skipped_because or 'unknown reason'})"
+
+
 @dataclass
 class RetrievedContext:
     """
@@ -324,3 +349,7 @@ class RetrievedContext:
     retrieval_sources: dict[str, int] = field(default_factory=dict)
     elapsed_seconds: float = 0.0
     intent: str = ""  # planner intent — used by synthesizer for per-intent prompts
+    # None means the rerank stage was never entered (disabled by config, or the
+    # planner's strategy set skip_reranker). An outcome with applied=False means it
+    # WAS entered and did nothing — a distinction that is invisible in the config.
+    rerank: RerankOutcome | None = None
