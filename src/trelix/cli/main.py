@@ -2388,7 +2388,21 @@ def watch(
     repo: str = typer.Argument(..., help="Path to the repository to watch"),
     provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
 ) -> None:
-    """Watch repo for changes and auto-update index. Ctrl+C to stop."""
+    """Watch repo for changes and auto-update the index. Ctrl+C to stop.
+
+    Runs a full index FIRST, then watches. Measured cost of that startup pass:
+
+      * up to date, no missing vectors — 0 chunks embedded, "Nothing to index".
+      * up to date but holed — "Repairing 3 chunk(s)...", 3 chunks embedded. The
+        content-hash pre-filter skips every file, but the pass also diffs the
+        vector store against the chunks table, so it pays to refill holes an
+        interrupted run left behind.
+      * never indexed — embeds the whole repository.
+
+    Only the watching phase that follows is free; it re-indexes changed files and
+    does not scan the store again, so a hole opened while watch is already running
+    survives until the next startup.
+    """
     _setup_logging(False)
 
     from pydantic import ValidationError as _PydanticValidationError
