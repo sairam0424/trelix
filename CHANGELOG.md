@@ -6,6 +6,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [3.1.5] — 2026-08-21
+
 ### Fixed
 
 - **`trelix graph --concepts` extracted concepts from an arbitrary 1.6% of symbols,
