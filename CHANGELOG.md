@@ -6,6 +6,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [3.1.4] — 2026-08-21
+
 ### Security
 
 - **The `trelix audit` read commands wrote to the databases they read, and could
