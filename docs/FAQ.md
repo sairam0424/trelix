@@ -1,6 +1,6 @@
-# trelix v3.1.2 — Frequently Asked Questions
+# trelix v3.1.5 — Frequently Asked Questions
 
-> Last updated: 2026-08-17 — covers trelix 3.1.2, trelix-mcp 3.1.2, trelix-langchain 3.1.2, and trelix-llama-index 3.1.2.
+> Last updated: 2026-08-17 — covers trelix 3.1.5, trelix-mcp 3.1.5, trelix-langchain 3.1.5, and trelix-llama-index 3.1.5.
 
 ---
 
@@ -102,11 +102,18 @@ Indexing is a one-time cost. After that, `trelix watch` incrementally re-indexes
 | Command | Retrieval | LLM | Output | Offline |
 |---------|-----------|-----|--------|---------|
 | `trelix search` | Hybrid (vector + BM25 + grep) | Planner only — no synthesis | Ranked code chunks in a table | Only with no chat credential set |
-| `trelix ask` | Hybrid + reranking + synthesis | Yes | Synthesized natural-language answer | Requires API key |
+| `trelix ask` | Hybrid + synthesis — no reranking, same as `search` | Yes | Synthesized natural-language answer | Requires API key |
 
 The `search` row used to read "LLM: No / Offline: Yes". That contradicted
 [What is `trelix query`?](#what-is-trelix-query) eleven lines below it, which says the planner
 call applies to `search` too. See that section for the two ways to get zero LLM calls.
+
+The `ask` row used to read "Hybrid + reranking + synthesis". It does not rerank: `ask`
+constructs `RetrievalConfig(rerank=False)` at `src/trelix/cli/main.py:1269`, exactly as
+`search` does at `:1173`, and an init keyword outranks `TRELIX_RETRIEVAL_RERANK` in
+pydantic-settings — so no environment setting switches it on. Reranking is on by default
+only on the surfaces that leave `retrieval` at its default: the MCP tools, the REST API,
+the Python API, and the `eval` / `eval-synthesis` / `review` / `search-all` commands.
 
 Use `trelix search` when you want to browse the raw matches and decide yourself. Use `trelix ask` when you want a direct answer to a question about the codebase. `trelix ask` calls `trelix search` internally and then sends the top results to an LLM.
 
@@ -228,7 +235,7 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v3.1.2 exposes **15 tools**:
+trelix-mcp v3.1.5 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|
@@ -357,7 +364,7 @@ For code-specific retrieval quality, ranked highest to lowest:
 
 | Provider | Model | CoIR Score | Notes |
 |----------|-------|-----------|-------|
-| `bge-code` | BAAI/bge-code-v1 (768-dim) | SOTA 2025 | Local, no API key, ~8GB RAM |
+| `bge-code` | BAAI/bge-code-v1 (1536-dim) | SOTA 2025 | Local, no API key, ~8GB RAM |
 | `voyage` | voyage-code-3 (256–2048-dim, Matryoshka) | Very High | Best API option; set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for 2x faster HNSW |
 | `local-code` | SFR-Embedding-Code-2B_R (4096-dim) | Very High | Local, large model, requires GPU or ~8GB RAM |
 | `nomic-code` | nomic-ai/nomic-embed-code (768-dim) | High | Local, good for large repos |
@@ -529,7 +536,7 @@ trelix-langchain==3.1.5
 trelix-llama-index==3.1.5
 ```
 
-The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.1.2 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.1.2 resolving against core 3.0.0 is supported and intended — the four-way 3.1.2 pin above is the combination CI installs and tests, not the only one that works.
+The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.1.5 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.1.5 resolving against core 3.0.0 is supported and intended — the four-way 3.1.5 pin above is the combination CI installs and tests, not the only one that works.
 
 ---
 

@@ -1,4 +1,4 @@
-# trelix User Guide — v3.1.2
+# trelix User Guide — v3.1.5
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -1620,7 +1620,7 @@ built-in default list rather than appending to it.
 Only two flags are processed before a subcommand:
 
 ```bash
-trelix --version        # or -V; prints e.g. "trelix 3.1.2"
+trelix --version        # or -V; prints e.g. "trelix 3.1.5"
 trelix --help           # top-level help
 trelix <command> --help  # per-command help — the ground truth for any flag question
 ```
@@ -1731,7 +1731,7 @@ curl http://localhost:8765/health
 ```
 
 ```json
-{"status": "ok", "version": "3.1.2", "repo": "./my-repo"}
+{"status": "ok", "version": "3.1.5"}
 ```
 
 ### Index statistics
@@ -2204,4 +2204,4 @@ Everything below is **additive and off by default** — a v2.12.0 setup keeps be
 
 ---
 
-*trelix v3.1.2 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v3.1.5 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

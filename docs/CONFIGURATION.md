@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v3.1.2
+# Trelix Configuration Reference — v3.1.5
 
 Complete reference for all configuration options available in trelix.
 
@@ -361,7 +361,7 @@ relevant to your setup. Lines beginning with `#` are comments and are ignored.
 
 ```dotenv
 # =============================================================================
-# Trelix v3.1.2 — complete .env example
+# Trelix v3.1.5 — complete .env example
 # Copy to .env and fill in values. Never commit this file.
 # =============================================================================
 

@@ -20,7 +20,7 @@ Verify the install:
 
 ```bash
 trelix --version
-# trelix 3.1.2
+# trelix 3.1.5
 ```
 
 ---
@@ -33,16 +33,42 @@ Point `trelix index` at any local directory. Trelix parses every supported sourc
 trelix index ./my-repo
 ```
 
-Expected output:
+Expected output, captured from a real run against a three-file example repo — your counts will differ:
 
 ```
-[trelix] Scanning ./my-repo...
-[trelix] Found 1,247 files (312 supported)
-[trelix] Parsing symbols...  ████████████████████ 312/312
-[trelix] Embedding chunks... ████████████████████ 4,891/4,891
-[trelix] Index written to ./my-repo/.trelix/index.db
-[trelix] Done. 4,891 chunks indexed in 18.4s
+╭────────────────────╮
+│ Indexing ./my-repo │
+╰────────────────────╯
+  Phase 1/3: parsing 3 files (4 workers)…
+  Parsing… ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%
+  Phase 2/3: inserting symbols & building chunks…
+  Writing symbols… ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%
+  Phase 3/3: embedding 3 chunks (91 tokens, up to 4 concurrent API calls)…
+  Embedding… ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%
+
+Done. {'files_found': 3, 'files_unreadable': 0, 'files_indexed': 3, 'files_skipped': 0,
+'symbols_extracted': 3, 'chunks_total': 3, 'chunks_embedded': 3, 'file_summaries_generated': 0,
+'file_summaries_failed': 0, 'file_summaries_embedded': 0, 'chunks_missing_vectors': 0,
+'chunks_reconciled': 0, 'errors': 0, 'elapsed_seconds': 4.2}
+        Index Summary
+┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓
+┃ Metric            ┃ Value ┃
+┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━┩
+│ Files found       │     3 │
+│ Files indexed     │     3 │
+│ Files skipped     │     0 │
+│ Symbols extracted │     3 │
+│ Chunks embedded   │     3 │
+│ Elapsed           │ 78.0s │
+└───────────────────┴───────┘
 ```
+
+How to read it:
+
+- The three progress bars are Rich progress displays — in a terminal they animate in place instead of appearing as finished lines.
+- `Done. {…}` is the raw stats dict, printed by the indexer itself before the CLI's summary table. Its line wrapping follows your terminal width.
+- Two summary rows are conditional: `Chunks repaired` appears only when an earlier interrupted run left chunks without vectors, and `Errors` only when at least one file failed.
+- `Elapsed` is timed around the whole command, including loading the local embedding model — a cost every process pays. That is why `78.0s` here dwarfs the `'elapsed_seconds': 4.2` inside the `Done.` line; timed separately on the same machine, constructing the indexer (which loads the model) took 66.9s of it.
 
 The `.trelix/` directory is self-contained. You can check it in or add it to `.gitignore` depending on whether you want the index shared with your team.
 
@@ -52,15 +78,38 @@ To see index statistics at any time:
 trelix stats ./my-repo
 ```
 
+Same example repo as above:
+
 ```
-Repository:  ./my-repo
-Index:       ./my-repo/.trelix/index.db
-Chunks:      4,891
-Files:       312
-Languages:   Python (204), TypeScript (68), YAML (40)
-Embedder:    local (sentence-transformers/all-MiniLM-L6-v2)
-Last index:  2026-07-05 09:32:11 UTC
+╭────────────────────────╮
+│ Index Stats: ./my-repo │
+╰────────────────────────╯
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ Metric                    ┃     Value ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━┩
+│ Files indexed             │         3 │
+│ Symbols                   │         3 │
+│ Chunks                    │         3 │
+│ Chunks with vectors       │         3 │
+│ Chunks missing vectors    │         0 │
+│ Vectors with no chunk row │         0 │
+│ Embedding dimension       │       384 │
+│ DB size                   │ 1792.0 KB │
+└───────────────────────────┴───────────┘
+                      Built from
+┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Field                  ┃                     Value ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Commit                 │     873fe87f0039 (= HEAD) │
+│ Branch                 │                    master │
+│ Worktree at index time │                     clean │
+│ Indexed at             │ 2026-08-21T20:27:02+00:00 │
+│ trelix version         │                     3.1.5 │
+│ Embedder               │                     local │
+└────────────────────────┴───────────────────────────┘
 ```
+
+There is no language breakdown and no repository/index-path rows — the path you passed is echoed in the panel title instead, and `Embedder` names the provider only. The three coverage rows are the point of the command: `Chunks missing vectors` above zero means those chunks can never be retrieved, and `stats` prints the remedy directly under the table when that happens. When the vector store cannot be consulted those three rows collapse to a single `Chunks with vectors │ not checked — <reason>`; on an index that never recorded a width, `Embedding dimension` reads `not recorded — dimension guard disabled`. Adding `--drift` appends a further section comparing every file on disk against its stored hash.
 
 ---
 
@@ -76,24 +125,21 @@ Basic semantic search:
 trelix search ./my-repo "authentication middleware"
 ```
 
+Results come back as a four-column table. The cell values below are elided because they
+depend entirely on your repository; the columns, their order and their alignment do not:
+
 ```
-1. src/middleware/auth.py:42  — verify_jwt_token()
-   Verifies JWT signature and expiry. Returns decoded payload or raises AuthError.
-
-2. src/middleware/auth.py:78  — require_auth()
-   Decorator that calls verify_jwt_token and attaches user context to request.
-
-3. src/api/routes/users.py:15 — UserRouter
-   FastAPI router; all routes decorated with @require_auth.
-
-4. tests/test_auth.py:31      — test_expired_token_raises()
-   Asserts AuthError is raised when JWT exp is in the past.
-
-5. docs/auth.md:1             — Authentication Overview
-   Describes the JWT-based auth flow and token rotation policy.
+Search: authentication middleware
+┏━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━┓
+┃ File ┃ Symbol ┃ Lines ┃ Score ┃
+┡━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━┩
+│ …    │ …      │     … │     … │
+│ …    │ …      │     … │     … │
+│ …    │ …      │     … │     … │
+└──────┴────────┴───────┴───────┘
 ```
 
-Search returns ranked results with file path, line number, symbol name, and a one-line description.
+One row per result: repo-relative file path, symbol name, the symbol's `start-end` line range, and the retrieval score to four decimal places. There is no description column — `search` prints no prose. When nothing matches it prints `No results found.` and exits 0. `trelix search --json` emits `{"status": "ok", "results": [{"file", "symbol", "lines", "score"}, ...]}` instead of the table.
 
 ### Python API
 

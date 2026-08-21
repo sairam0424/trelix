@@ -6,7 +6,62 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **`bge-code` could not index or query anything: `AttributeError` before Phase 1, and the
+  width it advertised was wrong underneath that.** `BGECodeEmbedder.dimension` called
+  `self._model.get_sentence_embedding_dimension()`, a method FlagEmbedding has never had —
+  absent from every class in the 1.2.11, 1.3.5 and 1.4.0 sdists, with no `__getattr__` on
+  `AbsEmbedder` or `FlagModel` to forward it. `Indexer.__init__` reads that property to size
+  the vec0 table (`indexer.py:388`) and `Retriever.__init__` reads it to arm `DimensionGuard`
+  (`retriever.py:262`), so every `bge-code` index and query died there. The unit test covering
+  the property passed only because a `MagicMock` answers for any attribute asked of it — the
+  green test was the reason nobody noticed. Behind the raise sat a second wrong number:
+  `bge_code_dimensions` defaulted to 768 while `BAAI/bge-code-v1` emits 1536 (`config.json`
+  `hidden_size: 1536`, `1_Pooling/config.json` `word_embedding_dimension: 1536`), and nothing
+  narrowed it — `truncate_dim`, FlagEmbedding's Matryoshka knob, was never passed. Had the
+  property returned 768 the vec0 table would have been created `FLOAT[768]` and Phase 3 would
+  have aborted with `PartialIndexError … Expected 768 dimensions but received 1536`, leaving
+  an index of zero vectors with 768 already stamped into `index_metadata`. `dimension` now
+  reads the loaded model — `truncate_dim` first, then the HF config's `hidden_size`, then the
+  configured value, so it cannot raise — and the default is 1536. No migration: because the
+  property raised before `make_vector_store` ran, no `bge-code` index has ever been built, so
+  nothing existing changes width. Switching a pre-existing 768-dim index (`nomic-code`) to
+  `bge-code` now raises the intended `DimensionMismatchError` with its `migrate-vectors
+  --reset --provider` instruction instead of `AttributeError`. Pinned by a plain stub class
+  carrying FlagModel's real attribute surface, which a `MagicMock` cannot fake past.
+  `docs/architecture.md`, `docs/PROVIDERS.md`, `docs/FAQ.md` and `docs/GLOSSARY.md` corrected
+  to 1536; `docs/USER_GUIDE.md` and `docs/WHY_TRELIX.md` already said 1536.
+
+- **`build_knowledge_graph` (MCP) reported `concept_count` with no coverage, so an agent
+  got the exact misreport v3.1.5 fixed for humans.** Extraction is capped at the 200 most
+  central symbols (batches of 20, at most 10 paid LLM calls); on this repo's own
+  12,184-symbol index that is **1.6%**, so the count describes a sample, not the
+  repository. v3.1.5 gave humans `Concepts : 47 (from the 200 most central of 12184
+  symbols — 1.6%)` and gave `--json` `concept_symbols_considered` /
+  `concept_symbols_total`, but `packages/trelix-mcp/src/trelix_mcp/server.py` still
+  returned the bare count and its docstring — which is the text FastMCP hands an agent as
+  the tool description — named neither the cost nor the bound. The tool now returns both
+  counts and the docstring states "PAID: up to 10 LLM calls over the 200 most central
+  symbols". Additive at the data layer: `GraphBuildResult` has carried the two fields
+  since v3.1.5 (`src/trelix/graph/builder.py:44`), and added response keys are compatible
+  under the **Stable** "MCP tool signatures" row of `docs/BACKWARDS_COMPATIBILITY.md`,
+  which forbids removals. Unlike the CLI's `if concepts:`, the keys are emitted
+  unconditionally: `0`/`0` beside `concept_count=0` is the only thing that distinguishes
+  "extraction never ran" from "it ran over 200 symbols and found nothing".
+  **`trelix-mcp`'s floor goes `trelix>=3.1.2` → `>=3.1.5` in the same change**, on
+  measured absence rather than on the stamp: `git show v3.1.4:src/trelix/graph/builder.py`
+  has neither field on `GraphBuildResult` (0 hits at v3.1.2, v3.1.3 and v3.1.4; 7 at
+  v3.1.5), so at those three published cores the tool would raise `AttributeError` and
+  return nothing at all. Two `server.py` citations in that same comment block were
+  re-measured (`767`→`787`, `858`→`878`) because this edit moves them. The shared test
+  mock had to be fixed here too, not as tidying: it is a `MagicMock`, so its auto-created
+  attributes are not JSON-serializable and `test_the_payload_fits_in_a_sane_budget` fails
+  with `TypeError: Object of type MagicMock is not JSON serializable` on the code change
+  alone. The REST API does not share the gap — all four `/graph*` endpoints in
+  `src/trelix/api/app.py` pass `extract_concepts=False` and `GraphStatsResponse` has no
+  concept field, so HTTP has no concept surface to misreport (it has no way to *request*
+  extraction either, which is a separate feature gap).
 
 ## [3.1.5] — 2026-08-21
 

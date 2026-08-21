@@ -1,6 +1,6 @@
 # trelix Architecture
 
-> **Version:** 3.1.2 | **Python:** 3.11+ | **140 source modules**
+> **Version:** 3.1.5 | **Python:** 3.11+ | **140 source modules**
 
 This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
 
@@ -313,7 +313,7 @@ Provider dimensions (used by `DimensionGuard`):
 | azure | text-embedding-3-large | 3072 |
 | voyage | voyage-code-3 | 1024 (Matryoshka: 256/512/1024/2048) |
 | local-code | SFR-Embedding-Code-2B_R | 4096 |
-| bge-code | BAAI/bge-code-v1 | 768 |
+| bge-code | BAAI/bge-code-v1 | 1536 |
 | nomic-code | nomic-ai/CodeRankEmbed | 768 |
 | bedrock-titan | amazon.titan-embed-text-v2:0 | 1024 (configurable: 256/512/1024) |
 | bedrock-cohere | cohere.embed-english-v3 | 1024 |
@@ -885,7 +885,7 @@ Module-level shared executor: `_SYNC_EXECUTOR = ThreadPoolExecutor(max_workers=4
 - Batch limit 96; pre-truncates at 2048 chars to avoid Bedrock `ValidationException`
 - `_BATCH_LIMIT = 96`, `_MAX_CHARS = 2048`
 
-**`BGECodeEmbedder`** — BAAI/bge-code-v1 (768 dims, CoIR SOTA 2025)
+**`BGECodeEmbedder`** — BAAI/bge-code-v1 (1536 dims, CoIR SOTA 2025)
 
 **`NomicCodeEmbedder`** — nomic-ai/CodeRankEmbed (768 dims)
 
@@ -2286,4 +2286,4 @@ That's it — no changes to `Retriever` needed.
 
 ---
 
-*trelix v3.1.2 — last updated 2026-08-16*
+*trelix v3.1.5 — last updated 2026-08-16*

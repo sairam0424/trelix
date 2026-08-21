@@ -386,9 +386,9 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 - A code review platform with UI (GitHub PR review is CLI-based and MCP-based, not a hosted product)
 - A real-time streaming completions service (retrieval happens at query time, not keystroke time)
 
-### Current version scope (v3.1.2)
+### Current version scope (v3.1.5)
 
-| In v3.1.2 | Planned (post-3.1) |
+| In v3.1.5 | Planned (post-3.1) |
 |-----------|-----------------|
 | 7-leg hybrid retrieval pipeline | Streaming retrieval with incremental result delivery |
 | FederatedRetriever with TTL cache (~90% hit rate) | Advanced taint analysis (Semgrep integration GA) |
@@ -429,7 +429,7 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 
 `trelix index` and `trelix search` need no chat credential and perform no synthesis, but "completely offline" holds only while no chat credential is present. If one *is* set, `Retriever.retrieve()` draws a query plan from the LLM — one call per distinct query — and a local embedder does not change that, because `--provider local` selects the embedder while the planner reads the chat credential separately. Unset the credential, or freeze plans with `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, for genuinely zero-call retrieval; see [FAQ: What is `trelix query`?](FAQ.md#what-is-trelix-query).
 
-**Beast-mode features compose but each has a cost.** FLARE adds 0–2 LLM calls per query. HyDE adds 1 LLM call per unique query (cached on repeat). Multi-query expansion adds N LLM calls per query (default N=3). GraphRAG map-reduce adds M LLM calls for large result sets. Enabling all features simultaneously on a slow or expensive LLM backend will increase latency and cost. The safe approach is to enable flags one at a time and validate with `trelix eval --golden`.
+**Beast-mode features compose but each has a cost.** FLARE adds 0–2 LLM calls per query. HyDE adds 1 LLM call per unique query (cached on repeat). Multi-query expansion adds exactly 1 LLM call per query regardless of the variant count — one completion returns all the phrasings at once (`TRELIX_RETRIEVAL_MULTI_QUERY_COUNT`, default 2). What scales with the count is retrieval, not chat: each of the N variants runs its own leg set, adding N query embeddings. It does compound with HyDE fallback, though, because every variant leg generates its own snippet — on a single-sub-query plan the two together cost N+2 chat calls (4 at the default N=2). GraphRAG map-reduce adds M LLM calls for large result sets. Enabling all features simultaneously on a slow or expensive LLM backend will increase latency and cost. The safe approach is to enable flags one at a time and validate with `trelix eval --golden`.
 
 **The knowledge graph requires a separate build step.** `trelix graph ./repo` must be run (or re-run) to populate the `graph_metadata` table and enable graph-aware retrieval. `trelix watch` automatically patches the graph on file changes once built, but the initial graph build is not automatic.
 
