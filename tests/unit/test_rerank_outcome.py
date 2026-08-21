@@ -141,7 +141,13 @@ def test_no_candidates_reports_why_rather_than_claiming_a_rerank() -> None:
 
 
 def test_the_original_rerank_contract_is_unchanged() -> None:
-    """22 existing call sites want only the results; they must not have to care."""
+    """33 pre-existing call sites want only the results; they must not have to care.
+
+    Counted as module-level `rerank(` calls excluding method calls and the def itself: 34 at
+    v3.1.4 (33 in tests, 1 in retriever.py), and the production one is precisely the caller
+    that moved to `rerank_with_outcome`. Stated exactly because an earlier draft of this
+    docstring said "22", which was a guess.
+    """
     config = RetrievalConfig(rerank=True, rerank_provider="cohere", cohere_api_key=None)
 
     out = rerank("q", _results(), config, top_n=2)

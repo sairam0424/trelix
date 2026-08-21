@@ -12,19 +12,33 @@ _Nothing yet._
 
 ### Fixed
 
-- **`trelix graph --concepts` extracted concepts from an arbitrary 1.6% of symbols,
-  chosen by whichever index SQLite's query planner happened to pick, and reported a count
-  that read as a property of the whole repository.** Extraction is capped at 200 symbols
-  in batches of 20 — a real bound, worth ≤10 LLM calls, but it sliced whatever order
-  `iter_all_symbols_with_files()` returned and that query has **no `ORDER BY`**. Measured
-  on this repo's own index: 12,184 symbols, of which 200 (**1.6%**) were processed, in an
-  order produced by `SCAN s USING COVERING INDEX idx_symbols_file_id` — so the "first 200"
-  spanned symbol ids **2..11230**. They were neither the first defined nor the most
-  important, and a new index or a `VACUUM` could silently change the set, making concept
-  extraction irreproducible. Meanwhile the PageRank centrality that identifies the most
-  important symbols was computed **two steps earlier in the same function** and ignored.
-  Symbols are now ranked by that centrality with a symbol-id tiebreak (so ties cannot
-  reshuffle with the query plan) before the cap applies; truncation logs a WARNING — not
+- **`trelix-mcp` declared `trelix>=2.8.0` while calling five core APIs that do not exist at
+  that version, so `pip install trelix-mcp` could resolve a core it cannot run against.**
+  The binding requirement is `Database.get_symbol_ids_for_file_id` (`server.py:508`), first
+  shipped in **v3.1.2**; also `plan_from_intent_hint` (v2.10.0) and three federation APIs
+  (v2.8.1). Established by grepping each symbol across every released tag, not by reading
+  release notes. The floor had been false since v2.8.1 and is already published that way in
+  trelix-mcp 3.1.4, where a resolver free to pick core 2.8.0 leaves every `search_code` call
+  failing on a missing attribute. Now `trelix>=3.1.2`, with the newest requirement named in
+  a comment beside it. Raised to what the imports demand — **not** to the current version:
+  lockstep governs the version stamp, not this floor. Both adapters keep `trelix>=3.0.0`,
+  which their own imports still satisfy.
+
+- **`trelix graph --concepts` spent every one of its paid LLM calls on the ten
+  earliest-indexed files — on this repository, entirely `.github/` and `.devcontainer/`
+  metadata — and reported a count that read as a property of the whole repo.** Extraction
+  is capped at 200 symbols in batches of 20 — a real bound, worth ≤10 LLM calls — but it
+  sliced whatever order `iter_all_symbols_with_files()` returned, and that query has **no
+  `ORDER BY`**. Measured on this repo's own index (read-only, `mode=ro`): 12,184 symbols,
+  of which 200 (**1.6%**) were processed. The query plans as a plain `SCAN s`, so those 200
+  were simply the lowest symbol ids — **2..226**, drawn from just **10 files**, every one of
+  them repository metadata: issue templates (124 symbols across four of them),
+  `dependabot.yml`, `devcontainer.json`, a workflow, `PULL_REQUEST_TEMPLATE.md`,
+  `FUNDING.yml`, `SECURITY.md`. Not one line of `src/`. So the concepts described the issue
+  templates. Meanwhile the PageRank centrality that identifies the most important symbols
+  was computed **two steps earlier in the same function** and ignored. Symbols are now
+  ranked by that centrality with a symbol-id tiebreak (so equal-centrality symbols cannot
+  reshuffle if the DB order ever changes) before the cap applies; truncation logs a WARNING — not
   INFO, since the CLI's default level is WARNING and an INFO line is invisible without
   `-v`, which is how this went unnoticed; `GraphBuildResult` carries
   `concept_symbols_considered` / `concept_symbols_total`; the human output reads
@@ -55,7 +69,8 @@ _Nothing yet._
   is deliberately not collapsed to a single name. `xtr` reports `applied=False` even on
   its success path, because that path re-sorts by the score each result already had and
   never reads the query. `rerank()`'s existing contract is unchanged — it still returns a
-  bare list for all 22 existing call sites; the outcome is available via the new
+  bare list for all 33 pre-existing call sites — every one of them a test, since the single
+  production caller is the one that moved to the outcome-returning form; it is available as the new
   `rerank_with_outcome()`. One limit stated rather than glossed: for `plaid`,
   `applied=True` means *dispatched*, since `PlaidReranker` has three internal fallbacks
   of its own that are not visible from outside. Pinned by 15 tests, each verified by
@@ -87,9 +102,10 @@ _Nothing yet._
   command runs "without calling an LLM", "works fully offline", "returns deterministic
   results", and to "use it in CI scripts"; `docs/GETTING_STARTED.md` summarised it as
   "no LLM — fast, offline, deterministic"; `docs/WHY_TRELIX.md` said `search` is
-  "completely offline" with local embedders. Measured: with no chat credential the
-  planner is never built and retrieval makes **zero** calls, so the promise held for the
-  case those docs had in mind — but with one set, `QueryPlanner.plan()` draws a plan via
+  "completely offline" with local embedders. Measured: with no chat credential retrieval
+  makes **zero** calls — the planner is still constructed unconditionally, but holds no
+  usable client and short-circuits to `default_plan()` — so the promise held for the
+  case those docs had in mind. With one set, `QueryPlanner.plan()` draws a plan via
   `tool_call`, **one call per distinct query**. Because the draw lives in
   `Retriever.retrieve()` rather than in the `query` command, it applies to every
   retrieval consumer, `search --json` included. `--provider local` does not prevent it:
