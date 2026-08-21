@@ -32,9 +32,21 @@ jobs:
       # tag OBJECT's creation date out of refs/tags/. Without the tag present that step
       # takes its refuse-to-certify branch and fails every release — a gate that cannot
       # read its input must not pass, so the input has to be guaranteed here instead.
-      # fetch-depth stays at the default: only the tag object is needed, not history.
+      #
+      # fetch-depth: 0 is NOT optional, and omitting it broke the v3.1.5 release outright.
+      # When the triggering ref is itself a tag, actions/checkout@v4 builds the refspec
+      # `+<sha>:refs/tags/<tag>` and, with fetch-tags also set on a SHALLOW fetch, adds the
+      # tag ref to the same destination:
+      #   fatal: Cannot fetch both 1e1a66fc… and refs/tags/v3.1.5 to refs/tags/v3.1.5
+      # Checkout retries three times and the job dies before a single step runs, so every
+      # downstream job skips and nothing publishes. This is why both other checkouts in this
+      # repo that set fetch-tags (below, and ci.yml) pair it with fetch-depth: 0 — ci.yml's
+      # comment even says so in as many words. An earlier version of THIS comment claimed
+      # "fetch-depth stays at the default: only the tag object is needed, not history",
+      # which cited that precedent while dropping the half that makes it work.
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           fetch-tags: true
       - name: Compare tag against every version site
         run: |
