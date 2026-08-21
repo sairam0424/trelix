@@ -8,6 +8,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ### Fixed
 
+- **`docs/PROVIDERS.md` told users holding a partial index that `trelix watch` could not
+  repair it. Its startup pass does — and bills for it.** The recovery section said
+  "`trelix watch` will not do it — it only re-indexes files as they change, and never scans
+  the store for holes", and `src/trelix/indexing/indexer.py` carried the same claim as a
+  source comment ("`trelix watch`, which deliberately never reconciles"). Both are true of
+  the **watching phase** — `FileWatcher` calls `index_file()` per changed file, with no
+  repo-wide diff — and false of the **startup pass**, which calls `Indexer.index()` and so
+  reaches the same reconcile that diffs the vector store against the `chunks` table.
+  Measured on a 7-file fixture with the local embedder: up to date with no holes, "Nothing
+  to index" and **0 chunks embedded**; up to date with 3 vectors deleted, "Repairing 3
+  chunk(s)…" and **3 chunks embedded**. So a user who followed that paragraph was told the
+  wrong thing in the direction that costs them a step, and a user who ran `watch` expecting
+  it to be passive got a paid repair with no warning — its help text was the single line
+  "Watch repo for changes and auto-update index", which mentioned no startup index at all.
+  All three sites now state the distinction, and the help text names all three cost cases
+  (free when current, a repair when holed, a full index when never indexed). Pinned by 5
+  tests, each verified by mutation. The behavioural one reads the call order out of the
+  AST rather than invoking the command: a first attempt drove `watch` through `CliRunner`
+  and hung the suite until it was killed, because patching the watcher does not stop the
+  command's own wait loop.
+
 - **Three docs promised that `trelix query` and `trelix search` make no LLM calls; with a
   chat credential set they make one per distinct query.** `docs/FAQ.md` told readers the
   command runs "without calling an LLM", "works fully offline", "returns deterministic
