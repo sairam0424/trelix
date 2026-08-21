@@ -201,3 +201,60 @@ class TestDockerPublishIsGatedToo:
                 continue
             if "github.event.inputs" in line and ("echo " in line or "if [" in line):
                 raise AssertionError(f"dispatch input reaches a script body: {stripped}")
+
+
+class TestEveryReleasedChangelogHeadingIsDated:
+    """The date on a released heading is a shipped artifact, not decoration.
+
+    `release.yml` gates a tag on the heading existing AND on its date matching the
+    tag's UTC day. These tests pin the same rule where it is cheap to fix — at PR
+    time, before a tag exists — because by the time the workflow refuses, the
+    correction costs a re-tag.
+
+    Why the field earns its own tests: on 3.1.3 it was wrong twice in one day. First
+    it kept the day the release was *prepared*; then it was "corrected" to the next
+    day by reading a local clock after midnight, which shipped in the sdist. PyPI is
+    immutable, so that date is permanent. Every release before it used the UTC
+    publish day — and v3.1.0 proves the rule rather than merely agreeing with it,
+    having published at 23:00:08Z, the next day in IST, with a heading that follows
+    UTC.
+    """
+
+    #: `## [1.2.3] — 2026-08-19`. `[Unreleased]` is deliberately excluded: it has no
+    #: date because it has no publish day yet, which is the whole point of the section.
+    _HEADING = re.compile(r"^## \[(\d+\.\d+\.\d+)\](.*)$", re.MULTILINE)
+    _DATED = re.compile(r"^ — (\d{4}-\d{2}-\d{2})$")
+
+    def _headings(self) -> list[tuple[str, str]]:
+        text = (_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        found = self._HEADING.findall(text)
+        assert found, "no released version headings found — has the format changed?"
+        return found
+
+    def test_every_released_version_carries_an_iso_date(self) -> None:
+        undated = [
+            f"## [{version}]{tail}"
+            for version, tail in self._headings()
+            if not self._DATED.match(tail)
+        ]
+        assert undated == [], (
+            "every released heading needs ' — YYYY-MM-DD', the tag's UTC day, because "
+            f"release.yml refuses to publish without it: {undated}"
+        )
+
+    def test_the_dates_never_go_backwards_reading_down_the_file(self) -> None:
+        """Newest first. A heading dated later than the one above it is a transposition.
+
+        Catches the shape a hand-edited date makes — 3.1.3's wrong value was one day
+        AHEAD of its predecessor's, so an ordering check sees it even without a tag.
+        """
+        dates = [
+            match.group(1)
+            for _, tail in self._headings()
+            if (match := self._DATED.match(tail)) is not None
+        ]
+        inversions = [(above, below) for above, below in zip(dates, dates[1:]) if above < below]
+        assert inversions == [], (
+            "CHANGELOG runs newest-first, so each date must be >= the one below it; "
+            f"these pairs are inverted (above, below): {inversions}"
+        )
