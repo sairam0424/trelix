@@ -13,8 +13,10 @@ Covers:
 from __future__ import annotations
 
 import os
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,6 +26,7 @@ from trelix.core.models import (
     Chunk,
     IndexedFile,
     Language,
+    RerankOutcome,
     RetrievedContext,
     SearchResult,
     Symbol,
@@ -1086,7 +1089,7 @@ class TestRetrieverCallGraphExpansion:
             patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
             patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
             patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
-            patch("trelix.retrieval.retriever.rerank") as mock_rerank,
+            patch("trelix.retrieval.retriever.rerank_with_outcome") as mock_rerank,
             patch.object(retriever, "_assemble", return_value=expected_ctx),
         ):
             retriever._retrieve_standard(plan)
@@ -1141,12 +1144,166 @@ class TestRetrieverCallGraphExpansion:
             patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
             patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
             patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
-            patch("trelix.retrieval.retriever.rerank", return_value=[sr]) as mock_rerank,
+            patch(
+                "trelix.retrieval.retriever.rerank_with_outcome",
+                # Returns (results, outcome) now — the outcome is what lets a caller
+                # report which pipeline actually ran rather than which was configured.
+                return_value=([sr], RerankOutcome("cross_encoder", applied=True)),
+            ) as mock_rerank,
             patch.object(retriever, "_assemble", return_value=expected_ctx),
         ):
             retriever._retrieve_standard(plan)
 
         mock_rerank.assert_called_once()
+
+    def test_retrieve_attaches_the_rerank_outcome_to_the_context_it_returns(
+        self, tmp_path: Path
+    ) -> None:
+        """The link between "what the reranker did" and "what a caller can report".
+
+        Driving `retrieve()` rather than `_retrieve_standard`, because the attach happens
+        at the end of `retrieve()`. Without this test, deleting the attach passed 186
+        tests: the reranker knew its own verdict, `trelix eval` printed one, and nothing
+        checked that the two were connected.
+        """
+        from trelix.retrieval.planner.models import RetrievalStrategy
+
+        retriever = _build_retriever(str(tmp_path))
+
+        sr = _make_search_result(idx=1, score=0.9)
+        retriever.vector_store.search.return_value = [(1, 0.1)]
+        retriever.db.get_chunk_with_context.return_value = (sr.chunk, sr.symbol, sr.file)
+        retriever.embedder.embed_query.return_value = [0.0] * 1536
+        retriever.config.retrieval.rerank = True
+        retriever.config.telemetry_enabled = False
+
+        plan = QueryPlan(
+            intent=IntentType.FEATURE_FLOW,
+            execution_mode="sequential",
+            strategy=RetrievalStrategy(
+                expand_depth=1,
+                legs=["vector", "bm25"],
+                skip_reranker=False,
+                import_depth=1,
+                import_max_extra=5,
+                import_direction="both",
+                assembly_mode="greedy",
+                rerank_top_n=20,
+            ),
+            sub_queries=[
+                SubQuery(
+                    semantic_query="auth flow",
+                    hyde_snippet="",
+                    bm25_tokens=["auth"],
+                    grep_hints=[],
+                    file_hints=[],
+                )
+            ],
+            raw_query="auth flow",
+        )
+        skipped = RerankOutcome("cohere", applied=False, skipped_because="no API key")
+
+        with (
+            patch("trelix.retrieval.retriever.bm25_search", return_value=[sr]),
+            patch("trelix.retrieval.retriever.grep_search", return_value=[]),
+            patch("trelix.retrieval.retriever.reciprocal_rank_fusion", return_value=[sr]),
+            patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
+            patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
+            patch(
+                "trelix.retrieval.retriever.rerank_with_outcome",
+                return_value=([sr], skipped),
+            ),
+            patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
+        ):
+            ctx = retriever.retrieve("auth flow", plan=plan)
+
+        assert ctx.rerank == skipped, (
+            "retrieve() dropped the rerank verdict, so any score derived from this "
+            f"context can no longer say which pipeline produced it: {ctx.rerank!r}"
+        )
+
+    def test_retrieve_reports_no_verdict_when_the_rerank_stage_never_runs(
+        self, tmp_path: Path
+    ) -> None:
+        """rerank=False must leave `None`, not a stale verdict from an earlier query.
+
+        The outcome lives in thread-local storage, so a missing per-query reset would
+        make a disabled run inherit the previous run's verdict on the same thread — a
+        report that is worse than no report.
+        """
+        from trelix.retrieval.planner.models import RetrievalStrategy
+
+        retriever = _build_retriever(str(tmp_path))
+
+        sr = _make_search_result(idx=1, score=0.9)
+        retriever.vector_store.search.return_value = [(1, 0.1)]
+        retriever.db.get_chunk_with_context.return_value = (sr.chunk, sr.symbol, sr.file)
+        retriever.embedder.embed_query.return_value = [0.0] * 1536
+        retriever.config.telemetry_enabled = False
+
+        plan = QueryPlan(
+            intent=IntentType.FEATURE_FLOW,
+            execution_mode="sequential",
+            strategy=RetrievalStrategy(
+                expand_depth=1,
+                legs=["vector", "bm25"],
+                skip_reranker=False,
+                import_depth=1,
+                import_max_extra=5,
+                import_direction="both",
+                assembly_mode="greedy",
+                rerank_top_n=20,
+            ),
+            sub_queries=[
+                SubQuery(
+                    semantic_query="auth flow",
+                    hyde_snippet="",
+                    bm25_tokens=["auth"],
+                    grep_hints=[],
+                    file_hints=[],
+                )
+            ],
+            raw_query="auth flow",
+        )
+
+        def _fresh_patchers() -> list[Any]:
+            """New patcher objects per block — a patcher is not reusable across two."""
+            return [
+                patch("trelix.retrieval.retriever.bm25_search", return_value=[sr]),
+                patch("trelix.retrieval.retriever.grep_search", return_value=[]),
+                patch("trelix.retrieval.retriever.reciprocal_rank_fusion", return_value=[sr]),
+                patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]),
+                patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]),
+                patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]),
+                patch.object(retriever, "_assemble", return_value=_make_retrieved_context()),
+            ]
+
+        # First query reranks, seeding the thread-local with a verdict.
+        retriever.config.retrieval.rerank = True
+        with ExitStack() as stack:
+            for patcher in _fresh_patchers():
+                stack.enter_context(patcher)
+            stack.enter_context(
+                patch(
+                    "trelix.retrieval.retriever.rerank_with_outcome",
+                    return_value=([sr], RerankOutcome("cross_encoder", applied=True)),
+                )
+            )
+            first = retriever.retrieve("auth flow", plan=plan)
+        assert first.rerank is not None, "precondition: the first query must record a verdict"
+
+        # Second query on the same thread with reranking off must NOT inherit it.
+        retriever.config.retrieval.rerank = False
+        with ExitStack() as stack:
+            for patcher in _fresh_patchers():
+                stack.enter_context(patcher)
+            second = retriever.retrieve("auth flow", plan=plan)
+
+        assert second.rerank is None, (
+            "a run with reranking disabled inherited the previous query's verdict: "
+            f"{second.rerank!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
