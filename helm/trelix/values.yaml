@@ -5,8 +5,8 @@
 replicaCount: 1
 
 image:
-  # :3.1.2 is the slim, API-embedder-only tag. Use the "-local" suffix
-  # (e.g. 3.1.2-local) for the variant bundling sentence-transformers/torch.
+  # :3.1.5 is the slim, API-embedder-only tag. Use the "-local" suffix
+  # (e.g. 3.1.5-local) for the variant bundling sentence-transformers/torch.
   #
   # This tag MUST equal Chart.yaml's appVersion. It sat on 2.12.0 while
   # appVersion was bumped by all five releases since, so the chart advertised

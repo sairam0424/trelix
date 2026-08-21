@@ -12,7 +12,7 @@ type: application
 # so the chart ships from the git tree and no one has pinned 0.1.0 from an
 # index. verify-version does not check this line — appVersion is the site that
 # has to match the tag.
-version: 0.2.0
+version: 0.2.1
 appVersion: "3.1.5"
 home: https://github.com/sairam0424/trelix
 sources:

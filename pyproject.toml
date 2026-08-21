@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 packages = ["src/trelix"]
 
 # Local-build hygiene, not a change to what ships. CI publishes from a clean
-# checkout where none of these exist, so the released sdist is ~6 MB either way.
+# checkout where none of these exist, so the released sdist is ~1.9 MiB either way.
 # But hatchling does not honour NESTED .gitignore files, and
 # workspace-vscode/.gitignore ignores .vscode-test/ — which @vscode/test-electron
 # fills with three ~900 MB VS Code app bundles. A developer who runs the extension
@@ -22,6 +22,16 @@ exclude = [
   "scratch-pad",
   "htmlcov",
   ".venv",
+  # Same nested-.gitignore mechanism as .vscode-test above, and a worse payload. Root
+  # .gitignore has `.trelix/`, which does not match a RENAMED index directory, so
+  # `.trelix.bak-selfindex/` is hidden from git only by its own nested .gitignore containing
+  # `*` — which hatchling does not honour. Measured on this checkout: it holds 329 MB,
+  # including a 221 MB index.db, a pre-v3.1.2 384-dim backup, and 2,479 query-trace JSONs
+  # WHOSE FILENAMES ARE THE QUERY TEXT. A local `make build` produced a 158 MiB sdist and
+  # `make check-dist` (twine check) passed it. CI is unaffected — it builds from a fresh
+  # checkout — but the documented local pre-flight was one `twine upload` away from
+  # publishing an index and a list of someone's queries. Glob covers any `.trelix*` name.
+  "**/.trelix*",
 ]
 
 [project]

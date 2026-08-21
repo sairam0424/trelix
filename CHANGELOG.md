@@ -12,6 +12,34 @@ _Nothing yet._
 
 ### Fixed
 
+- **A local `python -m build` produced a 158 MiB sdist containing a 221 MB index database and
+  2,479 query-trace files whose filenames are the query text — and `twine check` passed it.**
+  Root `.gitignore` has `.trelix/`, which does not match a *renamed* index directory, so
+  `.trelix.bak-selfindex/` (329 MB on this checkout) is hidden from git only by its own nested
+  `.gitignore` containing `*` — and hatchling does not honour nested `.gitignore` files. That
+  is the same mechanism already documented in `pyproject.toml` for `.vscode-test`; the fix had
+  been applied to that one case only. Published artifacts were never affected, because CI
+  builds from a fresh checkout, but the *documented local pre-flight* (`make build` then
+  `make check-dist`) produced the polluted tarball and reported it clean, one `twine upload`
+  from publishing an index and a list of someone's queries. `**/.trelix*` added to the sdist
+  exclude list.
+
+- **The Helm chart's own `version` had not moved for three consecutive releases, and four
+  reader-facing documents still called 3.1.2 the latest release.** `Chart.yaml` held
+  `version: 0.2.0` while its `image.tag` default changed again — breaking the rule its own
+  comment states — so charts deploying 3.1.3, 3.1.4 and 3.1.5 were all stamped 0.2.0; now
+  0.2.1. `verify-version` checks twelve stamps and no prose, so drift accumulated in the
+  places a reader *acts on* a version: `.github/SECURITY.md`'s Supported Versions table (which
+  tells users where security fixes land), `docs/FAQ.md`'s copy-pasteable four-way `==` pin
+  block, the bug-report template's placeholder and "I am using the latest release (X)"
+  checkbox, and `helm/trelix/README.md`'s `image.tag` row — which asserts of itself that it
+  "always equals `Chart.yaml`'s `appVersion`". `packages/trelix-mcp/README.md` also opened
+  "MCP server for trelix v2.12.0", eight releases stale, in a **PyPI long description**. All
+  corrected and pinned by `tests/unit/test_docs_version_claims.py`, which reads the shipping
+  version from `pyproject.toml` and holds each site to it. Historical references ("before
+  v3.1.2", "through v3.1.1") are deliberately untouched, and doc *header* stamps are left for
+  a follow-up: a reader does not act on those.
+
 - **`trelix-mcp` declared `trelix>=2.8.0` while calling five core APIs that do not exist at
   that version, so `pip install trelix-mcp` could resolve a core it cannot run against.**
   The binding requirement is `Database.get_symbol_ids_for_file_id` (`server.py:508`), first
@@ -42,7 +70,7 @@ _Nothing yet._
   INFO, since the CLI's default level is WARNING and an INFO line is invisible without
   `-v`, which is how this went unnoticed; `GraphBuildResult` carries
   `concept_symbols_considered` / `concept_symbols_total`; the human output reads
-  `Concepts : 47 (from the 200 most central of 12,184 symbols — 1.6%)`; and `--json` gains
+  `Concepts : 47 (from the 200 most central of 12184 symbols — 1.6%)`; and `--json` gains
   the two counts additively, under the same rule the visualization keys already follow.
   The `--concepts` help text now states the cost and the bound at the point of decision:
   "paid: up to 10 LLM calls over the 200 most central symbols; requires an LLM API key".

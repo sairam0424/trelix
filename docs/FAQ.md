@@ -523,10 +523,10 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 So pin all four to the same version in your `requirements.txt`:
 
 ```
-trelix==3.1.2
-trelix-mcp==3.1.2
-trelix-langchain==3.1.2
-trelix-llama-index==3.1.2
+trelix==3.1.5
+trelix-mcp==3.1.5
+trelix-langchain==3.1.5
+trelix-llama-index==3.1.5
 ```
 
 The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.1.2 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.1.2 resolving against core 3.0.0 is supported and intended — the four-way 3.1.2 pin above is the combination CI installs and tests, not the only one that works.

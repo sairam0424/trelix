@@ -733,7 +733,7 @@ build, in batches of 20 — at most 10 paid LLM calls. On a 12,184-symbol index 
 When the cap truncates, the command logs a warning and the output names the coverage:
 
 ```
-Concepts   : 47 (from the 200 most central of 12,184 symbols — 1.6%)
+Concepts   : 47 (from the 200 most central of 12184 symbols — 1.6%)
 ```
 
 `--json` reports the same two numbers as `concept_symbols_considered` and
