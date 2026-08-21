@@ -6,7 +6,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **Three docs promised that `trelix query` and `trelix search` make no LLM calls; with a
+  chat credential set they make one per distinct query.** `docs/FAQ.md` told readers the
+  command runs "without calling an LLM", "works fully offline", "returns deterministic
+  results", and to "use it in CI scripts"; `docs/GETTING_STARTED.md` summarised it as
+  "no LLM — fast, offline, deterministic"; `docs/WHY_TRELIX.md` said `search` is
+  "completely offline" with local embedders. Measured: with no chat credential the
+  planner is never built and retrieval makes **zero** calls, so the promise held for the
+  case those docs had in mind — but with one set, `QueryPlanner.plan()` draws a plan via
+  `tool_call`, **one call per distinct query**. Because the draw lives in
+  `Retriever.retrieve()` rather than in the `query` command, it applies to every
+  retrieval consumer, `search --json` included. `--provider local` does not prevent it:
+  that selects the embedder, while the planner reads the chat credential independently —
+  so a CI box holding a key for `trelix ask` was paying here too, and getting
+  non-deterministic plans, while three docs said otherwise. No synthesis was ever
+  performed, and a failed draw still falls back to `default_plan()`; the defect was the
+  published claim, not the retrieval result. All three sites now state the condition and
+  name the two measured remedies: withhold the chat credential, or record and commit a
+  plan cache via `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, which is record-then-replay — the
+  first pass draws once, every later pass draws nothing. Pinned by five tests in
+  `tests/unit/test_planner_llm_call_count.py` that count real attempts through the real
+  client factory (only the outbound methods are stubbed, so the "is there a client at
+  all" decision under test is never faked), each verified by mutation.
 
 ## [3.1.4] — 2026-08-21
 

@@ -110,7 +110,16 @@ Use `trelix search` when you want to browse the raw matches and decide yourself.
 
 ### What is `trelix query`?
 
-`trelix query` runs a structured query over the index — keyword and semantic matching — without calling an LLM. It is faster than `trelix ask`, works fully offline, and returns deterministic results. Use it in CI scripts or anywhere you cannot guarantee an LLM API key is available.
+`trelix query` runs a structured query over the index — keyword and semantic matching — and performs **no LLM synthesis**. It is faster than `trelix ask` and never writes a generated answer.
+
+It is not, however, unconditionally LLM-free. When a chat credential is resolvable from the environment, retrieval draws a **query plan** from the LLM: one call per distinct query, made by `QueryPlanner.plan()` from inside `Retriever.retrieve()`, so it applies to `trelix search` as well. `--provider local` does not prevent it — that selects the *embedder*, while the planner reads the chat credential independently. If the call fails, retrieval logs a warning and falls back to `default_plan()`.
+
+Two ways to get the offline, deterministic, zero-cost behaviour this section used to promise unconditionally:
+
+- **Unset the chat credential.** With no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / Azure equivalent in the environment, the planner is never constructed and retrieval makes **zero** LLM calls.
+- **Freeze the plans.** Set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE` to a path. The first pass records each plan (one call per distinct query); every later pass replays from the file and makes **zero** calls. Commit that file to get a CI run that is both free and byte-for-byte reproducible.
+
+So `trelix query` is safe for CI — but for cost and determinism you must either withhold the credential or commit a recorded plan cache. A CI box that has a key set for `trelix ask` will otherwise pay one planner call per distinct query here too.
 
 ```bash
 trelix query ./my-repo "rate limiting middleware"
