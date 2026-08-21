@@ -860,6 +860,26 @@ trelix eval [<repo_path>] --golden <file>
 Evaluates retrieval quality by running every query in a golden JSONL file and
 computing nDCG@10, Recall@10, and MRR against the expected relevant files.
 
+The results table also reports a **`Rerank`** row naming the pipeline that actually
+produced those numbers — not the one that was configured. This matters because
+`rerank` defaults to `true` with `rerank_provider=cohere`, and without a
+`COHERE_API_KEY` the reranker logs a warning and returns the unranked results, so the
+same golden set against the same index can score differently depending only on whether
+a credential happens to be exported. Measured on a 10-query fixture, that difference
+was nDCG@10 `0.9631` unranked against `0.9131` reranked — larger than most changes
+anyone measures with this command. The row reads one of:
+
+| `Rerank` shows | Meaning |
+|---|---|
+| `cross_encoder` | reranking ran with that provider |
+| `disabled` | the rerank stage was never entered (`rerank=false`, or the planner's strategy skipped it) |
+| `cohere (skipped: no API key)` | configured, entered, and did nothing — the scores are un-reranked |
+| `xtr (skipped: …identity function)` | the `xtr` provider re-sorts by the score each result already had and never reads the query |
+| `MIXED across queries — 3/10 applied: …` | different queries used different pipelines, so the reported mean is a blend |
+
+Quote that row alongside any score you compare or publish. Two runs whose `Rerank`
+rows differ are not two measurements of the same thing.
+
 #### Options
 
 | Option | Short | Type | Default | Description |

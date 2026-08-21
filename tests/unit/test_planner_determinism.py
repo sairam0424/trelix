@@ -496,6 +496,13 @@ class TestEvalCommandWiring:
             def run(self, golden_path: str) -> dict[str, float]:
                 return {"ndcg@10": 0.5, "recall@10": 0.5, "mrr": 0.5, "n_queries": 1.0}
 
+            def rerank_summary(self) -> str:
+                # The real harness reports which rerank pipeline produced the scores, and
+                # `eval` prints it. Stubbed rather than omitted: the CLI deliberately does
+                # not getattr-with-fallback, so a double that drops this method fails here
+                # instead of silently printing nothing about the pipeline.
+                return "disabled"
+
         original = harness_module.EvalHarness
         harness_module.EvalHarness = _FakeHarness  # type: ignore[misc]
         try:
@@ -532,6 +539,9 @@ class TestEvalCommandWiring:
 
             def run(self, golden_path: str) -> dict[str, float]:
                 return {"ndcg@10": 0.0, "recall@10": 0.0, "mrr": 0.0, "n_queries": 1.0}
+
+            def rerank_summary(self) -> str:
+                return "disabled"
 
         original = harness_module.EvalHarness
         harness_module.EvalHarness = _FakeHarness  # type: ignore[misc]

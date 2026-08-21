@@ -23,6 +23,7 @@ To disable: comment out the self._trace(...) calls in this file.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 import logging
@@ -57,7 +58,7 @@ from .planner.models import (
     compression_ratio_for_intent,
     default_plan,
 )
-from .reranker import rerank
+from .reranker import rerank_with_outcome
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from trelix.compression.base import Compressor
@@ -403,6 +404,10 @@ class Retriever:
         }
         # Reset expansion result for this query (set later by _retrieve_standard if used)
         _trace_local.expand_result = None
+        # Reset the rerank outcome. None means the rerank stage was never entered; the
+        # stage overwrites it with a RerankOutcome when it runs. Must be reset per query
+        # or a later query inherits an earlier one's verdict off this thread.
+        _trace_local.rerank_outcome = None
 
         cfg = self.config.retrieval
         with pipeline_stage_span(cfg, "retrieve", {"query_len": len(query)}):
@@ -481,7 +486,13 @@ class Retriever:
                     context, elapsed_ms=elapsed_ms, expansion_result=expand_result
                 )
 
-            return context
+            # Attach what the rerank stage actually did, so a caller reporting a number
+            # can say which pipeline produced it. A new object rather than an in-place
+            # write: the assembler's return value is not ours to mutate, and callers
+            # holding it must not see it change under them.
+            return dataclasses.replace(
+                context, rerank=getattr(_trace_local, "rerank_outcome", None)
+            )
 
     # ------------------------------------------------------------------
     # Intent router
@@ -853,12 +864,17 @@ class Retriever:
         )
         if cfg.rerank and candidates and not strategy.skip_reranker:
             with pipeline_stage_span(cfg, "rerank", {"top_n": effective_rerank_top_n}):
-                candidates = rerank(
+                candidates, _rerank_outcome = rerank_with_outcome(
                     query=plan.raw_query,
                     results=candidates,
                     config=cfg,
                     top_n=effective_rerank_top_n,
                 )
+                # Recorded so retrieve() can attach it to the returned context. Every
+                # provider degrades to "unranked head" on a missing library, credential
+                # or internal error, logging a warning and nothing else — which leaves a
+                # caller reporting a measurement unable to say which pipeline produced it.
+                _trace_local.rerank_outcome = _rerank_outcome
 
                 # -- Trace: post-rerank ordering --
                 self._trace(
