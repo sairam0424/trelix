@@ -255,6 +255,7 @@ class FileWatcher:
         Return True if this path is indexable — delegates to walker filters.
 
         Mirrors the logic in FileWalker.walk():
+          - Must not live under an `extra_ignore_dirs` directory
           - Must have a known extension (in EXTENSION_MAP)
           - Must not be ignored by gitignore
           - Must not match extra_ignore_extensions / extra_ignore_filenames
@@ -268,6 +269,27 @@ class FileWatcher:
 
         if not path.is_file():
             return False
+
+        # `extra_ignore_dirs` is enforced by the WALK's traversal — `walk()` simply never
+        # descends into `node_modules/` — so no per-file rule mentions those names and
+        # `_is_ignored_file("repo/node_modules/left-pad/index.js")` is False in a repo with
+        # no .gitignore. A watch event arrives as a bare path with no traversal behind it,
+        # so every directory between the repo root and the file has to be re-asked or the
+        # exclusion never fires. Until this loop existed, `trelix watch` on a monorepo wrote
+        # rows for a partial `packages/` subset that the walk cannot reach — and a row the
+        # walk cannot reach is what `compute_drift` reports as `missing` and `--prune`
+        # offers to delete. `MultiRepoWatcher._should_index` has carried this loop since
+        # `watch-all` shipped; this surface was the copy that did not.
+        try:
+            rel = path.relative_to(self._walker.repo_root)
+        except ValueError:
+            # Outside the repo root — the walk could never yield it either.
+            return False
+        current = self._walker.repo_root
+        for part in rel.parts[:-1]:
+            current = current / part
+            if self._walker._is_ignored_dir(current):
+                return False
 
         # Extension must be known
         # detect_language, not a bare suffix lookup: an extensionless Dockerfile or

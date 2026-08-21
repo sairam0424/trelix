@@ -269,15 +269,48 @@ class LanceVectorStore(BaseVectorStore):
             logger.warning("LanceDB delete_batch failed: %s", exc)
 
     def count(self) -> int:
-        """Return the total number of stored embeddings."""
+        """Rows in the table, sentinels included — see `BaseVectorStore.count`.
+
+        NOT the figure to compare against the SQLite `chunks` table: it counts the
+        negative file-summary and offset sub-chunk rows too, so the difference is holes
+        minus sentinels. `stored_chunk_ids()` answers that question. What this DOES answer,
+        and a set of ids cannot, is how many rows were written — which is why
+        `_report_duplicate_rows` above uses a filtered count and not an id set (verified:
+        4,501 rows collapse to 4,500 distinct ids).
+        """
         try:
-            # Refresh first — count() is what callers compare against the SQLite
-            # chunks table to spot drift, and a pinned handle under-reports it
-            # (measured 0 against a true 1 after another handle's upsert).
+            # Refresh first — a pinned handle under-reports (measured 0 against a true 1
+            # after another handle's upsert).
             self._checkout_latest()
             return int(self._table.count_rows())
         except Exception:
             return 0
+
+    def stored_chunk_ids(self) -> set[int]:
+        """Every real chunk_id with a vector in this table. See the base method.
+
+        `_checkout_latest()` first, and it is mandatory rather than defensive: reproduced
+        on lancedb 0.33.0, a handle opened before another handle's write enumerated 4,500
+        ids against a true 4,501 and missed the new one entirely — the same pinned-snapshot
+        failure `_checkout_latest` documents. Under-reporting HERE is the expensive
+        direction: every id it misses reads as a hole and is re-embedded for money.
+
+        Projects one column instead of materialising vectors, and filters in the query
+        rather than in Python so the vector payload never crosses the boundary. `to_lance()`
+        would be the other way to scan and is not available — it raises ImportError asking
+        for pylance, which is not a trelix dependency. `.limit(None)` is passed explicitly
+        even though the default measured unlimited at fixture size: lancedb is un-pinned,
+        so relying on that default is relying on someone else's choice not to change.
+        """
+        self._checkout_latest()
+        arrow = (
+            self._table.search()
+            .where(f"chunk_id > 0 AND chunk_id < {self._SUB_CHUNK_OFFSET}")
+            .select(["chunk_id"])
+            .limit(None)
+            .to_arrow()
+        )
+        return {int(cid) for cid in arrow.column("chunk_id").to_pylist()}
 
     def upsert_file_summary_embedding(self, file_id: int, embedding: list[float]) -> None:
         """
@@ -296,10 +329,12 @@ class LanceVectorStore(BaseVectorStore):
         results = self.search(query_embedding, k=k * 5)
         return [(-cid, score) for cid, score in results if cid < 0][:k]
 
-    _SUB_CHUNK_OFFSET = 10_000_000
-
     def upsert_sub_chunk_embedding(self, sub_chunk_id: int, embedding: list[float]) -> None:
-        """Store sub-chunk embedding using chunk_id = sub_chunk_id + _SUB_CHUNK_OFFSET."""
+        """Store sub-chunk embedding using chunk_id = sub_chunk_id + _SUB_CHUNK_OFFSET.
+
+        Offset inherited from `BaseVectorStore` — the identical copy that shadowed it here
+        is gone, because `stored_chunk_ids()` above now keys its sentinel filter off it.
+        """
         self.upsert_batch([(sub_chunk_id + self._SUB_CHUNK_OFFSET, embedding)])
 
     def search_sub_chunks(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:

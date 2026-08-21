@@ -52,33 +52,176 @@ gated by auth but is still audited.
 ## Integrity model — tamper-EVIDENT, not tamper-PROOF
 
 > **The chain detects corruption. It does not prevent it.** The hash chain *and*
-> the anchor it is checked against both live inside the same `audit.db`. Anyone
-> with write access to that file can rewrite a row, recompute every subsequent
-> `entry_hash`, and update the anchor in the same transaction — after which
-> `trelix audit verify` reports the chain as intact. What this protects against
-> is *accidental or naive* damage: a stray `UPDATE`, a truncated file, a deleted
-> row, a dropped tail. It is not a defence against a determined attacker who
-> already has write access to the host.
+> the anchor it is checked against both live inside the same `audit.db`. An in-DB
+> anchor can therefore only ever detect *incomplete* tampering: anyone with write
+> access who updates the anchor **consistently** passes, and for the case that
+> matters most — erasing recent activity — that costs no hash computation at all,
+> because the value the anchor then needs is already sitting in a surviving row.
+> What this protects against is damage that leaves the anchor behind: a stray
+> `UPDATE`, a truncated file, a deleted row, a dropped tail, a deleted anchor. It
+> is **not** a defence against a writer who knows the scheme. See
+> [exactly what is and is not detected](#exactly-what-is-and-is-not-detected).
 
-Two gates make that detection work:
+Three gates make that detection work, and all three live inside the same file as
+the thing they check:
 
 1. **Hash chain.** Each row stores `prev_hash` (the previous row's `entry_hash`;
    the genesis value is 64 zeros) and
    `entry_hash = sha256(prev_hash || canonical_json(content))`, where `content`
    is the eleven logical columns (everything except `id`, `prev_hash` and
    `entry_hash`) serialized with sorted keys and compact separators. Mutating a
-   row breaks its own recomputed hash; deleting or reordering a middle row
-   breaks the next row's `prev_hash` linkage and leaves an `id` gap.
+   row breaks its own recomputed hash; deleting a middle row leaves an `id` gap;
+   swapping or reordering rows breaks the following row's `prev_hash` linkage.
 2. **In-DB count/head anchor.** A chain alone cannot detect a deleted *tail* —
    the survivors still form a valid chain. So an `audit_meta` table holds
-   `count` and `head_hash`, updated atomically with every append, and
-   `verify` compares the live row count and head against it. This is
-   bookkeeping, not an external root of trust: it lives in the same file.
+   `count` and `head_hash`, updated atomically with every append, and `verify`
+   requires **both values to be present and well-formed** before comparing the
+   live row count and head against them. Presence is part of the check, not a
+   precondition for it: `append` writes the entry and both anchor rows in one
+   transaction, so a non-empty log with a missing anchor row is a state normal
+   operation cannot produce, and treating it as "no information available" made
+   deleting the anchor a complete bypass of this gate. A malformed value —
+   non-numeric, negative, absurdly long, or a `head_hash` that is not 64
+   lowercase hex — is likewise reported rather than trusted, and never raises out
+   of the verifier. This is bookkeeping, not an external root of trust: it lives
+   in the same file.
+3. **SQLite's own `sqlite_sequence` high-water mark**, read-only, for one shape
+   the two gates above cannot see: a log emptied completely. `audit_log.id` is
+   `AUTOINCREMENT`, so SQLite records the highest id it ever handed out and
+   `DELETE` does **not** reset it. Zero rows with `seq > 0` is a state normal
+   operation cannot produce. Nothing is written to record this — the row is
+   already in the file. **This closes the sloppy wipe and nothing more**; four
+   ways to defeat it are named below and all four still work.
+
+### Reading never writes
+
+`trelix audit list`, `verify` and `export` open `file:<path>?mode=ro` and run no
+DDL, and they refuse to report anything at all unless `audit_log` **and**
+`audit_meta` already exist — exit 2, "not an audit database".
+
+**The cost of that guarantee, stated up front.** `audit.db` uses SQLite's default
+rollback journal. A writer killed between the journal fsync and its unlink leaves a
+database that must be rolled back before it can be read, and a read-only handle
+cannot perform a rollback — so the read commands exit 2 with "needs journal
+recovery" rather than a verdict. One read-write open fixes it: restart the audited
+service, or run `sqlite3 <path> .tables` once, then re-run.
+
+This is a deliberate trade, and it is worth understanding which way it cuts. Before
+these commands opened read-only, the same file verified cleanly — because opening it
+read-write silently performed the rollback. That is, the reader repaired the database
+it was auditing, writing to the artifact whose integrity it was reporting on.
+Refusing and saying so is the weaker-looking behaviour and the more honest one. Note
+also that a WAL-mode database has no such gap: the read commands handle a killed WAL
+writer without touching the file at all.
+
+Until v3.0.1 they used the same constructor as the writer, which meant they ran
+`CREATE TABLE IF NOT EXISTS`. Pointed at any other SQLite file, `trelix audit
+verify` **added the audit schema to it** — one measured case went from 8 KB and
+one table to 32 KB and five — and then reported `Audit chain intact.` at exit 0:
+a green integrity verdict on a database that is not an audit log. A zero-byte
+file went from 0 to 28 KB the same way.
+
+The claim is deliberately narrow. **The serving path still writes**: `trelix
+serve` with auditing enabled creates `audit.db`, runs its DDL and holds a write
+lock to append. What is true is that the three read commands cannot, even by
+mistake — SQLite refuses every write on a `mode=ro` handle.
+
+A damaged file is also not a tamper verdict. A corrupted b-tree page makes the
+first row read raise, and that now exits **2** ("could not read audit database"),
+not 1 with a traceback. And no stored value can crash a read: a TEXT cell holding
+undecodable UTF-8 (`CAST(x'FFFE41' AS TEXT)` keeps TEXT storage class while
+holding invalid bytes) is reported as `anchor_corrupt` or as a row fault instead
+of raising out of `fetchall()`.
+
+### Exactly what is and is not detected
+
+Every row here is pinned by a test, including the "no" rows — see
+`tests/unit/test_audit_anchor_presence.py`, `tests/unit/test_audit_store.py`,
+`tests/unit/test_audit_read_hardening.py`,
+`tests/unit/test_audit_wipe_detection.py` and
+`tests/unit/test_audit_undetectable.py`. The hashing column is the attacker's
+cost, and it is listed to make one point: cheapness is *not* what separates the
+two halves of this table.
+
+| Damage | Hashing needed | Detected |
+|---|---|---|
+| A row's content edited | none | **yes** |
+| A middle row deleted, or two rows swapped | none | **yes** |
+| The tail truncated, anchor untouched | none | **yes** |
+| Either `audit_meta` row deleted, or both | none | **yes** |
+| An anchor value malformed, out of range, the wrong storage type, or not valid UTF-8 | none | **yes** |
+| A valid row appended without the anchor advanced | one | **yes** |
+| Both tables emptied, and nothing else — the *sloppy* wipe | none | **yes** (`log_emptied`) |
+| A wipe that also clears, zeroes or forges `sqlite_sequence.seq` | none | **no** |
+| A wipe that removes `sqlite_sequence` via `PRAGMA writable_schema` | none | **no** |
+| The tail truncated with both anchor values realigned | none | **no** |
+| A row appended with `prev_hash` set to the real head, anchor advanced | one | **no** |
+| The whole log rebuilt with a recomputed chain | one per row | **no** |
+| The file deleted, or replaced by another valid chain | none | **no** |
+
+Reading the "no" rows plainly: **in-DB hashing cannot detect a writer who knows
+the scheme.** Four of those six need no hashing whatsoever, and nothing inside the
+file records *which* chain it is supposed to be, so a substituted file verifies
+perfectly.
+
+**On the wipe row, precisely.** What is detected is the wipe that empties both
+tables and stops there. Four defeats are known and all four succeed today, all of
+them reachable by anyone who can already write to the file:
+
+1. Deleting SQLite's `sqlite_sequence` bookkeeping row for `audit_log` — one more
+   statement than the wipe itself.
+2. Zeroing that row's `seq`, or setting it to a negative value or a non-integer.
+3. Forging `seq` on a log that still has rows — matched to a partial truncation,
+   or set *below* the real row count. The check is scoped to an *empty* log, so
+   neither fires. A `seq` below the live row count is impossible for a legitimate
+   writer and could therefore be closed; widening the check has its own
+   false-positive surface to establish first, and that is a separate change.
+4. Removing the `sqlite_sequence` table itself through writable-schema access. A
+   plain `DROP TABLE` is refused by SQLite ("may not be dropped"), but that route
+   needs no extra privilege.
+
+Named rather than spelled out on purpose: this is a known-unpatched weakness in a
+public repository, and an operator needs to know the boundary without the file
+handing anyone a recipe. Each of the four is pinned by a test, so the boundary is
+enforced rather than merely described.
+
+All four end in the same place: no usable `seq`, which is exactly what a database
+that was never appended to looks like — and that state has to verify clean. So
+**absence is deliberately not a finding**, and the only thing this closes is
+carelessness.
+
+Two things that look like a wipe and are not, both pinned: a rolled-back append
+leaves no `seq` row at all, and a restored `sqlite3 .dump` legitimately carries a
+**duplicate** `sqlite_sequence` row (`.dump` emits an `INSERT` *and*
+`AUTOINCREMENT` recreates the row on first insert), so a check written as "exactly
+one row and `seq == COUNT(*)`" would call every restored dump tamper. `VACUUM`,
+`VACUUM INTO` and `.backup()` all preserve `seq` exactly.
+
+> **This check will become a false positive when retention pruning lands.**
+> `TRELIX_AUDIT_RETENTION_DAYS` is accepted but unimplemented and nothing in
+> `src/` issues `DELETE FROM audit_log` today — a fact pinned by a test — which is
+> the only reason a legitimately empty-but-used log cannot occur. Whoever
+> implements pruning must update `AuditStore._max_audit_log_seq_locked` and this
+> section, or every fully-pruned log will report `log_emptied`.
+
+What closes those rows is an anchor the attacker cannot write: **export the head
+hash and count off-box, somewhere the attacker does not control, and compare it
+later.** A CI artifact, a syslog/SIEM record, an object-lock (WORM) bucket, a
+different host, a transparency log. Then a wipe, a realigned truncation and a
+substituted file all show up as a divergence from the copy you hold. None of that
+ships in trelix and this document is not proposing to build it here; it is the
+boundary you are working inside.
+
+Note what the `sqlite_sequence` check is *not*: it is not a genesis or origin
+marker, and it writes nothing — no schema, no `user_version`, no new row. It reads
+bookkeeping SQLite was already keeping. An anchor an attacker cannot write has to
+live outside the file, and nothing inside a single SQLite file substitutes for it.
 
 **Hardening path** (none of this ships today — it is what you would add):
 
 - Sign the head hash with a key held **outside** the DB (HMAC or asymmetric) and
-  verify the signature independently, so recomputing the chain is not enough.
+  verify the signature independently, so a self-consistent rewrite of the file is
+  not enough.
 - Anchor the head hash to append-only/WORM storage — an object-lock bucket, a
   write-once log service, or a transparency log.
 - Ship entries off-box continuously (see
@@ -117,7 +260,7 @@ belong together and must survive re-indexing. See [SSO.md](SSO.md).
 | `TRELIX_AUDIT_DB_PATH` | _(none)_ → `<cwd>/.trelix/audit.db` | Path to the separate audit DB. Parent directories are created on first open. |
 | `TRELIX_AUDIT_LOG_QUERIES` | `false` | Store raw query text for `search`/`ask` actions instead of `sha256:<hex>` of it. **Currently has no observable effect through the HTTP API** — see [Query text](#query-text-and-log_queries). |
 | `TRELIX_AUDIT_FAIL_CLOSED` | `false` | `true` re-raises an audit-write failure into the request; `false` logs a WARNING and lets the request proceed. See [Failure contract](#failure-contract). |
-| `TRELIX_AUDIT_RETENTION_DAYS` | `365` | **Not implemented.** Accepted and validated-free (a negative value is accepted), but nothing in trelix reads it — there is no pruning job. Rotate or prune `audit.db` yourself. |
+| `TRELIX_AUDIT_RETENTION_DAYS` | `365` | **Not implemented.** Accepted and validated-free (a negative value is accepted), but nothing in trelix reads it — there is no pruning job. Rotate or prune `audit.db` yourself, and read the `log_emptied` caveat in [what is and is not detected](#exactly-what-is-and-is-not-detected) first: pruning a log all the way to zero rows is currently reported as a wipe. |
 
 ---
 
@@ -182,19 +325,35 @@ trelix audit verify --db /var/log/trelix/audit.db
 ```
 
 - Exit **0** — `Audit chain intact.`
-- Exit **1** — `Audit chain TAMPERED — first divergent entry id: <id>` on stderr.
-  Entries *before* that id verified cleanly, so it is the exact place to start
-  an investigation.
+- Exit **1** — a `TAMPERED` line on stderr, carrying a machine-matchable reason
+  code and an id. Two different sentences, because they state two different facts:
+  - `... (row_mutated) — first divergent entry id: 2` — a row that is **present
+    and wrong**. Entries before it verified cleanly, so it is the exact place to
+    start an investigation.
+  - `... (anchor_missing) — no surviving entry diverged; first unprovable entry
+    id: 5` — every surviving row verified. What was destroyed is the ability to
+    prove whether an entry 5 ever existed, so there is no row at that id to go
+    and look at.
 
 What each failure mode looks like:
 
-| Damage | How it is caught | Reported id |
-|---|---|---|
-| A row's content was edited | Recomputed `entry_hash` ≠ stored | that row's id |
-| A middle row was deleted or reordered | `prev_hash` no longer links / `id` gap | the first id out of sequence |
-| The tail was truncated | Live count/head ≠ `audit_meta` anchor | the first missing id |
+| Damage | Reason code | How it is caught | Reported id |
+|---|---|---|---|
+| A row's content was edited | `row_mutated` | Recomputed `entry_hash` ≠ stored | that row's id |
+| Two rows swapped or reordered | `row_mislinked` | `prev_hash` no longer links | that row's id |
+| A middle row was deleted | `id_gap` | `id` sequence has a hole | the first id out of sequence |
+| The tail was truncated, or a row planted | `count_mismatch` | Live count ≠ anchor `count` | the first unprovable id |
+| The head no longer matches | `head_mismatch` | Live head ≠ anchor `head_hash` | the last surviving id |
+| An `audit_meta` row is gone | `anchor_missing` | Entries present, an anchor row absent | `n + 1` |
+| An anchor value is not what `append` writes | `anchor_corrupt` | Fails a shape check before being parsed | `n + 1` |
 
-An empty log verifies as intact (exit 0).
+The last two report `n + 1` — one past the last surviving entry — deliberately.
+No surviving row is divergent in those shapes, so naming a present row would be a
+false statement about a row that is fine.
+
+An empty log verifies as intact (exit 0), because a brand-new `audit.db` has no
+entries and no anchor rows. That is the one legitimate state with no anchor, and
+it is also why a total wipe is undetectable.
 
 **One honest caveat about exit 0:** if the DB cannot be *opened* at all (path is
 a directory, permissions denied), `AuditStore` logs
@@ -202,6 +361,14 @@ a directory, permissions denied), `AuditStore` logs
 `verify` then prints `Audit chain intact.` and exits 0 — it verified nothing.
 When you wire `verify` into CI or a cron job, alert on that WARNING too; the
 exit code alone is not sufficient proof that a chain was read.
+
+**Verifying while a writer is running is safe.** `verify` reads the rows and the
+anchor inside one SQLite read transaction, so both come from the same committed
+state. Before that they were two separate statements, and an append landing
+between them made the anchor describe one more entry than the rows did —
+reported as a truncated tail. On one writer doing 2,870 appends with 30 verify
+runs going past, 24 of the 30 said TAMPERED about an undamaged database. Running
+`trelix audit verify` against a live `audit.db` no longer does that.
 
 **Single writer per `audit.db`.** The head-hash read and the append are guarded
 by an in-process `threading.Lock` only. SQLite will keep the *file* consistent
@@ -375,7 +542,11 @@ The one place they join: when OTel tracing is enabled, an audit row carries the
 
 ## Known limitations, in one place
 
-1. **Tamper-evident, not tamper-proof** — chain and anchor share `audit.db`.
+1. **Tamper-evident, not tamper-proof** — chain and anchor share `audit.db`, so
+   only *incomplete* tampering is detectable. Five shapes are not detected at all,
+   three of them needing no hashing at all:
+   [the full table is above](#exactly-what-is-and-is-not-detected). Closing them
+   requires exporting the head hash off-box; nothing in trelix does that.
 2. **HTTP API surface only** — MCP tool calls, the internal agent loop, CLI
    commands and direct library use are not audited.
 3. **`TRELIX_AUDIT_RETENTION_DAYS` is not implemented** — nothing prunes; the DB

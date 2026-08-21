@@ -6,8 +6,354 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [3.1.4] — 2026-08-21
+
+### Security
+
+- **The `trelix audit` read commands wrote to the databases they read, and could
+  report an intact chain about a file that was not an audit log.** `list`, `verify`
+  and `export` used the same store constructor as the writer, which runs
+  `CREATE TABLE IF NOT EXISTS`. Pointed at any other SQLite file they *added the
+  audit schema to it* — one measured case went from 8 KB and one table to 32 KB and
+  five — and then reported `Audit chain intact.` at exit 0, because the chain they
+  had just created was empty and therefore consistent. A zero-byte file went from 0
+  to 28 KB the same way. A CI integrity gate aimed at the wrong path passed green
+  and mutated the file it was aimed at. All three commands now open
+  `file:<path>?mode=ro`, run no DDL, and exit 2 unless `audit_log` and `audit_meta`
+  are already present. Pinned byte-for-byte — file sha256, `user_version`, every
+  `sqlite_master` name, and the absence of sidecar journal files — on a clean log, a
+  tampered log and a foreign database. The claim is narrow on purpose: `trelix
+  serve` with auditing enabled still creates `audit.db`, runs its DDL and holds a
+  write lock. Only the read commands cannot.
+- **Anything that could write the audit log could crash every command that reads
+  it.** `CAST(x'FFFE41' AS TEXT)` keeps TEXT storage class while holding bytes
+  sqlite3 cannot decode, so the exception fired inside `fetchall()` — one layer
+  *below* the anchor validation written to judge exactly this. The validation was
+  right and in the wrong place; the plain-BLOB case was already handled correctly,
+  which is what made it a placement bug rather than a logic bug. Measured: 61
+  tracebacks across 648 real CLI invocations, and 114 raises across 226 direct
+  `verify()` calls, all one root cause. Reads now go through a `text_factory` that
+  hands back raw `bytes` for an undecodable cell, so the value reaches the checks
+  that exist: `anchor_corrupt` in `audit_meta`, a row fault in `audit_log`. Legitimate
+  values are byte-for-byte unaffected. `export` separately died on any BLOB with
+  `TypeError: Object of type bytes is not JSON serializable`, mid-stream, losing the
+  rows it had already written; it now serializes with `default=str`, mirroring
+  `_canonical_hash`. **No audit command can be made to exit on a traceback by
+  editing the data it checks.**
+- **A total wipe of the audit log is now detected — the sloppy one.** Four places
+  claimed an emptied `audit.db` was "byte-indistinguishable" from a legitimately new
+  one. It is not: `audit_log.id` is `AUTOINCREMENT`, so SQLite keeps a
+  `sqlite_sequence` high-water mark and `DELETE` does not reset it. Zero rows with
+  `seq > 0` is a state normal operation cannot produce, and `verify` now reports it
+  as `log_emptied`. Nothing is written to achieve this and no schema is added — the
+  row was already in the file; this is not a genesis or origin marker. **It closes
+  carelessness and nothing else, and the docs now name the four defeats that all
+  still work**: clearing `sqlite_sequence`, zeroing or forging `seq`, setting `seq`
+  below the real row count, and removing the table via `PRAGMA writable_schema=ON`
+  (plain `DROP TABLE sqlite_sequence` is refused by SQLite). Absence of the row is
+  deliberately *not* a finding, because it is exactly what a never-appended database
+  looks like. Two look-alikes are pinned as clean: a rolled-back append leaves no
+  `seq` row, and a restored `sqlite3 .dump` legitimately carries a **duplicate**
+  `sqlite_sequence` row, which a check written as "exactly one row and
+  `seq == COUNT(*)`" would have called tamper. This **will** become a false positive
+  when retention pruning lands — `TRELIX_AUDIT_RETENTION_DAYS` is accepted but
+  unimplemented and nothing in `src/` deletes audit rows today, a premise now pinned
+  by a test — so whoever implements pruning has to revisit the check.
+- **A damaged audit database was reported as a tampered one.** A corrupted b-tree
+  page leaves the file openable and makes the first row read raise
+  `sqlite3.DatabaseError`; that surfaced as a Python traceback and exit **1**, which
+  is the tamper exit code, with none of the tokens an alert matches on. Restoring
+  from backup and hunting an intruder are different first moves. All three commands
+  now exit **2** with `Could not read audit database` and name what SQLite reported.
+- **`trelix audit verify` treated a missing integrity anchor as an absence of
+  information rather than as a fault.** The audit chain is checked against a `count`
+  and `head_hash` pair in `audit_meta`, and both comparisons were skipped when the
+  value was not there — so a log whose anchor had been removed reported *intact* and
+  exited 0, and removing the anchor required no hash computation. `append` writes the
+  entry and both anchor rows in one transaction, which makes a non-empty log with an
+  incomplete anchor a state normal operation cannot reach: `git log` on
+  `src/trelix/audit/store.py` is a single commit and both anchor keys are in that
+  first version, so this has no legitimate producer and no false-positive surface,
+  legacy databases included. Verification now requires **both** values to be present
+  and well-formed. A malformed value is reported as a finding rather than trusted or
+  raised — parsing lived in the read path, so one edited character used to end the
+  command in an unhandled traceback, denying an incident responder the tool they
+  reach for first. A brand-new, empty `audit.db` has no anchor rows and still
+  verifies clean at exit 0.
+- **The audit documentation overstated what an attack costs, and now states the
+  boundary.** `docs/AUDIT.md` and the `trelix.audit.store` docstring claimed tampering
+  required recomputing every subsequent `entry_hash`. That is true only of a content
+  rewrite. Both now carry a per-shape table of what is and is not detected, with the
+  attacker's hashing cost for each: five shapes are **not** detectable in-DB, three of
+  them without computing a single hash. An in-DB anchor can only ever detect
+  *incomplete* tampering, and closing the gap needs the head hash exported off-box,
+  somewhere the attacker does not control, and compared later. **Nothing in trelix
+  does that**, and this release does not add it. Every row of the table — including
+  every "not detected" row — is pinned by a test, so a claim cannot quietly stop
+  being true.
+
+### Fixed
+
+- **An interrupted writer made the audit read commands unusable, with a diagnosis that
+  described the wrong problem.** `audit.db` uses SQLite's default rollback journal, so a
+  writer killed between the journal fsync and its unlink leaves a file that must be
+  rolled back before it can be read — and the read-only handle these commands now use
+  cannot perform a rollback. That is the intended trade (the previous behaviour
+  "recovered" such a file by writing to the very artifact it was auditing), but the
+  operator saw only "check the path… and that it is readable" about a path that is a
+  perfectly readable file, with the real cause leaking out as a stray log line. `list`,
+  `verify` and `export` now report journal recovery as its own condition, still at exit
+  2, and name the one-read-write-open remedy — which a test now proves actually works.
+  This is exactly when the command matters most: a service was just killed and the
+  question is whether entries were lost.
+- **`audit list --limit` with a value above SQLite's 64-bit ceiling raised
+  `OverflowError` and exited 1** — the code reserved for *the chain is damaged* — on a
+  healthy database, with none of the tokens an alert matches on. The limit is now
+  clamped, alongside the existing non-positive guard: a value the driver cannot bind is
+  a caller mistake, not a finding about the data.
+- **The read-only guarantee rested on one untested line.** The `mode=ro` URI is built
+  with `Path.as_uri()` rather than string interpolation, because a path containing `?`
+  or `#` would otherwise be parsed as URI query or fragment syntax and silently open a
+  different file — or none. Reverting that line passed the entire suite, so the property
+  everything else depends on had no pin. It has three now, over paths containing each
+  character, including one asserting the handle is still genuinely read-only afterwards
+  so the escaping cannot be "fixed" by quietly dropping `mode=ro`.
+- **Verifying a live `audit.db` reported tamper on undamaged data.** `verify` read the
+  rows and then the anchor as two separate statements outside any transaction, and the
+  store's `threading.Lock` is per-instance, so it serialized nothing against the
+  serving process doing the appending. A legitimate append landing between the two
+  reads made the anchor describe one more entry than the rows did — reported as a
+  truncated tail. Measured on one writer doing 2,870 appends past 30 verify runs: **24
+  of 30 said TAMPERED** about a database an independent walk found perfectly intact.
+  Both reads now happen inside one DEFERRED read transaction, so they come from one
+  committed state: 0 of 30 after the change, with no append lost and no write to the
+  file being audited. This predated the anchor bug above and was the worse of the two —
+  an operational condition reported as an attack teaches operators to distrust exit 1.
+
+- **An interrupted index run left permanent holes that re-indexing refused to fill.** Files
+  are hash-tracked whole, and a file's content hash is committed in Phase 2 — the sequential
+  DB write — before Phase 3 embeds its chunks. Any interruption in between (SIGKILL, laptop
+  sleep, a CI timeout, OOM, embedding-quota exhaustion) therefore left chunk rows whose
+  vectors were never written, and every later incremental run skipped those files as up to
+  date. Measured on a real index: 68,880 chunk rows against 61,652 vectors, so 7,228 chunks
+  (10.5% of the index) could never be retrieved, while a re-index reported "Files walked
+  3,136 / Unchanged since last index 3,136 / Files to embed 0" and printed "Nothing to index
+  — all files up to date." `index_metadata` was emptied by the same kill, which disarmed the
+  dimension guard as a side effect: `DimensionGuard.check` early-returns when the stored
+  value is not an int, so that index would also have accepted mixed-width vectors.
+  `trelix index` now reconciles the vector store against the `chunks` table once per run and
+  folds any vector-less chunks into the existing Phase 3, re-embedding **only** the holes —
+  not the whole file, which would cost strictly more. This is the crash-recovery counterpart
+  to `PartialIndexError`, which covers the case where Phase 3 *raises*; that abort's own
+  recovery text is corrected in the next entry, because this reconcile is what made it false.
+  Both pipelines heal, at different points in the run: the batch pipeline reconciles before Phase 1
+  (which is what withholds the "Nothing to index" claim), while the streaming pipeline has no
+  such pre-pass and reconciles after the walk instead — and skips the repair entirely when any
+  file failed in the same run, since a chunk this run just failed to embed would otherwise be
+  re-sent to the provider that refused it and paid for twice. Watch mode deliberately does not
+  heal (a save event on one file is the wrong trigger for a repo-wide scan), which
+  `trelix stats` now states under its remedy rather than leaving to be discovered by waiting.
+- **`PartialIndexError` told users to delete an index that now repairs itself.** That abort's
+  text predates the reconcile above, and it is the only channel there is: `cli/main.py` prints
+  `str(exc)` and exits 1, and `index_file()` returns it verbatim as `error`. It still said the
+  index "does not heal on the next run" and that the way out was to delete the index database.
+  Reproduced end to end: run 1 aborts saying exactly that, and run 2 — a plain `trelix index`,
+  nothing else changed — reconciles the holes and leaves none. Following the stale advice
+  destroys every embedding that DID land (61,652 of them on the real index) to recover holes
+  the re-run refills for the price of the holes alone. The message now keeps the part that is
+  still true — this index is PARTIAL *right now*, and `trelix stats` keeps counting those
+  chunks as indexed — and points at re-running `trelix index` once the cause is fixed, naming
+  `trelix watch` as the command that will not do it and the store location where the partial
+  state lives. The docstring's list of load-bearing claims is corrected with it, as is
+  `docs/PROVIDERS.md`, which stated the same "does not repair itself" conclusion and the same
+  delete-both-stores recovery for the LanceDB backend.
+- **The streaming pipeline printed two contradictory WARNINGs back to back.** The coverage
+  check announced "Re-embedding them in this run." before either caller had decided anything,
+  and the streaming caller then logged "not repairing now, because a chunk this run just failed
+  to embed would be re-sent to the provider that refused it" immediately after. The first line
+  was false on that path and is the one a user reading top-to-bottom believes. The promise now
+  comes from the two callers that actually repair, so each path emits exactly one warning and
+  it describes what that run does.
+- **`trelix index --dry-run` was silent about id-space exhaustion while `trelix stats` printed
+  it in red.** `_repair_cost` excluded ids at or above the sub-chunk offset from the bill,
+  which is correct — no real run will embed them — and then excluded them from the output too,
+  so the preview rendered "Chunks missing vectors 0 / Repair tokens 0": a clean bill of health
+  for chunks that cannot be retrieved at all. It now returns that count and the preview states
+  it under the table as a sentence rather than a priced row, because there is nothing to price.
+- **The id-space remedy in `trelix stats` was backend-blind.** It said to remove the index file
+  to renumber `chunks` from 1; on lance/qdrant the vectors do not live there, so following it
+  clears the id-space row but strands every vector the old ids carried. Reproduced on lancedb
+  0.33.0: `Vectors with no chunk row` goes 0 → 4 on a four-chunk fixture whose ids had climbed —
+  the entire former vector set on a real index — and nothing reclaims those rows. It now names
+  the vector store's own location too, the way `PartialIndexError` already did.
+- **Chunk rows whose id reached the vector store's sub-chunk offset are no longer treated as
+  holes.** Every backend's `stored_chunk_ids()` excludes ids at or above 10,000,000 because
+  that is where sub-chunk vectors live, so diffing a flat set of `chunks.id` against it
+  reported every row past the offset as missing a vector *forever* — and the repair above then
+  re-embedded them on every single run, for money, on a tree with nothing to do. This is
+  reachable rather than theoretical: `chunks.id` is `INTEGER PRIMARY KEY AUTOINCREMENT` and
+  Phase 2 deletes then re-inserts the chunk rows of every changed symbol, so the counter only
+  climbs — roughly 145 full re-chunks of a 68,880-chunk index. `Database.all_chunk_ids()` now
+  returns the two id classes separately; the repair services only the ids below the offset,
+  and the rest are reported at error level (and as their own `trelix stats` row and remedy)
+  as id-space exhaustion. Re-embedding cannot help them in any case — `search()` filters
+  their vectors out through `_is_chunk_id` — so they need a re-key, not a re-embed.
+- **The embedding dimension is recorded before Phase 3 only when the vector store is empty,**
+  and after a successful embed otherwise. Recording early is what re-arms the dimension guard
+  on an index whose store is still empty when its Phase 3 dies — "empty" being a
+  sentinel-inclusive `count()`, so one Phase 2.5 file-summary vector is enough to make the
+  stamp late instead — and over an empty store a wrong stamp costs nothing: no stored vector carries the other width and the `migrate-vectors
+  --reset` remedy would discard zero embeddings. Over a store that already holds vectors it
+  costs plenty — a repair run whose Phase 3 raised would stamp the new provider's width while
+  the vec0 table kept its own (`CREATE VIRTUAL TABLE IF NOT EXISTS` can neither widen nor
+  narrow a pre-existing table), locking the *correct* provider out of its own index behind a
+  `DimensionMismatchError` whose remedy discards every paid-for embedding. The re-arming
+  property survives where it is needed: on a populated index with the correct provider the
+  embed succeeds and the late record fires.
+- **`SQLiteVectorStore.count()` now takes the connection lock** like every other read on
+  that connection. It was the one that did not, against a connection opened
+  `check_same_thread=False`.
+- **The new report told users to edit a variable that could not have the effect it promised.**
+  A directory can be excluded by both tiers — `extra_ignore_dirs` is consulted first and
+  `.gitignore` second — so a `packages/` that is listed *and* gitignored is excluded twice.
+  The message advised removing the `extra_ignore_dirs` entry regardless, and doing that alone
+  changes nothing, because the gitignore tier still excludes it (asserted, not assumed: a test
+  now walks that case with the entry dropped and the file is still absent). It now names
+  `.gitignore` as the real blocker and offers `TRELIX_WALKER_RESPECT_GITIGNORE=false`, with the
+  caveat that this drops every other `.gitignore` exclusion in the repo too. This report exists
+  to replace silence about a hidden directory; replacing it with a confident lie would have been
+  worse than the silence.
+- **`trelix watch` ignored `extra_ignore_dirs` entirely, so it indexed files the batch walk
+  cannot reach.** `FileWatcher._should_index` checked `.gitignore`, extensions, filenames,
+  size and language — under a comment claiming "Gitignore / directory ignore" — but never the
+  directory list, and no per-file rule mentions those names because the walk enforces them
+  during traversal instead. In a repo with no `.gitignore` it therefore returned True for
+  `node_modules/left-pad/index.js`, and for every edit under `packages/` and `obj/`. A row
+  written by the watcher that a walk cannot reach is exactly what `compute_drift` reports as
+  `missing` and what `--prune` offers to delete, so a watched monorepo was generating its own
+  phantom deletions. `MultiRepoWatcher._should_index` has carried the required ancestor loop
+  since `watch-all` shipped; this was the surface that did not, and the two are now pinned
+  against one `FileWalker` for every file in a fixture tree. This removes rows rather than
+  adding them, so it costs nothing and re-embeds nothing.
+
+### Changed
+
+- **`trelix audit verify` now prints a reason code, and two different sentences.**
+  Every tamper verdict used to read "first divergent entry id: `<id>`". That is true of
+  a row that is present and wrong, and false of an anchor or count fault, where every
+  surviving row verifies and the reported id is the first entry whose *existence* can
+  no longer be proven. The second case now says so, and both carry a stable reason
+  token (`row_mutated`, `row_mislinked`, `id_gap`, `count_mismatch`, `head_mismatch`,
+  `anchor_missing`, `anchor_corrupt`, `log_emptied`) for alerting. `AuditStore.verify()`
+  returns that verdict; `verify_chain()` keeps its signature and return type unchanged.
+- **`AuditStore` takes a keyword-only `read_only` flag, and exposes `missing_tables`.**
+  `AuditStore(path, read_only=True)` opens `mode=ro`, runs no DDL, creates no parent
+  directory, and leaves `is_open` false with `missing_tables` populated when the file
+  does not already contain both audit tables. The default is unchanged and remains
+  read-write, so no existing caller behaves differently.
+
 ### Added
 
+- **`packages/` and `bin/` are now detected as source and reported instead of silently
+  skipped. The walk is unchanged, so this release costs nothing extra to run.** Those two
+  names — plus `obj` — have been in the default `extra_ignore_dirs` since June 2026 (v3.1.1,
+  v3.1.2, v3.1.3; this is not a regression) for .NET build output: `packages/` is a NuGet
+  restore, `bin/` and `obj/` are MSBuild. They also exclude the source tree of every
+  pnpm/npm/yarn/lerna/turborepo monorepo, and every Node CLI's `bin/`, which holds real
+  executables rather than build output. Because directory exclusion is enforced during
+  traversal, the walk never descends and the index simply contains none of it — while the run
+  reports `errors: 0`. Measured across six repositories in one workspace, in **walk-units**
+  (files a bare walk yields, i.e. what trelix would actually index after the language, size,
+  filename and `.gitignore` filters — the same unit as every control below, and the only unit a
+  plan can be sized from):
+
+  | repo | dir | first-party source hidden | indexed today | if the default flipped |
+  |---|---|---|---|---|
+  | repo A | `packages` | 36 | 598 | 634 (+6%) |
+  | repo B | `packages` | 168 | 31 | 199 |
+  | repo C | `packages` | 137 | 200 | 337 |
+  | repo D | `packages` | 104 | 510 | 614 |
+  | repo E | `bin` | 189 (183 `.js`) | 2765 | 2954 |
+
+  Repo A's controls reproduce exactly and are the proof that the exclusion is the only
+  difference: its `services/` 265, `apps/` 125, `proto/` 34 and `docs/` 51 ARE indexed. Repo B
+  finishes at 31 of 212 tracked files with exactly **ONE file in a code language and 0 call
+  edges** — which reads as "this codebase has no call graph" rather than "the source was never
+  walked". The sixth repository is trelix itself, and it is the honest limit of requiring
+  proof: its own `packages/` has no root workspace manifest, so the probe finds nothing and
+  says nothing. The severity was always in the silence, so that is what this release fixes:
+  when a
+  `packages/` sits beside a workspace manifest (`pnpm-workspace.yaml`, `pnpm-workspace.yml`,
+  `lerna.json`, `nx.json`, `rush.json`, or a `package.json` with a `workspaces` key), or a
+  `bin/` sits beside a `package.json` whose `bin` field points into it, the walk logs one
+  WARNING naming the directory, the evidence file, and the `TRELIX_WALKER_EXTRA_IGNORE_DIRS`
+  value that indexes it. WARNING is the CLI's default level, so a plain `trelix index` prints
+  it. Nothing about the walk, the files yielded, or the recorded walk-config fingerprint
+  changes — **no new files are embedded and no existing index becomes incomparable, so there
+  is no bill and no migration.** Making the default index those directories is a separate,
+  deliberately later change: it would widen the walk on every repo with a `packages/`
+  directory and bill for the difference, and a silent EXPANSION of scope is the same class of
+  defect as the silent contraction being fixed here. It ships with the walk-config field
+  split and the history collapse that keep `--prune` working across the change.
+  - Detection requires POSITIVE evidence, and both branches are load-bearing: one measured
+    repo has a marker file but no `workspaces` key, and **three** have the key but no marker
+    file at all.
+  - `turbo.json` alone is deliberately NOT accepted — it appears in non-workspace repos.
+  - A sibling `*.sln`, `*.slnx`, `*.slnf`, `*.csproj`, `*.fsproj`, `*.vbproj`, `*.vcxproj`,
+    `Directory.Build.props`, `Directory.Build.targets`, `Directory.Packages.props`,
+    `packages.config`, `packages.lock.json` or `NuGet.config` keeps the directory excluded even
+    when workspace evidence is also present: the .NET case wins any tie, because re-including a
+    NuGet tree is thousands of third-party files priced per token. **All of these are matched
+    case-insensitively**, because MSBuild and NuGet resolve them that way and .NET is developed
+    on Windows and macOS, where the filesystem does too.
+  - A `bin/` with no declaration stays excluded. Absence of .NET evidence is not evidence of
+    source, and "index unless proven otherwise" would expand the walk into every virtualenv,
+    Go and compiled-output `bin/` in the wild. Requiring proof can only under-include, and
+    under-inclusion is now loud while over-inclusion is silent money.
+  - `obj` is unconditional and unchanged. Dropping it from the list re-admitted 0 files in all
+    six measured repos — but only because none of them has a reachable .NET `obj/` (the
+    workspace's only two are a gitignored Go toolchain cache and one inside `node_modules`), so
+    that 0 means "untested here", not "measured harmless".
+  - Directories inside a package store (`node_modules`, `.pnpm-store`, `.yarn`, `.npm`,
+    `.pnp`, `.git`) are never reclassified: a store holds complete copies of other projects,
+    manifests included, so evidence found inside one proves nothing. `.pnpm-store` is not in
+    `extra_ignore_dirs`, so the walk really does reach inside it.
+  - The report follows the NAMES the effective `extra_ignore_dirs` still lists, so customising
+    the list does not silence it — only removing the name does, and removing the name is also
+    what stops the directory being hidden. A hand-written override is still a choice: dropping
+    `packages` (as `scripts/self-index.sh` does) leaves nothing to report about `packages`.
+  - The probe costs no extra syscalls during a walk — marker names come out of the directory
+    listing the traversal already has, and the one `package.json` read only happens in a
+    directory that actually contains a `packages/` or `bin/`.
+
+- **`trelix stats` reports vector coverage in both directions** — chunks with vectors, chunks
+  missing vectors, and vectors with no chunk row — and never nets them, because a single
+  netted number is what let a 10.5%-blind index read as healthy. It also reports
+  `Embedding dimension: not recorded — dimension guard disabled` instead of guessing, which
+  makes the second half of the failure above visible before any hole is counted — and reports
+  the coverage anyway in that case, on the sqlite backend, through the same read-only
+  dimension-free projection `--dry-run` uses. (A missing dimension used to suppress the whole
+  coverage block, which is precisely the state a killed run leaves, so the command that exists
+  to reveal the holes was blind on the only index that had them. What must never be guessed is
+  the vec0 *width* — a projection of `chunk_id` needs none and creates nothing.) lance and
+  qdrant still report "not checked" without a recorded dimension: both create on open. Exit
+  code is unchanged at 0 in every case, so scripts that pipe `stats` keep working.
+- **`trelix index --dry-run` prices the repair.** New `Chunks missing vectors` and
+  `Repair tokens` rows, with the repair tokens included in the dollar estimate — a preview
+  that under-quotes the run it is pricing is the same class of defect as the bug above. It
+  quotes the same set the run will embed, ids past the sub-chunk offset excluded, so it does
+  not over-quote either. The check is strictly read-only (`mode=ro` plus `PRAGMA query_only`),
+  and reports "not checked (lance backend)" rather than opening a Lance or Qdrant handle, since
+  both create on open — which also means the dollar figure is a **lower bound** on those two
+  backends, where the repair is not priced at all.
+- **`BaseVectorStore.stored_chunk_ids()`**, implemented for all three backends
+  (sqlite-vec, LanceDB, Qdrant). Returns real chunk ids with summary and sub-chunk sentinels
+  excluded. `count()` cannot answer this question — it is sentinel-inclusive, so
+  `count_chunks() - count()` returns holes minus sentinels (405 against a true 500 on a
+  fixture, and negative once sentinels outnumber holes); both `count()` docstrings that
+  claimed otherwise are corrected.
 - **Python 3.14 is tested and advertised.** `requires-python` has always been an open
   `>=3.11`, so pip was already willing to install trelix on 3.14 — but nothing verified it
   and the classifiers stopped at 3.13, so the honest answer to "does this work on 3.14" was
@@ -307,8 +653,6 @@ disabling its deletion path for every later test in the session.
   project shipping a security policy.
 
 ### Added
-
-
 
 - **`trelix index --prune`** — remove index rows for files deleted from the repository.
   Deliberately unbuilt until now: a prune keyed on "files the walk did not yield" reads a

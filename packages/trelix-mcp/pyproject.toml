@@ -7,7 +7,7 @@ packages = ["src/trelix_mcp"]
 
 [project]
 name = "trelix-mcp"
-version = "3.1.3"
+version = "3.1.4"
 description = "MCP server for trelix — semantic code search for Claude Code, Cursor, Windsurf, Continue.dev"
 readme = "README.md"
 license = { file = "LICENSE" }

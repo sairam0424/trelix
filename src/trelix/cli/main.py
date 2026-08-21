@@ -20,6 +20,7 @@ import os
 import sys
 import time
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, cast
 
@@ -38,6 +39,8 @@ from trelix.federation.registry import RepoRegistry
 from trelix.store.provenance import _PRUNE_MAX_FRACTION_DEFAULT
 
 if TYPE_CHECKING:
+    import sqlite3
+
     from trelix.core.config import EmbedderConfig, IndexConfig
     from trelix.core.models import IndexedFile
     from trelix.indexing.indexer import Indexer
@@ -534,6 +537,10 @@ def index(
     table.add_row("Files skipped", str(stats.get("files_skipped", 0)))
     table.add_row("Symbols extracted", str(stats.get("symbols_extracted", 0)))
     table.add_row("Chunks embedded", str(stats.get("chunks_embedded", 0)))
+    # Only when it happened. A permanent "Chunks repaired 0" row invites reading its
+    # absence as "not checked", which is a different thing that the stats command reports.
+    if stats.get("chunks_reconciled"):
+        table.add_row("Chunks repaired", str(stats["chunks_reconciled"]))
     table.add_row("Elapsed", f"{elapsed:.1f}s")
     if stats.get("errors"):
         table.add_row("[red]Errors[/red]", f"[red]{stats['errors']}[/red]")
@@ -822,6 +829,7 @@ def _print_cost_preview(config: IndexConfig) -> None:
         )
 
     to_embed, index_read_error = _files_needing_embedding(config, files)
+    repair_count, repair_tokens, repair_exhausted, repair_note = _repair_cost(config)
 
     chunker = Chunker(config.chunker)
     chunk_count = 0
@@ -881,6 +889,15 @@ def _print_cost_preview(config: IndexConfig) -> None:
     table.add_row("Files to embed", f"{len(to_embed):,}")
     if no_symbols:
         table.add_row("Files yielding no symbols", f"{no_symbols:,}")
+    # Repair work is reported on its own two rows and NOT folded into "Chunks to embed" /
+    # "Embedding tokens", which keep their from-scratch meaning. It reaches the dollar
+    # figure below though: a preview that under-quotes the run it is pricing is the same
+    # class of dishonesty as an index that reports itself complete while 10.5% blind.
+    if repair_note is not None:
+        table.add_row("[yellow]Chunks missing vectors[/yellow]", f"[yellow]{repair_note}[/yellow]")
+    else:
+        table.add_row("Chunks missing vectors", f"{repair_count:,}")
+        table.add_row("Repair tokens", f"{repair_tokens:,}")
     table.add_row("Chunks to embed", f"{chunk_count:,}")
     table.add_row("Embedding tokens", f"{token_count:,}")
     console.print(table)
@@ -892,7 +909,32 @@ def _print_cost_preview(config: IndexConfig) -> None:
             "this is an over-estimate, not an under-estimate."
         )
 
-    _print_cost_estimate(config, token_count)
+    if repair_note is not None:
+        # Named because the direction matters and it is the unsafe one: the repair is priced
+        # at 0 here, and a real run will still perform it. Cross-backend repair pricing would
+        # mean opening a Lance/Qdrant handle, which creates on open — so the honest move is to
+        # label the figure, not to make the preview a writer.
+        console.print(
+            "[yellow]The repair could not be priced[/yellow] "
+            f"({_safe_text(repair_note)}), so the estimate below is a LOWER BOUND — a real "
+            "run may also re-embed chunks left without a vector by an interrupted one."
+        )
+
+    if repair_exhausted:
+        # A sentence rather than a table row, because there is nothing to price: no real run
+        # will embed these, so a priced row would quote a spend that cannot happen. Silence
+        # was the wrong answer though — the rows above then read as a clean bill of health
+        # for chunks `trelix stats` reports in red, and the two commands answer the same
+        # question.
+        console.print(
+            f"[red]{repair_exhausted:,} chunk(s) are past the id-space limit[/red] and are "
+            "NOT in the figures above — their `chunks.id` reached the vector store's "
+            "sub-chunk sentinel offset, so any vector stored for them is filtered out of "
+            "every search. No real run will embed them either: they need a re-key, not a "
+            "re-embed. Run [bold]trelix stats[/bold] for the count and the remedy."
+        )
+
+    _print_cost_estimate(config, token_count + repair_tokens)
     _print_cost_caveats(config)
 
 
@@ -927,6 +969,122 @@ def _files_needing_embedding(
         return list(files), str(exc)
 
     return [f for f in files if stored.get(f.rel_path) != f.hash], None
+
+
+def _readonly_vec_conn(db_path: Path) -> sqlite3.Connection:
+    """A connection to `db_path` that CANNOT write it, with sqlite-vec loaded.
+
+    Answers "which chunks have a vector" without a width, which is what makes it usable on
+    the state a killed run leaves: `index_metadata` empty, so no dimension to open a store
+    at. Every part of it is load-bearing:
+
+      * `mode=ro` + `PRAGMA query_only=ON` rather than `Database` or `SQLiteVectorStore`.
+        `Database.__init__` runs schema migrations and `SQLiteVectorStore.__init__` issues
+        `CREATE VIRTUAL TABLE IF NOT EXISTS … FLOAT[{dim}]` — so opening a store is the one
+        thing that can create a permanently-wrong table where none exists, since a vec0
+        table's width is fixed at creation (see `SQLiteVectorStore.recreate`).
+      * `pathname2url` before interpolating the path, copied from `scripts/verify-index.sh`
+        along with the reason: raw, a `#` in the path ends the URI as a fragment and a `?`
+        opens a second query section, so `mode=ro` is silently dropped and SQLite creates
+        an empty database at the truncated path — every count then reads 0 and a
+        10.5%-blind index reads as healthy.
+      * sqlite-vec must be loaded even to project a column: `chunk_embeddings` is a vec0
+        virtual table and is unreachable without the extension.
+
+    Raises rather than returning None — every caller has to render "not checked" with the
+    exception type anyway, and a None here would read as "no vectors".
+    """
+    import sqlite3
+    import urllib.request
+
+    import sqlite_vec
+
+    uri = f"file:{urllib.request.pathname2url(str(db_path))}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        conn.execute("PRAGMA query_only = ON")
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
+def _stored_chunk_ids_sql(conn: sqlite3.Connection) -> set[int]:
+    """`SQLiteVectorStore.stored_chunk_ids()` against a raw connection, sentinels excluded.
+
+    Duplicated as SQL rather than reached through the store class on purpose: the store
+    cannot be constructed without a width, and this exists precisely for the case where
+    there is none. The sentinel bound comes from the class attribute so it cannot drift.
+    """
+    # Imported for the sentinel offset only — reading a class attribute constructs no
+    # store, and the alternative is a magic 10_000_000 that silently drifts from the one
+    # every backend now filters on.
+    from trelix.store.vector import BaseVectorStore
+
+    return {
+        int(r[0])
+        for r in conn.execute(
+            "SELECT chunk_id FROM chunk_embeddings WHERE chunk_id > 0 AND chunk_id < ?",
+            (BaseVectorStore._SUB_CHUNK_OFFSET,),
+        )
+    }
+
+
+def _repair_cost(config: IndexConfig) -> tuple[int, int, int, str | None]:
+    """Price the chunks a real run would re-embed to repair an interrupted one.
+
+    Returns (chunk count, token count, id-space-exhausted count, reason it could not be
+    checked). The reason is non-None exactly when the numbers are meaningless, so the
+    caller renders a sentence instead of a zero — "no holes" and "never looked" must not
+    print the same.
+
+    The exhausted count is returned SEPARATELY rather than dropped, which is what this used
+    to do: those ids are excluded from the bill (see below) and were then excluded from the
+    output too, so the preview printed "Chunks missing vectors 0 / Repair tokens 0" — a
+    clean bill of health — for an index `trelix stats` reports in red. It is not a priced
+    row because there is nothing to price; the caller states it under the table.
+
+    STRICTLY READ-ONLY via `_readonly_vec_conn` — a cost preview must not be able to modify
+    the index it prices. lance / qdrant are reported as not checked rather than opened:
+    `LanceVectorStore._get_or_create_table` creates the table when the open fails and
+    `QdrantVectorStore._ensure_collection` creates a collection; both are writes.
+
+    Chunk ids at or above the sub-chunk offset are excluded from the bill for the same
+    reason `Indexer._chunks_missing_vectors` excludes them from the repair: no real run will
+    embed them, so pricing them would quote a spend that cannot happen.
+
+    Tokens come from `chunks.token_count`, already stored, so this needs no parse and no
+    chunker call — and it is the same number Phase 3 will send.
+    """
+    from trelix.store.vector import BaseVectorStore
+
+    backend = str(getattr(config.store, "backend", "sqlite"))
+    if backend != "sqlite":
+        return 0, 0, 0, f"not checked ({backend} backend)"
+
+    db_path = config.db_path_absolute
+    if not db_path.exists():
+        return 0, 0, 0, None  # No index at all: nothing indexed, so nothing half-indexed.
+
+    try:
+        conn = _readonly_vec_conn(db_path)
+        try:
+            stored = _stored_chunk_ids_sql(conn)
+            rows = conn.execute("SELECT id, token_count FROM chunks").fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return 0, 0, 0, f"not checked ({type(exc).__name__})"
+
+    offset = BaseVectorStore._SUB_CHUNK_OFFSET
+    missing = [
+        (int(r[0]), int(r[1])) for r in rows if int(r[0]) < offset and int(r[0]) not in stored
+    ]
+    exhausted = sum(1 for r in rows if int(r[0]) >= offset)
+    return len(missing), sum(t for _, t in missing), exhausted, None
 
 
 def _print_cost_estimate(config: IndexConfig, token_count: int) -> None:
@@ -1401,6 +1559,7 @@ def stats(
             chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             db_size_bytes = db_path.stat().st_size
             provenance = read_provenance(db)
+            coverage = _vector_coverage(config, db)
             # Computed inside the `with` because it reads per-file hashes back out of
             # this same connection.
             drift_report = compute_drift(config, db) if drift else None
@@ -1418,12 +1577,211 @@ def stats(
     table.add_row("Files indexed", str(file_count))
     table.add_row("Symbols", str(symbol_count))
     table.add_row("Chunks", str(chunk_count))
+    _add_coverage_rows(table, coverage)
     table.add_row("DB size", f"{db_size_kb:.1f} KB")
     console.print(table)
+    _print_coverage_remedy(coverage, repo, config)
 
     _print_provenance(provenance, commits_since(config, provenance.git_commit))
     if drift_report is not None:
         _print_drift(drift_report)
+
+
+@dataclass
+class _VectorCoverage:
+    """What `trelix stats` can say about whether every chunk actually has a vector.
+
+    `missing` / `orphaned` are None when the store could not be consulted, which is a
+    different answer from 0 and is rendered as such. `dimension` is None when
+    `index_metadata` holds no `embedding_dimension` — the state a killed run leaves, and
+    the state in which `DimensionGuard.check` silently disarms itself. Note that a None
+    `dimension` no longer implies unknown coverage: on the sqlite backend the two are
+    answered independently (see `_vector_coverage`).
+
+    `id_space_exhausted` counts chunk rows whose id reached the vector store's sub-chunk
+    offset. Held apart from `missing` because no re-index can fix them — it is the one
+    coverage number whose remedy is not `trelix index`.
+    """
+
+    missing: int | None = None
+    orphaned: int | None = None
+    with_vectors: int | None = None
+    dimension: int | None = None
+    id_space_exhausted: int | None = None
+    unavailable_reason: str | None = None
+
+
+def _vector_coverage(config: IndexConfig, db: Database) -> _VectorCoverage:
+    """Count chunks with and without a vector, in both directions.
+
+    A recorded dimension is NOT required, and that is the whole shape of this function.
+    Requiring one made `stats` blind on exactly the index this reporting exists for: a
+    killed run leaves `index_metadata` with 0 rows, so the command that is supposed to
+    reveal the holes reported "not checked" instead, and the remedy line never printed.
+
+    What the old gate was right about is narrower than it looked: never GUESS a width, and
+    never call `make_vector_store` without one, because `SQLiteVectorStore.__init__` issues
+    `CREATE VIRTUAL TABLE IF NOT EXISTS chunk_embeddings … FLOAT[{dim}]` and a vec0 table's
+    width is fixed at creation (see `SQLiteVectorStore.recreate`), so a guess would leave a
+    permanently-wrong table where none existed. A read-only projection of `chunk_id` needs
+    no width at all and cannot create anything — `--dry-run` has priced the identical
+    question that way since this feature landed — so for the sqlite backend the answer is
+    read that way when there is no dimension to open a store with. lance / qdrant keep
+    reporting "not checked": both create on open, and neither can be projected from SQL.
+
+    `stats` already constructs `Database`, which runs schema migrations, so it is a writer
+    already; the read-only path here is about not creating a vec0 table, not about the
+    `--dry-run` contract.
+    """
+    from trelix.store.vector import make_vector_store
+
+    partition = db.all_chunk_ids()
+    exhausted = len(partition.id_space_exhausted)
+    dimension = db.get_embedding_dimension()
+
+    try:
+        if isinstance(dimension, int):
+            stored = make_vector_store(config, dimension).stored_chunk_ids()
+        elif str(getattr(config.store, "backend", "sqlite")) != "sqlite":
+            return _VectorCoverage(
+                id_space_exhausted=exhausted,
+                unavailable_reason="no embedding dimension recorded",
+            )
+        else:
+            conn = _readonly_vec_conn(config.db_path_absolute)
+            try:
+                stored = _stored_chunk_ids_sql(conn)
+            finally:
+                conn.close()
+    except Exception as exc:
+        return _VectorCoverage(
+            dimension=dimension if isinstance(dimension, int) else None,
+            id_space_exhausted=exhausted,
+            unavailable_reason=f"{type(exc).__name__}",
+        )
+
+    return _VectorCoverage(
+        # Both directions, never netted: netting is what makes a single count lie, and the
+        # reverse direction is the only signal for LanceDB's swallowed delete_batch.
+        # `partition.repairable`, not every chunk row: an id past the sub-chunk offset is
+        # unretrievable but is NOT a hole `trelix index` can fill, and counting it here is
+        # what printed a remedy that could never clear.
+        missing=len(partition.repairable - stored),
+        orphaned=len(stored - partition.repairable),
+        with_vectors=len(stored),
+        dimension=dimension if isinstance(dimension, int) else None,
+        id_space_exhausted=exhausted,
+    )
+
+
+def _add_coverage_rows(table: Table, coverage: _VectorCoverage) -> None:
+    """Add the vector-coverage rows to the stats table."""
+    if coverage.missing is None:
+        why = _safe_text(coverage.unavailable_reason or "unknown")
+        table.add_row(
+            "[yellow]Chunks with vectors[/yellow]",
+            f"[yellow]not checked — {why}[/yellow]",
+        )
+    else:
+        table.add_row("Chunks with vectors", str(coverage.with_vectors))
+        missing_style = "red" if coverage.missing else "green"
+        table.add_row(
+            f"[{missing_style}]Chunks missing vectors[/{missing_style}]",
+            f"[{missing_style}]{coverage.missing}[/{missing_style}]",
+        )
+        orphan_style = "yellow" if coverage.orphaned else "green"
+        table.add_row(
+            f"[{orphan_style}]Vectors with no chunk row[/{orphan_style}]",
+            f"[{orphan_style}]{coverage.orphaned}[/{orphan_style}]",
+        )
+
+    # Only when non-zero, unlike the rows above. Those three are reported at 0 because "0
+    # holes" is the reassurance the command exists to give; this one is a condition no
+    # normal index is in, and a permanent `0` row invites it to be read as a hole count.
+    if coverage.id_space_exhausted:
+        table.add_row(
+            "[red]Chunks past the id-space limit[/red]",
+            f"[red]{coverage.id_space_exhausted}[/red]",
+        )
+
+    if coverage.dimension is None:
+        # The single row that makes the reproduced bug loud before any hole is counted:
+        # `DimensionGuard.check` early-returns when the stored value is not an int, so this
+        # index has no protection against mixed-width vectors either.
+        table.add_row(
+            "[yellow]Embedding dimension[/yellow]",
+            "[yellow]not recorded — dimension guard disabled[/yellow]",
+        )
+    else:
+        table.add_row("Embedding dimension", str(coverage.dimension))
+
+
+def _vector_store_locations(config: IndexConfig) -> list[str]:
+    """Every place a from-scratch rebuild has to clear, named per backend.
+
+    `Indexer._partial_index_error` names the same set for the same reason: on lance and
+    qdrant the vectors do not live in the index file, so "remove the index file" renumbers
+    `chunks` from 1 and leaves every old vector behind. That does clear the id-space row —
+    a fresh file has no `sqlite_sequence`, so AUTOINCREMENT restarts at 1 — but it strands
+    every vector the old ids carried as a `Vectors with no chunk row` orphan that nothing
+    reclaims. Reproduced on lancedb 0.33.0: 0 -> 4 orphans on a four-chunk fixture whose
+    ids had climbed, which on a real index is the entire former vector set.
+    """
+    backend = str(getattr(config.store, "backend", "sqlite"))
+    locations = [f"the index database ({config.db_path_absolute})"]
+    if backend == "lance":
+        locations.append(f"the LanceDB directory ({config.store.lance_uri})")
+    elif backend == "qdrant":
+        locations.append(
+            f"the Qdrant collection {config.store.qdrant_collection} at {config.store.qdrant_url}"
+        )
+    return locations
+
+
+def _print_coverage_remedy(coverage: _VectorCoverage, repo: str, config: IndexConfig) -> None:
+    """Name the way out, but only when there is something to fix.
+
+    Deliberately does not change the exit code. A non-zero status here would break every
+    script that pipes `stats` — `tests/unit/test_cli_closed_stdout.py` exists because a
+    non-zero exit on this command broke CI twice.
+
+    Two remedies, never merged, because they are not the same instruction: holes are healed
+    by `trelix index`, and id-space exhaustion is not healed by anything a user can type
+    today. Printing one sentence for both would send someone to spend money on chunks no
+    embedding can rescue.
+    """
+    if coverage.missing:
+        console.print(
+            f"\n[red]{coverage.missing} chunk(s) can never be retrieved[/red] — they have a "
+            f"chunk row but no vector, which is what an interrupted index run leaves behind. "
+            f"Run [bold]trelix index {_safe_text(repo)}[/bold] to re-embed those chunks "
+            # "exactly those chunks and nothing else" was false: a plain index also embeds
+            # every file whose content hash moved since the last run, which is its job.
+            f"(on top of anything that changed since the last run), or "
+            f"[bold]trelix index {_safe_text(repo)} --dry-run[/bold] to price it first."
+        )
+        # Stated because the alternative is discovering it by waiting. `trelix watch` never
+        # reconciles — a save event on one file is the wrong trigger for a repo-wide store
+        # scan, and an unbounded scan per filesystem event is the wrong cost profile for a
+        # long-lived process — so someone who leaves watch running expects these to close
+        # and they never do.
+        console.print(
+            "[dim]  `trelix watch` will not repair them: it only re-indexes files as they "
+            "change, and never scans the store for holes.[/dim]"
+        )
+
+    if coverage.id_space_exhausted:
+        from trelix.store.vector import BaseVectorStore
+
+        console.print(
+            f"\n[red]{coverage.id_space_exhausted} chunk(s) are past the id-space limit"
+            f"[/red] — their `chunks.id` reached the vector store's sub-chunk sentinel "
+            f"offset ({BaseVectorStore._SUB_CHUNK_OFFSET:,}), so any vector stored for them "
+            f"is filtered out of every search as a sentinel. Re-indexing CANNOT fix this and "
+            f"will not try: they need a re-key, not a re-embed. Rebuild the index from "
+            f"scratch — remove {' and '.join(_vector_store_locations(config))}, then "
+            f"[bold]trelix index {_safe_text(repo)}[/bold] — to renumber `chunks` from 1."
+        )
 
 
 def _print_provenance(provenance: IndexProvenance, behind: int | None) -> None:
@@ -3351,6 +3709,15 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
     all-clear from a read-only command, and exactly the failure the paragraph
     above says this function exists to prevent. A CI integrity gate pointed at a
     not-yet-created or misspelled path passed green.
+
+    Opened ``read_only=True``, which is what makes "these commands never write the
+    database they read" true rather than intended. The existence check above stopped
+    an *absent* path from being created; it said nothing about a path that exists and
+    is some other SQLite file. Pointed at, say, a customers database, the old
+    read-write open ran the writer's DDL and grew an 8 KB one-table file into a
+    32 KB five-table one, then reported "Audit chain intact." — a green integrity
+    verdict on a database that is not an audit log. A read-only handle cannot do
+    that, and the ``missing_tables`` gate turns the verdict itself into exit 2.
     """
     from trelix.audit.store import AuditStore
     from trelix.core.config import AuditConfig
@@ -3369,8 +3736,36 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
         )
         raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
 
-    store = AuditStore(path)
+    store = AuditStore(path, read_only=True)
+    # Reported BEFORE the generic is_open check, and with its own wording, because
+    # "this file is not an audit log" and "this file would not open" send an
+    # operator to different places. Nothing here may resemble a verdict about a
+    # chain: there is no chain to have a verdict about.
+    if store.missing_tables:
+        err_console.print(
+            f"[red]Not an audit database[/red] at {_safe_text(str(path))} — no "
+            f"{_safe_text(', '.join(store.missing_tables))} table. Nothing was read and "
+            "nothing was created, and no verdict about a chain is possible here. Check "
+            "the path, or enable auditing (TRELIX_AUDIT_ENABLED=true) to start a chain."
+        )
+        raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
     if not store.is_open:
+        if getattr(store, "needs_journal_recovery", False):
+            # Named separately because the generic message below is actively wrong
+            # here: the path IS a readable file, and telling an operator to check
+            # that sends them looking for a problem that does not exist. This is
+            # also the moment the command matters most — a writer was just killed
+            # and the question is whether entries were lost.
+            err_console.print(
+                f"[red]Audit database needs journal recovery[/red] at "
+                f"{_safe_text(str(path))} — a writer was interrupted and left a "
+                "rollback journal beside it. The read commands open read-only and "
+                "cannot replay one, so nothing was read and no verdict is possible. "
+                "One read-write open recovers it: restart the audited service, or "
+                f"run `sqlite3 {_safe_text(str(path))} .tables` once, then re-run "
+                "this command. The file is intact; it has not been modified here."
+            )
+            raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
         err_console.print(
             f"[red]Could not open audit database[/red] at {_safe_text(str(path))} — "
             "nothing was read. Check the path (it must be a file, not a directory) "
@@ -3380,14 +3775,37 @@ def _open_audit_store(db: str | None):  # type: ignore[no-untyped-def]
     return store, path
 
 
+def _audit_db_unreadable(path: Path, exc: Exception) -> NoReturn:
+    """Report a damaged audit database as *could not check*, never as tamper.
+
+    A corrupted b-tree page — 256 bytes of garbage over page 2 is enough — leaves
+    the file openable and makes the first row read raise ``sqlite3.DatabaseError``.
+    That surfaced as a traceback and exit 1, which is the tamper exit code: a
+    damaged disk was being reported as an attack, and the tokens an alert matches on
+    ("TAMPERED", a reason code) were absent, so the alert saw only a nonzero exit.
+    Restoring from backup and hunting an intruder are different first moves.
+    """
+    err_console.print(
+        f"[red]Could not read audit database[/red] at {_safe_text(str(path))} — "
+        f"SQLite reports: {_safe_text(str(exc))}. That is a damaged or truncated "
+        "file, not a tamper verdict; nothing about the chain was determined."
+    )
+    raise typer.Exit(2)  # 2 = could not check; 1 is reserved for detected tamper
+
+
 @audit_app.command("list")
 def audit_list(
     db: Annotated[str | None, typer.Option("--db", help="Path to audit.db")] = None,
     limit: Annotated[int, typer.Option("--limit", "-n", help="Rows to show")] = 50,
 ) -> None:
     """Show the most recent audit entries (newest first)."""
+    import sqlite3
+
     store, path = _open_audit_store(db)
-    rows = store.recent(limit)
+    try:
+        rows = store.recent(limit)
+    except sqlite3.DatabaseError as exc:
+        _audit_db_unreadable(path, exc)
     if not rows:
         console.print("[yellow]No audit entries.[/yellow]")
         return
@@ -3428,14 +3846,34 @@ def audit_verify(
     db: Annotated[str | None, typer.Option("--db", help="Path to audit.db")] = None,
 ) -> None:
     """Verify the hash chain. Exits nonzero and names the first divergent id on tamper."""
-    store, _ = _open_audit_store(db)
-    divergent = store.verify_chain()
-    if divergent is None:
+    import sqlite3
+
+    from trelix.audit.store import UNPROVABLE_ID_REASONS
+
+    store, path = _open_audit_store(db)
+    try:
+        result = store.verify()
+    except sqlite3.DatabaseError as exc:
+        _audit_db_unreadable(path, exc)
+    if result.tampered_id is None:
         console.print("[green]Audit chain intact.[/green]")
         return
-    err_console.print(
-        f"[red]Audit chain TAMPERED[/red] — first divergent entry id: [bold]{divergent}[/bold]"
-    )
+    # Two sentences because these are two different facts, and the id alone does
+    # not distinguish them. A row fault names a row that is present and wrong. An
+    # anchor or count fault names the first id whose EXISTENCE can no longer be
+    # proven — every surviving row verified — so calling that "the first divergent
+    # entry" would send a responder to inspect a row that is not in the table.
+    # The reason code is printed for both so an alert can match on it.
+    if result.reason in UNPROVABLE_ID_REASONS:
+        err_console.print(
+            f"[red]Audit chain TAMPERED[/red] ({result.reason}) — no surviving entry diverged; "
+            f"first unprovable entry id: [bold]{result.tampered_id}[/bold]"
+        )
+    else:
+        err_console.print(
+            f"[red]Audit chain TAMPERED[/red] ({result.reason}) — "
+            f"first divergent entry id: [bold]{result.tampered_id}[/bold]"
+        )
     raise typer.Exit(1)
 
 
@@ -3447,12 +3885,22 @@ def audit_export(
     ] = "ndjson",
 ) -> None:
     """Export every audit entry (oldest first) to stdout as NDJSON."""
+    import sqlite3
+
     if export_format != "ndjson":
         _print_error("Unsupported format", f"{export_format!r} (only 'ndjson' is supported)")
         raise typer.Exit(1)
-    store, _ = _open_audit_store(db)
-    for row in store.iter_for_export():
-        print(json.dumps(row))
+    store, path = _open_audit_store(db)
+    # `default=str`, mirroring `_canonical_hash`, because a column's declared type
+    # does not constrain what is stored: SQLite accepts a BLOB in any of them, and
+    # `json.dumps` raised "Object of type bytes is not JSON serializable" — export
+    # was the only command a single planted BLOB could kill outright, which is the
+    # command an offline verifier and every SIEM shipper depend on.
+    try:
+        for row in store.iter_for_export():
+            print(json.dumps(row, default=str))
+    except sqlite3.DatabaseError as exc:
+        _audit_db_unreadable(path, exc)
 
 
 # ---------------------------------------------------------------------------
