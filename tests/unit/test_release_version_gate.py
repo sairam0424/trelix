@@ -258,3 +258,85 @@ class TestEveryReleasedChangelogHeadingIsDated:
             "CHANGELOG runs newest-first, so each date must be >= the one below it; "
             f"these pairs are inverted (above, below): {inversions}"
         )
+
+
+class TestCheckoutCanActuallyFetchTheTag:
+    """`fetch-tags: true` without `fetch-depth: 0` kills the job before any step runs.
+
+    WHY THIS EXISTS. v3.1.5 was tagged and published nothing. `verify-version`'s checkout set
+    `fetch-tags: true` on an otherwise default (shallow) fetch. When the triggering ref is
+    itself a tag, actions/checkout@v4 builds the refspec `+<sha>:refs/tags/<tag>` and, with
+    fetch-tags also requested, tries to write the tag ref to that same destination:
+
+        fatal: Cannot fetch both 1e1a66fc… and refs/tags/v3.1.5 to refs/tags/v3.1.5
+
+    Checkout retried three times, the job died before a single step executed, and all four
+    downstream jobs skipped. So the gate written to protect the CHANGELOG date instead
+    prevented the release — and nothing local could catch it, because the failure needs a
+    tag-shaped ref to exist.
+
+    It cannot be caught by running the workflow either: the previous release ran the older
+    file, so this configuration had never executed once. A static pin is the only thing that
+    would have caught it before the tag was cut.
+
+    Every other checkout in this repo that sets fetch-tags pairs it with fetch-depth: 0, and
+    ci.yml's comment states the reason explicitly. This asserts the pairing repo-wide rather
+    than for release.yml alone, since the same mistake is available in any workflow.
+    """
+
+    @staticmethod
+    def _checkout_steps() -> list[tuple[str, dict[str, Any]]]:
+        """(workflow-name, `with:` mapping) for every actions/checkout step in the repo."""
+        root = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+        found: list[tuple[str, dict[str, Any]]] = []
+        for path in sorted(root.glob("*.yml")):
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            for job in (data.get("jobs") or {}).values():
+                for step in (job or {}).get("steps") or []:
+                    uses = (step or {}).get("uses") or ""
+                    if uses.startswith("actions/checkout"):
+                        found.append((path.name, step.get("with") or {}))
+        return found
+
+    def test_there_are_checkout_steps_to_inspect(self) -> None:
+        """Precondition. An empty sweep would make every assertion below vacuous."""
+        steps = self._checkout_steps()
+
+        assert len(steps) >= 5, f"only found {len(steps)} checkout steps; the sweep is broken"
+
+    def test_no_workflow_requests_fetch_tags_on_a_shallow_checkout(self) -> None:
+        """The exact configuration that made v3.1.5 publish nothing."""
+        offenders = [
+            (name, cfg)
+            for name, cfg in self._checkout_steps()
+            if cfg.get("fetch-tags") is True and cfg.get("fetch-depth") != 0
+        ]
+
+        assert offenders == [], (
+            "actions/checkout cannot fetch both a tag's commit and the tag ref into the same "
+            "destination, so `fetch-tags: true` on a shallow checkout aborts the job whenever "
+            "the triggering ref is a tag — which is every release. Add `fetch-depth: 0`: "
+            f"{offenders}"
+        )
+
+    def test_the_version_gate_can_read_the_tag_object_it_certifies_against(self) -> None:
+        """verify-version specifically, because its CHANGELOG-date step reads refs/tags/.
+
+        Asserted separately from the sweep above so that deleting fetch-tags entirely — which
+        would silence the sweep — still fails here. That step refuses to certify when it
+        cannot read the tag date, so a tag-less checkout turns the gate into a hard failure.
+        """
+        root = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "release.yml"
+        data = yaml.safe_load(root.read_text(encoding="utf-8"))
+        steps = data["jobs"]["verify-version"]["steps"]
+
+        checkout = next(
+            (s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")), None
+        )
+        assert checkout is not None, "verify-version no longer checks out the repo"
+        cfg = checkout.get("with") or {}
+        assert cfg.get("fetch-tags") is True, "verify-version must fetch tags to read the tag date"
+        assert cfg.get("fetch-depth") == 0, (
+            "verify-version must use fetch-depth: 0 alongside fetch-tags, or checkout aborts "
+            f"on a tag ref: {cfg}"
+        )

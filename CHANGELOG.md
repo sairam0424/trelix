@@ -12,6 +12,21 @@ _Nothing yet._
 
 ### Fixed
 
+- **The release workflow could not check out a tag, so v3.1.5's first tag published nothing.**
+  `verify-version`'s checkout requested `fetch-tags: true` on an otherwise default — therefore
+  shallow — fetch. When the triggering ref is itself a tag, `actions/checkout@v4` builds the
+  refspec `+<sha>:refs/tags/<tag>` and, with tags also requested, writes the tag ref to that
+  same destination: `fatal: Cannot fetch both 1e1a66fc… and refs/tags/v3.1.5 to
+  refs/tags/v3.1.5`. Checkout retried three times, the job died before a single step ran, and
+  all four downstream jobs skipped — so the gate added to protect the CHANGELOG date instead
+  blocked the release outright. Nothing was published, and the tag was re-cut after this fix.
+  Both other checkouts in this repo that set `fetch-tags` pair it with `fetch-depth: 0`, and
+  `ci.yml`'s comment states the reason in as many words; the broken step cited that precedent
+  while dropping the half that makes it work. It had also never executed before: the gate
+  merged after the 3.1.4 release branch was cut, so v3.1.4 ran the previous file. Now pinned
+  repo-wide by `TestCheckoutCanActuallyFetchTheTag` — a static check, because reproducing this
+  needs a tag-shaped ref and no local run can produce one.
+
 - **A local `python -m build` produced a 158 MiB sdist containing a 221 MB index database and
   2,479 query-trace files whose filenames are the query text — and `twine check` passed it.**
   Root `.gitignore` has `.trelix/`, which does not match a *renamed* index directory, so
