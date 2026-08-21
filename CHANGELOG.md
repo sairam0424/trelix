@@ -91,8 +91,102 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 - **`SQLiteVectorStore.count()` now takes the connection lock** like every other read on
   that connection. It was the one that did not, against a connection opened
   `check_same_thread=False`.
+- **The new report told users to edit a variable that could not have the effect it promised.**
+  A directory can be excluded by both tiers — `extra_ignore_dirs` is consulted first and
+  `.gitignore` second — so a `packages/` that is listed *and* gitignored is excluded twice.
+  The message advised removing the `extra_ignore_dirs` entry regardless, and doing that alone
+  changes nothing, because the gitignore tier still excludes it (asserted, not assumed: a test
+  now walks that case with the entry dropped and the file is still absent). It now names
+  `.gitignore` as the real blocker and offers `TRELIX_WALKER_RESPECT_GITIGNORE=false`, with the
+  caveat that this drops every other `.gitignore` exclusion in the repo too. This report exists
+  to replace silence about a hidden directory; replacing it with a confident lie would have been
+  worse than the silence.
+- **`trelix watch` ignored `extra_ignore_dirs` entirely, so it indexed files the batch walk
+  cannot reach.** `FileWatcher._should_index` checked `.gitignore`, extensions, filenames,
+  size and language — under a comment claiming "Gitignore / directory ignore" — but never the
+  directory list, and no per-file rule mentions those names because the walk enforces them
+  during traversal instead. In a repo with no `.gitignore` it therefore returned True for
+  `node_modules/left-pad/index.js`, and for every edit under `packages/` and `obj/`. A row
+  written by the watcher that a walk cannot reach is exactly what `compute_drift` reports as
+  `missing` and what `--prune` offers to delete, so a watched monorepo was generating its own
+  phantom deletions. `MultiRepoWatcher._should_index` has carried the required ancestor loop
+  since `watch-all` shipped; this was the surface that did not, and the two are now pinned
+  against one `FileWalker` for every file in a fixture tree. This removes rows rather than
+  adding them, so it costs nothing and re-embeds nothing.
 
 ### Added
+
+- **`packages/` and `bin/` are now detected as source and reported instead of silently
+  skipped. The walk is unchanged, so this release costs nothing extra to run.** Those two
+  names — plus `obj` — have been in the default `extra_ignore_dirs` since June 2026 (v3.1.1,
+  v3.1.2, v3.1.3; this is not a regression) for .NET build output: `packages/` is a NuGet
+  restore, `bin/` and `obj/` are MSBuild. They also exclude the source tree of every
+  pnpm/npm/yarn/lerna/turborepo monorepo, and every Node CLI's `bin/`, which holds real
+  executables rather than build output. Because directory exclusion is enforced during
+  traversal, the walk never descends and the index simply contains none of it — while the run
+  reports `errors: 0`. Measured across six repositories in one workspace, in **walk-units**
+  (files a bare walk yields, i.e. what trelix would actually index after the language, size,
+  filename and `.gitignore` filters — the same unit as every control below, and the only unit a
+  plan can be sized from):
+
+  | repo | dir | first-party source hidden | indexed today | if the default flipped |
+  |---|---|---|---|---|
+  | repo A | `packages` | 36 | 598 | 634 (+6%) |
+  | repo B | `packages` | 168 | 31 | 199 |
+  | repo C | `packages` | 137 | 200 | 337 |
+  | repo D | `packages` | 104 | 510 | 614 |
+  | repo E | `bin` | 189 (183 `.js`) | 2765 | 2954 |
+
+  Repo A's controls reproduce exactly and are the proof that the exclusion is the only
+  difference: its `services/` 265, `apps/` 125, `proto/` 34 and `docs/` 51 ARE indexed. Repo B
+  finishes at 31 of 212 tracked files with exactly **ONE file in a code language and 0 call
+  edges** — which reads as "this codebase has no call graph" rather than "the source was never
+  walked". The sixth repository is trelix itself, and it is the honest limit of requiring
+  proof: its own `packages/` has no root workspace manifest, so the probe finds nothing and
+  says nothing. The severity was always in the silence, so that is what this release fixes:
+  when a
+  `packages/` sits beside a workspace manifest (`pnpm-workspace.yaml`, `pnpm-workspace.yml`,
+  `lerna.json`, `nx.json`, `rush.json`, or a `package.json` with a `workspaces` key), or a
+  `bin/` sits beside a `package.json` whose `bin` field points into it, the walk logs one
+  WARNING naming the directory, the evidence file, and the `TRELIX_WALKER_EXTRA_IGNORE_DIRS`
+  value that indexes it. WARNING is the CLI's default level, so a plain `trelix index` prints
+  it. Nothing about the walk, the files yielded, or the recorded walk-config fingerprint
+  changes — **no new files are embedded and no existing index becomes incomparable, so there
+  is no bill and no migration.** Making the default index those directories is a separate,
+  deliberately later change: it would widen the walk on every repo with a `packages/`
+  directory and bill for the difference, and a silent EXPANSION of scope is the same class of
+  defect as the silent contraction being fixed here. It ships with the walk-config field
+  split and the history collapse that keep `--prune` working across the change.
+  - Detection requires POSITIVE evidence, and both branches are load-bearing: one measured
+    repo has a marker file but no `workspaces` key, and **three** have the key but no marker
+    file at all.
+  - `turbo.json` alone is deliberately NOT accepted — it appears in non-workspace repos.
+  - A sibling `*.sln`, `*.slnx`, `*.slnf`, `*.csproj`, `*.fsproj`, `*.vbproj`, `*.vcxproj`,
+    `Directory.Build.props`, `Directory.Build.targets`, `Directory.Packages.props`,
+    `packages.config`, `packages.lock.json` or `NuGet.config` keeps the directory excluded even
+    when workspace evidence is also present: the .NET case wins any tie, because re-including a
+    NuGet tree is thousands of third-party files priced per token. **All of these are matched
+    case-insensitively**, because MSBuild and NuGet resolve them that way and .NET is developed
+    on Windows and macOS, where the filesystem does too.
+  - A `bin/` with no declaration stays excluded. Absence of .NET evidence is not evidence of
+    source, and "index unless proven otherwise" would expand the walk into every virtualenv,
+    Go and compiled-output `bin/` in the wild. Requiring proof can only under-include, and
+    under-inclusion is now loud while over-inclusion is silent money.
+  - `obj` is unconditional and unchanged. Dropping it from the list re-admitted 0 files in all
+    six measured repos — but only because none of them has a reachable .NET `obj/` (the
+    workspace's only two are a gitignored Go toolchain cache and one inside `node_modules`), so
+    that 0 means "untested here", not "measured harmless".
+  - Directories inside a package store (`node_modules`, `.pnpm-store`, `.yarn`, `.npm`,
+    `.pnp`, `.git`) are never reclassified: a store holds complete copies of other projects,
+    manifests included, so evidence found inside one proves nothing. `.pnpm-store` is not in
+    `extra_ignore_dirs`, so the walk really does reach inside it.
+  - The report follows the NAMES the effective `extra_ignore_dirs` still lists, so customising
+    the list does not silence it — only removing the name does, and removing the name is also
+    what stops the directory being hidden. A hand-written override is still a choice: dropping
+    `packages` (as `scripts/self-index.sh` does) leaves nothing to report about `packages`.
+  - The probe costs no extra syscalls during a walk — marker names come out of the directory
+    listing the traversal already has, and the one `package.json` read only happens in a
+    directory that actually contains a `packages/` or `bin/`.
 
 - **`trelix stats` reports vector coverage in both directions** — chunks with vectors, chunks
   missing vectors, and vectors with no chunk row — and never nets them, because a single
@@ -419,8 +513,6 @@ disabling its deletion path for every later test in the session.
   project shipping a security policy.
 
 ### Added
-
-
 
 - **`trelix index --prune`** — remove index rows for files deleted from the repository.
   Deliberately unbuilt until now: a prune keyed on "files the walk did not yield" reads a
