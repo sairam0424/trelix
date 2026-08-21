@@ -1746,8 +1746,15 @@ class Indexer:
           * "run `trelix index` again … re-embeds exactly the chunks left without a
             vector" — `_chunks_missing_vectors` diffs the store against the `chunks`
             table once per run and both pipelines fold the result into this same Phase 3.
-            That is why the text names `trelix index` and not `trelix watch`, which
-            deliberately never reconciles, and why it says to fix the failure FIRST: the
+            The text names `trelix index` because that is the reliable route. `trelix
+            watch` also reconciles, but only in its startup pass — `cli/main.py`'s watch
+            command calls `indexer.index()` before it starts watching, and that call
+            reaches the reconcile above like any other. What never reconciles is the
+            watching phase itself: `FileWatcher` calls `index_file()` per changed file,
+            which has no repo-wide diff, so a hole opened while watch is already running
+            survives until the next startup. Saying "watch never reconciles" was wrong
+            about the startup pass and is why the docs told users it would not help.
+            The text also says to fix the failure FIRST: the
             streaming pipeline repairs after its walk and skips the repair entirely while
             any file is still failing, so a re-run that fails the same way repairs
             nothing. It replaced advice to DELETE the index database, which this branch
