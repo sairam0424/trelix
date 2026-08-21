@@ -173,13 +173,21 @@ def test_a_rolled_back_append_does_not_arm_the_check(tmp_path: Path) -> None:
 def test_a_restored_sqlite3_dump_with_a_DUPLICATE_sequence_row_verifies_clean(
     tmp_path: Path,
 ) -> None:
-    """TRAP: ``.dump`` + restore legitimately produces two rows for one table.
+    """TRAP: ``.dump`` + restore can produce two ``sqlite_sequence`` rows for one table.
 
-    The ``sqlite3`` CLI emits ``INSERT INTO sqlite_sequence`` *and* AUTOINCREMENT
-    recreates the row on the first insert, so a restored dump carries
+    On some SQLite builds the ``sqlite3`` CLI emits ``INSERT INTO sqlite_sequence``
+    *and* AUTOINCREMENT recreates the row on the first insert, leaving
     ``[('audit_log', 5), ('audit_log', 5)]``. A check written as "exactly one row,
-    and seq == COUNT(*)" would call every restored dump tamper. All matching rows
-    are reduced with ``max`` for this reason.
+    and seq == COUNT(*)" would call such a restored dump tamper, which is why all
+    matching rows are reduced with ``max``.
+
+    How many rows appear is NOT asserted, because it is a property of the SQLite
+    build rather than of trelix: measured at two rows on 3.50.4 and one row on the
+    build CPython 3.13 bundles, which turned this test red on that leg alone while
+    the code under test was correct for both. What must hold on every build is the
+    behaviour — a restored dump is a legitimate operation and must verify clean —
+    so that is what is asserted, with the row count reported for diagnosis if it
+    ever does fail.
     """
     source = _seed(tmp_path / "source.db")
     restored = tmp_path / "restored.db"
@@ -191,8 +199,12 @@ def test_a_restored_sqlite3_dump_with_a_DUPLICATE_sequence_row_verifies_clean(
         ["sqlite3", str(restored)], input=dump, capture_output=True, text=True, check=True
     )
 
-    assert _seq_rows(restored) == [("audit_log", 5), ("audit_log", 5)]
-    assert _verify(restored) == (None, None)
+    rows = _seq_rows(restored)
+    # The sequence survives the round trip at the right value however many rows carry it.
+    assert rows, f"a restored dump lost sqlite_sequence entirely: {rows!r}"
+    assert {name for name, _ in rows} == {"audit_log"}, rows
+    assert max(seq for _, seq in rows) == 5, rows
+    assert _verify(restored) == (None, None), f"restored dump flagged as tamper; rows={rows!r}"
 
 
 @pytest.mark.parametrize("how", ["vacuum", "vacuum_into", "backup"])
