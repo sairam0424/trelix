@@ -128,7 +128,7 @@ All trelix capabilities are exposed as CLI subcommands. Here is the full referen
 |---------|-------------|
 | `trelix index ./my-repo` | Parse, embed, and write the index to `.trelix/index.db` |
 | `trelix search ./my-repo "query"` | Hybrid semantic + keyword search, returns ranked chunks |
-| `trelix query ./my-repo "question"` | Structured query over the index with no LLM — fast, offline, deterministic |
+| `trelix query ./my-repo "question"` | Structured query over the index with no LLM **synthesis**. Fast, and offline/deterministic when no chat credential is set — with one set, retrieval draws a query plan from the LLM (one call per distinct query). See [FAQ: What is `trelix query`?](FAQ.md#what-is-trelix-query) for the two ways to make it free and reproducible |
 | `trelix ask ./my-repo "question"` | Retrieval-augmented answer using an LLM (requires `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or equivalent); `--session <id>` resumes a persisted agentic session (implies `--agentic`) |
 | `trelix agent sessions list/show/clear ./my-repo` | List, inspect, or delete persisted agentic (ReAct) sessions |
 | `trelix stats ./my-repo` | Index statistics: file, symbol and chunk counts, DB size, plus the commit / embedder / timestamp the index was built from. Add `--drift` to also compare every file on disk against its stored hash |

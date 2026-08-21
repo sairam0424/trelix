@@ -8,6 +8,162 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.1.5] — 2026-08-21
+
+### Fixed
+
+- **The release workflow could not check out a tag, so v3.1.5's first tag published nothing.**
+  `verify-version`'s checkout requested `fetch-tags: true` on an otherwise default — therefore
+  shallow — fetch. When the triggering ref is itself a tag, `actions/checkout@v4` builds the
+  refspec `+<sha>:refs/tags/<tag>` and, with tags also requested, writes the tag ref to that
+  same destination: `fatal: Cannot fetch both 1e1a66fc… and refs/tags/v3.1.5 to
+  refs/tags/v3.1.5`. Checkout retried three times, the job died before a single step ran, and
+  all four downstream jobs skipped — so the gate added to protect the CHANGELOG date instead
+  blocked the release outright. Nothing was published, and the tag was re-cut after this fix.
+  Both other checkouts in this repo that set `fetch-tags` pair it with `fetch-depth: 0`, and
+  `ci.yml`'s comment states the reason in as many words; the broken step cited that precedent
+  while dropping the half that makes it work. It had also never executed before: the gate
+  merged after the 3.1.4 release branch was cut, so v3.1.4 ran the previous file. Now pinned
+  repo-wide by `TestCheckoutCanActuallyFetchTheTag` — a static check, because reproducing this
+  needs a tag-shaped ref and no local run can produce one.
+
+- **A local `python -m build` produced a 158 MiB sdist containing a 221 MB index database and
+  2,479 query-trace files whose filenames are the query text — and `twine check` passed it.**
+  Root `.gitignore` has `.trelix/`, which does not match a *renamed* index directory, so
+  `.trelix.bak-selfindex/` (329 MB on this checkout) is hidden from git only by its own nested
+  `.gitignore` containing `*` — and hatchling does not honour nested `.gitignore` files. That
+  is the same mechanism already documented in `pyproject.toml` for `.vscode-test`; the fix had
+  been applied to that one case only. Published artifacts were never affected, because CI
+  builds from a fresh checkout, but the *documented local pre-flight* (`make build` then
+  `make check-dist`) produced the polluted tarball and reported it clean, one `twine upload`
+  from publishing an index and a list of someone's queries. `**/.trelix*` added to the sdist
+  exclude list.
+
+- **The Helm chart's own `version` had not moved for three consecutive releases, and four
+  reader-facing documents still called 3.1.2 the latest release.** `Chart.yaml` held
+  `version: 0.2.0` while its `image.tag` default changed again — breaking the rule its own
+  comment states — so charts deploying 3.1.3, 3.1.4 and 3.1.5 were all stamped 0.2.0; now
+  0.2.1. `verify-version` checks twelve stamps and no prose, so drift accumulated in the
+  places a reader *acts on* a version: `.github/SECURITY.md`'s Supported Versions table (which
+  tells users where security fixes land), `docs/FAQ.md`'s copy-pasteable four-way `==` pin
+  block, the bug-report template's placeholder and "I am using the latest release (X)"
+  checkbox, and `helm/trelix/README.md`'s `image.tag` row — which asserts of itself that it
+  "always equals `Chart.yaml`'s `appVersion`". `packages/trelix-mcp/README.md` also opened
+  "MCP server for trelix v2.12.0", eight releases stale, in a **PyPI long description**. All
+  corrected and pinned by `tests/unit/test_docs_version_claims.py`, which reads the shipping
+  version from `pyproject.toml` and holds each site to it. Historical references ("before
+  v3.1.2", "through v3.1.1") are deliberately untouched, and doc *header* stamps are left for
+  a follow-up: a reader does not act on those.
+
+- **`trelix-mcp` declared `trelix>=2.8.0` while calling five core APIs that do not exist at
+  that version, so `pip install trelix-mcp` could resolve a core it cannot run against.**
+  The binding requirement is `Database.get_symbol_ids_for_file_id` (`server.py:508`), first
+  shipped in **v3.1.2**; also `plan_from_intent_hint` (v2.10.0) and three federation APIs
+  (v2.8.1). Established by grepping each symbol across every released tag, not by reading
+  release notes. The floor had been false since v2.8.1 and is already published that way in
+  trelix-mcp 3.1.4, where a resolver free to pick core 2.8.0 leaves every `search_code` call
+  failing on a missing attribute. Now `trelix>=3.1.2`, with the newest requirement named in
+  a comment beside it. Raised to what the imports demand — **not** to the current version:
+  lockstep governs the version stamp, not this floor. Both adapters keep `trelix>=3.0.0`,
+  which their own imports still satisfy.
+
+- **`trelix graph --concepts` spent every one of its paid LLM calls on the ten
+  earliest-indexed files — on this repository, entirely `.github/` and `.devcontainer/`
+  metadata — and reported a count that read as a property of the whole repo.** Extraction
+  is capped at 200 symbols in batches of 20 — a real bound, worth ≤10 LLM calls — but it
+  sliced whatever order `iter_all_symbols_with_files()` returned, and that query has **no
+  `ORDER BY`**. Measured on this repo's own index (read-only, `mode=ro`): 12,184 symbols,
+  of which 200 (**1.6%**) were processed. The query plans as a plain `SCAN s`, so those 200
+  were simply the lowest symbol ids — **2..226**, drawn from just **10 files**, every one of
+  them repository metadata: issue templates (124 symbols across four of them),
+  `dependabot.yml`, `devcontainer.json`, a workflow, `PULL_REQUEST_TEMPLATE.md`,
+  `FUNDING.yml`, `SECURITY.md`. Not one line of `src/`. So the concepts described the issue
+  templates. Meanwhile the PageRank centrality that identifies the most important symbols
+  was computed **two steps earlier in the same function** and ignored. Symbols are now
+  ranked by that centrality with a symbol-id tiebreak (so equal-centrality symbols cannot
+  reshuffle if the DB order ever changes) before the cap applies; truncation logs a WARNING — not
+  INFO, since the CLI's default level is WARNING and an INFO line is invisible without
+  `-v`, which is how this went unnoticed; `GraphBuildResult` carries
+  `concept_symbols_considered` / `concept_symbols_total`; the human output reads
+  `Concepts : 47 (from the 200 most central of 12184 symbols — 1.6%)`; and `--json` gains
+  the two counts additively, under the same rule the visualization keys already follow.
+  The `--concepts` help text now states the cost and the bound at the point of decision:
+  "paid: up to 10 LLM calls over the 200 most central symbols; requires an LLM API key".
+  Pinned by 8 tests. Two of them exist because mutation testing caught the *tests* rather
+  than the code: the first fixture made `fn_0` the hub, putting maximum centrality at the
+  lowest symbol id where DB order already agreed, so every ordering test passed with the
+  fix reverted; and dropping the id tiebreak passed too, because `sorted` is stable and
+  two builds in one process see the same DB order. The fixture now places hubs at the
+  highest ids, and the tiebreak is verified against a deliberately reversed DB order.
+- **`trelix eval` reported retrieval scores without saying which pipeline produced
+  them, so the same golden set against the same index scored differently depending on
+  whether a credential happened to be exported.** `rerank` defaults to `true` and
+  `rerank_provider` to `cohere`; with no `COHERE_API_KEY` the reranker logs a warning
+  and hands back the unranked head. The results table showed nDCG@10 / Recall@10 / MRR
+  and nothing else, so a reader attributed the number to a Cohere-reranked pipeline that
+  had not run. Measured on the 10-query `mini_repo` fixture: nDCG@10 **0.9631** un-reranked
+  against **0.9131** reranked, MRR 0.9500 against 0.8833 — a gap larger than most changes
+  anyone measures with `trelix eval`, and `docs/WHY_TRELIX.md` tells readers to validate
+  feature flags with exactly this command. Two of those runs printed **identical scores**
+  with no way to tell them apart. Every provider now reports whether it actually applied
+  and why not, the verdict rides back on `RetrievedContext.rerank`, and the table carries
+  a `Rerank` row: `cross_encoder`, `disabled`, `cohere (skipped: no API key)`, or
+  `MIXED across queries — 3/10 applied: …` when a run used more than one pipeline, which
+  is deliberately not collapsed to a single name. `xtr` reports `applied=False` even on
+  its success path, because that path re-sorts by the score each result already had and
+  never reads the query. `rerank()`'s existing contract is unchanged — it still returns a
+  bare list for all 33 pre-existing call sites — every one of them a test, since the single
+  production caller is the one that moved to the outcome-returning form; it is available as the new
+  `rerank_with_outcome()`. One limit stated rather than glossed: for `plaid`,
+  `applied=True` means *dispatched*, since `PlaidReranker` has three internal fallbacks
+  of its own that are not visible from outside. Pinned by 15 tests, each verified by
+  mutation — including one that closed a real hole, since deleting the line that attaches
+  the verdict to the context previously passed all 186 tests in the touched suites.
+- **`docs/PROVIDERS.md` told users holding a partial index that `trelix watch` could not
+  repair it. Its startup pass does — and bills for it.** The recovery section said
+  "`trelix watch` will not do it — it only re-indexes files as they change, and never scans
+  the store for holes", and `src/trelix/indexing/indexer.py` carried the same claim as a
+  source comment ("`trelix watch`, which deliberately never reconciles"). Both are true of
+  the **watching phase** — `FileWatcher` calls `index_file()` per changed file, with no
+  repo-wide diff — and false of the **startup pass**, which calls `Indexer.index()` and so
+  reaches the same reconcile that diffs the vector store against the `chunks` table.
+  Measured on a 7-file fixture with the local embedder: up to date with no holes, "Nothing
+  to index" and **0 chunks embedded**; up to date with 3 vectors deleted, "Repairing 3
+  chunk(s)…" and **3 chunks embedded**. So a user who followed that paragraph was told the
+  wrong thing in the direction that costs them a step, and a user who ran `watch` expecting
+  it to be passive got a paid repair with no warning — its help text was the single line
+  "Watch repo for changes and auto-update index", which mentioned no startup index at all.
+  All three sites now state the distinction, and the help text names all three cost cases
+  (free when current, a repair when holed, a full index when never indexed). Pinned by 5
+  tests, each verified by mutation. The behavioural one reads the call order out of the
+  AST rather than invoking the command: a first attempt drove `watch` through `CliRunner`
+  and hung the suite until it was killed, because patching the watcher does not stop the
+  command's own wait loop.
+
+- **Three docs promised that `trelix query` and `trelix search` make no LLM calls; with a
+  chat credential set they make one per distinct query.** `docs/FAQ.md` told readers the
+  command runs "without calling an LLM", "works fully offline", "returns deterministic
+  results", and to "use it in CI scripts"; `docs/GETTING_STARTED.md` summarised it as
+  "no LLM — fast, offline, deterministic"; `docs/WHY_TRELIX.md` said `search` is
+  "completely offline" with local embedders. Measured: with no chat credential retrieval
+  makes **zero** calls — the planner is still constructed unconditionally, but holds no
+  usable client and short-circuits to `default_plan()` — so the promise held for the
+  case those docs had in mind. With one set, `QueryPlanner.plan()` draws a plan via
+  `tool_call`, **one call per distinct query**. Because the draw lives in
+  `Retriever.retrieve()` rather than in the `query` command, it applies to every
+  retrieval consumer, `search --json` included. `--provider local` does not prevent it:
+  that selects the embedder, while the planner reads the chat credential independently —
+  so a CI box holding a key for `trelix ask` was paying here too, and getting
+  non-deterministic plans, while three docs said otherwise. No synthesis was ever
+  performed, and a failed draw still falls back to `default_plan()`; the defect was the
+  published claim, not the retrieval result. All three sites now state the condition and
+  name the two measured remedies: withhold the chat credential, or record and commit a
+  plan cache via `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, which is record-then-replay — the
+  first pass draws once, every later pass draws nothing. Pinned by five tests in
+  `tests/unit/test_planner_llm_call_count.py` that count real attempts through the real
+  client factory (only the outbound methods are stubbed, so the "is there a client at
+  all" decision under test is never faked), each verified by mutation.
+
 ## [3.1.4] — 2026-08-21
 
 ### Security

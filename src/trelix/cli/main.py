@@ -2388,7 +2388,21 @@ def watch(
     repo: str = typer.Argument(..., help="Path to the repository to watch"),
     provider: str | None = typer.Option(None, help=_PROVIDER_HELP),
 ) -> None:
-    """Watch repo for changes and auto-update index. Ctrl+C to stop."""
+    """Watch repo for changes and auto-update the index. Ctrl+C to stop.
+
+    Runs a full index FIRST, then watches. Measured cost of that startup pass:
+
+      * up to date, no missing vectors — 0 chunks embedded, "Nothing to index".
+      * up to date but holed — "Repairing 3 chunk(s)...", 3 chunks embedded. The
+        content-hash pre-filter skips every file, but the pass also diffs the
+        vector store against the chunks table, so it pays to refill holes an
+        interrupted run left behind.
+      * never indexed — embeds the whole repository.
+
+    Only the watching phase that follows is free; it re-indexes changed files and
+    does not scan the store again, so a hole opened while watch is already running
+    survives until the next startup.
+    """
     _setup_logging(False)
 
     from pydantic import ValidationError as _PydanticValidationError
@@ -2659,7 +2673,17 @@ def graph(
     output: str = typer.Option(
         "", "--output", "-o", help="Output path for HTML (default: .trelix/graph.html)"
     ),
-    concepts: bool = typer.Option(False, "--concepts", "-c", help="Extract LLM semantic concepts"),
+    concepts: bool = typer.Option(
+        False,
+        "--concepts",
+        "-c",
+        # The bound is real (200 symbols in batches of 20, so at most 10 calls) but was
+        # invisible at the point of decision, which is the only place it helps.
+        help=(
+            "Extract LLM semantic concepts (paid: up to 10 LLM calls over the 200 "
+            "most central symbols; requires an LLM API key)"
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output stats as JSON"),
 ) -> None:
     """Build the knowledge graph for an indexed repository.
@@ -2708,6 +2732,12 @@ def graph(
             "community_count": result.community_count,
             "concept_count": result.concept_count,
         }
+        # Same additive rule as the visualization keys below: a machine consumer that
+        # reads concept_count cannot otherwise tell it describes a capped sample rather
+        # than the repository, and the cap is 200 against 12,184 symbols on this repo.
+        if concepts:
+            data["concept_symbols_considered"] = result.concept_symbols_considered
+            data["concept_symbols_total"] = result.concept_symbols_total
         # Additive only, and only when the flag was passed: the four documented keys
         # keep their names and types, so an existing consumer is unaffected, while one
         # that asked for a visualization learns where it landed.
@@ -2727,7 +2757,18 @@ def graph(
     console.print(f"  Edges      : {result.edge_count}")
     console.print(f"  Communities: {result.community_count}")
     if concepts:
-        console.print(f"  Concepts   : {result.concept_count}")
+        # The count alone reads as a property of the repository when it is really a
+        # property of a capped sample — on a 12,184-symbol index, 200 of them. Saying
+        # so here is the difference between "this repo has 47 concepts" and "47 concepts
+        # were found in the 200 most central symbols of 12,184".
+        coverage = ""
+        if result.concept_symbols_total > result.concept_symbols_considered > 0:
+            pct = 100.0 * result.concept_symbols_considered / result.concept_symbols_total
+            coverage = (
+                f" [yellow](from the {result.concept_symbols_considered} most central of "
+                f"{result.concept_symbols_total} symbols — {pct:.1f}%)[/yellow]"
+            )
+        console.print(f"  Concepts   : {result.concept_count}{coverage}")
     console.print(f"  Time       : {result.elapsed_seconds:.2f}s")
 
     if result.community_summary:
@@ -2850,6 +2891,20 @@ def eval(
     table.add_row("Recall@10", f"{metrics['recall@10']:.4f}")
     table.add_row("MRR", f"{metrics['mrr']:.4f}")
     table.add_row("Queries evaluated", str(int(metrics["n_queries"])))
+    # Which pipeline produced those numbers, not which one was configured. `rerank`
+    # defaults True with provider `cohere`, and a missing COHERE_API_KEY makes the
+    # reranker warn and hand back the unranked head — so two runs of the same golden
+    # set against the same index print different scores depending only on whether a
+    # credential happened to be exported. Measured on a 10-query fixture: nDCG@10
+    # 0.9631 unranked against 0.9131 reranked. The warning was already logged; what
+    # was missing was a record attached to the number anyone would paste into a PR.
+    rerank_state = harness.rerank_summary()
+    table.add_row(
+        "Rerank",
+        rerank_state
+        if "skipped" not in rerank_state and "MIXED" not in rerank_state
+        else f"[yellow]{rerank_state}[/yellow]",
+    )
     console.print(table)
 
 

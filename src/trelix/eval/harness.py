@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from trelix.core.config import IndexConfig
+from trelix.core.models import RerankOutcome
 from trelix.eval.ndcg import mrr, ndcg_at_k, recall_at_k
 
 logger = logging.getLogger("trelix.eval")
@@ -187,6 +188,43 @@ class EvalHarness:
         from trelix.retrieval.retriever import Retriever
 
         self._retriever = Retriever(config)
+        # One entry per golden entry processed by the most recent run(): what the rerank
+        # stage actually did. Set once at the end of run() rather than appended to a
+        # shared field, so a caller reading it can never observe a half-filled run.
+        self._rerank_outcomes: tuple[RerankOutcome | None, ...] = ()
+
+    @property
+    def rerank_outcomes(self) -> tuple[RerankOutcome | None, ...]:
+        """Per-query rerank outcomes from the last run(). `None` = not recorded.
+
+        `None` means either the rerank stage was never entered (disabled by config, or
+        the planner's strategy skipped it) or the query itself failed before retrieval
+        returned. Both are genuinely "no verdict", which is why they share a value.
+        """
+        return self._rerank_outcomes
+
+    def rerank_summary(self) -> str:
+        """One line describing the rerank pipeline the last run() actually used.
+
+        Deliberately does NOT collapse disagreement. If three queries reranked and seven
+        fell back on a transient API failure, the reported score is a blend of two
+        pipelines, and a summary that said "cohere" would hide exactly the thing that
+        makes such a number untrustworthy.
+        """
+        recorded = [o for o in self._rerank_outcomes if o is not None]
+        if not recorded:
+            return "disabled" if self._rerank_outcomes else "not run"
+
+        described = {o.describe() for o in recorded}
+        missing = len(self._rerank_outcomes) - len(recorded)
+        parts = [next(iter(described))] if len(described) == 1 else []
+        if not parts:
+            applied = sum(1 for o in recorded if o.applied)
+            detail = ", ".join(sorted(described))
+            parts = [f"MIXED across queries — {applied}/{len(recorded)} applied: {detail}"]
+        if missing:
+            parts.append(f"+{missing} query(s) with no verdict")
+        return "; ".join(parts)
 
     def run(
         self,
@@ -246,6 +284,7 @@ class EvalHarness:
         ndcg_scores: list[float] = []
         recall_scores: list[float] = []
         mrr_scores: list[float] = []
+        rerank_outcomes: list[RerankOutcome | None] = []
 
         for entry in entries:
             try:
@@ -262,7 +301,13 @@ class EvalHarness:
                 ndcg_scores.append(0.0)
                 recall_scores.append(0.0)
                 mrr_scores.append(0.0)
+                # No retrieval, so no verdict — recorded to keep this list the same
+                # length as the score lists, so "how many queries had no verdict"
+                # stays answerable.
+                rerank_outcomes.append(None)
                 continue
+
+            rerank_outcomes.append(ctx.rerank)
 
             # Use file rel_path as the ID for matching. Retrieval ranks CHUNKS, so the
             # same file legitimately appears several times here. Ground truth is
@@ -280,6 +325,9 @@ class EvalHarness:
             mrr_scores.append(mrr(ranked_ids, relevant_ids))
 
         n = len(ndcg_scores)
+        # Single assignment at the end: a caller reading rerank_outcomes mid-run would
+        # otherwise see a partial picture and could describe the wrong pipeline.
+        self._rerank_outcomes = tuple(rerank_outcomes)
         return {
             "ndcg@10": sum(ndcg_scores) / n,
             "recall@10": sum(recall_scores) / n,

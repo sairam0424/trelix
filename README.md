@@ -159,7 +159,7 @@ trelix watch ./my-repo
 | Call graph for a symbol | `trelix call-graph ./repo AuthService.login` |
 | Build a knowledge graph | `trelix graph ./repo` |
 
-**Every query is answered offline by default** — no data leaves your machine. Enable LLM synthesis for natural-language answers.
+**Every query is answered without LLM synthesis by default.** Retrieval is fully offline — no data leaves your machine — as long as no chat credential is set. With one in the environment, retrieval draws a query plan from the LLM (one call per distinct query), which sends the query text; unset the credential, or set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, for genuinely zero calls. Enable LLM synthesis for natural-language answers.
 
 ---
 
@@ -190,7 +190,7 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **Universal LLM client** — OpenAI, Azure, Anthropic, Bedrock, Vertex AI, LiteLLM (100+ providers)
 - **Zero-infra default** — single SQLite file (`.trelix/index.db`) with sqlite-vec HNSW + FTS5 BM25
 - **Real-time watching** — `trelix watch` auto-indexes on every file save
-- **Works offline** — `--provider local` uses sentence-transformers, no API key needed
+- **Works offline** — `--provider local` uses sentence-transformers, no API key needed for embeddings. It selects the *embedder* only: if a chat credential is present, the retrieval planner still makes one LLM call per distinct query. Unset it for a fully offline path
 - **BGE-Code-v1 / Nomic CodeRankEmbed** — CoIR SOTA embedding models (`bge-code`, `nomic-code` providers)
 - **Matryoshka voyage embeddings** — compact 256/512-dim voyage-code-3 via `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS`
 - **PLAID late-interaction reranker** — 7–45× faster ColBERT via RAGatouille (`rerank_provider=plaid`)

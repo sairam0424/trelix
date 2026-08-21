@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from trelix.core.config import IndexConfig
+from trelix.core.models import Symbol
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import (
     PartitionQuality,
@@ -36,6 +37,12 @@ class GraphBuildResult:
     # Defaulted so existing constructors (api/app.py, the MCP server's tests)
     # keep working; None means "not assessed", which is distinct from "healthy".
     partition_quality: PartitionQuality | None = None
+    # Coverage of concept extraction. `concept_count` alone reads as a property of the
+    # repository when it is really a property of a capped sample: extraction stops at
+    # _MAX_CONCEPT_SYMBOLS, which on a 12,184-symbol index is 1.6% of it. Both default
+    # to 0, which is also the honest value when extract_concepts was False.
+    concept_symbols_considered: int = 0
+    concept_symbols_total: int = 0
 
 
 class GraphBuilder:
@@ -97,15 +104,55 @@ class GraphBuilder:
         _MAX_CONCEPT_SYMBOLS = 200
         _CONCEPT_BATCH_SIZE = 20
         concept_count = 0
+        concept_symbols_considered = 0
+        concept_symbols_total = 0
         if extract_concepts:
             symbols_with_files = self._db.iter_all_symbols_with_files()
             symbols = [s for s, _ in symbols_with_files]
+            concept_symbols_total = len(symbols)
             if symbols:
                 extractor = ConceptExtractor(self._config.llm)
+
+                # Rank by the PageRank centrality computed in step 3b before taking the
+                # top _MAX_CONCEPT_SYMBOLS. Previously this sliced whatever order
+                # iter_all_symbols_with_files() happened to return, which has no ORDER BY.
+                # Measured on this repo's own index: the query plans as a plain `SCAN s`,
+                # so the "first 200" were just the lowest symbol ids — 2..226, drawn from
+                # 10 files, all of them .github/ and .devcontainer/ metadata (issue
+                # templates, dependabot.yml, a workflow, SECURITY.md). Nothing from src/.
+                # Every paid call went to repository boilerplate. Centrality was already
+                # computed and sitting unused two steps above; the id tiebreak makes the
+                # order total, so equal-centrality symbols cannot reshuffle if the DB
+                # order ever changes.
+                def _rank_key(symbol: Symbol) -> tuple[float, int]:
+                    sid = symbol.id
+                    if sid is None:
+                        # Symbol.id is Optional because an unsaved Symbol has no id yet.
+                        # These come from the DB so every one is saved, but the type
+                        # permits None and a None in the tuple would raise on comparison
+                        # against an int. Ranked last: centralities are positive, so
+                        # -centrality is negative and 0.0 sorts after all of them.
+                        return (0.0, 0)
+                    return (-pr_scores.get(sid, 0.0), sid)
+
+                ranked = sorted(symbols, key=_rank_key)
+                concept_symbols_considered = min(len(ranked), _MAX_CONCEPT_SYMBOLS)
+                if concept_symbols_total > _MAX_CONCEPT_SYMBOLS:
+                    # WARNING, not INFO, for the reason given in step 2 above: the CLI's
+                    # default level is WARNING, so an INFO line here is invisible without
+                    # -v — which is how this truncation went unnoticed in the first place.
+                    logger.warning(
+                        "Concept extraction covered %d of %d symbols (%.1f%%), highest "
+                        "centrality first. `concept_count` therefore describes that "
+                        "sample, not the repository.",
+                        concept_symbols_considered,
+                        concept_symbols_total,
+                        100.0 * concept_symbols_considered / concept_symbols_total,
+                    )
                 # Batch into groups of _CONCEPT_BATCH_SIZE, cap at _MAX_CONCEPT_SYMBOLS total
                 concepts = []
-                for i in range(0, min(len(symbols), _MAX_CONCEPT_SYMBOLS), _CONCEPT_BATCH_SIZE):
-                    batch = symbols[i : i + _CONCEPT_BATCH_SIZE]
+                for i in range(0, concept_symbols_considered, _CONCEPT_BATCH_SIZE):
+                    batch = ranked[i : i + _CONCEPT_BATCH_SIZE]
                     concepts.extend(extractor.extract_from_symbols(batch))
                 if concepts:
                     save_concepts(self._db, concepts)
@@ -124,4 +171,6 @@ class GraphBuilder:
             elapsed_seconds=elapsed,
             community_summary=community_summary,
             partition_quality=quality,
+            concept_symbols_considered=concept_symbols_considered,
+            concept_symbols_total=concept_symbols_total,
         )
