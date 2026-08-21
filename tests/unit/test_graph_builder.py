@@ -185,12 +185,12 @@ class TestConceptExtractionCoverage:
     """`concept_count` described a capped, arbitrarily-selected sample and said so nowhere.
 
     Extraction stops at 200 symbols. It used to slice whatever order
-    `iter_all_symbols_with_files()` returned, and that query has no ORDER BY — measured on
-    this repo's own 12,184-symbol index the order came from
-    `SCAN s USING COVERING INDEX idx_symbols_file_id`, so the "first 200" spanned symbol
-    ids 2..11230: neither the first defined nor the most important, just what the query
-    planner surfaced first. A different plan (a new index, a VACUUM) would silently change
-    which symbols got concepts.
+    `iter_all_symbols_with_files()` returned, and that query has no ORDER BY. Measured on
+    this repo's own 12,184-symbol index: the query plans as a plain `SCAN s`, so the
+    "first 200" were the lowest symbol ids — 2..226, from 10 files, all of them `.github/`
+    and `.devcontainer/` metadata. Every paid LLM call described an issue template; nothing
+    in `src/` was ever reached. Lowest-id means earliest-indexed, which has no relationship
+    to importance, and that is what ranking by centrality fixes.
     """
 
     CAP = 200

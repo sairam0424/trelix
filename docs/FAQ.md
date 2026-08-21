@@ -101,8 +101,12 @@ Indexing is a one-time cost. After that, `trelix watch` incrementally re-indexes
 
 | Command | Retrieval | LLM | Output | Offline |
 |---------|-----------|-----|--------|---------|
-| `trelix search` | Hybrid (vector + BM25 + grep) | No | Ranked code chunks in a table | Yes |
+| `trelix search` | Hybrid (vector + BM25 + grep) | Planner only — no synthesis | Ranked code chunks in a table | Only with no chat credential set |
 | `trelix ask` | Hybrid + reranking + synthesis | Yes | Synthesized natural-language answer | Requires API key |
+
+The `search` row used to read "LLM: No / Offline: Yes". That contradicted
+[What is `trelix query`?](#what-is-trelix-query) eleven lines below it, which says the planner
+call applies to `search` too. See that section for the two ways to get zero LLM calls.
 
 Use `trelix search` when you want to browse the raw matches and decide yourself. Use `trelix ask` when you want a direct answer to a question about the codebase. `trelix ask` calls `trelix search` internally and then sends the top results to an LLM.
 
@@ -116,7 +120,7 @@ It is not, however, unconditionally LLM-free. When a chat credential is resolvab
 
 Two ways to get the offline, deterministic, zero-cost behaviour this section used to promise unconditionally:
 
-- **Unset the chat credential.** With no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / Azure equivalent in the environment, the planner is never constructed and retrieval makes **zero** LLM calls.
+- **Unset the chat credential.** With no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / Azure equivalent in the environment, retrieval makes **zero** LLM calls. (The planner object is still constructed — that happens unconditionally — but with no resolvable credential it holds no usable client, so it short-circuits to `default_plan()` without calling out. Measured: 0 calls.)
 - **Freeze the plans.** Set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE` to a path. The first pass records each plan (one call per distinct query); every later pass replays from the file and makes **zero** calls. Commit that file to get a CI run that is both free and byte-for-byte reproducible.
 
 So `trelix query` is safe for CI — but for cost and determinism you must either withhold the credential or commit a recorded plan cache. A CI box that has a key set for `trelix ask` will otherwise pay one planner call per distinct query here too.
@@ -519,10 +523,10 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 So pin all four to the same version in your `requirements.txt`:
 
 ```
-trelix==3.1.2
-trelix-mcp==3.1.2
-trelix-langchain==3.1.2
-trelix-llama-index==3.1.2
+trelix==3.1.5
+trelix-mcp==3.1.5
+trelix-langchain==3.1.5
+trelix-llama-index==3.1.5
 ```
 
 The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.1.2 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.1.2 resolving against core 3.0.0 is supported and intended — the four-way 3.1.2 pin above is the combination CI installs and tests, not the only one that works.

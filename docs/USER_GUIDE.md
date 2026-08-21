@@ -506,7 +506,7 @@ trelix has three primary query commands. Each serves a different purpose. Knowin
 trelix search ./my-repo "<query>"
 ```
 
-**What it does:** Runs the full retrieval pipeline (all enabled legs, RRF fusion, graph expansion, optional reranking) and returns a ranked table of results. No LLM synthesis. No external API call (if using a local embedding provider).
+**What it does:** Runs the full retrieval pipeline (all enabled legs, RRF fusion, graph expansion, optional reranking) and returns a ranked table of results. No LLM synthesis. No external API call **if no chat credential is set** — a local embedding provider is not sufficient on its own, because the retrieval planner reads the chat credential independently and makes one call per distinct query when it finds one.
 
 **Output:** A Rich table with score, file path, symbol name, line numbers, and language.
 

@@ -115,15 +115,15 @@ class GraphBuilder:
 
                 # Rank by the PageRank centrality computed in step 3b before taking the
                 # top _MAX_CONCEPT_SYMBOLS. Previously this sliced whatever order
-                # iter_all_symbols_with_files() happened to return, which has no ORDER BY:
-                # measured on this repo's own index, that order comes from
-                # `SCAN s USING COVERING INDEX idx_symbols_file_id`, so the "first 200"
-                # spanned symbol ids 2..11230 and were neither the first defined nor the
-                # most important — just the ones the query planner surfaced first. A new
-                # index or a VACUUM could change the set, making extraction irreproducible.
-                # Centrality was already computed and sitting unused two steps above; the
-                # id tiebreak makes the order total, so equal-centrality symbols cannot
-                # reshuffle between runs.
+                # iter_all_symbols_with_files() happened to return, which has no ORDER BY.
+                # Measured on this repo's own index: the query plans as a plain `SCAN s`,
+                # so the "first 200" were just the lowest symbol ids — 2..226, drawn from
+                # 10 files, all of them .github/ and .devcontainer/ metadata (issue
+                # templates, dependabot.yml, a workflow, SECURITY.md). Nothing from src/.
+                # Every paid call went to repository boilerplate. Centrality was already
+                # computed and sitting unused two steps above; the id tiebreak makes the
+                # order total, so equal-centrality symbols cannot reshuffle if the DB
+                # order ever changes.
                 def _rank_key(symbol: Symbol) -> tuple[float, int]:
                     sid = symbol.id
                     if sid is None:
