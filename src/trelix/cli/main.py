@@ -2673,7 +2673,17 @@ def graph(
     output: str = typer.Option(
         "", "--output", "-o", help="Output path for HTML (default: .trelix/graph.html)"
     ),
-    concepts: bool = typer.Option(False, "--concepts", "-c", help="Extract LLM semantic concepts"),
+    concepts: bool = typer.Option(
+        False,
+        "--concepts",
+        "-c",
+        # The bound is real (200 symbols in batches of 20, so at most 10 calls) but was
+        # invisible at the point of decision, which is the only place it helps.
+        help=(
+            "Extract LLM semantic concepts (paid: up to 10 LLM calls over the 200 "
+            "most central symbols; requires an LLM API key)"
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output stats as JSON"),
 ) -> None:
     """Build the knowledge graph for an indexed repository.
@@ -2722,6 +2732,12 @@ def graph(
             "community_count": result.community_count,
             "concept_count": result.concept_count,
         }
+        # Same additive rule as the visualization keys below: a machine consumer that
+        # reads concept_count cannot otherwise tell it describes a capped sample rather
+        # than the repository, and the cap is 200 against 12,184 symbols on this repo.
+        if concepts:
+            data["concept_symbols_considered"] = result.concept_symbols_considered
+            data["concept_symbols_total"] = result.concept_symbols_total
         # Additive only, and only when the flag was passed: the four documented keys
         # keep their names and types, so an existing consumer is unaffected, while one
         # that asked for a visualization learns where it landed.
@@ -2741,7 +2757,18 @@ def graph(
     console.print(f"  Edges      : {result.edge_count}")
     console.print(f"  Communities: {result.community_count}")
     if concepts:
-        console.print(f"  Concepts   : {result.concept_count}")
+        # The count alone reads as a property of the repository when it is really a
+        # property of a capped sample — on a 12,184-symbol index, 200 of them. Saying
+        # so here is the difference between "this repo has 47 concepts" and "47 concepts
+        # were found in the 200 most central symbols of 12,184".
+        coverage = ""
+        if result.concept_symbols_total > result.concept_symbols_considered > 0:
+            pct = 100.0 * result.concept_symbols_considered / result.concept_symbols_total
+            coverage = (
+                f" [yellow](from the {result.concept_symbols_considered} most central of "
+                f"{result.concept_symbols_total} symbols — {pct:.1f}%)[/yellow]"
+            )
+        console.print(f"  Concepts   : {result.concept_count}{coverage}")
     console.print(f"  Time       : {result.elapsed_seconds:.2f}s")
 
     if result.community_summary:

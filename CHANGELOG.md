@@ -8,6 +8,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ### Fixed
 
+- **`trelix graph --concepts` extracted concepts from an arbitrary 1.6% of symbols,
+  chosen by whichever index SQLite's query planner happened to pick, and reported a count
+  that read as a property of the whole repository.** Extraction is capped at 200 symbols
+  in batches of 20 — a real bound, worth ≤10 LLM calls, but it sliced whatever order
+  `iter_all_symbols_with_files()` returned and that query has **no `ORDER BY`**. Measured
+  on this repo's own index: 12,184 symbols, of which 200 (**1.6%**) were processed, in an
+  order produced by `SCAN s USING COVERING INDEX idx_symbols_file_id` — so the "first 200"
+  spanned symbol ids **2..11230**. They were neither the first defined nor the most
+  important, and a new index or a `VACUUM` could silently change the set, making concept
+  extraction irreproducible. Meanwhile the PageRank centrality that identifies the most
+  important symbols was computed **two steps earlier in the same function** and ignored.
+  Symbols are now ranked by that centrality with a symbol-id tiebreak (so ties cannot
+  reshuffle with the query plan) before the cap applies; truncation logs a WARNING — not
+  INFO, since the CLI's default level is WARNING and an INFO line is invisible without
+  `-v`, which is how this went unnoticed; `GraphBuildResult` carries
+  `concept_symbols_considered` / `concept_symbols_total`; the human output reads
+  `Concepts : 47 (from the 200 most central of 12,184 symbols — 1.6%)`; and `--json` gains
+  the two counts additively, under the same rule the visualization keys already follow.
+  The `--concepts` help text now states the cost and the bound at the point of decision:
+  "paid: up to 10 LLM calls over the 200 most central symbols; requires an LLM API key".
+  Pinned by 8 tests. Two of them exist because mutation testing caught the *tests* rather
+  than the code: the first fixture made `fn_0` the hub, putting maximum centrality at the
+  lowest symbol id where DB order already agreed, so every ordering test passed with the
+  fix reverted; and dropping the id tiebreak passed too, because `sorted` is stable and
+  two builds in one process see the same DB order. The fixture now places hubs at the
+  highest ids, and the tiebreak is verified against a deliberately reversed DB order.
 - **`trelix eval` reported retrieval scores without saying which pipeline produced
   them, so the same golden set against the same index scored differently depending on
   whether a credential happened to be exported.** `rerank` defaults to `true` and

@@ -726,11 +726,28 @@ Builds a code knowledge graph (nodes = symbols, edges = call/import
 relationships) over the indexed repository. Optionally extracts semantic
 concepts via LLM and exports an interactive Pyvis HTML visualization.
 
+**Concept-extraction coverage.** `--concepts` does not cover the whole repository. It
+processes the **200 most central symbols** by the PageRank centrality computed during the
+build, in batches of 20 — at most 10 paid LLM calls. On a 12,184-symbol index that is
+**1.6% of symbols**, so the reported `Concepts` count describes that sample, not the repo.
+When the cap truncates, the command logs a warning and the output names the coverage:
+
+```
+Concepts   : 47 (from the 200 most central of 12,184 symbols — 1.6%)
+```
+
+`--json` reports the same two numbers as `concept_symbols_considered` and
+`concept_symbols_total`, added additively alongside the existing keys. Ranking is by
+`(centrality desc, symbol id asc)`; the id tiebreak is what makes the selection
+reproducible, since most symbols share a baseline centrality and the underlying query has
+no `ORDER BY` of its own. Concepts are extracted per symbol batch — **not** per community,
+despite what earlier versions of this page said.
+
 #### Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
-| `--concepts` | `-c` | flag | `false` | Use LLM to extract semantic concepts for each community. Requires LLM API key. |
+| `--concepts` | `-c` | flag | `false` | Use an LLM to extract semantic concepts from the **200 most central symbols** (batches of 20, so at most 10 LLM calls — **paid**). Requires an LLM API key. See the coverage note below. |
 | `--visualize` | `-v` | flag | `false` | Export an interactive HTML visualization via Pyvis. |
 | `--output` | `-o` | string | `<repo>/.trelix/graph.html` | Output path for the HTML file (only used with `--visualize`). |
 | `--json` | | flag | `false` | Print graph statistics as JSON instead of Rich output. |
