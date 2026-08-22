@@ -6,6 +6,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [3.1.6] — 2026-08-22
+
 ### Fixed
 
 - **`bge-code` could not index or query anything: `AttributeError` before Phase 1, and the

@@ -1,6 +1,6 @@
 # trelix Architecture
 
-> **Version:** 3.1.5 | **Python:** 3.11+ | **140 source modules**
+> **Version:** 3.1.6 | **Python:** 3.11+ | **140 source modules**
 
 This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
 
@@ -2286,4 +2286,4 @@ That's it — no changes to `Retriever` needed.
 
 ---
 
-*trelix v3.1.5 — last updated 2026-08-16*
+*trelix v3.1.6 — last updated 2026-08-16*
