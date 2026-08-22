@@ -191,7 +191,7 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **Zero-infra default** — single SQLite file (`.trelix/index.db`) with sqlite-vec HNSW + FTS5 BM25
 - **Real-time watching** — `trelix watch` auto-indexes on every file save
 - **Works offline** — `--provider local` uses sentence-transformers, no API key needed for embeddings. It selects the *embedder* only: if a chat credential is present, the retrieval planner still makes one LLM call per distinct query. Unset it for a fully offline path
-- **BGE-Code-v1 / Nomic CodeRankEmbed** — CoIR SOTA embedding models (`bge-code`, `nomic-code` providers)
+- **BGE-Code-v1 / Nomic CodeRankEmbed** — code-specialized embedding providers (`bge-code`, `nomic-code`). `bge-code` is **experimental**: its pooling is unverified against BAAI's published `pooling_mode_lasttoken: true`, so no quality claim is made — see [docs/PROVIDERS.md](docs/PROVIDERS.md#bge-code-baaibge-code-v1)
 - **Matryoshka voyage embeddings** — compact 256/512-dim voyage-code-3 via `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS`
 - **PLAID late-interaction reranker** — 7–45× faster ColBERT via RAGatouille (`rerank_provider=plaid`)
 - **Multi-granularity indexing** — LLM file-level summaries alongside symbol chunks (`TRELIX_FILE_SUMMARIES_ENABLED=true`)
@@ -434,7 +434,13 @@ Markdown (heading sections), HTML (custom elements), CSS/SCSS
 
 ## Embedding Providers
 
-9 providers, from fully offline (`local`, default) to SOTA-quality (`bge-code`, CoIR 2025) to API-based (`voyage`, `openai`, Bedrock). Full comparison with CoIR benchmark scores, model IDs, and per-provider setup: [docs/PROVIDERS.md](docs/PROVIDERS.md).
+9 providers, from fully offline (`local`, default) to API-based (`voyage`, `openai`, Bedrock). Full comparison with CoIR benchmark scores, model IDs, and per-provider setup: [docs/PROVIDERS.md](docs/PROVIDERS.md).
+
+> **`bge-code` is experimental (as of v3.1.7).** trelix builds it with FlagEmbedding's
+> `FlagModel`, which pools with CLS (`DEFAULT_POOLING_METHOD = "cls"`), while BAAI publishes
+> `BAAI/bge-code-v1` as a causal Qwen2 decoder with `pooling_mode_lasttoken: true`. The pooling
+> is unverified and the CoIR standing quoted for the upstream model is not substantiated by
+> this implementation. Do not use it as a quality baseline.
 
 > **voyage-code-3 Matryoshka:** Set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for 2× faster HNSW search with minimal quality loss.
 

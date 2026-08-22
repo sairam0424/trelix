@@ -166,9 +166,13 @@ nodes = retriever.retrieve(QueryBundle("how does authentication work?"))
 **What it does:** `pip install "trelix[local]"` + `trelix index ./repo` works completely offline. The local embedder (`all-MiniLM-L6-v2`) runs via sentence-transformers with no API call. The local-code embedder (`SFR-Embedding-Code-2B_R`) is a 2B-parameter code-specialized model that also runs fully offline with no API key.
 
 **Additional local-first embedding options:**
-- `nomic-code`: Nomic CodeRankEmbed (768-dim, Apache 2.0, sentence-transformers, CoIR score 58.40)
-- `bge-code`: BGE-Code-v1 (1536-dim, FlagEmbedding, CoIR score 63.10)
-- `local-code`: SFR-Embedding-Code-2B_R (4096-dim, CoIR score 67.41 — highest quality local option)
+- `nomic-code`: Nomic CodeRankEmbed (768-dim, MIT, sentence-transformers, vendor CoIR 60.1) — experimental
+- `bge-code`: BGE-Code-v1 (1536-dim, FlagEmbedding, vendor CoIR 63.10) — experimental
+- `local-code`: SFR-Embedding-Code-2B_R (2304-dim, vendor CoIR 67.41) — experimental, **CC-BY-NC-4.0 weights: research use only**
+
+All three are self-hosted code embedders whose wrapper is known to deviate from the
+model's published encoding protocol; see docs/PROVIDERS.md before choosing one. For
+commercial use pick `local` (Apache 2.0), `voyage`, or `bedrock-cohere`.
 
 **Why it matters:** Copilot requires a GitHub account. Cursor requires a Cursor account. Sourcegraph Cody requires a Sourcegraph account. Trelix requires nothing — it works in an air-gapped environment, behind a corporate firewall, or on a plane with no Wi-Fi. LLM synthesis (`trelix ask`) still needs an API key, but indexing and search (`trelix index`, `trelix search`) are fully local.
 
@@ -292,7 +296,7 @@ retrieve → synthesize
 
 **Fit: High.**
 
-`pip install "trelix[local]" && trelix index ./repo && trelix ask ./repo "how does the request lifecycle work?"` — no API key, no cloud, no data egress. The local embedder produces competitive retrieval quality for most codebase exploration tasks. Add `--provider bge-code` or `--provider nomic-code` for code-specialized embeddings, still fully offline.
+`pip install "trelix[local]" && trelix index ./repo && trelix ask ./repo "how does the request lifecycle work?"` — no API key, no cloud, no data egress. The local embedder produces competitive retrieval quality for most codebase exploration tasks. Add `--provider nomic-code` or `--provider local-code` for code-specialized embeddings, still fully offline. (`--provider bge-code` also exists but is **experimental** — its pooling is unverified; see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).)
 
 ---
 

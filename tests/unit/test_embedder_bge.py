@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from trelix.core.config import EmbedderConfig
 
@@ -142,3 +146,219 @@ class TestBGECodeEmbedder:
         cfg = EmbedderConfig(provider="bge-code", _env_file=None)
         assert cfg.bge_code_dimensions == 1536
         assert cfg.effective_dimension == 1536
+
+
+# ---------------------------------------------------------------------------
+# Pooling.
+#
+# 3.1.6 fixed `dimension` so `bge-code` could reach Phase 1 at all. Nothing in
+# this file pinned WHICH FlagEmbedding class `bge_code.py` constructs, or how
+# that class pools -- `_FakeFlagModel` above is substituted for the class and
+# manufactures its return value from a constant (`_vecs`), so
+# `DEFAULT_POOLING_METHOD`, `pooling()` and `last_hidden_state[:, 0]` are never
+# reached, and `_vecs(2)` hands back two IDENTICAL vectors, i.e. the fake models
+# the very degeneracy a pooling test must detect. The tests below use the real
+# pooling functions out of the installed FlagEmbedding and a real causal forward
+# pass, never a stand-in for either.
+# ---------------------------------------------------------------------------
+
+# Verbatim bytes of BAAI/bge-code-v1's published pooling config. Fetched once:
+#   curl https://huggingface.co/BAAI/bge-code-v1/raw/main/1_Pooling/config.json
+# Checked in, so nothing below touches the network at run time.
+_PUBLISHED_1_POOLING_CONFIG = """{
+  "word_embedding_dimension": 1536,
+  "pooling_mode_cls_token": false,
+  "pooling_mode_mean_tokens": false,
+  "pooling_mode_max_tokens": false,
+  "pooling_mode_mean_sqrt_len_tokens": false,
+  "pooling_mode_weightedmean_tokens": false,
+  "pooling_mode_lasttoken": true,
+  "include_prompt": true
+}"""
+
+# Verbatim bytes of the same revision's top-level config.json. Fetched once:
+#   curl https://huggingface.co/BAAI/bge-code-v1/raw/main/config.json
+# Note also tokenizer_config.json's `"add_bos_token": false` at that revision:
+# no BOS is injected, so token 0 of every query is the first token of the
+# constant `_QUERY_INSTRUCTION` prefix.
+_PUBLISHED_MODEL_CONFIG = """{
+  "_name_or_path": "bge-code-v1",
+  "architectures": [
+    "Qwen2Model"
+  ],
+  "attention_dropout": 0.0,
+  "bos_token_id": 151643,
+  "eos_token_id": 151643,
+  "hidden_act": "silu",
+  "hidden_size": 1536,
+  "initializer_range": 0.02,
+  "intermediate_size": 8960,
+  "max_position_embeddings": 32768,
+  "max_window_layers": 28,
+  "model_type": "qwen2",
+  "num_attention_heads": 12,
+  "num_key_value_heads": 2,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": null,
+  "rope_theta": 1000000.0,
+  "sliding_window": null,
+  "tie_word_embeddings": true,
+  "torch_dtype": "float32",
+  "transformers_version": "4.49.0",
+  "use_cache": false,
+  "use_sliding_window": false,
+  "vocab_size": 151667
+}"""
+
+# sentence-transformers spells the mode as one boolean per method; FlagEmbedding
+# spells it as a single string. This is the only translation between them.
+_ST_FLAG_TO_FLAGEMBEDDING_METHOD = {
+    "pooling_mode_cls_token": "cls",
+    "pooling_mode_mean_tokens": "mean",
+    "pooling_mode_lasttoken": "last_token",
+}
+
+
+def _published_pooling_method() -> str:
+    """The one pooling mode BAAI published for bge-code-v1, in FlagEmbedding's vocabulary."""
+    published = json.loads(_PUBLISHED_1_POOLING_CONFIG)
+    enabled = [method for key, method in _ST_FLAG_TO_FLAGEMBEDDING_METHOD.items() if published[key]]
+    assert len(enabled) == 1, (
+        f"published 1_Pooling/config.json enables {enabled}; expected exactly one"
+    )
+    return enabled[0]
+
+
+def _pool_the_way_flagembedding_does(model_class: object, hidden: object, mask: object) -> object:
+    """Pool `hidden` with the REAL function `model_class` uses -- no imitation.
+
+    `encoder_only.base.BaseEmbedder` implements cls and mean in its own
+    `pooling()` (`base.py:284-308`, `cls` being `return last_hidden_state[:, 0]`).
+    `decoder_only.base.BaseLLMEmbedder` has NO `pooling()` attribute at all; it
+    calls the module-level `last_token_pool` inline (`base.py:261` and `:280`).
+    Dispatching on the class's declared method mirrors FlagEmbedding's own
+    structure, so one test body measures `FlagModel` today and `FlagLLMModel`
+    after a fix -- without which this test could never stop being an xfail,
+    because `FlagLLMModel.pooling` does not exist.
+    """
+    method = model_class.DEFAULT_POOLING_METHOD  # type: ignore[attr-defined]
+    if method == "last_token":
+        from FlagEmbedding.inference.embedder.decoder_only.base import last_token_pool
+
+        return last_token_pool(hidden, mask)
+    from FlagEmbedding.inference.embedder.encoder_only.base import BaseEmbedder as _EncBase
+
+    return _EncBase.pooling(SimpleNamespace(pooling_method=method), hidden, attention_mask=mask)
+
+
+class TestBGECodePooling:
+    """The pooling method bge-code actually runs, versus the one BAAI published."""
+
+    def test_published_snapshot_describes_the_model_this_provider_configures(self) -> None:
+        """The snapshots are tied to live config, so they cannot rot silently.
+
+        No FlagEmbedding and no torch, so this one always executes: it is the
+        tripwire that says the block below ran rather than being collected away.
+        """
+        from trelix.embedder.bge_code import _QUERY_INSTRUCTION
+
+        cfg = EmbedderConfig(provider="bge-code", _env_file=None)
+        published = json.loads(_PUBLISHED_MODEL_CONFIG)
+
+        assert cfg.bge_code_model == "BAAI/bge-code-v1", (
+            "snapshots below are BAAI/bge-code-v1's; refresh them if the model changes"
+        )
+        assert published["hidden_size"] == cfg.bge_code_dimensions
+        assert published["architectures"] == ["Qwen2Model"]
+        assert published["model_type"] == "qwen2"
+        assert _published_pooling_method() == "last_token"
+
+        # Why token 0 is shared: the prefix is a constant, prepended to every
+        # query by query_instruction_format "{}{}" (encoder_only/base.py:48).
+        assert isinstance(_QUERY_INSTRUCTION, str) and _QUERY_INSTRUCTION != ""
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "bge-code constructs FlagModel, which is encoder_only.base.BaseEmbedder "
+            "with DEFAULT_POOLING_METHOD='cls'; BAAI published bge-code-v1 with "
+            "pooling_mode_lasttoken. Fixing this means FlagLLMModel + "
+            "trust_remote_code + real-weight validation, deliberately deferred past "
+            "3.1.7. When it lands this XPASSes and the marker must be removed."
+        ),
+    )
+    def test_constructed_class_pools_the_way_the_model_was_published(self) -> None:
+        pytest.importorskip("FlagEmbedding", reason="bge-code extra not installed")
+        from trelix.embedder import bge_code
+
+        assert bge_code.FlagModel is not None
+        assert bge_code.FlagModel.DEFAULT_POOLING_METHOD == _published_pooling_method()
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "cls pooling on a causal decoder reads position 0 only, and every query "
+            "shares token 0 via the constant instruction prefix, so every query "
+            "embedding is byte-identical. XPASSes the moment the provider pools the "
+            "published way; remove the marker then."
+        ),
+    )
+    def test_two_queries_differing_after_token_0_get_different_embeddings(self) -> None:
+        """A degeneracy detector: real pooling fn, real causal forward, no weights."""
+        pytest.importorskip("FlagEmbedding", reason="bge-code extra not installed")
+        torch = pytest.importorskip("torch")
+        pytest.importorskip("transformers")
+        from FlagEmbedding.inference.embedder.decoder_only.base import last_token_pool
+        from transformers import Qwen2Config, Qwen2Model
+
+        from trelix.embedder import bge_code
+
+        published = json.loads(_PUBLISHED_MODEL_CONFIG)
+        assert published["architectures"] == ["Qwen2Model"]
+
+        # Randomly initialised and tiny: no weights are downloaded, and the
+        # degeneracy is a property of the causal mask, not of the parameters.
+        torch.manual_seed(0)
+        model = Qwen2Model(
+            Qwen2Config(
+                vocab_size=64,
+                hidden_size=32,
+                intermediate_size=64,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                num_key_value_heads=published["num_key_value_heads"],
+                hidden_act=published["hidden_act"],
+                max_position_embeddings=64,
+            )
+        ).eval()
+
+        # Two instruction-prefixed queries: identical prefix (ids 5,6,7),
+        # different tails. Asserted rather than assumed -- picking inputs that
+        # differ at token 0 would make this pass for the wrong reason.
+        ids = torch.tensor([[5, 6, 7, 11, 12, 13], [5, 6, 7, 41, 42, 43]])
+        mask = torch.ones_like(ids)
+        assert ids[0][0].item() == ids[1][0].item(), "inputs must share token 0"
+        assert ids[0].tolist() != ids[1].tolist(), "inputs must differ somewhere"
+
+        with torch.no_grad():
+            hidden = model(input_ids=ids, attention_mask=mask).last_hidden_state
+
+        # POSITIVE CONTROL, evaluated first: the pooling BAAI published must
+        # separate these two inputs. If it does not, the forward pass carried no
+        # signal and a zero below would be an artefact, not the defect.
+        control = last_token_pool(hidden, mask)
+        control_delta = (control[0] - control[1]).abs().max().item()
+        assert control_delta > 1e-3, (
+            f"control dead: last_token pooling gave max|delta|={control_delta:.3e}; "
+            "the model produced no signal, so this run proves nothing either way"
+        )
+
+        pooled = _pool_the_way_flagembedding_does(bge_code.FlagModel, hidden, mask)
+        delta = (pooled[0] - pooled[1]).abs().max().item()
+        assert delta > 1e-3, (
+            f"every query embeds identically: {bge_code.FlagModel.__name__} pools with "
+            f"{bge_code.FlagModel.DEFAULT_POOLING_METHOD!r} and gave "
+            f"max|delta|={delta:.3e} on inputs sharing only token 0, while the "
+            f"published last_token pooling separated the same hidden states by "
+            f"{control_delta:.3e}"
+        )

@@ -196,7 +196,7 @@ All trelix capabilities are exposed as CLI subcommands. Here is the full referen
 | `openai` | `OPENAI_API_KEY` | General-purpose; high quality |
 | `azure` | `AZURE_OPENAI_*` | Enterprise Azure deployments |
 | `voyage` | `VOYAGE_API_KEY` | Code-optimized; strong ranking |
-| `bge-code` | No | Local code-specialized model |
+| `bge-code` | No | Experimental — pooling unverified, not recommended |
 | `nomic-code` | No | Local; good on large repos |
 
 ---

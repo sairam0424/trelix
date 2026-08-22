@@ -529,8 +529,16 @@ class TestLocalCodeEmbedder:
             embedder = LocalCodeEmbedder(config)
         assert embedder.dimension == 4096
 
-    def test_dimension_fallback_is_4096(self) -> None:
-        """If model has no dimension method, fallback must be 4096."""
+    def test_dimension_fallback_is_2304(self) -> None:
+        """If model has no dimension method, fallback must be the model's real width.
+
+        The expected value's provenance is the MODEL REPOSITORY, not this file and not
+        the constant under test: Salesforce/SFR-Embedding-Code-2B_R states its width
+        twice — `hidden_size: 2304` in config.json and `word_embedding_dimension: 2304`
+        in 1_Pooling/config.json — with modules.json declaring no Dense module to widen
+        it. This test previously asserted 4096, i.e. the constant against itself through
+        a mock that cannot disagree, and 4096 is that model's max_seq_length.
+        """
         pytest.importorskip(
             "sentence_transformers",
             reason="sentence-transformers not installed; skipping local-code provider test",
@@ -541,7 +549,7 @@ class TestLocalCodeEmbedder:
         mock_st_module.SentenceTransformer.return_value = mock_model
         with patch.dict(sys.modules, {"sentence_transformers": mock_st_module}):
             embedder = LocalCodeEmbedder(config)
-        assert embedder.dimension == 4096
+        assert embedder.dimension == 2304
 
     def test_import_error_when_sentence_transformers_missing(self) -> None:
         config = EmbedderConfig(provider="local-code")

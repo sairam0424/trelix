@@ -361,9 +361,13 @@ Uses `voyage-code-3` (code-specialized, 1024-dim Matryoshka) for embeddings. Bes
 
 **Option D — Offline local code-specialized embeddings (no API key, needs ~8GB RAM):**
 ```bash
-pip install "trelix[local-code]"
+pip install "trelix[local]"
+export TRELIX_ALLOW_REMOTE_MODEL_CODE=1   # this model loads with trust_remote_code
 ```
-Uses `SFR-Embedding-Code-2B_R` (4096-dim). CoIR score 67.41 — excellent quality with zero API cost. Requires a machine with 8GB+ RAM.
+Uses `SFR-Embedding-Code-2B_R` (2304-dim). CoIR score 67.41 is the model card's
+self-report; trelix has not reproduced it, and does not send the query instruction the
+model card requires, so treat this provider as experimental. Requires a machine with
+8GB+ RAM. Weights are CC-BY-NC-4.0 — research use only, not for commercial products.
 
 ### Step 2 — Index the repository
 
@@ -1191,13 +1195,13 @@ Choosing the right embedding provider is the single highest-leverage configurati
 | `openai` | text-embedding-3-large | 3072 | ~45 | ~$0.13/1M tokens | yes | General-purpose, high quality |
 | `azure` | text-embedding-3-large | 3072 | ~45 | ~$0.13/1M tokens | yes | Enterprise, existing Azure setup |
 | `voyage` | voyage-code-3 (Matryoshka) | 256–2048 | **56.26** | ~$0.06/1M tokens | yes | Best semantic quality for code |
-| `local-code` | SFR-Embedding-Code-2B_R | 4096 | **67.41** | free | no | Best offline, needs 8GB RAM |
-| `bge-code` | BAAI/bge-code-v1 | 1536 | **63.10** | free | no | SOTA 2025, balanced size/quality |
-| `nomic-code` | nomic-embed-code | 768 | **58.40** | free | no | No API key, good quality |
+| `local-code` | SFR-Embedding-Code-2B_R | 2304 | 67.41† | free | no | Experimental; CC-BY-NC weights; 8GB RAM |
+| `bge-code` | BAAI/bge-code-v1 | 1536 | 63.10† | free | no | Experimental — see PROVIDERS.md before use |
+| `nomic-code` | nomic-ai/CodeRankEmbed | 768 | 60.1† | free | no | Experimental; off-protocol prefixes |
 | `bedrock-titan` | amazon.titan-embed-text-v2:0 | 256–1024 | — | AWS pricing | AWS creds | AWS-native deployments |
 | `bedrock-cohere` | cohere.embed-english-v3 | 1024 | — | AWS pricing | AWS creds | AWS + best asymmetric retrieval |
 
-CoIR scores from the Code Information Retrieval benchmark (ACL 2025). Higher is better. Baseline (`local`) score is ~30.
+CoIR scores from the Code Information Retrieval benchmark (ACL 2025). Higher is better. Baseline (`local`) score is ~30. †Self-reported by the model vendor and not reproduced by trelix; the three providers marked experimental are additionally known to deviate from their model's published encoding protocol, so their effective quality is lower than the number shown.
 
 ### When to use which provider
 
@@ -1208,12 +1212,12 @@ TRELIX_EMBEDDER_PROVIDER=local trelix index ./my-repo
 ```
 No API key, no cost, fast. Quality is adequate for basic navigation and learning how trelix works. Do not use in production for semantic search quality.
 
-**Production deployment, best-in-class quality:**
+**Experimental, not recommended for production — `bge-code`:**
 ```bash
 pip install "trelix[bge-code]"
 TRELIX_EMBEDDER_PROVIDER=bge-code trelix index ./my-repo
 ```
-BGE-Code-v1 is the 2025 CoIR leader. It runs fully offline after the first model download (~3GB), needs no API key, and outperforms all API providers on code retrieval benchmarks. If you have a GPU, it is fast. On CPU it is slower (plan for 30–60 seconds for a 10k-chunk index, vs. 3 seconds with local).
+This provider is **experimental as of v3.1.7 and its retrieval quality is unverified.** trelix builds it with FlagEmbedding's `FlagModel`, which pools with CLS (`DEFAULT_POOLING_METHOD = "cls"`; `pooling()` returns `last_hidden_state[:, 0]`), while BAAI publishes `BAAI/bge-code-v1` as a causal Qwen2 decoder with `pooling_mode_lasttoken: true` in `1_Pooling/config.json`. The "2025 CoIR leader" standing previously stated here was the upstream model's and was never a measurement of this implementation; it is retracted. It does run fully offline after the first model download (~3GB) and needs no API key. On CPU it is slower (plan for 30–60 seconds for a 10k-chunk index, vs. 3 seconds with local). For an offline provider without this open question, use `local-code` or `nomic-code`. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
 
 **Best API-based quality for code:**
 ```bash
