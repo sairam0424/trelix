@@ -8,6 +8,138 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.2.0] — 2026-08-22
+
+### Overview
+
+Three protocol defects, all of which change stored vectors, which is why this is a minor
+release rather than a patch. Two were found by comparing what each model *publishes* against
+what trelix *does*, side by side — the same method that produced v3.1.7's retraction. The
+third is the same class of defect in the sparse leg, which no previous audit had examined.
+
+Only the sparse fix requires action from an existing user. See **Migration** below.
+
+### Fixed
+
+- **The sparse leg mixed padding into every stored vector, so a chunk's representation
+  depended on which other chunks shared its batch.** `SparseEmbedder.embed` tokenizes with
+  `padding=True`, padding each batch to its own longest member, and then aggregated with
+  `torch.log(1 + torch.relu(logits)).max(dim=1)` — a max over *all* sequence positions. A
+  MaskedLM emits real logits at PAD positions too; it predicts a distribution for every
+  position, including the ones that exist only because a longer chunk is in the batch. The
+  attention mask was never applied: `grep -c attention_mask src/trelix/embedder/sparse.py`
+  returned 0, and tree-wide `grep -rln attention_mask src/trelix/` matched no file at all.
+  Measured on the real `naver/splade-v3-distilbert` at `top_k=128`: a 28-token chunk
+  embedded alone versus batched with a 185-token chunk **gained 28 phantom terms and lost 28
+  real ones** at the `top_k` cut — 22% of the vector — with **0.478** max weight drift on the
+  terms that survived. The phantom tokens are ordinary English the chunk never contained:
+  `where`, `store`, `numbers`, `text`, `gene`, `sequence`, `phrase`, `messages`. The positive
+  control is what pins the cause rather than a correlate: the same chunk batched with an
+  *equal-length* chunk, needing no padding, is bit-identical to it embedded alone. Batching
+  was never the problem; padding was.
+
+  Two consequences made this worth a release rather than a note. `sparse_embeddings` is a
+  **persisted** table (`store/db.py`), so an index was not reproducible — re-indexing the
+  same repository with a different file order, or a different `TRELIX_SPARSE_BATCH_SIZE`,
+  rewrote every row. And `embed_query` routes through `embed([text])`, a batch of one that
+  needs no padding, so **queries were always clean and were scored against contaminated
+  documents**. No amount of query-side tuning corrects that asymmetry. The aggregation now
+  multiplies by the attention mask before the max, which is also NAVER's own formulation;
+  `torch.log(1 + …)` is kept verbatim rather than switched to `log1p`, so the mask is the
+  only intended change to the numbers.
+
+- **`nomic-code` had never constructed, for any user, in any release.**
+  `nomic-ai/CodeRankEmbed`'s `config.json` declares
+  `auto_map.AutoModel = modeling_hf_nomic_bert.NomicBertModel`, and that published module
+  imports `einops` at its **top level** — so the import runs during the `trust_remote_code`
+  load, before any trelix code sees the model. `einops` was declared by no trelix extra
+  (`grep -c einops pyproject.toml` → 0; the `nomic-code` extra contained only
+  `sentence-transformers`), and nothing else installed provides it transitively, so the
+  provider raised `ModuleNotFoundError` from inside remote model code every time it was
+  selected. `einops>=0.7.0` is now declared in the extra.
+
+- **`nomic-code` sent prefixes belonging to a different model.** The module carried
+  `_DOC_PREFIX = "search_document: "` and `_QUERY_PREFIX = "search_query: "`, which are
+  `nomic-embed-text-v1.5`'s protocol. CodeRankEmbed publishes exactly one prefix — a query
+  instruction in its own `config_sentence_transformers.json` under `prompts.query` — and
+  takes **no** prefix on documents, so both sides carried a prefix the model was never
+  trained on. Queries now pass `prompt_name="query"`, which makes sentence-transformers read
+  the instruction from the model's own config, exactly as `Pooling.load()` reads its pooling
+  method from `1_Pooling/config.json`; documents pass no prompt. The string is not hardcoded
+  in the encode path, so a future model swap cannot leave this provider asserting a protocol
+  its model does not declare — the mechanism that caused both this defect and the next one.
+
+- **`bge-code` used `nomic-ai/CodeRankEmbed`'s query prompt.**
+  `_QUERY_INSTRUCTION` read `"Represent this query for searching relevant code: "`, which is
+  character for character CodeRankEmbed's published `prompts.query`. `BAAI/bge-code-v1`
+  publishes `prompts: {}` — empty — and its model card supplies the instruction and the
+  format `<instruct>{}\n<query>{}` instead, with `<instruct>` and `<query>` shipped as
+  `additional_special_tokens` in its tokenizer so they tokenize as single ids. The provider
+  now passes BAAI's CosQA task instruction (the published task closest to trelix's: a
+  natural-language query retrieving code) together with `query_instruction_format`, which
+  `FlagModel` accepts and which otherwise defaults to plain concatenation `"{}{}"`.
+
+  **This does not make `bge-code` usable, and must not be read as doing so.** The provider
+  remains EXPERIMENTAL for the pooling reason v3.1.7 documented: with CLS pooling on a causal
+  decoder, token 0 is now `<instruct>` for every query instead of `Represent` for every
+  query — still one shared token, so every query embedding is still identical. The prompt was
+  corrected here because it is provably wrong independently of the pooling question, under
+  every candidate loader. The pooling fix is a separate change and is not in this release.
+
+  Why it survived 28 tagged releases: the pooling degeneracy made every query embedding
+  byte-identical, so the prompt text could not change any observable, and the tests asserted
+  `encoded_text.startswith(_QUERY_INSTRUCTION)` — deriving the expected value from the
+  constant under test, so they passed for any value at all.
+
+### Changed
+
+- `nomic-code` now honours `TRELIX_EMBEDDER_BATCH_SIZE`. `embed` hardcoded `batch_size=32`,
+  silently ignoring the knob every other sentence-transformers provider reads. Safe to change
+  because the provider has never produced a vector, so there is no memory profile to preserve.
+- `SparseEmbedder.embed`'s exception handler logs at WARNING instead of DEBUG. The
+  degradation is deliberate — a failing sparse leg must not fail the whole index — but every
+  chunk receives `{}`, the dot product over an empty vector is 0, and the leg contributes
+  nothing while reporting nothing. At DEBUG the CLI's default level hid it entirely, so a
+  uniformly empty sparse index produced no signal anywhere.
+
+### Migration
+
+- **If `TRELIX_RETRIEVAL_SPARSE` is enabled, reindex.** Every stored sparse vector was
+  computed with padding mixed in, and the fix changes them. Dimension is unchanged, so
+  nothing detects this automatically. Old and new sparse vectors are directly comparable in
+  the dot product, so a partially-reindexed store degrades silently rather than failing —
+  prefer a full reindex over an incremental one, since an incremental run re-embeds only
+  changed files. If sparse retrieval is off (the default), nothing to do.
+- **`nomic-code` needs no reindex, because no `nomic-code` index can exist.** The provider
+  could never construct, so there are no stored vectors to invalidate. Users who want it must
+  reinstall to pick up `einops`: `pip install -U 'trelix[nomic-code]'`.
+- **`bge-code` vectors change.** The provider is EXPERIMENTAL and its query embeddings were
+  degenerate before and after, so no retrieval-quality claim is affected either way. Reindex
+  if you have an index built with it.
+- No dependency floors moved. `trelix-mcp` still requires `trelix>=3.1.5`; both adapters
+  still require `trelix>=3.0.0`.
+
+### Tests
+
+- `tests/unit/test_sparse_padding_contamination.py` — nine tests, all mutation-verified:
+  dropping `* mask` from the aggregation fails five of them and leaves the equal-length
+  control passing, which is what localises the cause to padding. Includes an offline
+  real-weights arm gated on the cached snapshot, and three fixture self-checks, because the
+  existing `test_sparse_embedder.py` fakes all return `attention_mask=torch.ones(...)` — an
+  all-ones mask makes the masked and unmasked aggregations identical by construction, so all
+  ten of those tests passed either way.
+- `tests/unit/test_provider_prompt_provenance.py` — asserts the invariant the prompt bugs
+  violated rather than the instances: each prompt constant matches what its own model
+  publishes, and appears in exactly one provider. The cross-provider check parses the AST
+  rather than searching text, so a comment explaining the historical bug does not trip it
+  while a real string literal does; a self-test pins that distinction, since an AST walk that
+  silently returned nothing would make the check pass for every input.
+- `tests/unit/test_embedder_nomic.py` — the two prefix tests are replaced. They asserted
+  `called_texts[0].startswith(_DOC_PREFIX)`, taking their oracle from the code under test, so
+  they could not fail for any prefix value. The replacements record the actual `encode` call
+  with a plain class rather than a `MagicMock` — a mock answers to any kwarg name and cannot
+  tell an absent prompt from a misspelled one.
+
 ## [3.1.7] — 2026-08-22
 
 ### Changed
