@@ -351,7 +351,16 @@ class EmbedderConfig(BaseSettings):
 
     # ── Local-code (SFR-Embedding-Code-2B_R) ─────────────────────────────────
     local_code_model: str = "Salesforce/SFR-Embedding-Code-2B_R"
-    local_code_dimensions: int = 4096
+    # 2304, not 4096 — the same class of error as the bge-code 768 above, found by
+    # reading the model repo instead of the changelog. The width is stated twice:
+    # config.json `hidden_size: 2304` (a Gemma-2-2B fine-tune — `model_type:
+    # codexembed2b`, `AutoModel: modeling_gemma2.CodeXEmbedModel2B`) and
+    # 1_Pooling/config.json `word_embedding_dimension: 2304`; modules.json declares
+    # only Transformer + Pooling, so nothing widens it. 4096 is this model's
+    # sentence_bert_config.json `max_seq_length` — a sequence length — and the width
+    # of the unrelated SFR-Embedding-Mistral. `LocalCodeEmbedder.dimension` reads the
+    # loaded model first, so this is the fallback and `effective_dimension`'s answer.
+    local_code_dimensions: int = 2304
 
     # ── BGE-Code-v1 (BAAI, CoIR SOTA 2025) ────────────────────────────────────
     # Uses FlagEmbedding library. pip install trelix[bge-code]

@@ -201,7 +201,7 @@ retriever = TrelixRetriever(repo_path="/path/to/repo", provider="openai", k=10)
 ## Provider Switching (v2.0.0+, updated v2.4.0)
 
 ```bash
-# Use code-optimized BGE-Code embeddings (best for code semantics)
+# bge-code is EXPERIMENTAL: pooling unverified, no quality claim (see trelix docs/PROVIDERS.md)
 TRELIX_EMBEDDER_PROVIDER=bge-code trelix index /path/to/repo
 
 # Use Nomic-Code embeddings

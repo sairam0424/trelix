@@ -163,7 +163,7 @@ commands on the same repository.
 |-------|-------|-----------------|
 | `local` | `sentence-transformers/all-MiniLM-L6-v2` | No |
 | `local-code` | `Salesforce/SFR-Embedding-Code-2B_R` | No (large download) |
-| `bge-code` | `BAAI/bge-code-v1` | No (`pip install trelix[bge-code]`) |
+| `bge-code` | `BAAI/bge-code-v1` (**experimental** — pooling unverified) | No (`pip install trelix[bge-code]`) |
 | `nomic-code` | `nomic-ai/CodeRankEmbed` | No (`pip install trelix[local]`) |
 | `openai` | `text-embedding-3-large` (3072-dim) | `OPENAI_API_KEY` |
 | `azure` | deployment via `AZURE_EMBEDDINGS_MODEL` | `AZURE_API_KEY` + `AZURE_ENDPOINT` |

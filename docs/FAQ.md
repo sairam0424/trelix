@@ -364,17 +364,23 @@ For code-specific retrieval quality, ranked highest to lowest:
 
 | Provider | Model | CoIR Score | Notes |
 |----------|-------|-----------|-------|
-| `bge-code` | BAAI/bge-code-v1 (1536-dim) | SOTA 2025 | Local, no API key, ~8GB RAM |
 | `voyage` | voyage-code-3 (256–2048-dim, Matryoshka) | Very High | Best API option; set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for 2x faster HNSW |
-| `local-code` | SFR-Embedding-Code-2B_R (4096-dim) | Very High | Local, large model, requires GPU or ~8GB RAM |
-| `nomic-code` | nomic-ai/nomic-embed-code (768-dim) | High | Local, good for large repos |
+| `local-code` | SFR-Embedding-Code-2B_R (2304-dim) | Very High (vendor claim) | Experimental; CC-BY-NC weights; needs `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` |
+| `nomic-code` | nomic-ai/CodeRankEmbed (768-dim) | High (vendor claim) | Experimental; off-protocol prefixes; needs `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` |
 | `openai` / `azure` | text-embedding-3-large (3072-dim) | High | General-purpose, strong on mixed code+prose |
 | `bedrock-cohere` | cohere.embed-english-v3 (1024-dim) | High | AWS ecosystem |
 | `local` | all-MiniLM-L6-v2 (384-dim) | Baseline | Default, fully offline, excellent for getting started |
 
 CoIR benchmark scores are from [archersama.github.io/coir](https://archersama.github.io/coir/) (ACL 2025).
 
-For teams on a budget: `nomic-code` or `bge-code` offer near-API quality at zero cost after the one-time model download.
+**`bge-code` is deliberately absent from the ranking above.** It is **experimental** as of
+v3.1.7: trelix builds it with FlagEmbedding's `FlagModel`, which pools with CLS, while BAAI
+publishes `BAAI/bge-code-v1` as a causal Qwen2 decoder with `pooling_mode_lasttoken: true`.
+Its pooling is unverified, so it cannot be placed in a quality ranking at all — it previously
+held first place here on a "SOTA 2025" label that was the upstream model's, not a measurement
+of trelix. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
+
+For teams on a budget: `nomic-code` offers strong quality at zero cost after the one-time model download.
 
 ---
 
@@ -555,7 +561,7 @@ A typical team setup for a shared codebase:
 
 3. **MCP for individual developers.** Each developer installs `trelix-mcp` locally and points it at either their own local index or the team REST server.
 
-4. **Voyage or BGE-Code embeddings.** For best retrieval quality across a shared index, standardize on one embedding provider. `voyage-code-3` (API) or `bge-code` (local, SOTA 2025) are recommended over the default `local` provider for teams.
+4. **Voyage or local-code embeddings.** For best retrieval quality across a shared index, standardize on one embedding provider. `voyage-code-3` (API) or `local-code` (local, no API key) are recommended over the default `local` provider for teams. **Do not standardize a shared team index on `bge-code`:** it is experimental as of v3.1.7 and its pooling is unverified — see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
 
 5. **Federation for multi-repo monorepos.** Register all service repos and use `trelix search-all` or `FederatedRetriever` for cross-repo search.
 

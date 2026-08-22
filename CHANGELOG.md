@@ -6,9 +6,98 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- **Retracted: `bge-code` does not "work now". v3.1.6's dimension fix unblocked a
+  degenerate path, and the provider is marked EXPERIMENTAL.** v3.1.6 correctly found that
+  `BGECodeEmbedder.dimension` raised `AttributeError` on every real install and fixed the
+  width, but the framing that followed — that `bge-code` could then index and query — was
+  wrong. What the fix unblocked was a provider that pools the wrong token.
+  `from FlagEmbedding import FlagModel` is the alias `from .base import BaseEmbedder as
+  FlagModel` (FlagEmbedding 1.4.0, `inference/embedder/encoder_only/__init__.py:1`): the
+  ENCODER-ONLY `BaseEmbedder`, `DEFAULT_POOLING_METHOD = "cls"`
+  (`encoder_only/base.py:38`), `__init__` default `pooling_method: str = "cls"` (`:50`,
+  assigned `:76`), and `pooling()` for that method is `return last_hidden_state[:, 0]`
+  (`:302`). `BGECodeEmbedder.__init__` passes no `pooling_method`. But `BAAI/bge-code-v1`
+  is a causal Qwen2 decoder — `config.json` `architectures: ["Qwen2Model"]`, `model_type:
+  "qwen2"` — published with `1_Pooling/config.json` `pooling_mode_lasttoken: true` and
+  `pooling_mode_cls_token: false`; the model card's own examples use `FlagLLMModel` with
+  `trust_remote_code=True`, or `last_token_pool` directly. Position 0 of a causal decoder
+  cannot attend forward, so a CLS vector depends on token 0 and nothing else. Measured
+  against a randomly initialised `Qwen2Model` from a small `Qwen2Config` (no weights)
+  pooled by the real `FlagModel.pooling`: two sequences identical in token 0 and
+  different in every later token gave **cosine 1.0, max|diff| 0.0** — bitwise identical —
+  while the same hidden states through FlagEmbedding's real `last_token_pool` gave cosine
+  0.10 and through the real `mean` branch 0.65, and changing token 0 alone moved CLS to
+  cosine -0.015. Across 200 resamples of every token after position 0, position 0's
+  output never moved: the loss is total, not partial. Queries are worst — `encode_queries`
+  prefixes all of them with the same instruction via `get_detailed_instruct`, and
+  `tokenizer_config.json` has `add_bos_token: false` / `bos_token: null`, so token 0 is
+  the shared prefix and **every query embedding is identical**. Documents are not all
+  identical but collapse by first token: 5 distinct chunks sharing token 0 produced 1
+  distinct vector, against 5 for `last_token_pool`. No kwarg fixes it —
+  `FlagModel(..., pooling_method="last_token")` raises `NotImplementedError`
+  (`encoder_only/base.py:308`). The correct fix is `FlagLLMModel`, which requires
+  `trust_remote_code=True` and validation against real weights, and is **deliberately
+  deferred**. Meanwhile `bge-code` is documented EXPERIMENTAL and unfit for retrieval, and it
+  now logs a WARNING on construction — docs alone do not reach a user who never opens
+  `PROVIDERS.md`, and the failure is otherwise silent: nothing raises, because
+  `resolve_trust_remote_code(False, …)` returns False without error and the builtin
+  `Qwen2Tokenizer` loads fine. The recommended offline alternative is **`local`**
+  (all-MiniLM-L6-v2), where sentence-transformers reads the model's own
+  `1_Pooling/config.json` rather than assuming a method — **not** `local-code` or
+  `nomic-code`, which this same release marks EXPERIMENTAL for their own protocol
+  mismatches (below). For API-based accuracy, `voyage` is unaffected. This survived four
+  releases green because every test in `tests/unit/test_embedder_bge.py` replaces
+  `FlagModel` with a `MagicMock` or a stub, so no test ever executes `pooling()`.
+
+- **`local-code` and `nomic-code` are also marked EXPERIMENTAL: each wrapper sends a
+  different encoding protocol than its model publishes.** Checked against the model
+  repositories, not against our own docstrings. `local-code`
+  (`Salesforce/SFR-Embedding-Code-2B_R`) omits the query instruction its card requires —
+  `BaseEmbedder.embed_query` is `return self.embed([text])[0]`
+  (`src/trelix/embedder/base.py:494-495`), i.e. queries and documents are encoded
+  identically, while the card passes `prompt=query_instruction_example` for queries and
+  leaves passages unprefixed. `nomic-code` prefixes `search_document: ` / `search_query: `,
+  which are a *different* Nomic model's task prefixes; `nomic-ai/CodeRankEmbed` publishes one
+  instruction, `Represent this query for searching relevant code: `, in its own
+  `config_sentence_transformers.json`, with code unprefixed. Neither is fixed here: a
+  protocol change silently invalidates every existing index built with that provider, so it
+  needs its own release with a migration note. `src/trelix/embedder/base.py`'s module
+  docstring now defines EXPERIMENTAL precisely and lists all three — it previously said
+  "seven" and listed seven while `make_embedder` had dispatched nine since v2.
+
+### Fixed
+
+- **Two of the nine providers could not be started by following the documentation.**
+  `local-code` and `nomic-code` both route through `load_remote_code_model`, which refuses
+  unless `TRELIX_ALLOW_REMOTE_MODEL_CODE` is set — a variable that appeared in exactly two
+  source files and in no doc, README, CHANGELOG or config example. Running the real
+  `make_embedder` for either raised `RemoteModelCodeNotAllowedError`. Compounding it, the
+  documented install `pip install trelix[local-code]` (`docs/PROVIDERS.md`,
+  `docs/USER_GUIDE.md`, `.env.example`) names an extra `pyproject.toml` does not declare, and
+  pip treats an unknown extra as a warning rather than an error — so the advertised quickstart
+  for both providers silently installed nothing and then refused to run. Both now documented.
+
+- **The pooling regression test would have been theatre without a CI change.** The unit job
+  installed `.[local,otel,sso,dev]` and `bge-code` is deliberately excluded from `all`, so
+  FlagEmbedding was absent from every job that runs pytest — confirmed by blocking it at
+  `sys.meta_path`, where the new tests report `SKIPPED (bge-code extra not installed)`. A skip
+  is reported inside a green check and is indistinguishable from a pass, which is the exact
+  failure mode the test exists to close. `ci.yml` now installs `bge-code` in the unit job
+  (torch and transformers were already present via `local`, so this adds ~22 MB, not a new
+  heavyweight dependency). The two degeneracy tests are `xfail(strict=True)`: they document
+  today's bug, and the day someone switches to `FlagLLMModel` they XPASS and fail, forcing the
+  fix to be acknowledged rather than absorbed.
 
 ## [3.1.6] — 2026-08-22
+
+> **Annotation added in 3.1.7. The entry below is the shipped 3.1.6 text and is unchanged.**
+> The `bge-code` fix recorded here is correct as far as it goes — the `AttributeError` and the
+> 768 default were both real — but removing that raise made a degenerate pooling path
+> reachable for the first time, so it replaced a loud failure with a silent one. It did not
+> establish that `bge-code` works. `bge-code` is marked **experimental** as of 3.1.7; see that
+> entry.
 
 ### Fixed
 

@@ -223,7 +223,7 @@ pip install -e ".[sparse]"
 trelix ships with built-in support for multiple embedding backends:
 
 - **Local embeddings** (`local`) — Uses transformers library (default, no API keys needed)
-- **BGE-Code-v1** (`bge-code`) — BAAI General Embedding for code, optimized for semantic code search
+- **BGE-Code-v1** (`bge-code`) — BAAI General Embedding for code. **Experimental**: the wrapper pools with CLS while BAAI publishes `pooling_mode_lasttoken: true`, so retrieval quality is unverified (see docs/PROVIDERS.md)
 - **Nomic CodeRankEmbed** (`nomic-code`) — Open-source embeddings specialized for code ranking
 - **Azure OpenAI Embeddings** — Enterprise deployment via Azure; set `TRELIX_EMBEDDER_PROVIDER=azure`
 - **Bedrock** — AWS-hosted embeddings via Bedrock

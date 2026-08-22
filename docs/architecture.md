@@ -312,7 +312,7 @@ Provider dimensions (used by `DimensionGuard`):
 | openai | text-embedding-3-large | 3072 |
 | azure | text-embedding-3-large | 3072 |
 | voyage | voyage-code-3 | 1024 (Matryoshka: 256/512/1024/2048) |
-| local-code | SFR-Embedding-Code-2B_R | 4096 |
+| local-code | SFR-Embedding-Code-2B_R | 2304 |
 | bge-code | BAAI/bge-code-v1 | 1536 |
 | nomic-code | nomic-ai/CodeRankEmbed | 768 |
 | bedrock-titan | amazon.titan-embed-text-v2:0 | 1024 (configurable: 256/512/1024) |
@@ -885,11 +885,11 @@ Module-level shared executor: `_SYNC_EXECUTOR = ThreadPoolExecutor(max_workers=4
 - Batch limit 96; pre-truncates at 2048 chars to avoid Bedrock `ValidationException`
 - `_BATCH_LIMIT = 96`, `_MAX_CHARS = 2048`
 
-**`BGECodeEmbedder`** — BAAI/bge-code-v1 (1536 dims, CoIR SOTA 2025)
+**`BGECodeEmbedder`** — BAAI/bge-code-v1 (1536 dims). **Experimental.** Constructs FlagEmbedding's `FlagModel`, which resolves to the encoder-only `BaseEmbedder` (`DEFAULT_POOLING_METHOD = "cls"`; `pooling()` returns `last_hidden_state[:, 0]`), and passes no `pooling_method` — while BAAI publishes the model as a causal Qwen2 decoder with `pooling_mode_lasttoken: true`. Pooling is therefore unverified and no quality claim is made. `FlagLLMModel` (`last_token`) is the matching decoder-only class; switching to it needs real-weight validation and is deferred. Logs a WARNING at construction.
 
 **`NomicCodeEmbedder`** — nomic-ai/CodeRankEmbed (768 dims)
 
-**`LocalCodeEmbedder`** — Salesforce/SFR-Embedding-Code-2B_R (4096 dims, ~8GB RAM)
+**`LocalCodeEmbedder`** — Salesforce/SFR-Embedding-Code-2B_R (2304 dims, ~8GB RAM)
 
 ### `CachingEmbedder`
 
