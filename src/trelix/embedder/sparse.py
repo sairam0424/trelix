@@ -133,9 +133,40 @@ class SparseEmbedder:
                 with torch.no_grad():
                     outputs = self._model(**inputs)
 
-                # SPLADE aggregation: max over sequence, then log(1 + ReLU(logits))
+                # SPLADE aggregation: log(1 + ReLU(logits)), masked, then max over sequence.
+                #
+                # The mask is load-bearing, not defensive. `padding=True` above pads every
+                # batch to its own longest member, and a MaskedLM emits real logits at PAD
+                # positions too — it predicts a distribution for every position, including
+                # the ones that only exist because a longer chunk shares the batch. Maxing
+                # over them mixes those predictions into the stored vector, so a chunk's
+                # sparse representation came to depend on WHICH OTHER CHUNKS happened to be
+                # batched with it. Measured on naver/splade-v3-distilbert with top_k=128: a
+                # 28-token chunk batched with a 185-token one gained 28 phantom terms and
+                # lost 28 real ones at the top_k cut — 22% of the vector — with 0.478 max
+                # weight drift on the terms that survived. The phantom tokens are ordinary
+                # English the chunk never contained ('where', 'gene', 'sequence', 'phrase').
+                # The positive control is what pins the cause: the same chunk batched with an
+                # EQUAL-length chunk, needing no padding, is bit-identical to it embedded
+                # alone. So batching was never the problem; padding was.
+                #
+                # Two consequences made this worth fixing rather than documenting. The
+                # vectors are PERSISTED (store/db.py `sparse_embeddings`), so an index was
+                # not reproducible — re-indexing the same repository with a different file
+                # order or a different TRELIX_SPARSE_BATCH_SIZE rewrote every row. And
+                # `embed_query` routes through `embed([text])`, a batch of one that needs no
+                # padding, so queries were always clean and were scored against contaminated
+                # documents — an asymmetry no amount of query tuning could correct.
+                #
+                # Multiplying is sound because these weights are non-negative by
+                # construction (log1p of a ReLU), so zeroing the padded positions can never
+                # win a max against a real one. This is also NAVER's own formulation.
+                # `torch.log(1 + ...)` is kept verbatim rather than switched to `log1p`: the
+                # mask is the only intended change to the numbers.
                 logits = outputs.logits  # (batch, seq_len, vocab_size)
-                agg = torch.log(1 + torch.relu(logits)).max(dim=1).values  # (batch, vocab)
+                weighted = torch.log(1 + torch.relu(logits))
+                mask = inputs["attention_mask"].unsqueeze(-1)  # (batch, seq_len, 1)
+                agg = (weighted * mask).max(dim=1).values  # (batch, vocab)
 
                 for i in range(len(batch)):
                     scores = agg[i]  # (vocab_size,)
@@ -147,7 +178,21 @@ class SparseEmbedder:
                     results.append(vec)
             return results
         except Exception as exc:
-            logger.debug("SparseEmbedder.embed() failed: %s", exc)
+            # WARNING, not DEBUG. The degradation is deliberate — a failing sparse leg must
+            # not fail the whole index — but the failure mode is indistinguishable from
+            # success at a glance: every chunk gets `{}`, the dot product over an empty
+            # vector is 0, and the leg contributes nothing while reporting nothing. At DEBUG
+            # the CLI's default level hid it entirely, so the sparse index could be
+            # uniformly empty with no signal anywhere. It also made tests over this function
+            # vacuous: any assertion comparing two embeddings passes as `{} == {}` when both
+            # sides crashed, which is why the tests below assert the vectors are non-empty
+            # before comparing them.
+            logger.warning(
+                "SparseEmbedder.embed() failed on a batch of %d; those chunks get empty "
+                "sparse vectors and contribute nothing to the sparse leg: %s",
+                len(texts),
+                exc,
+            )
             return [{} for _ in texts]
 
     def embed_query(self, text: str) -> dict[int, float]:
