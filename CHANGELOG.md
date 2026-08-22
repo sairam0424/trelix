@@ -139,6 +139,14 @@ Only the sparse fix requires action from an existing user. See **Migration** bel
   they could not fail for any prefix value. The replacements record the actual `encode` call
   with a plain class rather than a `MagicMock` — a mock answers to any kwarg name and cannot
   tell an absent prompt from a misspelled one.
+- The `nomic-code` extra is now installed by the `ci.yml` unit job, and
+  `test_readme_install_commands.py` asserts the extra declares `einops`. Without both, the
+  `einops` fix shipped with nothing that would fail if the requirement were unresolvable or
+  the declaration were deleted: no CI job installed the extra, so pip never resolved it. pip
+  resolution is the positive control. Neither half can prove the provider *constructs* —
+  that needs the model weights, which CI does not download — so the claim they support is
+  exactly "the extra resolves and `einops` is importable", and the release makes no stronger
+  one.
 
 ## [3.1.7] — 2026-08-22
 

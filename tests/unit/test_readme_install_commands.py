@@ -143,3 +143,43 @@ def test_no_readme_hard_pins_a_trelix_version() -> None:
         f"long description, so that pin is stale the moment the next release ships"
         for readme, lineno, dist, version in pins
     )
+
+
+def test_the_nomic_code_extra_declares_einops() -> None:
+    """An extra that omits a REQUIRED transitive import is the same class of bug as one
+    that does not exist: pip succeeds and the provider fails at use.
+
+    `nomic-ai/CodeRankEmbed`'s `config.json` declares
+    `auto_map.AutoModel = modeling_hf_nomic_bert.NomicBertModel`, and that published module
+    imports `einops` at its MODULE TOP LEVEL — so the import runs during the
+    `trust_remote_code` load, before any trelix code touches the model. Until v3.2.0 `einops`
+    was declared by no extra and no installed package provided it transitively, so
+    `nomic-code` raised `ModuleNotFoundError` from inside remote model code every time it was
+    selected: the provider had never constructed for any user, in any release.
+
+    This assertion is the offline half of the guard. The other half is the ci.yml unit job
+    installing `[nomic-code]`, which makes pip resolution itself the positive control — an
+    unresolvable or deleted requirement turns that job red. Neither half can prove the
+    provider CONSTRUCTS; that needs the model weights, which CI does not download. So the
+    claim these two support is exactly "the extra resolves and einops is importable".
+
+    MUTATION: delete the einops line from the nomic-code extra and this fails.
+    """
+    with (_ROOT / "pyproject.toml").open("rb") as handle:
+        extras = tomllib.load(handle)["project"]["optional-dependencies"]
+
+    assert "nomic-code" in extras, "the nomic-code extra is gone; the provider is unreachable"
+    requirements = extras["nomic-code"]
+    names = {re.split(r"[<>=!~\[ ]", req, maxsplit=1)[0].lower() for req in requirements}
+
+    # Precondition: without this the assertion below could pass on an empty parse.
+    assert "sentence-transformers" in names, (
+        f"the requirement parse produced {names} — it is not reading the extra correctly, so "
+        "the einops assertion below would be vacuous"
+    )
+    assert "einops" in names, (
+        "the nomic-code extra no longer declares einops. CodeRankEmbed's published "
+        "modeling_hf_nomic_bert.py imports it at module top level during the "
+        "trust_remote_code load, so the provider cannot construct without it — which is the "
+        "state trelix shipped in from this provider's introduction through v3.1.7."
+    )
