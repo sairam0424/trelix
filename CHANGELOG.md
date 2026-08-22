@@ -51,18 +51,23 @@ _Nothing yet._
   (all-MiniLM-L6-v2), where sentence-transformers reads the model's own
   `1_Pooling/config.json` rather than assuming a method — **not** `local-code` or
   `nomic-code`, which this same release marks EXPERIMENTAL for their own protocol
-  mismatches (below). For API-based accuracy, `voyage` is unaffected. This survived four
-  releases green because every test in `tests/unit/test_embedder_bge.py` replaces
-  `FlagModel` with a `MagicMock` or a stub, so no test ever executes `pooling()`.
+  mismatches (below). For API-based accuracy, `voyage` is unaffected. This shipped in **28 tagged releases** — every tag from v2.0.0 to v3.1.6 contains
+  `793c42b`, the commit that introduced the embedder — and stayed green in all of them
+  because every test in `tests/unit/test_embedder_bge.py` replaces `FlagModel` with a
+  `MagicMock` or a stub, so no test ever executes `pooling()`. (An earlier draft said
+  "four releases", a figure with no anchor behind it.)
 
 - **`local-code` and `nomic-code` are also marked EXPERIMENTAL: each wrapper sends a
   different encoding protocol than its model publishes.** Checked against the model
   repositories, not against our own docstrings. `local-code`
   (`Salesforce/SFR-Embedding-Code-2B_R`) omits the query instruction its card requires —
-  `BaseEmbedder.embed_query` is `return self.embed([text])[0]`
-  (`src/trelix/embedder/base.py:494-495`), i.e. queries and documents are encoded
-  identically, while the card passes `prompt=query_instruction_example` for queries and
-  leaves passages unprefixed. `nomic-code` prefixes `search_document: ` / `search_query: `,
+  `LocalCodeEmbedder.embed_query` is `return self.embed([text])[0]`, i.e. that provider
+  encodes queries and documents identically, while the card passes
+  `prompt=query_instruction_example` for queries and leaves passages unprefixed. (Cited by
+  symbol, not line: an earlier draft of this entry said `BaseEmbedder.embed_query` at
+  `base.py:494-495`, which was true against the v3.1.6 tree and wrong by the time it
+  shipped — this release's own diff to that file moved the body +34 lines, and the shared
+  `BaseEmbedder.embed_query` is an `@abstractmethod` that encodes nothing.) `nomic-code` prefixes `search_document: ` / `search_query: `,
   which are a *different* Nomic model's task prefixes; `nomic-ai/CodeRankEmbed` publishes one
   instruction, `Represent this query for searching relevant code: `, in its own
   `config_sentence_transformers.json`, with code unprefixed. Neither is fixed here: a
@@ -77,7 +82,8 @@ _Nothing yet._
   `local-code` and `nomic-code` both route through `load_remote_code_model`, which refuses
   unless `TRELIX_ALLOW_REMOTE_MODEL_CODE` is set — a variable that appeared in exactly two
   source files and in no doc, README, CHANGELOG or config example. Running the real
-  `make_embedder` for either raised `RemoteModelCodeNotAllowedError`. Compounding it, the
+  `make_embedder` for either raised `RemoteModelCodeNotAllowedError`. Compounding it for
+  `local-code` specifically — `nomic-code`'s extra is real and installs correctly — the
   documented install `pip install trelix[local-code]` (`docs/PROVIDERS.md`,
   `docs/USER_GUIDE.md`, `.env.example`) names an extra `pyproject.toml` does not declare, and
   pip treats an unknown extra as a warning rather than an error — so the advertised quickstart
@@ -89,8 +95,13 @@ _Nothing yet._
   `sys.meta_path`, where the new tests report `SKIPPED (bge-code extra not installed)`. A skip
   is reported inside a green check and is indistinguishable from a pass, which is the exact
   failure mode the test exists to close. `ci.yml` now installs `bge-code` in the unit job
-  (torch and transformers were already present via `local`, so this adds ~22 MB, not a new
-  heavyweight dependency). The two degeneracy tests are `xfail(strict=True)`: they document
+  (torch, transformers and sentence-transformers were already present via `local`; the
+  resolver adds 24 further packages). Measured CI impact on the job that matters: the four
+  Python test legs went from a 5m23s mean to 5m30s — +7s, inside run-to-run noise, and the
+  3.11 leg got faster. An earlier draft called it "~22 MB of pure-python wheels"; both
+  halves were wrong. `FlagEmbedding` requires `datasets`, which requires `pyarrow>=21.0.0`
+  — 118.6 MB on disk here with 37 compiled extension modules. The wall-clock number above
+  is the one that was actually measured; the byte count never was. The two degeneracy tests are `xfail(strict=True)`: they document
   today's bug, and the day someone switches to `FlagLLMModel` they XPASS and fail, forcing the
   fix to be acknowledged rather than absorbed.
 
