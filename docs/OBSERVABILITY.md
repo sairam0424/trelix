@@ -106,9 +106,10 @@ series only exists where the provider actually reports a count.
 | `nomic-code` | **no — not counted at all** | — | `NomicCodeEmbedder`, same reason |
 
 Those last two rows are the ones to notice. They are 2 of the 9 values
-`EmbedderConfig.provider` accepts, and `bge-code` is trelix's flagship v2.0 embedder, so a
-bge-code deployment emits **no embedding counters at all** — a provider-filtered dashboard
-will look broken rather than look free. Both run local models, so nothing is being billed
+`EmbedderConfig.provider` accepts, so a bge-code deployment emits **no embedding counters at
+all** — a provider-filtered dashboard will look broken rather than look free. (`bge-code` was
+described here as "trelix's flagship v2.0 embedder"; as of v3.1.7 it is marked **experimental**
+— its pooling is unverified against BAAI's published `pooling_mode_lasttoken: true`.) Both run local models, so nothing is being billed
 unmeasured; what is lost is the volume signal, not a cost signal.
 
 The SPLADE sparse embedder (`embedder/sparse.py`) is also uninstrumented. It is a separate

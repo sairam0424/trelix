@@ -952,6 +952,12 @@ class TestKnowledgeGraphPayloadIsCapped:
             concept_count=0,
             elapsed_seconds=1.5,
             community_summary=summary,
+            # Ints, not the auto-created MagicMock attributes: the tool now puts these
+            # two in the payload, and `json.dumps` of a MagicMock raises TypeError, so
+            # omitting them here breaks test_the_payload_fits_in_a_sane_budget rather
+            # than the code under test. 0/0 matches concept_count=0 — extraction off.
+            concept_symbols_considered=0,
+            concept_symbols_total=0,
         )
 
     def _call(self, **kwargs):  # type: ignore[no-untyped-def]
@@ -1005,6 +1011,38 @@ class TestKnowledgeGraphPayloadIsCapped:
             "community_summary",
         ):
             assert key in payload, f"documented key {key!r} disappeared"
+
+    def test_the_concept_sample_is_disclosed_not_just_its_count(self) -> None:
+        """An agent must learn concept_count came from 1.6% of the repo, as v3.1.5's
+        CLI output does: "Concepts : 47 (from the 200 most central of 12184 symbols)".
+        """
+        import trelix_mcp.server as srv
+
+        result = self._mock_result()
+        result.concept_count = 47
+        result.concept_symbols_considered = 200
+        result.concept_symbols_total = 12184
+
+        with (
+            patch("trelix.core.config.IndexConfig"),
+            patch("trelix.graph.builder.GraphBuilder") as MockBuilder,
+        ):
+            MockBuilder.return_value.build.return_value = result
+            payload = srv.build_knowledge_graph("/fake/repo", extract_concepts=True)
+
+        assert payload["concept_count"] == 47
+        assert payload["concept_symbols_considered"] == 200, (
+            "the bound the paid calls actually covered is missing from the payload"
+        )
+        assert payload["concept_symbols_total"] == 12184, (
+            "without the total, 200 is a number with nothing to be 1.6% of"
+        )
+
+    def test_the_coverage_keys_are_present_when_extraction_was_off(self) -> None:
+        """0/0 is the value that distinguishes "never ran" from "ran, found nothing"."""
+        payload = self._call()
+        assert payload["concept_symbols_considered"] == 0
+        assert payload["concept_symbols_total"] == 0
 
     def test_the_old_uncapped_shape_is_still_reachable(self) -> None:
         """An existing consumer parsing every community must have a way back."""

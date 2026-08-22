@@ -373,7 +373,8 @@ _EmbedderProvider = Literal[
 
 _PROVIDER_HELP = (
     "Embedding provider: local | openai | azure | voyage"
-    " | local-code | bge-code | nomic-code | bedrock-titan | bedrock-cohere"
+    " | local-code | nomic-code | bedrock-titan | bedrock-cohere"
+    " | bge-code (EXPERIMENTAL: pooling unverified, no quality claim)"
     " (default: TRELIX_EMBEDDER_PROVIDER env var, or 'local' if unset)"
 )
 

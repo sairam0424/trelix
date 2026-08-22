@@ -7,7 +7,7 @@ packages = ["src/trelix_mcp"]
 
 [project]
 name = "trelix-mcp"
-version = "3.1.5"
+version = "3.1.7"
 description = "MCP server for trelix — semantic code search for Claude Code, Cursor, Windsurf, Continue.dev"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -24,16 +24,24 @@ classifiers = [
 # The floor was `trelix>=2.8.0` and had been false since v2.8.1. The server calls five core
 # APIs that do not exist at 2.8.0, established by grepping each one across every tag rather
 # than by reading release notes:
-#   Database.get_symbol_ids_for_file_id  (server.py:508)  first shipped v3.1.2  <- binding
+#   GraphBuildResult.concept_symbols_*   (server.py:624)  first shipped v3.1.5  <- binding
+#   Database.get_symbol_ids_for_file_id  (server.py:508)  first shipped v3.1.2
 #   plan_from_intent_hint                (server.py:315)  first shipped v2.10.0
-#   RetrievalConfig.federation_max_repos (server.py:767)  first shipped v2.8.1
-#   FederatedRetriever.repos_queried_count (server.py:858) first shipped v2.8.1
+#   RetrievalConfig.federation_max_repos (server.py:787)  first shipped v2.8.1
+#   FederatedRetriever.repos_queried_count (server.py:878) first shipped v2.8.1
 #   RepoRegistry.add(..., max_repos=)                      first shipped v2.8.1
 # So `pip install trelix-mcp` could resolve core 2.8.0 and every search_code call would fail
 # on a missing attribute. Raised to the newest requirement, not to the current version:
 # lockstep governs the version STAMP, not this floor. Distinct from the v2.7.1 regression,
 # where floors were raised on an assumption — this one is raised on measured absence.
-dependencies = ["trelix>=3.1.2", "mcp>=1.24.0,<2.0", "fastmcp>=3.4.0,<4"]
+#
+# 3.1.2 -> 3.1.5 for the same measured reason, not for the stamp: build_knowledge_graph now
+# reads result.concept_symbols_considered / _total, and `git show
+# v3.1.4:src/trelix/graph/builder.py` has neither on GraphBuildResult (added v3.1.5, 0 hits
+# at every earlier tag). Against core 3.1.2-3.1.4 the tool would raise AttributeError and
+# return nothing at all — worse than the bare concept_count it replaced. The two federation
+# line numbers above moved 767->787 and 858->878 in that same edit.
+dependencies = ["trelix>=3.1.5", "mcp>=1.24.0,<2.0", "fastmcp>=3.4.0,<4"]
 
 [project.scripts]
 trelix-mcp = "trelix_mcp.server:main"

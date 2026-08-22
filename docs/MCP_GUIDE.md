@@ -28,7 +28,7 @@ version from the package instead:
 
 ```bash
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
-# 3.1.2
+# 3.1.5
 ```
 
 > **Note:** Python 3.10+ is required. Use a virtual environment if you manage multiple projects.
@@ -396,7 +396,7 @@ build_knowledge_graph(repo_path) → graph stats
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `repo_path` | str | required | Absolute path to the indexed repository |
-| `extract_concepts` | bool | `false` | Run LLM semantic-concept extraction (costs API calls) |
+| `extract_concepts` | bool | `false` | Run LLM semantic-concept extraction. **Paid**: at most 10 LLM calls over the 200 most central symbols (batches of 20); requires an LLM API key. Covers 1.6% of a 12,184-symbol index — see the coverage note below |
 | `min_community_size` | int | `2` | Drop communities smaller than this. `1` returns singletons too |
 | `max_communities` | int | `50` | Cap on returned communities, largest first. `0` disables the cap |
 
@@ -409,12 +409,23 @@ here, `nodes`/`edges`/`connected_components`/`max_depth`/`build_seconds`, do not
   "edge_count": 11150,
   "community_count": 6497,
   "concept_count": 0,
+  "concept_symbols_considered": 0,
+  "concept_symbols_total": 0,
   "elapsed_seconds": 1.52,
   "community_summary": [{"community_id": 12, "size": 514, "top_files": ["..."], "top_symbols": ["..."]}],
   "singleton_count": 6437,
   "communities_omitted": 6447
 }
 ```
+
+**Concept-extraction coverage.** `extract_concepts=True` does not cover the repository.
+It processes the **200 most central symbols** by the PageRank centrality computed during
+the build, in batches of 20 — at most 10 paid LLM calls. On a 12,184-symbol index that is
+**1.6% of symbols**, so `concept_count` describes that sample, not the repo.
+`concept_symbols_considered` / `concept_symbols_total` report that coverage in every
+response, and are `0`/`0` when extraction was off — which is what distinguishes
+"extraction never ran" from "it ran over 200 symbols and found nothing". Same two numbers
+as `trelix graph --concepts --json` ([CLI_REFERENCE](CLI_REFERENCE.md#trelix-graph)).
 
 **Why the caps exist.** `community_summary` used to ship every detected community,
 unsorted. On trelix's own index that is **1,160,517 bytes — roughly 290,000 tokens from

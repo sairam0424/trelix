@@ -1,4 +1,4 @@
-# trelix v3.1.2 — Providers Reference
+# trelix v3.1.7 — Providers Reference
 
 Complete guide to all embedding providers and LLM providers supported by trelix.
 
@@ -14,8 +14,8 @@ Complete guide to all embedding providers and LLM providers supported by trelix.
 | `openai` | `OPENAI_API_KEY` | 1536 / 3072 | — | Fast (API) | Production, general use |
 | `azure` | `AZURE_API_KEY` + `AZURE_ENDPOINT` | 1536 / 3072 | — | Fast (API) | Enterprise, Azure customers |
 | `voyage` | `VOYAGE_API_KEY` | 1024 | 56.26 avg | Fast (API) | Best API-based code retrieval |
-| `local-code` | No (HuggingFace) | 4096 | 67.41 avg | Slow (GPU rec.) | Highest offline accuracy |
-| `bge-code` | No (HuggingFace) | 768 | — | Slow (GPU rec.) | Self-hosted, no API cost |
+| `local-code` | No (HuggingFace) | 2304 | 67.41 avg (self-reported) | Slow (GPU rec.) | Experimental — needs `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` |
+| `bge-code` | No (HuggingFace) | 1536 | — | Slow (GPU rec.) | **EXPERIMENTAL — broken pooling, not for retrieval** |
 | `nomic-code` | No (HuggingFace) | 768 | — | Medium (CPU) | Self-hosted alternative |
 | `bedrock-titan` | AWS credentials | 256 / 512 / 1024 | — | Fast (API) | AWS-native deployments |
 | `bedrock-cohere` | AWS credentials | 1024 | — | Fast (API) | AWS + strong code retrieval |
@@ -118,14 +118,26 @@ TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512
 
 ---
 
-### local-code (SFR-Embedding-Code-2B_R)
+### local-code (SFR-Embedding-Code-2B_R) — experimental
 
-The highest-accuracy offline option. **CoIR 67.41 avg** — top of the CoIR leaderboard as of 2025.
+**CoIR 67.41 avg** as self-reported by the model card. trelix has not reproduced that
+number, and this provider is off-protocol in one respect: the model card requires a
+query instruction (`Instruct: Given Code or Text, retrieval relevant content` /
+`Query: `) that trelix does not send, so queries are encoded as passages. Retrieval
+works; quality is below what the model card measured.
 
-- **Model**: `Salesforce/SFR-Embedding-Code-2B_R`
-- **Dimensions**: 4096
+- **Model**: `Salesforce/SFR-Embedding-Code-2B_R` (a Gemma-2-2B fine-tune)
+- **Dimensions**: 2304 — `hidden_size` in the model's `config.json` and
+  `word_embedding_dimension` in its `1_Pooling/config.json`. Earlier docs said 4096;
+  that is the model's `max_seq_length`.
 - **RAM**: ~8 GB GPU VRAM (or ~16 GB CPU RAM in slow mode)
-- **Install**: `pip install trelix[local-code]`
+- **Install**: `pip install 'trelix[local]'` — there is no `local-code` extra; the
+  provider needs only sentence-transformers.
+- **Required opt-in**: `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` **in the process
+  environment** (a `.env` cannot set it, by design). This model loads with
+  `trust_remote_code=True`; without the opt-in trelix refuses to construct it.
+- **Licence**: weights are **CC-BY-NC-4.0 — research use only**. Not usable in a
+  commercial product. Prefer `voyage` or `bedrock-cohere` there.
 
 ```bash
 TRELIX_EMBEDDER_PROVIDER=local-code trelix index ./my-repo
@@ -139,12 +151,31 @@ GPU is strongly recommended. CPU works but is significantly slower on large repo
 
 ---
 
-### bge-code (BAAI/BGE-Code-v1)
+### bge-code (BAAI/BGE-Code-v1) — EXPERIMENTAL, DO NOT USE FOR RETRIEVAL
+
+> **This provider pools the wrong token and its embeddings are degenerate. Use
+> `local-code` or `voyage` instead.**
+>
+> `FlagEmbedding`'s `FlagModel` is an alias for the *encoder-only* `BaseEmbedder`, which
+> pools **CLS** (`return last_hidden_state[:, 0]`). `BAAI/bge-code-v1` is a causal Qwen2
+> decoder published with `pooling_mode_lasttoken: true`. Position 0 of a causal decoder
+> cannot attend forward, so the vector depends on token 0 and nothing else — measured
+> cosine 1.0 / max|diff| 0.0 between two sequences that share only token 0, against
+> cosine 0.10 for the model's published last-token pooling on the same hidden states.
+>
+> Because `encode_queries` prefixes every query with the same instruction and no BOS is
+> prepended, **every query embedding is identical**. Documents collapse by first token.
+> Search results from a `bge-code` index are meaningless.
+>
+> Not fixable by a flag: the encoder-only class raises `NotImplementedError` for
+> `last_token`. The correct fix is `FlagLLMModel` with `trust_remote_code=True`, deferred
+> pending validation against real weights.
 
 Self-hosted, no API cost, optimized for code. Uses the `FlagEmbedding` library.
 
 - **Model**: `BAAI/bge-code-v1`
-- **Dimensions**: 768
+- **Dimensions**: 1536
+- **Status**: experimental / broken pooling — not fit for retrieval
 - **Install**: `pip install trelix[bge-code]`
 
 ```bash
@@ -159,13 +190,24 @@ GPU recommended. CPU works for smaller repos.
 
 ---
 
-### nomic-code (CodeRankEmbed)
+### nomic-code (CodeRankEmbed) — experimental
 
 Self-hosted alternative with a smaller footprint than `bge-code`. Uses `sentence-transformers`.
 
-- **Model**: `nomic-ai/CodeRankEmbed`
+- **Model**: `nomic-ai/CodeRankEmbed` (137M bidirectional encoder, MIT)
 - **Dimensions**: 768
-- **Install**: `pip install trelix[local]`
+- **Install**: `pip install 'trelix[local]'`
+- **Required opt-in**: `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` **in the process
+  environment**. CodeRankEmbed loads with `trust_remote_code=True`; without the
+  opt-in trelix refuses to construct it.
+
+**Known protocol mismatch.** trelix prefixes documents with `search_document: ` and
+queries with `search_query: `. Those belong to nomic-embed-text v1.5. CodeRankEmbed
+publishes one prefix — the query instruction `Represent this query for searching
+relevant code: ` — and takes no prefix on code. Both sides are therefore prefixed
+with strings the model never saw in training. Retrieval still ranks (pooling and
+dimension are correct), but quality is below the model card's 60.1 CoIR. The fix
+changes every stored vector and so is tracked with the bge-code rewrite.
 
 ```bash
 TRELIX_EMBEDDER_PROVIDER=nomic-code trelix index ./my-repo

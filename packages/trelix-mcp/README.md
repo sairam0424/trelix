@@ -92,7 +92,7 @@ Set environment variables before starting the MCP server. All variables are opti
 # Local sentence-transformers — no API key (default)
 TRELIX_EMBEDDER_PROVIDER=local
 
-# Local BGE Code (v1.5) — superior code retrieval, no API key
+# Local BGE Code — EXPERIMENTAL: pooling unverified, no quality claim, no API key
 TRELIX_EMBEDDER_PROVIDER=bge-code
 
 # Local Nomic Code — competitive code embeddings, no API key

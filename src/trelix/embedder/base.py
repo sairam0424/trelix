@@ -1,13 +1,25 @@
 """
-Embedder abstraction — seven providers, same interface.
+Embedder abstraction — nine providers, same interface.
 
   local          → LocalEmbedder           (sentence-transformers, no API key)
   openai         → OpenAIEmbedder          (text-embedding-3-large, 3072 dims)
   azure          → AzureOpenAIEmbedder     (Azure OpenAI, AZURE_* env vars)
   voyage         → VoyageEmbedder          (voyage-code-3, 1024 dims, 56.26 CoIR)
-  local-code     → LocalCodeEmbedder       (SFR-Embedding-Code-2B_R, 4096 dims, 67.41 CoIR)
+  local-code     → LocalCodeEmbedder       (SFR-Embedding-Code-2B_R, 2304 dims) EXPERIMENTAL
   bedrock-titan  → BedrockTitanEmbedder    (amazon.titan-embed-text-v2, 256/512/1024 dims)
   bedrock-cohere → BedrockCohereEmbedder   (cohere.embed-english-v3, 1024 dims)
+  bge-code       → BGECodeEmbedder         (bge_code.py; bge-code-v1, 1536 dims) EXPERIMENTAL
+  nomic-code     → NomicCodeEmbedder       (nomic_code.py; CodeRankEmbed, 768 dims) EXPERIMENTAL
+
+This docstring said "seven" and listed seven, while make_embedder() below has
+dispatched nine since v2 — bge-code and nomic-code were never added here.
+
+EXPERIMENTAL means: the wrapper's encoding protocol has been checked against the
+model repository and does NOT match it. bge-code pools with `cls` on a causal
+decoder (see bge_code.py). local-code omits the query instruction its model card
+requires. nomic-code sends a different Nomic model's task prefixes. None of the
+three has been validated against real weights; all three are retained, documented,
+and deliberately unfixed rather than silently advertised as working.
 
 The rest of the pipeline only ever calls embed() / embed_query().
 Switching provider = set TRELIX_EMBEDDER_PROVIDER in .env — zero code changes.
@@ -454,8 +466,30 @@ class LocalCodeEmbedder(BaseEmbedder):
     """
     SFR-Embedding-Code-2B_R — best open-source code embedder.
 
-    Performance: 67.41 avg on CoIR (vs Ada-002's 45.59 = 49% gap).
-    Dimensions: 4096 by default (model.get_embedding_dimension()).
+    Performance: 67.41 avg on CoIR (vs Ada-002's 45.59 = 49% gap) — the model card's
+    self-report, never reproduced here.
+    Dimensions: 2304 (model.get_embedding_dimension()). config.json `hidden_size` and
+    1_Pooling/config.json `word_embedding_dimension` both say 2304, and modules.json
+    has no Dense module to widen it. The 4096 this line claimed is the model's
+    sentence_bert_config.json `max_seq_length`.
+
+    Pooling is CORRECT here, unlike bge-code, and for a reason worth writing down:
+    this is also a causal decoder (Gemma-2-2B fine-tune), but modules.json routes it
+    through sentence_transformers Pooling, whose load() reads 1_Pooling/config.json,
+    and this model publishes `pooling_mode_lasttoken: true`. sentence-transformers
+    honours that file; FlagEmbedding never reads it, which is the whole difference
+    between this provider and bge-code.
+
+    KNOWN GAP (deferred — needs real-weight validation): the model card requires a
+    query instruction, `encode(queries, prompt="Instruct: Given Code or Text,
+    retrieval relevant content" + newline + "Query: ")`, with passages unprefixed.
+    embed_query() below sends the document path instead, so queries are encoded as
+    passages. config_sentence_transformers.json ships `prompts: {}`, so
+    sentence-transformers cannot supply the instruction on our behalf either.
+
+    LICENCE: these weights are CC-BY-NC-4.0, research use only (the model card says
+    so explicitly). Nothing in the docs says this, though sparse.py already warns on
+    load for the same reason about naver/splade.
 
     NOTE: This model requires approximately 8 GB RAM / GPU memory (2B parameters).
     trust_remote_code=True is required for the SFR model architecture — it is not
@@ -501,8 +535,11 @@ class LocalCodeEmbedder(BaseEmbedder):
         )
         if getter is not None:
             return getter()  # type: ignore[no-any-return]
-        # Fallback: SFR-Embedding-Code-2B_R native output dimension
-        return 4096
+        # Fallback: SFR-Embedding-Code-2B_R native output dimension — 2304, from
+        # config.json `hidden_size` and 1_Pooling/config.json
+        # `word_embedding_dimension`, with no Dense module in modules.json to widen
+        # it. The previous 4096 was that model's max_seq_length.
+        return 2304
 
 
 class _BedrockEmbedderBase(BaseEmbedder):

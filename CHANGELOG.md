@@ -8,6 +8,169 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.1.7] — 2026-08-22
+
+### Changed
+
+- **Retracted: `bge-code` does not "work now". v3.1.6's dimension fix unblocked a
+  degenerate path, and the provider is marked EXPERIMENTAL.** v3.1.6 correctly found that
+  `BGECodeEmbedder.dimension` raised `AttributeError` on every real install and fixed the
+  width, but the framing that followed — that `bge-code` could then index and query — was
+  wrong. What the fix unblocked was a provider that pools the wrong token.
+  `from FlagEmbedding import FlagModel` is the alias `from .base import BaseEmbedder as
+  FlagModel` (FlagEmbedding 1.4.0, `inference/embedder/encoder_only/__init__.py:1`): the
+  ENCODER-ONLY `BaseEmbedder`, `DEFAULT_POOLING_METHOD = "cls"`
+  (`encoder_only/base.py:38`), `__init__` default `pooling_method: str = "cls"` (`:50`,
+  assigned `:76`), and `pooling()` for that method is `return last_hidden_state[:, 0]`
+  (`:302`). `BGECodeEmbedder.__init__` passes no `pooling_method`. But `BAAI/bge-code-v1`
+  is a causal Qwen2 decoder — `config.json` `architectures: ["Qwen2Model"]`, `model_type:
+  "qwen2"` — published with `1_Pooling/config.json` `pooling_mode_lasttoken: true` and
+  `pooling_mode_cls_token: false`; the model card's own examples use `FlagLLMModel` with
+  `trust_remote_code=True`, or `last_token_pool` directly. Position 0 of a causal decoder
+  cannot attend forward, so a CLS vector depends on token 0 and nothing else. Measured
+  against a randomly initialised `Qwen2Model` from a small `Qwen2Config` (no weights)
+  pooled by the real `FlagModel.pooling`: two sequences identical in token 0 and
+  different in every later token gave **cosine 1.0, max|diff| 0.0** — bitwise identical —
+  while the same hidden states through FlagEmbedding's real `last_token_pool` gave cosine
+  0.10 and through the real `mean` branch 0.65, and changing token 0 alone moved CLS to
+  cosine -0.015. Across 200 resamples of every token after position 0, position 0's
+  output never moved: the loss is total, not partial. Queries are worst — `encode_queries`
+  prefixes all of them with the same instruction via `get_detailed_instruct`, and
+  `tokenizer_config.json` has `add_bos_token: false` / `bos_token: null`, so token 0 is
+  the shared prefix and **every query embedding is identical**. Documents are not all
+  identical but collapse by first token: 5 distinct chunks sharing token 0 produced 1
+  distinct vector, against 5 for `last_token_pool`. No kwarg fixes it —
+  `FlagModel(..., pooling_method="last_token")` raises `NotImplementedError`
+  (`encoder_only/base.py:308`). The correct fix is `FlagLLMModel`, which requires
+  `trust_remote_code=True` and validation against real weights, and is **deliberately
+  deferred**. Meanwhile `bge-code` is documented EXPERIMENTAL and unfit for retrieval, and it
+  now logs a WARNING on construction — docs alone do not reach a user who never opens
+  `PROVIDERS.md`, and the failure is otherwise silent: nothing raises, because
+  `resolve_trust_remote_code(False, …)` returns False without error and the builtin
+  `Qwen2Tokenizer` loads fine. The recommended offline alternative is **`local`**
+  (all-MiniLM-L6-v2), where sentence-transformers reads the model's own
+  `1_Pooling/config.json` rather than assuming a method — **not** `local-code` or
+  `nomic-code`, which this same release marks EXPERIMENTAL for their own protocol
+  mismatches (below). For API-based accuracy, `voyage` is unaffected. This shipped in **28 tagged releases** — every tag from v2.0.0 to v3.1.6 contains
+  `793c42b`, the commit that introduced the embedder — and stayed green in all of them
+  because every test in `tests/unit/test_embedder_bge.py` replaces `FlagModel` with a
+  `MagicMock` or a stub, so no test ever executes `pooling()`. (An earlier draft said
+  "four releases", a figure with no anchor behind it.)
+
+- **`local-code` and `nomic-code` are also marked EXPERIMENTAL: each wrapper sends a
+  different encoding protocol than its model publishes.** Checked against the model
+  repositories, not against our own docstrings. `local-code`
+  (`Salesforce/SFR-Embedding-Code-2B_R`) omits the query instruction its card requires —
+  `LocalCodeEmbedder.embed_query` is `return self.embed([text])[0]`, i.e. that provider
+  encodes queries and documents identically, while the card passes
+  `prompt=query_instruction_example` for queries and leaves passages unprefixed. (Cited by
+  symbol, not line: an earlier draft of this entry said `BaseEmbedder.embed_query` at
+  `base.py:494-495`, which was true against the v3.1.6 tree and wrong by the time it
+  shipped — this release's own diff to that file moved the body +34 lines, and the shared
+  `BaseEmbedder.embed_query` is an `@abstractmethod` that encodes nothing.) `nomic-code` prefixes `search_document: ` / `search_query: `,
+  which are a *different* Nomic model's task prefixes; `nomic-ai/CodeRankEmbed` publishes one
+  instruction, `Represent this query for searching relevant code: `, in its own
+  `config_sentence_transformers.json`, with code unprefixed. Neither is fixed here: a
+  protocol change silently invalidates every existing index built with that provider, so it
+  needs its own release with a migration note. `src/trelix/embedder/base.py`'s module
+  docstring now defines EXPERIMENTAL precisely and lists all three — it previously said
+  "seven" and listed seven while `make_embedder` had dispatched nine since v2.
+
+### Fixed
+
+- **Two of the nine providers could not be started by following the documentation.**
+  `local-code` and `nomic-code` both route through `load_remote_code_model`, which refuses
+  unless `TRELIX_ALLOW_REMOTE_MODEL_CODE` is set — a variable that appeared in exactly two
+  source files and in no doc, README, CHANGELOG or config example. Running the real
+  `make_embedder` for either raised `RemoteModelCodeNotAllowedError`. Compounding it for
+  `local-code` specifically — `nomic-code`'s extra is real and installs correctly — the
+  documented install `pip install trelix[local-code]` (`docs/PROVIDERS.md`,
+  `docs/USER_GUIDE.md`, `.env.example`) names an extra `pyproject.toml` does not declare, and
+  pip treats an unknown extra as a warning rather than an error — so the advertised quickstart
+  for both providers silently installed nothing and then refused to run. Both now documented.
+
+- **The pooling regression test would have been theatre without a CI change.** The unit job
+  installed `.[local,otel,sso,dev]` and `bge-code` is deliberately excluded from `all`, so
+  FlagEmbedding was absent from every job that runs pytest — confirmed by blocking it at
+  `sys.meta_path`, where the new tests report `SKIPPED (bge-code extra not installed)`. A skip
+  is reported inside a green check and is indistinguishable from a pass, which is the exact
+  failure mode the test exists to close. `ci.yml` now installs `bge-code` in the unit job
+  (torch, transformers and sentence-transformers were already present via `local`; the
+  resolver adds 24 further packages). Measured CI impact on the job that matters: the four
+  Python test legs went from a 5m23s mean to 5m30s — +7s, inside run-to-run noise, and the
+  3.11 leg got faster. An earlier draft called it "~22 MB of pure-python wheels"; both
+  halves were wrong. `FlagEmbedding` requires `datasets`, which requires `pyarrow>=21.0.0`
+  — 118.6 MB on disk here with 37 compiled extension modules. The wall-clock number above
+  is the one that was actually measured; the byte count never was. The two degeneracy tests are `xfail(strict=True)`: they document
+  today's bug, and the day someone switches to `FlagLLMModel` they XPASS and fail, forcing the
+  fix to be acknowledged rather than absorbed.
+
+## [3.1.6] — 2026-08-22
+
+> **Annotation added in 3.1.7. The entry below is the shipped 3.1.6 text and is unchanged.**
+> The `bge-code` fix recorded here is correct as far as it goes — the `AttributeError` and the
+> 768 default were both real — but removing that raise made a degenerate pooling path
+> reachable for the first time, so it replaced a loud failure with a silent one. It did not
+> establish that `bge-code` works. `bge-code` is marked **experimental** as of 3.1.7; see that
+> entry.
+
+### Fixed
+
+- **`bge-code` could not index or query anything: `AttributeError` before Phase 1, and the
+  width it advertised was wrong underneath that.** `BGECodeEmbedder.dimension` called
+  `self._model.get_sentence_embedding_dimension()`, a method FlagEmbedding has never had —
+  absent from every class in the 1.2.11, 1.3.5 and 1.4.0 sdists, with no `__getattr__` on
+  `AbsEmbedder` or `FlagModel` to forward it. `Indexer.__init__` reads that property to size
+  the vec0 table (`indexer.py:388`) and `Retriever.__init__` reads it to arm `DimensionGuard`
+  (`retriever.py:262`), so every `bge-code` index and query died there. The unit test covering
+  the property passed only because a `MagicMock` answers for any attribute asked of it — the
+  green test was the reason nobody noticed. Behind the raise sat a second wrong number:
+  `bge_code_dimensions` defaulted to 768 while `BAAI/bge-code-v1` emits 1536 (`config.json`
+  `hidden_size: 1536`, `1_Pooling/config.json` `word_embedding_dimension: 1536`), and nothing
+  narrowed it — `truncate_dim`, FlagEmbedding's Matryoshka knob, was never passed. Had the
+  property returned 768 the vec0 table would have been created `FLOAT[768]` and Phase 3 would
+  have aborted with `PartialIndexError … Expected 768 dimensions but received 1536`, leaving
+  an index of zero vectors with 768 already stamped into `index_metadata`. `dimension` now
+  reads the loaded model — `truncate_dim` first, then the HF config's `hidden_size`, then the
+  configured value, so it cannot raise — and the default is 1536. No migration: because the
+  property raised before `make_vector_store` ran, no `bge-code` index has ever been built, so
+  nothing existing changes width. Switching a pre-existing 768-dim index (`nomic-code`) to
+  `bge-code` now raises the intended `DimensionMismatchError` with its `migrate-vectors
+  --reset --provider` instruction instead of `AttributeError`. Pinned by a plain stub class
+  carrying FlagModel's real attribute surface, which a `MagicMock` cannot fake past.
+  `docs/architecture.md`, `docs/PROVIDERS.md`, `docs/FAQ.md` and `docs/GLOSSARY.md` corrected
+  to 1536; `docs/USER_GUIDE.md` and `docs/WHY_TRELIX.md` already said 1536.
+
+- **`build_knowledge_graph` (MCP) reported `concept_count` with no coverage, so an agent
+  got the exact misreport v3.1.5 fixed for humans.** Extraction is capped at the 200 most
+  central symbols (batches of 20, at most 10 paid LLM calls); on this repo's own
+  12,184-symbol index that is **1.6%**, so the count describes a sample, not the
+  repository. v3.1.5 gave humans `Concepts : 47 (from the 200 most central of 12184
+  symbols — 1.6%)` and gave `--json` `concept_symbols_considered` /
+  `concept_symbols_total`, but `packages/trelix-mcp/src/trelix_mcp/server.py` still
+  returned the bare count and its docstring — which is the text FastMCP hands an agent as
+  the tool description — named neither the cost nor the bound. The tool now returns both
+  counts and the docstring states "PAID: up to 10 LLM calls over the 200 most central
+  symbols". Additive at the data layer: `GraphBuildResult` has carried the two fields
+  since v3.1.5 (`src/trelix/graph/builder.py:44`), and added response keys are compatible
+  under the **Stable** "MCP tool signatures" row of `docs/BACKWARDS_COMPATIBILITY.md`,
+  which forbids removals. Unlike the CLI's `if concepts:`, the keys are emitted
+  unconditionally: `0`/`0` beside `concept_count=0` is the only thing that distinguishes
+  "extraction never ran" from "it ran over 200 symbols and found nothing".
+  **`trelix-mcp`'s floor goes `trelix>=3.1.2` → `>=3.1.5` in the same change**, on
+  measured absence rather than on the stamp: `git show v3.1.4:src/trelix/graph/builder.py`
+  has neither field on `GraphBuildResult` (0 hits at v3.1.2, v3.1.3 and v3.1.4; 7 at
+  v3.1.5), so at those three published cores the tool would raise `AttributeError` and
+  return nothing at all. Two `server.py` citations in that same comment block were
+  re-measured (`767`→`787`, `858`→`878`) because this edit moves them. The shared test
+  mock had to be fixed here too, not as tidying: it is a `MagicMock`, so its auto-created
+  attributes are not JSON-serializable and `test_the_payload_fits_in_a_sane_budget` fails
+  with `TypeError: Object of type MagicMock is not JSON serializable` on the code change
+  alone. The REST API does not share the gap — all four `/graph*` endpoints in
+  `src/trelix/api/app.py` pass `extract_concepts=False` and `GraphStatsResponse` has no
+  concept field, so HTTP has no concept surface to misreport (it has no way to *request*
+  extraction either, which is a separate feature gap).
+
 ## [3.1.5] — 2026-08-21
 
 ### Fixed

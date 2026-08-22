@@ -7,8 +7,9 @@ candidate rather than by any gate.
 
 Most of those hits are fine and MUST NOT be touched: "before v3.1.2", "through v3.1.1",
 "added in v2.8.1" are history, and a test that rewrote them would destroy the record. Doc
-*header* stamps ("Version: 3.1.2" atop a guide) are stale too, but a reader does not act on
-them — they are deferred deliberately, not covered here.
+*header* stamps ("Version: 3.1.2" atop a guide) drifted the same way and are covered by the
+last two tests here, which scan only stamp POSITIONS — H1, masthead, signature — so that no
+regex ever has to guess whether a triple in body prose is a claim or a record.
 
 What this file pins is the narrow set a reader turns into a command or a decision:
 
@@ -125,3 +126,91 @@ def test_the_charts_own_version_moves_when_its_contents_do() -> None:
     own = re.search(r"^version:\s*([0-9]+\.[0-9]+\.[0-9]+)\s*$", chart, re.M)
     assert own is not None, "helm/trelix/Chart.yaml has no parseable chart `version`"
     assert own.group(1) != "0.0.0", "the chart version is a placeholder"
+
+
+# ── docs/ header, masthead and signature version stamps ────────────────────────
+#
+# Scope is POSITIONAL on purpose. A version triple in body prose is almost always
+# history ("before v3.1.2", "New in v3.0.0") and must never be rewritten, so this
+# looks only at the three places a stamp announces what the document is ABOUT: an H1
+# title, a labelled `Version:` line in the first few lines, and a `trelix vX.Y.Z`
+# signature at the foot. Measured on the tree at 3.1.5, those three shapes matched 16
+# sites across 12 pages and produced zero false positives — docs/AUDIT.md and
+# docs/SSO.md ("New in v3.0.0") and docs/BACKWARDS_COMPATIBILITY.md ("SemVer 2.0.0")
+# all pass untouched.
+#
+# Body-text and sample-output claims (`# trelix 3.1.2` under `trelix --version`,
+# "trelix-mcp v3.1.2 exposes 15 tools") are NOT covered: nothing about their position
+# distinguishes them from history, so a regex broad enough to catch them would rewrite
+# the record. They stay a manual release-checklist item.
+
+_VERSION_TRIPLE = re.compile(r"(?<![\w.])v?(\d+\.\d+\.\d+)(?![\w.])")
+_LABELLED_STAMP = re.compile(r"\bVersion:\**\s*v?(\d+\.\d+\.\d+)")
+_SIGNATURE_STAMP = re.compile(r"\btrelix v(\d+\.\d+\.\d+)")
+_MASTHEAD_LINES = 5
+_SIGNATURE_LINES = 3
+
+
+def _doc_pages() -> list[Path]:
+    """Top-level docs/ pages, minus any whose FILENAME names a release.
+
+    `docs/v2.4.0-world-release-report.md` stamps 2.4.0 in its H1 and its masthead and
+    always should: that release is its subject. Same for the nested dated artifacts
+    (`docs/reports/`, `docs/migration/`, `docs/superpowers/`), which `glob` skips.
+    """
+    return [
+        page
+        for page in sorted((_ROOT / "docs").glob("*.md"))
+        if not re.search(r"\d+\.\d+\.\d+", page.name)
+    ]
+
+
+def _version_stamps(page: Path) -> list[tuple[int, str, str]]:
+    """Every (line number, version, shape) stamp on one page."""
+    lines = page.read_text(encoding="utf-8").splitlines()
+    stamps: list[tuple[int, str, str]] = []
+
+    for lineno, line in enumerate(lines[:_MASTHEAD_LINES], start=1):
+        if line.startswith("# "):
+            title = _VERSION_TRIPLE.search(line)
+            if title is not None:
+                stamps.append((lineno, title.group(1), "H1 title"))
+        labelled = _LABELLED_STAMP.search(line)
+        if labelled is not None:
+            stamps.append((lineno, labelled.group(1), "masthead Version: stamp"))
+
+    tail_start = max(len(lines) - _SIGNATURE_LINES, 0)
+    for lineno, line in enumerate(lines[tail_start:], start=tail_start + 1):
+        signature = _SIGNATURE_STAMP.search(line)
+        if signature is not None:
+            stamps.append((lineno, signature.group(1), "signature line"))
+
+    return stamps
+
+
+def test_the_stamp_scanner_still_matches_something() -> None:
+    """Guards the regexes, not the docs. Silence here would make the next test vacuous.
+
+    This is the failure the four-release drift was hiding behind: a check nobody
+    noticed had stopped looking. If a docs reshuffle drops the stamps below this floor,
+    fail loudly rather than pass on an empty scan.
+    """
+    stamped = {page.name: _version_stamps(page) for page in _doc_pages()}
+    pages_with_stamps = {name for name, found in stamped.items() if found}
+    total = sum(len(found) for found in stamped.values())
+    assert len(pages_with_stamps) >= 10, (
+        f"only {len(pages_with_stamps)} docs/ pages carry a version stamp — the shapes "
+        f"this test recognises have probably changed: {sorted(pages_with_stamps)}"
+    )
+    assert total >= 14, f"only {total} stamps matched across {len(pages_with_stamps)} pages"
+
+
+@pytest.mark.parametrize("page", _doc_pages(), ids=lambda page: page.name)
+def test_doc_page_version_stamps_name_the_shipping_version(page: Path) -> None:
+    """A guide whose own header names a superseded release reads as unmaintained."""
+    version = _shipping_version()
+    stale = [(n, got, shape) for n, got, shape in _version_stamps(page) if got != version]
+    assert not stale, "\n".join(
+        f"docs/{page.name}:{n} ({shape}) stamps {got} while this tree ships {version}"
+        for n, got, shape in stale
+    )

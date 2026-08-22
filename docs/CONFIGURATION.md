@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v3.1.2
+# Trelix Configuration Reference — v3.1.7
 
 Complete reference for all configuration options available in trelix.
 
@@ -53,7 +53,7 @@ anywhere. See [Per-Project Configuration](#per-project-configuration).
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider. One of: `local`, `openai`, `azure`, `voyage`, `local-code`, `bge-code`, `nomic-code`, `bedrock-titan`, `bedrock-cohere` — see [PROVIDERS.md](PROVIDERS.md) |
+| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider. One of: `local`, `openai`, `azure`, `voyage`, `local-code`, `bge-code`, `nomic-code`, `bedrock-titan`, `bedrock-cohere` (`bge-code` is **experimental** — pooling unverified) — see [PROVIDERS.md](PROVIDERS.md) |
 | `TRELIX_EMBEDDER_OPENAI_MODEL` | `text-embedding-3-large` | OpenAI embedding model name |
 | `AZURE_EMBEDDINGS_MODEL` | `text-embedding-3-large` | Azure deployment name for embeddings. **Not** `TRELIX_EMBEDDER_AZURE_DEPLOYMENT` — this field carries an explicit alias, so the `TRELIX_EMBEDDER_` prefix does not apply (see the naming rule above) |
 | `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS` | _(none)_ | Matryoshka output dimension for Voyage models. Accepted values: `256`, `512`, `1024`, `2048` |
@@ -361,7 +361,7 @@ relevant to your setup. Lines beginning with `#` are comments and are ignored.
 
 ```dotenv
 # =============================================================================
-# Trelix v3.1.2 — complete .env example
+# Trelix v3.1.5 — complete .env example
 # Copy to .env and fill in values. Never commit this file.
 # =============================================================================
 
@@ -369,7 +369,7 @@ relevant to your setup. Lines beginning with `#` are comments and are ignored.
 # Embedder
 # ---------------------------------------------------------------------------
 
-# Provider: local | openai | azure | voyage | bge-code | nomic-code
+# Provider: local | openai | azure | voyage | nomic-code | bge-code (experimental)
 TRELIX_EMBEDDER_PROVIDER=local
 
 # OpenAI embeddings

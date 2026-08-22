@@ -166,9 +166,13 @@ nodes = retriever.retrieve(QueryBundle("how does authentication work?"))
 **What it does:** `pip install "trelix[local]"` + `trelix index ./repo` works completely offline. The local embedder (`all-MiniLM-L6-v2`) runs via sentence-transformers with no API call. The local-code embedder (`SFR-Embedding-Code-2B_R`) is a 2B-parameter code-specialized model that also runs fully offline with no API key.
 
 **Additional local-first embedding options:**
-- `nomic-code`: Nomic CodeRankEmbed (768-dim, Apache 2.0, sentence-transformers, CoIR score 58.40)
-- `bge-code`: BGE-Code-v1 (1536-dim, FlagEmbedding, CoIR score 63.10)
-- `local-code`: SFR-Embedding-Code-2B_R (4096-dim, CoIR score 67.41 — highest quality local option)
+- `nomic-code`: Nomic CodeRankEmbed (768-dim, MIT, sentence-transformers, vendor CoIR 60.1) — experimental
+- `bge-code`: BGE-Code-v1 (1536-dim, FlagEmbedding, vendor CoIR 63.10) — experimental
+- `local-code`: SFR-Embedding-Code-2B_R (2304-dim, vendor CoIR 67.41) — experimental, **CC-BY-NC-4.0 weights: research use only**
+
+All three are self-hosted code embedders whose wrapper is known to deviate from the
+model's published encoding protocol; see docs/PROVIDERS.md before choosing one. For
+commercial use pick `local` (Apache 2.0), `voyage`, or `bedrock-cohere`.
 
 **Why it matters:** Copilot requires a GitHub account. Cursor requires a Cursor account. Sourcegraph Cody requires a Sourcegraph account. Trelix requires nothing — it works in an air-gapped environment, behind a corporate firewall, or on a plane with no Wi-Fi. LLM synthesis (`trelix ask`) still needs an API key, but indexing and search (`trelix index`, `trelix search`) are fully local.
 
@@ -292,7 +296,7 @@ retrieve → synthesize
 
 **Fit: High.**
 
-`pip install "trelix[local]" && trelix index ./repo && trelix ask ./repo "how does the request lifecycle work?"` — no API key, no cloud, no data egress. The local embedder produces competitive retrieval quality for most codebase exploration tasks. Add `--provider bge-code` or `--provider nomic-code` for code-specialized embeddings, still fully offline.
+`pip install "trelix[local]" && trelix index ./repo && trelix ask ./repo "how does the request lifecycle work?"` — no API key, no cloud, no data egress. The local embedder produces competitive retrieval quality for most codebase exploration tasks. Add `--provider nomic-code` or `--provider local-code` for code-specialized embeddings, still fully offline. (`--provider bge-code` also exists but is **experimental** — its pooling is unverified; see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).)
 
 ---
 
@@ -386,9 +390,9 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 - A code review platform with UI (GitHub PR review is CLI-based and MCP-based, not a hosted product)
 - A real-time streaming completions service (retrieval happens at query time, not keystroke time)
 
-### Current version scope (v3.1.2)
+### Current version scope (v3.1.5)
 
-| In v3.1.2 | Planned (post-3.1) |
+| In v3.1.5 | Planned (post-3.1) |
 |-----------|-----------------|
 | 7-leg hybrid retrieval pipeline | Streaming retrieval with incremental result delivery |
 | FederatedRetriever with TTL cache (~90% hit rate) | Advanced taint analysis (Semgrep integration GA) |
@@ -429,7 +433,7 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 
 `trelix index` and `trelix search` need no chat credential and perform no synthesis, but "completely offline" holds only while no chat credential is present. If one *is* set, `Retriever.retrieve()` draws a query plan from the LLM — one call per distinct query — and a local embedder does not change that, because `--provider local` selects the embedder while the planner reads the chat credential separately. Unset the credential, or freeze plans with `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, for genuinely zero-call retrieval; see [FAQ: What is `trelix query`?](FAQ.md#what-is-trelix-query).
 
-**Beast-mode features compose but each has a cost.** FLARE adds 0–2 LLM calls per query. HyDE adds 1 LLM call per unique query (cached on repeat). Multi-query expansion adds N LLM calls per query (default N=3). GraphRAG map-reduce adds M LLM calls for large result sets. Enabling all features simultaneously on a slow or expensive LLM backend will increase latency and cost. The safe approach is to enable flags one at a time and validate with `trelix eval --golden`.
+**Beast-mode features compose but each has a cost.** FLARE adds 0–2 LLM calls per query. HyDE adds 1 LLM call per unique query (cached on repeat). Multi-query expansion adds exactly 1 LLM call per query regardless of the variant count — one completion returns all the phrasings at once (`TRELIX_RETRIEVAL_MULTI_QUERY_COUNT`, default 2). What scales with the count is retrieval, not chat: each of the N variants runs its own leg set, adding N query embeddings. It does compound with HyDE fallback, though, because every variant leg generates its own snippet — on a single-sub-query plan the two together cost N+2 chat calls (4 at the default N=2). GraphRAG map-reduce adds M LLM calls for large result sets. Enabling all features simultaneously on a slow or expensive LLM backend will increase latency and cost. The safe approach is to enable flags one at a time and validate with `trelix eval --golden`.
 
 **The knowledge graph requires a separate build step.** `trelix graph ./repo` must be run (or re-run) to populate the `graph_metadata` table and enable graph-aware retrieval. `trelix watch` automatically patches the graph on file changes once built, but the initial graph build is not automatic.
 

@@ -1,6 +1,6 @@
-# Trelix v3.1.2 — Installation Guide
+# Trelix v3.1.7 — Installation Guide
 
-This guide covers every installation scenario for Trelix v3.1.2, from a quick
+This guide covers every installation scenario for Trelix v3.1.5, from a quick
 one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 ---
@@ -47,7 +47,7 @@ so no API key is required.
 
 ```bash
 pip install "trelix[local]"
-trelix --version   # prints "trelix <version>", e.g. trelix 3.1.2
+trelix --version   # prints "trelix <version>", e.g. trelix 3.1.5
 ```
 
 On first use, Trelix downloads the embedder model (~420 MB) to
@@ -383,7 +383,7 @@ Run these commands after any installation method to confirm everything is
 working correctly.
 
 ```bash
-# Print version (must print the version you installed, e.g. 3.1.2)
+# Print version (must print the version you installed, e.g. 3.1.5)
 trelix --version
 
 # Print usage summary

@@ -165,8 +165,31 @@ jobs:
       # 'sso' is required by tests, not just by the feature: tests/unit/test_oidc.py
       # and tests/unit/test_api_audit.py import pyjwt/cryptography at module
       # scope, so without this extra the whole unit run fails at collection.
+      #
+      # 'bge-code' is here for the same class of reason, and it is load-bearing.
+      # tests/unit/test_embedder_bge.py::TestBGECodePooling uses the REAL pooling
+      # functions out of FlagEmbedding, and pytest.importorskip turns their absence
+      # into a SKIP -- a green that reads identically to a passing run. Measured on
+      # this tree with FlagEmbedding blocked at sys.meta_path: "10 passed, 2
+      # skipped". So without this extra the two strict-xfail pooling tests never
+      # execute in CI, and the XPASS(strict) that is meant to fire the moment the
+      # provider stops pooling with 'cls' never fires -- the exact shape of failure
+      # that let the bge-code defect survive four releases behind a green MagicMock.
+      # Nothing is downloaded: the tests build a randomly initialised 2-layer
+      # Qwen2Model from a checked-in copy of the published config.json, and pass
+      # under HF_HUB_OFFLINE=1. Cost, measured rather than assumed: beyond torch,
+      # transformers and sentence_transformers (all already installed by [local]),
+      # FlagEmbedding adds datasets, accelerate, peft, ir-datasets, sentencepiece,
+      # protobuf and 17 more (24 packages by the resolver's count). NOT pure-python:
+      # datasets requires pyarrow>=21.0.0, which is 118.6 MB on disk with 37 compiled
+      # extension modules. What was actually measured is wall clock on this workflow --
+      # the four test legs went 5m23s -> 5m30s mean, +7s, inside noise -- so that is the
+      # number quoted. No CUDA. This does not contradict pyproject.toml:219-220, which keeps bge-code
+      # out of the `all` aggregate because that fine-tuning stack is not a RUNTIME
+      # inference dependency; a test job installing a test-only extra is a
+      # different question, and `all` is unchanged.
       - name: Install trelix + dev deps
-        run: pip install -e ".[local,otel,sso,dev]"
+        run: pip install -e ".[local,otel,sso,bge-code,dev]"
       - name: Install trelix-mcp + deps
         run: pip install -e packages/trelix-mcp
       # The `lint` job installed these two but never ran their tests, and this job ran

@@ -1,6 +1,6 @@
-# trelix v3.1.2 — Frequently Asked Questions
+# trelix v3.1.7 — Frequently Asked Questions
 
-> Last updated: 2026-08-17 — covers trelix 3.1.2, trelix-mcp 3.1.2, trelix-langchain 3.1.2, and trelix-llama-index 3.1.2.
+> Last updated: 2026-08-17 — covers trelix 3.1.5, trelix-mcp 3.1.5, trelix-langchain 3.1.5, and trelix-llama-index 3.1.5.
 
 ---
 
@@ -102,11 +102,18 @@ Indexing is a one-time cost. After that, `trelix watch` incrementally re-indexes
 | Command | Retrieval | LLM | Output | Offline |
 |---------|-----------|-----|--------|---------|
 | `trelix search` | Hybrid (vector + BM25 + grep) | Planner only — no synthesis | Ranked code chunks in a table | Only with no chat credential set |
-| `trelix ask` | Hybrid + reranking + synthesis | Yes | Synthesized natural-language answer | Requires API key |
+| `trelix ask` | Hybrid + synthesis — no reranking, same as `search` | Yes | Synthesized natural-language answer | Requires API key |
 
 The `search` row used to read "LLM: No / Offline: Yes". That contradicted
 [What is `trelix query`?](#what-is-trelix-query) eleven lines below it, which says the planner
 call applies to `search` too. See that section for the two ways to get zero LLM calls.
+
+The `ask` row used to read "Hybrid + reranking + synthesis". It does not rerank: `ask`
+constructs `RetrievalConfig(rerank=False)` at `src/trelix/cli/main.py:1269`, exactly as
+`search` does at `:1173`, and an init keyword outranks `TRELIX_RETRIEVAL_RERANK` in
+pydantic-settings — so no environment setting switches it on. Reranking is on by default
+only on the surfaces that leave `retrieval` at its default: the MCP tools, the REST API,
+the Python API, and the `eval` / `eval-synthesis` / `review` / `search-all` commands.
 
 Use `trelix search` when you want to browse the raw matches and decide yourself. Use `trelix ask` when you want a direct answer to a question about the codebase. `trelix ask` calls `trelix search` internally and then sends the top results to an LLM.
 
@@ -228,7 +235,7 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v3.1.2 exposes **15 tools**:
+trelix-mcp v3.1.5 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|
@@ -357,17 +364,23 @@ For code-specific retrieval quality, ranked highest to lowest:
 
 | Provider | Model | CoIR Score | Notes |
 |----------|-------|-----------|-------|
-| `bge-code` | BAAI/bge-code-v1 (768-dim) | SOTA 2025 | Local, no API key, ~8GB RAM |
 | `voyage` | voyage-code-3 (256–2048-dim, Matryoshka) | Very High | Best API option; set `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS=512` for 2x faster HNSW |
-| `local-code` | SFR-Embedding-Code-2B_R (4096-dim) | Very High | Local, large model, requires GPU or ~8GB RAM |
-| `nomic-code` | nomic-ai/nomic-embed-code (768-dim) | High | Local, good for large repos |
+| `local-code` | SFR-Embedding-Code-2B_R (2304-dim) | Very High (vendor claim) | Experimental; CC-BY-NC weights; needs `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` |
+| `nomic-code` | nomic-ai/CodeRankEmbed (768-dim) | High (vendor claim) | Experimental; off-protocol prefixes; needs `TRELIX_ALLOW_REMOTE_MODEL_CODE=1` |
 | `openai` / `azure` | text-embedding-3-large (3072-dim) | High | General-purpose, strong on mixed code+prose |
 | `bedrock-cohere` | cohere.embed-english-v3 (1024-dim) | High | AWS ecosystem |
 | `local` | all-MiniLM-L6-v2 (384-dim) | Baseline | Default, fully offline, excellent for getting started |
 
 CoIR benchmark scores are from [archersama.github.io/coir](https://archersama.github.io/coir/) (ACL 2025).
 
-For teams on a budget: `nomic-code` or `bge-code` offer near-API quality at zero cost after the one-time model download.
+**`bge-code` is deliberately absent from the ranking above.** It is **experimental** as of
+v3.1.7: trelix builds it with FlagEmbedding's `FlagModel`, which pools with CLS, while BAAI
+publishes `BAAI/bge-code-v1` as a causal Qwen2 decoder with `pooling_mode_lasttoken: true`.
+Its pooling is unverified, so it cannot be placed in a quality ranking at all — it previously
+held first place here on a "SOTA 2025" label that was the upstream model's, not a measurement
+of trelix. See [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
+
+For teams on a budget: `nomic-code` offers strong quality at zero cost after the one-time model download.
 
 ---
 
@@ -523,13 +536,13 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 So pin all four to the same version in your `requirements.txt`:
 
 ```
-trelix==3.1.5
-trelix-mcp==3.1.5
-trelix-langchain==3.1.5
-trelix-llama-index==3.1.5
+trelix==3.1.7
+trelix-mcp==3.1.7
+trelix-langchain==3.1.7
+trelix-llama-index==3.1.7
 ```
 
-The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.1.2 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.1.2 resolving against core 3.0.0 is supported and intended — the four-way 3.1.2 pin above is the combination CI installs and tests, not the only one that works.
+The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.1.5 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.1.5 resolving against core 3.0.0 is supported and intended — the four-way 3.1.5 pin above is the combination CI installs and tests, not the only one that works.
 
 ---
 
@@ -548,7 +561,7 @@ A typical team setup for a shared codebase:
 
 3. **MCP for individual developers.** Each developer installs `trelix-mcp` locally and points it at either their own local index or the team REST server.
 
-4. **Voyage or BGE-Code embeddings.** For best retrieval quality across a shared index, standardize on one embedding provider. `voyage-code-3` (API) or `bge-code` (local, SOTA 2025) are recommended over the default `local` provider for teams.
+4. **Voyage or local-code embeddings.** For best retrieval quality across a shared index, standardize on one embedding provider. `voyage-code-3` (API) or `local-code` (local, no API key) are recommended over the default `local` provider for teams. **Do not standardize a shared team index on `bge-code`:** it is experimental as of v3.1.7 and its pooling is unverified — see [PROVIDERS.md](PROVIDERS.md#bge-code-baaibge-code-v1).
 
 5. **Federation for multi-repo monorepos.** Register all service repos and use `trelix search-all` or `FederatedRetriever` for cross-repo search.
 
