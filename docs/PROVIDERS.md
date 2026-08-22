@@ -1,4 +1,4 @@
-# trelix v3.1.2 — Providers Reference
+# trelix v3.1.5 — Providers Reference
 
 Complete guide to all embedding providers and LLM providers supported by trelix.
 
@@ -15,7 +15,7 @@ Complete guide to all embedding providers and LLM providers supported by trelix.
 | `azure` | `AZURE_API_KEY` + `AZURE_ENDPOINT` | 1536 / 3072 | — | Fast (API) | Enterprise, Azure customers |
 | `voyage` | `VOYAGE_API_KEY` | 1024 | 56.26 avg | Fast (API) | Best API-based code retrieval |
 | `local-code` | No (HuggingFace) | 4096 | 67.41 avg | Slow (GPU rec.) | Highest offline accuracy |
-| `bge-code` | No (HuggingFace) | 768 | — | Slow (GPU rec.) | Self-hosted, no API cost |
+| `bge-code` | No (HuggingFace) | 1536 | — | Slow (GPU rec.) | Self-hosted, no API cost |
 | `nomic-code` | No (HuggingFace) | 768 | — | Medium (CPU) | Self-hosted alternative |
 | `bedrock-titan` | AWS credentials | 256 / 512 / 1024 | — | Fast (API) | AWS-native deployments |
 | `bedrock-cohere` | AWS credentials | 1024 | — | Fast (API) | AWS + strong code retrieval |
@@ -144,7 +144,7 @@ GPU is strongly recommended. CPU works but is significantly slower on large repo
 Self-hosted, no API cost, optimized for code. Uses the `FlagEmbedding` library.
 
 - **Model**: `BAAI/bge-code-v1`
-- **Dimensions**: 768
+- **Dimensions**: 1536
 - **Install**: `pip install trelix[bge-code]`
 
 ```bash

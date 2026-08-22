@@ -555,13 +555,22 @@ def build_knowledge_graph(
     🎯 What this builds:
     - Unified code property graph (calls + imports + type hierarchy)
     - Community detection: clusters modules into architectural groups
-    - Optional LLM concept extraction (set extract_concepts=True, requires LLM config)
+    - Optional LLM concept extraction. extract_concepts=True is PAID: up to 10 LLM
+      calls over the 200 most central symbols (batches of 20), and it requires an LLM
+      API key. It does NOT cover the repository — on trelix's own 12,184-symbol index
+      those 200 symbols are 1.6% of it — so concept_count describes that sample.
+      Selection is by PageRank centrality descending, symbol id ascending.
 
     ✨ Returns:
     - node_count: number of symbols in the graph
     - edge_count: number of structural relationships
     - community_count: detected architectural clusters
     - community_summary: the largest clusters, size-ordered (see the caps below)
+    - concept_count: concepts found in that sample, 0 unless extract_concepts=True
+    - concept_symbols_considered / concept_symbols_total: the coverage those concepts
+      came from — 200 of 12,184 on this repo. Both are 0 when extract_concepts=False,
+      which is what distinguishes "extraction never ran" from "it ran over 200 symbols
+      and found nothing"; concept_count=0 alone cannot tell those apart.
 
     community_summary used to ship every detected community, unsorted. Measured on
     trelix's own index that was **1,160,415 bytes — roughly 290,000 tokens** from a
@@ -603,6 +612,17 @@ def build_knowledge_graph(
         # closer needs to know how much it is not seeing.
         "community_count": result.community_count,
         "concept_count": result.concept_count,
+        # concept_count alone reads as a property of the REPOSITORY when it is really a
+        # property of a capped sample: extraction stops at the 200 most central symbols,
+        # which on this repo's 12,184-symbol index is 1.6%. v3.1.5 gave that coverage to
+        # humans in `trelix graph --concepts` and to `--json`; an agent calling this tool
+        # still got the bare count, i.e. exactly the misreport that release fixed.
+        # Reported unconditionally, unlike the CLI's `if concepts:` — 0/0 alongside
+        # concept_count=0 is what tells an agent extraction never ran, and an added key
+        # is compatible under the Stable "MCP tool signatures" row of
+        # docs/BACKWARDS_COMPATIBILITY.md, which forbids removals, not additions.
+        "concept_symbols_considered": result.concept_symbols_considered,
+        "concept_symbols_total": result.concept_symbols_total,
         "elapsed_seconds": round(result.elapsed_seconds, 3),
         "community_summary": trimmed,
         "singleton_count": singleton_count,

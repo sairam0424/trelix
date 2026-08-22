@@ -70,4 +70,29 @@ class BGECodeEmbedder(BaseEmbedder):
 
     @property
     def dimension(self) -> int:
-        return self._model.get_sentence_embedding_dimension() or self._dimensions
+        """Width of the vectors `embed()` returns.
+
+        This used to call `self._model.get_sentence_embedding_dimension()`. FlagEmbedding
+        has never had that method: it appears in no class in the 1.2.11, 1.3.5 or 1.4.0
+        sdists, and neither `AbsEmbedder` nor `FlagModel` defines `__getattr__` to forward
+        it, so the call raised `AttributeError` against every real install. `Indexer.
+        __init__` reads this property to size the vec0 table and `Retriever.__init__` to
+        arm `DimensionGuard`, so `bge-code` could not index or query at all. Its unit test
+        passed only because a `MagicMock` answers for any attribute asked of it.
+
+        The width is read off the loaded model instead. `truncate_dim` wins when set: it
+        is FlagEmbedding's Matryoshka knob and the only thing that narrows the output.
+        Otherwise the HF config's `hidden_size` is the width every FlagEmbedding pooling
+        method (cls / mean / last_token) emits — 1536 for BAAI/bge-code-v1. Both the
+        encoder-only and decoder-only bases assign `self.model = AutoModel.from_pretrained
+        (...)`, so that attribute path holds whichever class is used. `bge_code_dimensions`
+        is the last resort, so this property cannot raise.
+        """
+        truncate = getattr(self._model, "truncate_dim", None)
+        if isinstance(truncate, int) and truncate > 0:
+            return truncate
+        hf_config = getattr(getattr(self._model, "model", None), "config", None)
+        width = getattr(hf_config, "hidden_size", None)
+        if isinstance(width, int) and width > 0:
+            return width
+        return self._dimensions

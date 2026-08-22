@@ -356,7 +356,14 @@ class EmbedderConfig(BaseSettings):
     # ── BGE-Code-v1 (BAAI, CoIR SOTA 2025) ────────────────────────────────────
     # Uses FlagEmbedding library. pip install trelix[bge-code]
     bge_code_model: str = "BAAI/bge-code-v1"
-    bge_code_dimensions: int = 768  # BGE-Code-v1 default embedding dim
+    # 1536 is BAAI/bge-code-v1's real output width, stated twice in the model repo:
+    # config.json `hidden_size: 1536` (model_type `qwen2`, architectures `["Qwen2Model"]`)
+    # and 1_Pooling/config.json `word_embedding_dimension: 1536`. This said 768, a number
+    # matching no artefact of this model; reaching a vec0 table it would have created
+    # `FLOAT[768]` and aborted Phase 3 with `Expected 768 dimensions but received 1536`.
+    # Last resort only: `BGECodeEmbedder.dimension` reads the loaded model, so this value
+    # is used when that is unreachable, or via `EmbedderConfig.effective_dimension`.
+    bge_code_dimensions: int = 1536
 
     # ── Nomic CodeRankEmbed ────────────────────────────────────────────────────
     # Uses sentence-transformers. pip install trelix[local]

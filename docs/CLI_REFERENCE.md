@@ -1,6 +1,6 @@
 # trelix CLI Reference
 
-**Version:** 3.1.2  
+**Version:** 3.1.5  
 **Last updated:** 2026-08-03
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
@@ -62,7 +62,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 3.1.2
+trelix --version        # trelix 3.1.5
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -280,10 +280,19 @@ trelix search /my/repo "database connection pool" --provider openai
 #### Notes
 
 - `trelix search` disables the reranker for its own invocation (it constructs
-  `RetrievalConfig(rerank=False)`), so `TRELIX_RETRIEVAL_RERANK*` affects `ask`, the MCP
-  tools, the REST API, and the Python API rather than this command. Elsewhere reranking
-  is on by default; turn it off with `TRELIX_RETRIEVAL_RERANK=false` and choose the
-  backend with `TRELIX_RETRIEVAL_RERANK_PROVIDER=cohere|cross_encoder|plaid|xtr`.
+  `RetrievalConfig(rerank=False)` — `src/trelix/cli/main.py:1173`), and so do three more
+  commands: `ask` (`:1269`), `query` (`:1365`) and `call-graph` (`:1443`). An init keyword
+  outranks the environment in pydantic-settings, so `TRELIX_RETRIEVAL_RERANK=true` cannot
+  switch reranking back on for any of those four — including `--agentic` and FLARE runs of
+  `ask`, which reuse the same config object. This note used to claim the var affected
+  `ask`; it does not.
+- `TRELIX_RETRIEVAL_RERANK*` does reach the MCP tools, the REST API, the Python API
+  (`Retriever(IndexConfig(...))`), and the CLI commands that leave `retrieval` at its
+  default — `eval`, `eval-synthesis`, `review`, `search-all`. There reranking is on by
+  default; turn it off with `TRELIX_RETRIEVAL_RERANK=false` and choose the backend with
+  `TRELIX_RETRIEVAL_RERANK_PROVIDER=cohere|cross_encoder|plaid|xtr`. A per-query intent
+  strategy can still skip the stage (`strategy.skip_reranker`), so `rerank=true` is
+  necessary but not sufficient — check the `Rerank` row that `trelix eval` prints.
 - The `--provider` flag affects the query embedding, not index scanning.
   Always use the same provider that was used for `trelix index`.
 
@@ -332,6 +341,12 @@ OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to data
   context text, which is useful for debugging retrieval quality.
 - FLARE iterative retrieval can be enabled globally with
   `TRELIX_RETRIEVAL_FLARE=true`.
+- Reranking is off for this command and cannot be enabled by environment: `ask` builds
+  `RetrievalConfig(rerank=False)` (`src/trelix/cli/main.py:1269`), which outranks
+  `TRELIX_RETRIEVAL_RERANK`. Applies to the plain, `--agentic` and FLARE paths alike —
+  all three share one config object. Use the MCP `search_code`/`ask_agent` tools, the REST
+  `/search`/`/ask` endpoints, or `Retriever(IndexConfig(...))` if you need a reranked
+  answer.
 
 ---
 
@@ -1835,4 +1850,4 @@ trelix audit export | jq -r '.principal' | sort | uniq -c
 
 ---
 
-*End of CLI Reference — trelix v3.1.2*
+*End of CLI Reference — trelix v3.1.5*

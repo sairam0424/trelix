@@ -603,11 +603,25 @@ class Indexer:
         #
         # Deliberately NOT inside index_file(), which is what every file here funnels
         # through: a check there would run a full store scan per file — 64 per streaming
-        # batch — for a repo-wide answer that changes once. The same reasoning keeps watch
-        # mode out of it: a save event on one unrelated file is the wrong trigger for a
-        # repo-wide repair, and an unbounded store scan per filesystem event is the wrong
-        # cost profile for a long-lived process. So watch mode does not self-heal; `trelix
-        # index` is the repair path, and `trelix stats` says so.
+        # batch — for a repo-wide answer that changes once. The same reasoning keeps the
+        # WATCHING phase out of it: a save event on one unrelated file is the wrong trigger
+        # for a repo-wide repair, and an unbounded store scan per filesystem event is the
+        # wrong cost profile for a long-lived process.
+        #
+        # That is a fact about the watching phase, and an earlier version of this comment
+        # generalised it to `trelix watch` as a whole. It is false of watch's STARTUP pass:
+        # `cli/main.py`'s watch command calls `indexer.index()` before it starts watching,
+        # and `index()` routes into this pipeline whenever TRELIX_INDEXER_STREAMING is set —
+        # into its own reconcile, decided right after the incremental pre-filter, when it is
+        # not — so the repair below is exactly what that pass runs on a streaming setup: 2
+        # holed chunks reconciled and exactly 2 texts embedded, in
+        # tests/unit/test_indexer_vector_repair.py::TestStreamingPipeline. What never
+        # reconciles is the watching phase that follows: `FileWatcher` calls `index_file()`
+        # per changed file, which has no repo-wide diff, so a hole opened while watch is
+        # already running survives until the next startup or `trelix index`. `trelix index`
+        # stays the repair path to name to a user — `trelix stats` names it too — because it
+        # is the reliable route, not because watch cannot repair. Same split as
+        # `_partial_index_error`'s docstring below; keep the two in step.
         #
         # No re-read filter needed here, unlike index(): the walk loop above has finished,
         # so nothing further deletes chunk rows before these ids are embedded. The rows are
