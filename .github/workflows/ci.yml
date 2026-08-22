@@ -188,8 +188,18 @@ jobs:
       # out of the `all` aggregate because that fine-tuning stack is not a RUNTIME
       # inference dependency; a test job installing a test-only extra is a
       # different question, and `all` is unchanged.
+      # `nomic-code` is here for one reason: it is the only thing that proves its own
+      # declaration resolves. v3.2.0 added `einops>=0.7.0` to that extra after finding the
+      # provider had never constructed for any user — CodeRankEmbed's published
+      # modeling_hf_nomic_bert.py imports einops at module top level, and no extra declared
+      # it. Nothing in CI installed the extra, so the fix shipped with no job that would go
+      # red if the dependency were unresolvable or the declaration were deleted. pip
+      # resolution IS the positive control here: this line fails loudly on either.
+      # It cannot prove the provider CONSTRUCTS — that needs the model weights, which CI
+      # does not download — so the claim this job supports is exactly "the extra resolves
+      # and einops is importable", and no more. einops is pure Python and ~60 KB.
       - name: Install trelix + dev deps
-        run: pip install -e ".[local,otel,sso,bge-code,dev]"
+        run: pip install -e ".[local,otel,sso,bge-code,nomic-code,dev]"
       - name: Install trelix-mcp + deps
         run: pip install -e packages/trelix-mcp
       # The `lint` job installed these two but never ran their tests, and this job ran

@@ -66,7 +66,33 @@ except ImportError:  # pragma: no cover
 
 FlagModel = _FlagModel
 
-_QUERY_INSTRUCTION = "Represent this query for searching relevant code: "
+# BAAI's published query protocol for bge-code-v1, from its model card.
+#
+# THIS WAS ANOTHER MODEL'S PROMPT UNTIL 3.2.0. The constant here read
+# "Represent this query for searching relevant code: " — which is, character for character,
+# nomic-ai/CodeRankEmbed's published `prompts.query`, taken from its own
+# config_sentence_transformers.json. It is not BAAI's format and never was. The pooling
+# degeneracy documented above is what hid it: when every query embedding is byte-identical,
+# the prompt text cannot change any observable, so no test and no measurement could see that
+# the wrong model's protocol was being applied.
+#
+# The instruction is BAAI's CosQA task string (model card line 181), the published task
+# closest to what trelix does — a natural-language query retrieving code. The format is
+# BAAI's own `query_instruction_format` from the card's FlagLLMModel example, and
+# `<instruct>`/`<query>` are real single tokens: they ship in bge-code-v1's
+# tokenizer_config.json `additional_special_tokens`, and tokenize to ids 151665 and one more
+# rather than being spelled out. Both are passed to FlagModel below, which accepts
+# `query_instruction_format` (encoder_only/base.py, default "{}{}").
+#
+# THIS DOES NOT FIX THE DEGENERACY, and must not be read as doing so. With cls pooling on a
+# causal decoder, token 0 is now `<instruct>` for every query instead of "Represent" for
+# every query — still one shared token, so every query embedding is still identical. The
+# prompt was fixed here because it is provably wrong independently of the pooling question,
+# under every candidate loader; the pooling fix is a separate change.
+_QUERY_INSTRUCTION = (
+    "Given a web search query, retrieve relevant code that can help answer the query."
+)
+_QUERY_INSTRUCTION_FORMAT = "<instruct>{}\n<query>{}"
 
 
 class BGECodeEmbedder(BaseEmbedder):
@@ -122,6 +148,7 @@ class BGECodeEmbedder(BaseEmbedder):
         self._model = FlagModel(
             config.bge_code_model,
             query_instruction_for_retrieval=_QUERY_INSTRUCTION,
+            query_instruction_format=_QUERY_INSTRUCTION_FORMAT,
             use_fp16=True,
         )
         self._dimensions = config.bge_code_dimensions
