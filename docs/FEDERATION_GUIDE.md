@@ -1,4 +1,4 @@
-# Federation Guide — trelix v3.1.6
+# Federation Guide — trelix v3.1.7
 
 Complete guide to searching across multiple independently-indexed repositories in one query.
 

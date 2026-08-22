@@ -6,6 +6,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [3.1.7] — 2026-08-22
+
 ### Changed
 
 - **Retracted: `bge-code` does not "work now". v3.1.6's dimension fix unblocked a

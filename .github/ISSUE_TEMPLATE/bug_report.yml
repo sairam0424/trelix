@@ -12,7 +12,7 @@ body:
     attributes:
       label: trelix Version
       description: Run `trelix --version`
-      placeholder: "3.1.6"
+      placeholder: "3.1.7"
     validations:
       required: true
   - type: dropdown
@@ -96,5 +96,5 @@ body:
         # .github/SECURITY.md's Supported Versions table admits exactly one line —
         # "3.1.2 (latest) / everything earlier: no backports" — so "v2.7.0 or later"
         # invited reports against five minors nobody will fix.
-        - label: I am using the latest release (3.1.6)
+        - label: I am using the latest release (3.1.7)
           required: false

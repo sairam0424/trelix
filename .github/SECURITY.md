@@ -10,7 +10,7 @@ injection, symlink and path-confinement behaviour, per-version security notes) l
 
 | Version | Supported |
 |---------|-----------|
-| 3.1.6 (latest) | ✅ Fixes ship here |
+| 3.1.7 (latest) | ✅ Fixes ship here |
 | everything earlier | ❌ No backports |
 
 Only the most recent release is supported, and that is a description of what this project
