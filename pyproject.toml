@@ -36,7 +36,7 @@ exclude = [
 
 [project]
 name = "trelix"
-version = "3.1.7"
+version = "3.2.0"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -137,6 +137,14 @@ bge-code = [
 ]
 nomic-code = [
     "sentence-transformers>=3.0.0",  # already in [local], duplicated for clarity
+    # REQUIRED, not optional. nomic-ai/CodeRankEmbed's config.json declares
+    # `auto_map.AutoModel = modeling_hf_nomic_bert.NomicBertModel`, and that published
+    # module imports einops at its TOP LEVEL — so the import runs during the
+    # trust_remote_code load, before any trelix code sees the model. einops was declared by
+    # no extra, so this provider raised ModuleNotFoundError from inside remote model code
+    # for every user who ever selected it: it has never once constructed. Nothing else
+    # installed pulls einops in transitively.
+    "einops>=0.7.0",
 ]
 sparse = [
     "transformers>=4.40.0",
