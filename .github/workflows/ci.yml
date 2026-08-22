@@ -179,9 +179,12 @@ jobs:
       # Qwen2Model from a checked-in copy of the published config.json, and pass
       # under HF_HUB_OFFLINE=1. Cost, measured rather than assumed: beyond torch,
       # transformers and sentence_transformers (all already installed by [local]),
-      # FlagEmbedding adds datasets, accelerate, peft, ir-datasets, sentencepiece
-      # and protobuf -- 22 MB of pure-python wheels, no CUDA -- plus ~5 s of import
-      # time. This does not contradict pyproject.toml:219-220, which keeps bge-code
+      # FlagEmbedding adds datasets, accelerate, peft, ir-datasets, sentencepiece,
+      # protobuf and 17 more (24 packages by the resolver's count). NOT pure-python:
+      # datasets requires pyarrow>=21.0.0, which is 118.6 MB on disk with 37 compiled
+      # extension modules. What was actually measured is wall clock on this workflow --
+      # the four test legs went 5m23s -> 5m30s mean, +7s, inside noise -- so that is the
+      # number quoted. No CUDA. This does not contradict pyproject.toml:219-220, which keeps bge-code
       # out of the `all` aggregate because that fine-tuning stack is not a RUNTIME
       # inference dependency; a test job installing a test-only extra is a
       # different question, and `all` is unchanged.

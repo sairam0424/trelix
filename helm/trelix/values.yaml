@@ -16,7 +16,7 @@ image:
   # version, which never matches a site stranded on 2.x. release.yml's
   # verify-version job now compares this line against the release tag.
   repository: ghcr.io/sairam0424/trelix
-  tag: "3.1.6"
+  tag: "3.1.7"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
