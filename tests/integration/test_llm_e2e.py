@@ -22,7 +22,11 @@ from typing import Any
 import pytest
 from dotenv import dotenv_values
 
-pytestmark = pytest.mark.integration
+# NOTE: no `pytestmark = pytest.mark.integration` here. This directory's conftest applies
+# that marker (and `enable_socket`) by path, and its docstring explains why by-directory
+# beats by-hand: a new file in this tree is credential-gated on arrival rather than on the
+# day someone remembers to decorate it. Adding it here too would just be a second place to
+# forget.
 
 # ── OPT-IN GATE, placed BEFORE anything reads .env ───────────────────────────────────
 #

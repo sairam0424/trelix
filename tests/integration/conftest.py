@@ -29,7 +29,7 @@ def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Tag everything under tests/integration/ with the ``integration`` marker.
+    """Tag everything under tests/integration/ with ``integration`` and ``enable_socket``.
 
     CONTRIBUTING.md documents ``pytest -m "not integration"`` as the
     credential-free run, but no test in this tree ever carried the marker, so
@@ -40,9 +40,20 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     added to this directory is credential-gated on arrival instead of the day
     someone remembers to decorate it.
 
+    ``enable_socket`` is applied by the same rule and for the same reason.
+    ``--disable-socket`` lives in the root ``addopts``, so it applies to EVERY
+    directory — including this one, whose entire purpose is to reach live
+    services. Without this the ban produced 188 ``SocketBlockedError`` failures
+    in the Integration Tests job ("A test tried to use socket.getaddrinfo"),
+    which is the ban working exactly as configured and pointed at the wrong
+    tree. Re-enabling per directory rather than weakening the global flag keeps
+    the unit suite hermetic, which is where the 232s and the accidental spend
+    came from.
+
     ``pytest_collection_modifyitems`` from a subdirectory conftest is still
     handed the WHOLE session's items, hence the explicit path filter.
     """
     for item in items:
         if _INTEGRATION_DIR in item.path.parents:
             item.add_marker(pytest.mark.integration)
+            item.add_marker(pytest.mark.enable_socket)

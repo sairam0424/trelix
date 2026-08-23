@@ -233,6 +233,33 @@ jobs:
           key: tree-sitter-language-pack-${{ hashFiles('pyproject.toml') }}
       - name: Prefetch tree-sitter grammars
         run: python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
+      # Same cache-then-prefetch shape as the grammars above, for the same reason: this job
+      # runs with HF_HUB_OFFLINE=1 (see this job's `env:`), and 51 unit tests construct a
+      # REAL embedder -- `SentenceTransformer(config.local_model)`, i.e.
+      # sentence-transformers/all-MiniLM-L6-v2 -- so offline mode against a COLD cache
+      # raises LocalEntryNotFoundError rather than skipping.
+      #
+      # That is not hypothetical. It is what the first push of this change did: 51 failed on
+      # all four legs, while the same suite was green locally. The difference was a warm
+      # ~/.cache/huggingface on the developer's machine. Reproduced deliberately with
+      # HF_HOME pointed at an empty directory, which gave 51 failed / 3,555 passed --
+      # matching CI exactly. A local pass on a warm cache is not evidence about CI.
+      #
+      # Offline is turned OFF for this ONE step so the download can happen, then the test
+      # run itself stays hermetic behind the socket ban. Warming here rather than letting
+      # the tests download is what keeps the ban meaningful: no test may open a socket, and
+      # nothing in the test phase can silently start fetching from the Hub again.
+      - name: Cache Hugging Face hub
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-hub-minilm-l6-v2-${{ hashFiles('pyproject.toml') }}
+      - name: Prefetch the local embedder model
+        env:
+          HF_HUB_OFFLINE: "0"
+          TRANSFORMERS_OFFLINE: "0"
+        run: |
+          python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
       # --cov is required for two things that were previously silently dead:
       # the htmlcov/ artifact uploaded below, and pyproject's
       # [tool.coverage.report] fail_under = 75 gate (pytest-cov reads
