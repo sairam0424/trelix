@@ -657,3 +657,193 @@ class TestDeclarationBoostIsWired:
             for r in bm25_search(db, "process_payment", k=10, declaration_boost_weight=5.0)
         ]
         assert boosted.index("process_payment") < boosted.index("batch_orchestrator")
+
+
+# ---------------------------------------------------------------------------
+# Round 3: the two CONFIRMED open survivors in trelix.retrieval.bm25
+#
+# Both mutants below survived a 311-test selection
+# (test_bm25 + test_retriever_core + test_store + test_federation + test_fusion)
+# before these tests existed.
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultResultBudgetIsTwenty:
+    """
+    Pins the DEFAULT value of `k` in bm25_search's signature.
+
+    The pre-existing `test_respects_k_limit` passes `k=3` explicitly and asserts
+    `len(results) <= 3`. An upper bound on an explicitly-passed k can never
+    observe the default, which is why the mutant below survived.
+    """
+
+    def test_default_k_returns_exactly_twenty_results(self, db: Database) -> None:
+        """
+        MUTATION THIS MUST KILL: `k: int = 20` -> `k: int = 3` in the
+        bm25_search signature (src/trelix/retrieval/bm25.py).
+
+        Oracle is the OBSERVED result count from a corpus with strictly more
+        than 20 matching symbols, with 20 written as a literal. Nothing is
+        imported from the module under test.
+        """
+        file_id = _make_file(db)
+        # 30 symbols that all match the query token "validate".
+        for i in range(30):
+            sym_id = _insert_symbol(
+                db,
+                file_id,
+                f"validate_field_{i:02d}",
+                f"def validate_field_{i:02d}(v): return validate(v)",
+            )
+            _insert_chunk(db, sym_id, f"validate field {i:02d}")
+
+        # PRECONDITION: the corpus built above must hold MORE than 20 matches,
+        # otherwise `== 20` below would be satisfied by corpus exhaustion rather
+        # than by the default budget clamping. If this fires, the 30-symbol loop
+        # in this test's `db` fixture setup stopped discriminating and the
+        # assertion beneath it proves nothing.
+        generous = bm25_search(db, "validate", k=30)
+        assert len(generous) == 30, (
+            "precondition failed: the 30-symbol corpus built in this test's `db` "
+            f"fixture yielded only {len(generous)} matches for 'validate' at k=30, "
+            "so a default-budget assertion of 20 would not discriminate"
+        )
+
+        # THE ASSERTION: call with NO k argument, so the signature default runs.
+        defaulted = bm25_search(db, "validate")
+        assert len(defaulted) == 20
+
+    def test_default_k_budget_matches_explicit_twenty(self, db: Database) -> None:
+        """
+        MUTATION THIS MUST KILL: `k: int = 20` -> `k: int = 3`.
+
+        Second, independent angle on the same default: omitting `k` must be
+        indistinguishable from passing the literal 20 -- same count AND same
+        ordered symbol names. Pins the default as a value, not just a count.
+        """
+        file_id = _make_file(db)
+        for i in range(30):
+            sym_id = _insert_symbol(
+                db,
+                file_id,
+                f"resolve_import_{i:02d}",
+                f"def resolve_import_{i:02d}(m): return resolve(m)",
+            )
+            _insert_chunk(db, sym_id, f"resolve import {i:02d}")
+
+        # PRECONDITION: 20 is a real clamp here, not the whole corpus. Names the
+        # fixture: the 30-symbol loop in this test's `db` setup.
+        assert len(bm25_search(db, "resolve", k=30)) == 30, (
+            "precondition failed: this test's `db` fixture corpus no longer holds "
+            "30 'resolve' matches, so clamping to 20 is not observable"
+        )
+
+        explicit_twenty = [r.symbol.name for r in bm25_search(db, "resolve", k=20)]
+        defaulted = [r.symbol.name for r in bm25_search(db, "resolve")]
+
+        assert len(explicit_twenty) == 20
+        assert defaulted == explicit_twenty
+
+
+class TestFts5EmptyQuerySentinel:
+    """
+    Pins the empty-query sentinel returned by `_escape_fts5`.
+
+    The pre-existing `test_empty_query_returns_empty_matcher` asserts
+    `result in ('\"\"', '\"\"*')` -- a disjunction that accepts either branch -- and
+    it probes `""`, which takes the *single-identifier prefix* branch and never
+    reaches the sentinel at all. Hence the mutant below survived.
+
+    NOTE, verified by running `_escape_fts5` rather than assumed: `""` and
+    `"   "` do NOT reach the sentinel; both return '""*' from the prefix branch.
+    Nor does every all-stop-word query: `"a an the"` returns 'the' and
+    `"he she"` returns 'she', because the len(t) > 2 fallback keeps 3-char stop
+    words. Only queries whose tokens are ALL punctuation, or all stop words of
+    length <= 2, reach `return '""'`.
+    """
+
+    def test_sentinel_is_a_quoted_empty_string_for_every_triggering_input(self) -> None:
+        """
+        MUTATION THIS MUST KILL: `return '\"\"'` -> `return '\"a\"'` in
+        _escape_fts5 (src/trelix/retrieval/bm25.py).
+
+        Explicit expected table, compared as whole mappings in BOTH directions,
+        so a changed return value AND a newly-diverging input both fail. The
+        expected strings are literals -- nothing is imported from the module
+        under test, and the inputs are not derived by iterating _STOP_WORDS.
+        """
+        # Every input here was confirmed by execution to reach the sentinel.
+        expected = {
+            "!!!": '""',
+            "!!! ???": '""',
+            "... ---": '""',
+            "?? !!": '""',
+            "@#$ %^&": '""',
+            "-": '""',
+            "+++ ***": '""',
+            "is it": '""',
+            "of to do be": '""',
+            "it is so": '""',
+            "no my we": '""',
+            "a b c": '""',
+        }
+        actual = {q: _escape_fts5(q) for q in expected}
+
+        # Set equality both ways over (input, output) pairs.
+        assert set(actual.items()) == set(expected.items())
+        assert set(expected.items()) == set(actual.items())
+
+    def test_non_triggering_inputs_do_not_reach_the_sentinel(self) -> None:
+        """
+        MUTATION THIS MUST KILL: none on its own -- this is the discriminating
+        control for the test above. It pins the CURRENT boundary of the sentinel
+        so that `return '\"\"'` cannot be trivially satisfied by every input.
+
+        Documents CURRENT behaviour that is arguably a DEFECT: `""` and `"   "`
+        fall into the single-identifier *prefix* branch and yield '""*', and
+        `"a an the"` / `"he she"` leak a bare 3-char stop word as the FTS5
+        expression. Neither looks intentional, but both are what ships today.
+        """
+        assert _escape_fts5("") == '""*'
+        assert _escape_fts5("   ") == '""*'
+        # DEFECT (pinned deliberately): the len(t) > 2 fallback re-admits stop
+        # words of 3+ chars that the stop-word filter had just removed.
+        assert _escape_fts5("a an the") == "the"
+        assert _escape_fts5("he she") == "she"
+
+    def test_sentinel_query_matches_no_document_containing_the_token_a(self, db: Database) -> None:
+        """
+        MUTATION THIS MUST KILL: `return '\"\"'` -> `return '\"a\"'`.
+
+        The search-behaviour half of the oracle: a test on the return string
+        alone pins an implementation detail, so this asserts the observable
+        consequence. The corpus deliberately contains the standalone token "a",
+        which the mutant's '"a"' expression would match.
+        """
+        file_id = _make_file(db)
+        sym_id = _insert_symbol(
+            db,
+            file_id,
+            "alpha_handler",
+            "def alpha_handler(x):\n    # a is a standalone token a here\n    return a",
+            docstring="a a a standalone token a",
+        )
+        _insert_chunk(db, sym_id, "a a a standalone token a")
+
+        # PRECONDITION: the corpus above must actually be matchable by the
+        # mutant's expression, otherwise the empty-result assertions below would
+        # hold for the mutant too and prove nothing. If this fires, the
+        # "alpha_handler" symbol inserted in this test's `db` setup no longer
+        # indexes a standalone "a" token and this test has stopped discriminating.
+        assert db.bm25_search('"a"', limit=10), (
+            "precondition failed: the `alpha_handler` symbol built in this test's "
+            "`db` fixture is not matched by the FTS5 expression '\"a\"', so this "
+            "test can no longer distinguish the '\"\"' sentinel from '\"a\"'"
+        )
+
+        # Every sentinel-triggering query must return NOTHING, exactly.
+        for query in ("!!!", "!!! ???", "is it", "of to do be", "a b c", "@#$ %^&"):
+            assert bm25_search(db, query, k=10) == [], (
+                f"sentinel query {query!r} matched documents; the FTS5 "
+                "empty-query sentinel is no longer a quoted empty string"
+            )
