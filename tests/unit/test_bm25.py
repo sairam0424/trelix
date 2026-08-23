@@ -368,3 +368,292 @@ class TestBM25ReadPoolOptIn:
 
         assert not errors, f"concurrent bm25_search under the read pool raised: {errors}"
         db._bm25_read_pool.close_all()
+
+
+# Explicit expected table. Deliberately written out as literals rather than
+# derived from bm25._STOP_WORDS: an expectation built by iterating the module's
+# own collection shrinks with the collection, which is precisely how 14
+# walker.EXTENSION_MAP entries became deletable with a green suite.
+#
+# Only members of length >= 3 are pinned. Both `count_meaningful_tokens` and
+# `_escape_fts5` also require len(token) >= 3 / > 2, so the 22 one- and
+# two-character entries ("a", "is", "it", "of", ...) are unreachable: deleting
+# one changes no behaviour. Pinning them would lock down dead data.
+_EXPECTED_LIVE_STOP_WORDS = {
+    "about",
+    "after",
+    "all",
+    "also",
+    "and",
+    "any",
+    "are",
+    "been",
+    "before",
+    "between",
+    "but",
+    "call",
+    "calls",
+    "can",
+    "class",
+    "code",
+    "could",
+    "did",
+    "does",
+    "each",
+    "file",
+    "find",
+    "for",
+    "from",
+    "function",
+    "get",
+    "give",
+    "had",
+    "has",
+    "have",
+    "her",
+    "his",
+    "how",
+    "into",
+    "just",
+    "know",
+    "like",
+    "list",
+    "make",
+    "method",
+    "more",
+    "new",
+    "not",
+    "our",
+    "out",
+    "over",
+    "return",
+    "returns",
+    "she",
+    "should",
+    "show",
+    "some",
+    "such",
+    "tell",
+    "than",
+    "that",
+    "the",
+    "their",
+    "them",
+    "then",
+    "there",
+    "they",
+    "this",
+    "type",
+    "use",
+    "used",
+    "using",
+    "value",
+    "was",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "will",
+    "with",
+    "would",
+    "you",
+    "your",
+}
+
+# Words that must never become stop words: they are ordinary code identifiers a
+# developer searches for. Guards the "someone pastes a big NLTK list in"
+# direction of the same defect.
+_MUST_STAY_SEARCHABLE = (
+    "auth",
+    "token",
+    "login",
+    "parse",
+    "index",
+    "query",
+    "search",
+    "config",
+    "schema",
+    "session",
+)
+
+
+class TestStopWordListIsPinned:
+    def test_every_live_stop_word_is_still_dropped(self) -> None:
+        """
+        MUTATION: deleting any length>=3 member of bm25._STOP_WORDS (e.g. the
+        line '"show",'). The walker.EXTENSION_MAP failure mode: deleting "show"
+        let "show me the auth code" carry the term `show` into the FTS5 MATCH
+        expression and raised its meaningful-token count, and the whole suite
+        stayed green.
+        """
+        from trelix.retrieval.bm25 import _STOP_WORDS, _escape_fts5, count_meaningful_tokens
+
+        # Direction 1: nothing was deleted. Direction 2: nothing was added.
+        live_members = {w for w in _STOP_WORDS if len(w) >= 3}
+        assert live_members == _EXPECTED_LIVE_STOP_WORDS
+        assert _EXPECTED_LIVE_STOP_WORDS == live_members
+        assert len(_EXPECTED_LIVE_STOP_WORDS) == 80
+
+        # Behavioural half: each pinned word is actually removed from both the
+        # token count and the FTS5 MATCH expression, so the set above is not
+        # just decoration.
+        for word in sorted(_EXPECTED_LIVE_STOP_WORDS):
+            phrase = f"{word} authenticate"
+            assert count_meaningful_tokens(phrase) == 1, (
+                f"stop word {word!r} was counted as a meaningful token in {phrase!r}"
+            )
+            assert _escape_fts5(phrase).split() == ["authenticate"], (
+                f"stop word {word!r} leaked into the FTS5 MATCH expression for "
+                f"{phrase!r}: {_escape_fts5(phrase)!r}"
+            )
+
+        for word in _MUST_STAY_SEARCHABLE:
+            phrase = f"{word} authenticate"
+            assert count_meaningful_tokens(phrase) == 2, (
+                f"{word!r} is an ordinary code identifier and must not be a stop word"
+            )
+            assert word in _escape_fts5(phrase).split(), (
+                f"{word!r} was stripped from the FTS5 MATCH expression for {phrase!r}"
+            )
+
+
+class TestMultiWordQueryPrecision:
+    def test_multiword_query_requires_every_token_including_three_char_ones(
+        self, db: Database
+    ) -> None:
+        """
+        MUTATIONS (two, both survived the pre-existing suite):
+          1. `return " ".join(tokens)` -> `return " OR ".join(tokens)` in
+             _escape_fts5 — FTS5's implicit AND becomes OR, so every multi-word
+             query floods the top-k with symbols that matched only one term.
+          2. `len(t) > 2` -> `len(t) > 3` in _escape_fts5 — three-character code
+             terms ("jwt", "sql", "api", "url") are silently dropped from the
+             MATCH expression, which has the same flooding effect.
+        Both are invisible to a `len(results) >= 1` style assertion; only an
+        exact result set catches them.
+        """
+        file_id = _make_file(db, "src/auth/tokens.py")
+
+        both_terms_body = "def decode_jwt_token(raw):\n    return jwt.decode(raw)"
+        one_term_body = "def decode_base64_blob(raw):\n    return base64.b64decode(raw)"
+
+        # Precondition: the fixture only discriminates while the second symbol
+        # contains "decode" but no occurrence of "jwt" anywhere FTS5 indexes it
+        # (name, qualified_name, docstring, body, context_summary).
+        assert "decode" in one_term_body and "jwt" not in one_term_body.lower(), (
+            "fixture 'decode_base64_blob' must contain 'decode' but never 'jwt'; "
+            "otherwise an OR-joined MATCH would look identical to an AND-joined one"
+        )
+
+        both_id = _insert_symbol(db, file_id, "decode_jwt_token", both_terms_body)
+        one_id = _insert_symbol(db, file_id, "decode_base64_blob", one_term_body)
+        _insert_chunk(db, both_id, both_terms_body)
+        _insert_chunk(db, one_id, one_term_body)
+
+        results = bm25_search(db, "jwt decode", k=10)
+
+        assert {r.symbol.name for r in results} == {"decode_jwt_token"}
+
+
+class TestFallbackChunkBody:
+    def test_fallback_chunk_carries_the_whole_body_up_to_2000_chars(self, db: Database) -> None:
+        """
+        MUTATIONS: `symbol.body[:2000]` -> `symbol.body[:0]` (empty) or
+        `symbol.body[:200]` (truncated) in the synthetic-Chunk fallback. The
+        pre-existing test asserted
+        `body[:2000] in chunk_text or chunk_text in body[:2000]`, and the second
+        half of that `or` is true for ANY prefix — including "" — so a
+        chunk-less symbol could reach the assembler carrying no code text at
+        all and the suite stayed green.
+        """
+        file_id = _make_file(db, "src/walk/orphan.py")
+
+        short_body = "def walk_orphan_tree(node):\n" + "\n".join(
+            f"    step_{i} = compute(node, {i})" for i in range(30)
+        )
+        long_body = "def walk_giant_tree(node):\n" + "\n".join(
+            f"    stage_{i} = accumulate(node, {i})" for i in range(120)
+        )
+        assert 200 < len(short_body) < 2000, (
+            "fixture 'short_body' must be longer than 200 chars and shorter than 2000 "
+            f"to discriminate a truncating slice; it is {len(short_body)}"
+        )
+        assert len(long_body) > 2000, (
+            f"fixture 'long_body' must exceed 2000 chars to pin the cap; it is {len(long_body)}"
+        )
+
+        # Symbols inserted with NO chunk row -> fallback path.
+        short_id = _insert_symbol(db, file_id, "walk_orphan_tree", short_body)
+        long_id = _insert_symbol(db, file_id, "walk_giant_tree", long_body)
+        # Precondition: both symbols must reach bm25_search with NO chunk row, or the
+        # synthetic-Chunk fallback under test is never entered and a truncating
+        # `symbol.body[:N]` slice becomes invisible.
+        #
+        # This guard is not hypothetical. Every OTHER test in this file inserts chunks, so
+        # omitting `_insert_chunk` here is exactly the kind of asymmetry a future edit
+        # "tidies up". Adversarial review simulated that drift — added the two
+        # `_insert_chunk` calls, re-applied the `body[:0]` mutation — and the file reported
+        # `26 passed`: the mutant survived and this test silently stopped testing anything.
+        for sym_id, label in ((short_id, "walk_orphan_tree"), (long_id, "walk_giant_tree")):
+            assert db.get_first_chunk_for_symbol(sym_id) is None, (
+                f"fixture {label!r} now has a chunk row, so bm25_search never builds the "
+                "synthetic fallback Chunk and this test no longer pins symbol.body[:2000]"
+            )
+
+        short_results = bm25_search(db, "walk_orphan_tree", k=5)
+        assert [r.symbol.name for r in short_results] == ["walk_orphan_tree"]
+        assert short_results[0].chunk.chunk_text == short_body
+
+        long_results = bm25_search(db, "walk_giant_tree", k=5)
+        assert [r.symbol.name for r in long_results] == ["walk_giant_tree"]
+        assert len(long_results[0].chunk.chunk_text) == 2000
+        assert long_results[0].chunk.chunk_text == long_body[:2000]
+
+
+class TestDeclarationBoostIsWired:
+    def test_declaration_boost_weight_reaches_the_sql_layer(self, db: Database) -> None:
+        """
+        MUTATION: `declaration_boost_weight=declaration_boost_weight` ->
+        `declaration_boost_weight=1.0` in the db.bm25_search() call. The
+        argument is accepted, documented, and threaded in from
+        RetrievalConfig.declaration_boost_weight — but dropping it on the floor
+        made every caller's configured boost a silent no-op with a green suite.
+        """
+        file_id = _make_file(db, "src/pay/charge.py")
+
+        declaration_body = "def process_payment(amount): pass"
+        incidental_body = "def batch_orchestrator(amounts):\n" + "\n".join(
+            f"    process_payment(amount_{i})  # calls process_payment" for i in range(15)
+        )
+        declaration_id = _insert_symbol(db, file_id, "process_payment", declaration_body)
+        incidental_id = _insert_symbol(
+            db,
+            file_id,
+            "batch_orchestrator",
+            incidental_body,
+            docstring=" ".join(["process_payment"] * 15),
+        )
+        _insert_chunk(db, declaration_id, declaration_body)
+        _insert_chunk(db, incidental_id, incidental_body)
+        for i in range(10):
+            noise_id = _insert_symbol(
+                db, file_id, f"unrelated_{i}", f"def unrelated_{i}(): return {i}"
+            )
+            _insert_chunk(db, noise_id, f"unrelated {i}")
+
+        unboosted = [r.symbol.name for r in bm25_search(db, "process_payment", k=10)]
+        # Precondition: without the boost this fixture reproduces the ranking
+        # defect the boost exists to fix. If it stops doing so, the assertion
+        # below proves nothing.
+        assert unboosted.index("batch_orchestrator") < unboosted.index("process_payment"), (
+            "fixture 'batch_orchestrator' no longer outranks the 'process_payment' "
+            "declaration at weight 1.0, so a boost of 5.0 would change nothing"
+        )
+
+        boosted = [
+            r.symbol.name
+            for r in bm25_search(db, "process_payment", k=10, declaration_boost_weight=5.0)
+        ]
+        assert boosted.index("process_payment") < boosted.index("batch_orchestrator")

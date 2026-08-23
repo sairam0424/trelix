@@ -452,3 +452,223 @@ class TestListWeights:
             "shell has no weights entry, so it must receive the 1.0 fallback and tie with "
             f"python at the same rank; got shell={scores[1]} python={scores[2]}"
         )
+
+
+def _leg_result(symbol_id: int, raw_score: float, rank: int, source: str) -> SearchResult:
+    """A real SearchResult as one retrieval leg would hydrate it (no Mock).
+
+    Unlike `_make_result`, this sets the incoming `rank` field, because fusion's
+    first-seen-wins guard is a candidate for rank-based as well as score-based
+    replacement mutants, and the rank-based one needs a realistic input rank.
+    """
+    result = _make_result(symbol_id=symbol_id, score=raw_score, source=source)
+    result.rank = rank
+    return result
+
+
+class TestFusionCompleteness:
+    def test_every_input_row_reaches_the_output_for_legs_longer_than_ten(self) -> None:
+        """Kills: `ranked_list[:10]`, `ranked_list[:3]`, and `return fused[:10]`.
+
+        Fusion is the only place the legs are merged, so a silent cap here caps
+        recall for the whole hybrid query. Nothing above pins the fused row SET
+        for a leg longer than three entries: the longest fixture in this file is
+        five items and is only checked for "all scores > 0" and "scores descend",
+        both of which a truncated output still satisfies.
+
+        The expected ids are an explicit literal table — deliberately NOT derived
+        by iterating the input lists, because an expectation built from the input
+        shrinks with it and would pass a truncating mutant.
+        """
+        vector_leg = [_make_result(symbol_id=sid, score=0.9) for sid in range(101, 113)]
+        bm25_leg = [
+            _make_result(symbol_id=sid, score=0.5, source="bm25") for sid in (201, 202, 203)
+        ]
+
+        # Fixture preconditions: if these stop holding, the truncation mutants
+        # become invisible and this test silently stops testing anything.
+        assert len(vector_leg) > 10, (
+            "fixture vector_leg must hold more than 10 entries or a `ranked_list[:10]` "
+            f"truncation cannot be observed; got {len(vector_leg)}"
+        )
+        assert len(vector_leg) + len(bm25_leg) > 10, (
+            "fixture vector_leg+bm25_leg must fuse to more than 10 rows or a "
+            "`return fused[:10]` truncation cannot be observed"
+        )
+
+        fused = reciprocal_rank_fusion([vector_leg, bm25_leg], k=60)
+        fused_ids = [r.chunk.symbol_id for r in fused]
+
+        expected_ids = {
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            201,
+            202,
+            203,
+        }
+
+        assert set(fused_ids) - expected_ids == set(), (
+            f"fusion invented rows: {set(fused_ids) - expected_ids}"
+        )
+        assert expected_ids - set(fused_ids) == set(), (
+            f"fusion dropped rows: {expected_ids - set(fused_ids)}"
+        )
+        assert len(fused_ids) == 15, f"expected 15 fused rows, got {len(fused_ids)}: {fused_ids}"
+
+
+class TestFirstSeenLegWins:
+    def test_first_leg_owns_the_row_whatever_the_later_legs_raw_scores_say(self) -> None:
+        """Kills: replacing the first-seen result when a later leg's raw score is
+        higher (`result.score > best_result[identity].score`), when it is lower
+        (`<`), or when its rank is better (`rank < best_result[identity].rank`).
+
+        The retained object decides the row's `source` — the "why did this match"
+        attribution in the search envelope and in the post_fusion trace — and also
+        which chunk text is carried forward. The module documents first-seen as
+        deliberate because raw scores are not comparable across legs, and that is
+        not a stylistic note: grep's name search emits a literal 1.0
+        (`grep_search.py::_name_search`) while the vector leg emits a cosine
+        (`max(0.0, 1.0 - distance)`, below 1.0 for any non-identical embedding), so
+        "keep the higher raw score" silently relabels every vector hit that grep
+        also found as a grep hit.
+
+        No test above pins `source` per row: the only source assertion in the suite
+        compares a SET across both leg orders, which is invariant under every one
+        of these replacement rules.
+        """
+        # Leg order matches Retriever._hybrid: vector first, then grep.
+        vector_leg = [
+            _leg_result(symbol_id=7, raw_score=0.62, rank=1, source="vector"),
+            _leg_result(symbol_id=8, raw_score=0.95, rank=2, source="vector"),
+            _leg_result(symbol_id=9, raw_score=0.40, rank=3, source="vector"),
+        ]
+        grep_leg = [
+            _leg_result(symbol_id=9, raw_score=1.00, rank=1, source="grep"),
+            _leg_result(symbol_id=7, raw_score=1.00, rank=2, source="grep"),
+            _leg_result(symbol_id=8, raw_score=0.10, rank=3, source="grep"),
+        ]
+
+        # Fixture preconditions, read BEFORE fusion because fusion overwrites
+        # .score and .rank in place. Each names the replacement rule it makes
+        # observable; if the fixture stops satisfying one, this test stops
+        # discriminating that rule.
+        assert grep_leg[1].score > vector_leg[0].score, (
+            "fixture grep_leg must out-SCORE vector_leg on symbol 7 or a "
+            "highest-raw-score-wins replacement is invisible"
+        )
+        assert grep_leg[2].score < vector_leg[1].score, (
+            "fixture grep_leg must under-SCORE vector_leg on symbol 8 or a "
+            "lowest-raw-score-wins replacement is invisible"
+        )
+        assert grep_leg[0].rank < vector_leg[2].rank, (
+            "fixture grep_leg must out-RANK vector_leg on symbol 9 or a "
+            "better-rank-wins replacement is invisible"
+        )
+        # The three preconditions above pin the score/rank RELATIONS, but the assertions
+        # below discriminate on `source` — so the two legs must actually carry different
+        # source labels. If a future edit made grep_leg use source="vector", every
+        # assertion becomes true by construction and this test stops detecting anything.
+        assert {r.source for r in grep_leg} == {"grep"}, (
+            "fixture grep_leg must be labelled 'grep' or `source` cannot discriminate "
+            "which leg owns the fused row"
+        )
+        assert {r.source for r in vector_leg} == {"vector"}, (
+            "fixture vector_leg must be labelled 'vector' for the same reason"
+        )
+
+        fused = reciprocal_rank_fusion([vector_leg, grep_leg], k=60)
+
+        sources = {r.chunk.symbol_id: r.source for r in fused}
+        assert sources == {7: "vector", 8: "vector", 9: "vector"}, (
+            "every row was first seen in the vector leg, so the vector leg must own "
+            f"all three rows regardless of grep's raw scores or ranks; got {sources}"
+        )
+
+
+class TestRankOnlyScoring:
+    def test_a_leg_result_scoring_exactly_zero_is_still_fused(self) -> None:
+        """Kills: `if result.score <= 0.0: continue` before the identity lookup.
+
+        RRF's whole premise is that only rank position is used, never the raw leg
+        score, so a raw 0.0 must contribute exactly like any other rank-1 hit. This
+        is reachable, not hypothetical: the vector leg computes
+        `score = max(0.0, 1.0 - distance)` (`retriever.py::_vector_search`), which
+        is exactly 0.0 for any chunk at cosine distance >= 1, so dropping those
+        makes a real ANN hit vanish from a hybrid query. No test above uses a raw
+        score of 0 — the closest, `test_scores_are_positive`, asserts the OUTPUT is
+        positive, which a filtered-out row also satisfies.
+        """
+        vector_leg = [
+            _make_result(symbol_id=1, score=0.0),
+            _make_result(symbol_id=2, score=0.5),
+        ]
+
+        assert vector_leg[0].score == 0.0, (
+            "fixture vector_leg[0] must carry a raw score of exactly 0.0 or a "
+            "non-positive-score filter is invisible"
+        )
+
+        fused = reciprocal_rank_fusion([vector_leg], k=60)
+
+        ids = [r.chunk.symbol_id for r in fused]
+        assert ids == [1, 2], (
+            f"the raw-0.0 row must survive and stay at rank 1 (it entered at rank 1); got {ids}"
+        )
+        scores = {r.chunk.symbol_id: r.score for r in fused}
+        assert abs(scores[1] - 1.0 / 61.0) < 1e-12, (
+            f"raw 0.0 at rank 1 must fuse to 1/(60+1); got {scores[1]}"
+        )
+        assert abs(scores[2] - 1.0 / 62.0) < 1e-12, (
+            f"raw 0.5 at rank 2 must fuse to 1/(60+2); got {scores[2]}"
+        )
+
+
+class TestExactScoreOrdering:
+    def test_a_sub_millesimal_score_margin_still_reorders_the_output(self) -> None:
+        """Kills: sorting on a quantized score, e.g.
+        `key=lambda ident: round(rrf_scores[ident], 3)`.
+
+        Every ordering test above expects an output order that happens to equal the
+        input insertion order, and Python's sort is stable — so bucketing the sort
+        key changes nothing they check. With k=60 the gap between adjacent ranks is
+        ~2.6e-4, so a 3-decimal bucket collapses most real comparisons into ties and
+        hands ranking back to dict insertion order; `file_type_weights` values near
+        1.0 would stop having any effect at all, silently.
+
+        The margin here (~6e-5) is smaller than one such bucket and the winner is
+        inserted SECOND, so only an exact-score sort can promote it.
+        """
+        md = _make_result_lang(symbol_id=10, score=0.95, language=Language.MARKDOWN)
+        py = _make_result_lang(symbol_id=20, score=0.80, language=Language.PYTHON)
+        bm25_leg = [md, py]  # markdown at rank 1, python at rank 2
+
+        # Expectations written from literals, not read from the module under test.
+        expected_md = (1.0 / 61.0) * 0.98
+        expected_py = (1.0 / 62.0) * 1.0
+        margin = expected_py - expected_md
+
+        assert 0.0 < margin < 1.0e-3, (
+            "fixture bm25_leg/weights must leave python ahead of markdown by less "
+            f"than 1e-3 or score quantization is invisible; margin={margin}"
+        )
+
+        fused = reciprocal_rank_fusion([bm25_leg], k=60, weights={"markdown": 0.98, "python": 1.0})
+
+        ids = [r.chunk.symbol_id for r in fused]
+        assert ids == [20, 10], (
+            "python must be promoted above markdown on a ~6e-5 margin even though "
+            f"markdown was inserted first; got {ids}"
+        )
+        scores = {r.chunk.symbol_id: r.score for r in fused}
+        assert abs(scores[10] - expected_md) < 1e-12, f"markdown score {scores[10]}"
+        assert abs(scores[20] - expected_py) < 1e-12, f"python score {scores[20]}"
