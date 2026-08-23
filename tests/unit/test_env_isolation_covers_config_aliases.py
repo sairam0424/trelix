@@ -278,7 +278,40 @@ def test_scrub_removes_a_planted_provider_leak(monkeypatch: pytest.MonkeyPatch) 
     scrub_operator_env(monkeypatch)
 
     assert EmbedderConfig().provider == "local"
-    assert sorted(k for k in os.environ if k.upper().startswith("AZURE_")) == []
+
+    # Assert what the scrub PROMISES, not a stronger proposition it never made.
+    #
+    # This line originally read:
+    #     assert sorted(k for k in os.environ if k.upper().startswith("AZURE_")) == []
+    # and CI falsified it on all four Python legs while it passed on a laptop. GitHub's
+    # ubuntu runners preinstall the Azure CLI, which exports
+    # AZURE_EXTENSION_DIR=/opt/az/azcliextensions -- a filesystem path, not a credential,
+    # declared by no trelix config field, and therefore read by no pydantic source. The
+    # assertion had claimed the whole third-party AZURE_ namespace, which the scrub
+    # deliberately does NOT: for non-prefixed providers it deletes a NAMED TABLE, precisely
+    # because AZURE_/AWS_/OPENAI_ are namespaces trelix does not own. Widening the scrub to
+    # match the assertion would have been the wrong repair -- it would delete an unrelated
+    # tool's configuration to satisfy a test.
+    #
+    # Kept instead, in two parts: the planted names must be gone (the scrub works), and no
+    # AZURE_ name that config.py DECLARES may remain (the breadth worth keeping -- a real
+    # alias the table missed still fails here). Reading the declared names SELECTS what to
+    # check and supplies no expected value, so rule 1 holds for the same reason it does in
+    # the two guards above.
+    #
+    # Both comparisons reduce to a list of NAMES before asserting: `assert x not in
+    # os.environ` makes pytest render the entire environment, values included, into the CI
+    # log.
+    planted_left = sorted(k for k in os.environ if k.upper() in {"AZURE_ENDPOINT", "AZURE_API_KEY"})
+    assert planted_left == [], f"the scrub left the planted names in place: {planted_left}"
+
+    declared_azure = {n.upper() for n in _derived_env_names() if n.upper().startswith("AZURE_")}
+    assert declared_azure, (
+        "config.py declares no AZURE_ env name any more, so the check below would be "
+        "vacuous; delete it or re-point it at whatever replaced those aliases"
+    )
+    declared_left = sorted(k for k in os.environ if k.upper() in declared_azure)
+    assert declared_left == [], f"the scrub left declared Azure aliases in place: {declared_left}"
 
 
 def test_scrub_does_not_touch_unrelated_env(monkeypatch: pytest.MonkeyPatch) -> None:
