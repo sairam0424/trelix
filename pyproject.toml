@@ -380,6 +380,24 @@ markers = [
 [tool.coverage.run]
 source = ["src/trelix"]
 omit = ["tests/*"]
+# Branch coverage. Line coverage counts whether a statement executed; it cannot see an
+# `if` whose false arm is never taken, which for this codebase is most of the risk: an
+# untaken `else` on a retrieval leg, an unexercised `except ImportError` fallback in the
+# parser registry, a validator whose reject path never runs.
+#
+# Measured on this tree before enabling, so the gate move is not a guess:
+#   line only            84.01%  (2,722 missing of 17,025 statements)
+#   line + branch        80.76%  (5,960 branch destinations, 1,701 missing, 1,015 partial)
+#   branch rate alone    71.46%
+# So `fail_under = 79` below still clears by 1.76 points and does NOT need to move. That
+# matters because an audit predicted the opposite -- it extrapolated the parser package's
+# 64.86% branch rate to the whole tree and computed a 0.05-point margin. The parser
+# package is the WORST-covered area in the repo, so using it as the estimator understated
+# everything else. The number here is the whole tree, measured.
+#
+# Consequence to state plainly: the headline percentage drops from 84.01% to ~80.76% and
+# is NOT comparable with any previously recorded figure. The denominator changed.
+branch = true
 
 [tool.coverage.report]
 show_missing = true

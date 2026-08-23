@@ -280,8 +280,28 @@ jobs:
       #
       # pyproject's fail_under stays 75 and now disagrees with CI; raise it to 79 so a
       # local `pytest --cov` fails for the same reason CI does.
+      # `branch = true` is now set in pyproject's [tool.coverage.run], so the number this
+      # step prints is combined line+branch and is NOT comparable with any figure recorded
+      # before 2026-08-23. Measured on the full tree before enabling it: line-only 84.01%,
+      # combined 80.76%, branch rate 71.46%. --cov-fail-under=79 therefore still clears, by
+      # 1.76 points, and deliberately does not move -- see the pyproject comment for why the
+      # 0.05-point margin an audit predicted was an extrapolation from the repo's worst area.
+      #
+      # --cov-report=json feeds the per-package floor check below. One global percentage
+      # cannot say WHERE coverage fell, and it lets a rise in a well-covered package mask a
+      # collapse in the extractors, which are simultaneously this repo's core value and its
+      # weakest area.
       - name: Run unit tests
-        run: pytest tests/unit/ -v --tb=short --cov=src/trelix --cov-report=term-missing --cov-report=html --cov-fail-under=79
+        run: pytest tests/unit/ -v --tb=short --cov=src/trelix --cov-report=term-missing --cov-report=html --cov-report=json:coverage-unit.json --cov-fail-under=79
+      # Deliberately a script run after the suite, not a pytest test. A test cannot read its
+      # own run's coverage (pytest-cov writes at session finish), and a test that reads a
+      # report file must skip when it is absent -- which in CI is produced by the very
+      # command running the test. A check that can only skip is a green identical to a check
+      # that never ran. Verified failing two ways before landing: a floor raised above
+      # actual exits 1 naming the package, and a floor whose prefix matches no files exits 1
+      # as DEAD rather than passing forever.
+      - name: Check per-package coverage floors
+        run: python scripts/check_coverage_floors.py coverage-unit.json
       - name: Run trelix-mcp tests
         run: pytest packages/trelix-mcp/tests/ -v --tb=short
       # Three separate invocations, not one. packages/trelix-langchain/tests and
