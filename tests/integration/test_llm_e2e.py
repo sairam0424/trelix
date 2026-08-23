@@ -22,6 +22,59 @@ from typing import Any
 import pytest
 from dotenv import dotenv_values
 
+# NOTE: no `pytestmark = pytest.mark.integration` here. This directory's conftest applies
+# that marker (and `enable_socket`) by path, and its docstring explains why by-directory
+# beats by-hand: a new file in this tree is credential-gated on arrival rather than on the
+# day someone remembers to decorate it. Adding it here too would just be a second place to
+# forget.
+
+# ── OPT-IN GATE, placed BEFORE anything reads .env ───────────────────────────────────
+#
+# These tests call Azure OpenAI and AWS Bedrock for real, and they used to run whenever a
+# .env merely EXISTED. During a single audit session three separate agents each spent real
+# money on this path just by running `pytest tests/integration/`. Presence of a file is not
+# consent; an explicit variable is.
+#
+# The gate sits above `_DOTENV_VALUES` deliberately, not below it: when it is closed,
+# `dotenv_values()` is never called, so no credential enters the process image at all —
+# not even under `--collect-only`.
+if os.environ.get("TRELIX_LIVE_LLM_TESTS") != "1":
+    pytest.skip(
+        "live LLM tests call Azure/Bedrock and cost money; set TRELIX_LIVE_LLM_TESTS=1 to opt in",
+        allow_module_level=True,
+    )
+
+# Keys this module is allowed to take from .env. ALLOWLIST, deny by default.
+#
+# This was every non-empty key in the file — measured at 32 on this checkout, including
+# PYPI_API_TOKEN, TRELIX_JIRA_API_TOKEN and TRELIX_LINEAR_API_KEY. All of them were built
+# into a module-scope dict at COLLECTION time and then published into os.environ by the
+# autouse fixture below, for tests that read exactly four credentials. A publish token was
+# therefore in the test process's object graph during any run that merely collected this
+# directory.
+#
+# Only four are secrets this module needs (`_env()` is called with exactly these); the rest
+# are non-secret configuration the backends resolve through pydantic-settings or boto3, and
+# omitting them would make the tests fail rather than leak. Deny-by-default is the point: a
+# new secret added to .env tomorrow does not silently join this dict.
+_ALLOWED_DOTENV_KEYS: frozenset[str] = frozenset(
+    {
+        # credentials, read via _env()
+        "AZURE_API_KEY",
+        "AZURE_ENDPOINT",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        # non-secret configuration the backends need in os.environ (boto3's default
+        # session and the Azure client read these directly, not through pydantic-settings)
+        "AWS_REGION",
+        "AZURE_API_VERSION",
+        "AZURE_CHAT_MODEL",
+        "AZURE_EMBEDDINGS_MODEL",
+        "TRELIX_LLM_BEDROCK_PRIMARY_MODEL",
+        "TRELIX_LLM_BEDROCK_FALLBACK_MODEL",
+    }
+)
+
 # .env from the repo root, so these tests work when run directly (not via CI env
 # injection). READ, NOT LOADED: dotenv_values() returns a dict and leaves
 # os.environ untouched.
@@ -37,7 +90,9 @@ from dotenv import dotenv_values
 # TRELIX_EMBEDDER_PROVIDER=azure. The values now reach os.environ only inside
 # _load_dotenv_into_env below, per test, and monkeypatch undoes them.
 _DOTENV_VALUES: dict[str, str] = {
-    k: v for k, v in dotenv_values(Path(__file__).parent.parent.parent / ".env").items() if v
+    k: v
+    for k, v in dotenv_values(Path(__file__).parent.parent.parent / ".env").items()
+    if v and k in _ALLOWED_DOTENV_KEYS
 }
 
 # ---------------------------------------------------------------------------

@@ -184,6 +184,13 @@ dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0",
+    # Guards, not conveniences -- each closes a named incident. pytest-socket bans
+    # outbound sockets in the unit suite (a harness reached a paid endpoint and got a
+    # live 401); pytest-timeout fails a hung test instead of wedging the run (a `trelix
+    # watch` test hung the suite until killed). Both are pinned by
+    # tests/unit/test_network_is_blocked.py and the --timeout entry in addopts.
+    "pytest-socket>=0.7.0",
+    "pytest-timeout>=2.3.0",
     "ruff>=0.15.0",
     "mypy>=1.10.0",
     "build>=1.0.0",
@@ -338,7 +345,25 @@ asyncio_mode = "auto"
 # tagging nothing. It does NOT validate `-m` expressions: a typo there still
 # deselects nothing silently, which is why the marker below must stay registered
 # and applied rather than relying on the flag alone.
-addopts = "--tb=short --strict-markers"
+# --disable-socket --allow-unix-socket: the unit suite may not reach the network.
+#   48.3% of this suite's wall clock (238.75s of 494.70s) was live HTTP to
+#   huggingface.co, and three separate audit runs spent real Azure OpenAI and AWS
+#   Bedrock money merely by collecting and running tests. The allowance is mandatory,
+#   not a loophole: `asyncio_mode = "auto"` builds an event loop per async test and that
+#   construction calls socket.socketpair(), so bare --disable-socket measured 76 failures
+#   in a 1,054-test slice -- every one from loop setup, none a real network call. With the
+#   Unix allowance: 0 failures across 2,172 tests. Both halves are pinned by
+#   tests/unit/test_network_is_blocked.py, which is this flag's positive control.
+#   Tests that legitimately need the network carry @pytest.mark.requires_network and
+#   pytest-socket's own @pytest.mark.enable_socket.
+# --timeout=60 --timeout-method=signal: a hung test must fail, not wedge the run. A test
+#   driving `trelix watch` previously hung the suite until it was killed by hand. 60s is
+#   ~5x headroom, measured: with the network closed the slowest unit test is 6.22s and
+#   everything after the top two is <=0.71s. `signal` (the default) rather than `thread`
+#   deliberately -- thread's hard os._exit() destroys the traceback in exactly the
+#   watcher/asyncio code you need it for, and no trelix source installs a SIGALRM handler.
+# -ra: makes skips visible. 42 tests skip in CI and nothing reported it.
+addopts = "--tb=short --strict-markers -ra --disable-socket --allow-unix-socket --timeout=60 --timeout-method=signal"
 pythonpath = ["src", "."]
 markers = [
     # This marker did not exist before, and no test carried it, so

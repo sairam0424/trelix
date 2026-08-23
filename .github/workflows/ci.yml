@@ -9,6 +9,7 @@ on:
 jobs:
   lint:
     name: Lint & Type Check
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +65,7 @@ jobs:
 
   type-check-extras:
     name: Type Check (optional extras present)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -136,6 +138,7 @@ jobs:
 
   test:
     name: Test (Python ${{ matrix.python-version }})
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -147,6 +150,14 @@ jobs:
         # 3256 collected (identical to 3.11), 3256 passed, 0 skipped, 0 failed, plus
         # 102/19/10 in the three packages.
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+    # Hub offline for the unit matrix ONLY. 48.3% of this suite's wall clock (238.75s of
+    # 494.70s) was live HTTP to huggingface.co, and with the socket ban in addopts these
+    # two variables are what let 51 tests load the CACHED model instead of revalidating
+    # against the Hub. Measured locally: same three files go 41 failed -> 188 passed.
+    # Deliberately NOT on the `integration` job, which documents that it may download.
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     steps:
       # fetch-tags is load-bearing, not hygiene: tests/unit/test_assembler_backcompat_golden.py
       # builds its baseline from `git show v2.12.0:src/trelix/retrieval/assembler.py` to prove
@@ -222,6 +233,33 @@ jobs:
           key: tree-sitter-language-pack-${{ hashFiles('pyproject.toml') }}
       - name: Prefetch tree-sitter grammars
         run: python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
+      # Same cache-then-prefetch shape as the grammars above, for the same reason: this job
+      # runs with HF_HUB_OFFLINE=1 (see this job's `env:`), and 51 unit tests construct a
+      # REAL embedder -- `SentenceTransformer(config.local_model)`, i.e.
+      # sentence-transformers/all-MiniLM-L6-v2 -- so offline mode against a COLD cache
+      # raises LocalEntryNotFoundError rather than skipping.
+      #
+      # That is not hypothetical. It is what the first push of this change did: 51 failed on
+      # all four legs, while the same suite was green locally. The difference was a warm
+      # ~/.cache/huggingface on the developer's machine. Reproduced deliberately with
+      # HF_HOME pointed at an empty directory, which gave 51 failed / 3,555 passed --
+      # matching CI exactly. A local pass on a warm cache is not evidence about CI.
+      #
+      # Offline is turned OFF for this ONE step so the download can happen, then the test
+      # run itself stays hermetic behind the socket ban. Warming here rather than letting
+      # the tests download is what keeps the ban meaningful: no test may open a socket, and
+      # nothing in the test phase can silently start fetching from the Hub again.
+      - name: Cache Hugging Face hub
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-hub-minilm-l6-v2-${{ hashFiles('pyproject.toml') }}
+      - name: Prefetch the local embedder model
+        env:
+          HF_HUB_OFFLINE: "0"
+          TRANSFORMERS_OFFLINE: "0"
+        run: |
+          python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
       # --cov is required for two things that were previously silently dead:
       # the htmlcov/ artifact uploaded below, and pyproject's
       # [tool.coverage.report] fail_under = 75 gate (pytest-cov reads
@@ -325,6 +363,7 @@ jobs:
 
   typescript-sdk:
     name: TypeScript SDK
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -343,6 +382,7 @@ jobs:
 
   docker-build:
     name: Docker build smoke test
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
