@@ -340,6 +340,25 @@ warn_unused_ignores = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Explicit, because pytest-asyncio warns when it is unset and `strict` below turns
+# config-parse warnings into errors. "function" is also what the suite already gets by
+# default, so this pins current behaviour rather than changing it.
+asyncio_default_fixture_loop_scope = "function"
+# pytest 9's umbrella switch: strict_config + strict_markers + strict_xfail +
+# strict_parametrization_ids. Each half earns its keep here:
+#   strict_config  -- an unknown or misparsed key in THIS section becomes an error
+#                     instead of a warning nobody reads. This repo configures
+#                     pytest-asyncio, pytest-socket, pytest-timeout and pytest-cov, so a
+#                     renamed ini key is a live risk.
+#   strict_markers -- already on via addopts; kept there too, explicitly.
+#   strict_xfail   -- an xfail that starts passing must fail the run, else a fixed defect
+#                     keeps its "known failure" label forever. All xfails on this tree
+#                     already declare strict=True with raises=, so this changes nothing
+#                     today and closes the door on the next one that forgets.
+#   strict_parametrization_ids -- non-unique parameter-set ids become an error. With
+#                     duplicate ids `-k` cannot address a single case and a failure report
+#                     cannot say WHICH one broke.
+strict = true
 # --strict-markers makes `@pytest.mark.<unregistered>` a collection error, so a
 # typo in the name tests/integration/conftest.py applies fails loudly instead of
 # tagging nothing. It does NOT validate `-m` expressions: a typo there still
@@ -365,6 +384,28 @@ asyncio_mode = "auto"
 # -ra: makes skips visible. 42 tests skip in CI and nothing reported it.
 addopts = "--tb=short --strict-markers -ra --disable-socket --allow-unix-socket --timeout=60 --timeout-method=signal"
 pythonpath = ["src", "."]
+# Every marker in this list is APPLIED BY PATH — `integration`, `enable_socket` and
+# `requires_network` in tests/integration/conftest.py, the rest in tests/conftest.py.
+# Nothing is registered here that no test carries: that state is worse than having no
+# marker at all, because it reads like protection. `integration` was exactly that for one
+# release — registered, documented in CONTRIBUTING.md as THE credential-free run, carried
+# by nobody, deselecting nothing while driving live Azure/Bedrock calls.
+#
+# Deliberately NOT registered, each proposed and then measured to zero on this tree:
+#   component, e2e  no reproducible definition; the flat tests/unit tree gives nothing to
+#                   key them on, and the census figures quoted for them (1,376 and 340)
+#                   are not derivable from any path or content rule here. Left in a `-m`
+#                   expression they deselect exactly 0 while reading as 1,716.
+#   perf            tests/perf/test_query_latency.py collects 0 tests — it is a __main__
+#                   script whose filename merely matches test_*.py.
+#   contract, property, regression, flaky   carried by nobody today.
+#
+# NO COUNTS ARE WRITTEN HERE ON PURPOSE, and the one that was here is gone: the
+# `integration` comment used to end "(104 deselected on the same tree)". Measured again,
+# `pytest tests --collect-only -m "not integration"` reports 3990/4079 collected, 89
+# deselected. The number had drifted — precisely the failure this taxonomy exists to
+# prevent — so counts now live in tests/unit/test_marker_taxonomy.py where drift FAILS a
+# run instead of misinforming a reader.
 markers = [
     # This marker did not exist before, and no test carried it, so
     # CONTRIBUTING.md's documented credential-free run
@@ -373,8 +414,35 @@ markers = [
     # fixed) and it drove the live Azure/Bedrock calls it claimed to skip.
     # It is now applied by directory in tests/integration/conftest.py rather
     # than by hand on each item, so a new file there is credential-gated on
-    # arrival (104 deselected on the same tree).
+    # arrival.
     "integration: hits a live service (Azure/Bedrock/network); needs credentials",
+    # Referenced by the --disable-socket comment above and by tests/unit/conftest.py as
+    # the documented escape hatch for a test that legitimately needs the network — and,
+    # until now, NEITHER registered NOR carried. Under --strict-markers that made the
+    # documented hatch a collection ERROR for whoever first tried to use it. Applied to
+    # tests/integration/ alongside `integration`: coextensive with it today by
+    # construction, kept separate so a future unit test that needs outbound traffic can
+    # say so without also claiming to need credentials.
+    "requires_network: needs outbound network; excluded from the hermetic unit run",
+    # Applied to exactly the files carrying a MODULE-SCOPE pytest.importorskip, i.e. the
+    # ones that vanish entirely when an optional extra is absent (pyvis, watchfiles,
+    # litellm, lancedb). Per-test importorskip files are excluded: they still have work to
+    # do without the extra.
+    "requires_extra: whole file skips unless an optional extra is installed",
+    # Node-level, not file-level: the two files involved also hold the portable fake-model
+    # proofs that must run on a runner with no HuggingFace cache.
+    "requires_weights: constructs a real published model from cached weights",
+    # Measured file-level cost, not a guess — see tests/conftest.py for the command and
+    # the threshold. FILE granularity, so fast tests inside a heavy file are tagged too;
+    # the marker means "this file is expensive", not "this test is slow".
+    "slow: file measured at >= 4.0s of call+setup+teardown",
+    "cli: drives the Typer CLI (CliRunner or the installed console script)",
+    "api: drives the FastAPI HTTP surface",
+    "parser: exercises the tree-sitter language front-end",
+    # Subject-is-a-security-control, by explicit table: authn/authz, path containment,
+    # output escaping, secret redaction, audit tamper evidence, read-only enforcement,
+    # remote-code gating, and the socket ban's own positive control.
+    "security: the subject under test IS a security control",
 ]
 
 [tool.coverage.run]

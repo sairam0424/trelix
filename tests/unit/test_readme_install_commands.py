@@ -102,10 +102,23 @@ def test_at_least_one_readme_and_one_install_command_were_found() -> None:
     assert _advertised_extras(), "no extras-style install commands found — the regex is wrong"
 
 
+_ADVERTISED_EXTRAS = _advertised_extras()
+
+
 @pytest.mark.parametrize(
     ("readme", "lineno", "dist", "extra"),
-    _advertised_extras(),
-    ids=lambda v: v if isinstance(v, str) else "",
+    _ADVERTISED_EXTRAS,
+    # The id must carry the README's path and line number, not just the extra name.
+    # `ids=lambda v: v if isinstance(v, str) else ""` produced `--trelix-local` three
+    # separate times (and `--trelix-knowledge-graph` five), because several READMEs
+    # advertise the same extra. `strict_parametrization_ids` (via `strict = true` in
+    # pyproject) turns that into a collection error, and rightly: with duplicate ids `-k`
+    # cannot address a single case and a failure report cannot tell you WHICH README line
+    # is broken — the only thing this test exists to say.
+    ids=[
+        f"{_rel(readme)}:{lineno}:{dist}[{extra}]"
+        for readme, lineno, dist, extra in _ADVERTISED_EXTRAS
+    ],
 )
 def test_every_advertised_extra_actually_exists(
     readme: Path, lineno: int, dist: str, extra: str

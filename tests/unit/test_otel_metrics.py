@@ -325,21 +325,50 @@ class TestEnabledRecordsCounters:
     def test_no_token_series_when_provider_reports_no_usage(self, metric_reader) -> None:
         """Cohere on Bedrock returns no token count. The requests counter must
         still move; the tokens counter must stay absent rather than carry an
-        invented estimate."""
+        invented estimate.
+
+        DELTAS, not absolute totals. ``_test_meter_provider`` is session-scoped (it has
+        to be -- OTel's global MeterProvider is a one-shot per process), so this reader
+        is alive for the whole session and every counter on it is CUMULATIVE. ``== 1``
+        therefore also asserted "nothing else in this session ever recorded under the
+        bedrock-cohere label", which is not this test's business and is false the moment
+        a second recorder exists. TestASecondRecorderUnderTheSameProviderLabel below is
+        exactly that second recorder, and
+        tests/unit/test_otel_metrics_cumulative_totals.py drives the order that makes
+        the difference visible.
+        """
         from trelix.embedder.base import BedrockCohereEmbedder
+
+        names = ("trelix.embedder.requests", "trelix.embedder.characters")
+        before, _ = _counter_deltas(metric_reader, "bedrock-cohere", names)
+        # PRECONDITION for the final assertion: no earlier test recorded a token series
+        # for this label, so "absent afterwards" is attributable to THIS embed. A delta
+        # cannot express "absent" -- 0 and missing are different claims, and the point
+        # of this test is that the series does not exist.
+        assert _counter_total(metric_reader, "trelix.embedder.tokens", "bedrock-cohere") is None
 
         embedder = object.__new__(BedrockCohereEmbedder)
         embedder._model = "cohere.embed-english-v3"
         embedder._client = _stub_bedrock_client({"embeddings": [[0.1, 0.2]]})
 
         assert embedder.embed(["hello"]) == [[0.1, 0.2]]
-        assert _counter_total(metric_reader, "trelix.embedder.requests", "bedrock-cohere") == 1
-        assert _counter_total(metric_reader, "trelix.embedder.characters", "bedrock-cohere") == 5
+
+        after, _ = _counter_deltas(metric_reader, "bedrock-cohere", names)
+        assert after["trelix.embedder.requests"] - before["trelix.embedder.requests"] == 1
+        assert after["trelix.embedder.characters"] - before["trelix.embedder.characters"] == 5
         assert _counter_total(metric_reader, "trelix.embedder.tokens", "bedrock-cohere") is None
 
     def test_bedrock_titan_records_provider_reported_tokens(self, metric_reader) -> None:
-        """Titan reports inputTextTokenCount, one text per invoke_model call."""
+        """Titan reports inputTextTokenCount, one text per invoke_model call.
+
+        Deltas for the same reason as the test above: the reader is session-lived and
+        these counters are cumulative, so ``== 2`` / ``== 8`` silently also asserted
+        that this test was the first bedrock-titan recorder in the process.
+        """
         from trelix.embedder.base import BedrockTitanEmbedder
+
+        names = ("trelix.embedder.requests", "trelix.embedder.tokens")
+        before, _ = _counter_deltas(metric_reader, "bedrock-titan", names)
 
         embedder = object.__new__(BedrockTitanEmbedder)
         embedder._model = "amazon.titan-embed-text-v2:0"
@@ -348,8 +377,59 @@ class TestEnabledRecordsCounters:
         embedder._client = _stub_bedrock_client({"embedding": [0.1, 0.2], "inputTextTokenCount": 4})
 
         assert embedder.embed(["ab", "cd"]) == [[0.1, 0.2], [0.1, 0.2]]
-        assert _counter_total(metric_reader, "trelix.embedder.requests", "bedrock-titan") == 2
-        assert _counter_total(metric_reader, "trelix.embedder.tokens", "bedrock-titan") == 8
+
+        after, _ = _counter_deltas(metric_reader, "bedrock-titan", names)
+        assert after["trelix.embedder.requests"] - before["trelix.embedder.requests"] == 2
+        assert after["trelix.embedder.tokens"] - before["trelix.embedder.tokens"] == 8
+
+
+class TestASecondRecorderUnderTheSameProviderLabel:
+    """The collision the two tests above must survive.
+
+    Not a hypothetical: the two ``"openai"`` tests in TestEnabledRecordsCounters already
+    share a series, and ``_counter_deltas``' docstring records that ``tests/unit`` in
+    reverse collection order failed one of them with ``assert 3 == 2`` for precisely this
+    reason. The bedrock labels had no second recorder, so their absolute totals kept
+    working by accident. This test is that second recorder, so the accident is gone and
+    the deltas above are load-bearing.
+
+    It asserts its OWN deltas rather than merely embedding for side effects: if it ever
+    stopped actually recording, this class would go red here instead of quietly making
+    tests/unit/test_otel_metrics_cumulative_totals.py vacuous.
+    """
+
+    def test_recording_under_both_bedrock_labels_moves_the_shared_counters(
+        self, metric_reader
+    ) -> None:
+        from trelix.embedder.base import BedrockCohereEmbedder, BedrockTitanEmbedder
+
+        titan_names = ("trelix.embedder.requests", "trelix.embedder.tokens")
+        cohere_names = ("trelix.embedder.requests",)
+        titan_before, _ = _counter_deltas(metric_reader, "bedrock-titan", titan_names)
+        cohere_before, _ = _counter_deltas(metric_reader, "bedrock-cohere", cohere_names)
+
+        titan = object.__new__(BedrockTitanEmbedder)
+        titan._model = "amazon.titan-embed-text-v2:0"
+        titan._dims = 2
+        titan._normalize = True
+        titan._client = _stub_bedrock_client({"embedding": [0.1, 0.2], "inputTextTokenCount": 4})
+        assert titan.embed(["ab", "cd"]) == [[0.1, 0.2], [0.1, 0.2]]
+
+        cohere = object.__new__(BedrockCohereEmbedder)
+        cohere._model = "cohere.embed-english-v3"
+        cohere._client = _stub_bedrock_client({"embeddings": [[0.1, 0.2]]})
+        assert cohere.embed(["hello"]) == [[0.1, 0.2]]
+
+        titan_after, _ = _counter_deltas(metric_reader, "bedrock-titan", titan_names)
+        cohere_after, _ = _counter_deltas(metric_reader, "bedrock-cohere", cohere_names)
+        assert (
+            titan_after["trelix.embedder.requests"] - titan_before["trelix.embedder.requests"] == 2
+        )
+        assert titan_after["trelix.embedder.tokens"] - titan_before["trelix.embedder.tokens"] == 8
+        assert (
+            cohere_after["trelix.embedder.requests"] - cohere_before["trelix.embedder.requests"]
+            == 1
+        )
 
 
 # ---------------------------------------------------------------------------

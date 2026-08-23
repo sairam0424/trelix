@@ -199,6 +199,184 @@ CONFIG_NON_PREFIXED_ENV: tuple[str, ...] = (
     "VOYAGE_API_KEY",
 )
 
+# ---------------------------------------------------------------------------
+# HOLE 1, CLOSED: names an installed SDK reads that config.py never declares
+# ---------------------------------------------------------------------------
+#
+# ``CONFIG_NON_PREFIXED_ENV`` above is scoped to what config.py declares, and its
+# meta-test derives the same selection from config.py's model fields. That guard
+# is honest about drift in config.py and BLIND to the other half of the channel:
+# a provider SDK reads its OWN env names straight out of ``os.environ``, with no
+# pydantic field anywhere in trelix to derive them from. Round 4 established the
+# case that makes this concrete -- "Azure credentials are read by the OpenAI SDK
+# directly from os.environ, not via pydantic env_prefix" -- so the config-derived
+# meta-test can be GREEN while a real channel is open. That is a green-when-
+# vacuous shape in the guard itself, and this table is what closes it.
+#
+# THE THREE NAMES THE ROUND-4 AUTHOR CALLED OUT BY HAND, and where they are read
+# in the INSTALLED packages of this venv (grepped, not remembered):
+#   AWS_SESSION_TOKEN   botocore/credentials.py:1192  (EnvProvider.TOKENS)
+#   AWS_DEFAULT_REGION  botocore/configprovider.py:74 (session var 'region')
+#   OPENAI_BASE_URL     openai/_client.py:251         (base_url default)
+# None of the three has a config.py field, so none could ever have been derived.
+# AWS_SESSION_TOKEN is the sharpest illustration of why a grep for
+# ``os.environ.get("NAME")`` is not enough on its own: botocore never writes that
+# call: the name lives in a class-attribute list which ``EnvProvider`` indexes at
+# runtime. A derivation that only matched direct-call sites would have missed the
+# very name the hole was named after, which is why the meta-test's scanner
+# matches quoted string LITERALS and filters them by shape (see
+# ``tests/unit/test_env_isolation_covers_sdk_env.py``, which also states the
+# limits of that approach).
+#
+# WHY A SEPARATE TUPLE RATHER THAN EXTENDING CONFIG_NON_PREFIXED_ENV. That table
+# is pinned by set-equality in BOTH directions against config.py's derived names
+# (``test_non_prefixed_table_has_no_stale_entries``). Adding AWS_SESSION_TOKEN to
+# it would be a stale entry by that test's definition -- correctly so, because
+# config.py really does not read it. Two tables with two derivations keeps both
+# guards strict instead of loosening one to fit the other.
+#
+# DO ENDPOINTS AND REGIONS BELONG IN THE SAME TABLE AS SECRETS? Yes, and the
+# argument is not "they are also sensitive" -- OPENAI_BASE_URL and
+# AWS_DEFAULT_REGION are not credentials, and a leaked region is not a
+# disclosure. The argument is that this table's axis was never secrecy. Round 4
+# recorded the leak as "a CORRECTNESS failure, not a cost one ... a test named for
+# the local embedder silently constructs and asserts on an Azure one", and
+# ``--disable-socket`` already removes the spend and exfiltration risk. The axis
+# is therefore: DOES THIS NAME CHANGE WHICH PROVIDER OR ENDPOINT THE CODE UNDER
+# TEST RESOLVES? A base_url does exactly that -- it redirects every request the
+# constructed client would make, so a test asserting on "the default OpenAI
+# client" is asserting on the operator's gateway instead. A region does it more
+# weakly but really: for Bedrock it is a component of the endpoint host and it
+# selects the model-availability surface. Both change the answer to "which
+# provider did this test actually exercise", so both belong.
+#
+# What that same axis EXCLUDES is the reason this is a family-filtered table and
+# not a second blanket prefix rule: a name that only affects the operator's
+# unrelated tooling has no bearing on which provider trelix resolves, so
+# scrubbing all of ``AWS_*`` would reach past the question being asked. The
+# families here are trelix's own provider surface, taken from
+# CONFIG_NON_PREFIXED_ENV.
+#
+# Over-inclusion within a family is deliberate and safe. Selection is by NAME
+# SHAPE, so a boolean like AWS_USE_FIPS_ENDPOINT is pulled in even though it is
+# neither a credential nor an endpoint. Deny-by-default plus monkeypatch teardown
+# makes a scrubbed-but-harmless name a non-event; an UNSCRUBBED credential is the
+# failure that matters. Verified not to break the suite rather than assumed --
+# see the deliverable's proof runs.
+INSTALLED_SDK_PROVIDER_ENV: tuple[str, ...] = (
+    "ANTHROPIC_API_BASE",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_AWS_API_BASE",
+    "ANTHROPIC_AWS_API_KEY",
+    "ANTHROPIC_AWS_BASE_URL",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+    "ANTHROPIC_ENVIRONMENT_KEY",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_IDENTITY_TOKEN",
+    "ANTHROPIC_IDENTITY_TOKEN_FILE",
+    "ANTHROPIC_PROFILE",
+    "ANTHROPIC_SERVICE_ACCOUNT_ID",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_WEBHOOK_SIGNING_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_ACCOUNT_ID",
+    "AWS_BATCH_ROLE_ARN",
+    "AWS_BEDROCK_BASE_URL",
+    "AWS_BEDROCK_RUNTIME_ENDPOINT",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_DEFAULT_REGION",
+    "AWS_EC2_METADATA_SERVICE_ENDPOINT",
+    "AWS_ENDPOINT_URL",
+    "AWS_PROFILE",
+    "AWS_PROFILE_NAME",
+    "AWS_REGION",
+    "AWS_REGION_NAME",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+    "AWS_S3_ENCRYPTION_KEY_ID",
+    "AWS_S3_US_EAST_1_REGIONAL_ENDPOINT",
+    "AWS_S3_USE_ARN_REGION",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SECURITY_TOKEN",
+    "AWS_SESSION_NAME",
+    "AWS_SESSION_TOKEN",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_USE_DUALSTACK_ENDPOINT",
+    "AWS_USE_FIPS_ENDPOINT",
+    "AWS_WEB_IDENTITY_TOKEN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AZURE_AD_TOKEN",
+    "AZURE_AI_API_BASE",
+    "AZURE_AI_API_KEY",
+    "AZURE_AI_API_VERSION",
+    "AZURE_API_BASE",
+    "AZURE_API_KEY",
+    "AZURE_API_VERSION",
+    "AZURE_CERTIFICATE_PASSWORD",
+    "AZURE_CERTIFICATE_PATH",
+    "AZURE_CLIENT_SECRET",
+    "AZURE_CREDENTIAL",
+    "AZURE_DEFAULT_RESPONSES_API_VERSION",
+    "AZURE_DOCUMENT_INTELLIGENCE_API_KEY",
+    "AZURE_DOCUMENT_INTELLIGENCE_API_VERSION",
+    "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
+    "AZURE_FEDERATED_TOKEN_FILE",
+    "AZURE_KEY_VAULT_URI",
+    "AZURE_OPENAI_AD_TOKEN",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_PASSWORD",
+    "AZURE_SENTINEL_CLIENT_SECRET",
+    "AZURE_SENTINEL_ENDPOINT",
+    "AZURE_SPEECH_API_BASE",
+    "AZURE_SPEECH_API_KEY",
+    "AZURE_STORAGE_ACCOUNT_KEY",
+    "AZURE_STORAGE_CLIENT_SECRET",
+    "CO_API_KEY",
+    "CO_API_URL",
+    "COHERE_API_BASE",
+    "COHERE_API_KEY",
+    "GEMINI_API_BASE",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_PSE_API_BASE",
+    "GOOGLE_PSE_API_KEY",
+    "OPENAI_ADMIN_KEY",
+    "OPENAI_API_BASE",
+    "OPENAI_API_KEY",
+    "OPENAI_API_VERSION",
+    "OPENAI_BASE_URL",
+    "OPENAI_CHATGPT_API_BASE",
+    "OPENAI_LIKE_API_BASE",
+    "OPENAI_LIKE_API_KEY",
+    "OPENAI_WEBHOOK_SECRET",
+    "OTEL_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "QDRANT_API_BASE",
+    "QDRANT_API_KEY",
+    "QDRANT_URL",
+    "VERTEX_API_BASE",
+    "VERTEX_CREDENTIALS",
+    "VERTEXAI_API_BASE",
+    "VERTEXAI_CREDENTIALS",
+    "VOYAGE_AI_API_KEY",
+    "VOYAGE_AI_TOKEN",
+    "VOYAGE_API_BASE",
+    "VOYAGE_API_KEY",
+    "VOYAGE_API_KEY_PATH",
+)
+
+
 # Set once, at import: litellm reads it at ITS import time, so a fixture would
 # run far too late — same reasoning as HF_HUB_OFFLINE in tests/unit/conftest.py.
 LITELLM_MODE_ENV_VAR = "LITELLM_MODE"
@@ -246,8 +424,15 @@ def scrub_operator_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Call this BEFORE ``apply_env_isolation``: the pins that function applies are
     ``TRELIX_*`` names and a scrub running afterwards would delete them again.
+
+    Two name tables, unioned: ``CONFIG_NON_PREFIXED_ENV`` (what config.py declares)
+    and ``INSTALLED_SDK_PROVIDER_ENV`` (what an installed provider SDK reads for
+    itself, which config.py cannot be asked about). They overlap -- OPENAI_API_KEY is
+    in both -- and the union is deliberate rather than a hierarchy: each is pinned by
+    its own derivation, and neither is authoritative over the other.
     """
     targets = {name.upper() for name in CONFIG_NON_PREFIXED_ENV}
+    targets |= {name.upper() for name in INSTALLED_SDK_PROVIDER_ENV}
     # list(...) first: delenv mutates os.environ while we iterate it.
     for name in list(os.environ):
         upper = name.upper()

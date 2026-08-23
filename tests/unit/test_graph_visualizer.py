@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from trelix.core.models import CallEdge, IndexedFile, Language, Symbol, SymbolKind
 from trelix.graph.builder import GraphBuildResult
 from trelix.graph.code_graph import CodeGraph
@@ -15,8 +17,27 @@ from trelix.graph.visualizer import GraphVisualizer
 from trelix.store.db import Database
 
 
-def _make_pyvis_mock() -> MagicMock:
-    """Inject a fake pyvis.network module so visualizer tests run without pyvis installed."""
+def _install_pyvis_stub(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Inject a fake pyvis.network module so visualizer tests run without pyvis installed.
+
+    ``monkeypatch.setitem``, NOT ``sys.modules.setdefault``. ``sys.modules`` is a
+    process-global that outlives the test: the old form installed two MagicMocks and
+    never removed them, so every later test in the same process that reached
+    ``from pyvis.network import Network`` -- which ``src/trelix/graph/visualizer.py``
+    does lazily inside ``export_html`` -- got the mock instead of the real package.
+    monkeypatch's teardown deletes the keys it created, so the stub cannot escape this
+    test.
+
+    ``setdefault`` SEMANTICS ARE PRESERVED DELIBERATELY: when the real pyvis is already
+    imported -- which it is in any run that collects
+    tests/unit/test_graph_visualizer_escaping.py, whose module-level
+    ``pytest.importorskip("pyvis.network")`` runs during collection -- these tests keep
+    exercising the REAL library and are not silently downgraded to asserting against a
+    MagicMock. Forcing the stub in unconditionally would have been the smaller diff and
+    a worse test.
+
+    Guarded by tests/unit/test_sys_modules_pyvis_leak.py.
+    """
 
     def _save_graph(path: str) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -31,8 +52,9 @@ def _make_pyvis_mock() -> MagicMock:
     mock_pyvis_mod = MagicMock()
     mock_pyvis_mod.network = mock_network_mod
 
-    sys.modules.setdefault("pyvis", mock_pyvis_mod)
-    sys.modules.setdefault("pyvis.network", mock_network_mod)
+    for name, module in (("pyvis", mock_pyvis_mod), ("pyvis.network", mock_network_mod)):
+        if name not in sys.modules:
+            monkeypatch.setitem(sys.modules, name, module)
     return mock_net
 
 
@@ -75,8 +97,10 @@ def _build_simple_graph(tmp_path: Path) -> tuple[Database, CodeGraph]:
 
 
 class TestGraphVisualizer:
-    def test_export_html_creates_file(self, tmp_path: Path) -> None:
-        _make_pyvis_mock()
+    def test_export_html_creates_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_pyvis_stub(monkeypatch)
         _, cg = _build_simple_graph(tmp_path)
         out = str(tmp_path / "graph.html")
         viz = GraphVisualizer()
@@ -85,8 +109,10 @@ class TestGraphVisualizer:
         content = Path(result_path).read_text()
         assert "<html" in content.lower()
 
-    def test_export_html_max_nodes_truncates(self, tmp_path: Path) -> None:
-        _make_pyvis_mock()
+    def test_export_html_max_nodes_truncates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_pyvis_stub(monkeypatch)
         _, cg = _build_simple_graph(tmp_path)
         out = str(tmp_path / "graph_small.html")
         viz = GraphVisualizer()
@@ -94,8 +120,8 @@ class TestGraphVisualizer:
         result_path = viz.export_html(cg, out, max_nodes=1)
         assert Path(result_path).exists()
 
-    def test_export_html_empty_graph(self, tmp_path: Path) -> None:
-        _make_pyvis_mock()
+    def test_export_html_empty_graph(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _install_pyvis_stub(monkeypatch)
         db = Database(tmp_path / "index.db")
         cg = CodeGraph(db)
         out = str(tmp_path / "empty.html")
