@@ -37,12 +37,51 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import pytest  # noqa: E402 - must follow the env vars above
 
-from tests._env_isolation import apply_env_isolation  # noqa: E402
+from tests._env_isolation import (  # noqa: E402
+    apply_env_isolation,
+    disable_litellm_dotenv_autoload,
+    scrub_operator_env,
+)
+
+# ── litellm may not publish the operator's dotenv; set BEFORE any test imports it ──────
+#
+# Same class of problem as the two Hub variables above, and the same reason it cannot be a
+# fixture: `litellm/__init__.py` calls `dotenv.load_dotenv()` at import time.
+#
+# The mechanism is wider than 'it finds the repo you are standing in': `find_dotenv()`
+# walks up from the CALLER'S FRAME directory -- `site-packages/litellm/` -- so it climbs
+# out of `.venv` and finds the `.env` of the repository that owns the venv, from ANY cwd.
+# Measured: run from `~` with no `.env` in any ancestor, the repo's token still appears.
+#
+# Measured effect in one process: `EmbedderConfig().provider` is "local" before
+# `import litellm` and "azure" after. tests/unit/test_retry.py imports litellm from inside
+# a test body, so without this the injection lands MID-TEST, after that test's isolation
+# fixture has already run.
+#
+# This is a CORRECTNESS problem, not a spend one: `--disable-socket` already stops the
+# outbound call (measured: zero outbound connect attempts). What leaks is which provider
+# the test actually exercises.
+#
+# Belt and braces on purpose. This line stops the pollution; `scrub_operator_env` below
+# cleans up anything that gets in anyway -- including the operator's plain shell exports,
+# which no import-time flag can prevent.
+disable_litellm_dotenv_autoload()
 
 
 @pytest.fixture(autouse=True)
 def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Override beast-mode feature flags to false so unit tests see code defaults."""
+    """Deny the operator's env, then pin the flags that survive it to code defaults.
+
+    Order matters: `apply_env_isolation` SETS `TRELIX_*` names and the scrub DELETES every
+    `TRELIX_*` name, so scrubbing second would undo the pins.
+
+    Only tests/unit does this. tests/integration and tests/eval exist to reach live Azure
+    and Bedrock and read those very credentials, so applying the scrub to the shared helper
+    would "fix" the hermetic suite by breaking the two that are supposed to see operator
+    config. tests/_env_isolation.py documents the asymmetry so it does not read as an
+    omission.
+    """
+    scrub_operator_env(monkeypatch)
     apply_env_isolation(monkeypatch)
 
 

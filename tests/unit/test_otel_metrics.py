@@ -185,7 +185,18 @@ class TestNoOpWithoutOtel:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
+# scope="session", NOT "module". OTel's global MeterProvider can be set once per
+# process; a second set_meter_provider() is a logged no-op. A module-scoped fixture is
+# finalized when pytest LEAVES this module and re-created when it COMES BACK -- which
+# `pytest A B C` with B in another module does, and so does xdist. On re-entry the new
+# InMemoryMetricReader is wired to nothing, get_metrics_data() returns None, and every
+# absolute assertion here fails with `assert None == 1`. Measured on this tree at module
+# scope: those three ids gave "1 failed, 2 passed" with the "Overriding of current
+# MeterProvider is not allowed" warning, while the same two WITHOUT the middle one gave
+# "2 passed" -- a real order dependency, invisible until pytest-randomly was actually
+# installed. tests/unit/test_otel_metrics_reentry.py is the regression test; reverting
+# this one word turns it red.
+@pytest.fixture(scope="session")
 def _test_meter_provider():
     """
     Install a real SDK MeterProvider backed by InMemoryMetricReader, once for

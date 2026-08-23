@@ -116,6 +116,145 @@ EMPTY_STRING_BY_DEFAULT: tuple[str, ...] = (
 ZERO_INT_BY_DEFAULT: tuple[str, ...] = ("TRELIX_TESTRAIL_PROJECT_ID",)
 
 
+# ---------------------------------------------------------------------------
+# Deny-by-default operator-env scrub (unit suite only)
+# ---------------------------------------------------------------------------
+#
+# THE LEAK THIS CLOSES, measured on this tree. ``import litellm`` runs
+# ``dotenv.load_dotenv(override=False)`` at module import time (its ``DEV``
+# default). CORRECTED MECHANISM, and the blast radius is wider than it looks:
+# ``find_dotenv()`` walks up from the CALLER'S FRAME directory -- here
+# ``site-packages/litellm/`` -- not from the process cwd. So it climbs out of
+# ``.venv`` and finds the ``.env`` of the repository that OWNS the venv, from any
+# cwd whatsoever. Measured with two discriminating markers (a token present only
+# in the real repo's ``.env``, and a synthetic ``.env`` planted in the cwd): run
+# from ``~`` with no ``.env`` in any ancestor, the repo's token still appears and
+# the planted one does not. Every process using this venv leaks, not merely ones
+# started inside the repository. In one process:
+# ``EmbedderConfig().provider`` is ``"local"`` before the import and ``"azure"``
+# after it. That is a CORRECTNESS failure, not a cost one — ``--disable-socket``
+# already stops the outbound call — because a test named for the local embedder
+# silently constructs and asserts on an Azure one.
+#
+# config.py is not at fault: it already refuses to read a cwd-relative ``.env``
+# (``resolve_operator_env_file``). The leak arrives through ``os.environ``, the
+# one channel that anchoring cannot defend.
+#
+# WHY A PREFIX SCRUB AND NOT A LONGER TABLE OF NAMES. The tables above pin ~25
+# names. config.py's eighteen settings classes read 273 distinct env names, most
+# of which have no ``alias=`` to grep for at all because they are
+# ``env_prefix`` + field name. Enumerating them by hand guarantees the table
+# lags the next field someone adds — which is exactly how ~80 names, including
+# ``TRELIX_LLM_PROVIDER`` and ``TRELIX_LLM_MODEL``, came to be unpinned. A
+# prefix denies the whole namespace, including names that do not exist yet.
+#
+# WHY ``_env_file=None`` IS NOT THE FIX. It removes pydantic-settings' dotenv
+# FILE source, but ``os.environ`` is a higher-precedence source, so it cannot
+# defend against a value that has been leaked INTO ``os.environ``. Measured:
+# after ``import litellm``, ``EmbedderConfig(_env_file=None).provider`` is still
+# ``"azure"``. ``tests/unit/test_env_isolation_covers_config_aliases.py`` pins
+# that, because the alternative design (editing hundreds of construction sites)
+# rests on it being false.
+SCRUB_PREFIXES: tuple[str, ...] = ("TRELIX_",)
+
+# The env names config.py reads that are NOT under a scrubbed prefix: provider
+# SDK conventions an operator has set for reasons unrelated to trelix. Held as an
+# explicit table rather than a second prefix rule because ``AZURE_``/``AWS_``/
+# ``GOOGLE_`` are not trelix's namespace — blanket-scrubbing them would reach
+# past config.py's surface into whatever else the developer's shell needs.
+#
+# Kept honest by ``tests/unit/test_env_isolation_covers_config_aliases.py``,
+# which derives the same selection from config.py's model fields at runtime and
+# fails set-equality in BOTH directions: a new non-prefixed alias in config.py
+# is an uncovered-name failure, and an entry here for a name config.py stopped
+# reading is a stale-entry failure.
+CONFIG_NON_PREFIXED_ENV: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_SECRET_ACCESS_KEY",
+    "AZURE_API_KEY",
+    "AZURE_API_VERSION",
+    "AZURE_CHAT_MODEL",
+    "AZURE_EMBEDDINGS_MODEL",
+    "AZURE_ENDPOINT",
+    "COHERE_API_KEY",
+    "COHERE_ENDPOINT",
+    "COHERE_MODEL_RERANK",
+    "GOOGLE_API_KEY",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_CLOUD_PROJECT",
+    "LANCE_TABLE",
+    "LANCE_URI",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_SERVICE_NAME",
+    "QDRANT_API_KEY",
+    "QDRANT_COLLECTION",
+    "QDRANT_PREFER_GRPC",
+    "QDRANT_TIMEOUT",
+    "QDRANT_URL",
+    "VOYAGE_API_KEY",
+)
+
+# Set once, at import: litellm reads it at ITS import time, so a fixture would
+# run far too late — same reasoning as HF_HUB_OFFLINE in tests/unit/conftest.py.
+LITELLM_MODE_ENV_VAR = "LITELLM_MODE"
+LITELLM_MODE_NON_DEV = "PRODUCTION"
+
+
+def disable_litellm_dotenv_autoload() -> None:
+    """Stop the leak at source: make ``import litellm`` skip ``load_dotenv()``.
+
+    litellm guards that call with ``if os.getenv("LITELLM_MODE", "DEV") ==
+    "DEV"``, so any other value skips it. Audited on the pinned version: the
+    only other reader of the flag is ``litellm/proxy/proxy_cli.py``, which this
+    suite never invokes, so nothing else in litellm's behaviour changes.
+
+    WHY THIS AND NOT A no-op PATCH OF ``dotenv.load_dotenv``. That was the first
+    design and it is wrong here: ``tests/perf/test_query_latency.py`` calls
+    ``load_dotenv()`` deliberately (anchored at the repo root, on purpose), and
+    ``testpaths = ["tests"]`` means a bare ``pytest`` run collects it into the
+    SAME process. Neutralising the library globally would fix the unit suite by
+    silently breaking the perf suite — the same shape of mistake as applying one
+    provider's fix to all three.
+
+    Assigned unconditionally rather than via ``setdefault``, which is where this
+    differs from its ``HF_HUB_OFFLINE`` neighbour. Offline mode has a legitimate
+    override (a developer debugging a genuine Hub fetch), whereas there is no
+    version of a unit test that wants a dotenv file published into its process
+    environment. ``scrub_operator_env`` is the guard that must hold even if this
+    one is defeated; this is the narrower belt that stops the pollution instead
+    of cleaning it up afterwards.
+    """
+    os.environ[LITELLM_MODE_ENV_VAR] = LITELLM_MODE_NON_DEV
+
+
+def scrub_operator_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove every operator-supplied config input from the process environment.
+
+    Deny-by-default: pydantic then falls back to each field's own declared
+    default, which is what a unit test asserting on "the unconfigured behaviour"
+    means. Undone at teardown by ``monkeypatch``, so a test that wants a value
+    can still set one in its own body.
+
+    Matched case-INSENSITIVELY, because pydantic-settings' ``case_sensitive``
+    defaults to False: it would resolve a lowercase ``azure_api_key`` in the
+    environment, so a case-sensitive scrub would leave a live channel open.
+
+    Call this BEFORE ``apply_env_isolation``: the pins that function applies are
+    ``TRELIX_*`` names and a scrub running afterwards would delete them again.
+    """
+    targets = {name.upper() for name in CONFIG_NON_PREFIXED_ENV}
+    # list(...) first: delenv mutates os.environ while we iterate it.
+    for name in list(os.environ):
+        upper = name.upper()
+        if upper.startswith(SCRUB_PREFIXES) or upper in targets:
+            monkeypatch.delenv(name, raising=False)
+
+
 def apply_env_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin beast-mode flags and connector settings to their code defaults.
 

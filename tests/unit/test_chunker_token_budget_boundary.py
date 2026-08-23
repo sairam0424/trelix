@@ -233,6 +233,14 @@ class TestTruncatedChunkTokenCountAccounting:
 
     @pytest.mark.xfail(
         strict=True,
+        # raises=AssertionError is load-bearing. Without it a strict xfail absorbs ANY
+        # exception, so the boomerang silently breaks: the marker stays satisfied while
+        # the assertion it exists for is never reached. Round 3 found exactly that in
+        # test_cli_failure_exit_codes.py, where a JSONDecodeError stood in for the real
+        # check. These two importorskip FlagEmbedding/torch/transformers and then build a
+        # Qwen2Model, so any upstream TypeError would have satisfied the marker and gone
+        # green. Verified under --runxfail that they die on the intended AssertionError.
+        raises=AssertionError,
         reason=(
             "Known defect: token_count of a truncated chunk omits the "
             "truncation suffix. Measured 512 recorded vs 518 actual at "
