@@ -8,11 +8,36 @@ duplication.
 """
 
 import logging
+import os
 from collections.abc import Iterator
 
-import pytest
+# ── Hub offline, set BEFORE any test imports transformers or huggingface_hub ──────────
+#
+# Set at conftest MODULE level, not in a fixture: `TRANSFORMERS_OFFLINE` is read at
+# transformers import time, and a fixture runs far too late — the first test to import a
+# model library would already have decided it may reach the network.
+#
+# WHY, measured. 48.3% of this suite's wall clock (238.75s of 494.70s) was live HTTP to
+# huggingface.co. With `--disable-socket` in addopts and these two variables UNSET, 51
+# unit tests fail; with them set, the same three files go from 41 failed / 147 passed to
+# **188 passed in 11.79s**. So those tests were never testing the network — they construct
+# a real embedder, and offline mode makes it load the already-cached snapshot instead of
+# revalidating against the Hub.
+#
+# That distinction decides the fix. Marking those 51 `requires_network` and re-enabling
+# their sockets would have kept the traffic and the cost; making them offline removes both.
+#
+# Scoped to tests/unit deliberately. tests/integration carries a comment that deliberately
+# permits the download, and this file cannot affect it.
+#
+# `setdefault`, not assignment: a developer debugging a genuine Hub-fetch problem can
+# export `HF_HUB_OFFLINE=0` and have it respected.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-from tests._env_isolation import apply_env_isolation
+import pytest  # noqa: E402 - must follow the env vars above
+
+from tests._env_isolation import apply_env_isolation  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

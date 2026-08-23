@@ -9,6 +9,7 @@ on:
 jobs:
   lint:
     name: Lint & Type Check
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +65,7 @@ jobs:
 
   type-check-extras:
     name: Type Check (optional extras present)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -136,6 +138,7 @@ jobs:
 
   test:
     name: Test (Python ${{ matrix.python-version }})
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -147,6 +150,14 @@ jobs:
         # 3256 collected (identical to 3.11), 3256 passed, 0 skipped, 0 failed, plus
         # 102/19/10 in the three packages.
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+    # Hub offline for the unit matrix ONLY. 48.3% of this suite's wall clock (238.75s of
+    # 494.70s) was live HTTP to huggingface.co, and with the socket ban in addopts these
+    # two variables are what let 51 tests load the CACHED model instead of revalidating
+    # against the Hub. Measured locally: same three files go 41 failed -> 188 passed.
+    # Deliberately NOT on the `integration` job, which documents that it may download.
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     steps:
       # fetch-tags is load-bearing, not hygiene: tests/unit/test_assembler_backcompat_golden.py
       # builds its baseline from `git show v2.12.0:src/trelix/retrieval/assembler.py` to prove
@@ -325,6 +336,7 @@ jobs:
 
   typescript-sdk:
     name: TypeScript SDK
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -343,6 +355,7 @@ jobs:
 
   docker-build:
     name: Docker build smoke test
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
