@@ -225,6 +225,66 @@ def _scan() -> tuple[set[str], dict[str, str], set[str]]:
 _RAW_LITERALS, _SELECTED, _FOUND_PACKAGES = _scan()
 
 
+def _is_installed(pkg: str) -> bool:
+    """True if importlib can resolve ``pkg`` at all, independently of the scan.
+
+    This is the DISCRIMINATOR that separates the two reasons ``_package_root``
+    returns None: the package is genuinely not installed (a legitimately thinner
+    environment) versus the package is installed but the discovery walk broke (a
+    real defect this file must catch). ``_package_root`` collapses both into None,
+    so asking importlib a second, narrower question is what keeps the precondition
+    from having to guess.
+    """
+    try:
+        return importlib.util.find_spec(pkg) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+# Absent because the environment is thin, versus missing because discovery broke.
+_INSTALLED_PACKAGES = frozenset(p for p in _SCANNED_PACKAGES if _is_installed(p))
+_ABSENT_PACKAGES = frozenset(_SCANNED_PACKAGES) - _INSTALLED_PACKAGES
+_FULL_SET_PRESENT = not _ABSENT_PACKAGES
+
+# The packages MEASURED to declare at least one in-scope env name, so a zero from any
+# of them means the scan broke for that package rather than that it has nothing to say.
+# boto3 and qdrant_client are deliberately excluded: both measured at exactly 0 and
+# both legitimately so (boto3 defers its constants to botocore; qdrant_client reads no
+# environment at all). Asserting positivity across ALL located packages is the
+# uniform-assertion-over-differing-components mistake, and it failed in the full venv.
+_PACKAGES_THAT_MUST_CONTRIBUTE = frozenset(
+    {"anthropic", "botocore", "cohere", "litellm", "openai", "voyageai"}
+)
+
+# WHY THIS FILE IS ENVIRONMENT-AWARE, and it is a fix rather than a loosening.
+#
+# The first version of this file asserted all eight packages unconditionally, with
+# the reasoning written into its own docstring: "Fails rather than skips: all eight
+# are installed in this venv, so a miss means the discovery broke, not that the
+# environment is legitimately thinner." True of the venv it was written in, and
+# false as a universal. CI's unit job installs
+# `.[local,otel,sso,bge-code,nomic-code,dev]`, which brings NONE of anthropic,
+# boto3, botocore, cohere, voyageai, qdrant_client or litellm -- so `openai` alone
+# was scanned and three tests here failed on all four Python legs while passing
+# locally. Same shape as the AZURE_EXTENSION_DIR failure one commit earlier: an
+# assertion stronger than the environment guarantees, validated in a rich env.
+#
+# Reproduced before fixing, not reasoned about: scratch-pad/leanenv/ci_lean_blocker.py
+# installs a meta_path finder that DECLINES those seven names, so find_spec raises
+# exactly as it does when they are absent. Under it, this file failed the same three
+# tests by name.
+#
+# THE SCRUB ITSELF IS UNAFFECTED by any of this: scrub_operator_env deletes all 124
+# names whatever is installed. Only the meta-test's expectations were coupled.
+#
+# AND THE DIRECTION THAT MATTERS STAYS STRICT EVERYWHERE.
+# test_every_scanned_sdk_env_name_is_covered -- "no in-scope SDK name escapes the
+# table", the actual hole-closer -- is not environment-coupled at all: a thinner
+# scan yields a SUBSET of names, every one of which must still be in the table. It
+# is the three PRECONDITIONS that cannot be stated the same way in both
+# environments, and only they are conditioned below.
+
+
 # ---------------------------------------------------------------------------
 # Preconditions. Each names the mechanism that could make the coverage test true
 # by construction, and fails (or skips) LOUDLY instead of passing vacuously.
@@ -232,23 +292,40 @@ _RAW_LITERALS, _SELECTED, _FOUND_PACKAGES = _scan()
 
 
 def test_scan_found_every_expected_package() -> None:
-    """Precondition: every package in ``_SCANNED_PACKAGES`` was located.
+    """Precondition: every package that IS installed was located by the scan.
 
     Names the mechanism that could go vacuous: ``_package_root``. If it silently
-    returns None for all eight, the scan yields nothing and every coverage
-    assertion below is trivially true. Fails rather than skips: all eight are
-    installed in this venv, so a miss means the discovery broke, not that the
-    environment is legitimately thinner.
+    returns None, the scan yields nothing and every coverage assertion below is
+    trivially true.
 
-    MUTATION that must make this fail: change ``_SCANNED_PACKAGES`` to
-    ``("no_such_package",)``, or make ``_package_root`` return ``None``.
+    The assertion is over ``_INSTALLED_PACKAGES``, not over ``_SCANNED_PACKAGES``,
+    and that distinction is the whole fix: an installed-but-unfound package means
+    discovery BROKE and must fail; an absent one means the environment is thinner,
+    which is the ordinary case in CI. Reporting the absentees either way, so a lean
+    run says plainly how wide its coverage was rather than looking identical to a
+    full one.
+
+    MUTATION that must make this fail: make ``_package_root`` return ``None``
+    unconditionally, or point ``_SCANNED_PACKAGES`` at a package that is installed
+    under a different import name.
     """
-    missing = sorted(set(_SCANNED_PACKAGES) - _FOUND_PACKAGES)
-    assert missing == [], (
-        f"these provider SDKs were not found by importlib and contributed nothing "
-        f"to the scan: {missing}. The coverage assertions in this file are only as "
-        f"wide as the packages actually scanned."
+    unfound = sorted(_INSTALLED_PACKAGES - _FOUND_PACKAGES)
+    assert unfound == [], (
+        f"these provider SDKs ARE installed but were not located by _package_root, "
+        f"so discovery is broken rather than the environment being thin: {unfound}. "
+        f"The coverage assertions in this file are only as wide as the packages "
+        f"actually scanned."
     )
+    if _ABSENT_PACKAGES:
+        pytest.skip(
+            f"not installed here, so outside this run's reach: "
+            f"{sorted(_ABSENT_PACKAGES)}. Scanned {sorted(_FOUND_PACKAGES)}. This is "
+            f"the expected state in CI's unit job "
+            f"(.[local,otel,sso,bge-code,nomic-code,dev] brings none of them) and is "
+            f"NOT evidence the table is wrong -- "
+            f"test_every_scanned_sdk_env_name_is_covered still holds strictly over "
+            f"whatever WAS scanned."
+        )
 
 
 def test_scan_is_not_vacuous() -> None:
@@ -263,14 +340,54 @@ def test_scan_is_not_vacuous() -> None:
     ``r"ZZZ_NEVER_MATCHES"``, or change ``rglob("*.py")`` to
     ``rglob("*.nosuchext")``.
     """
-    assert len(_RAW_LITERALS) >= _MIN_RAW_LITERALS, (
-        f"only {len(_RAW_LITERALS)} upper-case literals found across "
-        f"{sorted(_FOUND_PACKAGES)}; the scan has gone vacuous"
+    # Always true, whatever is installed: something must have been scanned at all.
+    # Without this the two conditional blocks below could both be skipped past on an
+    # environment with zero provider SDKs, and "the scan is not vacuous" would itself
+    # become vacuous -- the failure this test exists to prevent, one level up again.
+    assert _FOUND_PACKAGES, (
+        "no provider SDK was located at all, so _SELECTED is empty and every coverage "
+        "assertion in this file passes over nothing. Even CI's leanest job installs "
+        "openai; zero packages means discovery is broken, not that the env is thin."
     )
-    assert len(_SELECTED) >= _MIN_SELECTED_NAMES, (
-        f"only {len(_SELECTED)} provider-family credential-shaped names selected; "
-        f"the family or suffix filter has gone vacuous"
+
+    # Per-package, so the check scales with the environment instead of assuming the
+    # full set. The absolute floors below were measured over all eight (1,673 raw /
+    # 110 selected) and are meaningless when seven are absent: openai alone yields 22.
+    #
+    # NOT every located package: two contribute zero LEGITIMATELY, measured, and a
+    # blanket positivity assertion over all of them failed in the full venv on the
+    # first attempt. boto3 is a thin wrapper whose constants live in botocore (0 vs
+    # 21), and qdrant_client reads no environment at all -- its QDRANT_* names are
+    # trelix-declared aliases only. Requiring positivity from those two would fail
+    # forever, so the table below is the measured set that MUST contribute, and a zero
+    # from any of them means the walk or the regex broke for that package.
+    #   anthropic 18   botocore 21   cohere 3   litellm 61   openai 6   voyageai 1
+    barren = sorted(
+        pkg
+        for pkg in _FOUND_PACKAGES & _PACKAGES_THAT_MUST_CONTRIBUTE
+        if not any(loc.startswith(f"{pkg}/") for loc in _SELECTED.values())
     )
+    assert barren == [], (
+        f"these packages were located and are known to declare env names, but "
+        f"contributed none, so the regex or the file walk is broken for them: {barren}"
+    )
+
+    if _FULL_SET_PRESENT:
+        assert len(_RAW_LITERALS) >= _MIN_RAW_LITERALS, (
+            f"only {len(_RAW_LITERALS)} upper-case literals found across "
+            f"{sorted(_FOUND_PACKAGES)}; the scan has gone vacuous"
+        )
+        assert len(_SELECTED) >= _MIN_SELECTED_NAMES, (
+            f"only {len(_SELECTED)} provider-family credential-shaped names selected; "
+            f"the family or suffix filter has gone vacuous"
+        )
+    else:
+        pytest.skip(
+            f"the absolute floors ({_MIN_RAW_LITERALS} raw / {_MIN_SELECTED_NAMES} "
+            f"selected) were measured over all {len(_SCANNED_PACKAGES)} SDKs and do not "
+            f"apply with {sorted(_ABSENT_PACKAGES)} absent. The per-package check above "
+            f"ran and passed over {sorted(_FOUND_PACKAGES)}."
+        )
 
 
 def test_families_cover_the_config_table() -> None:
@@ -335,7 +452,27 @@ def test_sdk_table_has_no_unscanned_entries() -> None:
     MUTATION that must make this fail: add ``"STRIPE_SECRET_KEY"`` to
     ``INSTALLED_SDK_PROVIDER_ENV`` -- note it satisfies neither the family nor
     the scan, so it can only be a stale hand-edit.
+
+    REQUIRES THE FULL PACKAGE SET, and skips loudly without it. This is the one
+    direction that genuinely cannot be evaluated in a thin environment: the table
+    was derived from a scan of all eight SDKs, so with seven absent every name
+    contributed by those seven reads as "stale" when it is simply out of reach. The
+    forward direction needs no such condition -- a subset scan still has to be fully
+    covered -- which is why only this test carries the gate.
+
+    LIMIT, STATED SO NOBODY MISTAKES THIS FOR CI COVERAGE: no CI job installs all
+    eight, so this alarm fires only in a full development venv. That is where an SDK
+    bump happens, so it is the right place for it, but CI will never raise it and a
+    dropped SDK name can therefore sit unnoticed until someone runs the full set
+    locally.
     """
+    if not _FULL_SET_PRESENT:
+        pytest.skip(
+            f"stale-entry detection needs all {len(_SCANNED_PACKAGES)} SDKs; absent "
+            f"here: {sorted(_ABSENT_PACKAGES)}. Every name those packages contribute "
+            f"would read as stale. Run in a venv with all provider extras to exercise "
+            f"this direction."
+        )
     stale = sorted(set(name.upper() for name in INSTALLED_SDK_PROVIDER_ENV) - set(_SELECTED))
     assert stale == [], (
         f"INSTALLED_SDK_PROVIDER_ENV lists names the scan of "
