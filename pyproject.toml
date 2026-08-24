@@ -215,6 +215,22 @@ dev = [
     # install — hence this explicit line. Floor matched to Starlette's.
     "httpx2>=2.0.0",    # starlette.testclient's preferred client; core httpx stays
     "fastapi>=0.111.0", # REST API tests (tests/unit/test_api.py)
+    # Direct test dependencies, not transitive conveniences. Before this pin, neither
+    # was declared by ANY trelix extra: both reached the unit job only because
+    # packages/trelix-mcp's own dependencies (mcp>=1.24 -> uvicorn; fastmcp>=3.4 ->
+    # fastmcp-slim[server] -> watchfiles) happen to install them as a side effect of a
+    # step that runs after this extra in ci.yml. That made
+    # tests/unit/test_api_containment.py's bare `import uvicorn` and
+    # tests/unit/test_multi_watcher{,_filtering}.py's `pytest.importorskip("watchfiles")`
+    # hostage to trelix-mcp's own dependency graph -- a floor bump or an extras
+    # reshuffle there could silently start skipping/erroring these tests with no change
+    # to this repo. `dev` is installed by every job that runs `tests/unit`
+    # (lint/type-check-extras/test/integration all include it), so declaring them here
+    # keeps the guarantee independent of packages/trelix-mcp. Floors matched to the
+    # runtime extras that already carry these packages ([serve]'s uvicorn,
+    # [watch]'s watchfiles) so `dev` never demands a version [serve]/[watch] would reject.
+    "uvicorn>=0.29.0",
+    "watchfiles>=0.21.0",
 ]
 binary = [
     "pyinstaller>=6.0.0",

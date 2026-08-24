@@ -52,8 +52,27 @@ test-cov:  ## Run tests with coverage report
 test-mcp:  ## Run MCP package tests only
 	python -m pytest packages/trelix-mcp/tests/ -v --tb=short
 
+# tests/integration/test_recall.py used to run alongside test_eval.py here; it is
+# deleted (see tests/integration/test_eval.py's module docstring and
+# tests/unit/test_ci_environment_coupling.py's sibling gap for the two round-7
+# fixes this closes). It duplicated test_eval.py's mini_repo fixture and all 10
+# queries, but graded them by SUBSTRING match against ground truth
+# (`expected_file in result.file.rel_path`) with a mean >=70% threshold -- the
+# same shape of defect round 6 removed from tests/eval/metrics.py, reproduced
+# here: an expectation of "user.py" is credited by an unrelated "superuser.py"
+# hit. test_eval.py's per-query RANK LEDGER (rank<=3, EXACT path match via
+# tests/eval/harness.py:score_ranking) is strictly stricter and already gates
+# the identical queries against the identical fixture, so nothing here ran a
+# check that test_eval.py did not already run more rigorously. The two
+# non-substring tests the deleted file also carried (a file-type-weighting
+# kill-switch check, and "a .py file is in the main.py query's top-5") are
+# themselves already implied by test_eval.py's ledger passing and are covered
+# with mutation-level rigor at the unit layer by
+# tests/unit/test_retriever_budget_and_ranking_knobs.py's M18 tests. `make eval`
+# now runs ONE file instead of two -- strictly less collection, but not a weaker
+# gate: the surviving ledger is the one that was already stricter.
 eval:  ## Run integration recall/eval tests
-	pytest tests/integration/test_recall.py tests/integration/test_eval.py -v
+	pytest tests/integration/test_eval.py -v
 
 # Was `pytest tests/eval/`, which collects 0 tests (verified: "no tests collected",
 # exit 5) — tests/eval/ is a harness library plus a dataset, with no test_*.py in it.

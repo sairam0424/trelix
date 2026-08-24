@@ -89,13 +89,19 @@ EXPECTED_MARKERS = frozenset(
 # legitimately empties that file). Measured collection counts on this tree, for the
 # record only -- the assertions below never hard-code them, so adding a test to one
 # of these files does not break this file:
-#   integration/test_recall.py 14, unit/test_cli_watch_all_signals.py 2,
+#   integration/test_eval.py 2, unit/test_cli_watch_all_signals.py 2,
 #   unit/test_cli_serve_exposure_warning.py 10, unit/test_api_graph.py 11,
 #   unit/test_parser_go.py 21, unit/test_network_is_blocked.py 2,
 #   unit/test_multi_watcher_filtering.py 15.
+# The carrier for `integration`/`requires_network` used to be
+# integration/test_recall.py, deleted as fully subsumed by test_eval.py (see the
+# Makefile's `eval` target). Both markers are applied by directory in
+# tests/integration/conftest.py to EVERY file under tests/integration/, so any
+# non-empty file there remains a valid carrier; test_eval.py is not special, just
+# the smallest surviving one.
 CARRIER_FILES: dict[str, tuple[str, str | None]] = {
-    "integration": ("tests/integration/test_recall.py", None),
-    "requires_network": ("tests/integration/test_recall.py", None),
+    "integration": ("tests/integration/test_eval.py", None),
+    "requires_network": ("tests/integration/test_eval.py", None),
     "slow": ("tests/unit/test_cli_watch_all_signals.py", None),
     "cli": ("tests/unit/test_cli_serve_exposure_warning.py", None),
     "api": ("tests/unit/test_api_graph.py", None),

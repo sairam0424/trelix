@@ -226,10 +226,18 @@ MUTMUT_CONFIG: dict[str, object] = {
     # `def ... k: int = 10` signature lines and generated 2 mutants instead of 26.
     # A clean-looking report, produced by a missing markdown file.
     #
-    # The alternative -- deselecting those six files -- was rejected: it shrinks the
+    # A SEVENTH file joined this list in round 8, found the same way: a real,
+    # non-mutation failure inside mutmut's own stats pass.
+    #   test_makefile_eval_full_freezes_planner.py  1   .gitignore
+    # (``_ROOT / ".gitignore"``, same ``parents[2]`` pattern as the six above --
+    # ``.gitignore`` reaches the tree root via the initial `git worktree add` checkout,
+    # but was never in `also_copy`, so mutmut's own copy into `mutants/` omits it.)
+    #
+    # The alternative -- deselecting those files -- was rejected: it shrinks the
     # kill set, which is the one thing a survivor count must not do.
     "also_copy": [
         ".env.example",
+        ".gitignore",
         ".github",
         "CHANGELOG.md",
         "config",
@@ -283,6 +291,52 @@ DESELECTED_FILES: tuple[str, ...] = (
     "tests/unit/test_otel_tracing.py",
     "tests/unit/test_structured_logging.py",
 )
+# ROUND 8 (mutation:widen-scope retry), NOT reproduced from this tuple -- reverted
+# back to the 4 above after the run that needed it, per this task's own prescribed
+# workaround pattern. Recorded here so the next session does not re-spend a 20-minute
+# diagnosis budget on the same two failures. Both were reproduced BY HAND outside this
+# driver (a raw `git worktree add --detach` + copytree, and a direct pytest run
+# inside the resulting throwaway tree) before either file was added to the tuple
+# above, and this driver's own `test_mutation_driver_contract.py` run clean before and
+# after -- neither addition was needed to keep the contract suite green, only to get
+# `retrieval.fusion`'s stats pass past two false failures:
+#
+# 1. tests/unit/test_eval_metric_single_implementation.py -- SPECIFIC to a worktree
+#    whose git HEAD is stale relative to its live files (this session's, before any
+#    commit). `_ThrowawayTree.__enter__` does `git worktree add --detach <path> HEAD`;
+#    HEAD's committed tree still had `tests/eval/metrics.py` (deleted only on disk,
+#    never committed), and the follow-up `shutil.copytree(..., dirs_exist_ok=True)`
+#    sync never DELETES a file the live tree removed, only adds/overwrites. The
+#    throwaway tree ends up with a resurrected `tests/eval/metrics.py`, which the test
+#    correctly reports as a second metric implementation. Would NOT reproduce against
+#    a tree whose HEAD commit is genuinely 9b0c02a (or any commit without that file).
+#
+# 2. tests/unit/test_dotenv_anchoring.py -- GENERAL; reproduces on any correctly-
+#    committed tree too, for any scope inside the eager `trelix` import graph.
+#    `trelix/__init__.py` eagerly imports `Indexer`/`make_embedder`/`Retriever`, and
+#    `Retriever` eagerly imports `.bm25`, `.fusion`, `.graph`, `store.db`,
+#    `store.vector` -- so mutating any of those makes `import trelix` pull in a
+#    mutmut-trampoline-wrapped module everywhere, INCLUDING inside a fresh subprocess.
+#    test_dotenv_anchoring.py's child-process probes deliberately run with cwd set to
+#    a throwaway repo fixture and no TRELIX_*/OPENAI_*/AZURE_* env (to prove a hostile
+#    repo's `.env` is not a config source) -- so when the trampoline module's own
+#    `Config.ensure_loaded()` auto-guesses `source_paths` from that subprocess's cwd,
+#    it finds no pyproject.toml there and raises `FileNotFoundError: Could not figure
+#    out where the code to mutate is`, which the probe surfaces as "probe failed: ...".
+#    `store/dimension_guard.py` is NOT affected: its only imports are function-local,
+#    inside `indexer.py`, never reached by `import trelix` alone (confirmed by grep
+#    before relying on it). This is a permanent property of mutating anything in the
+#    eager import graph with `mutate_only_covered_lines = False` plus mutmut's
+#    trampoline wrapping, not a one-off environment glitch -- a future session with
+#    src authority could sidestep it either by making `trelix/__init__.py`'s heavy
+#    imports lazy, or by making test_dotenv_anchoring.py's subprocess probes pass
+#    PYTHONPATH/cwd pointing at the throwaway tree root. Neither is test-support-only,
+#    so it is left here rather than fixed. Left OUT of DESELECTED_FILES rather than
+#    left in, because it silently weakens the kill set for every future run of
+#    retrieval.fusion, retrieval.bm25, indexing.walker, store.db and store.vector --
+#    the four legitimate entries above exist for a session-scoped-global-state
+#    problem that has no other fix; this one has two, both just outside this round's
+#    authority.
 
 STATUS_BY_EXIT_CODE: dict[int | None, str] = {
     None: "not_checked",
@@ -705,9 +759,7 @@ def measure_module(
     # panic for no benefit at all.
     covered_lines_on = bool(MUTMUT_CONFIG["mutate_only_covered_lines"])
     launcher = tree / _LAUNCHER_NAME
-    launcher.write_text(
-        _LAUNCHER_SOURCE.format(preimport=_PREIMPORT if covered_lines_on else ())
-    )
+    launcher.write_text(_LAUNCHER_SOURCE.format(preimport=_PREIMPORT if covered_lines_on else ()))
     if covered_lines_on:
         (tree / _COVERAGERC_NAME).write_text(
             _COVERAGERC_TEMPLATE.format(mutants_src=tree / "mutants" / "src" / "trelix")
@@ -853,25 +905,17 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--report", action="store_true", help="measure and print; exits 0 on success"
-    )
+    mode.add_argument("--report", action="store_true", help="measure and print; exits 0 on success")
     mode.add_argument(
         "--update-baseline", action="store_true", help="measure and rewrite the JSON baseline"
     )
     mode.add_argument(
         "--check", action="store_true", help="measure and ratchet per-module ceilings"
     )
-    mode.add_argument(
-        "--list-scope", action="store_true", help="print the scope table and exit"
-    )
-    parser.add_argument(
-        "--modules", nargs="+", default=[], help="module keys from SCOPE, or ALL"
-    )
+    mode.add_argument("--list-scope", action="store_true", help="print the scope table and exit")
+    parser.add_argument("--modules", nargs="+", default=[], help="module keys from SCOPE, or ALL")
     parser.add_argument("--max-children", type=int, default=None)
-    parser.add_argument(
-        "--mutmut-path", default=None, help="dir holding a sideloaded mutmut"
-    )
+    parser.add_argument("--mutmut-path", default=None, help="dir holding a sideloaded mutmut")
     parser.add_argument(
         "--keep-worktree", action="store_true", help="do not delete the throwaway tree"
     )

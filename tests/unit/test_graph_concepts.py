@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from trelix.core.config import LLMConfig
@@ -78,12 +77,11 @@ class TestConceptExtractor:
             concepts = extractor.extract_from_symbols(_make_symbols())
         assert concepts == []
 
-    def test_save_and_load_concepts(self, tmp_path: Path) -> None:
-        db = Database(tmp_path / "index.db")
+    def test_save_and_load_concepts(self, tmp_db: Database) -> None:
         # Insert a dummy file and symbol so DB is valid
         from trelix.core.models import IndexedFile, Language
 
-        db.upsert_file(
+        tmp_db.upsert_file(
             IndexedFile(
                 path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=10
             )
@@ -96,8 +94,8 @@ class TestConceptExtractor:
                 name="token refresh", category="concept", importance=3, source_symbol_ids=[2]
             ),
         ]
-        save_concepts(db, concepts)
-        loaded = load_concepts(db)
+        save_concepts(tmp_db, concepts)
+        loaded = load_concepts(tmp_db)
         assert len(loaded) == 2
         names = {c.name for c in loaded}
         assert "jwt auth" in names

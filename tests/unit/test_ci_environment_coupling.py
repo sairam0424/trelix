@@ -90,11 +90,13 @@ _WORKFLOW = _ROOT / ".github" / "workflows" / "ci.yml"
 # is why a workflow edit has to fail here first.
 #
 # Note the two steps per job, not one: `test` and `lint` additionally install the
-# three adapter packages, and that is load-bearing rather than incidental --
-# packages/trelix-mcp requires mcp>=1.24 (-> uvicorn>=0.31.1) and fastmcp>=3.4
-# (-> fastmcp-slim[client,server] -> watchfiles>=1.0.0, uvicorn>=0.35). So the unit
-# job HAS uvicorn and watchfiles despite the `serve` and `watch` extras being
-# absent, and the `integration` job -- which installs no adapter package -- does not.
+# three adapter packages. `dev` now declares uvicorn and watchfiles directly (see
+# pyproject.toml's [dev] extra), so the unit job has them on that ground alone; it is
+# no longer contingent on packages/trelix-mcp's own dependency graph (mcp>=1.24 ->
+# uvicorn>=0.31.1; fastmcp>=3.4 -> fastmcp-slim[client,server] -> watchfiles>=1.0.0),
+# though that graph still supplies them too and both floors are compatible. The
+# `integration` job also installs `dev`, so it now has both as well -- a behaviour
+# change from before this fix, when it had neither.
 CI_JOB_PIP_INSTALLS: dict[str, tuple[str, ...]] = {
     "lint": (
         'pip install -e ".[local,sso,dev]"',
@@ -247,15 +249,14 @@ PRESENT_ANYWAY: dict[str, str] = {
     # [lance] declares pyarrow; [bge-code]'s FlagEmbedding requires datasets, which
     # requires pyarrow>=21.
     "pyarrow": "FlagEmbedding -> datasets -> pyarrow ([bge-code])",
-    # [serve] declares both; [dev] declares fastapi directly, and uvicorn arrives
-    # from the trelix-mcp STEP, not from any extra.
+    # [serve] declares both; [dev] declares fastapi directly. uvicorn and watchfiles
+    # (also declared by [serve]/[watch] respectively) no longer need an entry here at
+    # all: [dev] now declares both of THEM directly too (as of this fix), so they are
+    # already inside `_declared_imports_for(UNIT_JOB_EXTRAS)` and the derivation's own
+    # subtraction removes them from `declared_absent` before this table is even
+    # consulted -- unlike before this fix, when they were only reachable via
+    # packages/trelix-mcp's dependency graph and had to be excused here as SOFT.
     "fastapi": "declared directly by [dev]",
-    "uvicorn": "packages/trelix-mcp -> mcp>=1.24 -> uvicorn>=0.31.1 (and fastmcp -> "
-    "fastmcp-slim[server] -> uvicorn>=0.35). SOFT: no extra declares it.",
-    # [watch] declares both; only watchfiles arrives transitively.
-    "watchfiles": "packages/trelix-mcp -> fastmcp>=3.4.0,<4 -> fastmcp-slim[client,server] "
-    "-> watchfiles>=1.0.0. SOFT: any 3.x that moves watchfiles out of the "
-    "`server` extra removes it from the unit job.",
     # [binary] declares both; [dev] declares pyinstaller and [local]
     # sentence-transformers.
     "PyInstaller": "declared directly by [dev]",

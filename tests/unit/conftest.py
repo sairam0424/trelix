@@ -43,6 +43,15 @@ from tests._env_isolation import (  # noqa: E402
     scrub_operator_env,
 )
 
+# Shared fixtures (tests/fixtures/): re-exported here, per-fixture, per pytest's
+# documented conftest-sharing mechanism, so every test under tests/unit/ can
+# request `tmp_db` or `index_config` without a per-file import. The `as name`
+# form is an explicit re-export (ruff recognizes `import x as x`; a plain
+# `import x` here would be flagged unused since neither name is otherwise
+# referenced in this file).
+from tests.fixtures.config import index_config as index_config  # noqa: E402
+from tests.fixtures.db import tmp_db as tmp_db  # noqa: E402
+
 # ── litellm may not publish the operator's dotenv; set BEFORE any test imports it ──────
 #
 # Same class of problem as the two Hub variables above, and the same reason it cannot be a
