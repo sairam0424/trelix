@@ -191,6 +191,10 @@ dev = [
     # tests/unit/test_network_is_blocked.py and the --timeout entry in addopts.
     "pytest-socket>=0.7.0",
     "pytest-timeout>=2.3.0",
+    # tests/property/ -- Hypothesis-based property tests (Phase 9). Pinned >=6.100 for
+    # the current `@given`/`settings(max_examples=...)` API used there; no lower floor
+    # measured beyond "the API these tests call exists".
+    "hypothesis>=6.100.0",
     "ruff>=0.15.0",
     "mypy>=1.10.0",
     "build>=1.0.0",

@@ -199,6 +199,7 @@ DECLARED_DIST_TO_IMPORTS: dict[str, tuple[str, ...]] = {
     "anthropic": ("anthropic",),
     "boto3": ("boto3",),
     "build": ("build",),
+    "hypothesis": ("hypothesis",),
     "cohere": ("cohere",),
     "einops": ("einops",),
     "fastapi": ("fastapi",),
