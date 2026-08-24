@@ -44,6 +44,10 @@ MUTATIONS THAT MUST MAKE THIS FILE FAIL
    -> ``test_no_taxonomy_table_entry_points_at_a_missing_file`` fails.
 7. Drop a coverage.json at the repo root
    -> ``test_no_coverage_json_outside_scratch_pad`` fails.
+8. Remove ``env=env`` from ``_collect``'s ``subprocess.run``
+   -> nothing fails, which is why it was dead for a whole round. Proven live by
+      injecting ``env["PYTEST_ADDOPTS"]="--this-flag-does-not-exist"``: 10 of 16
+      tests go red through the returncode guard.
 """
 
 from __future__ import annotations
@@ -148,7 +152,12 @@ def _collect(paths: tuple[str, ...], marker_expr: str | None = None) -> frozense
     # time; the venv's bin must be reachable or collecting tests/integration errors.
     bin_dir = str(Path(sys.executable).parent)
     env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
-    proc = subprocess.run(argv, cwd=_ROOT, capture_output=True, text=True, timeout=120)
+    # env=env, not the inherited default. Both lines above were dead before this:
+    # PYTHONDONTWRITEBYTECODE never reached the child (round 3 lost a whole
+    # measurement to a stale .pyc), and the PATH fix the comment above describes as
+    # load-bearing worked only because the ambient PATH happened to contain the
+    # venv's bin already.
+    proc = subprocess.run(argv, cwd=_ROOT, capture_output=True, text=True, timeout=120, env=env)
     # 0 = collected something, 5 = collected nothing (a legitimate outcome for
     # `-m "not <marker>"`). Anything else -- 2 interrupted by a collection error,
     # 4 usage error -- means the probe itself is broken and its empty result must
@@ -162,6 +171,35 @@ def _collect(paths: tuple[str, ...], marker_expr: str | None = None) -> frozense
         line.strip()
         for line in proc.stdout.splitlines()
         if "::" in line and line.startswith("tests/")
+    )
+
+
+def _collect_or_skip(path: str, gate_module: str | None, marker: str) -> frozenset[str]:
+    """Collect *path*, or skip LOUDLY when its optional gate module is absent.
+
+    Extracted so the CONTROL below shares it. The control previously had no gate at
+    all and asserted a bare ``assert total`` on a carrier that skips wholesale
+    without ``watchfiles`` -- so it FAILED, rather than skipping, in any environment
+    without that extra. Measured with watchfiles hidden at ``sys.meta_path``: this
+    parametrised test skipped as designed while the control went red.
+
+    That is not hypothetical for CI. ``watchfiles`` is in NO extra the unit job
+    installs; it arrives only from the later ``pip install -e packages/trelix-mcp``
+    step, via ``fastmcp>=3.4.0,<4 -> fastmcp-slim[client,server] -> watchfiles``. Any
+    3.x release that moves it out of that extra removes it from all four legs.
+    """
+    total = _collect((path,))
+    if total:
+        return total
+    if gate_module is not None and importlib.util.find_spec(gate_module) is None:
+        pytest.skip(
+            f"{path} collected 0 tests because the optional module {gate_module!r} "
+            f"is not installed -- this probe cannot discriminate here. Install the "
+            f"extra to make it meaningful; it is NOT passing, it is skipped."
+        )
+    pytest.fail(
+        f"{path} collected 0 tests, so it cannot prove anything about {marker!r}. "
+        f"Pick a different carrier file in CARRIER_FILES."
     )
 
 
@@ -219,18 +257,7 @@ def test_marker_selects_and_deselects_its_carrier_file(
     "registered but carried by nobody" failure, and it is exactly what shipped
     once already.
     """
-    total = _collect((path,))
-    if not total:
-        if gate_module is not None and importlib.util.find_spec(gate_module) is None:
-            pytest.skip(
-                f"{path} collected 0 tests because the optional module {gate_module!r} "
-                f"is not installed -- this probe cannot discriminate here. Install the "
-                f"extra to make it meaningful; it is NOT passing, it is skipped."
-            )
-        pytest.fail(
-            f"{path} collected 0 tests, so it cannot prove anything about {marker!r}. "
-            f"Pick a different carrier file in CARRIER_FILES."
-        )
+    total = _collect_or_skip(path, gate_module, marker)
 
     selected = _collect((path,), marker)
     assert selected == total, (
@@ -257,10 +284,16 @@ def test_a_misspelled_marker_expression_deselects_nothing() -> None:
     It also pins the hazard itself: pytest offers no strictness flag that catches
     a misspelled `-m` name, so the taxonomy's correctness can only ever be
     asserted, never delegated.
+
+    The carrier is gated on ``watchfiles`` through ``_collect_or_skip``, exactly as
+    the parametrised test above is: tests/unit/test_multi_watcher.py carries a
+    module-scope ``pytest.importorskip("watchfiles")``, and no extra the CI unit job
+    installs declares that package -- it arrives only transitively via
+    packages/trelix-mcp. Asserting a non-empty collection unconditionally was an
+    assertion stronger than the environment guarantees.
     """
     path = "tests/unit/test_multi_watcher.py"
-    total = _collect((path,))
-    assert total, f"{path} collected nothing; this control cannot discriminate"
+    total = _collect_or_skip(path, "watchfiles", "requires_extra")
 
     typo = _collect((path,), "not integrationn")
     assert typo == total, (
@@ -306,6 +339,12 @@ def test_requires_extra_is_exactly_the_module_scope_importorskip_files() -> None
     "Whole file skips without the extra" IS "module-scope importorskip", so the
     table is mechanically checkable and there is no excuse for it being a
     judgement call. Adding one without updating tests/conftest.py fails here.
+
+    SCOPE LIMIT, and it is a real hole rather than a nicety: this criterion is
+    blind to ``pytest.skip(..., allow_module_level=True)``, which also skips a whole
+    file. tests/unit/test_assembler_backcompat_golden.py uses that form and takes
+    177 assertions dark with the run still exiting 0. That construct is guarded by
+    tests/unit/test_ci_environment_coupling.py instead.
     """
     derived = set()
     for source in sorted(_TESTS_DIR.rglob("test_*.py")):

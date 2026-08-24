@@ -20,6 +20,17 @@ runs every (query, expected_file) pair, and returns an EvalReport with
 per-query EvalResult objects and aggregate statistics.
 
 Printing is done via Rich when available; falls back to plain text.
+
+Metric arithmetic lives in exactly one place: ``trelix.eval.ndcg``, which
+``trelix eval`` ships from and which agrees with an independent (sklearn)
+implementation to 1e-12 — see ``tests/unit/test_eval_metric_single_implementation.py``.
+This module used to carry a *second* implementation (``tests/eval/metrics.py``,
+now deleted) that diverged from the shipped one by up to 0.6309 nDCG@10 on
+identical rankings, because it scored raw chunk positions instead of distinct
+files and matched ground truth by substring instead of exact string equality.
+``score_ranking`` below is the only boundary between this harness and the
+shipped metrics; it does no arithmetic of its own beyond building the
+integer-ID universe the shipped functions require.
 """
 
 from __future__ import annotations
@@ -27,26 +38,89 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from trelix.core.config import IndexConfig
-from trelix.core.models import SearchResult
+from trelix.eval.ndcg import mrr, ndcg_at_k, recall_at_k
 from trelix.indexing.indexer import Indexer
 from trelix.retrieval.retriever import Retriever
 
-from .metrics import (
-    EvalResult,
-    find_rank,
-    ndcg_at_k,
-    recall_at_k,
-    reciprocal_rank,
-)
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from trelix.core.models import SearchResult
 
 logger = logging.getLogger("trelix.eval")
 
 
 # ---------------------------------------------------------------------------
-# Aggregate report
+# Scoring — the only place this module talks to the shipped metric module
 # ---------------------------------------------------------------------------
+
+
+def _rank_from_mrr(reciprocal: float) -> int:
+    """1-based rank of the first relevant hit, recovered from its reciprocal.
+
+    ``round()``, not ``int()``: measured over ranks 1..100000, ``int(1.0 / (1.0 /
+    r)) != r`` for 5,850 of them (smallest: rank 93, where
+    ``1.0 / (1.0 / 93) == 92.99999999999999`` and truncation reports 92).
+    ``round()`` recovers every one of them exactly.
+    """
+    if reciprocal <= 0.0:
+        return -1
+    return round(1.0 / reciprocal)
+
+
+def score_ranking(
+    ranked_files: list[str], relevant_files: Sequence[str]
+) -> tuple[float, float, float, float, float, int]:
+    """Score one query's ranked file list against its ground truth.
+
+    ``ranked_files`` are exact repo-relative ``rel_path`` strings in rank order
+    (chunk order — the same file may repeat; the shipped metrics collapse
+    repeats to each file's best rank, so ``@k`` counts distinct files). Matching
+    against ``relevant_files`` is exact string equality, never substring: a bare
+    stem like ``"user.py"`` will not match ``"src/superuser.py"``.
+
+    Returns ``(recall@1, recall@5, recall@10, mrr, ndcg@10, rank)``. ``rank`` is
+    the 1-based position of the first relevant file, or ``-1`` if it was never
+    retrieved.
+    """
+    relevant = set(relevant_files)
+    universe = {f: i for i, f in enumerate(set(ranked_files) | relevant)}
+    ranked_ids = [universe[f] for f in ranked_files]
+    relevant_ids = {universe[f] for f in relevant}
+
+    r1 = recall_at_k(ranked_ids, relevant_ids, k=1)
+    r5 = recall_at_k(ranked_ids, relevant_ids, k=5)
+    r10 = recall_at_k(ranked_ids, relevant_ids, k=10)
+    rr = mrr(ranked_ids, relevant_ids)
+    ndcg = ndcg_at_k(ranked_ids, relevant_ids, k=10)
+    rank = _rank_from_mrr(rr)
+    return r1, r5, r10, rr, ndcg, rank
+
+
+# ---------------------------------------------------------------------------
+# Per-query result + aggregate report
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EvalResult:
+    """Per-query eval metrics."""
+
+    query: str
+    expected_file: str
+    recall_at_1: float
+    recall_at_5: float
+    recall_at_10: float
+    mrr: float  # reciprocal rank for this query
+    ndcg_at_10: float
+    rank: int  # 1-based rank of first match, -1 if not found
+    judge_score: float | None = None  # LLM-as-judge score (0.0–1.0); None if judge not run
+    retrieved_files: list[str] = field(
+        default_factory=list
+    )  # rel_paths of retrieved files (optional)
 
 
 @dataclass
@@ -115,12 +189,31 @@ class EvalHarness:
             )
         else:
             # Allow callers to pass a config; honour repo_path override.
-            object.__setattr__(config, "repo_path", repo_path) if False else None
             config = config.model_copy(update={"repo_path": repo_path})
 
         self._config = config
         self._repo_path = repo_path
         self._indexed = False
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def _validate_cases(self, cases: list[tuple[str, str]]) -> None:
+        """Refuse any case whose ground truth cannot exist under ``repo_path``.
+
+        Matching is exact-string (see ``score_ranking``), so a stale fixture —
+        a bare stem, a renamed file, a path from a different repo — scores 0.0
+        on every query and reads exactly like a genuine retrieval failure.
+        Called before indexing, so an unusable golden set fails fast without
+        spending an embedder or a query planner call.
+        """
+        root = Path(self._repo_path)
+        for query, expected in cases:
+            if not (root / expected).exists():
+                raise ValueError(
+                    f"{expected!r} does not exist under {self._repo_path!r} (query: {query!r})"
+                )
 
     # ------------------------------------------------------------------
     # Index (idempotent)
@@ -148,11 +241,14 @@ class EvalHarness:
         Run eval for every (query, expected_file) pair.
 
         Args:
-            cases: list of (query_string, expected_rel_path_fragment)
+            cases: list of (query_string, expected_rel_path). ``expected_rel_path``
+                must be the exact repo-relative path — see ``_validate_cases`` and
+                ``score_ranking``, both of which match exactly, never by substring.
 
         Returns:
             EvalReport with per-query EvalResult and aggregate stats.
         """
+        self._validate_cases(cases)
         self._ensure_indexed()
         retriever = Retriever(self._config)
 
@@ -160,13 +256,9 @@ class EvalHarness:
         for query, expected_file in cases:
             context = retriever.retrieve(query)
             results: list[SearchResult] = context.results
+            ranked_files = [r.file.rel_path for r in results]
 
-            r1 = recall_at_k(results, expected_file, k=1)
-            r5 = recall_at_k(results, expected_file, k=5)
-            r10 = recall_at_k(results, expected_file, k=10)
-            rr = reciprocal_rank(results, expected_file)
-            ndcg = ndcg_at_k(results, expected_file, k=10)
-            rank = find_rank(results, expected_file)
+            r1, r5, r10, rr, ndcg, rank = score_ranking(ranked_files, [expected_file])
 
             eval_results.append(
                 EvalResult(
@@ -196,7 +288,17 @@ class EvalHarness:
         min_mrr: float = 0.75,
         min_ndcg: float = 0.80,
     ) -> None:
-        """Raise AssertionError if any metric falls below the minimum threshold."""
+        """Raise AssertionError if any MEAN metric falls below the minimum threshold.
+
+        Kept for callers that want a coarse mean-over-the-set check (e.g. a
+        standalone script comparing two configurations). The CI retrieval-quality
+        gate itself (``tests/integration/test_eval.py::test_trelix_self_eval``) no
+        longer calls this: a mean over a golden set can hide a large regression on
+        a few queries behind headroom on the rest — measured concretely, flipping
+        ``graph_search_enabled`` to ``True`` costs -0.1384 mean nDCG@10 while the
+        gate's floor sits 0.3631 below the baseline mean, so the mean gate still
+        returns PASS. The gate uses a per-query rank ledger instead.
+        """
         failures: list[str] = []
 
         if report.mean_recall_at_5 < min_recall5:

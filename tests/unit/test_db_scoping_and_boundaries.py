@@ -27,6 +27,17 @@ The scoping tests deliberately give the two files IDENTICAL symbol names and
 identical bodies. That is not a contrived collision; it is the common case
 (`def main(): pass` in two entry points) and it is the only fixture in which an
 unfiltered query is distinguishable from a filtered one.
+
+SCOPE OF THE PARAGRAPH ABOVE, stated precisely because it has been misread. The
+cross-file leak it describes is what the MUTANT does; the shipped helpers really are
+`WHERE file_id = ?` scoped, and these tests are what keeps them that way. The
+qualified_name collision that bites the SHIPPED code is a WITHIN-ONE-FILE one --
+`java.py` gives two nested types the same bare `qualified_name`, and `rust.py` does the
+same to two `mod`-scoped `fn`s -- and no amount of file scoping helps there.
+`tests/unit/test_indexer_qualified_name_collision_keeps_stale_rows.py` drives the real
+`Indexer` over such a file and pins the user-visible result: edit one member of the pair
+and its PRE-EDIT body stays in `symbols` with a live `chunks` row. The two files are
+halves of one finding and should be read together.
 """
 
 from __future__ import annotations
@@ -233,6 +244,14 @@ class TestTransactionRollsBackOnFailure:
     `insert_query_telemetry`, `set_index_metadata`, ...) flushes them to disk. A
     file that FAILED to index is then indistinguishable from one that succeeded,
     except that it is missing the symbols the failure cut short.
+
+    This class asserts ONE HALF of ``transaction()``'s contract. The other half --
+    that a clean body actually COMMITS -- is ``TestTransactionCommitsOnASuccessfulBody``
+    below, and it is this class's discriminating counterpart: without it, a
+    ``transaction()`` that never persisted anything would satisfy the test below for
+    entirely the wrong reason. It used to be filed IN here, which meant the suite's only
+    commit guard was one class-deletion away from disappearing silently. Do not move it
+    back.
     """
 
     def test_a_raising_body_leaves_no_rows_behind(self, tmp_path: Path) -> None:
@@ -253,16 +272,53 @@ class TestTransactionRollsBackOnFailure:
         surviving = db._conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
         assert int(surviving) == 0
 
+
+class TestTransactionCommitsOnASuccessfulBody:
+    """Database.transaction() must COMMIT when the body returns normally.
+
+    WHY THIS IS ITS OWN CLASS, AND MUST STAY ONE. This test used to live inside
+    ``TestTransactionRollsBackOnFailure`` above, which is the wrong file drawer for
+    it in a way that is actively dangerous rather than merely untidy:
+
+      * It is the ONLY direct guard in the suite on ``transaction()`` committing.
+        ``insert_symbol`` and every other write inside a ``with self.db.transaction()``
+        block relies on this context manager for durability; nothing else asserts that
+        the ``self._conn.commit()`` line exists. Filed under a class whose NAME says
+        "rolls back on failure", it reads like a helper for the rollback proof, so
+        anyone consolidating or deleting that class takes the commit guard with it and
+        the suite keeps passing.
+      * Its own docstring described it as a "discriminating counterpart", which is true
+        and is a SECOND job, not its only job. The two jobs point in opposite
+        directions: the rollback class needs it as a control, while the codebase needs
+        it as a primary guarantee. A class boundary is the cheapest way to say so.
+
+    The counterpart role is unchanged and still load-bearing: if this test fails, the
+    rollback test above proves nothing, because a ``transaction()`` that never persists
+    ANYTHING would satisfy "no rows survived a raising body" for entirely the wrong
+    reason.
+
+    Mutation that must make this fail: deleting ``self._conn.commit()`` from the
+    success path of ``transaction()`` (``src/trelix/store/db.py:716``). Measured with
+    that line replaced by ``pass``: ``assert 0 == 1``, "1 failed, 13 passed" -- and
+    note that this is the ONLY test in this file that moved, so the kill is
+    attributable to this test alone.
+
+    Consequence if it survives: every write routed through ``transaction()`` -- which
+    is the whole symbol-insert path in ``Indexer._insert_one`` -- would sit unflushed
+    in the open transaction, durable only by accident when some later unrelated
+    ``commit()`` on the same connection happens to flush it. On the paths where no
+    later commit follows, an index that reported success would come back empty.
+    """
+
     def test_a_clean_body_still_commits(self, tmp_path: Path) -> None:
-        """Discriminating counterpart: if this fails, the class above proves
-        nothing, because a transaction() that never persists anything would pass
-        the rollback test for the wrong reason."""
         db = Database(tmp_path / "index.db")
         file_id = _make_file(db, "a.py")
 
         with db.transaction():
             _make_symbol(db, file_id, "main", body="def main(): return 1")
 
+        # A SEPARATE connection, so this asserts durability on disk rather than
+        # visibility inside db's own still-open transaction.
         persisted = sqlite3.connect(str(tmp_path / "index.db"))
         try:
             count = persisted.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]

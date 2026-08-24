@@ -57,9 +57,19 @@ _TESTS_DIR = Path(__file__).parent
 # plainly -- the taxonomy's own guard does NOT run in the fast inner loop. It is a
 # config guard, so CI's full run is the right place for it; the alternative is
 # a table that violates its own documented threshold.
+#
+# regressions/test_regressions.py is here by the same rule and the same reasoning:
+# measured 32.1s and 61.9s over the same 22 tests on two runs of this tree (the spread is
+# machine load; both are quoted rather than the flattering one), of which the four child
+# runs cost 8.74s, 7.36s, 6.83s and 6.35s on the faster one. It creates one throwaway
+# `git worktree` and spawns one child pytest per manifest entry, so its cost is structural
+# rather than incidental, and no plausible machine puts it under 4.0s. It is the only file
+# in this table outside tests/unit, which is why the key is relative to tests/ rather than a
+# basename -- see _relative_key below.
 # ---------------------------------------------------------------------------
 SLOW_FILES = frozenset(
     {
+        "regressions/test_regressions.py",
         "unit/test_audit_wipe_detection.py",
         "unit/test_cli_closed_stdout.py",
         "unit/test_cli_smoke.py",

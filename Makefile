@@ -62,9 +62,37 @@ eval:  ## Run integration recall/eval tests
 # file rather than written into the help text: `help` greps these `##` comments and
 # prints them literally, so a $(shell ...) here would show up unexpanded — and a number
 # typed in prose drifts (this line said "50-query" against a 54-line golden set).
+#
+# --plan-cache-file is not a convenience. Without it the LLM query planner re-plans
+# every query, and two runs of an IDENTICAL configuration differ: nDCG@10 run-to-run
+# sd 0.02202 (live planner, both caches off, n=5) and sd 0.02872 (shipped CLI, n=3),
+# because 0 of 54 plans reproduce byte-for-byte at temperature=0.0. Any A/B smaller
+# than that band measures the planner rather than the change under test. Replayed from
+# frozen plans the same pipeline reported sd exactly 0.000000 over six runs
+# (0.6332934265749293 each time) -- provenance and method in eval/README.md.
+#
+# The first run RECORDS the file (one JSONL line per distinct query, and it does draw
+# plans, so it spends planner calls); every later run replays it and makes no planner
+# LLM call at all. A query the file does not cover RAISES rather than silently
+# re-drawing, so a frozen run cannot end up half frozen while still looking frozen.
+# Delete the file to re-record, and re-record whenever eval/golden.jsonl changes.
+#
+# Override the location with `make eval-full EVAL_PLAN_CACHE=/tmp/plans.jsonl`. The
+# default sits under .trelix/, which is gitignored, so a recorded cache is never
+# committed and never shared between two different golden sets by accident.
+EVAL_PLAN_CACHE ?= .trelix/eval-plan-cache.jsonl
+
 eval-full:  ## Full self-eval over eval/golden.jsonl (needs a current index; spends embedding API calls; skip in CI)
 	@printf 'eval/golden.jsonl: %s queries\n' "$$(grep -c '[^[:space:]]' eval/golden.jsonl)"
-	trelix eval . --golden eval/golden.jsonl
+	@mkdir -p "$$(dirname '$(EVAL_PLAN_CACHE)')"
+	@if [ -f '$(EVAL_PLAN_CACHE)' ]; then \
+	  printf 'plan cache: %s -- REPLAYING %s frozen plan(s); no planner LLM call\n' \
+	    '$(EVAL_PLAN_CACHE)' "$$(grep -c '[^[:space:]]' '$(EVAL_PLAN_CACHE)')"; \
+	else \
+	  printf 'plan cache: %s -- absent, this run RECORDS it (planner calls WILL be spent)\n' \
+	    '$(EVAL_PLAN_CACHE)'; \
+	fi
+	trelix eval . --golden eval/golden.jsonl --plan-cache-file '$(EVAL_PLAN_CACHE)'
 
 # ---------------------------------------------------------------------------
 # Code quality

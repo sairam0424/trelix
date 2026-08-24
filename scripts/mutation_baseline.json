@@ -1,0 +1,136 @@
+{
+  "deselected_files": [
+    "tests/unit/test_otel_metrics.py",
+    "tests/unit/test_otel_metrics_reentry.py",
+    "tests/unit/test_otel_tracing.py",
+    "tests/unit/test_structured_logging.py"
+  ],
+  "excluded_scopes": {
+    "embedder.*": "tests construct a real torch model; 245/317 mutants segfault in torch/nn/modules/module.py convert, identically at --max-children 1 and 8. http_proxy= workaround moved 245 -> 245. Hard limit, not a todo.",
+    "rerank.*": "same torch-model construction as embedder.*",
+    "sparse.*": "loads a transformers model; same segfault class as embedder.*"
+  },
+  "gate": "none -- per-module survivor ceilings only, never a score ratio",
+  "generated_by": "scripts/mutation.py",
+  "modules": {
+    "compression.extractive": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/compression/extractive.py"
+      ]
+    },
+    "eval.ndcg": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 45,
+        "segfault": 7
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T07:45:58+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/eval/ndcg.py"
+      ],
+      "source_sha256": {
+        "src/trelix/eval/ndcg.py": "c2cebb2f4ebe644d52a9a673b6cf802e2ed03575784a9f576f7367f5843d3328"
+      },
+      "total_mutants": 52
+    },
+    "graph": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/graph/*"
+      ]
+    },
+    "indexing.chunker": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/chunker.py"
+      ]
+    },
+    "indexing.parser": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/*"
+      ]
+    },
+    "indexing.walker": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/walker.py"
+      ]
+    },
+    "retrieval.bm25": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/retrieval/bm25.py"
+      ]
+    },
+    "retrieval.fusion": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/retrieval/fusion.py"
+      ]
+    },
+    "store.db": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/store/db.py"
+      ]
+    },
+    "store.dimension_guard": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/store/dimension_guard.py"
+      ]
+    },
+    "store.vector": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/store/vector.py"
+      ]
+    }
+  },
+  "mutmut_config": {
+    "also_copy": [
+      ".env.example",
+      ".github",
+      "CHANGELOG.md",
+      "config",
+      "CONTRIBUTING.md",
+      "docs",
+      "helm",
+      "LICENSE",
+      "Makefile",
+      "packages",
+      "README.md",
+      "scripts",
+      "SECURITY.md",
+      "SUPPORT.md"
+    ],
+    "do_not_mutate_patterns": [
+      "raise \\w+",
+      "logger\\.\\w+"
+    ],
+    "max_stack_depth": 8,
+    "mutate_only_covered_lines": false,
+    "pytest_add_cli_args": [
+      "-p",
+      "no:cacheprovider"
+    ],
+    "pytest_add_cli_args_test_selection": [
+      "tests/unit"
+    ],
+    "source_paths": [
+      "src/trelix"
+    ],
+    "use_git_change_detection": false
+  },
+  "mutmut_version": "3.7.0",
+  "schema": 1
+}
