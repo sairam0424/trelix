@@ -62,8 +62,41 @@ def _field_default(name: str) -> object:
     return EmbedderConfig.model_fields[name].default
 
 
+def _write_mutmut_bootstrap_if_needed(cwd: Path) -> None:
+    """Neutralise a mutmut-only crash in the child, without touching what is under test.
+
+    Under `scripts/mutation.py`, any scope inside the eager `trelix` import graph
+    (indexing.walker, graph, store.vector, store.db, retrieval.*) makes `import
+    trelix` pull in a module wrapped by mutmut's own trampoline
+    (`mutmut/mutation/trampoline.py`), which imports `mutmut.__main__`, which at
+    MODULE SCOPE (`mutmut/utils/safe_setproctitle.py:15`, unconditional, not gated
+    on `MUTANT_UNDER_TEST`) calls `Config.get()`. That reads `pyproject.toml`
+    relative to `os.getcwd()` and, finding none, falls back to
+    `_guess_source_paths()` (also `os.getcwd()`-relative), which raises
+    `FileNotFoundError: Could not figure out where the code to mutate is` in ANY
+    process whose cwd has no `pyproject.toml`/`lib`/`src` — which the probe's own
+    `cwd` deliberately is, by design (see module docstring).
+
+    `cwd` must stay the untrusted repo: that is the fixture under test. So this
+    writes a `pyproject.toml` naming a `[tool.mutmut]` `source_paths` INTO that
+    same directory instead, purely to satisfy mutmut's own bootstrap. trelix's own
+    config resolution never reads `pyproject.toml` (see
+    `core.config.resolve_operator_env_file`), so this cannot change what the test
+    asserts. It is a no-op file that only matters when mutmut is already loaded in
+    THIS process (i.e. only under `scripts/mutation.py`, never in a normal test run
+    or in CI, where "mutmut" is never imported and this function does nothing).
+    """
+    if "mutmut" not in sys.modules:
+        return
+    marker = cwd / "pyproject.toml"
+    if marker.exists():
+        return
+    marker.write_text('[tool.mutmut]\nsource_paths = ["."]\n', encoding="utf-8")
+
+
 def _probe_config(*, cwd: Path, home: Path, extra_env: dict[str, str] | None = None) -> dict:
     """Construct EmbedderConfig in a child process with a from-scratch environment."""
+    _write_mutmut_bootstrap_if_needed(cwd)
     env = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(home),

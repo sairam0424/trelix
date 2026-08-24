@@ -60,16 +60,47 @@
       ]
     },
     "indexing.walker": {
-      "measured": false,
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 18
+      },
+      "counts": {
+        "killed": 336,
+        "survived": 18
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T17:44:59+00:00",
+      "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/indexing/walker.py"
-      ]
+      ],
+      "source_sha256": {
+        "src/trelix/indexing/walker.py": "412b59ed4c36f8f139f89ca915030a348060e8443c462eef75ede083c8782452"
+      },
+      "total_mutants": 354
     },
     "retrieval.bm25": {
-      "measured": false,
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 111
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T18:14:41+00:00",
+      "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/retrieval/bm25.py"
-      ]
+      ],
+      "source_sha256": {
+        "src/trelix/retrieval/bm25.py": "189a500dd05219f97fb72eb2cc4c7c83bbcce972fd2167e9b4a9a3abf981ba9f"
+      },
+      "total_mutants": 111
     },
     "retrieval.fusion": {
       "ceilings": {
@@ -99,10 +130,25 @@
       ]
     },
     "store.dimension_guard": {
-      "measured": false,
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 8
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T17:59:41+00:00",
+      "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/store/dimension_guard.py"
-      ]
+      ],
+      "source_sha256": {
+        "src/trelix/store/dimension_guard.py": "6430b677f5153e233ebfe713f9cfe2765e7341543f72b1164a718a454d1dbd6f"
+      },
+      "total_mutants": 8
     },
     "store.vector": {
       "measured": false,

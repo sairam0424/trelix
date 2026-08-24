@@ -406,3 +406,32 @@ class TestDimensionGuardMutationPins:
         # 384 != 3072, so if the read had somehow succeeded this would raise
         # DimensionMismatchError instead — the no-op is not vacuous.
         DimensionGuard.check(db, current_dimension=3072, provider="local")
+
+    def test_stored_attribute_is_the_constructor_arg_not_none(self) -> None:
+        """MUTATION: `self.stored = stored` -> `self.stored = None` in `__init__`.
+
+        Every other test on this exception only reads `str(err)` (the f-string, which
+        closes over the local `stored` param directly, not `self.stored`) — so the
+        attribute assignment itself had no test exercising it at all. `self.stored` is
+        exposed as public state precisely so a caller can inspect the mismatch
+        programmatically instead of parsing the message string; a `None` here silently
+        breaks that path for anyone who does.
+        """
+        err = DimensionMismatchError(stored=3072, current=384, provider="local")
+        assert err.stored == 3072
+
+    def test_current_attribute_is_the_constructor_arg_not_none(self) -> None:
+        """MUTATION: `self.current = current` -> `self.current = None` in `__init__`.
+
+        Same gap as `stored` above, for the other half of the mismatch pair.
+        """
+        err = DimensionMismatchError(stored=3072, current=384, provider="local")
+        assert err.current == 384
+
+    def test_provider_attribute_is_the_constructor_arg_not_none(self) -> None:
+        """MUTATION: `self.provider = provider` -> `self.provider = None` in `__init__`.
+
+        Same gap as `stored`/`current` above, for the provider name.
+        """
+        err = DimensionMismatchError(stored=3072, current=384, provider="local")
+        assert err.provider == "local"

@@ -441,7 +441,17 @@ class TestExtractStatusCodeNeverImportsAnSdk:
         inherited) because the shared venv this suite runs under has an
         unrelated editable trelix install; without this override the child
         would import a different tree's retry.py than the one this test
-        run is meant to prove."""
+        run is meant to prove. PREPENDED to, rather than replacing, any
+        inherited PYTHONPATH: under mutmut's own mutation runner (see
+        scripts/mutation.py), retry.py's package (`import trelix` walks
+        trelix/__init__.py's eager imports) needs a trampoline-wrapped
+        sibling module importable, which in turn needs the `mutmut`
+        package mutmut itself put on PYTHONPATH for this whole process
+        tree -- dropping that entry made every case here crash with
+        `ModuleNotFoundError: No module named 'mutmut'` instead of
+        classifying anything, under that runner only. A plain pytest run
+        has no mutmut on PYTHONPATH to begin with, so prepending is a
+        no-op there."""
         code = (
             "import sys\n"
             "from trelix.core.retry import is_retryable_http_error\n"
@@ -459,7 +469,9 @@ class TestExtractStatusCodeNeverImportsAnSdk:
             timeout=60,
             env={
                 **os.environ,
-                "PYTHONPATH": str(_REPO_ROOT / "src"),
+                "PYTHONPATH": os.pathsep.join(
+                    [str(_REPO_ROOT / "src"), *filter(None, [os.environ.get("PYTHONPATH")])]
+                ),
                 "PYTHONDONTWRITEBYTECODE": "1",
             },
             check=False,

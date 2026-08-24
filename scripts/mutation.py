@@ -310,6 +310,10 @@ DESELECTED_FILES: tuple[str, ...] = (
 #    throwaway tree ends up with a resurrected `tests/eval/metrics.py`, which the test
 #    correctly reports as a second metric implementation. Would NOT reproduce against
 #    a tree whose HEAD commit is genuinely 9b0c02a (or any commit without that file).
+#    ROUND 9 FIX: `_ThrowawayTree.__enter__` now mirrors deletions too (walks each
+#    synced dir after the copytree and unlinks any file absent from REPO_ROOT), so a
+#    resurrected file can no longer survive the sync regardless of how stale HEAD is.
+#    Scoped to files ABSENT from the live tree, so a real file can never be removed.
 #
 # 2. tests/unit/test_dotenv_anchoring.py -- GENERAL; reproduces on any correctly-
 #    committed tree too, for any scope inside the eager `trelix` import graph.
@@ -325,18 +329,37 @@ DESELECTED_FILES: tuple[str, ...] = (
 #    out where the code to mutate is`, which the probe surfaces as "probe failed: ...".
 #    `store/dimension_guard.py` is NOT affected: its only imports are function-local,
 #    inside `indexer.py`, never reached by `import trelix` alone (confirmed by grep
-#    before relying on it). This is a permanent property of mutating anything in the
-#    eager import graph with `mutate_only_covered_lines = False` plus mutmut's
-#    trampoline wrapping, not a one-off environment glitch -- a future session with
-#    src authority could sidestep it either by making `trelix/__init__.py`'s heavy
-#    imports lazy, or by making test_dotenv_anchoring.py's subprocess probes pass
-#    PYTHONPATH/cwd pointing at the throwaway tree root. Neither is test-support-only,
-#    so it is left here rather than fixed. Left OUT of DESELECTED_FILES rather than
-#    left in, because it silently weakens the kill set for every future run of
-#    retrieval.fusion, retrieval.bm25, indexing.walker, store.db and store.vector --
-#    the four legitimate entries above exist for a session-scoped-global-state
-#    problem that has no other fix; this one has two, both just outside this round's
-#    authority.
+#    before relying on it).
+#
+#    ROUND 9 CORRECTION: the paraphrase above ("neither fix is test-support-only") was
+#    wrong -- re-derived by actually reading mutmut 3.7.0's own installed source rather
+#    than trusting this comment. The precise mechanism is NOT the trampoline's
+#    MUTANT_UNDER_TEST env-var branch (that branch is inert with the var unset, which
+#    is exactly this probe's case) -- it is that a mutated module's generated
+#    `from mutmut.mutation.trampoline import ...` pulls in `mutmut.__main__`, which at
+#    IMPORT TIME (unconditionally, in `mutmut/utils/safe_setproctitle.py:15`) evaluates
+#    `Config.get().use_setproctitle`, and `Config._guess_source_paths()` falls back to
+#    `os.getcwd()` only when NO `pyproject.toml`/`setup.cfg` names `source_paths` --
+#    both absent from this probe's hostile-repo cwd, which holds nothing but a `.env`.
+#    FIXED test-side, gated so it is a true no-op outside mutation testing:
+#    `tests/unit/test_dotenv_anchoring.py`'s `_probe_config` now calls
+#    `_write_mutmut_bootstrap_if_needed(cwd)`, which returns immediately unless
+#    `"mutmut" in sys.modules` -- only true under this driver -- and otherwise writes
+#    a `pyproject.toml` naming `[tool.mutmut] source_paths = ["."]` into the probe's
+#    cwd, satisfying mutmut's guess without touching trelix's own dotenv resolution
+#    (which never reads `pyproject.toml`). An earlier candidate fix instead
+#    unconditionally created an empty `src/` marker directory on every call -- correct
+#    functionally, but it silently made the `TestAnchorInAChildProcess` fixture's own
+#    documented invariant ("a clean scratch dir holding only a .env") false on every
+#    normal test run, not only under mutmut. The gated version was chosen instead.
+#    Verified two ways: (a) `--update-baseline --modules retrieval.bm25`'s stats pass
+#    gets past this test where it previously failed with the exact FileNotFoundError
+#    above, and (b) the SAME hostile-.env scenario this test exists to catch (a
+#    cwd-relative `env_file` reintroduced on `EmbedderConfig`) is still caught after
+#    the fix -- reproduced by hand, confirmed 6/12 tests in the file fail, reverted
+#    with a sha256-verified restore. Left OUT of DESELECTED_FILES because the fix
+#    above restores full coverage; no scope needs to trade away its kill set for this
+#    anymore.
 
 STATUS_BY_EXIT_CODE: dict[int | None, str] = {
     None: "not_checked",
@@ -473,6 +496,26 @@ class _ThrowawayTree:
             )
         for name in _SYNC_DIRS:
             shutil.copytree(REPO_ROOT / name, self.path / name, dirs_exist_ok=True)
+            # `dirs_exist_ok=True` is add/overwrite-only, never delete. When the
+            # worktree's `HEAD` commit is stale relative to its own live files (a
+            # file deleted on disk but never committed -- e.g. this session, before
+            # any commit), `git worktree add --detach <path> HEAD` above checks out
+            # the STALE committed tree first, resurrecting that file in the
+            # throwaway tree, and this copytree does not remove it. Measured:
+            # tests/unit/test_eval_metric_single_implementation.py resurrecting a
+            # deleted tests/eval/metrics.py this exact way; see scripts/mutation.py's
+            # own round-8/round-9 history in DESELECTED_FILES' trailing comment for
+            # the full diagnosis. Mirror the deletion side too, scoped to files that
+            # were RESURRECTED under a name absent from the live tree -- a real
+            # ADDED-then-removed file in REPO_ROOT would already be absent from the
+            # copytree source, so this can only remove checkout artifacts, never a
+            # live file.
+            for resurrected in (self.path / name).rglob("*"):
+                if resurrected.is_dir():
+                    continue
+                live = REPO_ROOT / resurrected.relative_to(self.path)
+                if not live.exists():
+                    resurrected.unlink()
         for name in _SYNC_FILES:
             src = REPO_ROOT / name
             if src.exists():
