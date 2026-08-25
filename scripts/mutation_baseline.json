@@ -14,10 +14,27 @@
   "generated_by": "scripts/mutation.py",
   "modules": {
     "compression.extractive": {
-      "measured": false,
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 33
+      },
+      "counts": {
+        "killed": 510,
+        "survived": 33,
+        "timeout": 2
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-25T08:04:36+00:00",
+      "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/compression/extractive.py"
-      ]
+      ],
+      "source_sha256": {
+        "src/trelix/compression/extractive.py": "b4219a10672a468376905d6dcbff3a3f880c2711fbea870123d84edc8c4427d0"
+      },
+      "total_mutants": 545
     },
     "eval.ndcg": {
       "ceilings": {
@@ -42,24 +59,48 @@
       "total_mutants": 52
     },
     "graph": {
-      "measured": false,
+      "ceilings": {
+        "no_tests": 5,
+        "survived": 501
+      },
+      "counts": {
+        "killed": 608,
+        "no_tests": 5,
+        "segfault": 1,
+        "survived": 501
+      },
+      "files_mutated": 9,
+      "files_with_results": 8,
+      "measured": true,
+      "measured_at": "2026-08-25T12:00:46+00:00",
+      "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/graph/*"
-      ]
+      ],
+      "source_sha256": {
+        "src/trelix/graph/builder.py": "ca13b8f0997c2b5924bed9a418c3f5598ffcf8f1c82d9ce5fadd487535775a12",
+        "src/trelix/graph/code_graph.py": "37274ee4518b65b17044581a4a327787661261ad6a5eb97aa8c3100f385ebc9d",
+        "src/trelix/graph/community.py": "b0dd9e92ee978c427b23d8fe3696f6e53ef00bce9aca8837ac683c2c440e6992",
+        "src/trelix/graph/concepts.py": "358f36c3d87d433d037f89bb88d889e12226e6c076de595fce4b88c9e51ba8a7",
+        "src/trelix/graph/persistence.py": "51f123c5cd982b4f7e354acfa387c54014daa6d2e1854029bc7efc222057fd86",
+        "src/trelix/graph/search.py": "5620540ecc86b5b9b23d642de3b0fab105923cf13bac97caced6a836bd21307d",
+        "src/trelix/graph/updater.py": "d4d7db56745b5b12ff712e5d886c89c077c592096c22107b77857b82a6ee6de1",
+        "src/trelix/graph/visualizer.py": "63d9c119b21c096421d665eb31d949b8284a29d97ea22ba4972d1b0dcda84741"
+      },
+      "total_mutants": 1115
     },
     "indexing.chunker": {
       "ceilings": {
         "no_tests": 0,
-        "survived": 40
+        "survived": 0
       },
       "counts": {
-        "killed": 147,
-        "survived": 40
+        "killed": 187
       },
       "files_mutated": 1,
       "files_with_results": 1,
       "measured": true,
-      "measured_at": "2026-08-24T20:31:09+00:00",
+      "measured_at": "2026-08-25T07:04:28+00:00",
       "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/indexing/chunker.py"
@@ -169,12 +210,12 @@
     "store.vector": {
       "ceilings": {
         "no_tests": 0,
-        "survived": 62
+        "survived": 59
       },
       "counts": {
-        "killed": 226,
+        "killed": 229,
         "segfault": 46,
-        "survived": 62
+        "survived": 59
       },
       "files_mutated": 1,
       "files_with_results": 1,
