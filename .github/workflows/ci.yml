@@ -209,8 +209,21 @@ jobs:
       # It cannot prove the provider CONSTRUCTS — that needs the model weights, which CI
       # does not download — so the claim this job supports is exactly "the extra resolves
       # and einops is importable", and no more. einops is pure Python and ~60 KB.
+      # `graph-viz` closes the identical class of gap uvicorn/watchfiles closed earlier:
+      # tests/unit/test_graph_visualizer_escaping.py (SEC-04, the HTML-escaping /
+      # XSS-prevention test for the pyvis graph export) does a module-scope
+      # `pytest.importorskip("pyvis.network")`, and pyvis was declared by NO extra this
+      # job installs — so on every CI run the whole file SKIPPED, silently, and the
+      # security assertions inside it never executed. `graph-viz = ["pyvis>=0.3.2"]`
+      # already existed in pyproject.toml (added for the runtime `--visualize` feature);
+      # it is added here rather than folded into `dev` because `dev` is installed by
+      # three OTHER jobs (lint, type-check-extras, integration) that never run
+      # tests/unit at all, and pyvis pulls in ipython + its own dependency chain for no
+      # benefit in any of them. `graph-viz` is the narrowest true fix: it is the exact
+      # extra the feature under test already declares, added only to the one job whose
+      # matrix actually executes tests/unit.
       - name: Install trelix + dev deps
-        run: pip install -e ".[local,otel,sso,bge-code,nomic-code,dev]"
+        run: pip install -e ".[local,otel,sso,bge-code,nomic-code,dev,graph-viz]"
       - name: Install trelix-mcp + deps
         run: pip install -e packages/trelix-mcp
       # The `lint` job installed these two but never ran their tests, and this job ran

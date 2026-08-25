@@ -8,7 +8,6 @@ Tests:
 4. Backward compatibility (default=12000)
 """
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -67,19 +66,24 @@ def test_scale_top_k_to_budget_can_enable():
     assert cfg.scale_top_k_to_budget is True
 
 
-def test_env_var_parsing():
-    """Config fields can be set via environment variables."""
-    os.environ["TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION"] = "0.7"
-    os.environ["TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET"] = "true"
-    try:
-        cfg = RetrievalConfig()
-        assert cfg.context_window_fraction == 0.7
-        assert cfg.scale_top_k_to_budget is True
-        # Default budget is still 12000 unless explicitly set to None in code
-        assert cfg.context_token_budget == 12_000
-    finally:
-        os.environ.pop("TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION", None)
-        os.environ.pop("TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET", None)
+def test_env_var_parsing(monkeypatch: pytest.MonkeyPatch):
+    """Config fields can be set via environment variables.
+
+    ``monkeypatch.setenv``, not ``os.environ[...] = ...`` + ``finally: pop``. The old
+    form was this suite's only raw ``os.environ`` assignment in tests/unit, and ``pop``
+    is not the inverse of assignment: it DELETES the key, so a value already present in
+    the process environment when the test started was destroyed for every test that ran
+    afterwards rather than restored. monkeypatch records the prior state
+    (present-with-value vs absent) and puts exactly that back. Guarded by
+    tests/unit/test_no_raw_env_mutation_in_tests.py.
+    """
+    monkeypatch.setenv("TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION", "0.7")
+    monkeypatch.setenv("TRELIX_RETRIEVAL_SCALE_TOP_K_TO_BUDGET", "true")
+    cfg = RetrievalConfig()
+    assert cfg.context_window_fraction == 0.7
+    assert cfg.scale_top_k_to_budget is True
+    # Default budget is still 12000 unless explicitly set to None in code
+    assert cfg.context_token_budget == 12_000
 
 
 def _make_test_config(model: str, budget: int | None = 12_000) -> IndexConfig:

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import email.utils
 import logging
+import sys
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -71,6 +72,36 @@ def is_retryable_http_error(exc: BaseException) -> bool:
     return _is_connection_level_error(exc)
 
 
+def _loaded_module(name: str) -> Any | None:
+    """Return sys.modules[name] if that module is already loaded in this
+    process, else None — never imports it.
+
+    This is safe as a substitute for a fresh `import name` here because an
+    exception object cannot be an instance of a class defined in a module
+    that was never imported: constructing openai.APIStatusError (or
+    anthropic's, or voyageai's, ...) necessarily runs that module's import
+    first, wherever it happened (the LLM backend that made the call, a
+    connector, a test file). By the time is_retryable_http_error() sees the
+    exception, the module is already in sys.modules if it's ever going to
+    be — checking the cache costs a dict lookup, not an import.
+
+    Before this, _extract_status_code()/_is_connection_level_error() ran
+    `import httpx`, `import requests`, `from botocore.exceptions import
+    ClientError`, `import openai`, `import anthropic`, `from google.genai
+    import errors`, and `import voyageai.error` unconditionally on every
+    single retry-predicate call — including calls whose exception has
+    nothing to do with any of those SDKs. `import voyageai.error` alone
+    transitively pulls in torch plus the transformers/datasets/accelerate/
+    peft/safetensors stack (over a thousand modules) wherever voyageai is
+    installed, on every retryable-failure check, on trelix's hottest retry
+    path. Checking sys.modules instead removes that import from this
+    function's behavior entirely: nothing this module does can ever cause
+    torch (or any other SDK) to load as a side effect of classifying an
+    exception.
+    """
+    return sys.modules.get(name)
+
+
 def _extract_status_code(exc: BaseException) -> int | None:
     """Pull an HTTP status code out of exc, if it has one. Returns None for
     connection-level errors that never got a response at all.
@@ -81,73 +112,76 @@ def _extract_status_code(exc: BaseException) -> int | None:
     than being httpx.HTTPStatusError instances themselves. litellm's
     exceptions subclass openai's, so the openai check covers both.
 
-    Each block catches Exception, not just ImportError: this function's
-    entire contract is "never raise, always degrade to None on anything
-    unexpected" (is_retryable_http_error() falls back to treating an
-    unclassifiable exception as non-retryable). A malformed or mocked
-    exception object — e.g. a test harness's stand-in whose .response is a
-    plain dict instead of the real SDK's response type, or an SDK version
-    bump that changes an attribute's shape — could raise AttributeError/
-    TypeError from the attribute access itself, not just from a missing
-    import; letting that propagate would crash tenacity's retry predicate
-    mid-retry-loop instead of degrading gracefully.
+    Each block only runs its isinstance check when the relevant SDK module
+    is already present in sys.modules (see _loaded_module()) — this
+    function never imports anything itself. Each block still catches
+    Exception broadly around the attribute access that follows a matching
+    isinstance: this function's contract is "never raise, always degrade to
+    None on anything unexpected" (is_retryable_http_error() falls back to
+    treating an unclassifiable exception as non-retryable). A malformed or
+    mocked exception object — e.g. a test harness's stand-in whose
+    .response is a plain dict instead of the real SDK's response type, or
+    an SDK version bump that changes an attribute's shape — could raise
+    AttributeError/TypeError from the attribute access itself; letting that
+    propagate would crash tenacity's retry predicate mid-retry-loop instead
+    of degrading gracefully.
     """
-    try:
-        import httpx
+    httpx_mod = _loaded_module("httpx")
+    if httpx_mod is not None:
+        try:
+            if isinstance(exc, httpx_mod.HTTPStatusError):
+                return int(exc.response.status_code)
+        except Exception:  # noqa: BLE001
+            pass
 
-        if isinstance(exc, httpx.HTTPStatusError):
-            return exc.response.status_code
-    except Exception:  # noqa: BLE001
-        pass
+    requests_mod = _loaded_module("requests")
+    if requests_mod is not None:
+        try:
+            if isinstance(exc, requests_mod.exceptions.HTTPError) and exc.response is not None:
+                return int(exc.response.status_code)
+        except Exception:  # noqa: BLE001
+            pass
 
-    try:
-        import requests
+    botocore_exceptions = _loaded_module("botocore.exceptions")
+    if botocore_exceptions is not None:
+        try:
+            if isinstance(exc, botocore_exceptions.ClientError) and exc.response is not None:
+                code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+                return int(code) or None
+        except Exception:  # noqa: BLE001
+            pass
 
-        if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
-            return exc.response.status_code
-    except Exception:  # noqa: BLE001
-        pass
+    openai_mod = _loaded_module("openai")
+    if openai_mod is not None:
+        try:
+            if isinstance(exc, openai_mod.APIStatusError):
+                return int(exc.status_code)
+        except Exception:  # noqa: BLE001
+            pass
 
-    try:
-        from botocore.exceptions import ClientError
+    anthropic_mod = _loaded_module("anthropic")
+    if anthropic_mod is not None:
+        try:
+            if isinstance(exc, anthropic_mod.APIStatusError):
+                return int(exc.status_code)
+        except Exception:  # noqa: BLE001
+            pass
 
-        if isinstance(exc, ClientError) and exc.response is not None:
-            code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
-            return int(code) or None
-    except Exception:  # noqa: BLE001
-        pass
+    genai_errors = _loaded_module("google.genai.errors")
+    if genai_errors is not None:
+        try:
+            if isinstance(exc, genai_errors.APIError):
+                return int(exc.code)
+        except Exception:  # noqa: BLE001
+            pass
 
-    try:
-        import openai
-
-        if isinstance(exc, openai.APIStatusError):
-            return exc.status_code
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        import anthropic
-
-        if isinstance(exc, anthropic.APIStatusError):
-            return int(exc.status_code)
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        from google.genai import errors as genai_errors
-
-        if isinstance(exc, genai_errors.APIError):
-            return int(exc.code)
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        import voyageai.error as voyage_errors
-
-        if isinstance(exc, voyage_errors.VoyageError) and exc.http_status is not None:
-            return int(exc.http_status)
-    except Exception:  # noqa: BLE001
-        pass
+    voyage_errors = _loaded_module("voyageai.error")
+    if voyage_errors is not None:
+        try:
+            if isinstance(exc, voyage_errors.VoyageError) and exc.http_status is not None:
+                return int(exc.http_status)
+        except Exception:  # noqa: BLE001
+            pass
 
     return None
 
@@ -157,63 +191,71 @@ def _is_connection_level_error(exc: BaseException) -> bool:
     (DNS failure, connection refused, timeout) — as opposed to an error
     response the server actually sent back.
 
-    Each block catches Exception, not just ImportError — see
+    Each block only runs when the relevant SDK module is already present in
+    sys.modules (see _loaded_module()) and still catches Exception broadly
+    around the isinstance/attribute checks that follow — see
     _extract_status_code()'s docstring for why: this function must never
-    raise, only ever degrade to False."""
-    try:
-        import httpx
+    import anything and must never raise, only ever degrade to False."""
+    httpx_mod = _loaded_module("httpx")
+    if httpx_mod is not None:
+        try:
+            if isinstance(exc, httpx_mod.HTTPError) and not isinstance(
+                exc, httpx_mod.HTTPStatusError
+            ):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
 
-        if isinstance(exc, httpx.HTTPError) and not isinstance(exc, httpx.HTTPStatusError):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
+    requests_mod = _loaded_module("requests")
+    if requests_mod is not None:
+        try:
+            if isinstance(
+                exc,
+                (requests_mod.exceptions.ConnectionError, requests_mod.exceptions.Timeout),
+            ):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
 
-    try:
-        import requests
+    openai_mod = _loaded_module("openai")
+    if openai_mod is not None:
+        try:
+            if isinstance(exc, openai_mod.APIConnectionError):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
 
-        if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
+    anthropic_mod = _loaded_module("anthropic")
+    if anthropic_mod is not None:
+        try:
+            if isinstance(exc, anthropic_mod.APIConnectionError):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
 
-    try:
-        import openai
+    voyage_errors = _loaded_module("voyageai.error")
+    if voyage_errors is not None:
+        try:
+            if isinstance(exc, (voyage_errors.APIConnectionError, voyage_errors.Timeout)):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
 
-        if isinstance(exc, openai.APIConnectionError):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        import anthropic
-
-        if isinstance(exc, anthropic.APIConnectionError):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        import voyageai.error as voyage_errors
-
-        if isinstance(exc, (voyage_errors.APIConnectionError, voyage_errors.Timeout)):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        from botocore.exceptions import BotoCoreError
-
-        # BotoCoreError (EndpointConnectionError, ConnectTimeoutError,
-        # ReadTimeoutError, ...) is boto3/botocore's connection-level
-        # failure hierarchy — disjoint from ClientError (already handled
-        # in _extract_status_code(), which carries a real HTTP status via
-        # ResponseMetadata). Without this branch, a DNS failure or connect/
-        # read timeout talking to Bedrock was never retried, unlike every
-        # other backend/connector wired into this same contract.
-        if isinstance(exc, BotoCoreError):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
+    botocore_exceptions = _loaded_module("botocore.exceptions")
+    if botocore_exceptions is not None:
+        try:
+            # BotoCoreError (EndpointConnectionError, ConnectTimeoutError,
+            # ReadTimeoutError, ...) is boto3/botocore's connection-level
+            # failure hierarchy — disjoint from ClientError (already
+            # handled in _extract_status_code(), which carries a real HTTP
+            # status via ResponseMetadata). Without this branch, a DNS
+            # failure or connect/read timeout talking to Bedrock was never
+            # retried, unlike every other backend/connector wired into
+            # this same contract.
+            if isinstance(exc, botocore_exceptions.BotoCoreError):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
 
     return False
 

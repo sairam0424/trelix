@@ -279,6 +279,14 @@ class TestBGECodePooling:
 
     @pytest.mark.xfail(
         strict=True,
+        # raises=AssertionError is load-bearing. Without it a strict xfail absorbs ANY
+        # exception, so the boomerang silently breaks: the marker stays satisfied while
+        # the assertion it exists for is never reached. Round 3 found exactly that in
+        # test_cli_failure_exit_codes.py, where a JSONDecodeError stood in for the real
+        # check. These two importorskip FlagEmbedding/torch/transformers and then build a
+        # Qwen2Model, so any upstream TypeError would have satisfied the marker and gone
+        # green. Verified under --runxfail that they die on the intended AssertionError.
+        raises=AssertionError,
         reason=(
             "bge-code constructs FlagModel, which is encoder_only.base.BaseEmbedder "
             "with DEFAULT_POOLING_METHOD='cls'; BAAI published bge-code-v1 with "
@@ -296,6 +304,14 @@ class TestBGECodePooling:
 
     @pytest.mark.xfail(
         strict=True,
+        # raises=AssertionError is load-bearing. Without it a strict xfail absorbs ANY
+        # exception, so the boomerang silently breaks: the marker stays satisfied while
+        # the assertion it exists for is never reached. Round 3 found exactly that in
+        # test_cli_failure_exit_codes.py, where a JSONDecodeError stood in for the real
+        # check. These two importorskip FlagEmbedding/torch/transformers and then build a
+        # Qwen2Model, so any upstream TypeError would have satisfied the marker and gone
+        # green. Verified under --runxfail that they die on the intended AssertionError.
+        raises=AssertionError,
         reason=(
             "cls pooling on a causal decoder reads position 0 only, and every query "
             "shares token 0 via the constant instruction prefix, so every query "

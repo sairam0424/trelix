@@ -1,0 +1,15 @@
+diff --git a/src/trelix/embedder/bge_code.py b/src/trelix/embedder/bge_code.py
+index 768532a..e8d8394 100644
+--- a/src/trelix/embedder/bge_code.py
++++ b/src/trelix/embedder/bge_code.py
+@@ -89,9 +89,7 @@ FlagModel = _FlagModel
+ # every query — still one shared token, so every query embedding is still identical. The
+ # prompt was fixed here because it is provably wrong independently of the pooling question,
+ # under every candidate loader; the pooling fix is a separate change.
+-_QUERY_INSTRUCTION = (
+-    "Given a web search query, retrieve relevant code that can help answer the query."
+-)
++_QUERY_INSTRUCTION = "Represent this query for searching relevant code: "
+ _QUERY_INSTRUCTION_FORMAT = "<instruct>{}\n<query>{}"
+ 
+ 

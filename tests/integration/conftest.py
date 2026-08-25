@@ -57,3 +57,4 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if _INTEGRATION_DIR in item.path.parents:
             item.add_marker(pytest.mark.integration)
             item.add_marker(pytest.mark.enable_socket)
+            item.add_marker(pytest.mark.requires_network)

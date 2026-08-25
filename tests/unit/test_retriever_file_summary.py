@@ -10,9 +10,9 @@ from trelix.store.db import Database
 from trelix.store.vector import SQLiteVectorStore
 
 
-def _build_db_with_summary(tmp_path: Path) -> tuple[Database, int, int]:
-    """Return (db, file_id, summary_chunk_id) with one file and a stored summary."""
-    db = Database(tmp_path / "index.db")
+def _seed_summary(db: Database, tmp_path: Path) -> int:
+    """Insert one file with a stored summary into `db`; return its file_id.
+    `-(file_id)` is the existing convention for a summary row's chunk_id."""
     fid = db.upsert_file(
         IndexedFile(
             path=str(tmp_path / "auth.py"),
@@ -23,12 +23,14 @@ def _build_db_with_summary(tmp_path: Path) -> tuple[Database, int, int]:
         )
     )
     db.upsert_file_summary(fid, "Handles user authentication and JWT token lifecycle.")
-    return db, fid, -(fid)  # convention: chunk_id = -file_id for summary rows
+    return fid
 
 
 class TestSearchFileSummaries:
-    def test_search_file_summaries_returns_file_id_score_pairs(self, tmp_path: Path) -> None:
-        db, fid, neg_fid = _build_db_with_summary(tmp_path)
+    def test_search_file_summaries_returns_file_id_score_pairs(
+        self, tmp_db: Database, tmp_path: Path
+    ) -> None:
+        fid = _seed_summary(tmp_db, tmp_path)
         store = SQLiteVectorStore(tmp_path / "index.db", dimension=4)
         # Insert a fake summary embedding using the -(file_id) convention
         store.upsert_file_summary_embedding(fid, [0.1, 0.2, 0.3, 0.4])
@@ -37,9 +39,11 @@ class TestSearchFileSummaries:
         returned_file_ids = [r[0] for r in results]
         assert fid in returned_file_ids
 
-    def test_search_file_summaries_excludes_symbol_chunks(self, tmp_path: Path) -> None:
+    def test_search_file_summaries_excludes_symbol_chunks(
+        self, tmp_db: Database, tmp_path: Path
+    ) -> None:
         """Regular chunk rows (positive chunk_id) must NOT appear in summary search."""
-        db, fid, _ = _build_db_with_summary(tmp_path)
+        fid = _seed_summary(tmp_db, tmp_path)
         store = SQLiteVectorStore(tmp_path / "index.db", dimension=4)
         # Insert a regular chunk embedding (positive id)
         store.upsert(chunk_id=42, embedding=[0.1, 0.2, 0.3, 0.4])
@@ -48,11 +52,9 @@ class TestSearchFileSummaries:
         returned_ids = [r[0] for r in summary_results]
         assert 42 not in returned_ids  # regular chunks excluded
 
-    def test_summary_leg_disabled_by_default(self, tmp_path: Path) -> None:
-        config = IndexConfig(repo_path=str(tmp_path))
-        assert config.retrieval.file_summary_leg_enabled is False
+    def test_summary_leg_disabled_by_default(self, index_config: IndexConfig) -> None:
+        assert index_config.retrieval.file_summary_leg_enabled is False
 
-    def test_summary_leg_config_fields(self, tmp_path: Path) -> None:
-        config = IndexConfig(repo_path=str(tmp_path))
+    def test_summary_leg_config_fields(self, index_config: IndexConfig) -> None:
         # Fields exist and have sensible defaults
-        assert config.retrieval.top_k_file_summary == 5
+        assert index_config.retrieval.top_k_file_summary == 5

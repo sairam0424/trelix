@@ -1,0 +1,15 @@
+diff --git a/src/trelix/embedder/sparse.py b/src/trelix/embedder/sparse.py
+index 887a18d..6780eb3 100644
+--- a/src/trelix/embedder/sparse.py
++++ b/src/trelix/embedder/sparse.py
+@@ -164,9 +164,7 @@ class SparseEmbedder:
+                 # `torch.log(1 + ...)` is kept verbatim rather than switched to `log1p`: the
+                 # mask is the only intended change to the numbers.
+                 logits = outputs.logits  # (batch, seq_len, vocab_size)
+-                weighted = torch.log(1 + torch.relu(logits))
+-                mask = inputs["attention_mask"].unsqueeze(-1)  # (batch, seq_len, 1)
+-                agg = (weighted * mask).max(dim=1).values  # (batch, vocab)
++                agg = torch.log(1 + torch.relu(logits)).max(dim=1).values  # (batch, vocab)
+ 
+                 for i in range(len(batch)):
+                     scores = agg[i]  # (vocab_size,)

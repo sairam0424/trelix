@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 from pathlib import Path
@@ -35,7 +36,8 @@ _VENV = _REPO_ROOT / ".venv"
 
 def _resolve_trelix_bin() -> str:
     """
-    Locate the ``trelix`` console script: project venv first, then PATH.
+    Locate the ``trelix`` console script: interpreter's own bin dir, then the
+    repo-relative venv, then PATH.
 
     This used to be hardcoded to ``<repo>/.venv/bin/trelix``, which only exists
     for local uv/venv development — a CI job that does ``pip install -e .`` into
@@ -44,6 +46,24 @@ def _resolve_trelix_bin() -> str:
     genuine miss is deliberate: a silent module-level skip would let this file
     report "all green" while executing nothing.
     """
+    # WHY sys.executable IS TRIED FIRST, and it is a bug fix rather than a reordering.
+    # The two later probes are both ambient: _VENV is derived from __file__ and
+    # shutil.which reads PATH. Both fail in the same ordinary situation --
+    # `pytest tests/integration --collect-only` in a shell where the venv's bin was
+    # never put on PATH (activation is a convenience, not a requirement), and any
+    # git worktree that shares the primary clone's venv. Reproduced: RuntimeError at
+    # COLLECTION time, strictly worse than a test failure because --collect-only
+    # cannot even enumerate this file. Path(sys.executable).parent is the bin dir of
+    # the interpreter ACTUALLY running these tests, derived from the running process
+    # rather than the filesystem layout or the shell's configuration. The two ambient
+    # probes are KEPT as fallbacks, not replaced: script-on-PATH-but-not-beside-the-
+    # interpreter is legitimate (pipx, a wrapper shim, Windows Scripts vs bin).
+    # TEST-SIDE resolution only -- nothing in src/ is involved.
+    interpreter_bin = Path(sys.executable).parent
+    for candidate in (interpreter_bin / "trelix", interpreter_bin / "trelix.exe"):
+        if candidate.is_file():
+            return str(candidate)
+
     venv_bin = _VENV / "bin" / "trelix"
     if venv_bin.exists():
         return str(venv_bin)
@@ -51,7 +71,8 @@ def _resolve_trelix_bin() -> str:
     if on_path:
         return on_path
     raise RuntimeError(
-        f"`trelix` console script not found at {venv_bin} or on PATH. "
+        f"`trelix` console script not found beside the running interpreter "
+        f"({interpreter_bin}), at {venv_bin}, or on PATH. "
         "Install the package first (e.g. `pip install -e .`) — these tests drive "
         "the real CLI as a subprocess and cannot run without it."
     )

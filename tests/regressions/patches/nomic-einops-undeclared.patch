@@ -1,0 +1,12 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index 2b9f330..485c629 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -144,7 +144,6 @@ nomic-code = [
+     # no extra, so this provider raised ModuleNotFoundError from inside remote model code
+     # for every user who ever selected it: it has never once constructed. Nothing else
+     # installed pulls einops in transitively.
+-    "einops>=0.7.0",
+ ]
+ sparse = [
+     "transformers>=4.40.0",

@@ -1,0 +1,14 @@
+diff --git a/src/trelix/embedder/nomic_code.py b/src/trelix/embedder/nomic_code.py
+index 210d3e7..9258269 100644
+--- a/src/trelix/embedder/nomic_code.py
++++ b/src/trelix/embedder/nomic_code.py
+@@ -136,8 +136,7 @@ class NomicCodeEmbedder(BaseEmbedder):
+         module docstring.
+         """
+         vecs = self._model.encode(
+-            [text],
+-            prompt_name=_QUERY_PROMPT_NAME,
++            [f"search_query: {text}"],
+             normalize_embeddings=True,
+         )
+         v = vecs[0]
