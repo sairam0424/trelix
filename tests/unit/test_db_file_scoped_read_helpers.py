@@ -296,10 +296,26 @@ _PATH_KEY_PARAM_NAMES = frozenset(
 
 def _discover_methods_with_param(param_names: frozenset[str]) -> set[str]:
     """Enumerate Database methods taking any of param_names. Enumerating FUNCTIONS
-    is the point of this file; the EXPECTED sets are the literal tables above."""
+    is the point of this file; the EXPECTED sets are the literal tables above.
+
+    Skips names containing "ǁ" (LATIN LETTER LATERAL CLICK). That character
+    cannot appear in a Python identifier written by hand, so filtering on it can
+    never hide a real helper -- but it IS what `scripts/mutation.py`'s mutmut
+    driver injects: under `only_mutate=["src/trelix/store/db.py"]`, every mutated
+    method is rewritten into a trampoline plus `xǁDatabaseǁ<name>__mutmut_N` /
+    `..._mutmut_orig` variants that stay attached to `vars(Database)` alongside the
+    real dispatcher and share the ORIGINAL signature (including `file_id`). Without
+    this filter, `discovered` under mutation testing gains dozens of these mangled
+    names that were never in (and never belong in) `_FILE_ID_READER_PROBES` /
+    `_FILE_ID_NON_READERS`, and the set-equality assertion fails on every run of
+    `--modules store.db` regardless of what was actually mutated -- a measurement
+    artifact, not a scoping regression. Measured: this test failed exactly that way
+    inside the driver's stats pass before this filter, and passed both standalone
+    and under the same driver invocation after it.
+    """
     found: set[str] = set()
     for name, attr in vars(Database).items():
-        if name.startswith("__") or not callable(attr):
+        if name.startswith("__") or "ǁ" in name or not callable(attr):
             continue
         try:
             signature = inspect.signature(attr)

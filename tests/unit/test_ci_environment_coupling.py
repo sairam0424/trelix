@@ -106,7 +106,7 @@ CI_JOB_PIP_INSTALLS: dict[str, tuple[str, ...]] = {
     ),
     "type-check-extras": ('pip install -e ".[local,sso,voyage,vertex,watch,dev]"',),
     "test": (
-        'pip install -e ".[local,otel,sso,bge-code,nomic-code,dev]"',
+        'pip install -e ".[local,otel,sso,bge-code,nomic-code,dev,graph-viz]"',
         "pip install -e packages/trelix-langchain",
         "pip install -e packages/trelix-llama-index",
         "pip install -e packages/trelix-mcp",
@@ -119,7 +119,15 @@ UNIT_JOB = "test"
 
 #: Extras that job's `pip install -e ".[...]"` names. Parsed out below and
 #: compared, so this cannot fall behind the line above.
-UNIT_JOB_EXTRAS = frozenset({"local", "otel", "sso", "bge-code", "nomic-code", "dev"})
+#
+# `graph-viz` added for the identical reason uvicorn/watchfiles were declared
+# directly: tests/unit/test_graph_visualizer_escaping.py (SEC-04) does a
+# module-scope `pytest.importorskip("pyvis.network")`, and pyvis was declared by
+# no extra this job installed, so the whole file skipped on every CI run and
+# SEC-04's XSS-prevention assertions never executed. See ci.yml's comment on this
+# job's install step for why `graph-viz` and not `dev` (three other jobs install
+# `dev` and never run tests/unit).
+UNIT_JOB_EXTRAS = frozenset({"local", "otel", "sso", "bge-code", "nomic-code", "dev", "graph-viz"})
 
 
 def _workflow_pip_installs() -> dict[str, tuple[str, ...]]:
@@ -282,7 +290,6 @@ UNIT_JOB_ABSENT_IMPORTS = frozenset(
         "google.genai",
         "lancedb",
         "litellm",
-        "pyvis",
         "qdrant_client",
         "ragatouille",
         "semgrep",

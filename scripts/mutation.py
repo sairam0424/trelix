@@ -107,8 +107,48 @@ BASELINE_SCHEMA = 1
 #
 # Keys are the RATCHET UNIT. Rename one and its ceiling is orphaned, which
 # tests/unit/test_mutation_driver_contract.py turns into a failure.
+#
+# `indexing.parser` USED TO be one key, "src/trelix/indexing/parser/*" -- a single
+# fnmatch wildcard covering all 26 files (~14,000 lines) under that directory: a
+# grammar loader, a base extractor class, a registry, and 21 per-language extractors.
+# That is the exact "coarse aggregate as a proxy for the real thing" mistake this
+# module's own docstring argues against for a repo-wide RATIO, made instead at the
+# scope-DEFINITION level: measuring it as one number would hide a real regression in
+# one language's extractor (e.g. java.py or rust.py, which already carry 16 pinned
+# product defects found by hand -- see test_parser_java_rust_defect_spec.py) inside a
+# healthy-looking aggregate survivor count from the other 20 files. Split below into
+# one sub-key per extractor file, plus one "core" key for the three files shared by
+# every language (grammar loading, the base class, the registry) -- those three are
+# infrastructure, not per-language behaviour, and splitting them further has no
+# discriminating value: a mutant in registry.py's dispatch logic is not "core.registry
+# vs core.grammar vs core.base", it is "core", full stop.
 SCOPE: dict[str, tuple[str, ...]] = {
-    "indexing.parser": ("src/trelix/indexing/parser/*",),
+    "indexing.parser.core": (
+        "src/trelix/indexing/parser/_grammar.py",
+        "src/trelix/indexing/parser/base.py",
+        "src/trelix/indexing/parser/registry.py",
+    ),
+    "indexing.parser.c": ("src/trelix/indexing/parser/extractors/c.py",),
+    "indexing.parser.cpp": ("src/trelix/indexing/parser/extractors/cpp.py",),
+    "indexing.parser.csharp": ("src/trelix/indexing/parser/extractors/csharp.py",),
+    "indexing.parser.cshtml": ("src/trelix/indexing/parser/extractors/cshtml.py",),
+    "indexing.parser.csproj": ("src/trelix/indexing/parser/extractors/csproj.py",),
+    "indexing.parser.css": ("src/trelix/indexing/parser/extractors/css.py",),
+    "indexing.parser.go": ("src/trelix/indexing/parser/extractors/go.py",),
+    "indexing.parser.html": ("src/trelix/indexing/parser/extractors/html.py",),
+    "indexing.parser.java": ("src/trelix/indexing/parser/extractors/java.py",),
+    "indexing.parser.javascript": ("src/trelix/indexing/parser/extractors/javascript.py",),
+    "indexing.parser.json_config": ("src/trelix/indexing/parser/extractors/json_config.py",),
+    "indexing.parser.kotlin": ("src/trelix/indexing/parser/extractors/kotlin.py",),
+    "indexing.parser.line_window": ("src/trelix/indexing/parser/extractors/line_window.py",),
+    "indexing.parser.markdown": ("src/trelix/indexing/parser/extractors/markdown.py",),
+    "indexing.parser.python": ("src/trelix/indexing/parser/extractors/python.py",),
+    "indexing.parser.razor": ("src/trelix/indexing/parser/extractors/razor.py",),
+    "indexing.parser.ruby": ("src/trelix/indexing/parser/extractors/ruby.py",),
+    "indexing.parser.rust": ("src/trelix/indexing/parser/extractors/rust.py",),
+    "indexing.parser.toml_config": ("src/trelix/indexing/parser/extractors/toml_config.py",),
+    "indexing.parser.typescript": ("src/trelix/indexing/parser/extractors/typescript.py",),
+    "indexing.parser.yaml_config": ("src/trelix/indexing/parser/extractors/yaml_config.py",),
     "indexing.chunker": ("src/trelix/indexing/chunker.py",),
     "indexing.walker": ("src/trelix/indexing/walker.py",),
     "retrieval.fusion": ("src/trelix/retrieval/fusion.py",),

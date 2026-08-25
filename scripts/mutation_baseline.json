@@ -61,18 +61,18 @@
     "graph": {
       "ceilings": {
         "no_tests": 5,
-        "survived": 501
+        "survived": 429
       },
       "counts": {
-        "killed": 608,
+        "killed": 680,
         "no_tests": 5,
         "segfault": 1,
-        "survived": 501
+        "survived": 429
       },
       "files_mutated": 9,
       "files_with_results": 8,
       "measured": true,
-      "measured_at": "2026-08-25T12:00:46+00:00",
+      "measured_at": "2026-08-25T14:59:40+00:00",
       "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/graph/*"
@@ -110,10 +110,172 @@
       },
       "total_mutants": 187
     },
-    "indexing.parser": {
+    "indexing.parser.c": {
       "measured": false,
       "patterns": [
-        "src/trelix/indexing/parser/*"
+        "src/trelix/indexing/parser/extractors/c.py"
+      ]
+    },
+    "indexing.parser.core": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/_grammar.py",
+        "src/trelix/indexing/parser/base.py",
+        "src/trelix/indexing/parser/registry.py"
+      ]
+    },
+    "indexing.parser.cpp": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/cpp.py"
+      ]
+    },
+    "indexing.parser.csharp": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/csharp.py"
+      ]
+    },
+    "indexing.parser.cshtml": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/cshtml.py"
+      ]
+    },
+    "indexing.parser.csproj": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/csproj.py"
+      ]
+    },
+    "indexing.parser.css": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/css.py"
+      ]
+    },
+    "indexing.parser.go": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/go.py"
+      ]
+    },
+    "indexing.parser.html": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/html.py"
+      ]
+    },
+    "indexing.parser.java": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 376
+      },
+      "counts": {
+        "killed": 1350,
+        "segfault": 1,
+        "survived": 376
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-25T17:55:30+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/java.py"
+      ],
+      "source_sha256": {
+        "src/trelix/indexing/parser/extractors/java.py": "c379c582757697c558a24444b5d59aaa1becd84b14f3b57424fdd9b874aafd90"
+      },
+      "total_mutants": 1727
+    },
+    "indexing.parser.javascript": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/javascript.py"
+      ]
+    },
+    "indexing.parser.json_config": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/json_config.py"
+      ]
+    },
+    "indexing.parser.kotlin": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/kotlin.py"
+      ]
+    },
+    "indexing.parser.line_window": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/line_window.py"
+      ]
+    },
+    "indexing.parser.markdown": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/markdown.py"
+      ]
+    },
+    "indexing.parser.python": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/python.py"
+      ]
+    },
+    "indexing.parser.razor": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/razor.py"
+      ]
+    },
+    "indexing.parser.ruby": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/ruby.py"
+      ]
+    },
+    "indexing.parser.rust": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 428
+      },
+      "counts": {
+        "killed": 1516,
+        "segfault": 1,
+        "survived": 428
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-25T18:02:21+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/rust.py"
+      ],
+      "source_sha256": {
+        "src/trelix/indexing/parser/extractors/rust.py": "9cb9fa7dc0f2204cd53136748ff0ef0bb2a60534f15fd788b3c85819d0ffbdb1"
+      },
+      "total_mutants": 1945
+    },
+    "indexing.parser.toml_config": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/toml_config.py"
+      ]
+    },
+    "indexing.parser.typescript": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/typescript.py"
+      ]
+    },
+    "indexing.parser.yaml_config": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/yaml_config.py"
       ]
     },
     "indexing.walker": {
@@ -181,10 +343,28 @@
       "total_mutants": 50
     },
     "store.db": {
-      "measured": false,
+      "ceilings": {
+        "no_tests": 116,
+        "survived": 548
+      },
+      "counts": {
+        "killed": 1881,
+        "no_tests": 116,
+        "segfault": 19,
+        "survived": 548
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-25T14:24:34+00:00",
+      "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/store/db.py"
-      ]
+      ],
+      "source_sha256": {
+        "src/trelix/store/db.py": "5141a7d6bbbbbba9cfb471098a04cfa10197283a1ec49c75ecc07056e67d4eef"
+      },
+      "total_mutants": 2564
     },
     "store.dimension_guard": {
       "ceilings": {
