@@ -27,6 +27,13 @@ decomposed e+combining-acute-accent form of "café.py"). Walking it yields
 walking a real temp directory before writing the xfail (pasted in the round
 report); no source file was touched to get this result -- it is the shipped
 behavior today.
+
+DERANDOMIZED: both `@settings` below pin `derandomize=True` -- see the
+matching note in test_path_filter_escaping_property.py's docstring for why
+this matters for a strict-xfail property too, not only a passing one.
+`max_examples` is unchanged (15, 10): re-verification below confirms the
+pinned seed reproduces the NFD-normalization xfail on every one of three
+consecutive runs.
 """
 
 from __future__ import annotations
@@ -84,7 +91,12 @@ class TestWalkerPassesThroughUnnormalizedFilenames:
         raises=AssertionError,
         strict=True,
     )
-    @settings(max_examples=15, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @settings(
+        derandomize=True,
+        max_examples=15,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
     @example(stem="cafe", char="é")  # the hand-verified case
     @given(
         stem=st.text(alphabet=_STEM_ALPHABET, min_size=1, max_size=8),
@@ -123,7 +135,12 @@ class TestWalkerContentHashIsUnaffectedControl:
     identity) would be wrong about WHICH field drifts.
     """
 
-    @settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @settings(
+        derandomize=True,
+        max_examples=10,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
     @given(char=st.sampled_from(_NFC_NFD_DIVERGENT_CHARS))
     def test_hash_is_identical_across_normalization_forms_of_the_same_name(self, char: str) -> None:
         nfc_char = unicodedata.normalize("NFC", char)

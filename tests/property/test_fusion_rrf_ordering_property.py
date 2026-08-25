@@ -34,6 +34,22 @@ which inverts the order to sym2, sym3, sym1 and fails the
 non-increasing-score assertion; and separately mutating
 `enumerate(sorted_ids, start=1)` -> `start=0`, which fails the
 1-indexed-rank assertion. Both pasted in the round report.
+
+DERANDOMIZED: all three `@settings` below pin `derandomize=True`. Round 9's
+reviewer flagged specifically TestScoreMatchesClosedFormSum's third named
+mutation (list_weights silently dropped) as needing "multiple reruns with
+cleared example caches to reliably catch." Re-verified before deciding
+max_examples: mutating `list_weight = list_weights[list_idx] if
+list_weights else 1.0` to `list_weight = 1.0` and running that one test
+class 6 times with `derandomize=False` and `.hypothesis/examples/` deleted
+before each run (to rule out the local example database silently caching a
+prior failure) caught the mutation 6/6 times at the file's EXISTING
+`max_examples=30` -- and a further 3/3 with `derandomize=True` pinned. So
+`max_examples` is left UNCHANGED (40, 40, 30) for all three tests in this
+file: on the code as it stands today, this mutation is not actually fragile
+at the current example count, contrary to what a stale prior-round
+observation might suggest -- see round report / findings_left for the full
+re-verification transcript instead of re-deriving this from the old claim.
 """
 
 from __future__ import annotations
@@ -100,7 +116,12 @@ class TestOutputIsSortedWithSequentialRanks:
     `start=0` (breaks 1-indexed sequential ranks).
     """
 
-    @settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @settings(
+        derandomize=True,
+        max_examples=40,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
     @example(id_lists=[[1, 2, 3], [3, 1]])  # the hand-verified case
     @given(id_lists=_RANKED_LISTS)
     def test_scores_non_increasing_and_ranks_sequential(self, id_lists: list[list[int]]) -> None:
@@ -125,7 +146,12 @@ class TestNoIdentityIsLostOrDuplicated:
     symbol_id alone -- set equality both ways, per rule 2.
     """
 
-    @settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @settings(
+        derandomize=True,
+        max_examples=40,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
     @example(id_lists=[[1, 2, 3], [3, 1]])
     @given(id_lists=_RANKED_LISTS)
     def test_output_identities_equal_the_union_of_input_identities(
@@ -152,7 +178,12 @@ class TestScoreMatchesClosedFormSum:
     reimplemented from the module's own documented formula, not imported.
     """
 
-    @settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @settings(
+        derandomize=True,
+        max_examples=30,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
     @example(id_lists=[[1, 2, 3], [3, 1]], k=60, list_weights=None)
     @given(
         id_lists=_RANKED_LISTS,

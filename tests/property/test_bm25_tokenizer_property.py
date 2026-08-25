@@ -28,6 +28,12 @@ documents as having survived the pre-existing suite) turns this into
 "ab1 OR cd2", whose .split() is ["ab1", "OR", "cd2"] -- length 3, not 2, so the
 round-trip assertion fails. Verified by actually mutating and reverting the
 source, output pasted in the round report.
+
+DERANDOMIZED: all three `@settings` below pin `derandomize=True` -- fixed,
+hash-of-test-function example sequence, not a fresh random seed per run.
+`max_examples` is unchanged for all three (25, 40, 40): re-running the
+AND-join mutation above under the pinned seed still catches it on every one
+of three consecutive runs (see round report).
 """
 
 from __future__ import annotations
@@ -66,7 +72,7 @@ class TestTokenGenerationIsDisjointFromStopWords:
     """
 
     @given(tokens=_TOKEN_LIST)
-    @settings(max_examples=25, deadline=None)
+    @settings(derandomize=True, max_examples=25, deadline=None)
     def test_generated_tokens_never_collide_with_a_stop_word(self, tokens: list[str]) -> None:
         for token in tokens:
             assert token.lower() not in _STOP_WORDS, (
@@ -82,7 +88,12 @@ class TestEscapeFts5RoundTrip:
     or `len(t) > 2` -> `len(t) > 3` (drops any generated token of length exactly 3).
     """
 
-    @settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @settings(
+        derandomize=True,
+        max_examples=40,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
     @example(tokens=["ab1", "cd2"])  # the hand-verified case
     @example(tokens=["a1b", "c2d", "e3f"])  # three length-3 tokens, boundary-sensitive
     @given(tokens=_TOKEN_LIST)
@@ -103,7 +114,12 @@ class TestCountMeaningfulTokensAgreesWithEscape:
     hand-written test asserting only one function's output would never catch.
     """
 
-    @settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @settings(
+        derandomize=True,
+        max_examples=40,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
     @example(tokens=["ab1", "cd2"])
     @given(tokens=_TOKEN_LIST)
     def test_count_matches_the_number_of_tokens_escape_fts5_keeps(self, tokens: list[str]) -> None:

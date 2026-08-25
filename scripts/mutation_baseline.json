@@ -48,10 +48,26 @@
       ]
     },
     "indexing.chunker": {
-      "measured": false,
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 40
+      },
+      "counts": {
+        "killed": 147,
+        "survived": 40
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T20:31:09+00:00",
+      "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/indexing/chunker.py"
-      ]
+      ],
+      "source_sha256": {
+        "src/trelix/indexing/chunker.py": "520acb3c2cbf101c5e22b9a160412b3231754e6299bf15d31a3426bda8e0c813"
+      },
+      "total_mutants": 187
     },
     "indexing.parser": {
       "measured": false,
@@ -62,16 +78,16 @@
     "indexing.walker": {
       "ceilings": {
         "no_tests": 0,
-        "survived": 18
+        "survived": 9
       },
       "counts": {
-        "killed": 336,
-        "survived": 18
+        "killed": 345,
+        "survived": 9
       },
       "files_mutated": 1,
       "files_with_results": 1,
       "measured": true,
-      "measured_at": "2026-08-24T17:44:59+00:00",
+      "measured_at": "2026-08-24T20:44:21+00:00",
       "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/indexing/walker.py"
@@ -151,10 +167,27 @@
       "total_mutants": 8
     },
     "store.vector": {
-      "measured": false,
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 62
+      },
+      "counts": {
+        "killed": 226,
+        "segfault": 46,
+        "survived": 62
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T20:23:21+00:00",
+      "mutmut_exit_code": 0,
       "patterns": [
         "src/trelix/store/vector.py"
-      ]
+      ],
+      "source_sha256": {
+        "src/trelix/store/vector.py": "0166bc3468b481c9ae92f44b11913aaa404137eebee2a56ee0ef23115607b72b"
+      },
+      "total_mutants": 334
     }
   },
   "mutmut_config": {

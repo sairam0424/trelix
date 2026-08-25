@@ -27,6 +27,12 @@ gives back the original 5 lines in order. Mutating `line_start=start + 1` ->
 line 1" assertion (it would start at 0) AND the "consecutive windows tile
 with no gap" arithmetic; confirmed by actually mutating and reverting the
 source, output pasted in the round report.
+
+DERANDOMIZED: the `@settings` below pins `derandomize=True` -- fixed,
+hash-of-test-function example sequence, not a fresh random seed per run.
+`max_examples=40` is unchanged: re-running the `line_start=start + 1` ->
+`line_start=start` mutation above under the pinned seed still catches it on
+every one of three consecutive runs (see round report).
 """
 
 from __future__ import annotations
@@ -59,7 +65,12 @@ class TestWindowsTileTheSourceExactly:
     test_line_window_parser_bounds.py's territory).
     """
 
-    @settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @settings(
+        derandomize=True,
+        max_examples=40,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
     @example(lines=["l0", "l1", "l2", "l3", "l4"], window_lines=2)  # hand-verified case
     @given(
         lines=st.lists(_NONBLANK_LINE, min_size=1, max_size=40),

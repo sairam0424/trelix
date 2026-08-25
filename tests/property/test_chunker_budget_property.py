@@ -17,6 +17,14 @@ mutating chunker.py:92 `token_count > self.config.max_tokens_per_chunk` to
 `>=` breaks the "exactly at budget" case for EVERY (rel_path, language, budget)
 triple tried by hand (budget in {20, 30, 50, 100, 200}, default rel_path), not
 just budget=64. Verified: unmutated -- not truncated; mutated -- truncated.
+
+DERANDOMIZED: both `@settings` below pin `derandomize=True`, so the example
+sequence Hypothesis explores is a fixed hash of the test function rather
+than a fresh `random.Random()` seed per run -- the same falsifying input (if
+any exists) is found on every run, on every machine, not just on whichever
+run got unlucky. `max_examples=30` is unchanged (not raised): re-running the
+mutation above under the pinned seed still catches it on every one of three
+consecutive runs (see round report), so 30 is already sufficient here.
 """
 
 from __future__ import annotations
@@ -98,7 +106,12 @@ def _body_for_exact_total(
 # example builds two tiny Chunker.build_chunks() calls with no I/O, so a bound of
 # 30 examples is generous headroom, not a tight squeeze. Measured locally at a
 # small fraction of a second for the whole file.
-@settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@settings(
+    derandomize=True,
+    max_examples=30,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
 @example(rel_path="src/pkg/mod.py", language="python", budget=64)  # the hand-written case
 @example(rel_path="a", language="x", budget=21)  # minimal header, near-minimal budget
 @given(
@@ -125,7 +138,12 @@ def test_exactly_at_budget_never_truncates_for_any_header(
     assert chunk.token_count == budget
 
 
-@settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@settings(
+    derandomize=True,
+    max_examples=30,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
 @example(rel_path="src/pkg/mod.py", language="python", budget=64)
 @given(
     rel_path=st.text(alphabet=_PATH_ALPHABET, min_size=1, max_size=40),
