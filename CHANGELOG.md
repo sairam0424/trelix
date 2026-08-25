@@ -8,6 +8,58 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.2.1] — 2026-08-26
+
+### Overview
+
+Test-infrastructure release. No stored-vector, retrieval, or CLI behavior changes — one
+real production fix (a retry-path import cost) and everything else is measurement:
+mutation testing, branch coverage, and a hermetic unit suite. This lands the instrument the
+repo was missing: coverage alone could not say whether a test *can* fail; this release adds
+tooling that measures it directly.
+
+### Fixed
+
+- **`retry.py`'s status-code extractor imported every LLM provider SDK on every retry
+  decision**, not just the one actually in use. `_extract_status_code` branched through
+  `anthropic`, `openai`, `google.genai`, `boto3`, and `azure` imports on each call regardless
+  of which backend raised, pulling `torch` transitively into processes that use no LLM
+  feature at all. It now imports only the SDK for the exception type it is inspecting.
+
+### Tests
+
+- **Hermetic unit suite.** Outbound sockets banned (`pytest-socket`), every job
+  timeout-bounded, and `tests/integration/test_llm_e2e.py`'s live-LLM tests moved behind an
+  explicit opt-in (`TRELIX_LIVE_LLM_TESTS=1`) instead of running whenever a `.env` happened to
+  exist — removes roughly half the suite's wall clock (live HuggingFace Hub traffic) along
+  with the credential exposure that came with it.
+- **Branch coverage** enabled (`--cov-branch`) with per-package floors in
+  `tests/coverage-floors.json`, so a coverage regression now names the offending package
+  instead of hiding behind one global percentage.
+- **New scoped mutation-testing driver** (`scripts/mutation.py`, wrapping `mutmut`) with a
+  per-module survivor-*count* ceiling ratchet in `scripts/mutation_baseline.json` — never a
+  ratio. First real measurements landed for `indexing.parser`'s per-language extractors
+  (split from one coarse scope key into 23 granular ones), `store.db`, `store.vector`,
+  `indexing.chunker`, `compression.extractive`, and `graph`.
+- Closed the test-side gaps the mutation instrument surfaced: walker extension-map coverage,
+  `ContextualChunker` boundary conditions, graph community-detection survivor patterns, and
+  the operator-environment-variable leak/scrub coverage, among others.
+- Added a cross-backend `VectorStoreContract` (sqlite / in-process Lance) and the suite's
+  first `hypothesis` property-based tests.
+- Pinned 16 known, not-yet-fixed Java/Rust extractor defects as `xfail(strict=True)` instead
+  of leaving them silently uncovered — each now XPASSes loudly if fixed without an
+  accompanying changelog entry.
+- Registered a marker taxonomy (`slow`, `requires_network`, `component`, `e2e`, `cli`, …) so
+  the suite is selectable and a `-m` typo can no longer silently collect and pass everything.
+- Closed the `pyvis` CI coverage gap flagged in the previous release round.
+
+### Migration
+
+- No stored-vector or index changes; no reindex needed.
+- `TRELIX_LIVE_LLM_TESTS=1` is now required to run `tests/integration/test_llm_e2e.py`'s
+  live-provider tests — they no longer run automatically whenever a `.env` file exists.
+- No dependency floors moved.
+
 ## [3.2.0] — 2026-08-22
 
 ### Overview
