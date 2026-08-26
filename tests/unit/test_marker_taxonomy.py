@@ -75,6 +75,7 @@ EXPECTED_MARKERS = frozenset(
     {
         "api",
         "cli",
+        "e2e",
         "integration",
         "parser",
         "requires_extra",
@@ -108,6 +109,10 @@ CARRIER_FILES: dict[str, tuple[str, str | None]] = {
     "parser": ("tests/unit/test_parser_go.py", None),
     "security": ("tests/unit/test_network_is_blocked.py", None),
     "requires_extra": ("tests/unit/test_multi_watcher_filtering.py", "watchfiles"),
+    # e2e is applied by directory in tests/e2e/conftest.py to EVERY file under
+    # tests/e2e/, same shape as integration/requires_network above; this is the
+    # smallest surviving file there.
+    "e2e": ("tests/e2e/test_mcp_stdio_e2e.py", None),
 }
 
 # requires_weights is node-level, so it has no whole-file carrier; it gets its own

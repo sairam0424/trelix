@@ -394,6 +394,33 @@ jobs:
           path: htmlcov/
           if-no-files-found: warn
 
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    # Real subprocesses (trelix-mcp over stdio, fresh venv pip installs of freshly-built
+    # wheels), never mocks — this is the exact class of process-boundary coverage that
+    # would have caught the 3.2.1 defects (trelix-mcp missing from the Docker image;
+    # its console script silently ignoring --help/--version/any flag). Neither defect
+    # was visible to any in-process test: Click's CliRunner and the MCP SDK's in-memory
+    # Client are both documented as in-process doubles that cannot observe a real fd/
+    # process boundary. See tests/e2e/ for the tests themselves.
+    #
+    # No embedder extras needed here — unlike ci.yml's `test` job and
+    # tests/integration/test_cli.py, nothing under tests/e2e/ constructs a real local
+    # embedder, so there is no HF_HUB_OFFLINE/cache-warming to configure.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install project + dev deps
+        run: pip install -e ".[local,otel,sso,dev]"
+      - name: Install trelix-mcp, trelix-langchain, trelix-llama-index
+        run: pip install -e packages/trelix-mcp -e packages/trelix-langchain -e packages/trelix-llama-index
+      - name: Run E2E suite
+        run: pytest tests/e2e/ -v --tb=short
+
   typescript-sdk:
     name: TypeScript SDK
     timeout-minutes: 15
