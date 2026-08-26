@@ -36,7 +36,7 @@ exclude = [
 
 [project]
 name = "trelix"
-version = "3.2.0"
+version = "3.2.1"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -184,6 +184,17 @@ dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0",
+    # Guards, not conveniences -- each closes a named incident. pytest-socket bans
+    # outbound sockets in the unit suite (a harness reached a paid endpoint and got a
+    # live 401); pytest-timeout fails a hung test instead of wedging the run (a `trelix
+    # watch` test hung the suite until killed). Both are pinned by
+    # tests/unit/test_network_is_blocked.py and the --timeout entry in addopts.
+    "pytest-socket>=0.7.0",
+    "pytest-timeout>=2.3.0",
+    # tests/property/ -- Hypothesis-based property tests (Phase 9). Pinned >=6.100 for
+    # the current `@given`/`settings(max_examples=...)` API used there; no lower floor
+    # measured beyond "the API these tests call exists".
+    "hypothesis>=6.100.0",
     "ruff>=0.15.0",
     "mypy>=1.10.0",
     "build>=1.0.0",
@@ -204,6 +215,22 @@ dev = [
     # install — hence this explicit line. Floor matched to Starlette's.
     "httpx2>=2.0.0",    # starlette.testclient's preferred client; core httpx stays
     "fastapi>=0.111.0", # REST API tests (tests/unit/test_api.py)
+    # Direct test dependencies, not transitive conveniences. Before this pin, neither
+    # was declared by ANY trelix extra: both reached the unit job only because
+    # packages/trelix-mcp's own dependencies (mcp>=1.24 -> uvicorn; fastmcp>=3.4 ->
+    # fastmcp-slim[server] -> watchfiles) happen to install them as a side effect of a
+    # step that runs after this extra in ci.yml. That made
+    # tests/unit/test_api_containment.py's bare `import uvicorn` and
+    # tests/unit/test_multi_watcher{,_filtering}.py's `pytest.importorskip("watchfiles")`
+    # hostage to trelix-mcp's own dependency graph -- a floor bump or an extras
+    # reshuffle there could silently start skipping/erroring these tests with no change
+    # to this repo. `dev` is installed by every job that runs `tests/unit`
+    # (lint/type-check-extras/test/integration all include it), so declaring them here
+    # keeps the guarantee independent of packages/trelix-mcp. Floors matched to the
+    # runtime extras that already carry these packages ([serve]'s uvicorn,
+    # [watch]'s watchfiles) so `dev` never demands a version [serve]/[watch] would reject.
+    "uvicorn>=0.29.0",
+    "watchfiles>=0.21.0",
 ]
 binary = [
     "pyinstaller>=6.0.0",
@@ -333,13 +360,72 @@ warn_unused_ignores = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Explicit, because pytest-asyncio warns when it is unset and `strict` below turns
+# config-parse warnings into errors. "function" is also what the suite already gets by
+# default, so this pins current behaviour rather than changing it.
+asyncio_default_fixture_loop_scope = "function"
+# pytest 9's umbrella switch: strict_config + strict_markers + strict_xfail +
+# strict_parametrization_ids. Each half earns its keep here:
+#   strict_config  -- an unknown or misparsed key in THIS section becomes an error
+#                     instead of a warning nobody reads. This repo configures
+#                     pytest-asyncio, pytest-socket, pytest-timeout and pytest-cov, so a
+#                     renamed ini key is a live risk.
+#   strict_markers -- already on via addopts; kept there too, explicitly.
+#   strict_xfail   -- an xfail that starts passing must fail the run, else a fixed defect
+#                     keeps its "known failure" label forever. All xfails on this tree
+#                     already declare strict=True with raises=, so this changes nothing
+#                     today and closes the door on the next one that forgets.
+#   strict_parametrization_ids -- non-unique parameter-set ids become an error. With
+#                     duplicate ids `-k` cannot address a single case and a failure report
+#                     cannot say WHICH one broke.
+strict = true
 # --strict-markers makes `@pytest.mark.<unregistered>` a collection error, so a
 # typo in the name tests/integration/conftest.py applies fails loudly instead of
 # tagging nothing. It does NOT validate `-m` expressions: a typo there still
 # deselects nothing silently, which is why the marker below must stay registered
 # and applied rather than relying on the flag alone.
-addopts = "--tb=short --strict-markers"
+# --disable-socket --allow-unix-socket: the unit suite may not reach the network.
+#   48.3% of this suite's wall clock (238.75s of 494.70s) was live HTTP to
+#   huggingface.co, and three separate audit runs spent real Azure OpenAI and AWS
+#   Bedrock money merely by collecting and running tests. The allowance is mandatory,
+#   not a loophole: `asyncio_mode = "auto"` builds an event loop per async test and that
+#   construction calls socket.socketpair(), so bare --disable-socket measured 76 failures
+#   in a 1,054-test slice -- every one from loop setup, none a real network call. With the
+#   Unix allowance: 0 failures across 2,172 tests. Both halves are pinned by
+#   tests/unit/test_network_is_blocked.py, which is this flag's positive control.
+#   Tests that legitimately need the network carry @pytest.mark.requires_network and
+#   pytest-socket's own @pytest.mark.enable_socket.
+# --timeout=60 --timeout-method=signal: a hung test must fail, not wedge the run. A test
+#   driving `trelix watch` previously hung the suite until it was killed by hand. 60s is
+#   ~5x headroom, measured: with the network closed the slowest unit test is 6.22s and
+#   everything after the top two is <=0.71s. `signal` (the default) rather than `thread`
+#   deliberately -- thread's hard os._exit() destroys the traceback in exactly the
+#   watcher/asyncio code you need it for, and no trelix source installs a SIGALRM handler.
+# -ra: makes skips visible. 42 tests skip in CI and nothing reported it.
+addopts = "--tb=short --strict-markers -ra --disable-socket --allow-unix-socket --timeout=60 --timeout-method=signal"
 pythonpath = ["src", "."]
+# Every marker in this list is APPLIED BY PATH — `integration`, `enable_socket` and
+# `requires_network` in tests/integration/conftest.py, the rest in tests/conftest.py.
+# Nothing is registered here that no test carries: that state is worse than having no
+# marker at all, because it reads like protection. `integration` was exactly that for one
+# release — registered, documented in CONTRIBUTING.md as THE credential-free run, carried
+# by nobody, deselecting nothing while driving live Azure/Bedrock calls.
+#
+# Deliberately NOT registered, each proposed and then measured to zero on this tree:
+#   component, e2e  no reproducible definition; the flat tests/unit tree gives nothing to
+#                   key them on, and the census figures quoted for them (1,376 and 340)
+#                   are not derivable from any path or content rule here. Left in a `-m`
+#                   expression they deselect exactly 0 while reading as 1,716.
+#   perf            tests/perf/test_query_latency.py collects 0 tests — it is a __main__
+#                   script whose filename merely matches test_*.py.
+#   contract, property, regression, flaky   carried by nobody today.
+#
+# NO COUNTS ARE WRITTEN HERE ON PURPOSE, and the one that was here is gone: the
+# `integration` comment used to end "(104 deselected on the same tree)". Measured again,
+# `pytest tests --collect-only -m "not integration"` reports 3990/4079 collected, 89
+# deselected. The number had drifted — precisely the failure this taxonomy exists to
+# prevent — so counts now live in tests/unit/test_marker_taxonomy.py where drift FAILS a
+# run instead of misinforming a reader.
 markers = [
     # This marker did not exist before, and no test carried it, so
     # CONTRIBUTING.md's documented credential-free run
@@ -348,13 +434,58 @@ markers = [
     # fixed) and it drove the live Azure/Bedrock calls it claimed to skip.
     # It is now applied by directory in tests/integration/conftest.py rather
     # than by hand on each item, so a new file there is credential-gated on
-    # arrival (104 deselected on the same tree).
+    # arrival.
     "integration: hits a live service (Azure/Bedrock/network); needs credentials",
+    # Referenced by the --disable-socket comment above and by tests/unit/conftest.py as
+    # the documented escape hatch for a test that legitimately needs the network — and,
+    # until now, NEITHER registered NOR carried. Under --strict-markers that made the
+    # documented hatch a collection ERROR for whoever first tried to use it. Applied to
+    # tests/integration/ alongside `integration`: coextensive with it today by
+    # construction, kept separate so a future unit test that needs outbound traffic can
+    # say so without also claiming to need credentials.
+    "requires_network: needs outbound network; excluded from the hermetic unit run",
+    # Applied to exactly the files carrying a MODULE-SCOPE pytest.importorskip, i.e. the
+    # ones that vanish entirely when an optional extra is absent (pyvis, watchfiles,
+    # litellm, lancedb). Per-test importorskip files are excluded: they still have work to
+    # do without the extra.
+    "requires_extra: whole file skips unless an optional extra is installed",
+    # Node-level, not file-level: the two files involved also hold the portable fake-model
+    # proofs that must run on a runner with no HuggingFace cache.
+    "requires_weights: constructs a real published model from cached weights",
+    # Measured file-level cost, not a guess — see tests/conftest.py for the command and
+    # the threshold. FILE granularity, so fast tests inside a heavy file are tagged too;
+    # the marker means "this file is expensive", not "this test is slow".
+    "slow: file measured at >= 4.0s of call+setup+teardown",
+    "cli: drives the Typer CLI (CliRunner or the installed console script)",
+    "api: drives the FastAPI HTTP surface",
+    "parser: exercises the tree-sitter language front-end",
+    # Subject-is-a-security-control, by explicit table: authn/authz, path containment,
+    # output escaping, secret redaction, audit tamper evidence, read-only enforcement,
+    # remote-code gating, and the socket ban's own positive control.
+    "security: the subject under test IS a security control",
 ]
 
 [tool.coverage.run]
 source = ["src/trelix"]
 omit = ["tests/*"]
+# Branch coverage. Line coverage counts whether a statement executed; it cannot see an
+# `if` whose false arm is never taken, which for this codebase is most of the risk: an
+# untaken `else` on a retrieval leg, an unexercised `except ImportError` fallback in the
+# parser registry, a validator whose reject path never runs.
+#
+# Measured on this tree before enabling, so the gate move is not a guess:
+#   line only            84.01%  (2,722 missing of 17,025 statements)
+#   line + branch        80.76%  (5,960 branch destinations, 1,701 missing, 1,015 partial)
+#   branch rate alone    71.46%
+# So `fail_under = 79` below still clears by 1.76 points and does NOT need to move. That
+# matters because an audit predicted the opposite -- it extrapolated the parser package's
+# 64.86% branch rate to the whole tree and computed a 0.05-point margin. The parser
+# package is the WORST-covered area in the repo, so using it as the estimator understated
+# everything else. The number here is the whole tree, measured.
+#
+# Consequence to state plainly: the headline percentage drops from 84.01% to ~80.76% and
+# is NOT comparable with any previously recorded figure. The denominator changed.
+branch = true
 
 [tool.coverage.report]
 show_missing = true

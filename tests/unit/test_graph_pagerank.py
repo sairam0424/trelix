@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import networkx as nx
+import pytest
+
 from trelix.core.models import CallEdge, GenericEdge, IndexedFile, Language, Symbol, SymbolKind
 from trelix.graph.code_graph import CodeGraph
 from trelix.graph.community import compute_pagerank
@@ -107,6 +110,39 @@ class TestComputePagerank:
         db = Database(tmp_path / "index.db")
         cg = CodeGraph(db)
         assert compute_pagerank(cg) == {}
+
+    def test_alpha_parameter_is_actually_threaded_into_nx_pagerank(self, tmp_path: Path) -> None:
+        """MUTATION: `nx.pagerank(g, alpha=alpha, max_iter=100, ...)` -> the
+        `alpha=alpha` kwarg dropped, falling back to nx.pagerank's own default
+        alpha (0.85) -- which IS compute_pagerank's own default too, so no
+        test calling with the implicit default alpha can ever observe this.
+        Calling with a distinctly non-default alpha is the only way; networkx
+        itself (not compute_pagerank) is the independent oracle for what that
+        alpha value should produce.
+        """
+        _, cg, hub_id = _build_star_graph(tmp_path)
+        # A LEAF's score, not the hub's: the hub has the max raw PageRank in
+        # this topology by construction, and normalization always rescales
+        # the max score to exactly 1.0 regardless of alpha -- so the hub's own
+        # (post-normalization) score is trivially 1.0 for every alpha and
+        # cannot discriminate this mutation at all.
+        default_scores = compute_pagerank(cg)
+        leaf_id = next(k for k in default_scores if k != hub_id)
+        low_alpha_scores = compute_pagerank(cg, alpha=0.2)
+        assert default_scores[leaf_id] != pytest.approx(low_alpha_scores[leaf_id]), (
+            "alpha=0.2 must move a leaf's score away from the alpha=0.85 "
+            f"default; both were {default_scores[leaf_id]!r} -- alpha= is not "
+            "reaching nx.pagerank at all"
+        )
+        oracle_raw = nx.pagerank(cg.nx, alpha=0.2, max_iter=100, personalization=None)
+        oracle_max = max(oracle_raw.values())
+        oracle_normalized = {k: v / oracle_max for k, v in oracle_raw.items()}
+        assert low_alpha_scores[leaf_id] == pytest.approx(oracle_normalized[leaf_id]), (
+            "compute_pagerank(alpha=0.2) must match nx.pagerank(alpha=0.2) "
+            "directly (normalized the same way), not nx.pagerank's own "
+            f"default-alpha result; got {low_alpha_scores[leaf_id]!r}, oracle "
+            f"says {oracle_normalized[leaf_id]!r}"
+        )
 
     def test_personalization_disabled_is_default_and_unchanged(self, tmp_path: Path) -> None:
         """personalization_enabled defaults to False — must reproduce

@@ -297,3 +297,141 @@ class TestMigrateVectorsReset:
             assert db.get_embedding_dimension() is None
         finally:
             db.close()
+
+
+class TestDimensionGuardMutationPins:
+    """Mutation-verified pins on the only thing standing between a provider switch and a
+    silently corrupt index.
+
+    Every assertion here was written against a surviving mutant of
+    `src/trelix/store/dimension_guard.py`: each one passes on the real module and fails
+    on the specific one-token change named in its docstring. The expected strings are
+    written out as literals rather than imported from the module, so the oracle cannot
+    travel with the mutant.
+    """
+
+    def test_check_is_an_inequality_not_an_ordering(self, tmp_path: Path) -> None:
+        """MUTATION: `if stored != current_dimension:` -> `if stored > current_dimension:`.
+
+        Every pre-existing mismatch test SHRINKS the width (3072 stored, 384 current), so
+        the comparison could be weakened to a one-sided ordering and stay green. Under
+        that mutant an UPGRADE — a 384-dim local index, then switching to a 3072-dim
+        provider — passes the guard, and the next index writes 3072-dim vectors at a
+        vec0 table fixed at 384.
+
+        The match half of this test is what stops a guard that refuses EVERY width from
+        passing the raise half; it also kills `-> if True:` and
+        `-> if stored != current_dimension + 1:`.
+        """
+        upgrading = Database(tmp_path / "upgrading.db")
+        upgrading.set_embedding_dimension(384)
+        with pytest.raises(DimensionMismatchError):
+            DimensionGuard.check(upgrading, current_dimension=3072, provider="azure")
+        upgrading.close()
+
+        matching = Database(tmp_path / "matching.db")
+        matching.set_embedding_dimension(3072)
+        DimensionGuard.check(matching, current_dimension=3072, provider="azure")
+        matching.close()
+
+    def test_check_reports_the_stored_width_first_and_the_new_width_second(
+        self, tmp_path: Path
+    ) -> None:
+        """MUTATION: swapping `stored` and `current`, either in the
+        `DimensionMismatchError(stored=..., current=...)` kwargs at the raise site or
+        inside the message f-string.
+
+        Both survive today because the existing tests only assert that "3072" and "384"
+        each appear SOMEWHERE in the message, which holds in either order. A user reading
+        the swapped message is told their index was built at the width their NEW provider
+        emits, which points them at the wrong provider to migrate to. 3072 and 384 are
+        distinct literals here precisely so the order is observable.
+        """
+        db = Database(tmp_path / "index.db")
+        db.set_embedding_dimension(3072)
+        with pytest.raises(DimensionMismatchError) as exc_info:
+            DimensionGuard.check(db, current_dimension=384, provider="local")
+        db.close()
+        assert (
+            "index was built with 3072-dim vectors but the current provider 'local' "
+            "produces 384-dim vectors." in str(exc_info.value)
+        )
+
+    def test_the_printed_migration_command_names_the_real_provider(self, tmp_path: Path) -> None:
+        """MUTATION: `provider=provider` -> `provider="unknown"` (or any constant) at the
+        raise site in `check`.
+
+        The message is a copy-pasteable remedy, and `--provider` is what decides the new
+        vector width, so a constant there hands the user a command no provider factory
+        accepts. "voyage" appears nowhere in dimension_guard.py, so no hardcoded default
+        can fake it.
+        """
+        db = Database(tmp_path / "index.db")
+        db.set_embedding_dimension(384)
+        with pytest.raises(DimensionMismatchError) as exc_info:
+            DimensionGuard.check(db, current_dimension=1024, provider="voyage")
+        db.close()
+        message = str(exc_info.value)
+        assert "trelix migrate-vectors ./your-repo --reset --provider voyage" in message
+        assert "--provider unknown" not in message
+
+    def test_check_swallows_a_dimension_read_that_fails_with_a_non_ValueError(
+        self, tmp_path: Path
+    ) -> None:
+        """MUTATION: `except Exception:` -> `except ValueError:` in `check`.
+
+        `get_embedding_dimension()` does `int(value)`, so a garbage metadata value raises
+        ValueError and the narrowed handler still catches it — the surviving hole is
+        every OTHER read failure. `Watcher.__init__` calls `DimensionGuard.check` with no
+        try/except of its own, so a propagating sqlite3 error there turns a degraded index
+        into a `trelix watch` that cannot start at all.
+        """
+        db = Database(tmp_path / "index.db")
+        db.set_embedding_dimension(384)
+        db.close()
+
+        # Precondition on the fixture: a closed Database must still raise, and raise
+        # something that is NOT a ValueError. If sqlite3 ever returns None here instead,
+        # or narrows to ValueError, the closed-Database fixture stops distinguishing
+        # `except Exception` from `except ValueError` and the assertion below would hold
+        # by construction.
+        with pytest.raises(Exception) as probe:  # noqa: B017 - the type is the assertion
+            db.get_embedding_dimension()
+        assert not isinstance(probe.value, ValueError), (
+            "closed-Database fixture no longer raises a non-ValueError; it can no longer "
+            f"discriminate the except clause (got {type(probe.value).__name__})"
+        )
+
+        # Documented contract: an unreadable dimension disarms the guard quietly. Note
+        # 384 != 3072, so if the read had somehow succeeded this would raise
+        # DimensionMismatchError instead — the no-op is not vacuous.
+        DimensionGuard.check(db, current_dimension=3072, provider="local")
+
+    def test_stored_attribute_is_the_constructor_arg_not_none(self) -> None:
+        """MUTATION: `self.stored = stored` -> `self.stored = None` in `__init__`.
+
+        Every other test on this exception only reads `str(err)` (the f-string, which
+        closes over the local `stored` param directly, not `self.stored`) — so the
+        attribute assignment itself had no test exercising it at all. `self.stored` is
+        exposed as public state precisely so a caller can inspect the mismatch
+        programmatically instead of parsing the message string; a `None` here silently
+        breaks that path for anyone who does.
+        """
+        err = DimensionMismatchError(stored=3072, current=384, provider="local")
+        assert err.stored == 3072
+
+    def test_current_attribute_is_the_constructor_arg_not_none(self) -> None:
+        """MUTATION: `self.current = current` -> `self.current = None` in `__init__`.
+
+        Same gap as `stored` above, for the other half of the mismatch pair.
+        """
+        err = DimensionMismatchError(stored=3072, current=384, provider="local")
+        assert err.current == 384
+
+    def test_provider_attribute_is_the_constructor_arg_not_none(self) -> None:
+        """MUTATION: `self.provider = provider` -> `self.provider = None` in `__init__`.
+
+        Same gap as `stored`/`current` above, for the provider name.
+        """
+        err = DimensionMismatchError(stored=3072, current=384, provider="local")
+        assert err.provider == "local"

@@ -1,0 +1,452 @@
+{
+  "deselected_files": [
+    "tests/unit/test_otel_metrics.py",
+    "tests/unit/test_otel_metrics_reentry.py",
+    "tests/unit/test_otel_tracing.py",
+    "tests/unit/test_structured_logging.py"
+  ],
+  "excluded_scopes": {
+    "embedder.*": "tests construct a real torch model; 245/317 mutants segfault in torch/nn/modules/module.py convert, identically at --max-children 1 and 8. http_proxy= workaround moved 245 -> 245. Hard limit, not a todo.",
+    "rerank.*": "same torch-model construction as embedder.*",
+    "sparse.*": "loads a transformers model; same segfault class as embedder.*"
+  },
+  "gate": "none -- per-module survivor ceilings only, never a score ratio",
+  "generated_by": "scripts/mutation.py",
+  "modules": {
+    "compression.extractive": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 33
+      },
+      "counts": {
+        "killed": 510,
+        "survived": 33,
+        "timeout": 2
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-25T08:04:36+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/compression/extractive.py"
+      ],
+      "source_sha256": {
+        "src/trelix/compression/extractive.py": "b4219a10672a468376905d6dcbff3a3f880c2711fbea870123d84edc8c4427d0"
+      },
+      "total_mutants": 545
+    },
+    "eval.ndcg": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 45,
+        "segfault": 7
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T07:45:58+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/eval/ndcg.py"
+      ],
+      "source_sha256": {
+        "src/trelix/eval/ndcg.py": "c2cebb2f4ebe644d52a9a673b6cf802e2ed03575784a9f576f7367f5843d3328"
+      },
+      "total_mutants": 52
+    },
+    "graph": {
+      "ceilings": {
+        "no_tests": 5,
+        "survived": 429
+      },
+      "counts": {
+        "killed": 680,
+        "no_tests": 5,
+        "segfault": 1,
+        "survived": 429
+      },
+      "files_mutated": 9,
+      "files_with_results": 8,
+      "measured": true,
+      "measured_at": "2026-08-25T14:59:40+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/graph/*"
+      ],
+      "source_sha256": {
+        "src/trelix/graph/builder.py": "ca13b8f0997c2b5924bed9a418c3f5598ffcf8f1c82d9ce5fadd487535775a12",
+        "src/trelix/graph/code_graph.py": "37274ee4518b65b17044581a4a327787661261ad6a5eb97aa8c3100f385ebc9d",
+        "src/trelix/graph/community.py": "b0dd9e92ee978c427b23d8fe3696f6e53ef00bce9aca8837ac683c2c440e6992",
+        "src/trelix/graph/concepts.py": "358f36c3d87d433d037f89bb88d889e12226e6c076de595fce4b88c9e51ba8a7",
+        "src/trelix/graph/persistence.py": "51f123c5cd982b4f7e354acfa387c54014daa6d2e1854029bc7efc222057fd86",
+        "src/trelix/graph/search.py": "5620540ecc86b5b9b23d642de3b0fab105923cf13bac97caced6a836bd21307d",
+        "src/trelix/graph/updater.py": "d4d7db56745b5b12ff712e5d886c89c077c592096c22107b77857b82a6ee6de1",
+        "src/trelix/graph/visualizer.py": "63d9c119b21c096421d665eb31d949b8284a29d97ea22ba4972d1b0dcda84741"
+      },
+      "total_mutants": 1115
+    },
+    "indexing.chunker": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 187
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-25T07:04:28+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/indexing/chunker.py"
+      ],
+      "source_sha256": {
+        "src/trelix/indexing/chunker.py": "520acb3c2cbf101c5e22b9a160412b3231754e6299bf15d31a3426bda8e0c813"
+      },
+      "total_mutants": 187
+    },
+    "indexing.parser.c": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/c.py"
+      ]
+    },
+    "indexing.parser.core": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/_grammar.py",
+        "src/trelix/indexing/parser/base.py",
+        "src/trelix/indexing/parser/registry.py"
+      ]
+    },
+    "indexing.parser.cpp": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/cpp.py"
+      ]
+    },
+    "indexing.parser.csharp": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/csharp.py"
+      ]
+    },
+    "indexing.parser.cshtml": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/cshtml.py"
+      ]
+    },
+    "indexing.parser.csproj": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/csproj.py"
+      ]
+    },
+    "indexing.parser.css": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/css.py"
+      ]
+    },
+    "indexing.parser.go": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/go.py"
+      ]
+    },
+    "indexing.parser.html": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/html.py"
+      ]
+    },
+    "indexing.parser.java": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 376
+      },
+      "counts": {
+        "killed": 1350,
+        "segfault": 1,
+        "survived": 376
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-25T17:55:30+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/java.py"
+      ],
+      "source_sha256": {
+        "src/trelix/indexing/parser/extractors/java.py": "c379c582757697c558a24444b5d59aaa1becd84b14f3b57424fdd9b874aafd90"
+      },
+      "total_mutants": 1727
+    },
+    "indexing.parser.javascript": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/javascript.py"
+      ]
+    },
+    "indexing.parser.json_config": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/json_config.py"
+      ]
+    },
+    "indexing.parser.kotlin": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/kotlin.py"
+      ]
+    },
+    "indexing.parser.line_window": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/line_window.py"
+      ]
+    },
+    "indexing.parser.markdown": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/markdown.py"
+      ]
+    },
+    "indexing.parser.python": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/python.py"
+      ]
+    },
+    "indexing.parser.razor": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/razor.py"
+      ]
+    },
+    "indexing.parser.ruby": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/ruby.py"
+      ]
+    },
+    "indexing.parser.rust": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 428
+      },
+      "counts": {
+        "killed": 1516,
+        "segfault": 1,
+        "survived": 428
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-25T18:02:21+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/rust.py"
+      ],
+      "source_sha256": {
+        "src/trelix/indexing/parser/extractors/rust.py": "9cb9fa7dc0f2204cd53136748ff0ef0bb2a60534f15fd788b3c85819d0ffbdb1"
+      },
+      "total_mutants": 1945
+    },
+    "indexing.parser.toml_config": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/toml_config.py"
+      ]
+    },
+    "indexing.parser.typescript": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/typescript.py"
+      ]
+    },
+    "indexing.parser.yaml_config": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/parser/extractors/yaml_config.py"
+      ]
+    },
+    "indexing.walker": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 9
+      },
+      "counts": {
+        "killed": 345,
+        "survived": 9
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T20:44:21+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/indexing/walker.py"
+      ],
+      "source_sha256": {
+        "src/trelix/indexing/walker.py": "412b59ed4c36f8f139f89ca915030a348060e8443c462eef75ede083c8782452"
+      },
+      "total_mutants": 354
+    },
+    "retrieval.bm25": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 111
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T18:14:41+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/retrieval/bm25.py"
+      ],
+      "source_sha256": {
+        "src/trelix/retrieval/bm25.py": "189a500dd05219f97fb72eb2cc4c7c83bbcce972fd2167e9b4a9a3abf981ba9f"
+      },
+      "total_mutants": 111
+    },
+    "retrieval.fusion": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 50
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T13:24:40+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/retrieval/fusion.py"
+      ],
+      "source_sha256": {
+        "src/trelix/retrieval/fusion.py": "e05e43a684f87ee90ef807d216e8dcfa9bf166b89c6d1eb2bebc1096caf36b15"
+      },
+      "total_mutants": 50
+    },
+    "store.db": {
+      "ceilings": {
+        "no_tests": 116,
+        "survived": 548
+      },
+      "counts": {
+        "killed": 1881,
+        "no_tests": 116,
+        "segfault": 19,
+        "survived": 548
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-25T14:24:34+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/store/db.py"
+      ],
+      "source_sha256": {
+        "src/trelix/store/db.py": "5141a7d6bbbbbba9cfb471098a04cfa10197283a1ec49c75ecc07056e67d4eef"
+      },
+      "total_mutants": 2564
+    },
+    "store.dimension_guard": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 8
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T17:59:41+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/store/dimension_guard.py"
+      ],
+      "source_sha256": {
+        "src/trelix/store/dimension_guard.py": "6430b677f5153e233ebfe713f9cfe2765e7341543f72b1164a718a454d1dbd6f"
+      },
+      "total_mutants": 8
+    },
+    "store.vector": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 59
+      },
+      "counts": {
+        "killed": 229,
+        "segfault": 46,
+        "survived": 59
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-08-24T20:23:21+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/store/vector.py"
+      ],
+      "source_sha256": {
+        "src/trelix/store/vector.py": "0166bc3468b481c9ae92f44b11913aaa404137eebee2a56ee0ef23115607b72b"
+      },
+      "total_mutants": 334
+    }
+  },
+  "mutmut_config": {
+    "also_copy": [
+      ".env.example",
+      ".gitignore",
+      ".github",
+      "CHANGELOG.md",
+      "config",
+      "CONTRIBUTING.md",
+      "docs",
+      "helm",
+      "LICENSE",
+      "Makefile",
+      "packages",
+      "README.md",
+      "scripts",
+      "SECURITY.md",
+      "SUPPORT.md"
+    ],
+    "do_not_mutate_patterns": [
+      "raise \\w+",
+      "logger\\.\\w+"
+    ],
+    "max_stack_depth": 8,
+    "mutate_only_covered_lines": false,
+    "pytest_add_cli_args": [
+      "-p",
+      "no:cacheprovider"
+    ],
+    "pytest_add_cli_args_test_selection": [
+      "tests/unit"
+    ],
+    "source_paths": [
+      "src/trelix"
+    ],
+    "use_git_change_detection": false
+  },
+  "mutmut_version": "3.7.0",
+  "schema": 1
+}

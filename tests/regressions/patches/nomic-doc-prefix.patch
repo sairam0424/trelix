@@ -1,0 +1,15 @@
+diff --git a/src/trelix/embedder/nomic_code.py b/src/trelix/embedder/nomic_code.py
+index 210d3e7..a75f5f6 100644
+--- a/src/trelix/embedder/nomic_code.py
++++ b/src/trelix/embedder/nomic_code.py
+@@ -119,8 +119,9 @@ class NomicCodeEmbedder(BaseEmbedder):
+         Both encode paths must pass it or queries and documents would live on different
+         scales.
+         """
++        prefixed = [f"search_document: {t}" for t in texts]
+         vecs = self._model.encode(
+-            texts,
++            prefixed,
+             batch_size=self._batch_size,
+             normalize_embeddings=True,
+         )

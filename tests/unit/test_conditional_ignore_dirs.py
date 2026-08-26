@@ -264,6 +264,16 @@ class TestBinNeedsADeclaration:
             ("../bin/cli.js", False),
             ("/usr/local/bin/cli.js", False),
             ("bin", False),
+            # MUTATION: `target.startswith("./")` mutated to a string that cannot match
+            # a real target (mutmut's own survivor here rewrites the literal to
+            # "XX./XX"). `PurePosixPath` collapses a BARE leading "./" on its own, so
+            # "./bin/cli.js" alone cannot tell the manual strip apart from a no-op --
+            # both rows above pass either way. A double slash right after the leading
+            # dot breaks that coincidence: stripped, the real code turns ".//bin/cli.js"
+            # into "/bin/cli.js" (parts=('/', 'bin', 'cli.js'), so parts[0] is "/" and
+            # nothing is admitted); left unstripped, PurePosixPath's own normalisation
+            # collapses it straight to ('bin', 'cli.js') and admits it.
+            (".//bin/cli.js", False),
         ],
     )
     def test_only_a_target_inside_the_directory_admits_it(
@@ -277,6 +287,25 @@ class TestBinNeedsADeclaration:
         _json(tmp_path / "package.json", {"name": "x", "bin": declared})
         _write(tmp_path / "bin/cli.js", "#!/usr/bin/env node\n")
         assert ("bin/cli.js" in _walk(tmp_path)) is admitted
+
+    def test_a_non_string_bin_entry_before_a_real_target_still_admits_it(
+        self, tmp_path: Path
+    ) -> None:
+        """MUTATION: `_bin_points_into`'s `continue` (skip a non-string value and keep
+        scanning) mutated to `break` (abandon the scan at the first one) would stop
+        before ever reaching the real target that follows it in the same dict.
+
+        Every dict-form fixture elsewhere in this file has exactly one key,
+        so nothing exercises a `bin` dict holding a non-string value ahead of a real
+        target -- insertion order is preserved by both `dict` and `json.dumps`, so
+        `"weird"` is scanned, and skipped, before `"tool"`.
+        """
+        _json(
+            tmp_path / "package.json",
+            {"name": "x", "bin": {"weird": 123, "tool": "bin/cli.js"}},
+        )
+        _write(tmp_path / "bin/cli.js", "#!/usr/bin/env node\n")
+        assert "bin/cli.js" in _walk(tmp_path)
 
     def test_virtualenv_bin_needs_no_special_rule(self, tmp_path: Path) -> None:
         """Fixture 9. Requiring positive evidence subsumes a virtualenv-specific rule."""

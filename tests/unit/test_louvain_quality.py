@@ -200,6 +200,89 @@ class TestAssessPartitionQuality:
         assert json.loads(json.dumps(payload))["singleton_communities"] == 30
         assert payload["edge_limited"] is True
 
+    def test_empty_communities_on_a_real_graph_forces_zero_not_the_real_counts(
+        self, tmp_path: Path
+    ) -> None:
+        """MUTATION: `if cg.node_count == 0 or not communities:` -> `and`.
+
+        `test_empty_graph_returns_zeros` above already covers node_count == 0
+        WITH an empty graph, where the distinction is invisible (there is
+        nothing real to compute either way). This uses a REAL graph (11 nodes,
+        3 real edges from connected_pairs=3) with an EMPTY communities dict:
+        the early-return branch must still fire and force edge_count=0 /
+        isolated_nodes=0 -- not the graph's actual 3 edges / 5 isolated nodes,
+        which `and` would fall through and compute for real.
+        """
+        cg = _sparse_graph(tmp_path, connected_pairs=3, isolated=5)
+        assert cg.node_count == 11, (
+            "fixture drifted; the real-vs-forced distinction below needs a real graph"
+        )
+        quality = assess_partition_quality(cg, {})
+        assert quality.edge_count == 0, (
+            f"empty communities must force edge_count=0, got {quality.edge_count} "
+            "(the graph really has 3 edges -- 'and' would compute that for real)"
+        )
+        assert quality.isolated_nodes == 0
+        assert quality.community_count == 0
+
+    def test_modularity_uses_the_restricted_subgraph_not_the_full_graph(self) -> None:
+        """MUTATION: `nx.community.modularity(G.subgraph(assigned), covered)`
+        -> `G.subgraph(None)`.
+
+        networkx's `Graph.subgraph(None)` silently returns the WHOLE graph
+        (verified directly: `g.subgraph(None)` yields every node of `g`, not
+        an error and not an empty graph) -- so with a partition that covers
+        only SOME of the graph's nodes, the mutant hands `modularity()` a
+        graph the partition does NOT fully cover, which raises
+        `NotAPartition` (caught by this function's own try/except, forced to
+        0.0) instead of the real value computed on the graph correctly
+        restricted to what the partition covers.
+
+        Also pins `edge_count=G.number_of_edges()` on this same, non-early-
+        -return call path (mutation: `edge_count=None`): two disjoint edges
+        (1,2) and (3,4) are covered by the partition; a third edge (5,6) is
+        deliberately left out of it.
+        """
+        cg = CodeGraph.__new__(CodeGraph)
+        cg._g = nx.MultiDiGraph()
+        cg._g.add_edges_from([(1, 2), (3, 4), (5, 6)])
+        partition = {1: 0, 2: 0, 3: 1, 4: 1}  # 5, 6 deliberately absent
+        quality = assess_partition_quality(cg, partition)
+        assert quality.modularity == pytest.approx(0.5), (
+            "two communities, each holding exactly one full edge out of the "
+            f"partition-restricted subgraph's 2 total edges, must give "
+            f"modularity 0.5; got {quality.modularity} (0.0 is what an "
+            "unrestricted graph -- which raises NotAPartition, caught -- reports)"
+        )
+        assert quality.edge_count == 3, (
+            f"edge_count must be the REAL graph's edge count (3), got {quality.edge_count}"
+        )
+
+    def test_largest_sizes_is_the_real_top_five_descending(self) -> None:
+        """MUTATION: `sorted((len(group) for group in members.values()),
+        reverse=True)` -> `reverse=False` or the kwarg dropped, or
+        `largest_sizes=sizes[:5]` -> `[:6]` or the field dropped entirely.
+
+        Nothing in this suite asserts `largest_sizes`' VALUE anywhere else.
+        Six communities of six strictly distinct sizes make the real top-5-
+        descending answer unambiguous, then this pins the exact literal list.
+        """
+        cg = CodeGraph.__new__(CodeGraph)
+        cg._g = nx.MultiDiGraph()
+        node_id = 0
+        communities: dict[int, int] = {}
+        for community_id, size in enumerate([1, 2, 3, 4, 5, 6]):
+            for _ in range(size):
+                cg._g.add_node(node_id)
+                communities[node_id] = community_id
+                node_id += 1
+        quality = assess_partition_quality(cg, communities)
+        assert quality.largest_sizes == [6, 5, 4, 3, 2], (
+            f"expected the real top-5 sizes descending [6, 5, 4, 3, 2], got "
+            f"{quality.largest_sizes} -- ascending order or a 6-item list both "
+            "indicate the sort/slice was tampered with"
+        )
+
 
 class TestModularityDoesNotDetectThis:
     def test_modularity_stays_high_while_partition_is_all_singletons(self, tmp_path: Path) -> None:

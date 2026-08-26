@@ -12,7 +12,7 @@ from trelix.api.app import create_app
 from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
 from trelix.store.db import Database
 
-from .test_graph_visualizer import _make_pyvis_mock
+from .test_graph_visualizer import _install_pyvis_stub
 
 
 @pytest.fixture
@@ -201,8 +201,10 @@ class TestGraphVisualizeContainment:
     does not go through this file's allow-list fixture, covers that.
     """
 
-    def test_default_output_path_is_accepted(self, tmp_path: Path) -> None:
-        _make_pyvis_mock()
+    def test_default_output_path_is_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_pyvis_stub(monkeypatch)
         repo = _make_indexed_repo(tmp_path)
         app = create_app()
         client = TestClient(app)
@@ -212,8 +214,10 @@ class TestGraphVisualizeContainment:
         assert data["path"] == str(repo / ".trelix" / "graph.html")
         assert Path(data["path"]).exists()
 
-    def test_output_inside_trelix_dir_is_accepted(self, tmp_path: Path) -> None:
-        _make_pyvis_mock()
+    def test_output_inside_trelix_dir_is_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_pyvis_stub(monkeypatch)
         repo = _make_indexed_repo(tmp_path)
         app = create_app()
         client = TestClient(app)
@@ -267,7 +271,7 @@ class TestGraphVisualizeContainment:
         left unset, so this proves "not this root" and not merely the weaker
         "no root configured".
         """
-        _make_pyvis_mock()
+        _install_pyvis_stub(monkeypatch)
         served = tmp_path / "served"
         served.mkdir()
         monkeypatch.setenv("TRELIX_ALLOWED_REPO_ROOTS", str(served))

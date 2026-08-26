@@ -8,6 +8,10 @@ test.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -22,6 +26,8 @@ from trelix.core.retry import (
     is_retryable_http_error,
     with_retry,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _ERROR_CODE_TO_OPENAI_EXC: dict[int, type[openai.APIStatusError]] = {
     429: openai.RateLimitError,
@@ -63,6 +69,23 @@ def _anthropic_status_error(status_code: int) -> Exception:
     request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     response = httpx.Response(status_code, request=request)
     return anthropic.APIStatusError(f"{status_code} error", response=response, body=None)
+
+
+def _botocore_client_error(status_code: int) -> Exception:
+    """A real botocore.exceptions.ClientError shaped like what boto3's
+    bedrock-runtime client raises on a throttled/server-error InvokeModel
+    call: no HTTPStatusError, no .response.status_code — the status lives
+    at .response["ResponseMetadata"]["HTTPStatusCode"], which is why
+    _extract_status_code() has a dedicated branch for it distinct from the
+    httpx/requests/openai/anthropic branches."""
+    botocore_exceptions = pytest.importorskip("botocore.exceptions")
+    return botocore_exceptions.ClientError(
+        error_response={
+            "Error": {"Code": "ThrottlingException", "Message": "rate limited"},
+            "ResponseMetadata": {"HTTPStatusCode": status_code},
+        },
+        operation_name="InvokeModel",
+    )
 
 
 class TestIsRetryableHttpError:
@@ -144,6 +167,19 @@ class TestIsRetryableHttpError:
         exc_class = getattr(botocore_exceptions, exc_class_name)
         exc = exc_class(endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com")
         assert is_retryable_http_error(exc) is True
+
+    @pytest.mark.parametrize("status_code", sorted(RETRYABLE_STATUS_CODES))
+    def test_botocore_client_error_retryable_status_codes(self, status_code: int) -> None:
+        """The bedrock-runtime shape: a real HTTP status carried in
+        ClientError.response["ResponseMetadata"]["HTTPStatusCode"], not on
+        an httpx/requests/openai-style .response.status_code attribute —
+        this is the ClientError branch of _extract_status_code(), disjoint
+        from the BotoCoreError connection-level branch covered above."""
+        assert is_retryable_http_error(_botocore_client_error(status_code)) is True
+
+    @pytest.mark.parametrize("status_code", [400, 403, 404])
+    def test_botocore_client_error_non_retryable_status_codes(self, status_code: int) -> None:
+        assert is_retryable_http_error(_botocore_client_error(status_code)) is False
 
     @pytest.mark.parametrize("status_code", sorted(RETRYABLE_STATUS_CODES))
     def test_openai_retryable_status_codes(self, status_code: int) -> None:
@@ -363,3 +399,120 @@ class TestWaitRetryAfterOrExponentialClampsOverflow:
         fake_state = self._FakeRetryState(exc)
         wait_seconds = waiter(fake_state)
         assert 0.0 <= wait_seconds <= 0.01
+
+
+class TestExtractStatusCodeNeverImportsAnSdk:
+    """_extract_status_code()/_is_connection_level_error() used to run
+    `import httpx`, `import requests`, `from botocore.exceptions import
+    ClientError`, `import openai`, `import anthropic`, `from google.genai
+    import errors`, and `import voyageai.error` unconditionally on every
+    call, regardless of what exception was being classified. `import
+    voyageai.error` alone transitively pulls in torch plus the
+    transformers/datasets/accelerate/peft/safetensors stack (well over a
+    thousand modules, measured) — on trelix's hottest retry path, on every
+    retryable-failure check, even for a plain httpx/ValueError that has
+    nothing to do with voyageai.
+
+    The fix (_loaded_module() in src/trelix/core/retry.py) replaces every
+    `import X` in these two functions with a `sys.modules.get(X)` lookup:
+    an exception cannot be an instance of a class from a module that was
+    never imported, so checking the cache is a correct substitute for a
+    fresh import and never imports anything itself.
+
+    THE FALSIFYING INPUT: reverting either function's guarded
+    `_loaded_module("voyageai.error")` branch back to an unconditional
+    `import voyageai.error as voyage_errors` (the pre-fix shape) makes
+    test_calling_the_predicate_on_a_plain_exception_never_imports_torch
+    fail — confirmed by hand: with that revert, the subprocess prints
+    "voyageai,torch" on its second line instead of the empty string this
+    test asserts. (Verified via `git stash`/`git stash pop` on the fix
+    during development — see this task's proof protocol output — rather
+    than re-deriving a live mutation harness inside the test itself.)
+    """
+
+    def _run_in_fresh_subprocess(self, exc_expr: str) -> subprocess.CompletedProcess[str]:
+        """Classify *exc_expr* (a Python expression, e.g. "ValueError('x')")
+        in a brand-new interpreter process that has never imported
+        trelix or any SDK, so any import triggered by classification is
+        observable in that process's own sys.modules — not contaminated by
+        whatever this pytest process happened to import already.
+
+        PYTHONPATH is pointed at THIS repo's own src/ explicitly (not
+        inherited) because the shared venv this suite runs under has an
+        unrelated editable trelix install; without this override the child
+        would import a different tree's retry.py than the one this test
+        run is meant to prove. PREPENDED to, rather than replacing, any
+        inherited PYTHONPATH: under mutmut's own mutation runner (see
+        scripts/mutation.py), retry.py's package (`import trelix` walks
+        trelix/__init__.py's eager imports) needs a trampoline-wrapped
+        sibling module importable, which in turn needs the `mutmut`
+        package mutmut itself put on PYTHONPATH for this whole process
+        tree -- dropping that entry made every case here crash with
+        `ModuleNotFoundError: No module named 'mutmut'` instead of
+        classifying anything, under that runner only. A plain pytest run
+        has no mutmut on PYTHONPATH to begin with, so prepending is a
+        no-op there."""
+        code = (
+            "import sys\n"
+            "from trelix.core.retry import is_retryable_http_error\n"
+            f"result = is_retryable_http_error({exc_expr})\n"
+            "watched = ['torch', 'voyageai', 'openai', 'anthropic', 'httpx',"
+            " 'requests', 'botocore', 'google.genai']\n"
+            "leaked = [m for m in watched if m in sys.modules]\n"
+            "print(result)\n"
+            "print(','.join(leaked))\n"
+        )
+        return subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(
+                    [str(_REPO_ROOT / "src"), *filter(None, [os.environ.get("PYTHONPATH")])]
+                ),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+            check=False,
+        )
+
+    def test_calling_the_predicate_on_a_plain_exception_never_imports_torch(self) -> None:
+        proc = self._run_in_fresh_subprocess("ValueError('not a network error')")
+        assert proc.returncode == 0, (
+            f"subprocess crashed:\nstdout={proc.stdout}\nstderr={proc.stderr}"
+        )
+        lines = proc.stdout.splitlines()
+        assert lines[0] == "False", f"expected a plain ValueError to be non-retryable: {lines}"
+        leaked = lines[1] if len(lines) > 1 else "<missing>"
+        assert leaked == "", (
+            f"is_retryable_http_error() imported {leaked!r} as a side effect of "
+            "classifying a plain ValueError that has nothing to do with any SDK"
+        )
+
+    def test_calling_the_predicate_on_a_real_httpx_error_still_does_not_import_torch(
+        self,
+    ) -> None:
+        """Same control, but with a real retryable httpx.HTTPStatusError
+        instead of a ValueError — proves the fix holds even on the path
+        that DOES match a branch (httpx's) and return early, not just on
+        the always-falls-through ValueError case above."""
+        exc_expr = (
+            "__import__('httpx').HTTPStatusError("
+            "'503 error', "
+            "request=__import__('httpx').Request('GET', 'https://example.com'), "
+            "response=__import__('httpx').Response(503, "
+            "request=__import__('httpx').Request('GET', 'https://example.com')))"
+        )
+        proc = self._run_in_fresh_subprocess(exc_expr)
+        assert proc.returncode == 0, (
+            f"subprocess crashed:\nstdout={proc.stdout}\nstderr={proc.stderr}"
+        )
+        lines = proc.stdout.splitlines()
+        assert lines[0] == "True", f"expected httpx 503 to be retryable: {lines}"
+        # httpx itself is expected to be loaded (the exception is one of its
+        # classes) -- the control is that nothing ELSE leaked alongside it.
+        leaked = set((lines[1] if len(lines) > 1 else "").split(",")) - {""}
+        assert leaked == {"httpx"}, (
+            f"classifying an httpx error imported more than just httpx: {leaked}"
+        )

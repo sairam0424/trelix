@@ -1,0 +1,130 @@
+# The regression manifest: one entry per SHIPPED FIX, keyed on PATCH TEXT.
+#
+# WHY PATCH TEXT AND NOT A MUTATION-TOOL NAME. mutmut and cargo-mutants identify a mutant
+# positionally -- "src/trelix/embedder/sparse.py:169:mutant_3" -- so the identifier moves
+# when a line moves, differs between tool versions, and tells a reader nothing about which
+# defect is meant. Worse, no such tool can express any of these entries in the first place:
+# their own docs are explicit that "the diff is only matched against the code under test,
+# not the test code", so a suite whose TESTS have been weakened scores exactly as well as
+# one whose tests still work. A patch file is the defect, written in the only form that can
+# be re-applied and re-verified by hand.
+#
+# HOW EACH PATCH WAS DERIVED. From the real commit, then re-verified against today's tree
+# -- never from the CHANGELOG. All four defects here shipped in one commit, eb8eb8b
+# ("fix(embedder): stop padding leaking into sparse vectors, repair two wrong prompts",
+# v3.2.0); the anti-fix restores the pre-3.2.0 text at exactly one site, then the tests
+# named in `must_fail` were run under it and their outcomes recorded below as measurements,
+# not predictions.
+#
+# ONE MUTATION PER ENTRY. eb8eb8b changed BOTH of nomic_code.py's encode paths, so it is
+# split into two entries here. Reverting both at once would be a coupled measurement: the
+# kill could come from either site and the report could not say which.
+#
+# FIELDS
+#   id               unique, stable, used as the pytest parametrization id
+#   changelog        the release whose fix this anti-fix reverts
+#   commit           the real commit the anti-fix was derived from
+#   summary          one line, what the defect was
+#   patch            path relative to patches/
+#   must_fail        node ids that MUST fail under the patch. Measured, exhaustive for the
+#                    files listed: every non-deselected node in a mapped file that is not
+#                    in this list must still PASS, so an under-specified list fails the run.
+#   requires         importable module names without which the mapped tests cannot
+#                    discriminate. The harness SKIPS LOUDLY naming them, rather than
+#                    passing on an environment that never ran the experiment.
+#   deselect         node ids excluded from the run, each of which MUST still collect
+#   deselect_reason  mandatory whenever `deselect` is non-empty
+
+[[defect]]
+id = "splade-padding-3.2.0"
+changelog = "3.2.0"
+commit = "eb8eb8b"
+summary = "SPLADE aggregation maxed over padding positions, so a chunk's stored sparse vector depended on which chunks shared its batch"
+patch = "patches/splade-padding.patch"
+# torch only. `transformers` is never reached: the fixture assigns `_tokenizer` and
+# `_model` directly, so `_load()` short-circuits on `self._model is not None` and no
+# from_pretrained call happens. `embed()` itself does `import torch` inside its try, and
+# without torch every vector comes back `{}` -- which would make the phantom-token
+# assertions pass on empty dicts. Hence a loud skip, not a hopeful run.
+requires = ["torch"]
+# All four are the fake-tokenizer tests, which is the point: they need no weights and no
+# network. Measured under the patch: 4 failed, 4 passed.
+must_fail = [
+  "tests/unit/test_sparse_padding_contamination.py::TestPaddingDoesNotLeakIntoTheStoredVector::test_the_phantom_token_never_appears",
+  "tests/unit/test_sparse_padding_contamination.py::TestPaddingDoesNotLeakIntoTheStoredVector::test_a_chunk_embeds_identically_alone_and_beside_a_longer_chunk",
+  "tests/unit/test_sparse_padding_contamination.py::TestPaddingDoesNotLeakIntoTheStoredVector::test_batch_size_does_not_change_any_vector",
+  "tests/unit/test_sparse_padding_contamination.py::TestPaddingDoesNotLeakIntoTheStoredVector::test_the_query_path_agrees_with_the_document_path",
+]
+deselect = [
+  "tests/unit/test_sparse_padding_contamination.py::test_real_weights_agree_alone_and_batched",
+]
+# This node DOES detect the defect -- measured locally, "gained 31 phantom terms, lost 31"
+# on the real naver/splade-v3-distilbert. It is excluded anyway because it can only do so
+# on a machine that already has those weights cached. It carries `requires_weights` and
+# skips itself elsewhere, and CI downloads no weights, so listing it in `must_fail` would
+# be an assertion stronger than the environment guarantees -- the exact shape that turned
+# two locally-green commits red on all four CI legs. Leaving it in the run instead of
+# deselecting it would be worse: on this machine it FAILS under the patch and would be
+# counted as a broken remainder. Deselected, and the harness asserts it still collects.
+deselect_reason = "requires_weights: needs cached naver/splade-v3-distilbert, which CI never downloads; it would fail here and skip there"
+
+[[defect]]
+id = "nomic-code-document-prefix-3.2.0"
+changelog = "3.2.0"
+commit = "eb8eb8b"
+summary = "nomic-code prefixed DOCUMENTS with nomic-embed-text-v1.5's 'search_document: ', a prompt CodeRankEmbed never publishes"
+patch = "patches/nomic-doc-prefix.patch"
+# No sentence-transformers needed: the test patches
+# trelix.embedder.nomic_code.SentenceTransformer with a plain recorder class, and the
+# module's own import is already try/except-guarded. Fully offline, no weights.
+requires = []
+must_fail = [
+  "tests/unit/test_embedder_nomic.py::TestNomicCodeEmbedder::test_documents_are_encoded_with_no_prompt_at_all",
+]
+
+[[defect]]
+id = "nomic-code-query-prompt-name-3.2.0"
+changelog = "3.2.0"
+commit = "eb8eb8b"
+summary = "nomic-code hardcoded 'search_query: ' instead of asking sentence-transformers for the model's own published prompts.query"
+patch = "patches/nomic-query-prompt-name.patch"
+requires = []
+must_fail = [
+  "tests/unit/test_embedder_nomic.py::TestNomicCodeEmbedder::test_queries_use_the_prompt_name_the_model_publishes",
+]
+
+[[defect]]
+id = "bge-code-foreign-prompt-3.2.0"
+changelog = "3.2.0"
+commit = "eb8eb8b"
+summary = "bge-code shipped nomic-ai/CodeRankEmbed's published query prompt, character for character, for 28 releases"
+patch = "patches/bge-code-foreign-prompt.patch"
+# FlagEmbedding is NOT required: bge_code.py guards its import and the tests read module
+# constants and `inspect.getsource`, never a model.
+requires = []
+# Four kills, and the spread is the interesting part: two direct assertions on the
+# constant, one AST scan proving the string now appears in two providers, and one
+# ownership table that silently collapses from three entries to two when the strings
+# collide. Measured under the patch: 4 failed, 3 passed.
+must_fail = [
+  "tests/unit/test_provider_prompt_provenance.py::TestBgeCodeCarriesBaaisOwnProtocol::test_the_query_instruction_is_not_another_models_prompt",
+  "tests/unit/test_provider_prompt_provenance.py::TestBgeCodeCarriesBaaisOwnProtocol::test_the_query_instruction_is_one_baai_publishes",
+  "tests/unit/test_provider_prompt_provenance.py::TestNoPromptIsSharedBetweenProviders::test_coderankembeds_prompt_appears_in_exactly_one_provider",
+  "tests/unit/test_provider_prompt_provenance.py::TestNoPromptIsSharedBetweenProviders::test_every_provider_prompt_constant_is_traceable_to_its_own_model",
+]
+
+[[defect]]
+id = "nomic-code-einops-undeclared-3.2.0"
+changelog = "3.2.0"
+commit = "eb8eb8b"
+summary = "the nomic-code extra omitted einops, which CodeRankEmbed's published remote code imports at module top level, so the provider had never constructed for any user"
+patch = "patches/nomic-einops-undeclared.patch"
+# The only entry whose patch touches pyproject.toml rather than src/. Deliberately kept:
+# a dependency declaration is as much a shipped fix as a code change, and this one is the
+# reason the provider raised ModuleNotFoundError from inside remote model code. The
+# assertion parses the extra offline; it does not import einops and does not resolve
+# anything, so it is hermetic even on a runner where einops is absent.
+requires = []
+must_fail = [
+  "tests/unit/test_readme_install_commands.py::test_the_nomic_code_extra_declares_einops",
+]

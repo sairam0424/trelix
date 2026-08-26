@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from trelix.core.models import IndexedFile, Language, Symbol, SymbolKind
 from trelix.indexing.multi_granularity import Granularity, SubSymbolChunk
 from trelix.store.db import Database
@@ -17,8 +15,7 @@ _PROCESS_BODY = (
 )
 
 
-def _make_db_with_symbol(tmp_path: Path) -> tuple[Database, int]:
-    db = Database(tmp_path / "index.db")
+def _seed_symbol(db: Database) -> int:
     fid = db.upsert_file(
         IndexedFile(
             path="/r/a.py", rel_path="a.py", language=Language.PYTHON, hash="x", size_bytes=50
@@ -36,7 +33,7 @@ def _make_db_with_symbol(tmp_path: Path) -> tuple[Database, int]:
             body=_PROCESS_BODY,
         )
     )
-    return db, sid
+    return sid
 
 
 class TestSubSymbolChunk:
@@ -59,29 +56,29 @@ class TestSubSymbolChunk:
 
 
 class TestSubChunksDB:
-    def test_insert_and_retrieve(self, tmp_path: Path) -> None:
-        db, sid = _make_db_with_symbol(tmp_path)
+    def test_insert_and_retrieve(self, tmp_db: Database) -> None:
+        sid = _seed_symbol(tmp_db)
         chunks = [
             SubSymbolChunk(sid, Granularity.BLOCK, "for item in data: ...", 3, 4, 8),
             SubSymbolChunk(sid, Granularity.STATEMENT, "result = []", 2, 2, 4),
         ]
-        ids = db.insert_sub_chunks(chunks)
+        ids = tmp_db.insert_sub_chunks(chunks)
         assert len(ids) == 2
-        result = db.get_sub_chunks_for_symbol(sid)
+        result = tmp_db.get_sub_chunks_for_symbol(sid)
         assert len(result) == 2
 
-    def test_filter_by_granularity(self, tmp_path: Path) -> None:
-        db, sid = _make_db_with_symbol(tmp_path)
+    def test_filter_by_granularity(self, tmp_db: Database) -> None:
+        sid = _seed_symbol(tmp_db)
         chunks = [
             SubSymbolChunk(sid, Granularity.BLOCK, "block text", 3, 5, 6),
             SubSymbolChunk(sid, Granularity.STATEMENT, "stmt text", 2, 2, 3),
         ]
-        db.insert_sub_chunks(chunks)
-        blocks = db.get_sub_chunks_for_symbol(sid, granularity="block")
+        tmp_db.insert_sub_chunks(chunks)
+        blocks = tmp_db.get_sub_chunks_for_symbol(sid, granularity="block")
         assert len(blocks) == 1
         assert blocks[0].granularity == Granularity.BLOCK
 
-    def test_empty_for_unknown_symbol(self, tmp_path: Path) -> None:
-        db, _ = _make_db_with_symbol(tmp_path)
-        result = db.get_sub_chunks_for_symbol(9999)
+    def test_empty_for_unknown_symbol(self, tmp_db: Database) -> None:
+        _seed_symbol(tmp_db)
+        result = tmp_db.get_sub_chunks_for_symbol(9999)
         assert result == []

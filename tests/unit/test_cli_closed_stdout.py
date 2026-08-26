@@ -31,6 +31,7 @@ import errno
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NoReturn
 
@@ -65,19 +66,45 @@ def _run_with_closed_consumer(*args: str) -> subprocess.CompletedProcess[str]:
     it — the CI failure is non-deterministic precisely because a small payload can
     fit the 64 KiB pipe buffer and finish before the consumer exits. Removing the
     race is what makes this a test rather than a coin flip.
+
+    `_ENTRY` is written to a real `.py` file rather than passed via `python -c`.
+    `-c` gives the child's top-level frame a `co_filename` of the literal string
+    `"<string>"`, which has no meaning as a filesystem path. That is invisible under
+    a normal `pytest` run, but discovered as a real trap while widening this
+    project's mutation-coverage scope to `graph`: `_child_env()` below deliberately
+    points the child's `PYTHONPATH` at whatever `trelix` package this test process
+    itself has loaded, and under `scripts/mutation.py`'s mutmut driver that is the
+    trampoline-instrumented copy inside `mutants/`. Calling into any trampoline-
+    wrapped function (e.g. this test's `"graph"` parametrization constructing a
+    `GraphBuilder`) makes mutmut's `record_trampoline_hit` walk the call stack via
+    `Path(frame.f_code.co_filename).resolve(strict=True)`, and `Path("<string>")`
+    has no filesystem entry to resolve — `FileNotFoundError`, uncaught, crashing the
+    child with a traceback instead of the closed-consumer exit 0 this test asserts.
+    A real file has a resolvable path regardless of what loads it, so this is a
+    general robustness fix, not a mutmut-only workaround: identical behaviour for
+    the CLI under test either way, verified by running this file, unmutated,
+    before and after the change.
     """
     read_fd, write_fd = os.pipe()
     os.close(read_fd)
-    proc = subprocess.Popen(
-        [sys.executable, "-c", _ENTRY, *args],
-        stdout=write_fd,
-        stderr=subprocess.PIPE,
-        env=_child_env(),
-        text=True,
-    )
-    os.close(write_fd)
-    _, stderr = proc.communicate(timeout=180)
-    return subprocess.CompletedProcess(proc.args, proc.returncode, "", stderr)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, encoding="utf-8"
+    ) as entry_file:
+        entry_file.write(_ENTRY)
+        entry_path = entry_file.name
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, entry_path, *args],
+            stdout=write_fd,
+            stderr=subprocess.PIPE,
+            env=_child_env(),
+            text=True,
+        )
+        os.close(write_fd)
+        _, stderr = proc.communicate(timeout=180)
+        return subprocess.CompletedProcess(proc.args, proc.returncode, "", stderr)
+    finally:
+        os.unlink(entry_path)
 
 
 @pytest.fixture
@@ -128,6 +155,24 @@ def test_stats_exits_zero_and_stays_quiet_on_a_windows_einval_stdout(
     CI matrix (ci.yml is ubuntu-only for unit tests) — i.e. it would assert nothing
     and read as green. The shim replaces sys.stdout with a stream that fails the
     way Windows fails: OSError(EINVAL) instead of BrokenPipeError.
+
+    The shim is written to a real `.py` file rather than passed via `python -c`,
+    for the SAME reason documented on `_run_with_closed_consumer` above: `-c` gives
+    the child's top-level frame `co_filename == "<string>"`, and `_child_env()`
+    points the child at whatever `trelix` this test process itself loaded — under
+    `scripts/mutation.py`'s mutmut driver measuring `store.db` (which sits on
+    `trelix`'s eager import chain: `trelix/__init__.py` -> `Retriever` ->
+    `store.db`), that is the trampoline-instrumented copy inside `mutants/`.
+    `record_trampoline_hit` walks the call stack via
+    `Path(frame.f_code.co_filename).resolve(strict=True)`, and `Path("<string>")`
+    has no filesystem entry to resolve — an uncaught `FileNotFoundError` that
+    `trelix stats`'s own broad `except Exception` then reports as
+    "Failed to read index: ... '<string>'", masking the real cause. Measured: this
+    test failed exactly that way inside `scripts/mutation.py --update-baseline
+    --modules store.db`'s stats pass, before this fix, and passed both standalone
+    and under the same driver invocation after it. A real file has a resolvable
+    path regardless of what loads it, so this is a general robustness fix, not a
+    mutmut-only workaround — identical behaviour for the CLI under test either way.
     """
     shim = (
         "import errno, io, sys\n"
@@ -147,13 +192,21 @@ def test_stats_exits_zero_and_stays_quiet_on_a_windows_einval_stdout(
         "from trelix.cli.main import app\n"
         "sys.exit(app())\n"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", shim],
-        env=_child_env(),
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, encoding="utf-8"
+    ) as shim_file:
+        shim_file.write(shim)
+        shim_path = shim_file.name
+    try:
+        result = subprocess.run(
+            [sys.executable, shim_path],
+            env=_child_env(),
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    finally:
+        os.unlink(shim_path)
 
     assert result.returncode == 0, (
         f"exit {result.returncode} on an EINVAL stdout; stderr={result.stderr!r}"

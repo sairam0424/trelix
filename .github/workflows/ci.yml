@@ -9,6 +9,7 @@ on:
 jobs:
   lint:
     name: Lint & Type Check
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +65,7 @@ jobs:
 
   type-check-extras:
     name: Type Check (optional extras present)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -136,6 +138,7 @@ jobs:
 
   test:
     name: Test (Python ${{ matrix.python-version }})
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -147,6 +150,14 @@ jobs:
         # 3256 collected (identical to 3.11), 3256 passed, 0 skipped, 0 failed, plus
         # 102/19/10 in the three packages.
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+    # Hub offline for the unit matrix ONLY. 48.3% of this suite's wall clock (238.75s of
+    # 494.70s) was live HTTP to huggingface.co, and with the socket ban in addopts these
+    # two variables are what let 51 tests load the CACHED model instead of revalidating
+    # against the Hub. Measured locally: same three files go 41 failed -> 188 passed.
+    # Deliberately NOT on the `integration` job, which documents that it may download.
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     steps:
       # fetch-tags is load-bearing, not hygiene: tests/unit/test_assembler_backcompat_golden.py
       # builds its baseline from `git show v2.12.0:src/trelix/retrieval/assembler.py` to prove
@@ -198,8 +209,21 @@ jobs:
       # It cannot prove the provider CONSTRUCTS — that needs the model weights, which CI
       # does not download — so the claim this job supports is exactly "the extra resolves
       # and einops is importable", and no more. einops is pure Python and ~60 KB.
+      # `graph-viz` closes the identical class of gap uvicorn/watchfiles closed earlier:
+      # tests/unit/test_graph_visualizer_escaping.py (SEC-04, the HTML-escaping /
+      # XSS-prevention test for the pyvis graph export) does a module-scope
+      # `pytest.importorskip("pyvis.network")`, and pyvis was declared by NO extra this
+      # job installs — so on every CI run the whole file SKIPPED, silently, and the
+      # security assertions inside it never executed. `graph-viz = ["pyvis>=0.3.2"]`
+      # already existed in pyproject.toml (added for the runtime `--visualize` feature);
+      # it is added here rather than folded into `dev` because `dev` is installed by
+      # three OTHER jobs (lint, type-check-extras, integration) that never run
+      # tests/unit at all, and pyvis pulls in ipython + its own dependency chain for no
+      # benefit in any of them. `graph-viz` is the narrowest true fix: it is the exact
+      # extra the feature under test already declares, added only to the one job whose
+      # matrix actually executes tests/unit.
       - name: Install trelix + dev deps
-        run: pip install -e ".[local,otel,sso,bge-code,nomic-code,dev]"
+        run: pip install -e ".[local,otel,sso,bge-code,nomic-code,dev,graph-viz]"
       - name: Install trelix-mcp + deps
         run: pip install -e packages/trelix-mcp
       # The `lint` job installed these two but never ran their tests, and this job ran
@@ -222,6 +246,33 @@ jobs:
           key: tree-sitter-language-pack-${{ hashFiles('pyproject.toml') }}
       - name: Prefetch tree-sitter grammars
         run: python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
+      # Same cache-then-prefetch shape as the grammars above, for the same reason: this job
+      # runs with HF_HUB_OFFLINE=1 (see this job's `env:`), and 51 unit tests construct a
+      # REAL embedder -- `SentenceTransformer(config.local_model)`, i.e.
+      # sentence-transformers/all-MiniLM-L6-v2 -- so offline mode against a COLD cache
+      # raises LocalEntryNotFoundError rather than skipping.
+      #
+      # That is not hypothetical. It is what the first push of this change did: 51 failed on
+      # all four legs, while the same suite was green locally. The difference was a warm
+      # ~/.cache/huggingface on the developer's machine. Reproduced deliberately with
+      # HF_HOME pointed at an empty directory, which gave 51 failed / 3,555 passed --
+      # matching CI exactly. A local pass on a warm cache is not evidence about CI.
+      #
+      # Offline is turned OFF for this ONE step so the download can happen, then the test
+      # run itself stays hermetic behind the socket ban. Warming here rather than letting
+      # the tests download is what keeps the ban meaningful: no test may open a socket, and
+      # nothing in the test phase can silently start fetching from the Hub again.
+      - name: Cache Hugging Face hub
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-hub-minilm-l6-v2-${{ hashFiles('pyproject.toml') }}
+      - name: Prefetch the local embedder model
+        env:
+          HF_HUB_OFFLINE: "0"
+          TRANSFORMERS_OFFLINE: "0"
+        run: |
+          python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
       # --cov is required for two things that were previously silently dead:
       # the htmlcov/ artifact uploaded below, and pyproject's
       # [tool.coverage.report] fail_under = 75 gate (pytest-cov reads
@@ -242,8 +293,28 @@ jobs:
       #
       # pyproject's fail_under stays 75 and now disagrees with CI; raise it to 79 so a
       # local `pytest --cov` fails for the same reason CI does.
+      # `branch = true` is now set in pyproject's [tool.coverage.run], so the number this
+      # step prints is combined line+branch and is NOT comparable with any figure recorded
+      # before 2026-08-23. Measured on the full tree before enabling it: line-only 84.01%,
+      # combined 80.76%, branch rate 71.46%. --cov-fail-under=79 therefore still clears, by
+      # 1.76 points, and deliberately does not move -- see the pyproject comment for why the
+      # 0.05-point margin an audit predicted was an extrapolation from the repo's worst area.
+      #
+      # --cov-report=json feeds the per-package floor check below. One global percentage
+      # cannot say WHERE coverage fell, and it lets a rise in a well-covered package mask a
+      # collapse in the extractors, which are simultaneously this repo's core value and its
+      # weakest area.
       - name: Run unit tests
-        run: pytest tests/unit/ -v --tb=short --cov=src/trelix --cov-report=term-missing --cov-report=html --cov-fail-under=79
+        run: pytest tests/unit/ -v --tb=short --cov=src/trelix --cov-report=term-missing --cov-report=html --cov-report=json:coverage-unit.json --cov-fail-under=79
+      # Deliberately a script run after the suite, not a pytest test. A test cannot read its
+      # own run's coverage (pytest-cov writes at session finish), and a test that reads a
+      # report file must skip when it is absent -- which in CI is produced by the very
+      # command running the test. A check that can only skip is a green identical to a check
+      # that never ran. Verified failing two ways before landing: a floor raised above
+      # actual exits 1 naming the package, and a floor whose prefix matches no files exits 1
+      # as DEAD rather than passing forever.
+      - name: Check per-package coverage floors
+        run: python scripts/check_coverage_floors.py coverage-unit.json
       - name: Run trelix-mcp tests
         run: pytest packages/trelix-mcp/tests/ -v --tb=short
       # Three separate invocations, not one. packages/trelix-langchain/tests and
@@ -325,6 +396,7 @@ jobs:
 
   typescript-sdk:
     name: TypeScript SDK
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -343,6 +415,7 @@ jobs:
 
   docker-build:
     name: Docker build smoke test
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

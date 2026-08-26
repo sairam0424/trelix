@@ -1,8 +1,16 @@
 """
 50 eval cases for trelix self-evaluation.
 
-Each case is a (query, expected_file) pair where expected_file is a
-rel_path fragment (substring match) against the indexed trelix source.
+Each case is a (query, expected_file) pair where expected_file is an EXACT
+repo-relative rel_path in the indexed trelix source.
+
+It used to say "rel_path fragment (substring match)", which was true of the
+deleted ``tests/eval/metrics.py``: substring matching credited a hit on any file
+whose path merely CONTAINED the expected string, so ``user.py`` scored a hit on
+``superuser.py``. ``tests/eval/harness.py`` now matches by exact equality (as
+``trelix eval`` does) and refuses a case whose path does not exist in the repo
+under test. All 50 entries below are already exact paths, so no case changed
+meaning -- verified by checking every one against the working tree.
 
 Categories:
   - Symbol lookups   (15 cases): specific classes, functions, or modules

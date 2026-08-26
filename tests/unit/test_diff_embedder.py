@@ -58,13 +58,12 @@ class TestDiffEmbedder:
             f"Truncation removed too much content: only {len(call_arg)} chars remain"
         )
 
-    def test_search_similar_diffs_returns_sorted_by_score(self, tmp_path):
+    def test_search_similar_diffs_returns_sorted_by_score(self, tmp_db):
         from unittest.mock import MagicMock
 
         from trelix.review.diff_embedder import DiffEmbedder
-        from trelix.store.db import Database
 
-        db = Database(tmp_path / "test.db")
+        db = tmp_db
 
         mock_embedder = MagicMock()
         mock_embedder.embed_query.return_value = [1.0] * 4
