@@ -1,3 +1,4 @@
+import argparse
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ from trelix.federation.retriever import FederatedRetriever  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
 from trelix.retrieval.retriever import Retriever  # noqa: E402
 from trelix.store.db import Database  # noqa: E402
+from trelix_mcp import __version__  # noqa: E402
 from trelix_mcp.subscriptions import SubscriptionLimitExceeded, SubscriptionRegistry  # noqa: E402
 
 mcp = FastMCP("trelix")
@@ -998,7 +1000,18 @@ def agent_clear_session(repo_path: str, session_id: str) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Entry point for the trelix-mcp server (stdio transport)."""
+    """Entry point for the trelix-mcp server (stdio transport).
+
+    Parses argv only for --help/--version/unknown-flag rejection — the normal path (no
+    args, launched by an MCP client's server config) falls straight through to running
+    the server, unchanged from before this parser existed.
+    """
+    parser = argparse.ArgumentParser(
+        prog="trelix-mcp",
+        description="MCP server for trelix — semantic code search over stdio.",
+    )
+    parser.add_argument("--version", action="version", version=f"trelix-mcp {__version__}")
+    parser.parse_args()
 
     def _handle_sigterm(signum: int, frame: Any) -> None:
         _log.info("Received SIGTERM — shutting down")
