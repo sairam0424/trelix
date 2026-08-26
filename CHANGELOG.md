@@ -8,6 +8,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.2.2] — 2026-08-26
+
+### Overview
+
+Two fixes to the published trelix-mcp surface, both found by a post-3.2.1 production
+verification pass that installed and ran the actual shipped PyPI packages and Docker
+images rather than the source tree. No stored-vector or retrieval changes.
+
+### Fixed
+
+- **`trelix-mcp`'s console script ignored `--help`, `-h`, `--version`, and any
+  unrecognized flag** — `main()` never inspected `sys.argv` at all, so every one of those
+  silently launched the real MCP server on stdio instead of doing what a CLI user expects.
+  Confirmed live on the published PyPI package. `main()` now parses argv with `argparse`;
+  the no-args path — how every real MCP client actually launches this — is unchanged.
+- **`trelix-mcp` was entirely absent from the published Docker images.** The builder
+  stage only ever copied and installed core `trelix`; `packages/trelix-mcp` was never
+  copied in, and `.dockerignore`'s blanket `packages/` exclusion would have blocked it
+  even if it had been. Confirmed live: `docker run --entrypoint trelix-mcp
+  ghcr.io/sairam0424/trelix:3.2.1 --help` failed with exit 127, genuinely missing from
+  `console_scripts`, not a PATH issue. Both tags now bundle `trelix-mcp` alongside core
+  (~84MB larger on the slim `:X.Y.Z` tag; no torch pulled in).
+
+### Migration
+
+- No stored-vector or index changes; no reindex needed.
+- No dependency floors moved.
+- If you were relying on `docker run --entrypoint trelix-mcp <image>` failing (unlikely),
+  it now works instead.
+
 ## [3.2.1] — 2026-08-26
 
 ### Overview
