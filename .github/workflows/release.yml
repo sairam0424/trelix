@@ -179,6 +179,17 @@ jobs:
     name: Test before publishing
     runs-on: ubuntu-latest
     needs: [verify-version]
+    # Mirrors ci.yml's unit-job env for the same reason: pyproject.toml's addopts bans
+    # outbound sockets repo-wide, and without a warm Hugging Face cache the 51 tests that
+    # construct a REAL local embedder (SentenceTransformer('all-MiniLM-L6-v2')) raise
+    # LocalEntryNotFoundError on a cold runner instead of loading the cached model. This job
+    # is new — the full suite never ran on a tag before it — and shipped without the
+    # cache-then-prefetch steps ci.yml already needed for the identical reason, so the first
+    # tag push after this job existed failed here 100% of the time on a stock ubuntu-latest
+    # runner with no prior cache.
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -202,6 +213,22 @@ jobs:
           pip install -e packages/trelix-llama-index
       - name: Prefetch tree-sitter grammars
         run: python -c "from trelix.indexing.parser._grammar import prefetch_all; prefetch_all()"
+      # Same cache-then-prefetch shape as ci.yml, for the same reason: this job runs with
+      # HF_HUB_OFFLINE=1 above, and offline against a COLD cache raises
+      # LocalEntryNotFoundError rather than skipping. Offline is turned OFF for this one step
+      # so the download can happen, then the test run itself stays hermetic behind the
+      # socket ban.
+      - name: Cache Hugging Face hub
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-hub-minilm-l6-v2-${{ hashFiles('pyproject.toml') }}
+      - name: Prefetch the local embedder model
+        env:
+          HF_HUB_OFFLINE: "0"
+          TRANSFORMERS_OFFLINE: "0"
+        run: |
+          python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
       - name: Unit tests
         run: pytest tests/unit/ -q
       - name: trelix-mcp tests
