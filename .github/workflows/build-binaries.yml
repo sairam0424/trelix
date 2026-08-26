@@ -32,7 +32,7 @@ jobs:
           # sdist, so pip install fails before the build ever runs.
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # macOS only: actions/setup-python's macOS interpreter builds sqlite3
       # without SQLITE_ENABLE_LOAD_EXTENSION, so any bundled trelix binary
@@ -45,11 +45,11 @@ jobs:
       # unaffected, so only macOS's provisioning step changes.
       - name: Set up uv (macOS — needs a Python with sqlite3 load-extension support)
         if: runner.os == 'macOS'
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.11"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         if: runner.os != 'macOS'
         with:
           python-version: "3.11"
@@ -127,7 +127,7 @@ jobs:
           ./dist/trelix stats /tmp/trelix-smoke/repo | grep -q "Symbols"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.binary-path }}
