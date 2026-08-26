@@ -18,6 +18,9 @@ __pycache__/
 .env
 .env.local
 node_modules/
-packages/
+# Exclude every sibling package except trelix-mcp, which the Dockerfile now
+# COPYs and installs into the published image (see Dockerfile builder stage).
+packages/*
+!packages/trelix-mcp
 infra/
 helm/
