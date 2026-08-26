@@ -1,6 +1,6 @@
 # trelix CLI Reference
 
-**Version:** 3.2.1  
+**Version:** 3.2.2  
 **Last updated:** 2026-08-03
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
@@ -1850,4 +1850,4 @@ trelix audit export | jq -r '.principal' | sort | uniq -c
 
 ---
 
-*End of CLI Reference — trelix v3.2.1*
+*End of CLI Reference — trelix v3.2.2*
