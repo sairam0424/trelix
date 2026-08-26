@@ -20,6 +20,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
+# trelix-mcp was never copied into this image, so the published tags shipped no
+# trelix-mcp console script at all — found by the 3.2.1 production-verification audit
+# (docker run --entrypoint trelix-mcp <image> --help failed with exit 127, confirmed
+# genuinely absent from console_scripts, not a PATH issue). Installed in the SAME pip
+# invocation as core below so the resolver dedupes the shared trelix requirement in one
+# pass rather than risking two separate --prefix installs disagreeing on it.
+COPY packages/trelix-mcp/ packages/trelix-mcp/
 
 # --extra-index-url pulls torch's CPU-only wheels first (this image never
 # has GPU access) — the default PyPI torch wheel drags in the full CUDA/
@@ -29,7 +36,7 @@ COPY src/ src/
 # never installs torch at all.
 RUN pip install --no-cache-dir --prefix=/install \
         --extra-index-url https://download.pytorch.org/whl/cpu \
-        ".[${EXTRAS}]"
+        ".[${EXTRAS}]" ./packages/trelix-mcp
 
 FROM python:3.14-slim AS runtime
 
