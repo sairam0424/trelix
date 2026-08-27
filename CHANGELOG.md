@@ -8,6 +8,74 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.2.3] — 2026-08-28
+
+### Overview
+
+One real fix — a SQL `LIKE` wildcard leak in path-scoped search — plus the test
+infrastructure that should catch this class of gap automatically going
+forward: a real-subprocess E2E suite, a hard pre-publish gate on the actual
+built wheels, two cheap CI extensions closing the exact gaps that let the
+3.2.1 defects ship, and a permanent script replacing the hand-run post-publish
+audit this project used for the 3.2.1 and 3.2.2 releases. No stored-vector
+changes.
+
+### Fixed
+
+- **`path_filter` leaked results across sibling paths whose names differed only
+  at a `_` or `%` position.** `db.bm25_search` and `grep_search.py`'s three
+  `path_filter`-scoped queries built their SQL `LIKE` pattern with an unescaped
+  f-string, so a literal underscore or percent sign in `path_filter` — plausible
+  in a real directory name, e.g. `test_utils`, `src_auth` — was read as a `LIKE`
+  wildcard instead of a literal character. Confirmed by hand: two files,
+  `src_auth/login.py` and `srcXauth/login.py`, both matching the same query;
+  `path_filter="src_auth"` returned both. Not a SQL injection — every query here
+  was already parameterized with `?` — a distinct `LIKE`-semantics issue
+  parameterization does not address. Fixed with a shared `escape_like_pattern()`
+  helper plus an explicit `ESCAPE '\'` clause on every affected query, mirroring
+  the identical fix `Database.get_index_metadata_with_prefix` already had for
+  the same defect shape.
+
+### Tests
+
+- **A real-subprocess E2E suite** (`tests/e2e/`, new `e2e` pytest marker,
+  `make test-e2e`, a new CI job): `trelix-mcp` spawned as a real OS subprocess
+  speaking real stdio JSON-RPC, and a real wheel build + fresh-venv install
+  (never editable source) for all four published packages. Targets the exact
+  process-boundary defect class that shipped in 3.2.1 — `trelix-mcp` missing
+  from the Docker image, its console script silently ignoring
+  `--help`/`--version`/any flag — which every existing in-process test
+  (Click's `CliRunner`, the MCP SDK's in-memory `Client`) is documented as
+  structurally unable to see. Also extends `tests/integration/test_cli.py`
+  (which already spawns the real `trelix` CLI) with two assertions it lacked:
+  search finds the *specific* symbol a query targets, and the installed
+  console script's `--version` agrees with the importable package's own
+  `__version__`.
+- **`release.yml`'s `publish` job is now hard-gated on installing the actual
+  built wheels** — never editable source, never a live PyPI pull, which
+  structurally cannot gate the release that creates the version it would
+  check. A new `smoke-test-built-artifacts` job installs the exact wheels
+  `build-distributions` just built and re-runs the E2E + real-CLI-subprocess
+  suites against that install before `publish` is allowed to run.
+- **Two cheap extensions to already-existing CI checks** close the other two
+  gaps that let 3.2.1 ship: `ci.yml`'s Docker job now also checks `trelix-mcp`
+  is actually present in the built image, and `helm-lint.yml` now asserts the
+  rendered Deployment's image tag matches `Chart.yaml`'s `appVersion` on every
+  `helm/**` PR.
+- **`scripts/verify_release.py`** replaces the hand-authored, twice-run
+  post-publish verification prompt with one permanent, reusable command
+  (PyPI installs, Docker images, Helm chart at the tag, GitHub Release
+  binaries, a security/dependency audit) — see `CONTRIBUTING.md`'s release
+  checklist for when to run it.
+
+### Migration
+
+- No stored-vector or index changes; no reindex needed.
+- No dependency floors moved.
+- If you relied on `path_filter` accidentally matching sibling paths via an
+  unescaped `_`/`%` (unlikely, and not a documented behavior), it now matches
+  only the literal prefix you passed.
+
 ## [3.2.2] — 2026-08-26
 
 ### Overview
