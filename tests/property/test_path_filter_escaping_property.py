@@ -1,45 +1,38 @@
-"""DEFECT (pinned deliberately): `bm25_search`'s `path_filter` is a raw SQL LIKE
-pattern, unescaped -- `%` and `_` in a `path_filter` value are interpreted as
-LIKE wildcards instead of literal characters.
+"""FIXED: `bm25_search`'s `path_filter` was a raw SQL LIKE pattern, unescaped --
+`%` and `_` in a `path_filter` value were interpreted as LIKE wildcards instead
+of literal characters. This file was originally written as a pinned `xfail`
+before the fix landed; both classes below now assert the real, fixed contract.
 
-Checked first (per this round's instructions): grepped `path_filter` across
-tests/ and src/. It is NOT currently pinned as a known defect anywhere -- the
-only existing LIKE-wildcard-escaping test in this repo,
-tests/unit/test_provenance.py's `test_an_underscore_in_the_prefix_is_not_a_wildcard`
-/ `test_a_percent_in_the_prefix_is_not_a_wildcard`, covers a DIFFERENT, ALREADY-FIXED
-function: `Database.get_index_metadata_with_prefix` (src/trelix/store/db.py),
-which explicitly escapes with `ESCAPE '\\'` (see its docstring: "a prefix
-containing `_` ... would otherwise have it treated as a single-character
-wildcard"). `Database.bm25_search`'s `path_filter` branch
-(src/trelix/store/db.py, `params: tuple[object, ...] = (w, w, query,
-f"{path_filter}%", limit)`) has no such escaping -- it is the exact
-pre-provenance-fix shape, in a sibling function, unfixed. The retriever's
-OWN vector-search path_filter (`retriever.py::_vector_search`) is immune: it
-filters with plain Python `str.startswith`, which never treats any character
-as a wildcard. So the defect is confined to the two SQL-LIKE-based legs:
-`bm25_search` (tested here) and `grep_search.py` (same shape, not retested).
+The sibling, already-fixed function `Database.get_index_metadata_with_prefix`
+(src/trelix/store/db.py) had the identical defect shape and was fixed the same
+way first — this fix (`escape_like_pattern()` + explicit `ESCAPE '\\'`, both in
+src/trelix/store/db.py) is that same helper, now shared by both call sites
+rather than a second inline copy. `bm25_search`'s SQL now reads
+`fi.rel_path LIKE ? ESCAPE '\\'` with the parameter built from
+`escape_like_pattern(path_filter) + "%"`. The retriever's OWN vector-search
+path_filter (`retriever.py::_vector_search`) was never affected: it filters
+with plain Python `str.startswith`, which never treats any character as a
+wildcard. `grep_search.py` had the identical unescaped shape in three call
+sites (`_name_search`, `_body_search` x2) and is fixed the same way, covered by
+tests/property/test_grep_search_path_filter_escaping_property.py.
 
-FALSIFYING INPUT CONFIRMED BY HAND (see PROOF PROTOCOL below): two files
-"src_auth/login.py" and "srcXauth/login.py", both with an identically-named,
-identically-matching symbol. Querying `bm25_search(db, query, path_filter="src_auth")`
-returns BOTH files today -- the literal "_" in "src_auth" is treated as a
-LIKE single-char wildcard and matches "srcXauth" too. Confirmed by running
-this exact scenario against a real Database before writing the xfail
-(pasted in the round report). The boundary: a `path_filter` with no `%`/`_`
-in it is NOT affected (also confirmed by hand) -- see
-TestPlainPrefixIsUnaffectedControl below, which must keep passing.
+FALSIFYING INPUT THAT PROVED THE ORIGINAL DEFECT: two files "src_auth/login.py"
+and "srcXauth/login.py", both with an identically-named, identically-matching
+symbol. Querying `bm25_search(db, query, path_filter="src_auth")` returned BOTH
+files before this fix -- the literal "_" in "src_auth" was read as a LIKE
+single-char wildcard and matched "srcXauth" too. The boundary: a `path_filter`
+with no `%`/`_` in it was never affected -- see
+TestPlainPrefixIsUnaffectedControl below, which must keep passing (it is the
+discriminating control: if it ever fails, the assertion above stops proving
+anything about the wildcard characters specifically).
 
-DERANDOMIZED: both `@settings` below pin `derandomize=True`. For the xfail
-test this matters just as much as for a passing property: a strict xfail
-with `raises=AssertionError` only proves the defect is caught if Hypothesis
-actually reaches the wildcard-leak shape on the run that's graded, and an
-unpinned seed could in principle land on a run that -- by drawing prefix/
-suffix combinations that happen to leave the decoy indistinguishable in
-every other way -- still finds SOME failing input (since the defect fires
-for literally any prefix/suffix under the wildcard) but that is exactly the
-"green by luck, not by design" shape this task is closing. `max_examples`
-is unchanged (20, 15): re-verification below confirms the pinned seed finds
-the wildcard leak on every one of three consecutive runs.
+DERANDOMIZED: both `@settings` below pin `derandomize=True`, so a regression
+here is reproducible rather than depending on which random input Hypothesis
+happens to draw on a given run.
+
+MUTATION: revert `escape_like_pattern()` to `return value` (or drop the
+`ESCAPE '\\'` clause from bm25_search's SQL) and
+test_wildcard_char_in_path_filter_is_treated_literally fails again.
 """
 
 from __future__ import annotations
@@ -49,7 +42,6 @@ import string
 import tempfile
 from pathlib import Path
 
-import pytest
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
@@ -110,23 +102,11 @@ def _prefix_wildcard_suffix_decoy(draw: st.DrawFn) -> tuple[str, str, str, str]:
 
 
 class TestPathFilterWildcardLeak:
-    """Fails under the CORRECT (currently unimplemented) behaviour: a `path_filter`
-    containing a literal `_` or `%` should match ONLY that literal prefix, not
-    every string with an arbitrary character substituted at the wildcard's
-    position. `raises=AssertionError` because the leak IS a `!=` -> membership
-    assertion failing, not a crash.
+    """A `path_filter` containing a literal `_` or `%` must match ONLY that literal
+    prefix, not every string with an arbitrary character substituted at the
+    wildcard's position.
     """
 
-    @pytest.mark.xfail(
-        reason=(
-            "DEFECT: db.bm25_search's path_filter LIKE pattern is built with an "
-            "unescaped f-string, so '_' and '%' in path_filter act as SQL LIKE "
-            "wildcards instead of literal characters -- a sibling file whose path "
-            "differs only at the wildcard position leaks into path-filtered results."
-        ),
-        raises=AssertionError,
-        strict=True,
-    )
     @settings(
         derandomize=True,
         max_examples=20,
@@ -161,7 +141,7 @@ class TestPathFilterWildcardLeak:
             results = bm25_search(db, "zzq_target_fn", k=10, path_filter=f"{prefix}{wildcard}")
             matched_paths = {r.file.rel_path for r in results}
 
-            # DESIRED (currently failing) property: only the literal-prefix file matches.
+            # The wildcard character in path_filter must be treated literally.
             assert matched_paths == {f"{target_dir}/mod.py"}
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)

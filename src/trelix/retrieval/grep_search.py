@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 
 from trelix.core.models import Chunk, SearchResult
-from trelix.store.db import Database
+from trelix.store.db import Database, escape_like_pattern
 
 
 def grep_search(
@@ -74,6 +74,14 @@ def _name_search(
     as bm25_search()'s hydration calls whenever a strategy's legs include
     both 'grep' and 'bm25' — same shared db._conn hazard as
     get_symbol_with_file().
+
+    `path_filter`'s LIKE pattern is escaped via `escape_like_pattern()` — same
+    fix, same reason as db.bm25_search's path_filter (see that docstring and
+    tests/property/test_path_filter_escaping_property.py). `name`'s own
+    `LIKE ?` (prefix match) is a separate, pre-existing, NOT-yet-fixed instance
+    of the same defect class — a query name containing `_`/`%` would also leak
+    via wildcard matching there; out of scope for this fix, which is
+    path_filter-only.
     """
     with db._conn_lock:
         if path_filter:
@@ -82,10 +90,10 @@ def _name_search(
                 SELECT s.id FROM symbols s
                 JOIN files f ON s.file_id = f.id
                 WHERE (s.name = ? OR s.qualified_name = ? OR s.name LIKE ?)
-                  AND f.rel_path LIKE ?
+                  AND f.rel_path LIKE ? ESCAPE '\\'
                 LIMIT ?
                 """,
-                (name, name, f"{name}%", f"{path_filter}%", limit),
+                (name, name, f"{name}%", escape_like_pattern(path_filter) + "%", limit),
             ).fetchall()
         else:
             rows = db._conn.execute(
@@ -118,6 +126,10 @@ def _body_search(
     as bm25_search()'s hydration calls — same shared db._conn hazard as
     get_symbol_with_file(). Only the two conn.execute() calls are locked;
     the in-memory match_fn loop below runs outside the critical section.
+
+    `path_filter`'s LIKE pattern is escaped via `escape_like_pattern()` in
+    both the FTS5 and fallback-scan branches — same fix, same reason as
+    db.bm25_search's path_filter.
     """
     _FTS_LIMIT = 500
     _SCAN_LIMIT = 2000
@@ -144,10 +156,10 @@ def _body_search(
                     JOIN symbols_fts f ON s.id = f.rowid
                     JOIN files fi ON s.file_id = fi.id
                     WHERE symbols_fts MATCH ?
-                      AND fi.rel_path LIKE ?
+                      AND fi.rel_path LIKE ? ESCAPE '\\'
                     LIMIT ?
                     """,
-                    (pattern, f"{path_filter}%", _FTS_LIMIT),
+                    (pattern, escape_like_pattern(path_filter) + "%", _FTS_LIMIT),
                 ).fetchall()
             else:
                 rows = db._conn.execute(
@@ -171,10 +183,10 @@ def _body_search(
                     """
                     SELECT s.id, s.body FROM symbols s
                     JOIN files f ON s.file_id = f.id
-                    WHERE f.rel_path LIKE ?
+                    WHERE f.rel_path LIKE ? ESCAPE '\\'
                     LIMIT ?
                     """,
-                    (f"{path_filter}%", _SCAN_LIMIT),
+                    (escape_like_pattern(path_filter) + "%", _SCAN_LIMIT),
                 ).fetchall()
             else:
                 rows = db._conn.execute(
