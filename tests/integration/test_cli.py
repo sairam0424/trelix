@@ -337,3 +337,36 @@ def test_search_nonexistent_repo_exits_one() -> None:
     """trelix search on a non-existent repo must exit with code 1."""
     result = _run("search", "/no/such/path", "query")
     assert result.returncode == 1, f"Expected exit code 1 for invalid path, got {result.returncode}"
+
+
+def test_search_json_finds_the_right_symbol(indexed_repo: Path) -> None:
+    """Content correctness, not just "non-empty": a query must surface the
+    specific symbol it targets, not merely any result.
+
+    Every other search assertion in this file (test_search_exits_zero,
+    test_search_stdout_not_empty, test_search_json_flag) only checks that
+    SOMETHING came back — none of them can tell a correct ranking from a
+    degenerate one that always returns the same top hit regardless of query.
+    """
+    result = _run("search", str(indexed_repo), "add two numbers together", "--json")
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["status"] == "ok"
+    symbols = {r["symbol"] for r in data["results"]}
+    assert "add" in symbols, f"expected the add() function to surface; got {sorted(symbols)}"
+
+
+def test_cli_version_matches_the_installed_package() -> None:
+    """The installed console script's --version must agree with the real
+    __version__ this test process's own trelix import reports.
+
+    Catches the exact class of drift a stale editable install (pip install -e
+    . run once, then source edited without a reinstall) or a half-applied
+    release stamp can hide — the console script and the importable package
+    could silently disagree about which version is running.
+    """
+    from trelix import __version__
+
+    result = _run("--version")
+    assert result.returncode == 0
+    assert __version__ in result.stdout

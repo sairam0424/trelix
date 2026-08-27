@@ -2,7 +2,7 @@
 # via pypa/gh-action-pypi-publish and PyPI's OIDC trusted publisher, gated on the `pypi`
 # environment. A local target could not use OIDC — it would need a long-lived API token
 # on a developer machine. Use `make build check-dist` locally and push a tag to release.
-.PHONY: help install install-dev install-all test test-fast test-mcp test-cov lint typecheck format check clean build check-dist docs-serve version eval eval-full index-example search-example binary binary-clean binary-install docker-build docker-build-local docker-run
+.PHONY: help install install-dev install-all test test-fast test-mcp test-cov test-e2e lint typecheck format check clean build check-dist docs-serve version eval eval-full index-example search-example binary binary-clean binary-install docker-build docker-build-local docker-run
 
 # Paths ruff sees. Kept identical to the `lint` job in .github/workflows/ci.yml so that
 # a local `make lint` / `make format` that passes means CI's ruff steps pass. `scripts/`
@@ -51,6 +51,12 @@ test-cov:  ## Run tests with coverage report
 
 test-mcp:  ## Run MCP package tests only
 	python -m pytest packages/trelix-mcp/tests/ -v --tb=short
+
+# Real subprocesses (the trelix CLI, trelix-mcp over stdio, fresh venv pip installs), not
+# mocks — deliberately excluded from `test`/`test-fast` above, both by directory (tests/e2e
+# is outside tests/unit) and by the socket ban's own carve-out (see tests/e2e/conftest.py).
+test-e2e:  ## Run the real-subprocess E2E suite (CLI, MCP stdio, dist installs)
+	python -m pytest tests/e2e/ -v --tb=short
 
 # tests/integration/test_recall.py used to run alongside test_eval.py here; it is
 # deleted (see tests/integration/test_eval.py's module docstring and
