@@ -416,6 +416,9 @@ exceptions. Site 4 used to be one: it was documented as "verify it by hand until
 is added", which is the same silent-mis-publish risk as the adapters had, so it is now
 checked like the rest.
 
+After Release and Docker Publish both go green, run `python scripts/verify_release.py
+--version X.Y.Z` and confirm every check passes before announcing the release.
+
 Sites 4 and 8–11 are newly gated.
 [docs/BACKWARDS_COMPATIBILITY.md](docs/BACKWARDS_COMPATIBILITY.md#integration-package-policy)
 has always put all three integration packages on the core version; both adapters sat at
