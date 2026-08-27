@@ -35,6 +35,13 @@ jobs:
             --set store.backend=${{ matrix.backend }} \
             --set store.qdrant.apiKey=ci-test-placeholder
 
+      - name: Assert rendered image tag matches appVersion
+        run: |
+          RENDERED=$(helm template test helm/trelix --set store.backend=${{ matrix.backend }} --set store.qdrant.apiKey=ci-test-placeholder | grep -m1 'image:.*trelix' | awk '{print $2}' | tr -d '"')
+          APP_VERSION=$(grep '^appVersion:' helm/trelix/Chart.yaml | sed 's/appVersion: *"\?\([^"]*\)"\?/\1/')
+          echo "rendered=$RENDERED appVersion=$APP_VERSION"
+          [[ "$RENDERED" == *":$APP_VERSION" ]] || { echo "::error::rendered image tag ($RENDERED) does not match Chart.yaml appVersion ($APP_VERSION)"; exit 1; }
+
       - name: Helm template (ingress enabled)
         if: matrix.backend == 'sqlite'
         run: helm template test helm/trelix --set ingress.enabled=true

@@ -459,3 +459,5 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Verify image runs
         run: docker run --rm trelix:ci-test --help
+      - name: Verify trelix-mcp is present in the image
+        run: docker run --rm --entrypoint trelix-mcp trelix:ci-test --version
