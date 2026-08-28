@@ -40,10 +40,32 @@ RUN pip install --no-cache-dir --prefix=/install \
 
 FROM python:3.14-slim AS runtime
 
+# CVE-2026-14456 (libssl3t64 / openssl / openssl-provider-legacy): python:3.14-slim's
+# plain trixie/main apt suite still ships the vulnerable 3.5.6-1~deb13u2 build.
+# Debian's trixie-security channel has already published the fix
+# (3.5.7-1~deb13u2) but the upstream base image has not been rebuilt against it
+# yet, so pull it explicitly here instead of waiting on an image rebuild or doing
+# a blanket `apt-get upgrade -y`.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libssl3t64 \
+        openssl \
+        openssl-provider-legacy \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system trelix \
     && useradd --system --gid trelix --home-dir /home/trelix --create-home trelix
 
 COPY --from=builder /install /usr/local
+
+# GHSA-6v7p-g79w-8964 (msgpack 1.1.2) and CVE-2025-47273 (setuptools 70.3.0) are
+# not real trelix/trelix-mcp dependencies — trelix never depends on either
+# package. Both are pip's own internally vendored copies
+# (pip/_vendor/msgpack, pip/_vendor/pkg_resources), declared in pip's bundled
+# bom.cdx.json SBOM and picked up by Trivy's Python-package scanner. This
+# runtime image's ENTRYPOINT is the `trelix` console script and never invokes
+# pip, so drop pip (and its vendored msgpack/setuptools copies) from the
+# shipped image entirely.
+RUN python -m pip uninstall --yes pip setuptools wheel
 
 # Repos are indexed/served from a bind-mounted volume at /repo (see
 # docker-compose.yml). The trelix user must own it so `.trelix/` index
