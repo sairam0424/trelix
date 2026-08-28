@@ -306,11 +306,24 @@ jobs:
       # No `set -e` and no continue-on-error: this step records pip-audit's exit code as an
       # output instead of propagating it, because three outcomes have to be told apart and
       # only two of them are the same kind of event. The next step does the telling.
+      #
+      # `set -uo pipefail` alone does NOT achieve that: GitHub Actions' default `bash` shell
+      # runs every `run:` block as `bash -e {0}`, so `-e` is already active before this
+      # script's own `set` line executes, and `set -uo pipefail` does not clear a flag it
+      # never names. Proven with a minimal repro — `bash -e script.sh` vs plain
+      # `bash script.sh` on the identical body diverge exactly here. With `-e` still live,
+      # ANY non-zero pip-audit exit (i.e. any finding at all, not just a crash) aborted the
+      # step before `echo "status=$?"` could run, so `steps.audit.outputs.status` was never
+      # set and the "Classify and gate" step below was skipped outright — turning a
+      # report-only PR finding into an unexplained hard job failure. `set +e` right before
+      # the pip-audit call disables errexit for that one command; `STATUS=$?` captures the
+      # real exit code immediately, before anything else can overwrite `$?`.
       - name: pip-audit
         id: audit
         run: |
           set -uo pipefail
           SITE_PACKAGES=$(/tmp/surface/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+          set +e
           /tmp/auditor/bin/pip-audit \
             --path "$SITE_PACKAGES" \
             --skip-editable \
@@ -319,7 +332,9 @@ jobs:
             --progress-spinner off \
             --format markdown \
             --output audit.md >audit.log 2>&1
-          echo "status=$?" >> "$GITHUB_OUTPUT"
+          STATUS=$?
+          set -e
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
           cat audit.log
 
       # Three outcomes, three responses. The middle one is the trap: pip-audit 2.10.1 does
