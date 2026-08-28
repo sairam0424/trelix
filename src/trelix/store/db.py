@@ -288,6 +288,23 @@ END;
 """
 
 
+def escape_like_pattern(value: str) -> str:
+    """Escape `%`, `_`, and `\\` in `value` so it is safe as a SQL LIKE pattern segment.
+
+    LIKE treats `%` and `_` as wildcards in the PATTERN VALUE itself — this has nothing
+    to do with SQL injection (the callers here already use `?` parameterization) and
+    everything to do with LIKE's own semantics. A `path_filter` or symbol name
+    containing a literal underscore (extremely common: `test_utils.py`, `my_function`)
+    would otherwise match any other string with an arbitrary character substituted at
+    that position. Every caller must also add `ESCAPE '\\\\'` to its SQL — escaping the
+    value alone does nothing without it.
+
+    Backslash is escaped FIRST, or escaping `%`/`_` afterward would double-escape any
+    backslash a caller's own escaping introduced.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def read_only_uri(db_path: Path | str) -> str:
     """Build the `mode=ro` SQLite URI for `db_path`, percent-encoding the path.
 
@@ -1367,7 +1384,13 @@ class Database:
         `path_filter`, when set, restricts results to symbols whose file's
         rel_path starts with that prefix — pushed into the SQL join (same
         `f.rel_path LIKE ?` pattern as grep_search.py) rather than fetched
-        and discarded, since FTS5 can take the join cheaply.
+        and discarded, since FTS5 can take the join cheaply. Escaped via
+        `escape_like_pattern()` with an explicit `ESCAPE '\\'`: an unescaped
+        `_`/`%` in `path_filter` (e.g. `src_utils`, a plausible real directory
+        name) would otherwise be read as a LIKE wildcard and match a sibling
+        path that only coincidentally has some other character in that
+        position — a real path-filter leak, confirmed with
+        `tests/property/test_path_filter_escaping_property.py`.
 
         `declaration_boost_weight` (default 1.0 — a no-op) is applied to the
         `name`/`qualified_name` FTS5 columns via an explicit bm25() call;
@@ -1388,11 +1411,17 @@ class Database:
                 JOIN symbols s ON f.rowid = s.id
                 JOIN files fi ON s.file_id = fi.id
                 WHERE symbols_fts MATCH ?
-                  AND fi.rel_path LIKE ?
+                  AND fi.rel_path LIKE ? ESCAPE '\\'
                 ORDER BY rank
                 LIMIT ?
                 """
-            params: tuple[object, ...] = (w, w, query, f"{path_filter}%", limit)
+            params: tuple[object, ...] = (
+                w,
+                w,
+                query,
+                escape_like_pattern(path_filter) + "%",
+                limit,
+            )
         else:
             sql = """
                 SELECT rowid, bm25(symbols_fts, ?, ?, 1.0, 1.0, 1.0) AS rank
@@ -2737,7 +2766,7 @@ class Database:
         provenance keys do — would otherwise have it treated as a single-character
         wildcard and match keys it should not.
         """
-        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = escape_like_pattern(prefix)
         rows = self._conn.execute(
             "SELECT key, value FROM index_metadata WHERE key LIKE ? ESCAPE '\\'",
             (escaped + "%",),

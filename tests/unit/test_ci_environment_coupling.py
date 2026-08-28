@@ -112,6 +112,11 @@ CI_JOB_PIP_INSTALLS: dict[str, tuple[str, ...]] = {
         "pip install -e packages/trelix-mcp",
     ),
     "integration": ('pip install -e ".[local,otel,sso,dev]"',),
+    "e2e": (
+        'pip install -e ".[local,otel,sso,dev]"',
+        "pip install -e packages/trelix-mcp -e packages/trelix-langchain "
+        "-e packages/trelix-llama-index",
+    ),
 }
 
 #: The job whose install set ``tests/unit`` runs under (4 Python legs).

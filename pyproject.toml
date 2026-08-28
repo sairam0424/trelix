@@ -36,7 +36,7 @@ exclude = [
 
 [project]
 name = "trelix"
-version = "3.2.2"
+version = "3.2.3"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -463,6 +463,7 @@ markers = [
     # output escaping, secret redaction, audit tamper evidence, read-only enforcement,
     # remote-code gating, and the socket ban's own positive control.
     "security: the subject under test IS a security control",
+    "e2e: spawns a real subprocess/venv/pip install — the full external-boundary path a mock cannot see",
 ]
 
 [tool.coverage.run]
