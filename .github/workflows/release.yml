@@ -44,7 +44,7 @@ jobs:
       # comment even says so in as many words. An earlier version of THIS comment claimed
       # "fetch-depth stays at the default: only the tag object is needed, not history",
       # which cited that precedent while dropping the half that makes it work.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -191,11 +191,11 @@ jobs:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
       # Mirrors ci.yml's install: 'sso' is required by tests, not just by the feature —
@@ -219,7 +219,7 @@ jobs:
       # so the download can happen, then the test run itself stays hermetic behind the
       # socket ban.
       - name: Cache Hugging Face hub
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/huggingface
           key: hf-hub-minilm-l6-v2-${{ hashFiles('pyproject.toml') }}
@@ -266,7 +266,7 @@ jobs:
           # sdist, so pip install fails before the build ever runs.
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # macOS only: actions/setup-python's macOS interpreter builds sqlite3
       # without SQLITE_ENABLE_LOAD_EXTENSION, so any bundled trelix binary
@@ -278,11 +278,11 @@ jobs:
       # macOS's provisioning step changes. See build-binaries.yml.
       - name: Set up uv (macOS — needs a Python with sqlite3 load-extension support)
         if: runner.os == 'macOS'
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.11"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         if: runner.os != 'macOS'
         with:
           python-version: "3.11"
@@ -354,7 +354,7 @@ jobs:
           ./dist/trelix stats /tmp/trelix-smoke/repo | grep -q "Symbols"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.binary-path }}
@@ -367,9 +367,9 @@ jobs:
     permissions: {}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
@@ -383,7 +383,7 @@ jobs:
         run: twine check dist/*
 
       - name: Upload trelix distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: trelix-dist
           path: dist/
@@ -396,7 +396,7 @@ jobs:
         run: twine check packages/trelix-mcp/dist/*
 
       - name: Upload trelix-mcp distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: trelix-mcp-dist
           path: packages/trelix-mcp/dist/
@@ -409,7 +409,7 @@ jobs:
         run: twine check packages/trelix-langchain/dist/*
 
       - name: Upload trelix-langchain distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: trelix-langchain-dist
           path: packages/trelix-langchain/dist/
@@ -422,7 +422,7 @@ jobs:
         run: twine check packages/trelix-llama-index/dist/*
 
       - name: Upload trelix-llama-index distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: trelix-llama-index-dist
           path: packages/trelix-llama-index/dist/
@@ -477,76 +477,76 @@ jobs:
 
     steps:
       - name: Download trelix distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: trelix-dist
           path: dist/
 
       - name: Download trelix-mcp distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: trelix-mcp-dist
           path: packages/trelix-mcp/dist/
 
       - name: Download trelix-langchain distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: trelix-langchain-dist
           path: packages/trelix-langchain/dist/
 
       - name: Download trelix-llama-index distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: trelix-llama-index-dist
           path: packages/trelix-llama-index/dist/
 
       - name: Publish trelix to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true
           attestations: true
 
       - name: Publish trelix-mcp to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: packages/trelix-mcp/dist/
           skip-existing: true
           attestations: true
 
       - name: Publish trelix-langchain to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: packages/trelix-langchain/dist/
           skip-existing: true
           attestations: true
 
       - name: Publish trelix-llama-index to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: packages/trelix-llama-index/dist/
           skip-existing: true
           attestations: true
 
       - name: Download macOS binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: trelix-macos-arm64
           path: release-assets/macos
 
       - name: Download Windows binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: trelix-windows-x64
           path: release-assets/windows
 
       - name: Download Linux binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: trelix-linux-x64
           path: release-assets/linux
 
       - name: Download Linux ARM64 binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: trelix-linux-arm64
           path: release-assets/linux-arm64
@@ -562,7 +562,7 @@ jobs:
           mv release-assets/linux-arm64/trelix release-assets/linux-arm64/trelix-linux-arm64
 
       - name: Create GitHub Release with binaries
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             release-assets/macos/trelix-macos-arm64
