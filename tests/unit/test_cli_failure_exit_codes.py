@@ -171,31 +171,6 @@ def test_connector_sync_exits_nonzero_when_the_sync_reported_errors(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    # `raises=AssertionError` is load-bearing, and it was missing.
-    #
-    # Without it, ANY exception satisfies the xfail. Adversarial review proved that is not
-    # theoretical: `result.output` begins with Hub warnings and a `Loading weights: 100%|...`
-    # progress bar, so `json.loads(result.output)` raised JSONDecodeError and the test never
-    # reached `assert result.exit_code != 0` -- the assertion its docstring exists for. The
-    # reviewer then FIXED the underlying defect and re-ran: still XFAIL. The boomerang was
-    # broken, i.e. fixing the bug would not have forced the marker's removal, which is the
-    # entire point of a strict xfail.
-    #
-    # Pinning the type means a JSONDecodeError is now a hard failure, and only the intended
-    # assertion can satisfy the marker.
-    raises=AssertionError,
-    reason=(
-        "DEFECT, not a pinned behaviour: `Indexer.index_file()` catches every "
-        "exception and RETURNS {'status': 'error', ...} — it never raises. So "
-        "`update_index`'s `except Exception: raise typer.Exit(1)` is dead for every "
-        "failure inside index_file, and the command prints an error payload on "
-        "stdout with exit 0. `indexing/watcher.py` checks `result.get('status') == "
-        "'ok'`; the CLI does not. Fix: exit non-zero when status != 'ok', then "
-        "delete this xfail."
-    ),
-)
 def test_update_index_exits_nonzero_when_the_file_could_not_be_indexed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
