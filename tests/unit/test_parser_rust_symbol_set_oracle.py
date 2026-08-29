@@ -575,8 +575,7 @@ def test_rust_module_symbol_requires_inner_doc_comment():
     with_doc = parser.parse(MODULE_DOC_RS, file_id=1)
     assert {s.qualified_name for s in with_doc.symbols} == {"crate", "e"}
     crate = next(s for s in with_doc.symbols if s.qualified_name == "crate")
-    # Same trailing-newline-in-node-text quirk as above.
-    assert crate.docstring == "Crate line one.\n\nCrate line two."
+    assert crate.docstring == "Crate line one.\nCrate line two."
     assert crate.body == crate.docstring
     assert crate.signature == "crate"
 

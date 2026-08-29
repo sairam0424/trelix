@@ -96,7 +96,7 @@ class RustParser(BaseParser):
             if child.type == "line_comment":
                 text = self._txt(child, src)
                 if text.startswith("//!"):
-                    inner_doc_lines.append(text)
+                    inner_doc_lines.append(text.rstrip("\n"))
                     continue
             elif child.type == "block_comment":
                 text = self._txt(child, src)
