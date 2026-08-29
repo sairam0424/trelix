@@ -80,12 +80,12 @@ def detect_communities(
 
         for community_id, members in enumerate(communities):
             for node_id in members:
-                mapping[int(node_id)] = community_id
+                mapping[node_id] = community_id
 
     except Exception as exc:
         logger.warning("Community detection failed (%s), assigning all to 0: %s", algorithm, exc)
         for node_id in cg.nx.nodes():
-            mapping[int(node_id)] = 0
+            mapping[node_id] = 0
 
     return mapping
 
