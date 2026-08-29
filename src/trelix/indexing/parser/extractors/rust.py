@@ -97,7 +97,7 @@ class RustParser(BaseParser):
             if child.type == "line_comment":
                 text = self._txt(child, src)
                 if text.startswith("//!"):
-                    inner_doc_lines.append(text)
+                    inner_doc_lines.append(text.rstrip("\n"))
                     continue
             elif child.type == "block_comment":
                 text = self._txt(child, src)
@@ -520,7 +520,9 @@ class RustParser(BaseParser):
         if body:
             for child in body.children:
                 if child.type in ("function_item", "function_signature_item"):
-                    self._handle_trait_fn(child, src, file_id, symbols, local_idx, name, raw_calls)
+                    self._handle_trait_fn(
+                        child, src, file_id, symbols, local_idx, name, raw_calls, is_pub
+                    )
                 elif child.type == "associated_type":
                     # type Output; inside trait body
                     aname_node = child.child_by_field_name("name") or self._get_child_by_type(
@@ -552,6 +554,7 @@ class RustParser(BaseParser):
         trait_local_idx: int,
         trait_name: str,
         raw_calls: list[tuple[int, str, int]],
+        trait_is_public: bool,
     ) -> None:
         name_node = node.child_by_field_name("name") or self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -559,7 +562,10 @@ class RustParser(BaseParser):
         name = self._txt(name_node, src)
 
         attrs = self._get_rust_attributes(node, src)
-        is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
+        # A trait fn never carries its own visibility_modifier -- `pub fn` inside a
+        # trait body is a compile error in real Rust. Trait methods inherit the
+        # trait's own visibility instead.
+        is_pub = trait_is_public
 
         func_local_idx = len(symbols)
         symbols.append(
@@ -979,19 +985,29 @@ class RustParser(BaseParser):
         edges: list[ImportEdge],
     ) -> None:
         """Recursively expand use trees like foo::{A, B, C}."""
-        if node.type == "use_tree_list":
+        if node.type == "scoped_use_list":
+            path_node = node.child_by_field_name("path")
+            prefix = self._txt(path_node, src) if path_node else path_so_far
+            list_node = node.child_by_field_name("list")
+            if list_node:
+                self._flatten_use_tree(list_node, src, file_id, prefix, edges)
+        elif node.type == "use_list":
             for child in node.children:
-                if child.type == "use_tree":
+                if child.type == "identifier":
+                    edges.append(
+                        ImportEdge(
+                            file_id=file_id,
+                            imported_from=path_so_far,
+                            imported_names=[self._txt(child, src)],
+                        )
+                    )
+                elif child.type in (
+                    "scoped_identifier",
+                    "scoped_use_list",
+                    "use_as_clause",
+                    "use_wildcard",
+                ):
                     self._flatten_use_tree(child, src, file_id, path_so_far, edges)
-        elif node.type == "use_tree":
-            full = self._txt(node, src)
-            edges.append(
-                ImportEdge(
-                    file_id=file_id,
-                    imported_from=full,
-                    imported_names=[],
-                )
-            )
         else:
             full = self._txt(node, src)
             parts = full.replace("::", ".").split(".")
