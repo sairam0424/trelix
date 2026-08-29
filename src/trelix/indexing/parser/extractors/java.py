@@ -517,6 +517,10 @@ class JavaParser(BaseParser):
 
         kind = SymbolKind.CONSTANT if is_static_final else SymbolKind.VARIABLE
 
+        decl_start = modifiers_node.end_byte if modifiers_node else node.start_byte
+        decl_text = src[decl_start : node.end_byte].decode("utf-8", errors="replace").strip()
+        signature = decl_text.split("\n")[0][:200].strip()
+
         for child in node.children:
             if child.type != "variable_declarator":
                 continue
@@ -535,7 +539,7 @@ class JavaParser(BaseParser):
                     kind=kind,
                     line_start=node.start_point[0] + 1,
                     line_end=node.end_point[0] + 1,
-                    signature=body.split("\n")[0][:200].strip(),
+                    signature=signature,
                     body=body,
                     parent_id=class_local_idx,
                     decorators=annotations,
