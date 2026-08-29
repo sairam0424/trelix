@@ -178,7 +178,6 @@ MUTANTS AND DEAD CODE REPORTED, NOT TESTED (rule: a test pinning dead code block
 
 from __future__ import annotations
 
-import pytest
 from tree_sitter import Node
 
 from trelix.indexing.parser._grammar import make_parser
