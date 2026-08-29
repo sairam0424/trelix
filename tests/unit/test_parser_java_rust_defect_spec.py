@@ -623,16 +623,6 @@ def test_java_annotated_field_signature_describes_the_declaration() -> None:
 INNER_DOC_LEAK_RS = "//! Crate docs.\npub fn e() {}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R14 (pinned deliberately, NEW -- not in either oracle): a '//!' "
-    "crate-level inner doc comment is also attached as the docstring of the first "
-    "following item, because rust._get_preceding_comment accepts any line_comment and "
-    "does not distinguish '//!' (documents the enclosing scope) from '///' (documents "
-    "the next item). Opening a file with '//!' is idiomatic Rust, so the first symbol "
-    "of most real Rust files carries the whole crate header as its embedded doc text.",
-)
 def test_rust_crate_inner_doc_is_not_attached_to_the_following_item() -> None:
     """SPEC: a ``//!`` comment documents the crate, never the next item.
 
@@ -666,17 +656,6 @@ def test_rust_crate_inner_doc_is_not_attached_to_the_following_item() -> None:
     assert docs["e"] is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R7 (pinned deliberately): rust._get_preceding_comment's gap guard "
-    "'prev.end_point[0] + 1 < next_start_line' is one too many for Rust, because a "
-    "line_comment's text includes its trailing newline so end_point already names the "
-    "next line. A '///' comment separated from its item by ONE blank line is wrongly "
-    "attached. The IDENTICAL guard in java.py is CORRECT there (a '/** */' block "
-    "closes at '*/' on its own line), so this must be fixed in rust.py ONLY -- a "
-    "uniform fix across both extractors would break the healthy one.",
-)
 def test_rust_doc_comment_separated_by_a_blank_line_is_detached() -> None:
     """SPEC: one blank line between a ``///`` comment and an item detaches it.
 
@@ -695,15 +674,6 @@ def test_rust_doc_comment_separated_by_a_blank_line_is_detached() -> None:
     assert docs["b"] is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R8 (pinned deliberately): rust._get_preceding_comment walks "
-    "prev_named_sibling and stops at the non-comment attribute_item, so a '///' doc is "
-    "silently lost whenever an #[attr] sits between it and the item. Rust idiom puts "
-    "attributes AFTER doc comments, so this loses the docs on most #[derive]d, "
-    "#[inline]d and #[serde]d items.",
-)
 def test_rust_doc_comment_survives_an_attribute_between_it_and_the_item() -> None:
     """SPEC: ``/// doc`` then ``#[inline]`` then ``fn`` keeps the doc on the fn.
 
@@ -736,14 +706,6 @@ def test_rust_doc_comment_survives_an_attribute_between_it_and_the_item() -> Non
 MULTILINE_DOC_RS = "/// Two\n/// lines.\npub fn d() {}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R9 (pinned deliberately): tree-sitter-rust's line_comment text "
-    "includes its trailing newline, and rust._get_preceding_comment joins the pieces "
-    "with another '\\n', so every multi-line '///' doc gains a blank line between every "
-    "pair of lines. 'Two\\nlines.' is indexed as 'Two\\n\\nlines.'.",
-)
 def test_rust_multiline_doc_comment_has_no_spurious_blank_lines() -> None:
     """SPEC: two consecutive ``///`` lines join to ``"Two\\nlines."``.
 

@@ -1034,10 +1034,24 @@ class RustParser(BaseParser):
         lines: list[str] = []
         prev = node.prev_named_sibling
         next_start_line = node.start_point[0]
-        while prev is not None and prev.type in ("line_comment", "block_comment"):
-            if prev.end_point[0] + 1 < next_start_line:
+        while prev is not None and prev.type in (
+            "line_comment",
+            "block_comment",
+            "attribute_item",
+        ):
+            if prev.type == "attribute_item":
+                next_start_line = prev.start_point[0]
+                prev = prev.prev_named_sibling
+                continue
+            gap_row = prev.end_point[0] if prev.type == "line_comment" else prev.end_point[0] + 1
+            if gap_row < next_start_line:
                 break
-            lines.insert(0, self._txt(prev, src))
+            text = self._txt(prev, src)
+            if text.startswith("//!") or text.startswith("/*!"):
+                break
+            if prev.type == "line_comment":
+                text = text.rstrip("\n")
+            lines.insert(0, text)
             next_start_line = prev.start_point[0]
             prev = prev.prev_named_sibling
         return self._clean_comment("\n".join(lines)) if lines else None
