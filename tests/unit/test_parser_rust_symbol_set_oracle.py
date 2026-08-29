@@ -528,28 +528,23 @@ def test_rust_doc_comment_attachment_is_exact():
     parser = RustParser()
     docs = {s.qualified_name: s.docstring for s in parser.parse(DOC_RS, file_id=1).symbols}
     assert docs["a"] == "Attached to a."
-    # CURRENT-BUT-WRONG, pinned deliberately: a comment separated by ONE blank
-    # line is still attached. tree-sitter-rust's line_comment node text includes
-    # its trailing newline, so `prev.end_point[0]` already names the line AFTER
-    # the comment and the `+ 1` in `prev.end_point[0] + 1 < next_start_line` is
-    # one too many. The identical guard in the Java extractor is correct because
-    # a Java `/** */` block comment ends at `*/`, on its own line. Fixing this
-    # means dropping the `+ 1` for Rust; when that happens this row becomes None
-    # and this assertion is the thing to update.
-    assert docs["b"] == "One blank line before b."
+    # Fixed (R7): the gap guard no longer double-counts the trailing newline that
+    # tree-sitter-rust's line_comment text already includes, so a comment
+    # separated from its item by ONE blank line is correctly detached.
+    assert docs["b"] is None
     assert docs["c"] is None
-    # tree-sitter-rust's line_comment node text INCLUDES its trailing newline, so
-    # joining two of them with "\n" yields a blank line between them. Pinned as
-    # observed behaviour, not endorsed: the semantic value is "Two\nlines.".
-    assert docs["d"] == "Two\n\nlines."
+    # Fixed (R9): line_comment text is stripped of its trailing newline before
+    # being joined, so two adjacent `///` lines join without a spurious blank
+    # line between them.
+    assert docs["d"] == "Two\nlines."
 
-    # CURRENT-BUT-WRONG: the `///` doc is silently lost because
-    # _get_preceding_comment walks prev_named_sibling and the attribute_item is
-    # not a comment, so the loop never reaches the comment. Rust puts attributes
-    # AFTER doc comments idiomatically, so this loses docs on most real items.
+    # Fixed (R8): _get_preceding_comment now treats attribute_item as
+    # transparent while walking backwards, so a `///` doc survives an #[attr]
+    # sitting between it and the item. Rust puts attributes AFTER doc comments
+    # idiomatically, so this recovers docs on most real items.
     attr_result = parser.parse(ATTR_DOC_RS, file_id=1)
     attr_docs = {s.qualified_name: s.docstring for s in attr_result.symbols}
-    assert attr_docs["d"] is None
+    assert attr_docs["d"] == "Blocked by the attribute."
     assert attr_result.symbols[0].decorators == ["#[inline]"]
 
 
