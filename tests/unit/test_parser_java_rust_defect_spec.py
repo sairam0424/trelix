@@ -487,15 +487,6 @@ def test_java_record_implements_clause_produces_a_type_edge() -> None:
     assert len(result.type_edges) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J3 (pinned deliberately): java._extract_import cannot see the "
-    "'asterisk' sibling node, so 'import java.util.*;' is recorded as "
-    "imported_from='java' / imported_names=['util'] -- a bogus edge to package 'java' "
-    "and a lost edge to 'java.util'. Violates ImportEdge's documented ['*'] contract, "
-    "which python.py honours (see the control test above).",
-)
 def test_java_wildcard_import_records_the_wildcard() -> None:
     """SPEC: ``import java.util.*;`` is ``imported_from="java.util"``,
     ``imported_names=["*"]`` -- the shape ``ImportEdge``'s own docstring specifies and
@@ -858,16 +849,6 @@ impl Draw for Boxy {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R11 (pinned deliberately): rust._handle_impl routes a type_item "
-    "inside an impl block through _handle_type_alias, which takes no parent, so "
-    "'type Out = u32;' inside 'impl Draw for Boxy' becomes a TOP-LEVEL INTERFACE named "
-    "'Out' with parent_id=None -- both a bogus top-level symbol and a lost parent link. "
-    "Out/Item/Error are near-universal associated-type names, so this is also a "
-    "collision source (see J4).",
-)
 def test_rust_associated_type_in_an_impl_block_is_scoped_to_its_type() -> None:
     """SPEC: ``type Out = u32;`` inside ``impl Draw for Boxy`` is ``Boxy::Out`` with
     ``Boxy`` as its parent -- the same shape the identical declaration gets inside the

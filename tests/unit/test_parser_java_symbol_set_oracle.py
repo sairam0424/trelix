@@ -28,10 +28,6 @@ that number would lock in an artifact.
 width is the behaviour under test.
 
 CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
-  * ``import java.util.*;`` is recorded as ``imported_from="java"`` /
-    ``imported_names=["util"]``. The ``*`` is a sibling of the
-    ``scoped_identifier``, not part of it, so the ``if parts[-1] != "*"`` branch
-    is unreachable;
   * a NESTED type keeps a bare ``qualified_name`` (``Nested``, not
     ``Svc.Nested``), so two same-named inner classes in one file collide;
 
@@ -226,8 +222,7 @@ KIND_SINK_CALLS_EXPECTED: set[tuple[str, str, int]] = {
 # (imported_from, tuple(imported_names))
 KIND_SINK_IMPORTS_EXPECTED: set[tuple[str, tuple[str, ...]]] = {
     ("java.util", ("List",)),
-    # CURRENT-BUT-WRONG: the wildcard is lost — see the module docstring.
-    ("java", ("util",)),
+    ("java.util", ("*",)),
 }
 
 # (from_symbol qualified_name, to_type_name, edge_kind)
