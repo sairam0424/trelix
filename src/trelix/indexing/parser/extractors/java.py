@@ -325,15 +325,9 @@ class JavaParser(BaseParser):
         # implements type edges
         interfaces_node = node.child_by_field_name("interfaces")
         if interfaces_node:
-            for c in interfaces_node.children:
-                if c.type == "type_identifier":
-                    type_edges.append(
-                        TypeEdge(
-                            from_symbol_id=record_local_idx,
-                            to_type_name=self._txt(c, src),
-                            edge_kind="implements",
-                        )
-                    )
+            self._extract_type_list_edges(
+                interfaces_node, record_local_idx, "implements", type_edges, src
+            )
 
         # Record components → VARIABLE symbols (always public, immutable fields)
         params_node = self._get_child_by_type(node, "record_parameters")
