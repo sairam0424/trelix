@@ -44,8 +44,6 @@ CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
     is unreachable;
   * a NESTED type keeps a bare ``qualified_name`` (``Nested``, not
     ``Svc.Nested``), so two same-named inner classes in one file collide;
-  * ``_class_signature`` DUPLICATES the ``extends``/``implements`` keywords,
-    because the ``superclass`` and ``interfaces`` nodes already contain them;
   * an annotated field's ``signature`` is the ANNOTATION LINE rather than the
     declaration, because it is built from ``body.split("\\n")[0]``.
 
@@ -433,11 +431,9 @@ def test_java_signatures_are_exact():
     result = JavaParser().parse(KIND_SINK_JAVA, file_id=8)
     sigs = {s.qualified_name: s.signature for s in result.symbols}
 
-    # CURRENT-BUT-WRONG: `extends`/`implements` are duplicated because the
-    # superclass and interfaces nodes already include their keyword.
     assert sigs["Svc"] == (
-        "@Service\npublic abstract class Svc extends extends Base "
-        "implements implements Runnable, AutoCloseable"
+        "@Service\npublic abstract class Svc extends Base "
+        "implements Runnable, AutoCloseable"
     )
     assert sigs["Shape"] == "interface Shape"
     assert sigs["Status"] == "enum Status"
