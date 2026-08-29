@@ -257,11 +257,9 @@ KIND_SINK_EXPECTED: set[tuple[str, str, int, int, bool, str | None]] = {
     # `new()` has no self param -> FUNCTION, `area(&self)` does -> METHOD.
     ("Boxy::new", "FUNCTION", 41, 43, True, "Boxy"),
     ("Boxy::area", "METHOD", 44, 46, False, "Boxy"),
-    # CURRENT-BUT-WRONG: `type Out = u32;` inside `impl Draw for Boxy` routes
-    # through _handle_type_alias, which takes no parent, so this associated type
-    # is emitted as a top-level INTERFACE named `Out` with no parent — compare
-    # the `Draw::Out` row above.
-    ("Out", "INTERFACE", 50, 50, False, None),
+    # `type Out = u32;` inside `impl Draw for Boxy` is scoped to its enclosing
+    # impl block, matching the `Draw::Out` row above.
+    ("Boxy::Out", "INTERFACE", 50, 50, False, "Boxy"),
     ("Boxy::draw", "METHOD", 51, 54, False, "Boxy"),
     ("helper_fn", "FUNCTION", 58, 64, True, None),
     # macro_rules! is emitted as a FUNCTION and is not `pub`.
