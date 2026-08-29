@@ -328,25 +328,35 @@ def _duplicated(names: list[str]) -> set[str]:
 
 
 class TestTheCollisionExistsInTheInstalledExtractors:
-    """Asserted, not assumed. Everything below is meaningless if these two fail.
+    """Asserted, not assumed. Everything below is meaningless if these fail.
 
     NON-DISCRIMINATING COMPANIONS by design: no source mutation is claimed to make
     these fail, because their job is to make the DIAGNOSIS falsifiable rather than to
     kill a mutant. If a grammar or extractor change removes the collision, these go red
     and every pin below is re-opened before anyone acts on it -- which is the opposite
     of the pins, whose XPASS means the defect is FIXED.
+
+    J4 IS FIXED: this went red exactly as the docstring above predicted, which is how
+    the Java half of it was caught and rewritten below to assert the new,
+    non-colliding reality (see ``test_java_nested_types_no_longer_collide_after_j4``).
+    The Rust half (``test_rust_module_scoped_fns_collide_within_one_file``) is
+    untouched -- R12 has not landed, so ``RUST_COLLIDING_V1`` still collides.
     """
 
-    def test_java_nested_types_and_their_methods_both_collide_within_one_file(self) -> None:
+    def test_java_nested_types_no_longer_collide_after_j4(self) -> None:
         from trelix.indexing.parser.extractors.java import JavaParser
 
         names = [s.qualified_name for s in JavaParser().parse(JAVA_COLLIDING_V1, 1).symbols]
 
-        # Set equality BOTH ways on the multiset shape, written as literals.
-        assert names == ["Alpha", "Config", "Config.tag", "Beta", "Config", "Config.tag"]
-        actual_dupes = _duplicated(names)
-        assert actual_dupes == {"Config", "Config.tag"}
-        assert {"Config", "Config.tag"} == actual_dupes
+        assert names == [
+            "Alpha",
+            "Alpha.Config",
+            "Alpha.Config.tag",
+            "Beta",
+            "Beta.Config",
+            "Beta.Config.tag",
+        ]
+        assert _duplicated(names) == set()
 
     def test_rust_module_scoped_fns_collide_within_one_file(self) -> None:
         from trelix.indexing.parser.extractors.rust import RustParser
@@ -374,17 +384,22 @@ class TestTheCollisionExistsInTheInstalledExtractors:
 
 
 class TestFirstIndexIsNotWhereTheDamageHappens:
-    """Contradicts J4's stated consequence, and is therefore NOT an xfail.
+    """Contradicted J4's stated consequence back when the collision was live.
 
-    J4's note predicts the second colliding symbol is "declared unchanged, never
-    inserted, never chunked, never embedded -- silently unsearchable". Re-derived from
-    ``indexer.py:1287``: on a fresh index ``existing_hashes`` is ``{}``, so
-    ``existing_hashes.get(qn)`` is ``None`` for BOTH members and both take the
-    ``else: changed_local_indices.add(...)`` branch. Both are inserted. Whoever fixes
-    J4 should not be looking for a missing first-index insert.
+    J4's original note predicted the second colliding symbol would be "declared
+    unchanged, never inserted, never chunked, never embedded -- silently
+    unsearchable". Re-derived from ``indexer.py:1287``: on a fresh index
+    ``existing_hashes`` is ``{}``, so ``existing_hashes.get(qn)`` is ``None`` for BOTH
+    members and both take the ``else: changed_local_indices.add(...)`` branch. Both
+    were inserted even under the collision.
+
+    J4 IS FIXED, so ``Alpha.Config``/``Beta.Config`` no longer share a
+    ``qualified_name`` at all -- there is no longer a collision for a first index to
+    be "not the site of the damage" for. This now just confirms the first-index path
+    still stores both members correctly under their (now distinct) qualified names.
     """
 
-    def test_first_index_stores_both_members_of_the_colliding_pair(
+    def test_first_index_stores_both_members_under_their_distinct_names(
         self, tmp_path: pathlib.Path
     ) -> None:
         source_path = tmp_path / "Svc.java"
@@ -398,8 +413,10 @@ class TestFirstIndexIsNotWhereTheDamageHappens:
         ).fetchall()
         names = [r[0] for r in rows]
 
-        assert names.count("Config") == 2
-        assert names.count("Config.tag") == 2
+        assert names.count("Alpha.Config") == 1
+        assert names.count("Beta.Config") == 1
+        assert names.count("Alpha.Config.tag") == 1
+        assert names.count("Beta.Config.tag") == 1
         # Both bodies are present, so neither member was skipped as "unchanged".
         bodies = "\n".join(r[1] for r in rows)
         assert "ALPHA_V1" in bodies
@@ -459,15 +476,15 @@ class TestEditingOneMemberOfACollidingPairLeavesTheOldVersionIndexed:
     def test_java_editing_the_first_declared_member_removes_its_old_body(
         self, tmp_path: pathlib.Path
     ) -> None:
+        """J4 IS FIXED via the extractor route: the collision disappeared, so the
+        collision-existence precondition below was removed (it correctly ERRORed
+        with FixturePreconditionError when this test still had it, per the class
+        docstring). The remaining assertions were already stated as the CORRECT
+        behaviour and now pass because Alpha.Config/Beta.Config are genuinely
+        distinct rows -- editing one can no longer touch the other's data at all.
+        """
         run = _index_edit_reindex(tmp_path, "Svc.java", JAVA_COLLIDING_V1, "ALPHA_V1", "ALPHA_V2")
 
-        # PRECONDITIONS. FixturePreconditionError, not assert: these must not be
-        # absorbed by the xfail marker.
-        _require(
-            _duplicated(run.qualified_names_after_first_pass) == {"Config", "Config.tag"},
-            "the Java fixture must still produce colliding qualified_names; it "
-            f"produced {run.qualified_names_after_first_pass}",
-        )
         _require(
             run.rows_after_first_pass == 6,
             f"expected 6 symbols on the first pass, got {run.rows_after_first_pass}",
@@ -521,14 +538,15 @@ class TestTheDamageIsAsymmetricWhichNamesTheMechanism:
     ``{row[0]: row[1] for row in rows}`` (db.py:926) keeps the LAST row's hash for a
     duplicated name. So editing the LAST-declared member makes its stored hash the one
     that no longer matches, BOTH rows land in ``qualified_names_to_delete``, and the
-    pass is clean. Editing the FIRST-declared member does not. That asymmetry is the
-    signature of this mechanism and no other, which is why it is asserted here rather
-    than only described in prose.
+    pass is clean. Editing the FIRST-declared member does not. That asymmetry was the
+    signature of this mechanism and no other -- while the Java collision was live.
 
-    This test PASSES today: it pins the healthy half. It is the discriminating
-    counterpart to the two xfails above -- if it ever fails, "stale rows survive" has
-    stopped being about which row won the dict comprehension and the diagnosis above
-    is wrong.
+    J4 IS FIXED: Alpha.Config/Beta.Config no longer collide at all, so there is no
+    more asymmetry to demonstrate on the Java fixture (editing either member now
+    trivially leaves nothing stale, since they were never the same qualified_name to
+    begin with). This is kept as a plain regression check on the fixed behaviour
+    rather than removed. The still-live counterpart on the Rust side is
+    ``test_rust_editing_the_first_declared_member_removes_its_old_body`` above.
     """
 
     def test_editing_the_last_declared_member_leaves_nothing_stale(
@@ -537,9 +555,9 @@ class TestTheDamageIsAsymmetricWhichNamesTheMechanism:
         run = _index_edit_reindex(tmp_path, "Svc.java", JAVA_COLLIDING_V1, "BETA_V1", "BETA_V2")
 
         _require(
-            _duplicated(run.qualified_names_after_first_pass) == {"Config", "Config.tag"},
-            "the Java fixture must still produce colliding qualified_names; it "
-            f"produced {run.qualified_names_after_first_pass}",
+            _duplicated(run.qualified_names_after_first_pass) == set(),
+            "the Java fixture is expected to be collision-free after the J4 fix; it "
+            f"still produced duplicate qualified_names in {run.qualified_names_after_first_pass}",
         )
 
         assert run.rows_after_first_pass == 6
