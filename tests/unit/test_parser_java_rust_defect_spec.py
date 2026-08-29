@@ -854,16 +854,6 @@ def test_rust_crate_docstring_has_no_spurious_blank_lines() -> None:
     assert crate.docstring == "Crate line one.\nCrate line two."
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R10 (pinned deliberately): rust._flatten_use_tree branches on "
-    "'use_tree_list'/'use_tree', but the installed tree-sitter-rust emits "
-    "'scoped_use_list'/'use_list', so both branches are dead and the generic 'split on "
-    "::' fallback stores the literal text '{Alpha, Beta}' as an imported NAME. Brace "
-    "imports are the dominant Rust import form, so the import graph loses every symbol "
-    "in them.",
-)
 def test_rust_brace_import_is_expanded_into_its_members() -> None:
     """SPEC: ``use crate::util::{Alpha, Beta};`` yields the imported names
     ``{"Alpha", "Beta"}``.
