@@ -675,19 +675,16 @@ class JavaParser(BaseParser):
     # ------------------------------------------------------------------
 
     def _extract_import(self, node: Node, src: bytes, file_id: int) -> list[ImportEdge]:
-        """Handle: import java.util.List; import java.util.*;"""
+        is_wildcard = self._get_child_by_type(node, "asterisk") is not None
         for child in node.children:
             if child.type in ("scoped_identifier", "identifier"):
                 path = self._txt(child, src)
+                if is_wildcard:
+                    return [ImportEdge(file_id=file_id, imported_from=path, imported_names=["*"])]
                 parts = path.split(".")
-                imported_name = parts[-1] if parts[-1] != "*" else "*"
                 module = ".".join(parts[:-1]) if len(parts) > 1 else path
                 return [
-                    ImportEdge(
-                        file_id=file_id,
-                        imported_from=module,
-                        imported_names=[imported_name],
-                    )
+                    ImportEdge(file_id=file_id, imported_from=module, imported_names=[parts[-1]])
                 ]
         return []
 
