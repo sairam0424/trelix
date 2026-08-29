@@ -328,13 +328,19 @@ def _duplicated(names: list[str]) -> set[str]:
 
 
 class TestTheCollisionExistsInTheInstalledExtractors:
-    """Asserted, not assumed. Everything below is meaningless if these two fail.
+    """Asserted, not assumed. Everything below is meaningless if these fail.
 
     NON-DISCRIMINATING COMPANIONS by design: no source mutation is claimed to make
     these fail, because their job is to make the DIAGNOSIS falsifiable rather than to
     kill a mutant. If a grammar or extractor change removes the collision, these go red
     and every pin below is re-opened before anyone acts on it -- which is the opposite
     of the pins, whose XPASS means the defect is FIXED.
+
+    R12 IS FIXED: this went red exactly as predicted above, which is how the Rust
+    half was caught and rewritten to assert the new, non-colliding reality (see
+    ``test_rust_module_scoped_fns_no_longer_collide_after_r12``). The Java half
+    (``test_java_nested_types_and_their_methods_both_collide_within_one_file``) is
+    untouched here -- J4 has not landed on this branch yet.
     """
 
     def test_java_nested_types_and_their_methods_both_collide_within_one_file(self) -> None:
@@ -348,15 +354,14 @@ class TestTheCollisionExistsInTheInstalledExtractors:
         assert actual_dupes == {"Config", "Config.tag"}
         assert {"Config", "Config.tag"} == actual_dupes
 
-    def test_rust_module_scoped_fns_collide_within_one_file(self) -> None:
+    def test_rust_module_scoped_fns_no_longer_collide_after_r12(self) -> None:
+        """R12 IS FIXED: mirrors test_java_nested_types_no_longer_collide_after_j4."""
         from trelix.indexing.parser.extractors.rust import RustParser
 
         names = [s.qualified_name for s in RustParser().parse(RUST_COLLIDING_V1, 1).symbols]
 
-        assert names == ["tag", "tag"]
-        actual_dupes = _duplicated(names)
-        assert actual_dupes == {"tag"}
-        assert {"tag"} == actual_dupes
+        assert names == ["alpha::tag", "beta::tag"]
+        assert _duplicated(names) == set()
 
     def test_the_control_fixture_has_no_colliding_qualified_name(self) -> None:
         """The control must actually be a control."""
@@ -498,13 +503,13 @@ class TestEditingOneMemberOfACollidingPairLeavesTheOldVersionIndexed:
     def test_rust_editing_the_first_declared_member_removes_its_old_body(
         self, tmp_path: pathlib.Path
     ) -> None:
+        """R12 IS FIXED via the extractor route: alpha::tag/beta::tag no longer
+        collide, so the collision-existence precondition below was removed. The
+        remaining assertions were already stated as the CORRECT behaviour and now
+        pass because the two functions are genuinely distinct rows.
+        """
         run = _index_edit_reindex(tmp_path, "lib.rs", RUST_COLLIDING_V1, "1001", "1002")
 
-        _require(
-            _duplicated(run.qualified_names_after_first_pass) == {"tag"},
-            "the Rust fixture must still produce a colliding qualified_name; it "
-            f"produced {run.qualified_names_after_first_pass}",
-        )
         _require(
             run.rows_after_first_pass == 2,
             f"expected 2 symbols on the first pass, got {run.rows_after_first_pass}",
