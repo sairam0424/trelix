@@ -45,9 +45,7 @@ CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
   * a NESTED type keeps a bare ``qualified_name`` (``Nested``, not
     ``Svc.Nested``), so two same-named inner classes in one file collide;
   * ``_class_signature`` DUPLICATES the ``extends``/``implements`` keywords,
-    because the ``superclass`` and ``interfaces`` nodes already contain them;
-  * an annotated field's ``signature`` is the ANNOTATION LINE rather than the
-    declaration, because it is built from ``body.split("\\n")[0]``.
+    because the ``superclass`` and ``interfaces`` nodes already contain them.
 
 MUTANTS REPORTED, NOT TESTED:
   * ``JavaParser.__init__``: ``self._ts_language = load_language("java")``
@@ -428,7 +426,8 @@ def test_java_signatures_are_exact():
     `f"{mods}{ret}{class_name}.{name}{params}"` assembly in _method_signature
     (including dropping the return type or the `class_name.` prefix); the
     `f"{class_name}{params}"` constructor template; `_get_return_type`'s
-    type-node set; and `body.split("\\n")[0][:200].strip()` for fields.
+    type-node set; and `decl_text.split("\\n")[0][:200].strip()` for fields,
+    where `decl_text` starts after the field's modifiers node.
     """
     result = JavaParser().parse(KIND_SINK_JAVA, file_id=8)
     sigs = {s.qualified_name: s.signature for s in result.symbols}
@@ -447,11 +446,11 @@ def test_java_signatures_are_exact():
     assert sigs["Svc.run"] == "public int Svc.run(int n)"
     assert sigs["Svc.quiet"] == "private void Svc.quiet()"
     assert sigs["Shape.twice"] == "default int Shape.twice()"
-    assert sigs["Svc.VERSION"] == 'public static final String VERSION = "1.0";'
-    assert sigs["Svc.label"] == "protected String label;"
-    # CURRENT-BUT-WRONG: an annotated field's signature is its ANNOTATION line,
-    # because it is `body.split("\n")[0]` and the annotation comes first.
-    assert sigs["Svc.repo"] == "@Autowired"
+    # The signature starts after the field's modifiers node, so `public static
+    # final` / `protected` / the `@Autowired` annotation are excluded.
+    assert sigs["Svc.VERSION"] == 'String VERSION = "1.0";'
+    assert sigs["Svc.label"] == "String label;"
+    assert sigs["Svc.repo"] == "Repo repo;"
 
     decorators = {s.qualified_name: s.decorators for s in result.symbols}
     assert decorators["Svc"] == ["@Service"]
@@ -607,9 +606,12 @@ def test_java_field_caps_are_exact():
     assert len([s for s in wide_i.symbols if s.kind.name == "CONSTANT"]) == 30
 
 
+_FIELD_MODS = "public static final "
 _FIELD_HEAD = 'public static final String V = "'
 _CONSTANT_HEAD = 'String V = "'
 _FIELD_TAIL = '";'
+
+assert _FIELD_HEAD == _FIELD_MODS + _CONSTANT_HEAD, "_FIELD_MODS/_CONSTANT_HEAD arithmetic is wrong"
 
 
 def _field_of_length(n: int) -> str:
@@ -629,8 +631,8 @@ def _constant_of_length(n: int) -> str:
 def test_java_field_body_truncation_width_is_exact():
     """Kills: `if len(body) > 500` -> `>= 500` or `> 5` in _handle_field_decl and
     _handle_interface_constant; `body[:500]` -> another width; the `+ "..."`
-    suffix; and `signature=body.split("\\n")[0][:200].strip()` -> another width
-    or a dropped `.strip()`.
+    suffix; and `signature=decl_text.split("\\n")[0][:200].strip()` -> another
+    width or a dropped `.strip()`.
 
     500 is the documented contract, which is why body is asserted verbatim here
     and nowhere else in this file.
@@ -646,8 +648,9 @@ def test_java_field_body_truncation_width_is_exact():
     assert exact_sym.body == exact
     assert over_sym.body == over[:500] + "..."
     assert len(over_sym.body) == 503
-    # One line, so the signature is the truncated body capped at 200.
-    assert over_sym.signature == over[:200]
+    # One line, so the signature is the truncated declaration (the body minus
+    # the `public static final` modifiers) capped at 200.
+    assert over_sym.signature == over[len(_FIELD_MODS) :][:200]
     assert len(over_sym.signature) == 200
 
     # Same boundary in the interface-constant path, which has its own copy of
