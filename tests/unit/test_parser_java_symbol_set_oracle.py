@@ -401,7 +401,9 @@ def test_java_record_implements_edge_is_present():
     assert len(result.symbols) == 3
     assert [s.kind.name for s in result.symbols] == ["CLASS", "VARIABLE", "VARIABLE"]
     assert result.type_edges == [
-        TypeEdge(from_symbol_id=0, to_type_name="Cloneable", edge_kind="implements", to_symbol_id=None)
+        TypeEdge(
+            from_symbol_id=0, to_type_name="Cloneable", edge_kind="implements", to_symbol_id=None
+        )
     ]
     assert result.symbols[0].signature == "public record Pt(int x, int y)"
 
