@@ -336,11 +336,11 @@ class JavaParser(BaseParser):
                     )
 
         # Record components → VARIABLE symbols (always public, immutable fields)
-        params_node = self._get_child_by_type(node, "record_parameters")
+        params_node = node.child_by_field_name("parameters")
         if params_node:
             for comp in params_node.children:
-                if comp.type == "record_component":
-                    comp_name_node = self._get_child_by_type(comp, "identifier")
+                if comp.type == "formal_parameter":
+                    comp_name_node = comp.child_by_field_name("name")
                     if comp_name_node:
                         comp_name = self._txt(comp_name_node, src)
                         symbols.append(
@@ -721,7 +721,7 @@ class JavaParser(BaseParser):
 
     def _record_signature(self, node: Node, src: bytes) -> str:
         name_node = self._get_child_by_type(node, "identifier")
-        params_node = self._get_child_by_type(node, "record_parameters")
+        params_node = node.child_by_field_name("parameters")
         modifiers_node = self._get_child_by_type(node, "modifiers")
 
         mods = self._txt(modifiers_node, src) + " " if modifiers_node else ""

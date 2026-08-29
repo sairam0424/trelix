@@ -414,14 +414,6 @@ def test_python_extractor_honours_the_wildcard_import_contract() -> None:
 # ===========================================================================
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J1 (pinned deliberately): java._handle_record looks for the grammar "
-    "nodes 'record_parameters'/'record_component'; tree-sitter-java emits "
-    "'formal_parameters'/'formal_parameter', so record components are NEVER extracted "
-    "and Java records are invisible to the indexer. Tier 1 -- ship first.",
-)
 def test_java_record_components_are_extracted_as_fields() -> None:
     """SPEC: a record's components ARE symbols -- java.py's module docstring calls them
     "the primary query surface".
@@ -452,13 +444,6 @@ def test_java_record_components_are_extracted_as_fields() -> None:
     assert len(result.symbols) == 3
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J1b (pinned deliberately): the same wrong node name in "
-    "java._record_signature empties every record's parameter list, so the record's "
-    "embedded header omits its entire shape. Separate code site from J1.",
-)
 def test_java_record_signature_shows_its_components() -> None:
     """SPEC: the signature of ``record Pt(int x, int y)`` names its components.
 
