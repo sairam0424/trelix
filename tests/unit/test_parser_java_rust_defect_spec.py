@@ -521,16 +521,6 @@ class B {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J4 (pinned deliberately): java._handle_class recurses into nested "
-    "types with no outer-name prefix, so A.Inner and B.Inner both get "
-    "qualified_name='Inner'. SAME COLLISION CLASS as the symbols.qualified_name "
-    "finding in tests/unit/test_db_scoping_and_boundaries.py, but worse: that one "
-    "needs two files, this one collides inside ONE file, and Indexer._insert_one keys "
-    "existing_hashes on qualified_name.",
-)
 def test_java_nested_types_are_qualified_by_their_outer_type() -> None:
     """SPEC: a nested type's ``qualified_name`` is ``Outer.Nested``, and no two symbols
     in one file share a ``qualified_name``.
