@@ -587,15 +587,6 @@ class Svc {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J6 (pinned deliberately): an annotated field's signature is "
-    "body.split('\\n')[0] and the field_declaration node starts at its modifiers, so "
-    "Svc.repo is indexed with signature '@Autowired' -- no declared type, no name. "
-    "These are exactly the @Autowired/@Column/@Id/@Value fields java.py surfaces on "
-    "purpose, and the signature is embedded text.",
-)
 def test_java_annotated_field_signature_describes_the_declaration() -> None:
     """SPEC: the signature of an annotated field names its declared TYPE and NAME. The
     natural fix emits ``private Repo repo;``.
