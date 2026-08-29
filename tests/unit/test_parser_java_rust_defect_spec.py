@@ -414,14 +414,6 @@ def test_python_extractor_honours_the_wildcard_import_contract() -> None:
 # ===========================================================================
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J1 (pinned deliberately): java._handle_record looks for the grammar "
-    "nodes 'record_parameters'/'record_component'; tree-sitter-java emits "
-    "'formal_parameters'/'formal_parameter', so record components are NEVER extracted "
-    "and Java records are invisible to the indexer. Tier 1 -- ship first.",
-)
 def test_java_record_components_are_extracted_as_fields() -> None:
     """SPEC: a record's components ARE symbols -- java.py's module docstring calls them
     "the primary query surface".
@@ -452,13 +444,6 @@ def test_java_record_components_are_extracted_as_fields() -> None:
     assert len(result.symbols) == 3
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J1b (pinned deliberately): the same wrong node name in "
-    "java._record_signature empties every record's parameter list, so the record's "
-    "embedded header omits its entire shape. Separate code site from J1.",
-)
 def test_java_record_signature_shows_its_components() -> None:
     """SPEC: the signature of ``record Pt(int x, int y)`` names its components.
 
@@ -480,13 +465,6 @@ def test_java_record_signature_shows_its_components() -> None:
     assert record.signature == "public record Pt(int x, int y)"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J2 (pinned deliberately): java._handle_record scans the "
-    "super_interfaces node's DIRECT children for type_identifier, but they are nested "
-    "inside a type_list, so a record's 'implements' TypeEdge is never emitted.",
-)
 def test_java_record_implements_clause_produces_a_type_edge() -> None:
     """SPEC: ``record Pt(...) implements Cloneable`` yields one ``implements`` TypeEdge.
 
@@ -509,15 +487,6 @@ def test_java_record_implements_clause_produces_a_type_edge() -> None:
     assert len(result.type_edges) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J3 (pinned deliberately): java._extract_import cannot see the "
-    "'asterisk' sibling node, so 'import java.util.*;' is recorded as "
-    "imported_from='java' / imported_names=['util'] -- a bogus edge to package 'java' "
-    "and a lost edge to 'java.util'. Violates ImportEdge's documented ['*'] contract, "
-    "which python.py honours (see the control test above).",
-)
 def test_java_wildcard_import_records_the_wildcard() -> None:
     """SPEC: ``import java.util.*;`` is ``imported_from="java.util"``,
     ``imported_names=["*"]`` -- the shape ``ImportEdge``'s own docstring specifies and
@@ -597,15 +566,6 @@ def test_java_nested_types_are_qualified_by_their_outer_type() -> None:
 SIGNATURE_JAVA = "public abstract class Svc extends Base implements Runnable, AutoCloseable {}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J5 (pinned deliberately): java._class_signature prepends ' extends ' "
-    "and ' implements ' to node text that already starts with those keywords, emitting "
-    "'class Svc extends extends Base implements implements Runnable, AutoCloseable'. "
-    "The signature is EMBEDDED and lexically indexed text, so this doubles those terms' "
-    "frequency in every Java class chunk with a superclass or interface list.",
-)
 def test_java_class_signature_does_not_duplicate_its_keywords() -> None:
     """SPEC: ``extends`` and ``implements`` appear ONCE each in a class signature.
 
@@ -637,15 +597,6 @@ class Svc {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J6 (pinned deliberately): an annotated field's signature is "
-    "body.split('\\n')[0] and the field_declaration node starts at its modifiers, so "
-    "Svc.repo is indexed with signature '@Autowired' -- no declared type, no name. "
-    "These are exactly the @Autowired/@Column/@Id/@Value fields java.py surfaces on "
-    "purpose, and the signature is embedded text.",
-)
 def test_java_annotated_field_signature_describes_the_declaration() -> None:
     """SPEC: the signature of an annotated field names its declared TYPE and NAME. The
     natural fix emits ``private Repo repo;``.
@@ -898,16 +849,6 @@ impl Draw for Boxy {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R11 (pinned deliberately): rust._handle_impl routes a type_item "
-    "inside an impl block through _handle_type_alias, which takes no parent, so "
-    "'type Out = u32;' inside 'impl Draw for Boxy' becomes a TOP-LEVEL INTERFACE named "
-    "'Out' with parent_id=None -- both a bogus top-level symbol and a lost parent link. "
-    "Out/Item/Error are near-universal associated-type names, so this is also a "
-    "collision source (see J4).",
-)
 def test_rust_associated_type_in_an_impl_block_is_scoped_to_its_type() -> None:
     """SPEC: ``type Out = u32;`` inside ``impl Draw for Boxy`` is ``Boxy::Out`` with
     ``Boxy`` as its parent -- the same shape the identical declaration gets inside the

@@ -593,12 +593,20 @@ class RustParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
+        parent_local_idx: int | None = None,
+        qualifier: str | None = None,
     ) -> None:
-        """Handle: type Foo = Bar;  type MyVec<T> = Vec<T>;"""
+        """Handle: type Foo = Bar;  type MyVec<T> = Vec<T>;
+
+        When called from inside an impl block, ``parent_local_idx`` scopes the
+        associated type to its enclosing type and ``qualifier`` (the
+        enclosing type's name) qualifies it, e.g. ``Boxy::Out``.
+        """
         name_node = node.child_by_field_name("name")
         if not name_node:
             return
         name = self._txt(name_node, src)
+        qualified_name = f"{qualifier}::{name}" if qualifier else name
 
         tp_node = node.child_by_field_name("type_parameters")
         tp_str = self._txt(tp_node, src) if tp_node else ""
@@ -611,7 +619,7 @@ class RustParser(BaseParser):
             Symbol(
                 file_id=file_id,
                 name=name,
-                qualified_name=name,
+                qualified_name=qualified_name,
                 kind=SymbolKind.INTERFACE,
                 line_start=node.start_point[0] + 1,
                 line_end=node.end_point[0] + 1,
@@ -619,6 +627,7 @@ class RustParser(BaseParser):
                 body=self._txt(node, src),
                 docstring=self._get_preceding_comment(node, src),
                 is_public=is_pub,
+                parent_id=parent_local_idx,
             )
         )
 
@@ -683,7 +692,14 @@ class RustParser(BaseParser):
                 )
             elif child.type == "type_item":
                 # type Alias = ... inside impl block
-                self._handle_type_alias(child, src, file_id, symbols)
+                self._handle_type_alias(
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    parent_local_idx=parent_local_idx,
+                    qualifier=type_name,
+                )
 
     def _extract_type_name(self, node: Node, src: bytes) -> str:
         """Extract the base type identifier from a type node (handles generic_type)."""
