@@ -118,11 +118,14 @@ class JavaParser(BaseParser):
         symbols: list[Symbol],
         type_edges: list[TypeEdge],
         raw_calls: list[tuple[int, str, int]],
+        outer_qualified_name: str | None = None,
+        outer_local_idx: int | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
             return
         name = self._txt(name_node, src)
+        qualified_name = f"{outer_qualified_name}.{name}" if outer_qualified_name else name
 
         modifiers_node = self._get_child_by_type(node, "modifiers")
         is_public = "public" in self._txt(modifiers_node, src) if modifiers_node else False
@@ -133,7 +136,7 @@ class JavaParser(BaseParser):
             Symbol(
                 file_id=file_id,
                 name=name,
-                qualified_name=name,
+                qualified_name=qualified_name,
                 kind=SymbolKind.CLASS,
                 line_start=node.start_point[0] + 1,
                 line_end=node.end_point[0] + 1,
@@ -142,6 +145,7 @@ class JavaParser(BaseParser):
                 docstring=self._get_preceding_comment(node, src),
                 decorators=annotations,
                 is_public=is_public,
+                parent_id=outer_local_idx,
             )
         )
 
@@ -163,18 +167,29 @@ class JavaParser(BaseParser):
             for child in body_node.children:
                 if child.type == "method_declaration":
                     self._handle_method(
-                        child, src, file_id, symbols, class_local_idx, name, raw_calls
+                        child, src, file_id, symbols, class_local_idx, qualified_name, raw_calls
                     )
                 elif child.type == "constructor_declaration":
                     self._handle_constructor(
-                        child, src, file_id, symbols, class_local_idx, name, raw_calls
+                        child, src, file_id, symbols, class_local_idx, qualified_name, raw_calls
                     )
                 elif child.type == "field_declaration" and field_count < self.MAX_FIELDS:
                     before = len(symbols)
-                    self._handle_field_decl(child, src, file_id, symbols, class_local_idx, name)
+                    self._handle_field_decl(
+                        child, src, file_id, symbols, class_local_idx, qualified_name
+                    )
                     field_count += len(symbols) - before
                 elif child.type == "class_declaration":
-                    self._handle_class(child, src, file_id, symbols, type_edges, raw_calls)
+                    self._handle_class(
+                        child,
+                        src,
+                        file_id,
+                        symbols,
+                        type_edges,
+                        raw_calls,
+                        outer_qualified_name=qualified_name,
+                        outer_local_idx=class_local_idx,
+                    )
                 elif child.type == "interface_declaration":
                     self._handle_interface(child, src, file_id, symbols, type_edges, raw_calls)
                 elif child.type == "enum_declaration":

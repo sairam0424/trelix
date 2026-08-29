@@ -42,8 +42,6 @@ CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
     ``imported_names=["util"]``. The ``*`` is a sibling of the
     ``scoped_identifier``, not part of it, so the ``if parts[-1] != "*"`` branch
     is unreachable;
-  * a NESTED type keeps a bare ``qualified_name`` (``Nested``, not
-    ``Svc.Nested``), so two same-named inner classes in one file collide;
   * ``_class_signature`` DUPLICATES the ``extends``/``implements`` keywords,
     because the ``superclass`` and ``interfaces`` nodes already contain them;
   * an annotated field's ``signature`` is the ANNOTATION LINE rather than the
@@ -202,9 +200,9 @@ KIND_SINK_EXPECTED: set[tuple[str, str, int, int, bool, str | None]] = {
     ("Svc.Svc", "METHOD", 15, 18, True, "Svc"),
     ("Svc.run", "METHOD", 20, 22, True, "Svc"),
     ("Svc.quiet", "METHOD", 24, 24, False, "Svc"),
-    # CURRENT-BUT-WRONG: a nested type is NOT qualified by its outer class.
-    ("Nested", "CLASS", 26, 28, False, None),
-    ("Nested.v", "VARIABLE", 27, 27, True, "Nested"),
+    # A nested type is qualified by its outer class, and set as its parent.
+    ("Svc.Nested", "CLASS", 26, 28, False, "Svc"),
+    ("Svc.Nested.v", "VARIABLE", 27, 27, True, "Svc.Nested"),
     ("Shape", "INTERFACE", 31, 37, False, None),
     # Interface constants are hardcoded is_public=True even though `interface
     # Shape` is package-private, so `is_public=True` -> `is_public=is_public`

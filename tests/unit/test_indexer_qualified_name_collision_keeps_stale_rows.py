@@ -456,19 +456,6 @@ class TestEditingOneMemberOfACollidingPairLeavesTheOldVersionIndexed:
     the module docstring for the measured output of both.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="DEFECT (pinned deliberately): java.py J4 gives both nested types the "
-        "bare qualified_name 'Config' and both their methods 'Config.tag', so "
-        "Indexer._insert_one's per-NAME 'unchanged' set (indexer.py:1295-1306) marks "
-        "the whole name unchanged when EITHER member matches and never deletes the "
-        "other member's row. Editing Alpha.Config leaves its own pre-edit body in "
-        "symbols WITH a live chunks row. Fix: file- and outer-type-qualify "
-        "qualified_name (core/models.py:103,110; java.py _handle_class; rust.py "
-        "_walk_top_level) and key the incremental diff on (file_id, qualified_name, "
-        "line_start) rather than qualified_name alone.",
-    )
     def test_java_editing_the_first_declared_member_removes_its_old_body(
         self, tmp_path: pathlib.Path
     ) -> None:
