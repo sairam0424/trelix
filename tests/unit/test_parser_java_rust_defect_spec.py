@@ -465,13 +465,6 @@ def test_java_record_signature_shows_its_components() -> None:
     assert record.signature == "public record Pt(int x, int y)"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J2 (pinned deliberately): java._handle_record scans the "
-    "super_interfaces node's DIRECT children for type_identifier, but they are nested "
-    "inside a type_list, so a record's 'implements' TypeEdge is never emitted.",
-)
 def test_java_record_implements_clause_produces_a_type_edge() -> None:
     """SPEC: ``record Pt(...) implements Cloneable`` yields one ``implements`` TypeEdge.
 
