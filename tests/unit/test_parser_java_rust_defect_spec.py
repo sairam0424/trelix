@@ -575,15 +575,6 @@ def test_java_nested_types_are_qualified_by_their_outer_type() -> None:
 SIGNATURE_JAVA = "public abstract class Svc extends Base implements Runnable, AutoCloseable {}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J5 (pinned deliberately): java._class_signature prepends ' extends ' "
-    "and ' implements ' to node text that already starts with those keywords, emitting "
-    "'class Svc extends extends Base implements implements Runnable, AutoCloseable'. "
-    "The signature is EMBEDDED and lexically indexed text, so this doubles those terms' "
-    "frequency in every Java class chunk with a superclass or interface list.",
-)
 def test_java_class_signature_does_not_duplicate_its_keywords() -> None:
     """SPEC: ``extends`` and ``implements`` appear ONCE each in a class signature.
 
