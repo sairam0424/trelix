@@ -495,7 +495,9 @@ class RustParser(BaseParser):
         if body:
             for child in body.children:
                 if child.type in ("function_item", "function_signature_item"):
-                    self._handle_trait_fn(child, src, file_id, symbols, local_idx, name, raw_calls)
+                    self._handle_trait_fn(
+                        child, src, file_id, symbols, local_idx, name, raw_calls, is_pub
+                    )
                 elif child.type == "associated_type":
                     # type Output; inside trait body
                     aname_node = child.child_by_field_name("name") or self._get_child_by_type(
@@ -527,6 +529,7 @@ class RustParser(BaseParser):
         trait_local_idx: int,
         trait_name: str,
         raw_calls: list[tuple[int, str, int]],
+        trait_is_public: bool,
     ) -> None:
         name_node = node.child_by_field_name("name") or self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -534,7 +537,10 @@ class RustParser(BaseParser):
         name = self._txt(name_node, src)
 
         attrs = self._get_rust_attributes(node, src)
-        is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
+        # A trait fn never carries its own visibility_modifier -- `pub fn` inside a
+        # trait body is a compile error in real Rust. Trait methods inherit the
+        # trait's own visibility instead.
+        is_pub = trait_is_public
 
         func_local_idx = len(symbols)
         symbols.append(
