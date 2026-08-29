@@ -27,9 +27,7 @@ that number would lock in an artifact.
 500-character truncation boundary for fields and interface constants — that
 width is the behaviour under test.
 
-CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
-  * a NESTED type keeps a bare ``qualified_name`` (``Nested``, not
-    ``Svc.Nested``), so two same-named inner classes in one file collide;
+ALL JAVA DEFECTS PINNED IN EARLIER REVISIONS OF THIS FILE (J1-J6) ARE NOW FIXED.
 
 MUTANTS REPORTED, NOT TESTED:
   * ``JavaParser.__init__``: ``self._ts_language = load_language("java")``
@@ -185,9 +183,9 @@ KIND_SINK_EXPECTED: set[tuple[str, str, int, int, bool, str | None]] = {
     ("Svc.Svc", "METHOD", 15, 18, True, "Svc"),
     ("Svc.run", "METHOD", 20, 22, True, "Svc"),
     ("Svc.quiet", "METHOD", 24, 24, False, "Svc"),
-    # CURRENT-BUT-WRONG: a nested type is NOT qualified by its outer class.
-    ("Nested", "CLASS", 26, 28, False, None),
-    ("Nested.v", "VARIABLE", 27, 27, True, "Nested"),
+    # A nested type is qualified by its outer class, and set as its parent.
+    ("Svc.Nested", "CLASS", 26, 28, False, "Svc"),
+    ("Svc.Nested.v", "VARIABLE", 27, 27, True, "Svc.Nested"),
     ("Shape", "INTERFACE", 31, 37, False, None),
     # Interface constants are hardcoded is_public=True even though `interface
     # Shape` is package-private, so `is_public=True` -> `is_public=is_public`
