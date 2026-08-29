@@ -2141,6 +2141,9 @@ def update_index(
 
     print(json.dumps(result))
 
+    if result.get("status") != "ok":
+        raise typer.Exit(1)
+
 
 # ---------------------------------------------------------------------------
 # migrate-vectors
