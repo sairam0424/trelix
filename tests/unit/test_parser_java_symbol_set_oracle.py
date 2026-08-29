@@ -28,10 +28,6 @@ that number would lock in an artifact.
 width is the behaviour under test.
 
 CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
-  * a ``record``'s ``implements`` clause produces NO TypeEdge, because
-    ``_handle_record`` scans the ``super_interfaces`` node's direct children for
-    ``type_identifier`` instead of calling ``_extract_type_list_edges``, and the
-    identifiers live one level down inside a ``type_list``;
   * ``import java.util.*;`` is recorded as ``imported_from="java"`` /
     ``imported_names=["util"]``. The ``*`` is a sibling of the
     ``scoped_identifier``, not part of it, so the ``if parts[-1] != "*"`` branch
@@ -62,6 +58,7 @@ from __future__ import annotations
 
 import pytest
 
+from trelix.core.models import TypeEdge
 from trelix.indexing.parser.extractors.java import JavaParser
 
 # ---------------------------------------------------------------------------
@@ -243,7 +240,7 @@ KIND_SINK_TYPE_EDGES_EXPECTED: set[tuple[str, str, str]] = {
     ("Svc", "Runnable", "implements"),
     ("Svc", "AutoCloseable", "implements"),
     ("Status", "Runnable", "implements"),
-    # CURRENT-BUT-WRONG: ("Point", "Cloneable", "implements") is MISSING.
+    ("Point", "Cloneable", "implements"),
 }
 
 
@@ -379,7 +376,7 @@ def test_java_call_import_and_type_edges_are_exact():
         for e in result.type_edges
     }
     assert type_edges == KIND_SINK_TYPE_EDGES_EXPECTED
-    assert len(result.type_edges) == 4
+    assert len(result.type_edges) == 5
 
     assert result.parse_errors == 0
 
@@ -387,23 +384,14 @@ def test_java_call_import_and_type_edges_are_exact():
 RECORD_ONLY_JAVA = "public record Pt(int x, int y) implements Cloneable {}"
 
 
-def test_java_record_implements_edge_is_missing():
-    """Pins the still-live J2 defect so a fix is forced to update this test
-    rather than slip past it. Also kills `node.child_by_field_name("parameters")`
-    -> any OTHER wrong lookup for the component branch (which would keep the
-    symbol set unchanged and so stay invisible to the fixture-1 table alone).
-
-    _handle_record now reads a record's components via
-    `node.child_by_field_name("parameters")` / `formal_parameter` (J1/J1b, fixed),
-    but it still scans the super_interfaces node's DIRECT children for
-    `type_identifier` instead of calling `_extract_type_list_edges`, and the
-    identifiers actually live one level down inside a `type_list`, so no
-    "implements" TypeEdge is produced even though the module docstring
-    documents it. When THIS is fixed too, `result.type_edges` gains one
-    ("Pt", "Cloneable", "implements") edge.
+def test_java_record_implements_edge_is_present():
+    """J1/J1b (record components) and J2 (record implements edge) are both
+    fixed: a record's components are extracted and its `implements` clause
+    produces a real TypeEdge via `_extract_type_list_edges`, exactly like
+    `_handle_class` already does for ordinary classes.
     """
     # Precondition: the record must actually declare components and an
-    # implements clause, or "nothing was extracted" would be trivially true.
+    # implements clause, or "everything was extracted" would be trivially true.
     assert "(int x, int y)" in RECORD_ONLY_JAVA, "RECORD_ONLY_JAVA lost its two components"
     assert "implements Cloneable" in RECORD_ONLY_JAVA, "RECORD_ONLY_JAVA lost its implements clause"
 
@@ -412,8 +400,9 @@ def test_java_record_implements_edge_is_missing():
     assert {s.qualified_name for s in result.symbols} == {"Pt", "Pt.x", "Pt.y"}
     assert len(result.symbols) == 3
     assert [s.kind.name for s in result.symbols] == ["CLASS", "VARIABLE", "VARIABLE"]
-    # CURRENT-BUT-WRONG (J2, unfixed): the implements edge is still missing.
-    assert result.type_edges == []
+    assert result.type_edges == [
+        TypeEdge(from_symbol_id=0, to_type_name="Cloneable", edge_kind="implements", to_symbol_id=None)
+    ]
     assert result.symbols[0].signature == "public record Pt(int x, int y)"
 
 
