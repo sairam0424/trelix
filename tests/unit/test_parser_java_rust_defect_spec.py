@@ -509,15 +509,6 @@ def test_java_record_implements_clause_produces_a_type_edge() -> None:
     assert len(result.type_edges) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J3 (pinned deliberately): java._extract_import cannot see the "
-    "'asterisk' sibling node, so 'import java.util.*;' is recorded as "
-    "imported_from='java' / imported_names=['util'] -- a bogus edge to package 'java' "
-    "and a lost edge to 'java.util'. Violates ImportEdge's documented ['*'] contract, "
-    "which python.py honours (see the control test above).",
-)
 def test_java_wildcard_import_records_the_wildcard() -> None:
     """SPEC: ``import java.util.*;`` is ``imported_from="java.util"``,
     ``imported_names=["*"]`` -- the shape ``ImportEdge``'s own docstring specifies and

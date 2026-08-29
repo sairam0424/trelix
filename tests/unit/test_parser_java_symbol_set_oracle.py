@@ -38,10 +38,6 @@ CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
     ``_handle_record`` scans the ``super_interfaces`` node's direct children for
     ``type_identifier`` instead of calling ``_extract_type_list_edges``, and the
     identifiers live one level down inside a ``type_list``;
-  * ``import java.util.*;`` is recorded as ``imported_from="java"`` /
-    ``imported_names=["util"]``. The ``*`` is a sibling of the
-    ``scoped_identifier``, not part of it, so the ``if parts[-1] != "*"`` branch
-    is unreachable;
   * a NESTED type keeps a bare ``qualified_name`` (``Nested``, not
     ``Svc.Nested``), so two same-named inner classes in one file collide;
   * ``_class_signature`` DUPLICATES the ``extends``/``implements`` keywords,
@@ -237,8 +233,7 @@ KIND_SINK_CALLS_EXPECTED: set[tuple[str, str, int]] = {
 # (imported_from, tuple(imported_names))
 KIND_SINK_IMPORTS_EXPECTED: set[tuple[str, tuple[str, ...]]] = {
     ("java.util", ("List",)),
-    # CURRENT-BUT-WRONG: the wildcard is lost — see the module docstring.
-    ("java", ("util",)),
+    ("java.util", ("*",)),
 }
 
 # (from_symbol qualified_name, to_type_name, edge_kind)
