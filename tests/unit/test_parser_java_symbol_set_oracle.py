@@ -427,8 +427,7 @@ def test_java_signatures_are_exact():
     sigs = {s.qualified_name: s.signature for s in result.symbols}
 
     assert sigs["Svc"] == (
-        "@Service\npublic abstract class Svc extends Base "
-        "implements Runnable, AutoCloseable"
+        "@Service\npublic abstract class Svc extends Base implements Runnable, AutoCloseable"
     )
     assert sigs["Shape"] == "interface Shape"
     assert sigs["Status"] == "enum Status"
