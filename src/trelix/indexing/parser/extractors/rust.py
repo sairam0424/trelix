@@ -668,7 +668,12 @@ class RustParser(BaseParser):
             elif child.type == "type_item":
                 # type Alias = ... inside impl block
                 self._handle_type_alias(
-                    child, src, file_id, symbols, parent_local_idx=parent_local_idx, qualifier=type_name
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    parent_local_idx=parent_local_idx,
+                    qualifier=type_name,
                 )
 
     def _extract_type_name(self, node: Node, src: bytes) -> str:
