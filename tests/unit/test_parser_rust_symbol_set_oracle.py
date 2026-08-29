@@ -37,9 +37,6 @@ CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
     still attached, because tree-sitter-rust's ``line_comment`` node text
     includes the trailing newline so ``end_point`` already names the next line.
     Java's identical guard is correct because ``*/`` closes on its own line;
-  * ``use a::b::{A, B}`` is NOT expanded into one edge per brace member — the
-    grammar node is ``scoped_use_list``, which ``_flatten_use_tree`` does not
-    handle, so the literal text ``{Alpha, Beta}`` is stored as an imported name;
   * an associated type inside ``impl Trait for Type`` is emitted with
     ``parent_id=None`` (row ``Out``), unlike the same declaration inside the
     trait itself (row ``Draw::Out``);
@@ -286,11 +283,12 @@ KIND_SINK_CALLS_EXPECTED: set[tuple[str, str, int]] = {
 # (imported_from, tuple(imported_names))
 KIND_SINK_IMPORTS_EXPECTED: set[tuple[str, tuple[str, ...]]] = {
     ("std.collections", ("HashMap",)),
-    # CURRENT-BUT-WRONG: the brace group is not expanded into Alpha and Beta.
-    # tree-sitter-rust emits `scoped_use_list` here, a node type
-    # _flatten_use_tree has no branch for, so it falls through to the generic
-    # "split on ::" path and stores the literal brace text as a name.
-    ("crate.util", ("{Alpha, Beta}",)),
+    # `use crate::util::{Alpha, Beta};` -> one edge per brace member. The
+    # module string keeps the `::` separator (unlike the generic "split on
+    # ::" fallback path above, which normalises to `.`) because it is read
+    # straight off the `scoped_use_list`'s `path` field text.
+    ("crate::util", ("Alpha",)),
+    ("crate::util", ("Beta",)),
     # `extern crate serde;` -> no imported names.
     ("serde", ()),
 }
@@ -414,7 +412,7 @@ def test_rust_call_import_and_type_edges_are_exact():
 
     imports = {(e.imported_from, tuple(e.imported_names)) for e in result.import_edges}
     assert imports == KIND_SINK_IMPORTS_EXPECTED
-    assert len(result.import_edges) == 3
+    assert len(result.import_edges) == 4
 
     type_edges = {
         (result.symbols[e.from_symbol_id].qualified_name, e.to_type_name, e.edge_kind)

@@ -954,19 +954,29 @@ class RustParser(BaseParser):
         edges: list[ImportEdge],
     ) -> None:
         """Recursively expand use trees like foo::{A, B, C}."""
-        if node.type == "use_tree_list":
+        if node.type == "scoped_use_list":
+            path_node = node.child_by_field_name("path")
+            prefix = self._txt(path_node, src) if path_node else path_so_far
+            list_node = node.child_by_field_name("list")
+            if list_node:
+                self._flatten_use_tree(list_node, src, file_id, prefix, edges)
+        elif node.type == "use_list":
             for child in node.children:
-                if child.type == "use_tree":
+                if child.type == "identifier":
+                    edges.append(
+                        ImportEdge(
+                            file_id=file_id,
+                            imported_from=path_so_far,
+                            imported_names=[self._txt(child, src)],
+                        )
+                    )
+                elif child.type in (
+                    "scoped_identifier",
+                    "scoped_use_list",
+                    "use_as_clause",
+                    "use_wildcard",
+                ):
                     self._flatten_use_tree(child, src, file_id, path_so_far, edges)
-        elif node.type == "use_tree":
-            full = self._txt(node, src)
-            edges.append(
-                ImportEdge(
-                    file_id=file_id,
-                    imported_from=full,
-                    imported_names=[],
-                )
-            )
         else:
             full = self._txt(node, src)
             parts = full.replace("::", ".").split(".")
