@@ -41,9 +41,7 @@ CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
     ``parent_id=None`` (row ``Out``), unlike the same declaration inside the
     trait itself (row ``Draw::Out``);
   * ``fn`` items inside a ``mod`` block get no module prefix in their
-    ``qualified_name`` (row ``nested``);
-  * trait method signatures report ``is_public=False`` even though trait items
-    are public in Rust (rows ``Draw::draw``, ``Draw::helper``).
+    ``qualified_name`` (row ``nested``).
 
 MUTANTS REPORTED, NOT TESTED:
   * ``RustParser.__init__``: ``self._ts_language = load_language("rust")``
@@ -245,10 +243,10 @@ KIND_SINK_EXPECTED: set[tuple[str, str, int, int, bool, str | None]] = {
     ("Mode::Slow", "CONSTANT", 25, 25, True, "Mode"),
     ("Draw", "INTERFACE", 28, 35, True, None),
     ("Draw::Out", "INTERFACE", 29, 29, True, "Draw"),
-    # CURRENT-BUT-WRONG: trait items are public in Rust, but _handle_trait_fn
-    # looks for a visibility_modifier that trait fns never carry.
-    ("Draw::draw", "METHOD", 30, 30, False, "Draw"),
-    ("Draw::helper", "METHOD", 31, 34, False, "Draw"),
+    # Trait items are public in Rust. _handle_trait_fn inherits the trait's own
+    # is_pub instead of looking for a visibility_modifier trait fns never carry.
+    ("Draw::draw", "METHOD", 30, 30, True, "Draw"),
+    ("Draw::helper", "METHOD", 31, 34, True, "Draw"),
     ("Alias", "INTERFACE", 37, 37, True, None),
     ("ZERO", "CONSTANT", 40, 40, True, "Boxy"),
     # `new()` has no self param -> FUNCTION, `area(&self)` does -> METHOD.

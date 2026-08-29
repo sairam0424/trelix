@@ -856,15 +856,6 @@ pub trait Draw {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R13 (pinned deliberately): rust._handle_trait_fn derives is_public "
-    "from a visibility_modifier that trait fns never carry (a `pub fn` inside a trait "
-    "is a compile error in Rust), so every method of a `pub trait` is recorded "
-    "is_public=False. Metadata only -- but it is metadata that is_public filters and "
-    "ranking act on.",
-)
 def test_rust_method_of_a_public_trait_is_public() -> None:
     """SPEC: the methods of a ``pub trait`` are part of the public API. The correct rule
     is to INHERIT the trait's visibility, not to look for a modifier the grammar
