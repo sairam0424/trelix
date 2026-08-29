@@ -726,15 +726,6 @@ def test_rust_multiline_doc_comment_has_no_spurious_blank_lines() -> None:
 MODULE_DOC_RS = "//! Crate line one.\n//! Crate line two.\n\npub fn e() {}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R9b (pinned deliberately): the same trailing-newline quirk at a "
-    "DIFFERENT code site -- rust._get_module_symbol's own '\\n'.join(inner_doc_lines) "
-    "-- so the crate docstring gains a blank line between every pair of '//!' lines. "
-    "Pinned separately from R9 because it is a separate join that a fix to "
-    "_get_preceding_comment need not touch.",
-)
 def test_rust_crate_docstring_has_no_spurious_blank_lines() -> None:
     """SPEC: two consecutive ``//!`` lines join to
     ``"Crate line one.\\nCrate line two."``.
