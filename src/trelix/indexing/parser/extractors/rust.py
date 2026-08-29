@@ -23,6 +23,7 @@ Parent linkage:
 
 from __future__ import annotations
 
+import dataclasses
 import re
 
 from tree_sitter import Node
@@ -143,6 +144,7 @@ class RustParser(BaseParser):
         type_edges: list[TypeEdge],
         type_idx: dict[str, int],
         raw_calls: list[tuple[int, str, int]],
+        module_path: str = "",
     ) -> None:
         for child in node.children:
             ntype = child.type
@@ -152,7 +154,29 @@ class RustParser(BaseParser):
                 edge = self._handle_extern_crate(child, src, file_id)
                 if edge:
                     import_edges.append(edge)
-            elif ntype == "function_item":
+            elif ntype == "mod_item":
+                # Recurse into inline modules, threading the module path through
+                # so mod-scoped top-level symbols get qualified by it.
+                name_node = child.child_by_field_name("name")
+                mod_name = self._txt(name_node, src) if name_node else ""
+                child_path = f"{module_path}::{mod_name}" if module_path else mod_name
+                body = self._get_child_by_type(child, "declaration_list")
+                if body:
+                    self._walk_top_level(
+                        body,
+                        src,
+                        file_id,
+                        symbols,
+                        import_edges,
+                        type_edges,
+                        type_idx,
+                        raw_calls,
+                        module_path=child_path,
+                    )
+                continue
+
+            pre_dispatch_len = len(symbols)
+            if ntype == "function_item":
                 self._handle_function(child, src, file_id, symbols, raw_calls)
             elif ntype == "struct_item":
                 self._handle_struct(child, src, file_id, symbols, type_idx)
@@ -172,13 +196,14 @@ class RustParser(BaseParser):
                 self._handle_static_item(child, src, file_id, symbols)
             elif ntype == "macro_definition":
                 self._handle_macro_def(child, src, file_id, symbols)
-            elif ntype == "mod_item":
-                # Recurse into inline modules
-                body = self._get_child_by_type(child, "declaration_list")
-                if body:
-                    self._walk_top_level(
-                        body, src, file_id, symbols, import_edges, type_edges, type_idx, raw_calls
-                    )
+
+            if module_path:
+                for idx in range(pre_dispatch_len, len(symbols)):
+                    symbol = symbols[idx]
+                    if symbol.parent_id is None:
+                        symbols[idx] = dataclasses.replace(
+                            symbol, qualified_name=f"{module_path}::{symbol.qualified_name}"
+                        )
 
     # ------------------------------------------------------------------
     # Struct

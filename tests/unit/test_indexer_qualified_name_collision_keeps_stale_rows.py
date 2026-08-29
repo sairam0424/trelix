@@ -495,16 +495,6 @@ class TestEditingOneMemberOfACollidingPairLeavesTheOldVersionIndexed:
         )
         assert run.rows_after_second_pass == 6, "editing one symbol must not grow the symbols table"
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="DEFECT (pinned deliberately): rust.py R12 gives a fn inside a mod no "
-        "module prefix, so 'alpha::tag' and 'beta::tag' both become 'tag'. Same "
-        "mechanism and same consequence as the Java pin above, pinned separately "
-        "because it is a separate extractor and a fix to one does not touch the "
-        "other -- a single test covering both would credit one extractor's fix to "
-        "the other. Fix: rust.py must prefix mod-scoped items with the module path.",
-    )
     def test_rust_editing_the_first_declared_member_removes_its_old_body(
         self, tmp_path: pathlib.Path
     ) -> None:

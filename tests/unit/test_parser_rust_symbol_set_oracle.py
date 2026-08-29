@@ -43,8 +43,6 @@ CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
   * an associated type inside ``impl Trait for Type`` is emitted with
     ``parent_id=None`` (row ``Out``), unlike the same declaration inside the
     trait itself (row ``Draw::Out``);
-  * ``fn`` items inside a ``mod`` block get no module prefix in their
-    ``qualified_name`` (row ``nested``);
   * trait method signatures report ``is_public=False`` even though trait items
     are public in Rust (rows ``Draw::draw``, ``Draw::helper``).
 
@@ -266,9 +264,7 @@ KIND_SINK_EXPECTED: set[tuple[str, str, int, int, bool, str | None]] = {
     ("helper_fn", "FUNCTION", 58, 64, True, None),
     # macro_rules! is emitted as a FUNCTION and is not `pub`.
     ("shout", "FUNCTION", 66, 68, False, None),
-    # CURRENT-BUT-WRONG: `mod inner` is flattened, so `nested` gets no
-    # `inner::` prefix in its qualified_name.
-    ("nested", "FUNCTION", 71, 71, True, None),
+    ("inner::nested", "FUNCTION", 71, 71, True, None),
 }
 
 # (caller qualified_name, callee_name, line)
