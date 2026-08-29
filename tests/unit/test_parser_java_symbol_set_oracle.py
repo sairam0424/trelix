@@ -28,12 +28,6 @@ that number would lock in an artifact.
 width is the behaviour under test.
 
 CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
-  * a ``record``'s COMPONENTS ARE NEVER EXTRACTED, even though the module
-    docstring advertises them as "the primary query surface".
-    ``_handle_record`` looks for grammar nodes ``record_parameters`` /
-    ``record_component``; tree-sitter-java emits ``formal_parameters`` /
-    ``formal_parameter``, so the whole branch is dead. The same wrong node name
-    makes ``_record_signature`` always render ``record Name()``;
   * a ``record``'s ``implements`` clause produces NO TypeEdge, because
     ``_handle_record`` scans the ``super_interfaces`` node's direct children for
     ``type_identifier`` instead of calling ``_extract_type_list_edges``, and the
@@ -219,8 +213,10 @@ KIND_SINK_EXPECTED: set[tuple[str, str, int, int, bool, str | None]] = {
     ("Status.BAD", "CONSTANT", 41, 41, False, "Status"),
     ("Status.run", "METHOD", 43, 43, True, "Status"),
     ("Point", "CLASS", 46, 50, False, None),
-    # CURRENT-BUT-WRONG: `Point.x` and `Point.y` are MISSING. See
-    # test_java_record_components_and_implements_edge_are_missing.
+    # Record components are VARIABLE symbols, always public, parented to the
+    # record, and spanned to the record header's own line.
+    ("Point.x", "VARIABLE", 46, 46, True, "Point"),
+    ("Point.y", "VARIABLE", 46, 46, True, "Point"),
     ("Point.sum", "METHOD", 47, 49, True, "Point"),
     ("Marker", "INTERFACE", 52, 52, False, None),
 }
@@ -313,7 +309,7 @@ def test_java_symbol_set_and_line_spans_are_exact():
 
     assert _rows(result) == KIND_SINK_EXPECTED
     # Set equality cannot see duplicates; pin the count too.
-    assert len(result.symbols) == 20
+    assert len(result.symbols) == 22
 
 
 def test_java_no_symbol_claims_a_line_past_end_of_file():
@@ -391,21 +387,20 @@ def test_java_call_import_and_type_edges_are_exact():
 RECORD_ONLY_JAVA = "public record Pt(int x, int y) implements Cloneable {}"
 
 
-def test_java_record_components_and_implements_edge_are_missing():
-    """Pins two live defects so a fix is forced to update this test rather than
-    slip past it, and kills `_get_child_by_type(node, "record_parameters")` ->
-    any OTHER wrong node name (which would keep the symbol set unchanged and so
-    stay invisible to the fixture-1 table alone).
+def test_java_record_implements_edge_is_missing():
+    """Pins the still-live J2 defect so a fix is forced to update this test
+    rather than slip past it. Also kills `node.child_by_field_name("parameters")`
+    -> any OTHER wrong lookup for the component branch (which would keep the
+    symbol set unchanged and so stay invisible to the fixture-1 table alone).
 
-    tree-sitter-java emits `formal_parameters` / `formal_parameter` for a record
-    header and wraps the `implements` types in a `type_list`. _handle_record
-    looks for `record_parameters` / `record_component` and scans the
-    super_interfaces node's DIRECT children, so:
-      * no component VARIABLE symbols are produced, and
-      * no "implements" TypeEdge is produced,
-    even though the module docstring documents both. When this is fixed the
-    asserted values below become {"Pt.x", "Pt.y"} and one TypeEdge, and the
-    signature becomes `public record Pt(int x, int y)`.
+    _handle_record now reads a record's components via
+    `node.child_by_field_name("parameters")` / `formal_parameter` (J1/J1b, fixed),
+    but it still scans the super_interfaces node's DIRECT children for
+    `type_identifier` instead of calling `_extract_type_list_edges`, and the
+    identifiers actually live one level down inside a `type_list`, so no
+    "implements" TypeEdge is produced even though the module docstring
+    documents it. When THIS is fixed too, `result.type_edges` gains one
+    ("Pt", "Cloneable", "implements") edge.
     """
     # Precondition: the record must actually declare components and an
     # implements clause, or "nothing was extracted" would be trivially true.
@@ -414,12 +409,12 @@ def test_java_record_components_and_implements_edge_are_missing():
 
     result = JavaParser().parse(RECORD_ONLY_JAVA, file_id=1)
 
-    assert {s.qualified_name for s in result.symbols} == {"Pt"}
-    assert len(result.symbols) == 1
-    assert [s.kind.name for s in result.symbols] == ["CLASS"]
+    assert {s.qualified_name for s in result.symbols} == {"Pt", "Pt.x", "Pt.y"}
+    assert len(result.symbols) == 3
+    assert [s.kind.name for s in result.symbols] == ["CLASS", "VARIABLE", "VARIABLE"]
+    # CURRENT-BUT-WRONG (J2, unfixed): the implements edge is still missing.
     assert result.type_edges == []
-    # The same wrong node name empties the parameter list in the signature.
-    assert result.symbols[0].signature == "public record Pt()"
+    assert result.symbols[0].signature == "public record Pt(int x, int y)"
 
 
 def test_java_signatures_are_exact():
