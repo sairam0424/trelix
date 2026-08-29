@@ -710,9 +710,9 @@ class JavaParser(BaseParser):
 
         mods = self._txt(modifiers_node, src) + " " if modifiers_node else ""
         name = self._txt(name_node, src) if name_node else "?"
-        extends = f" extends {self._txt(superclass_node, src)}" if superclass_node else ""
-        implements = f" implements {self._txt(interfaces_node, src)}" if interfaces_node else ""
-        permits = f" permits {self._txt(permits_node, src)}" if permits_node else ""
+        extends = f" {self._txt(superclass_node, src)}" if superclass_node else ""
+        implements = f" {self._txt(interfaces_node, src)}" if interfaces_node else ""
+        permits = f" {self._txt(permits_node, src)}" if permits_node else ""
         return f"{mods}class {name}{extends}{implements}{permits}"
 
     def _record_signature(self, node: Node, src: bytes) -> str:
