@@ -126,8 +126,6 @@ from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from trelix.core.config import EmbedderConfig, IndexConfig, StoreConfig
 
 _DIM = 4
@@ -336,11 +334,11 @@ class TestTheCollisionExistsInTheInstalledExtractors:
     and every pin below is re-opened before anyone acts on it -- which is the opposite
     of the pins, whose XPASS means the defect is FIXED.
 
-    J4 IS FIXED: this went red exactly as the docstring above predicted, which is how
-    the Java half of it was caught and rewritten below to assert the new,
-    non-colliding reality (see ``test_java_nested_types_no_longer_collide_after_j4``).
-    The Rust half (``test_rust_module_scoped_fns_collide_within_one_file``) is
-    untouched -- R12 has not landed, so ``RUST_COLLIDING_V1`` still collides.
+    J4 AND R12 ARE BOTH FIXED: this went red exactly as the docstring above
+    predicted, for both extractors independently, which is how each half was caught
+    and rewritten to assert its new, non-colliding reality (see
+    ``test_java_nested_types_no_longer_collide_after_j4`` and
+    ``test_rust_module_scoped_fns_no_longer_collide_after_r12``).
     """
 
     def test_java_nested_types_no_longer_collide_after_j4(self) -> None:
@@ -358,15 +356,14 @@ class TestTheCollisionExistsInTheInstalledExtractors:
         ]
         assert _duplicated(names) == set()
 
-    def test_rust_module_scoped_fns_collide_within_one_file(self) -> None:
+    def test_rust_module_scoped_fns_no_longer_collide_after_r12(self) -> None:
+        """R12 IS FIXED: mirrors test_java_nested_types_no_longer_collide_after_j4."""
         from trelix.indexing.parser.extractors.rust import RustParser
 
         names = [s.qualified_name for s in RustParser().parse(RUST_COLLIDING_V1, 1).symbols]
 
-        assert names == ["tag", "tag"]
-        actual_dupes = _duplicated(names)
-        assert actual_dupes == {"tag"}
-        assert {"tag"} == actual_dupes
+        assert names == ["alpha::tag", "beta::tag"]
+        assert _duplicated(names) == set()
 
     def test_the_control_fixture_has_no_colliding_qualified_name(self) -> None:
         """The control must actually be a control."""
@@ -499,26 +496,16 @@ class TestEditingOneMemberOfACollidingPairLeavesTheOldVersionIndexed:
         )
         assert run.rows_after_second_pass == 6, "editing one symbol must not grow the symbols table"
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="DEFECT (pinned deliberately): rust.py R12 gives a fn inside a mod no "
-        "module prefix, so 'alpha::tag' and 'beta::tag' both become 'tag'. Same "
-        "mechanism and same consequence as the Java pin above, pinned separately "
-        "because it is a separate extractor and a fix to one does not touch the "
-        "other -- a single test covering both would credit one extractor's fix to "
-        "the other. Fix: rust.py must prefix mod-scoped items with the module path.",
-    )
     def test_rust_editing_the_first_declared_member_removes_its_old_body(
         self, tmp_path: pathlib.Path
     ) -> None:
+        """R12 IS FIXED via the extractor route: alpha::tag/beta::tag no longer
+        collide, so the collision-existence precondition below was removed. The
+        remaining assertions were already stated as the CORRECT behaviour and now
+        pass because the two functions are genuinely distinct rows.
+        """
         run = _index_edit_reindex(tmp_path, "lib.rs", RUST_COLLIDING_V1, "1001", "1002")
 
-        _require(
-            _duplicated(run.qualified_names_after_first_pass) == {"tag"},
-            "the Rust fixture must still produce a colliding qualified_name; it "
-            f"produced {run.qualified_names_after_first_pass}",
-        )
         _require(
             run.rows_after_first_pass == 2,
             f"expected 2 symbols on the first pass, got {run.rows_after_first_pass}",

@@ -178,7 +178,6 @@ MUTANTS AND DEAD CODE REPORTED, NOT TESTED (rule: a test pinning dead code block
 
 from __future__ import annotations
 
-import pytest
 from tree_sitter import Node
 
 from trelix.indexing.parser._grammar import make_parser
@@ -822,16 +821,6 @@ mod inner {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R12 (pinned deliberately): rust._walk_top_level recurses into a "
-    "mod_item's declaration_list without carrying the module name, so 'fn nested' "
-    "inside 'mod inner' gets qualified_name='nested'. SAME COLLISION CLASS as J4 and "
-    "as the symbols.qualified_name finding in "
-    "tests/unit/test_db_scoping_and_boundaries.py: two mods in one file each with a "
-    "'fn new' collide, and Indexer._insert_one keys existing_hashes on qualified_name.",
-)
 def test_rust_function_inside_a_module_is_qualified_by_the_module() -> None:
     """SPEC: ``fn nested`` inside ``mod inner`` is ``inner::nested`` -- the ``::``
     separator the extractor already uses for ``Type::method`` and ``Enum::Variant``.

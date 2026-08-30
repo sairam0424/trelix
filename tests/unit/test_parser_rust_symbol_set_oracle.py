@@ -27,21 +27,8 @@ formula and deleting it is caught.
 documented truncation boundaries (const/static at 500 chars, macro_rules at
 800) — those widths are the behaviour under test.
 
-CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
-  * a ``///`` doc comment is LOST when an ``#[attr]`` sits between it and the
-    item, because ``_get_preceding_comment`` walks ``prev_named_sibling`` and
-    stops at the non-comment ``attribute_item``  (row ``Boxy``, and
-    ``test_rust_doc_comment_attachment_is_exact``);
-  * the blank-line gap guard in ``_get_preceding_comment`` is itself off by one
-    for Rust: a ``///`` comment separated from its item by ONE blank line is
-    still attached, because tree-sitter-rust's ``line_comment`` node text
-    includes the trailing newline so ``end_point`` already names the next line.
-    Java's identical guard is correct because ``*/`` closes on its own line;
-  * an associated type inside ``impl Trait for Type`` is emitted with
-    ``parent_id=None`` (row ``Out``), unlike the same declaration inside the
-    trait itself (row ``Draw::Out``);
-  * ``fn`` items inside a ``mod`` block get no module prefix in their
-    ``qualified_name`` (row ``nested``).
+ALL RUST DEFECTS PINNED IN EARLIER REVISIONS OF THIS FILE ARE NOW FIXED, INCLUDING
+R12 (module-scoped qualification) FIXED IN THIS CHANGE.
 
 MUTANTS REPORTED, NOT TESTED:
   * ``RustParser.__init__``: ``self._ts_language = load_language("rust")``
@@ -259,9 +246,7 @@ KIND_SINK_EXPECTED: set[tuple[str, str, int, int, bool, str | None]] = {
     ("helper_fn", "FUNCTION", 58, 64, True, None),
     # macro_rules! is emitted as a FUNCTION and is not `pub`.
     ("shout", "FUNCTION", 66, 68, False, None),
-    # CURRENT-BUT-WRONG: `mod inner` is flattened, so `nested` gets no
-    # `inner::` prefix in its qualified_name.
-    ("nested", "FUNCTION", 71, 71, True, None),
+    ("inner::nested", "FUNCTION", 71, 71, True, None),
 }
 
 # (caller qualified_name, callee_name, line)
