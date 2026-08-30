@@ -640,15 +640,25 @@ class TestCrossRepoSymbolResolution:
     def test_make_scip_symbol_id_is_deterministic(self):
         from trelix.federation.retriever import make_scip_symbol_id
 
-        id1 = make_scip_symbol_id("myapp", "1.0.0", "AuthService.verify")
-        id2 = make_scip_symbol_id("myapp", "1.0.0", "AuthService.verify")
+        id1 = make_scip_symbol_id("myapp", "1.0.0", "AuthService.verify", "src/auth.py")
+        id2 = make_scip_symbol_id("myapp", "1.0.0", "AuthService.verify", "src/auth.py")
         assert id1 == id2
 
     def test_make_scip_symbol_id_different_packages_differ(self):
         from trelix.federation.retriever import make_scip_symbol_id
 
-        id1 = make_scip_symbol_id("app-a", "1.0.0", "login")
-        id2 = make_scip_symbol_id("app-b", "1.0.0", "login")
+        id1 = make_scip_symbol_id("app-a", "1.0.0", "login", "src/login.py")
+        id2 = make_scip_symbol_id("app-b", "1.0.0", "login", "src/login.py")
+        assert id1 != id2
+
+    def test_make_scip_symbol_id_different_files_same_package_differ(self):
+        """DEFECT (now fixed): two files in the same package/version sharing a
+        qualified_name used to hash to the identical id, silently dropping one
+        file's row on INSERT OR IGNORE against the symbol_id PRIMARY KEY."""
+        from trelix.federation.retriever import make_scip_symbol_id
+
+        id1 = make_scip_symbol_id("myapp", "1.0.0", "main", "src/a.py")
+        id2 = make_scip_symbol_id("myapp", "1.0.0", "main", "src/b.py")
         assert id1 != id2
 
     def test_resolve_symbol_returns_repo_that_defines_it(self, tmp_path):
@@ -664,7 +674,7 @@ class TestCrossRepoSymbolResolution:
         fed._fed_conn.execute(
             "INSERT INTO federation_symbols VALUES (?, ?, ?, ?, ?, ?)",
             (
-                make_scip_symbol_id("auth-service", "", "AuthService.verify"),
+                make_scip_symbol_id("auth-service", "", "AuthService.verify", "src/auth.py"),
                 "auth-service",
                 "",
                 "AuthService.verify",
@@ -678,6 +688,64 @@ class TestCrossRepoSymbolResolution:
         assert len(results) == 1
         assert results[0]["alias"] == "auth-service"
         assert results[0]["file_path"] == "src/auth.py"
+
+    def test_two_files_with_the_same_qualified_name_both_resolve(self, tmp_path):
+        """DEFECT (now fixed): record_exports() computed symbol_id from
+        (package, version, qualified_name) alone, with no file_path component.
+        Two files in the SAME repo sharing a qualified_name (e.g. two entry
+        points each with a top-level `def main()`, the common case per
+        tests/unit/test_db_scoping_and_boundaries.py's module docstring) hashed
+        to the IDENTICAL id, and `INSERT OR IGNORE INTO federation_symbols`
+        against the `symbol_id PRIMARY KEY` column silently dropped the second
+        file's row — resolve_symbol() could only ever find the first.
+        """
+        from unittest.mock import MagicMock
+
+        from trelix.core.config import IndexConfig
+        from trelix.federation.retriever import FederatedRetriever
+        from trelix.store.db import Database
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        cfg = IndexConfig(repo_path=str(repo_path))
+        db = Database(cfg.db_path_absolute)
+
+        for rel_path in ("entry_a.py", "entry_b.py"):
+            file_id = db.upsert_file(
+                IndexedFile(
+                    path=str(repo_path / rel_path),
+                    rel_path=rel_path,
+                    language=Language.PYTHON,
+                    hash=rel_path,
+                    size_bytes=10,
+                )
+            )
+            db.insert_symbol(
+                Symbol(
+                    file_id=file_id,
+                    name="main",
+                    qualified_name="main",
+                    kind=SymbolKind.FUNCTION,
+                    line_start=1,
+                    line_end=2,
+                    signature="def main()",
+                    body="def main(): pass",
+                )
+            )
+        db._conn.commit()
+        db._conn.close()
+
+        registry = MagicMock()
+        registry.list.return_value = [MagicMock(alias="myapp", path=str(repo_path))]
+        fed = FederatedRetriever(registry)
+        stored = fed.record_exports(alias="myapp", repo_path=str(repo_path))
+        assert stored == 2, f"expected both files' symbols stored, got {stored}"
+
+        results = fed.resolve_symbol("main")
+        resolved_paths = {r["file_path"] for r in results}
+        assert resolved_paths == {"entry_a.py", "entry_b.py"}, (
+            f"expected both files resolvable, got {resolved_paths}"
+        )
 
     def test_resolve_symbol_empty_when_not_found(self, tmp_path):
         from unittest.mock import MagicMock
@@ -704,7 +772,7 @@ class TestCrossRepoSymbolResolution:
         fed._fed_conn.execute(
             "INSERT INTO federation_symbols VALUES (?, ?, ?, ?, ?, ?)",
             (
-                make_scip_symbol_id("myapp", "", "login"),
+                make_scip_symbol_id("myapp", "", "login", "src/login.py"),
                 "myapp",
                 "",
                 "login",
@@ -732,7 +800,7 @@ class TestCrossRepoSymbolResolution:
         fed._fed_conn.execute(
             "INSERT INTO federation_symbols VALUES (?, ?, ?, ?, ?, ?)",
             (
-                make_scip_symbol_id("auth", "", "AuthService.verify"),
+                make_scip_symbol_id("auth", "", "AuthService.verify", "src/auth.py"),
                 "auth",
                 "",
                 "AuthService.verify",
@@ -751,6 +819,6 @@ class TestCrossRepoSymbolResolution:
         """@scope/pkg packages must not collide with same-name unscoped packages."""
         from trelix.federation.retriever import make_scip_symbol_id
 
-        id1 = make_scip_symbol_id("@scope/pkg", "1.0", "login")
-        id2 = make_scip_symbol_id("pkg", "@scope/1.0", "login")
+        id1 = make_scip_symbol_id("@scope/pkg", "1.0", "login", "src/login.py")
+        id2 = make_scip_symbol_id("pkg", "@scope/1.0", "login", "src/login.py")
         assert id1 != id2, "|| separator must prevent scoped-package collisions"

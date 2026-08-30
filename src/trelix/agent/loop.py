@@ -259,8 +259,13 @@ class AgentLoop:
         db = Database(self._config.db_path_absolute)
         symbols = db.get_symbol_by_name(qualified_name.split(".")[-1])
         exact = [s for s in symbols if s.qualified_name == qualified_name]
-        candidates = exact or symbols[:1]
-        sym = candidates[0] if candidates else None
+        # Exactly one exact qualified_name match is required. Falling back to
+        # an arbitrary bare-name match (the old `exact or symbols[:1]`) would
+        # silently return a DIFFERENT symbol's body when the agent's guessed
+        # qualified_name didn't exist verbatim — a wrong answer with no error
+        # signal. Mirrors Indexer._resolve_symbol_match's "ambiguous ->
+        # unresolved, never guess" contract.
+        sym = exact[0] if len(exact) == 1 else None
         if sym is None:
             return Observation(f"Symbol '{qualified_name}' not found.", "get_symbol", False)
         # Fence length is derived from the body: a markdown symbol body carrying

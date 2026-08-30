@@ -249,6 +249,53 @@ class TestGetSymbolFencing:
         assert content == f"``````\n{body}\n``````"
 
 
+class TestGetSymbolAmbiguityIsReportedNotGuessed:
+    """DEFECT (now fixed): `_do_get_symbol` used to fall back to an ARBITRARY
+    bare-name match (`exact or symbols[:1]`) whenever the agent's requested
+    qualified_name didn't exactly match any indexed symbol. If the bare last
+    segment (e.g. "tag" out of "Alpha.Config.tag") matched a DIFFERENT
+    symbol's name, that unrelated symbol's body was silently returned as if
+    it were the one asked for -- a wrong answer with no error signal, unlike
+    Indexer._resolve_symbol_match's deliberate "ambiguous -> unresolved,
+    never guess" contract for the same underlying db.get_symbol_by_name()
+    ambiguity.
+    """
+
+    def test_no_exact_match_reports_not_found_instead_of_a_wrong_symbol(
+        self, tmp_path: Path
+    ) -> None:
+        cfg = _make_config(tmp_path)
+        loop = AgentLoop(cfg)
+        mock_db_cls = _mock_db_class()
+        # The agent asks for "Alpha.Config.tag", but the only bare-name match
+        # ("tag") in the index is a DIFFERENT symbol, "Beta.Config.tag".
+        mock_db_cls.return_value.get_symbol_by_name.return_value = [
+            _symbol("Beta.Config.tag", "def tag(self): return self._beta_tag")
+        ]
+        with patch("trelix.store.db.Database", mock_db_cls):
+            obs = loop._do_get_symbol("Alpha.Config.tag")
+        assert obs.success is False
+        assert "not found" in str(obs.content)
+        assert "_beta_tag" not in str(obs.content), (
+            "must not silently return a different symbol's body"
+        )
+
+    def test_exact_match_among_several_bare_name_candidates_still_resolves(
+        self, tmp_path: Path
+    ) -> None:
+        cfg = _make_config(tmp_path)
+        loop = AgentLoop(cfg)
+        mock_db_cls = _mock_db_class()
+        mock_db_cls.return_value.get_symbol_by_name.return_value = [
+            _symbol("Beta.Config.tag", "def tag(self): return self._beta_tag"),
+            _symbol("Alpha.Config.tag", "def tag(self): return self._alpha_tag"),
+        ]
+        with patch("trelix.store.db.Database", mock_db_cls):
+            obs = loop._do_get_symbol("Alpha.Config.tag")
+        assert obs.success is True
+        assert "_alpha_tag" in str(obs.content)
+
+
 def _capture_tool_call_kwargs(tmp_path: Path, query: str = "how does auth work") -> dict[str, Any]:
     """Run one turn against a fake client and return the tool_call() kwargs."""
     cfg = _make_config(tmp_path)
