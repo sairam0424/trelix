@@ -8,6 +8,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.2.5] — 2026-08-31
+
+### Fixed
+- embedder: the standalone GitHub Release binary's `local`/`local-code` embedder
+  error told users to `pip install 'trelix[local]'` when sentence-transformers
+  was missing — misleading for a frozen PyInstaller binary, which never
+  consults the host's Python/pip environment at all, so the suggested fix had
+  zero effect. Found during a production audit of the published v3.2.4
+  binary. The frozen binary now gets an accurate message pointing at an
+  API-backed provider or the Python package instead; the pip-installed
+  package's message is unchanged.
+
+### Docs
+- `docs/INSTALLATION_GUIDE.md`: corrected a related inaccuracy in the
+  "Standalone Binaries" section that implied the local embedder model works
+  inside the binary — it doesn't; `trelix.spec` explicitly excludes
+  sentence-transformers/torch/scipy/sklearn to keep the binary small.
+
 ## [3.2.4] — 2026-08-31
 
 ### Overview
