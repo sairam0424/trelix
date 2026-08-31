@@ -1,7 +1,7 @@
 # trelix Roadmap
 
 > **Status:** Living document — updated with each release.
-> **Version:** 3.2.4 (current)
+> **Version:** 3.2.5 (current)
 
 This roadmap describes planned features, research directions, and long-term vision for trelix. Items are organized by phase; specific timelines are intentionally loose to reflect research-driven development.
 
