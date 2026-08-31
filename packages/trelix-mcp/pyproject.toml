@@ -41,7 +41,7 @@ classifiers = [
 # at every earlier tag). Against core 3.1.2-3.1.4 the tool would raise AttributeError and
 # return nothing at all — worse than the bare concept_count it replaced. The two federation
 # line numbers above moved 767->787 and 858->878 in that same edit.
-dependencies = ["trelix>=3.1.5", "mcp>=1.24.0,<2.0", "fastmcp>=3.4.0,<4"]
+dependencies = ["trelix>=3.1.5", "mcp>=1.24.0,<3.0", "fastmcp>=3.4.0,<4"]
 
 [project.scripts]
 trelix-mcp = "trelix_mcp.server:main"
