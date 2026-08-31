@@ -36,7 +36,7 @@ exclude = [
 
 [project]
 name = "trelix"
-version = "3.2.3"
+version = "3.2.4"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }

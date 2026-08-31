@@ -7,7 +7,7 @@ packages = ["src/trelix_langchain"]
 
 [project]
 name = "trelix-langchain"
-version = "3.2.3"
+version = "3.2.4"
 description = "LangChain retriever for trelix code intelligence"
 readme = "README.md"
 # `license` and the License classifier are what PyPI renders, NOT the shipped file.
