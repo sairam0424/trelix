@@ -8,6 +8,141 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.2.4] — 2026-08-31
+
+### Overview
+
+A parser-accuracy release: twelve confirmed defects across the Java and Rust
+extractors (nested-type qualification, record components/implements clauses,
+wildcard imports, field/class signatures, module-path qualification, doc-comment
+attachment, brace imports, trait method visibility, associated-type scoping),
+plus seven other defect fixes surfaced by the same qualified-name-collision
+audit (CLI, graph, chunker, walker, BM25, agent, federation). Also ships a new
+automated release-verification workflow, two more real E2E suites, a Docker CI
+improvement, and two CI follow-up fixes. No stored-vector changes.
+
+### Fixed
+
+- **Java extractor — six defects (J1/J1b, J2–J6):**
+  - Record components were never extracted: the installed tree-sitter-java
+    grammar emits `formal_parameters`/`formal_parameter` for a record's header,
+    not `record_parameters`/`record_component`, so every record's signature
+    rendered an empty parameter list.
+  - A record's `implements` clause was never emitted as a TypeEdge because the
+    bespoke loop scanned `super_interfaces`'s direct children instead of
+    delegating to the shared `_extract_type_list_edges` helper.
+  - `import java.util.*;` was recorded as a bogus edge to package `java` with
+    `imported_names=['util']` instead of a wildcard edge to `java.util`, because
+    the asterisk is a sibling node, not part of the identifier text.
+  - Nested classes and their members got a bare `qualified_name` (e.g.
+    `"Config"`) and `parent_id=None` regardless of their real enclosing type,
+    so two same-named nested classes collided under one qualified name and
+    editing one left the other's stale row permanently indexed.
+  - Class signatures duplicated their `extends`/`implements`/`permits`
+    keywords.
+  - Annotated fields (e.g. `@Autowired private Repo repo;`) were indexed with
+    signature `"@Autowired"` — no type, no name — because the signature slice
+    started at the field's modifiers instead of after them.
+- **Rust extractor — six defects (R7/R8/R9/R9b/R10/R11/R12/R13/R14):**
+  - A function nested inside `mod inner` was recorded under a bare,
+    collision-prone `qualified_name` instead of `inner::nested`.
+  - One shared 3-line function mis-attached doc comments in four ways at
+    once: an off-by-one gap guard over-detached a doc comment separated by
+    exactly one blank line, an intervening `#[derive]`/`#[inline]`/`#[serde]`
+    attribute stopped the backward walk instead of being transparent,
+    multiline doc comments gained a spurious blank line between every pair of
+    lines, and a crate-level `//!`/`/*!` doc comment attached to the following
+    item instead of terminating the walk.
+  - Brace imports (`use foo::{Alpha, Beta}`) — the dominant Rust import form —
+    fell through to a generic fallback that stored the literal text
+    `"{Alpha, Beta}"` as a single import name, because the grammar emits
+    `scoped_use_list`/`use_list`, not the `use_tree_list`/`use_tree` node types
+    the flattener checked for.
+  - Every method of a `pub trait` was recorded `is_public=False`, since trait
+    methods never carry their own `visibility_modifier` node.
+  - An associated type inside an `impl` block (e.g. `type Out = u32;`) was
+    recorded as a bogus top-level `INTERFACE` named `Out` with `parent_id=None`
+    instead of scoped to its enclosing impl.
+  - Crate-doc (`//!`) comment lines gained a spurious blank line between each
+    pair when joined, from not stripping the trailing newline `tree-sitter-rust`
+    includes in the node text.
+- **`agent`: `get_symbol` could silently return the wrong symbol.**
+  `AgentLoop._do_get_symbol` fell back to an arbitrary bare-name match whenever
+  the requested qualified name didn't match exactly, so an unrelated symbol's
+  body could be returned as if it were the one asked for, with no error
+  signal. It now requires exactly one exact match and reports "not found"
+  otherwise.
+- **`federation`: SCIP symbol ids could silently drop cross-file symbols.**
+  `make_scip_symbol_id()` hashed only `(package, version, qualified_name)`, so
+  two files in the same repo/package/version sharing a qualified name (e.g.
+  two entry points each with a top-level `def main()`) hashed to the same id
+  and the second file's row was silently dropped on insert. `file_path` is now
+  a required fourth component of the hash.
+- **`chunker`: `token_count` excluded the truncation suffix.** Both
+  `Chunker.build_chunks` and `ContextualChunker.build_chunks` set `token_count`
+  to the pre-truncation budget after truncating, so every over-budget chunk
+  carried more tokens than its recorded count claimed. Both now recount from
+  the already-truncated (and suffixed) chunk text.
+- **`walker`: NFD-encoded filenames were not normalized to NFC.** A filename
+  produced natively by macOS/HFS+ could change `rel_path` on a re-walk from a
+  filesystem returning the other Unicode normalization form, which the
+  indexer's `rel_path`-keyed change detection read as delete+add for a file
+  whose content never changed.
+- **`bm25`: pure-stop-word queries didn't hit the empty-query fallback.**
+  Stop words are now excluded before the empty-query check, so a query made
+  entirely of stop words correctly hits the FTS5 sentinel path instead of
+  being treated as a non-empty query.
+- **`graph`: community detection crashed on ticket-linked repos.**
+  `detect_communities()` unconditionally cast node ids to `int`, but
+  cross-source artifact nodes (e.g. `ticket:PROJ-1`) are keyed by a
+  `source_ref` string, so any graph containing one raised `ValueError` in both
+  the success path and its `except` fallback, escaping `GraphBuilder.build()`
+  entirely.
+- **`cli`: `update_index` exited 0 even when indexing failed.** It printed the
+  JSON error payload from `Indexer.index_file()` but never checked
+  `result["status"]`, so a failed re-index was reported as success. It now
+  mirrors the status check already used in `indexing/watcher.py`.
+
+### Added
+
+- **Automated release verification** (`.github/workflows/verify-release.yml`):
+  once a tag is pushed, this new workflow waits for `release.yml`'s `Release`
+  workflow and `docker-publish.yml`'s `Docker Publish` workflow to both go
+  green for that tag, then runs `scripts/verify_release.py` itself and posts
+  the PASS/FAIL summary — no more running it by hand after watching two other
+  workflows finish. The manual command remains available for ad-hoc
+  re-verification (see `CONTRIBUTING.md`).
+- **A real `search_code` MCP round-trip** (`tests/e2e/test_mcp_stdio_e2e.py`):
+  indexes a real fixture repo, spawns `trelix-mcp` as a real OS subprocess,
+  and confirms `search_code` returns real results from the real index — over
+  the actual stdio JSON-RPC boundary.
+- **Real-index round-trip tests for both LLM-framework adapters**
+  (`packages/trelix-langchain/tests/e2e/test_retriever_e2e.py` and
+  `packages/trelix-llama-index/tests/e2e/test_retriever_e2e.py`): each
+  builds a real index and drives `TrelixRetriever` / `TrelixIndexRetriever`
+  against it. Both new suites are also wired into `release.yml`'s
+  `smoke-test-built-artifacts` job, so they run against the actual built
+  wheels before publish, not just against editable source.
+
+### CI
+
+- **`ci.yml` now smoke-tests the `-local` Docker image variant** whenever
+  Docker-relevant files change, alongside the existing slim-image smoke test.
+- **Two follow-up fixes to that Docker-change gating**, landed the same day:
+  the job's comment claiming "no embedder extras needed" was stale now that
+  the new `search_code` E2E test constructs a real local embedder (a Hugging
+  Face cache step was added for it), and the gating regex was widened to also
+  treat `packages/trelix-mcp/pyproject.toml` as Docker-relevant, since the
+  root `Dockerfile` copies and installs that package into both image variants.
+
+### Migration
+
+- No stored-vector or index changes; no reindex needed.
+- No dependency floors moved.
+- If you relied on any of the twelve parser/graph/chunker/walker/bm25/agent/
+  federation defects above (unlikely, and none were documented behavior),
+  the corrected output is now what ships.
+
 ## [3.2.3] — 2026-08-28
 
 ### Overview
