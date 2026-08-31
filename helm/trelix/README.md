@@ -59,7 +59,7 @@ See `values.yaml` for the full list with defaults and comments. Highlights:
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `3.2.3` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
+| `image.tag` | `3.2.4` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
 | `store.backend` | `sqlite` | `sqlite` \| `qdrant` \| `lance` |
 | `persistence.enabled` | `true` | Shared multi-repo PVC — see "Repo model" above |
 | `persistence.mountPath` | `/data` | |
