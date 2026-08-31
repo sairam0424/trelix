@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -370,6 +371,22 @@ class LocalEmbedder(BaseEmbedder):
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
+            if getattr(sys, "frozen", False):
+                # PyInstaller's standalone binary (trelix.spec) deliberately
+                # excludes sentence-transformers/torch to stay ~30-40 MB instead
+                # of ~500 MB. The frozen process never consults the host's
+                # Python/pip environment, so telling the user to `pip install`
+                # here would be actively misleading — running it has zero
+                # effect on this binary.
+                raise ImportError(
+                    "sentence-transformers is required for the local embedder, "
+                    "and the standalone trelix binary does not bundle it — "
+                    "installing it on this host has no effect on this binary. "
+                    "Use an API-backed provider instead (e.g. --provider "
+                    "openai/azure/voyage/bedrock-titan), or use the trelix "
+                    "Python package (trelix[local]) instead of the standalone "
+                    "binary for local/offline embedding."
+                ) from exc
             raise ImportError(
                 "sentence-transformers is required for the local embedder. "
                 "Install it with: pip install 'trelix[local]'"
@@ -505,6 +522,18 @@ class LocalCodeEmbedder(BaseEmbedder):
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
+            if getattr(sys, "frozen", False):
+                # See LocalEmbedder.__init__'s comment — same PyInstaller
+                # exclusion, same reason `pip install` is the wrong message here.
+                raise ImportError(
+                    "sentence-transformers is required for the local-code "
+                    "embedder, and the standalone trelix binary does not "
+                    "bundle it — installing it on this host has no effect on "
+                    "this binary. Use an API-backed provider instead (e.g. "
+                    "--provider openai/azure/voyage/bedrock-titan), or use the "
+                    "trelix Python package (trelix[local]) instead of the "
+                    "standalone binary for local/offline embedding."
+                ) from exc
             raise ImportError(
                 "sentence-transformers is required for the local-code embedder. "
                 "Install it with: pip install 'trelix[local]'"

@@ -286,6 +286,45 @@ class TestLocalEmbedder:
             with pytest.raises(ImportError, match="pip install"):
                 LocalEmbedder(config)
 
+    def test_frozen_binary_import_error_message_when_sentence_transformers_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Under a PyInstaller frozen binary (sys.frozen=True), the message must
+        say pip install has NO EFFECT on this binary — a frozen process never
+        consults the host's Python/pip environment, so the normal "pip install
+        'trelix[local]'" advice is actively misleading there."""
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        config = EmbedderConfig(provider="local")
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            with pytest.raises(ImportError) as exc_info:
+                LocalEmbedder(config)
+        message = str(exc_info.value)
+        assert "does not bundle it" in message
+        assert "no effect on this binary" in message
+        # The frozen message must not contain the pip-install-fixes-this-process
+        # instruction — that is the exact thing this fix removes for this case.
+        assert "pip install" not in message
+
+    def test_import_error_message_unchanged_when_not_frozen(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Outside a frozen binary (normal pip-installed usage, sys.frozen absent
+        or False), the original pip-install message must be unchanged — that
+        advice IS correct for a regular Python install."""
+        config = EmbedderConfig(provider="local")
+
+        monkeypatch.delattr(sys, "frozen", raising=False)  # absent, the common case
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            with pytest.raises(ImportError, match="pip install") as exc_info:
+                LocalEmbedder(config)
+        assert "does not bundle it" not in str(exc_info.value)
+
+        monkeypatch.setattr(sys, "frozen", False, raising=False)  # explicit False
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            with pytest.raises(ImportError, match="pip install") as exc_info:
+                LocalEmbedder(config)
+        assert "does not bundle it" not in str(exc_info.value)
+
     def test_embed_returns_list_of_vectors(self) -> None:
         pytest.importorskip(
             "sentence_transformers",
@@ -556,6 +595,39 @@ class TestLocalCodeEmbedder:
         with patch.dict(sys.modules, {"sentence_transformers": None}):
             with pytest.raises(ImportError, match="pip install"):
                 LocalCodeEmbedder(config)
+
+    def test_frozen_binary_import_error_message_when_sentence_transformers_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same frozen-binary distinction as LocalEmbedder — see its test's
+        docstring for why the standard pip-install advice is wrong here."""
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        config = EmbedderConfig(provider="local-code")
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            with pytest.raises(ImportError) as exc_info:
+                LocalCodeEmbedder(config)
+        message = str(exc_info.value)
+        assert "does not bundle it" in message
+        assert "no effect on this binary" in message
+        assert "pip install" not in message
+
+    def test_import_error_message_unchanged_when_not_frozen(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Outside a frozen binary, the original pip-install message is unchanged."""
+        config = EmbedderConfig(provider="local-code")
+
+        monkeypatch.delattr(sys, "frozen", raising=False)  # absent, the common case
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            with pytest.raises(ImportError, match="pip install") as exc_info:
+                LocalCodeEmbedder(config)
+        assert "does not bundle it" not in str(exc_info.value)
+
+        monkeypatch.setattr(sys, "frozen", False, raising=False)  # explicit False
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            with pytest.raises(ImportError, match="pip install") as exc_info:
+                LocalCodeEmbedder(config)
+        assert "does not bundle it" not in str(exc_info.value)
 
     def test_trust_remote_code_true(self) -> None:
         """With SEC-03c's opt-in granted (class fixture), the kwarg must still arrive.
