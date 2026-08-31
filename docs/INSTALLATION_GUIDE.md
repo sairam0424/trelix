@@ -236,9 +236,16 @@ chmod +x /usr/local/bin/trelix
 trelix --version
 ```
 
-Binaries are built with PyInstaller and include all Python dependencies. The
-local embedder model is still downloaded to the HuggingFace cache
-(`$HF_HOME`, default `~/.cache/huggingface/hub/`) on first use.
+Binaries are built with PyInstaller. `sentence-transformers`, `torch`, and the
+other local-embedding libraries are intentionally excluded to keep the binary
+at ~30-40 MB instead of ~500 MB (see `trelix.spec`). **The standalone binary
+therefore requires an API-backed embedding provider** — `openai`, `azure`,
+`voyage`, `bedrock-titan`, or `bedrock-cohere` — set via
+`TRELIX_EMBEDDER_PROVIDER` or `--provider`; there is no local/offline
+embedding in this binary, and running `pip install "trelix[local]"` on the
+host has no effect on it, since a frozen binary never consults the host's
+Python environment. Use `pip install "trelix[local]"` (see [Section 3.1](#31-local-only-offline-no-api-key))
+instead of the standalone binary if you need local/offline embedding.
 
 ---
 
