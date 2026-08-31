@@ -16,7 +16,6 @@ from typing import Any, Literal  # noqa: E402
 
 from fastmcp import Context, FastMCP  # noqa: E402
 from fastmcp.prompts import Message  # noqa: E402
-from mcp.server.lowlevel.server import NotificationOptions  # noqa: E402
 from mcp.types import ServerCapabilities  # noqa: E402
 
 from trelix.agent.loop import AgentLoop  # noqa: E402
@@ -49,17 +48,33 @@ _subscription_registry = SubscriptionRegistry(
 # subscribe and listChanged are independent optional fields; we only
 # opt-in to subscribe here — listChanged is handled separately by FastMCP's
 # notification_options.
+#
+# The wrapper is deliberately *args/**kwargs rather than a fixed
+# (notification_options, experimental_capabilities) signature: the mcp SDK's
+# own internal call sites for this method are not stable across SDK major
+# versions —
+#   mcp 1.x  Server.create_initialization_options() calls
+#            get_capabilities(notification_options, experimental_capabilities)
+#            — 2 positional args, no `extensions`/`protocol_version`.
+#   mcp 2.x  Server.create_initialization_options() calls
+#            get_capabilities(notification_options or ..., experimental_capabilities
+#            or ..., extensions if ... else ...) — 3 positional args.
+#   mcp 2.x  Server._handle_discover() calls
+#            get_capabilities(protocol_version=ctx.protocol_version) — 0
+#            positional args, one keyword-only arg unknown to the 1.x shape.
+# A fixed 2-positional-arg signature raises TypeError against the second and
+# third call shapes (confirmed against real mcp 2.1.1: "takes 2 positional
+# arguments but 3 were given"). Forwarding everything straight through to the
+# real bound method keeps this correct across SDK generations without
+# version-sniffing mcp's version at import time.
 # ---------------------------------------------------------------------------
 
 _orig_get_capabilities = mcp._mcp_server.get_capabilities
 
 
-def _get_capabilities_with_subscribe(
-    notification_options: NotificationOptions,
-    experimental_capabilities: dict[str, dict[str, Any]],
-) -> ServerCapabilities:
+def _get_capabilities_with_subscribe(*args: Any, **kwargs: Any) -> ServerCapabilities:
     """Wrap get_capabilities to advertise resources.subscribe=True."""
-    caps = _orig_get_capabilities(notification_options, experimental_capabilities)
+    caps = _orig_get_capabilities(*args, **kwargs)
     if caps.resources is not None:
         caps = caps.model_copy(
             update={"resources": caps.resources.model_copy(update={"subscribe": True})}

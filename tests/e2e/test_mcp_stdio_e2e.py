@@ -33,6 +33,7 @@ import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 from mcp import ClientSession
@@ -42,6 +43,22 @@ from trelix.core.config import EmbedderConfig, IndexConfig
 from trelix.indexing.indexer import Indexer
 
 _TRELIX_MCP_EXE = shutil.which("trelix-mcp")
+
+
+def _sdk_field(obj: Any, new_name: str, old_name: str) -> Any:
+    """Read a pydantic result field whose name mcp 2.0 renamed.
+
+    mcp 2.0's `mcp.types` renamed several wire-model fields from camelCase to
+    snake_case (`serverInfo`->`server_info`, `isError`->`is_error`,
+    `structuredContent`->`structured_content`); mcp 1.x only ever exposed the
+    camelCase name, and pydantic's default `BaseModel.__getattr__` raises
+    `AttributeError` for the name that doesn't exist on the installed
+    version rather than returning `None`. Trying the 2.x name first keeps
+    this suite passing against both SDK major versions without importing
+    `mcp.version`/sniffing it.
+    """
+    return getattr(obj, new_name) if hasattr(obj, new_name) else getattr(obj, old_name)
+
 
 # A generous ceiling for process spawn + MCP handshake on a cold interpreter —
 # not a tight bound, just a guard against a genuine hang reading forever.
@@ -101,7 +118,7 @@ async def test_initialize_identifies_the_trelix_server() -> None:
     async def run() -> None:
         async with _connected_session() as session:
             result = await session.initialize()
-            assert result.serverInfo.name == "trelix"
+            assert _sdk_field(result, "server_info", "serverInfo").name == "trelix"
 
     await asyncio.wait_for(run(), timeout=_HANDSHAKE_TIMEOUT)
 
@@ -127,14 +144,15 @@ async def test_search_code_finds_real_results_in_a_real_index(indexed_mini_repo:
                 "search_code",
                 {"query": "authenticate user", "repo_path": str(indexed_mini_repo)},
             )
-            assert result.isError is False
+            assert _sdk_field(result, "is_error", "isError") is False
             # Confirmed live against the installed mcp==1.29.1 / fastmcp==3.4.7:
             # a dict returned from an @mcp.tool()-decorated function is marshaled
             # into BOTH `result.content` (a single TextContent whose `.text` is
             # the JSON-encoded dict) AND `result.structuredContent` (the dict
             # itself, already parsed) — structuredContent is the direct,
-            # no-reparsing access path.
-            payload = result.structuredContent
+            # no-reparsing access path. mcp 2.0 renamed the latter to
+            # `structured_content`; see `_sdk_field`.
+            payload = _sdk_field(result, "structured_content", "structuredContent")
             assert payload is not None
             assert payload["total_available"] > 0
             files = {r["file"] for r in payload["results"]}
