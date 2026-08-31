@@ -23,6 +23,7 @@ Parent linkage:
 
 from __future__ import annotations
 
+import dataclasses
 import re
 
 from tree_sitter import Node
@@ -96,7 +97,7 @@ class RustParser(BaseParser):
             if child.type == "line_comment":
                 text = self._txt(child, src)
                 if text.startswith("//!"):
-                    inner_doc_lines.append(text)
+                    inner_doc_lines.append(text.rstrip("\n"))
                     continue
             elif child.type == "block_comment":
                 text = self._txt(child, src)
@@ -143,6 +144,7 @@ class RustParser(BaseParser):
         type_edges: list[TypeEdge],
         type_idx: dict[str, int],
         raw_calls: list[tuple[int, str, int]],
+        module_path: str = "",
     ) -> None:
         for child in node.children:
             ntype = child.type
@@ -152,7 +154,29 @@ class RustParser(BaseParser):
                 edge = self._handle_extern_crate(child, src, file_id)
                 if edge:
                     import_edges.append(edge)
-            elif ntype == "function_item":
+            elif ntype == "mod_item":
+                # Recurse into inline modules, threading the module path through
+                # so mod-scoped top-level symbols get qualified by it.
+                name_node = child.child_by_field_name("name")
+                mod_name = self._txt(name_node, src) if name_node else ""
+                child_path = f"{module_path}::{mod_name}" if module_path else mod_name
+                body = self._get_child_by_type(child, "declaration_list")
+                if body:
+                    self._walk_top_level(
+                        body,
+                        src,
+                        file_id,
+                        symbols,
+                        import_edges,
+                        type_edges,
+                        type_idx,
+                        raw_calls,
+                        module_path=child_path,
+                    )
+                continue
+
+            pre_dispatch_len = len(symbols)
+            if ntype == "function_item":
                 self._handle_function(child, src, file_id, symbols, raw_calls)
             elif ntype == "struct_item":
                 self._handle_struct(child, src, file_id, symbols, type_idx)
@@ -172,13 +196,14 @@ class RustParser(BaseParser):
                 self._handle_static_item(child, src, file_id, symbols)
             elif ntype == "macro_definition":
                 self._handle_macro_def(child, src, file_id, symbols)
-            elif ntype == "mod_item":
-                # Recurse into inline modules
-                body = self._get_child_by_type(child, "declaration_list")
-                if body:
-                    self._walk_top_level(
-                        body, src, file_id, symbols, import_edges, type_edges, type_idx, raw_calls
-                    )
+
+            if module_path:
+                for idx in range(pre_dispatch_len, len(symbols)):
+                    symbol = symbols[idx]
+                    if symbol.parent_id is None:
+                        symbols[idx] = dataclasses.replace(
+                            symbol, qualified_name=f"{module_path}::{symbol.qualified_name}"
+                        )
 
     # ------------------------------------------------------------------
     # Struct
@@ -495,7 +520,9 @@ class RustParser(BaseParser):
         if body:
             for child in body.children:
                 if child.type in ("function_item", "function_signature_item"):
-                    self._handle_trait_fn(child, src, file_id, symbols, local_idx, name, raw_calls)
+                    self._handle_trait_fn(
+                        child, src, file_id, symbols, local_idx, name, raw_calls, is_pub
+                    )
                 elif child.type == "associated_type":
                     # type Output; inside trait body
                     aname_node = child.child_by_field_name("name") or self._get_child_by_type(
@@ -527,6 +554,7 @@ class RustParser(BaseParser):
         trait_local_idx: int,
         trait_name: str,
         raw_calls: list[tuple[int, str, int]],
+        trait_is_public: bool,
     ) -> None:
         name_node = node.child_by_field_name("name") or self._get_child_by_type(node, "identifier")
         if not name_node:
@@ -534,7 +562,10 @@ class RustParser(BaseParser):
         name = self._txt(name_node, src)
 
         attrs = self._get_rust_attributes(node, src)
-        is_pub = self._get_child_by_type(node, "visibility_modifier") is not None
+        # A trait fn never carries its own visibility_modifier -- `pub fn` inside a
+        # trait body is a compile error in real Rust. Trait methods inherit the
+        # trait's own visibility instead.
+        is_pub = trait_is_public
 
         func_local_idx = len(symbols)
         symbols.append(
@@ -568,12 +599,20 @@ class RustParser(BaseParser):
         src: bytes,
         file_id: int,
         symbols: list[Symbol],
+        parent_local_idx: int | None = None,
+        qualifier: str | None = None,
     ) -> None:
-        """Handle: type Foo = Bar;  type MyVec<T> = Vec<T>;"""
+        """Handle: type Foo = Bar;  type MyVec<T> = Vec<T>;
+
+        When called from inside an impl block, ``parent_local_idx`` scopes the
+        associated type to its enclosing type and ``qualifier`` (the
+        enclosing type's name) qualifies it, e.g. ``Boxy::Out``.
+        """
         name_node = node.child_by_field_name("name")
         if not name_node:
             return
         name = self._txt(name_node, src)
+        qualified_name = f"{qualifier}::{name}" if qualifier else name
 
         tp_node = node.child_by_field_name("type_parameters")
         tp_str = self._txt(tp_node, src) if tp_node else ""
@@ -586,7 +625,7 @@ class RustParser(BaseParser):
             Symbol(
                 file_id=file_id,
                 name=name,
-                qualified_name=name,
+                qualified_name=qualified_name,
                 kind=SymbolKind.INTERFACE,
                 line_start=node.start_point[0] + 1,
                 line_end=node.end_point[0] + 1,
@@ -594,6 +633,7 @@ class RustParser(BaseParser):
                 body=self._txt(node, src),
                 docstring=self._get_preceding_comment(node, src),
                 is_public=is_pub,
+                parent_id=parent_local_idx,
             )
         )
 
@@ -658,7 +698,14 @@ class RustParser(BaseParser):
                 )
             elif child.type == "type_item":
                 # type Alias = ... inside impl block
-                self._handle_type_alias(child, src, file_id, symbols)
+                self._handle_type_alias(
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    parent_local_idx=parent_local_idx,
+                    qualifier=type_name,
+                )
 
     def _extract_type_name(self, node: Node, src: bytes) -> str:
         """Extract the base type identifier from a type node (handles generic_type)."""
@@ -938,19 +985,29 @@ class RustParser(BaseParser):
         edges: list[ImportEdge],
     ) -> None:
         """Recursively expand use trees like foo::{A, B, C}."""
-        if node.type == "use_tree_list":
+        if node.type == "scoped_use_list":
+            path_node = node.child_by_field_name("path")
+            prefix = self._txt(path_node, src) if path_node else path_so_far
+            list_node = node.child_by_field_name("list")
+            if list_node:
+                self._flatten_use_tree(list_node, src, file_id, prefix, edges)
+        elif node.type == "use_list":
             for child in node.children:
-                if child.type == "use_tree":
+                if child.type == "identifier":
+                    edges.append(
+                        ImportEdge(
+                            file_id=file_id,
+                            imported_from=path_so_far,
+                            imported_names=[self._txt(child, src)],
+                        )
+                    )
+                elif child.type in (
+                    "scoped_identifier",
+                    "scoped_use_list",
+                    "use_as_clause",
+                    "use_wildcard",
+                ):
                     self._flatten_use_tree(child, src, file_id, path_so_far, edges)
-        elif node.type == "use_tree":
-            full = self._txt(node, src)
-            edges.append(
-                ImportEdge(
-                    file_id=file_id,
-                    imported_from=full,
-                    imported_names=[],
-                )
-            )
         else:
             full = self._txt(node, src)
             parts = full.replace("::", ".").split(".")
@@ -1018,10 +1075,24 @@ class RustParser(BaseParser):
         lines: list[str] = []
         prev = node.prev_named_sibling
         next_start_line = node.start_point[0]
-        while prev is not None and prev.type in ("line_comment", "block_comment"):
-            if prev.end_point[0] + 1 < next_start_line:
+        while prev is not None and prev.type in (
+            "line_comment",
+            "block_comment",
+            "attribute_item",
+        ):
+            if prev.type == "attribute_item":
+                next_start_line = prev.start_point[0]
+                prev = prev.prev_named_sibling
+                continue
+            gap_row = prev.end_point[0] if prev.type == "line_comment" else prev.end_point[0] + 1
+            if gap_row < next_start_line:
                 break
-            lines.insert(0, self._txt(prev, src))
+            text = self._txt(prev, src)
+            if text.startswith("//!") or text.startswith("/*!"):
+                break
+            if prev.type == "line_comment":
+                text = text.rstrip("\n")
+            lines.insert(0, text)
             next_start_line = prev.start_point[0]
             prev = prev.prev_named_sibling
         return self._clean_comment("\n".join(lines)) if lines else None

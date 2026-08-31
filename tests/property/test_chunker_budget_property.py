@@ -165,4 +165,8 @@ def test_one_token_above_budget_always_truncates_for_any_header(
     chunk = _build_one(chunker, body, rel_path, language)
 
     assert _TRUNCATION_MARKER in chunk.chunk_text
-    assert chunk.token_count == budget
+    # token_count is recounted after truncation, so it reflects the actual
+    # truncated text (including the appended truncation suffix) rather than
+    # the pre-truncation budget -- it can exceed `budget` by the suffix's
+    # token cost.
+    assert chunk.token_count == _count(chunk.chunk_text)

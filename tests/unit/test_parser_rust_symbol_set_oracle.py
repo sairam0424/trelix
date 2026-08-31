@@ -27,26 +27,8 @@ formula and deleting it is caught.
 documented truncation boundaries (const/static at 500 chars, macro_rules at
 800) — those widths are the behaviour under test.
 
-CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
-  * a ``///`` doc comment is LOST when an ``#[attr]`` sits between it and the
-    item, because ``_get_preceding_comment`` walks ``prev_named_sibling`` and
-    stops at the non-comment ``attribute_item``  (row ``Boxy``, and
-    ``test_rust_doc_comment_attachment_is_exact``);
-  * the blank-line gap guard in ``_get_preceding_comment`` is itself off by one
-    for Rust: a ``///`` comment separated from its item by ONE blank line is
-    still attached, because tree-sitter-rust's ``line_comment`` node text
-    includes the trailing newline so ``end_point`` already names the next line.
-    Java's identical guard is correct because ``*/`` closes on its own line;
-  * ``use a::b::{A, B}`` is NOT expanded into one edge per brace member — the
-    grammar node is ``scoped_use_list``, which ``_flatten_use_tree`` does not
-    handle, so the literal text ``{Alpha, Beta}`` is stored as an imported name;
-  * an associated type inside ``impl Trait for Type`` is emitted with
-    ``parent_id=None`` (row ``Out``), unlike the same declaration inside the
-    trait itself (row ``Draw::Out``);
-  * ``fn`` items inside a ``mod`` block get no module prefix in their
-    ``qualified_name`` (row ``nested``);
-  * trait method signatures report ``is_public=False`` even though trait items
-    are public in Rust (rows ``Draw::draw``, ``Draw::helper``).
+ALL RUST DEFECTS PINNED IN EARLIER REVISIONS OF THIS FILE ARE NOW FIXED, INCLUDING
+R12 (module-scoped qualification) FIXED IN THIS CHANGE.
 
 MUTANTS REPORTED, NOT TESTED:
   * ``RustParser.__init__``: ``self._ts_language = load_language("rust")``
@@ -248,27 +230,23 @@ KIND_SINK_EXPECTED: set[tuple[str, str, int, int, bool, str | None]] = {
     ("Mode::Slow", "CONSTANT", 25, 25, True, "Mode"),
     ("Draw", "INTERFACE", 28, 35, True, None),
     ("Draw::Out", "INTERFACE", 29, 29, True, "Draw"),
-    # CURRENT-BUT-WRONG: trait items are public in Rust, but _handle_trait_fn
-    # looks for a visibility_modifier that trait fns never carry.
-    ("Draw::draw", "METHOD", 30, 30, False, "Draw"),
-    ("Draw::helper", "METHOD", 31, 34, False, "Draw"),
+    # Trait items are public in Rust. _handle_trait_fn inherits the trait's own
+    # is_pub instead of looking for a visibility_modifier trait fns never carry.
+    ("Draw::draw", "METHOD", 30, 30, True, "Draw"),
+    ("Draw::helper", "METHOD", 31, 34, True, "Draw"),
     ("Alias", "INTERFACE", 37, 37, True, None),
     ("ZERO", "CONSTANT", 40, 40, True, "Boxy"),
     # `new()` has no self param -> FUNCTION, `area(&self)` does -> METHOD.
     ("Boxy::new", "FUNCTION", 41, 43, True, "Boxy"),
     ("Boxy::area", "METHOD", 44, 46, False, "Boxy"),
-    # CURRENT-BUT-WRONG: `type Out = u32;` inside `impl Draw for Boxy` routes
-    # through _handle_type_alias, which takes no parent, so this associated type
-    # is emitted as a top-level INTERFACE named `Out` with no parent — compare
-    # the `Draw::Out` row above.
-    ("Out", "INTERFACE", 50, 50, False, None),
+    # `type Out = u32;` inside `impl Draw for Boxy` is scoped to its enclosing
+    # impl block, matching the `Draw::Out` row above.
+    ("Boxy::Out", "INTERFACE", 50, 50, False, "Boxy"),
     ("Boxy::draw", "METHOD", 51, 54, False, "Boxy"),
     ("helper_fn", "FUNCTION", 58, 64, True, None),
     # macro_rules! is emitted as a FUNCTION and is not `pub`.
     ("shout", "FUNCTION", 66, 68, False, None),
-    # CURRENT-BUT-WRONG: `mod inner` is flattened, so `nested` gets no
-    # `inner::` prefix in its qualified_name.
-    ("nested", "FUNCTION", 71, 71, True, None),
+    ("inner::nested", "FUNCTION", 71, 71, True, None),
 }
 
 # (caller qualified_name, callee_name, line)
@@ -288,11 +266,12 @@ KIND_SINK_CALLS_EXPECTED: set[tuple[str, str, int]] = {
 # (imported_from, tuple(imported_names))
 KIND_SINK_IMPORTS_EXPECTED: set[tuple[str, tuple[str, ...]]] = {
     ("std.collections", ("HashMap",)),
-    # CURRENT-BUT-WRONG: the brace group is not expanded into Alpha and Beta.
-    # tree-sitter-rust emits `scoped_use_list` here, a node type
-    # _flatten_use_tree has no branch for, so it falls through to the generic
-    # "split on ::" path and stores the literal brace text as a name.
-    ("crate.util", ("{Alpha, Beta}",)),
+    # `use crate::util::{Alpha, Beta};` -> one edge per brace member. The
+    # module string keeps the `::` separator (unlike the generic "split on
+    # ::" fallback path above, which normalises to `.`) because it is read
+    # straight off the `scoped_use_list`'s `path` field text.
+    ("crate::util", ("Alpha",)),
+    ("crate::util", ("Beta",)),
     # `extern crate serde;` -> no imported names.
     ("serde", ()),
 }
@@ -416,7 +395,7 @@ def test_rust_call_import_and_type_edges_are_exact():
 
     imports = {(e.imported_from, tuple(e.imported_names)) for e in result.import_edges}
     assert imports == KIND_SINK_IMPORTS_EXPECTED
-    assert len(result.import_edges) == 3
+    assert len(result.import_edges) == 4
 
     type_edges = {
         (result.symbols[e.from_symbol_id].qualified_name, e.to_type_name, e.edge_kind)
@@ -534,28 +513,23 @@ def test_rust_doc_comment_attachment_is_exact():
     parser = RustParser()
     docs = {s.qualified_name: s.docstring for s in parser.parse(DOC_RS, file_id=1).symbols}
     assert docs["a"] == "Attached to a."
-    # CURRENT-BUT-WRONG, pinned deliberately: a comment separated by ONE blank
-    # line is still attached. tree-sitter-rust's line_comment node text includes
-    # its trailing newline, so `prev.end_point[0]` already names the line AFTER
-    # the comment and the `+ 1` in `prev.end_point[0] + 1 < next_start_line` is
-    # one too many. The identical guard in the Java extractor is correct because
-    # a Java `/** */` block comment ends at `*/`, on its own line. Fixing this
-    # means dropping the `+ 1` for Rust; when that happens this row becomes None
-    # and this assertion is the thing to update.
-    assert docs["b"] == "One blank line before b."
+    # Fixed (R7): the gap guard no longer double-counts the trailing newline that
+    # tree-sitter-rust's line_comment text already includes, so a comment
+    # separated from its item by ONE blank line is correctly detached.
+    assert docs["b"] is None
     assert docs["c"] is None
-    # tree-sitter-rust's line_comment node text INCLUDES its trailing newline, so
-    # joining two of them with "\n" yields a blank line between them. Pinned as
-    # observed behaviour, not endorsed: the semantic value is "Two\nlines.".
-    assert docs["d"] == "Two\n\nlines."
+    # Fixed (R9): line_comment text is stripped of its trailing newline before
+    # being joined, so two adjacent `///` lines join without a spurious blank
+    # line between them.
+    assert docs["d"] == "Two\nlines."
 
-    # CURRENT-BUT-WRONG: the `///` doc is silently lost because
-    # _get_preceding_comment walks prev_named_sibling and the attribute_item is
-    # not a comment, so the loop never reaches the comment. Rust puts attributes
-    # AFTER doc comments idiomatically, so this loses docs on most real items.
+    # Fixed (R8): _get_preceding_comment now treats attribute_item as
+    # transparent while walking backwards, so a `///` doc survives an #[attr]
+    # sitting between it and the item. Rust puts attributes AFTER doc comments
+    # idiomatically, so this recovers docs on most real items.
     attr_result = parser.parse(ATTR_DOC_RS, file_id=1)
     attr_docs = {s.qualified_name: s.docstring for s in attr_result.symbols}
-    assert attr_docs["d"] is None
+    assert attr_docs["d"] == "Blocked by the attribute."
     assert attr_result.symbols[0].decorators == ["#[inline]"]
 
 
@@ -575,8 +549,7 @@ def test_rust_module_symbol_requires_inner_doc_comment():
     with_doc = parser.parse(MODULE_DOC_RS, file_id=1)
     assert {s.qualified_name for s in with_doc.symbols} == {"crate", "e"}
     crate = next(s for s in with_doc.symbols if s.qualified_name == "crate")
-    # Same trailing-newline-in-node-text quirk as above.
-    assert crate.docstring == "Crate line one.\n\nCrate line two."
+    assert crate.docstring == "Crate line one.\nCrate line two."
     assert crate.body == crate.docstring
     assert crate.signature == "crate"
 
