@@ -178,7 +178,6 @@ MUTANTS AND DEAD CODE REPORTED, NOT TESTED (rule: a test pinning dead code block
 
 from __future__ import annotations
 
-import pytest
 from tree_sitter import Node
 
 from trelix.indexing.parser._grammar import make_parser
@@ -414,14 +413,6 @@ def test_python_extractor_honours_the_wildcard_import_contract() -> None:
 # ===========================================================================
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J1 (pinned deliberately): java._handle_record looks for the grammar "
-    "nodes 'record_parameters'/'record_component'; tree-sitter-java emits "
-    "'formal_parameters'/'formal_parameter', so record components are NEVER extracted "
-    "and Java records are invisible to the indexer. Tier 1 -- ship first.",
-)
 def test_java_record_components_are_extracted_as_fields() -> None:
     """SPEC: a record's components ARE symbols -- java.py's module docstring calls them
     "the primary query surface".
@@ -452,13 +443,6 @@ def test_java_record_components_are_extracted_as_fields() -> None:
     assert len(result.symbols) == 3
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J1b (pinned deliberately): the same wrong node name in "
-    "java._record_signature empties every record's parameter list, so the record's "
-    "embedded header omits its entire shape. Separate code site from J1.",
-)
 def test_java_record_signature_shows_its_components() -> None:
     """SPEC: the signature of ``record Pt(int x, int y)`` names its components.
 
@@ -480,13 +464,6 @@ def test_java_record_signature_shows_its_components() -> None:
     assert record.signature == "public record Pt(int x, int y)"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J2 (pinned deliberately): java._handle_record scans the "
-    "super_interfaces node's DIRECT children for type_identifier, but they are nested "
-    "inside a type_list, so a record's 'implements' TypeEdge is never emitted.",
-)
 def test_java_record_implements_clause_produces_a_type_edge() -> None:
     """SPEC: ``record Pt(...) implements Cloneable`` yields one ``implements`` TypeEdge.
 
@@ -509,15 +486,6 @@ def test_java_record_implements_clause_produces_a_type_edge() -> None:
     assert len(result.type_edges) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J3 (pinned deliberately): java._extract_import cannot see the "
-    "'asterisk' sibling node, so 'import java.util.*;' is recorded as "
-    "imported_from='java' / imported_names=['util'] -- a bogus edge to package 'java' "
-    "and a lost edge to 'java.util'. Violates ImportEdge's documented ['*'] contract, "
-    "which python.py honours (see the control test above).",
-)
 def test_java_wildcard_import_records_the_wildcard() -> None:
     """SPEC: ``import java.util.*;`` is ``imported_from="java.util"``,
     ``imported_names=["*"]`` -- the shape ``ImportEdge``'s own docstring specifies and
@@ -552,16 +520,6 @@ class B {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J4 (pinned deliberately): java._handle_class recurses into nested "
-    "types with no outer-name prefix, so A.Inner and B.Inner both get "
-    "qualified_name='Inner'. SAME COLLISION CLASS as the symbols.qualified_name "
-    "finding in tests/unit/test_db_scoping_and_boundaries.py, but worse: that one "
-    "needs two files, this one collides inside ONE file, and Indexer._insert_one keys "
-    "existing_hashes on qualified_name.",
-)
 def test_java_nested_types_are_qualified_by_their_outer_type() -> None:
     """SPEC: a nested type's ``qualified_name`` is ``Outer.Nested``, and no two symbols
     in one file share a ``qualified_name``.
@@ -597,15 +555,6 @@ def test_java_nested_types_are_qualified_by_their_outer_type() -> None:
 SIGNATURE_JAVA = "public abstract class Svc extends Base implements Runnable, AutoCloseable {}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J5 (pinned deliberately): java._class_signature prepends ' extends ' "
-    "and ' implements ' to node text that already starts with those keywords, emitting "
-    "'class Svc extends extends Base implements implements Runnable, AutoCloseable'. "
-    "The signature is EMBEDDED and lexically indexed text, so this doubles those terms' "
-    "frequency in every Java class chunk with a superclass or interface list.",
-)
 def test_java_class_signature_does_not_duplicate_its_keywords() -> None:
     """SPEC: ``extends`` and ``implements`` appear ONCE each in a class signature.
 
@@ -637,15 +586,6 @@ class Svc {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT J6 (pinned deliberately): an annotated field's signature is "
-    "body.split('\\n')[0] and the field_declaration node starts at its modifiers, so "
-    "Svc.repo is indexed with signature '@Autowired' -- no declared type, no name. "
-    "These are exactly the @Autowired/@Column/@Id/@Value fields java.py surfaces on "
-    "purpose, and the signature is embedded text.",
-)
 def test_java_annotated_field_signature_describes_the_declaration() -> None:
     """SPEC: the signature of an annotated field names its declared TYPE and NAME. The
     natural fix emits ``private Repo repo;``.
@@ -682,16 +622,6 @@ def test_java_annotated_field_signature_describes_the_declaration() -> None:
 INNER_DOC_LEAK_RS = "//! Crate docs.\npub fn e() {}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R14 (pinned deliberately, NEW -- not in either oracle): a '//!' "
-    "crate-level inner doc comment is also attached as the docstring of the first "
-    "following item, because rust._get_preceding_comment accepts any line_comment and "
-    "does not distinguish '//!' (documents the enclosing scope) from '///' (documents "
-    "the next item). Opening a file with '//!' is idiomatic Rust, so the first symbol "
-    "of most real Rust files carries the whole crate header as its embedded doc text.",
-)
 def test_rust_crate_inner_doc_is_not_attached_to_the_following_item() -> None:
     """SPEC: a ``//!`` comment documents the crate, never the next item.
 
@@ -725,17 +655,6 @@ def test_rust_crate_inner_doc_is_not_attached_to_the_following_item() -> None:
     assert docs["e"] is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R7 (pinned deliberately): rust._get_preceding_comment's gap guard "
-    "'prev.end_point[0] + 1 < next_start_line' is one too many for Rust, because a "
-    "line_comment's text includes its trailing newline so end_point already names the "
-    "next line. A '///' comment separated from its item by ONE blank line is wrongly "
-    "attached. The IDENTICAL guard in java.py is CORRECT there (a '/** */' block "
-    "closes at '*/' on its own line), so this must be fixed in rust.py ONLY -- a "
-    "uniform fix across both extractors would break the healthy one.",
-)
 def test_rust_doc_comment_separated_by_a_blank_line_is_detached() -> None:
     """SPEC: one blank line between a ``///`` comment and an item detaches it.
 
@@ -754,15 +673,6 @@ def test_rust_doc_comment_separated_by_a_blank_line_is_detached() -> None:
     assert docs["b"] is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R8 (pinned deliberately): rust._get_preceding_comment walks "
-    "prev_named_sibling and stops at the non-comment attribute_item, so a '///' doc is "
-    "silently lost whenever an #[attr] sits between it and the item. Rust idiom puts "
-    "attributes AFTER doc comments, so this loses the docs on most #[derive]d, "
-    "#[inline]d and #[serde]d items.",
-)
 def test_rust_doc_comment_survives_an_attribute_between_it_and_the_item() -> None:
     """SPEC: ``/// doc`` then ``#[inline]`` then ``fn`` keeps the doc on the fn.
 
@@ -795,14 +705,6 @@ def test_rust_doc_comment_survives_an_attribute_between_it_and_the_item() -> Non
 MULTILINE_DOC_RS = "/// Two\n/// lines.\npub fn d() {}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R9 (pinned deliberately): tree-sitter-rust's line_comment text "
-    "includes its trailing newline, and rust._get_preceding_comment joins the pieces "
-    "with another '\\n', so every multi-line '///' doc gains a blank line between every "
-    "pair of lines. 'Two\\nlines.' is indexed as 'Two\\n\\nlines.'.",
-)
 def test_rust_multiline_doc_comment_has_no_spurious_blank_lines() -> None:
     """SPEC: two consecutive ``///`` lines join to ``"Two\\nlines."``.
 
@@ -823,15 +725,6 @@ def test_rust_multiline_doc_comment_has_no_spurious_blank_lines() -> None:
 MODULE_DOC_RS = "//! Crate line one.\n//! Crate line two.\n\npub fn e() {}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R9b (pinned deliberately): the same trailing-newline quirk at a "
-    "DIFFERENT code site -- rust._get_module_symbol's own '\\n'.join(inner_doc_lines) "
-    "-- so the crate docstring gains a blank line between every pair of '//!' lines. "
-    "Pinned separately from R9 because it is a separate join that a fix to "
-    "_get_preceding_comment need not touch.",
-)
 def test_rust_crate_docstring_has_no_spurious_blank_lines() -> None:
     """SPEC: two consecutive ``//!`` lines join to
     ``"Crate line one.\\nCrate line two."``.
@@ -854,16 +747,6 @@ def test_rust_crate_docstring_has_no_spurious_blank_lines() -> None:
     assert crate.docstring == "Crate line one.\nCrate line two."
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R10 (pinned deliberately): rust._flatten_use_tree branches on "
-    "'use_tree_list'/'use_tree', but the installed tree-sitter-rust emits "
-    "'scoped_use_list'/'use_list', so both branches are dead and the generic 'split on "
-    "::' fallback stores the literal text '{Alpha, Beta}' as an imported NAME. Brace "
-    "imports are the dominant Rust import form, so the import graph loses every symbol "
-    "in them.",
-)
 def test_rust_brace_import_is_expanded_into_its_members() -> None:
     """SPEC: ``use crate::util::{Alpha, Beta};`` yields the imported names
     ``{"Alpha", "Beta"}``.
@@ -898,16 +781,6 @@ impl Draw for Boxy {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R11 (pinned deliberately): rust._handle_impl routes a type_item "
-    "inside an impl block through _handle_type_alias, which takes no parent, so "
-    "'type Out = u32;' inside 'impl Draw for Boxy' becomes a TOP-LEVEL INTERFACE named "
-    "'Out' with parent_id=None -- both a bogus top-level symbol and a lost parent link. "
-    "Out/Item/Error are near-universal associated-type names, so this is also a "
-    "collision source (see J4).",
-)
 def test_rust_associated_type_in_an_impl_block_is_scoped_to_its_type() -> None:
     """SPEC: ``type Out = u32;`` inside ``impl Draw for Boxy`` is ``Boxy::Out`` with
     ``Boxy`` as its parent -- the same shape the identical declaration gets inside the
@@ -948,16 +821,6 @@ mod inner {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R12 (pinned deliberately): rust._walk_top_level recurses into a "
-    "mod_item's declaration_list without carrying the module name, so 'fn nested' "
-    "inside 'mod inner' gets qualified_name='nested'. SAME COLLISION CLASS as J4 and "
-    "as the symbols.qualified_name finding in "
-    "tests/unit/test_db_scoping_and_boundaries.py: two mods in one file each with a "
-    "'fn new' collide, and Indexer._insert_one keys existing_hashes on qualified_name.",
-)
 def test_rust_function_inside_a_module_is_qualified_by_the_module() -> None:
     """SPEC: ``fn nested`` inside ``mod inner`` is ``inner::nested`` -- the ``::``
     separator the extractor already uses for ``Type::method`` and ``Enum::Variant``.
@@ -982,15 +845,6 @@ pub trait Draw {
 }"""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DEFECT R13 (pinned deliberately): rust._handle_trait_fn derives is_public "
-    "from a visibility_modifier that trait fns never carry (a `pub fn` inside a trait "
-    "is a compile error in Rust), so every method of a `pub trait` is recorded "
-    "is_public=False. Metadata only -- but it is metadata that is_public filters and "
-    "ranking act on.",
-)
 def test_rust_method_of_a_public_trait_is_public() -> None:
     """SPEC: the methods of a ``pub trait`` are part of the public API. The correct rule
     is to INHERIT the trait's visibility, not to look for a modifier the grammar

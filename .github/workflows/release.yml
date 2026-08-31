@@ -465,6 +465,19 @@ jobs:
         run: python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
       - name: Run the E2E and real-CLI-subprocess suites against the built wheels
         run: python -m pytest tests/e2e/ tests/integration/test_cli.py -v --tb=short
+      # Two separate invocations, not one — verified live: combining them (or combining
+      # either with tests/e2e/ above) raises pytest's "import file mismatch" error.
+      # packages/trelix-langchain/tests/e2e/test_retriever_e2e.py and
+      # packages/trelix-llama-index/tests/e2e/test_retriever_e2e.py share a basename with
+      # no package __init__.py to disambiguate (same root cause already documented in
+      # ci.yml for packages/*/tests/test_retriever.py — "combining them is not an option
+      # until one of the files is renamed"). Each new suite also needs the real `trelix`
+      # wheel installed above (unlike tests/test_retriever.py, which mocks it), which is
+      # exactly why this job — not a hermetic unit job — is where they run.
+      - name: Run the TrelixRetriever real-index round-trip (trelix-langchain)
+        run: python -m pytest packages/trelix-langchain/tests/e2e/ -v --tb=short
+      - name: Run the TrelixIndexRetriever real-index round-trip (trelix-llama-index)
+        run: python -m pytest packages/trelix-llama-index/tests/e2e/ -v --tb=short
 
   publish:
     name: Publish to PyPI & GitHub Release

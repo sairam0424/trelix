@@ -27,27 +27,7 @@ that number would lock in an artifact.
 500-character truncation boundary for fields and interface constants — that
 width is the behaviour under test.
 
-CURRENT-BUT-WRONG BEHAVIOUR PINNED HERE (each marked at its assertion):
-  * a ``record``'s COMPONENTS ARE NEVER EXTRACTED, even though the module
-    docstring advertises them as "the primary query surface".
-    ``_handle_record`` looks for grammar nodes ``record_parameters`` /
-    ``record_component``; tree-sitter-java emits ``formal_parameters`` /
-    ``formal_parameter``, so the whole branch is dead. The same wrong node name
-    makes ``_record_signature`` always render ``record Name()``;
-  * a ``record``'s ``implements`` clause produces NO TypeEdge, because
-    ``_handle_record`` scans the ``super_interfaces`` node's direct children for
-    ``type_identifier`` instead of calling ``_extract_type_list_edges``, and the
-    identifiers live one level down inside a ``type_list``;
-  * ``import java.util.*;`` is recorded as ``imported_from="java"`` /
-    ``imported_names=["util"]``. The ``*`` is a sibling of the
-    ``scoped_identifier``, not part of it, so the ``if parts[-1] != "*"`` branch
-    is unreachable;
-  * a NESTED type keeps a bare ``qualified_name`` (``Nested``, not
-    ``Svc.Nested``), so two same-named inner classes in one file collide;
-  * ``_class_signature`` DUPLICATES the ``extends``/``implements`` keywords,
-    because the ``superclass`` and ``interfaces`` nodes already contain them;
-  * an annotated field's ``signature`` is the ANNOTATION LINE rather than the
-    declaration, because it is built from ``body.split("\\n")[0]``.
+ALL JAVA DEFECTS PINNED IN EARLIER REVISIONS OF THIS FILE (J1-J6) ARE NOW FIXED.
 
 MUTANTS REPORTED, NOT TESTED:
   * ``JavaParser.__init__``: ``self._ts_language = load_language("java")``
@@ -68,6 +48,7 @@ from __future__ import annotations
 
 import pytest
 
+from trelix.core.models import TypeEdge
 from trelix.indexing.parser.extractors.java import JavaParser
 
 # ---------------------------------------------------------------------------
@@ -202,9 +183,9 @@ KIND_SINK_EXPECTED: set[tuple[str, str, int, int, bool, str | None]] = {
     ("Svc.Svc", "METHOD", 15, 18, True, "Svc"),
     ("Svc.run", "METHOD", 20, 22, True, "Svc"),
     ("Svc.quiet", "METHOD", 24, 24, False, "Svc"),
-    # CURRENT-BUT-WRONG: a nested type is NOT qualified by its outer class.
-    ("Nested", "CLASS", 26, 28, False, None),
-    ("Nested.v", "VARIABLE", 27, 27, True, "Nested"),
+    # A nested type is qualified by its outer class, and set as its parent.
+    ("Svc.Nested", "CLASS", 26, 28, False, "Svc"),
+    ("Svc.Nested.v", "VARIABLE", 27, 27, True, "Svc.Nested"),
     ("Shape", "INTERFACE", 31, 37, False, None),
     # Interface constants are hardcoded is_public=True even though `interface
     # Shape` is package-private, so `is_public=True` -> `is_public=is_public`
@@ -219,8 +200,10 @@ KIND_SINK_EXPECTED: set[tuple[str, str, int, int, bool, str | None]] = {
     ("Status.BAD", "CONSTANT", 41, 41, False, "Status"),
     ("Status.run", "METHOD", 43, 43, True, "Status"),
     ("Point", "CLASS", 46, 50, False, None),
-    # CURRENT-BUT-WRONG: `Point.x` and `Point.y` are MISSING. See
-    # test_java_record_components_and_implements_edge_are_missing.
+    # Record components are VARIABLE symbols, always public, parented to the
+    # record, and spanned to the record header's own line.
+    ("Point.x", "VARIABLE", 46, 46, True, "Point"),
+    ("Point.y", "VARIABLE", 46, 46, True, "Point"),
     ("Point.sum", "METHOD", 47, 49, True, "Point"),
     ("Marker", "INTERFACE", 52, 52, False, None),
 }
@@ -237,8 +220,7 @@ KIND_SINK_CALLS_EXPECTED: set[tuple[str, str, int]] = {
 # (imported_from, tuple(imported_names))
 KIND_SINK_IMPORTS_EXPECTED: set[tuple[str, tuple[str, ...]]] = {
     ("java.util", ("List",)),
-    # CURRENT-BUT-WRONG: the wildcard is lost — see the module docstring.
-    ("java", ("util",)),
+    ("java.util", ("*",)),
 }
 
 # (from_symbol qualified_name, to_type_name, edge_kind)
@@ -247,7 +229,7 @@ KIND_SINK_TYPE_EDGES_EXPECTED: set[tuple[str, str, str]] = {
     ("Svc", "Runnable", "implements"),
     ("Svc", "AutoCloseable", "implements"),
     ("Status", "Runnable", "implements"),
-    # CURRENT-BUT-WRONG: ("Point", "Cloneable", "implements") is MISSING.
+    ("Point", "Cloneable", "implements"),
 }
 
 
@@ -313,7 +295,7 @@ def test_java_symbol_set_and_line_spans_are_exact():
 
     assert _rows(result) == KIND_SINK_EXPECTED
     # Set equality cannot see duplicates; pin the count too.
-    assert len(result.symbols) == 20
+    assert len(result.symbols) == 22
 
 
 def test_java_no_symbol_claims_a_line_past_end_of_file():
@@ -383,7 +365,7 @@ def test_java_call_import_and_type_edges_are_exact():
         for e in result.type_edges
     }
     assert type_edges == KIND_SINK_TYPE_EDGES_EXPECTED
-    assert len(result.type_edges) == 4
+    assert len(result.type_edges) == 5
 
     assert result.parse_errors == 0
 
@@ -391,35 +373,28 @@ def test_java_call_import_and_type_edges_are_exact():
 RECORD_ONLY_JAVA = "public record Pt(int x, int y) implements Cloneable {}"
 
 
-def test_java_record_components_and_implements_edge_are_missing():
-    """Pins two live defects so a fix is forced to update this test rather than
-    slip past it, and kills `_get_child_by_type(node, "record_parameters")` ->
-    any OTHER wrong node name (which would keep the symbol set unchanged and so
-    stay invisible to the fixture-1 table alone).
-
-    tree-sitter-java emits `formal_parameters` / `formal_parameter` for a record
-    header and wraps the `implements` types in a `type_list`. _handle_record
-    looks for `record_parameters` / `record_component` and scans the
-    super_interfaces node's DIRECT children, so:
-      * no component VARIABLE symbols are produced, and
-      * no "implements" TypeEdge is produced,
-    even though the module docstring documents both. When this is fixed the
-    asserted values below become {"Pt.x", "Pt.y"} and one TypeEdge, and the
-    signature becomes `public record Pt(int x, int y)`.
+def test_java_record_implements_edge_is_present():
+    """J1/J1b (record components) and J2 (record implements edge) are both
+    fixed: a record's components are extracted and its `implements` clause
+    produces a real TypeEdge via `_extract_type_list_edges`, exactly like
+    `_handle_class` already does for ordinary classes.
     """
     # Precondition: the record must actually declare components and an
-    # implements clause, or "nothing was extracted" would be trivially true.
+    # implements clause, or "everything was extracted" would be trivially true.
     assert "(int x, int y)" in RECORD_ONLY_JAVA, "RECORD_ONLY_JAVA lost its two components"
     assert "implements Cloneable" in RECORD_ONLY_JAVA, "RECORD_ONLY_JAVA lost its implements clause"
 
     result = JavaParser().parse(RECORD_ONLY_JAVA, file_id=1)
 
-    assert {s.qualified_name for s in result.symbols} == {"Pt"}
-    assert len(result.symbols) == 1
-    assert [s.kind.name for s in result.symbols] == ["CLASS"]
-    assert result.type_edges == []
-    # The same wrong node name empties the parameter list in the signature.
-    assert result.symbols[0].signature == "public record Pt()"
+    assert {s.qualified_name for s in result.symbols} == {"Pt", "Pt.x", "Pt.y"}
+    assert len(result.symbols) == 3
+    assert [s.kind.name for s in result.symbols] == ["CLASS", "VARIABLE", "VARIABLE"]
+    assert result.type_edges == [
+        TypeEdge(
+            from_symbol_id=0, to_type_name="Cloneable", edge_kind="implements", to_symbol_id=None
+        )
+    ]
+    assert result.symbols[0].signature == "public record Pt(int x, int y)"
 
 
 def test_java_signatures_are_exact():
@@ -428,16 +403,14 @@ def test_java_signatures_are_exact():
     `f"{mods}{ret}{class_name}.{name}{params}"` assembly in _method_signature
     (including dropping the return type or the `class_name.` prefix); the
     `f"{class_name}{params}"` constructor template; `_get_return_type`'s
-    type-node set; and `body.split("\\n")[0][:200].strip()` for fields.
+    type-node set; and `decl_text.split("\\n")[0][:200].strip()` for fields,
+    where `decl_text` starts after the field's modifiers node.
     """
     result = JavaParser().parse(KIND_SINK_JAVA, file_id=8)
     sigs = {s.qualified_name: s.signature for s in result.symbols}
 
-    # CURRENT-BUT-WRONG: `extends`/`implements` are duplicated because the
-    # superclass and interfaces nodes already include their keyword.
     assert sigs["Svc"] == (
-        "@Service\npublic abstract class Svc extends extends Base "
-        "implements implements Runnable, AutoCloseable"
+        "@Service\npublic abstract class Svc extends Base implements Runnable, AutoCloseable"
     )
     assert sigs["Shape"] == "interface Shape"
     assert sigs["Status"] == "enum Status"
@@ -447,11 +420,11 @@ def test_java_signatures_are_exact():
     assert sigs["Svc.run"] == "public int Svc.run(int n)"
     assert sigs["Svc.quiet"] == "private void Svc.quiet()"
     assert sigs["Shape.twice"] == "default int Shape.twice()"
-    assert sigs["Svc.VERSION"] == 'public static final String VERSION = "1.0";'
-    assert sigs["Svc.label"] == "protected String label;"
-    # CURRENT-BUT-WRONG: an annotated field's signature is its ANNOTATION line,
-    # because it is `body.split("\n")[0]` and the annotation comes first.
-    assert sigs["Svc.repo"] == "@Autowired"
+    # The signature starts after the field's modifiers node, so `public static
+    # final` / `protected` / the `@Autowired` annotation are excluded.
+    assert sigs["Svc.VERSION"] == 'String VERSION = "1.0";'
+    assert sigs["Svc.label"] == "String label;"
+    assert sigs["Svc.repo"] == "Repo repo;"
 
     decorators = {s.qualified_name: s.decorators for s in result.symbols}
     assert decorators["Svc"] == ["@Service"]
@@ -607,9 +580,12 @@ def test_java_field_caps_are_exact():
     assert len([s for s in wide_i.symbols if s.kind.name == "CONSTANT"]) == 30
 
 
+_FIELD_MODS = "public static final "
 _FIELD_HEAD = 'public static final String V = "'
 _CONSTANT_HEAD = 'String V = "'
 _FIELD_TAIL = '";'
+
+assert _FIELD_HEAD == _FIELD_MODS + _CONSTANT_HEAD, "_FIELD_MODS/_CONSTANT_HEAD arithmetic is wrong"
 
 
 def _field_of_length(n: int) -> str:
@@ -629,8 +605,8 @@ def _constant_of_length(n: int) -> str:
 def test_java_field_body_truncation_width_is_exact():
     """Kills: `if len(body) > 500` -> `>= 500` or `> 5` in _handle_field_decl and
     _handle_interface_constant; `body[:500]` -> another width; the `+ "..."`
-    suffix; and `signature=body.split("\\n")[0][:200].strip()` -> another width
-    or a dropped `.strip()`.
+    suffix; and `signature=decl_text.split("\\n")[0][:200].strip()` -> another
+    width or a dropped `.strip()`.
 
     500 is the documented contract, which is why body is asserted verbatim here
     and nowhere else in this file.
@@ -646,8 +622,9 @@ def test_java_field_body_truncation_width_is_exact():
     assert exact_sym.body == exact
     assert over_sym.body == over[:500] + "..."
     assert len(over_sym.body) == 503
-    # One line, so the signature is the truncated body capped at 200.
-    assert over_sym.signature == over[:200]
+    # One line, so the signature is the truncated declaration (the body minus
+    # the `public static final` modifiers) capped at 200.
+    assert over_sym.signature == over[len(_FIELD_MODS) :][:200]
     assert len(over_sym.signature) == 200
 
     # Same boundary in the interface-constant path, which has its own copy of
