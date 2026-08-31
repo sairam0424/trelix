@@ -18,7 +18,6 @@ expected numbers are not taken from the code being tested.
 
 from __future__ import annotations
 
-import pytest
 import tiktoken
 
 from trelix.core.config import ChunkerConfig
@@ -211,11 +210,10 @@ class TestChunkerTokenBudgetBoundary:
         chunk = _build_one(chunker, body)
 
         assert _TRUNCATION_MARKER in chunk.chunk_text
-        assert chunk.token_count == 64
-        # DEFECT (documented, not asserted as correct): the recorded
-        # token_count is the budget, while the text actually carries the
-        # 7-token truncation suffix on top of the 64 kept tokens.
+        # token_count is recounted after truncation, so it reflects the actual
+        # text -- the 64 kept tokens plus the 7-token truncation suffix.
         assert _count(chunk.chunk_text) == 64 + _TRUNCATION_MARKER_TOKENS
+        assert chunk.token_count == 64 + _TRUNCATION_MARKER_TOKENS
 
 
 class TestTruncatedChunkTokenCountAccounting:
@@ -231,26 +229,10 @@ class TestTruncatedChunkTokenCountAccounting:
     that does not merge, the delta is the full 7, as pinned above).
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        # raises=AssertionError is load-bearing. Without it a strict xfail absorbs ANY
-        # exception, so the boomerang silently breaks: the marker stays satisfied while
-        # the assertion it exists for is never reached. Round 3 found exactly that in
-        # test_cli_failure_exit_codes.py, where a JSONDecodeError stood in for the real
-        # check. These two importorskip FlagEmbedding/torch/transformers and then build a
-        # Qwen2Model, so any upstream TypeError would have satisfied the marker and gone
-        # green. Verified under --runxfail that they die on the intended AssertionError.
-        raises=AssertionError,
-        reason=(
-            "Known defect: token_count of a truncated chunk omits the "
-            "truncation suffix. Measured 512 recorded vs 518 actual at "
-            "max_tokens_per_chunk=512."
-        ),
-    )
     def test_truncated_chunk_token_count_matches_its_text(self) -> None:
-        """Fails today (xfail strict). Once _truncate_chunk reserves room for
-        its suffix, or build_chunks recounts after truncating, this passes and
-        strict xfail turns the stale expectation into a failure.
+        """Passes now that build_chunks recounts token_count after truncating
+        (formerly xfail strict while token_count was set to the pre-truncation
+        budget instead).
         """
         chunker = Chunker(ChunkerConfig(max_tokens_per_chunk=512))
         body = "def f():\n" + "    # pad pad pad\n" * 400
@@ -325,5 +307,7 @@ class TestContextualChunkerTokenBudgetBoundary:
 
         assert client.completions.call_count == 1
         assert _TRUNCATION_MARKER in chunk.chunk_text
-        assert chunk.token_count == 64
+        # token_count is recounted after truncation, so it reflects the actual
+        # text -- the 64 kept tokens plus the 7-token truncation suffix.
         assert _count(chunk.chunk_text) == 64 + _TRUNCATION_MARKER_TOKENS
+        assert chunk.token_count == 64 + _TRUNCATION_MARKER_TOKENS

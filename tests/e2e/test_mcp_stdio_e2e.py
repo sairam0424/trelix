@@ -18,6 +18,12 @@ docstring.
 
 MUTATION: rename search_code's @mcp.tool() registration in server.py to
 something else and test_tools_list_includes_the_real_tools fails.
+
+MUTATION (search_code itself): make search_code return
+{"results": [], "next_cursor": None, "total_available": 0} unconditionally and
+test_search_code_finds_real_results_in_a_real_index fails on the
+total_available assertion — the earlier tests above only prove the tool is
+listed, never that it does real retrieval against a real index.
 """
 
 from __future__ import annotations
@@ -26,15 +32,57 @@ import asyncio
 import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+import pytest
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+
+from trelix.core.config import EmbedderConfig, IndexConfig
+from trelix.indexing.indexer import Indexer
 
 _TRELIX_MCP_EXE = shutil.which("trelix-mcp")
 
 # A generous ceiling for process spawn + MCP handshake on a cold interpreter —
 # not a tight bound, just a guard against a genuine hang reading forever.
 _HANDSHAKE_TIMEOUT = 30.0
+
+# search_code's own real round-trip does far more than a handshake: the
+# trelix-mcp SUBPROCESS constructs its own Retriever, which loads a real
+# local SentenceTransformer model independently of the fixture's own
+# in-process indexing — measured at ~23s warm-cache locally (on top of the
+# fixture's own ~37s indexing setup), because even a cache hit still makes a
+# dozen-plus HTTP HEAD requests to the HF Hub to validate freshness (this repo
+# does not set HF_HUB_OFFLINE for tests/e2e/, unlike ci.yml's `test` job — see
+# that job's "Prefetch the local embedder model" step). A cold cache on a CI
+# runner is plausibly several times slower, so this is a real ceiling, not a
+# tight one — matching tests/regressions/test_regressions.py's precedent for
+# overriding the suite's 60s pytest-timeout default on tests whose slowness is
+# model-loading-related rather than a genuine hang.
+_SEARCH_CODE_TIMEOUT = 90.0
+
+_MINI_REPO = Path(__file__).parent.parent / "fixtures" / "mini_repo"
+
+
+@pytest.fixture(scope="module")
+def indexed_mini_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Copy ``tests/fixtures/mini_repo/`` into a fresh dir and index it with the
+    local embedder — mirrors tests/integration/test_eval.py's
+    ``mini_repo_dir``/``mini_repo_config`` pattern exactly (same copy-then-
+    ``Indexer(...).index()`` shape), so ``search_code`` has a real index to
+    query rather than hitting the "no index found" error path."""
+    dest = tmp_path_factory.mktemp("mcp_search_code_e2e")
+    for f in _MINI_REPO.iterdir():
+        if f.is_file():
+            shutil.copy2(f, dest / f.name)
+    config = IndexConfig(
+        repo_path=str(dest),
+        incremental=False,
+        parse_workers=2,
+        embedder=EmbedderConfig(provider="local"),
+    )
+    Indexer(config, quiet=True).index()
+    return dest
 
 
 @asynccontextmanager
@@ -68,3 +116,28 @@ async def test_tools_list_includes_the_real_tools() -> None:
             assert "agent_list_sessions" in names
 
     await asyncio.wait_for(run(), timeout=_HANDSHAKE_TIMEOUT)
+
+
+@pytest.mark.timeout(180)
+async def test_search_code_finds_real_results_in_a_real_index(indexed_mini_repo: Path) -> None:
+    async def run() -> None:
+        async with _connected_session() as session:
+            await session.initialize()
+            result = await session.call_tool(
+                "search_code",
+                {"query": "authenticate user", "repo_path": str(indexed_mini_repo)},
+            )
+            assert result.isError is False
+            # Confirmed live against the installed mcp==1.29.1 / fastmcp==3.4.7:
+            # a dict returned from an @mcp.tool()-decorated function is marshaled
+            # into BOTH `result.content` (a single TextContent whose `.text` is
+            # the JSON-encoded dict) AND `result.structuredContent` (the dict
+            # itself, already parsed) — structuredContent is the direct,
+            # no-reparsing access path.
+            payload = result.structuredContent
+            assert payload is not None
+            assert payload["total_available"] > 0
+            files = {r["file"] for r in payload["results"]}
+            assert "auth.py" in files
+
+    await asyncio.wait_for(run(), timeout=_SEARCH_CODE_TIMEOUT)

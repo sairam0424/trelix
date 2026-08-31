@@ -362,26 +362,6 @@ class TestPersistedCentrality:
         finally:
             db.close()
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=ValueError,
-        reason=(
-            "PRE-EXISTING DEFECT, not a property of this test: GraphBuilder.build() raises "
-            "ValueError on any index containing a cross-source generic edge. "
-            "detect_communities() does int(node_id) over every node, but CodeGraph keys "
-            "artifact nodes by the source_ref STRING ('ticket:PROJ-1'), and its except "
-            "handler repeats the same unguarded cast — so the fallback raises too and the "
-            "error escapes build(). Verified on pristine source: the identical repo builds "
-            "fine with call edges only and raises after adding exactly one generic edge. "
-            "This is strict+raises=ValueError deliberately: when the crash is fixed this "
-            "test XPASSes, strict turns that into a failure, and whoever fixes it removes "
-            "the marker and inherits a real guard for the config flag. Until then the "
-            "hardcode-True / hardcode-False mutants of "
-            "pagerank_personalization_enabled CANNOT be killed through build(), because "
-            "the flag only changes anything when artifact nodes exist and artifact nodes "
-            "are exactly what crashes the build."
-        ),
-    )
     def test_the_builder_honours_the_personalization_config_flag(self, tmp_path: Path) -> None:
         """MUTATION: `personalization_enabled=self._config.retrieval.
         pagerank_personalization_enabled` -> hardcoded True or hardcoded False.
@@ -389,9 +369,6 @@ class TestPersistedCentrality:
         Both constants passed the whole suite, i.e. nothing observed that the builder
         reads the flag at all. Asserting only one direction would kill only one constant,
         so both settings are exercised on the same graph and must produce opposite orders.
-
-        This test does NOT kill those mutants today — see the xfail reason. It is here
-        because it is the assertion that will kill them the moment build() stops crashing.
         """
         off_repo, off_hub, off_target = _ticket_linked_repo(tmp_path / "off")
         on_repo, on_hub, on_target = _ticket_linked_repo(tmp_path / "on")

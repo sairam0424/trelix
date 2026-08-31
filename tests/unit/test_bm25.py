@@ -806,10 +806,10 @@ class TestFts5EmptyQuerySentinel:
         """
         assert _escape_fts5("") == '""*'
         assert _escape_fts5("   ") == '""*'
-        # DEFECT (pinned deliberately): the len(t) > 2 fallback re-admits stop
-        # words of 3+ chars that the stop-word filter had just removed.
-        assert _escape_fts5("a an the") == "the"
-        assert _escape_fts5("he she") == "she"
+        # Stop words are excluded from the fallback too, so an all-stop-word
+        # query hits the FTS5 sentinel instead of leaking a raw stop word.
+        assert _escape_fts5("a an the") == '""'
+        assert _escape_fts5("he she") == '""'
 
     def test_sentinel_query_matches_no_document_containing_the_token_a(self, db: Database) -> None:
         """

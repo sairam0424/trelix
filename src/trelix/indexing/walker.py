@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import unicodedata
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 
@@ -693,9 +694,11 @@ class FileWalker:
                 self._record_incomplete(path, exc)
                 continue
 
+            rel_path = unicodedata.normalize("NFC", str(path.relative_to(self.repo_root)))
+
             yield IndexedFile(
                 path=str(path),
-                rel_path=str(path.relative_to(self.repo_root)),
+                rel_path=rel_path,
                 language=language,
                 hash=file_hash,
                 size_bytes=size,

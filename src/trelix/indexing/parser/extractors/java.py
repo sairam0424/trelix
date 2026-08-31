@@ -118,11 +118,14 @@ class JavaParser(BaseParser):
         symbols: list[Symbol],
         type_edges: list[TypeEdge],
         raw_calls: list[tuple[int, str, int]],
+        outer_qualified_name: str | None = None,
+        outer_local_idx: int | None = None,
     ) -> None:
         name_node = self._get_child_by_type(node, "identifier")
         if not name_node:
             return
         name = self._txt(name_node, src)
+        qualified_name = f"{outer_qualified_name}.{name}" if outer_qualified_name else name
 
         modifiers_node = self._get_child_by_type(node, "modifiers")
         is_public = "public" in self._txt(modifiers_node, src) if modifiers_node else False
@@ -133,7 +136,7 @@ class JavaParser(BaseParser):
             Symbol(
                 file_id=file_id,
                 name=name,
-                qualified_name=name,
+                qualified_name=qualified_name,
                 kind=SymbolKind.CLASS,
                 line_start=node.start_point[0] + 1,
                 line_end=node.end_point[0] + 1,
@@ -142,6 +145,7 @@ class JavaParser(BaseParser):
                 docstring=self._get_preceding_comment(node, src),
                 decorators=annotations,
                 is_public=is_public,
+                parent_id=outer_local_idx,
             )
         )
 
@@ -163,18 +167,29 @@ class JavaParser(BaseParser):
             for child in body_node.children:
                 if child.type == "method_declaration":
                     self._handle_method(
-                        child, src, file_id, symbols, class_local_idx, name, raw_calls
+                        child, src, file_id, symbols, class_local_idx, qualified_name, raw_calls
                     )
                 elif child.type == "constructor_declaration":
                     self._handle_constructor(
-                        child, src, file_id, symbols, class_local_idx, name, raw_calls
+                        child, src, file_id, symbols, class_local_idx, qualified_name, raw_calls
                     )
                 elif child.type == "field_declaration" and field_count < self.MAX_FIELDS:
                     before = len(symbols)
-                    self._handle_field_decl(child, src, file_id, symbols, class_local_idx, name)
+                    self._handle_field_decl(
+                        child, src, file_id, symbols, class_local_idx, qualified_name
+                    )
                     field_count += len(symbols) - before
                 elif child.type == "class_declaration":
-                    self._handle_class(child, src, file_id, symbols, type_edges, raw_calls)
+                    self._handle_class(
+                        child,
+                        src,
+                        file_id,
+                        symbols,
+                        type_edges,
+                        raw_calls,
+                        outer_qualified_name=qualified_name,
+                        outer_local_idx=class_local_idx,
+                    )
                 elif child.type == "interface_declaration":
                     self._handle_interface(child, src, file_id, symbols, type_edges, raw_calls)
                 elif child.type == "enum_declaration":
@@ -325,22 +340,16 @@ class JavaParser(BaseParser):
         # implements type edges
         interfaces_node = node.child_by_field_name("interfaces")
         if interfaces_node:
-            for c in interfaces_node.children:
-                if c.type == "type_identifier":
-                    type_edges.append(
-                        TypeEdge(
-                            from_symbol_id=record_local_idx,
-                            to_type_name=self._txt(c, src),
-                            edge_kind="implements",
-                        )
-                    )
+            self._extract_type_list_edges(
+                interfaces_node, record_local_idx, "implements", type_edges, src
+            )
 
         # Record components → VARIABLE symbols (always public, immutable fields)
-        params_node = self._get_child_by_type(node, "record_parameters")
+        params_node = node.child_by_field_name("parameters")
         if params_node:
             for comp in params_node.children:
-                if comp.type == "record_component":
-                    comp_name_node = self._get_child_by_type(comp, "identifier")
+                if comp.type == "formal_parameter":
+                    comp_name_node = comp.child_by_field_name("name")
                     if comp_name_node:
                         comp_name = self._txt(comp_name_node, src)
                         symbols.append(
@@ -523,6 +532,10 @@ class JavaParser(BaseParser):
 
         kind = SymbolKind.CONSTANT if is_static_final else SymbolKind.VARIABLE
 
+        decl_start = modifiers_node.end_byte if modifiers_node else node.start_byte
+        decl_text = src[decl_start : node.end_byte].decode("utf-8", errors="replace").strip()
+        signature = decl_text.split("\n")[0][:200].strip()
+
         for child in node.children:
             if child.type != "variable_declarator":
                 continue
@@ -541,7 +554,7 @@ class JavaParser(BaseParser):
                     kind=kind,
                     line_start=node.start_point[0] + 1,
                     line_end=node.end_point[0] + 1,
-                    signature=body.split("\n")[0][:200].strip(),
+                    signature=signature,
                     body=body,
                     parent_id=class_local_idx,
                     decorators=annotations,
@@ -681,19 +694,16 @@ class JavaParser(BaseParser):
     # ------------------------------------------------------------------
 
     def _extract_import(self, node: Node, src: bytes, file_id: int) -> list[ImportEdge]:
-        """Handle: import java.util.List; import java.util.*;"""
+        is_wildcard = self._get_child_by_type(node, "asterisk") is not None
         for child in node.children:
             if child.type in ("scoped_identifier", "identifier"):
                 path = self._txt(child, src)
+                if is_wildcard:
+                    return [ImportEdge(file_id=file_id, imported_from=path, imported_names=["*"])]
                 parts = path.split(".")
-                imported_name = parts[-1] if parts[-1] != "*" else "*"
                 module = ".".join(parts[:-1]) if len(parts) > 1 else path
                 return [
-                    ImportEdge(
-                        file_id=file_id,
-                        imported_from=module,
-                        imported_names=[imported_name],
-                    )
+                    ImportEdge(file_id=file_id, imported_from=module, imported_names=[parts[-1]])
                 ]
         return []
 
@@ -710,14 +720,14 @@ class JavaParser(BaseParser):
 
         mods = self._txt(modifiers_node, src) + " " if modifiers_node else ""
         name = self._txt(name_node, src) if name_node else "?"
-        extends = f" extends {self._txt(superclass_node, src)}" if superclass_node else ""
-        implements = f" implements {self._txt(interfaces_node, src)}" if interfaces_node else ""
-        permits = f" permits {self._txt(permits_node, src)}" if permits_node else ""
+        extends = f" {self._txt(superclass_node, src)}" if superclass_node else ""
+        implements = f" {self._txt(interfaces_node, src)}" if interfaces_node else ""
+        permits = f" {self._txt(permits_node, src)}" if permits_node else ""
         return f"{mods}class {name}{extends}{implements}{permits}"
 
     def _record_signature(self, node: Node, src: bytes) -> str:
         name_node = self._get_child_by_type(node, "identifier")
-        params_node = self._get_child_by_type(node, "record_parameters")
+        params_node = node.child_by_field_name("parameters")
         modifiers_node = self._get_child_by_type(node, "modifiers")
 
         mods = self._txt(modifiers_node, src) + " " if modifiers_node else ""

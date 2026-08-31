@@ -91,7 +91,7 @@ class Chunker:
             # If chunk exceeds budget, truncate body (keep header + signature + docstring)
             if token_count > self.config.max_tokens_per_chunk:
                 chunk_text = self._truncate_chunk(chunk_text, self.config.max_tokens_per_chunk)
-                token_count = self.config.max_tokens_per_chunk
+                token_count = len(self._tokenizer.encode(chunk_text))
 
             chunks.append(
                 Chunk(
@@ -256,7 +256,7 @@ class ContextualChunker(Chunker):
 
             if token_count > self.config.max_tokens_per_chunk:
                 chunk_text = self._truncate_chunk(chunk_text, self.config.max_tokens_per_chunk)
-                token_count = self.config.max_tokens_per_chunk
+                token_count = len(self._tokenizer.encode(chunk_text))
 
             chunks.append(
                 Chunk(

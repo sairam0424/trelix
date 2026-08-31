@@ -540,12 +540,18 @@ Read every hit before editing. A blind `sed` over `docs/` will silently rewrite
 "New in v3.0.0" and the shipped-version table in `ROADMAP.md`, turning accurate
 history into a false claim.
 
-Every stamp above is a property of the *source tree*. Once the tag is pushed and
-`release.yml`'s `Release` and `Docker Publish` workflows both go green, run
-`python scripts/verify_release.py --version X.Y.Z` and confirm every check passes
-before announcing the release — it verifies the *published* artifacts themselves
-(PyPI, the Docker images, the Helm chart at the tag, the GitHub Release binaries),
-which is a different claim than "the stamps agreed with the tag."
+Every stamp above is a property of the *source tree*. Once the tag is pushed,
+`.github/workflows/verify-release.yml` runs `scripts/verify_release.py` for you
+automatically — it waits for `release.yml`'s `Release` workflow AND
+`docker-publish.yml`'s `Docker Publish` workflow to both go green for that tag,
+then runs every check and posts the same PASS/FAIL summary. Watch the "Verify
+Release" run in the Actions tab before announcing the release. The manual command
+remains available for ad-hoc re-verification — e.g. after fixing a bug in the
+script itself, or re-checking an older release:
+`python scripts/verify_release.py --version X.Y.Z` (confirm every check passes)
+— it verifies the *published* artifacts themselves (PyPI, the Docker images, the
+Helm chart at the tag, the GitHub Release binaries), which is a different claim
+than "the stamps agreed with the tag."
 
 ---
 
