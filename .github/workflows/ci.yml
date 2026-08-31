@@ -408,9 +408,14 @@ jobs:
     # Client are both documented as in-process doubles that cannot observe a real fd/
     # process boundary. See tests/e2e/ for the tests themselves.
     #
-    # No embedder extras needed here — unlike ci.yml's `test` job and
-    # tests/integration/test_cli.py, nothing under tests/e2e/ constructs a real local
-    # embedder, so there is no HF_HUB_OFFLINE/cache-warming to configure.
+    # tests/e2e/test_mcp_stdio_e2e.py::test_search_code_finds_real_results_in_a_real_index
+    # DOES construct a real local embedder: it indexes a real fixture repo with
+    # EmbedderConfig(provider="local"), then trelix-mcp's own subprocess builds its own
+    # Retriever against it. No HF_HUB_OFFLINE dance is needed to make that safe, unlike
+    # ci.yml's `test` job: tests/e2e/conftest.py auto-applies `enable_socket` +
+    # `requires_network` to everything under this directory, so this job can reach
+    # huggingface.co directly. The cache step below is a pure speed optimisation (skip a
+    # redundant cold model download on every run), not a correctness requirement.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -421,6 +426,11 @@ jobs:
         run: pip install -e ".[local,otel,sso,dev]"
       - name: Install trelix-mcp, trelix-langchain, trelix-llama-index
         run: pip install -e packages/trelix-mcp -e packages/trelix-langchain -e packages/trelix-llama-index
+      - name: Cache Hugging Face hub
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-hub-minilm-l6-v2-${{ hashFiles('pyproject.toml') }}
       - name: Run E2E suite
         run: pytest tests/e2e/ -v --tb=short
 
@@ -448,7 +458,13 @@ jobs:
     timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 is load-bearing for the "Detect Docker-relevant changes"
+      # step below: it needs both the PR base commit and the pre-push commit
+      # present locally to diff against, and a shallow (depth-1) checkout has
+      # neither.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       - name: Build slim image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -464,3 +480,79 @@ jobs:
         run: docker run --rm trelix:ci-test --help
       - name: Verify trelix-mcp is present in the image
         run: docker run --rm --entrypoint trelix-mcp trelix:ci-test --version
+      # The -local variant (EXTRAS=serve,local) bundles torch/sentence-transformers and
+      # is materially heavier to build than the slim image above — the Dockerfile's own
+      # comments document a past hosted-runner disk-space incident from this exact
+      # build target. Running it unconditionally on every push/PR would add real
+      # minutes to CI for no signal on changes that can't affect the Docker image at
+      # all, so it is gated to only run when the diff actually touches something that
+      # could change what gets built (Dockerfile itself, or the dependency/extras
+      # declarations in pyproject.toml).
+      #
+      # This repo doesn't use dorny/paths-filter or tj-actions/changed-files anywhere
+      # else (every other conditional in these workflows is plain git/bash), so a
+      # plain `git diff --name-only` step is used here too rather than introducing a
+      # new third-party action dependency for a two-line check.
+      #
+      # Defaults to changed=true (i.e. build it) whenever the comparison point can't
+      # be resolved — e.g. the very first commit on a new default branch, where
+      # `github.event.before` is all-zeros — so an inability to detect never silently
+      # skips the smoke test; it only skips when the diff was actually computed and
+      # came back clean.
+      - name: Detect Docker-relevant changes
+        id: docker-relevant-changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          changed="true"
+          # packages/trelix-mcp/pyproject.toml is included because the root Dockerfile's
+          # builder stage COPYs and pip-installs packages/trelix-mcp/ into both image
+          # variants; a version/dependency bump there can change what actually ships. The
+          # other two sub-packages (trelix-langchain, trelix-llama-index) are deliberately
+          # excluded — the Dockerfile never COPYs either into the image, so a change to
+          # their pyproject.toml cannot affect what this job smoke-tests.
+          docker_relevant_pattern='^(Dockerfile|pyproject\.toml|packages/trelix-mcp/pyproject\.toml)$'
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$BASE_SHA" ]; then
+            files="$(git diff --name-only "$BASE_SHA" HEAD)"
+            if echo "$files" | grep -qE "$docker_relevant_pattern"; then
+              changed="true"
+            else
+              changed="false"
+            fi
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            files="$(git diff --name-only "$BEFORE_SHA" HEAD)"
+            if echo "$files" | grep -qE "$docker_relevant_pattern"; then
+              changed="true"
+            else
+              changed="false"
+            fi
+          fi
+          echo "Docker-relevant files touched: $changed"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+      # Mirrors the slim steps above exactly, per the EXTRAS=serve,local <-> -local
+      # convention already used in docker-publish.yml. Uses a distinct gha cache scope
+      # (scope=local) so the slim and local builds' layer caches don't collide and
+      # overwrite each other.
+      - name: Build local image
+        if: steps.docker-relevant-changes.outputs.changed == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          build-args: EXTRAS=serve,local
+          tags: trelix:ci-test-local
+          push: false
+          load: true
+          cache-from: type=gha,scope=local
+          cache-to: type=gha,mode=max,scope=local
+      - name: Verify local image runs
+        if: steps.docker-relevant-changes.outputs.changed == 'true'
+        run: docker run --rm trelix:ci-test-local --help
+      - name: Verify trelix-mcp is present in the local image
+        if: steps.docker-relevant-changes.outputs.changed == 'true'
+        run: docker run --rm --entrypoint trelix-mcp trelix:ci-test-local --version
+      - name: Verify torch/sentence-transformers actually import in the local image
+        if: steps.docker-relevant-changes.outputs.changed == 'true'
+        run: docker run --rm --entrypoint python trelix:ci-test-local -c "import torch, sentence_transformers"

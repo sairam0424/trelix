@@ -11,9 +11,10 @@ Cache: TTL-based in-memory cache keyed by SHA-256(query+sorted_repo_paths+k).
 cache_ttl=0 disables caching. Thread-safe via threading.Lock.
 
 Cross-repo symbol resolution (Plan A):
-  make_scip_symbol_id() produces stable 16-char IDs per (package, version, symbol).
-  FederatedRetriever maintains an in-memory SQLite `federation_symbols` table that
-  can be queried via resolve_symbol() to find which repos define a given symbol.
+  make_scip_symbol_id() produces stable 16-char IDs per (package, version,
+  file_path, symbol). FederatedRetriever maintains an in-memory SQLite
+  `federation_symbols` table that can be queried via resolve_symbol() to find
+  which repos define a given symbol.
 """
 
 from __future__ import annotations
@@ -33,18 +34,27 @@ from trelix.retrieval.retriever import Retriever
 logger = logging.getLogger("trelix.federation.retriever")
 
 
-def make_scip_symbol_id(package: str, version: str, qualified_name: str) -> str:
+def make_scip_symbol_id(package: str, version: str, qualified_name: str, file_path: str) -> str:
     """
     Create a stable cross-repo symbol ID using SCIP-style concatenation.
 
-    Format: sha256('{package}@{version}:{qualified_name}')[:16]
-    Globally unique per (package, version, symbol) tuple.
+    Format: sha256('{package}||{version}||{file_path}||{qualified_name}')[:16]
+    Globally unique per (package, version, file_path, qualified_name) tuple.
     Same symbol in different packages -> different ID (version-aware routing).
+
+    `file_path` is required, not optional: two DIFFERENT files in the SAME
+    package/version can define a symbol with the identical qualified_name
+    (e.g. two files each with a top-level `def main()`), and record_exports()
+    inserts with `INSERT OR IGNORE` keyed on this id against a `PRIMARY KEY`
+    column — without file_path, the second file's row is silently dropped and
+    resolve_symbol() would never find it. See
+    tests/unit/test_federation.py::TestCrossRepoSymbolResolution::
+    test_two_files_with_the_same_qualified_name_both_resolve.
 
     Reference: Sourcegraph SCIP cross-repo navigation
     (github.com/sourcegraph/scip-clang/blob/main/docs/CrossRepo.md)
     """
-    raw = f"{package}||{version}||{qualified_name}"
+    raw = f"{package}||{version}||{file_path}||{qualified_name}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -126,7 +136,7 @@ class FederatedRetriever:
         stored = 0
         with self._fed_lock:
             for qualified_name, file_path in rows:
-                symbol_id = make_scip_symbol_id(alias, "", qualified_name)
+                symbol_id = make_scip_symbol_id(alias, "", qualified_name, file_path)
                 try:
                     self._fed_conn.execute(
                         "INSERT OR IGNORE INTO federation_symbols "

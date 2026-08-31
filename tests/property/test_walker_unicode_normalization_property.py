@@ -44,7 +44,6 @@ import tempfile
 import unicodedata
 from pathlib import Path
 
-import pytest
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
@@ -83,14 +82,6 @@ class TestWalkerPassesThroughUnnormalizedFilenames:
     string mismatch, not a crash.
     """
 
-    @pytest.mark.xfail(
-        reason=(
-            "DEFECT: FileWalker.walk() does not Unicode-normalize rel_path, so an "
-            "NFD-encoded filename is yielded verbatim instead of canonicalized to NFC."
-        ),
-        raises=AssertionError,
-        strict=True,
-    )
     @settings(
         derandomize=True,
         max_examples=15,

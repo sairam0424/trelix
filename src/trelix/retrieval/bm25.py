@@ -236,7 +236,7 @@ def _escape_fts5(query: str) -> str:
 
     # Fall back to all non-trivial tokens if stop-word filtering removed everything
     if not tokens:
-        tokens = [t for t in raw_tokens if len(t) > 2]
+        tokens = [t for t in raw_tokens if len(t) > 2 and t.lower() not in _STOP_WORDS]
     if not tokens:
         return '""'  # matches nothing
 
