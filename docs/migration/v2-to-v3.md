@@ -138,6 +138,11 @@ Passing by alias (`TRELIX_FILE_SUMMARIES_ENABLED=`) worked in v2 and still works
 
 ## Still deprecated — deadline moved, not lifted
 
+> **Update**: this deadline has now passed. v4.0.0 removed the alias outright — see
+> [v3-to-v4.md](v3-to-v4.md). The table and checklist item below describe accurately
+> what was true for a v2→v3 upgrade landing on v3.1.2; if you're upgrading from v3.x to
+> v4.0.0 instead, the rename below is no longer optional.
+
 | Symbol | Deprecated in | Now removed in | Replacement |
 |---|---|---|---|
 | `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | **v4.0.0** (was v3.0.0) | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` |

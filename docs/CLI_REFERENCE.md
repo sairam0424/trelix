@@ -113,7 +113,7 @@ below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 | `TRELIX_RETRIEVAL_SPARSE` | `false` | Enable SPLADE-Code sparse retrieval leg |
 | `TRELIX_RETRIEVAL_AGENTIC` | `false` | Enable multi-turn ReAct loop (also set by `--agentic`) |
 | `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE confidence-gated re-retrieval |
-| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Max FLARE retries (range: 1–3). Replaces the old `TRELIX_RETRIEVAL_FLARE_MAX_ITER`, which is **deprecated but still honoured** as of v3.1.2 — it remains in the field's `AliasChoices` and setting it logs a deprecation warning rather than being ignored. Values > 3 raise `ValidationError` at startup. |
+| `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Max FLARE retries (range: 1–3). Replaces the old `TRELIX_RETRIEVAL_FLARE_MAX_ITER`, which was **removed in v4.0.0** — setting it now has no effect. Values > 3 raise `ValidationError` at startup. |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Boost results by PageRank symbol importance |
 | `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHTING` | `true` | Apply per-language RRF score multipliers |
 | `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_<LANG>` | varies | Per-language override, e.g. `TRELIX_RETRIEVAL_FILE_TYPE_WEIGHT_MARKDOWN=0.1` |

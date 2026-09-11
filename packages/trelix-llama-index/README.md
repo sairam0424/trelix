@@ -264,7 +264,7 @@ Deleted files are removed from the SQLite index and vector store automatically.
 
 ### Config field rename
 
-`flare_max_retries` replaces `flare_max_iterations` in `RetrievalConfig`. Both the new env var `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` and the old `TRELIX_RETRIEVAL_FLARE_MAX_ITER` are accepted (old name emits `DeprecationWarning` and will be removed in v3.0.0).
+`flare_max_retries` replaces `flare_max_iterations` in `RetrievalConfig`. Only the new env var `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` is accepted — the old `TRELIX_RETRIEVAL_FLARE_MAX_ITER` was removed in v4.0.0 and now has no effect.
 
 ## Links
 
