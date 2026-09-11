@@ -46,6 +46,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from trelix.agent.actions import AgentResult
 from trelix.cli.main import app
 from trelix.core.models import Chunk, IndexedFile, Language, RetrievedContext, SearchResult, Symbol
 
@@ -331,7 +332,7 @@ def test_ask_agentic_renders_llm_answer_with_unmatched_closing_tag(tmp_path: Pat
 
     answer = f"The Rust extractor strips comments with:\n\n    {_rust_comment_stripper_line()}\n"
     loop = MagicMock()
-    loop.return_value.run.return_value = (answer, "sess-123")
+    loop.return_value.run.return_value = AgentResult(content=answer, session_id="sess-123")
 
     with patch("trelix.agent.AgentLoop", loop):
         result = runner.invoke(app, ["ask", str(tmp_path), "q", "--agentic", "--provider", "local"])
