@@ -37,7 +37,7 @@ class TestAgentLoopInit:
 
 
 class TestAgentLoopRun:
-    def test_run_returns_tuple(self, tmp_path: Path) -> None:
+    def test_run_returns_agent_result(self, tmp_path: Path) -> None:
         cfg = _make_config(tmp_path)
         mock_client = MagicMock()
         mock_client.tool_call.return_value = MagicMock(
@@ -49,11 +49,11 @@ class TestAgentLoopRun:
         loop._retriever = MagicMock()
 
         with patch("trelix.store.db.Database", _mock_db_class()):
-            result, session_id = loop.run("how does auth work")
+            result = loop.run("how does auth work")
 
-        assert isinstance(result, str)
-        assert "auth.py" in result
-        assert isinstance(session_id, str)
+        assert isinstance(result.content, str)
+        assert "auth.py" in result.content
+        assert isinstance(result.session_id, str)
 
     def test_run_stops_after_done_action(self, tmp_path: Path) -> None:
         cfg = _make_config(tmp_path)
@@ -73,9 +73,9 @@ class TestAgentLoopRun:
         loop._retriever = mock_retriever
 
         with patch("trelix.store.db.Database", _mock_db_class()):
-            result, _session_id = loop.run("how does auth work")
+            result = loop.run("how does auth work")
 
-        assert "Found it in auth.py" in result
+        assert "Found it in auth.py" in result.content
         assert mock_client.tool_call.call_count == 2
 
     def test_run_respects_max_turns(self, tmp_path: Path) -> None:
@@ -96,10 +96,10 @@ class TestAgentLoopRun:
         loop._retriever = mock_retriever
 
         with patch("trelix.store.db.Database", _mock_db_class()):
-            result, _session_id = loop.run("how does auth work")
+            result = loop.run("how does auth work")
 
         # Should stop after 2 turns and return a fallback answer
-        assert isinstance(result, str)
+        assert isinstance(result.content, str)
         assert mock_client.tool_call.call_count <= 2
 
     def test_run_without_session_id_generates_uuid(self, tmp_path: Path) -> None:
@@ -113,10 +113,10 @@ class TestAgentLoopRun:
         loop._retriever = MagicMock()
 
         with patch("trelix.store.db.Database", _mock_db_class()):
-            _answer, session_id = loop.run("q")
+            result = loop.run("q")
 
         # Must not raise — a valid UUID4 string
-        uuid.UUID(session_id)
+        uuid.UUID(result.session_id)
 
     def test_run_with_session_id_loads_prior_turns(self, tmp_path: Path) -> None:
         cfg = _make_config(tmp_path)
@@ -141,9 +141,9 @@ class TestAgentLoopRun:
         mock_db_cls.return_value.get_agent_turns.return_value = [prior_row]
 
         with patch("trelix.store.db.Database", mock_db_cls):
-            _answer, session_id = loop.run("follow-up question", session_id="existing-session")
+            result = loop.run("follow-up question", session_id="existing-session")
 
-        assert session_id == "existing-session"
+        assert result.session_id == "existing-session"
         mock_db_cls.return_value.get_agent_turns.assert_called_with("existing-session")
 
     def test_run_persists_each_turn(self, tmp_path: Path) -> None:
@@ -164,12 +164,12 @@ class TestAgentLoopRun:
 
         mock_db_cls = _mock_db_class()
         with patch("trelix.store.db.Database", mock_db_cls):
-            _answer, session_id = loop.run("how does auth work")
+            result = loop.run("how does auth work")
 
         calls = mock_db_cls.return_value.insert_agent_turn.call_args_list
         assert len(calls) == 2
         for call in calls:
-            assert call.kwargs["session_id"] == session_id
+            assert call.kwargs["session_id"] == result.session_id
             # turn_index must NOT be passed by the caller — Database assigns
             # it atomically via MAX(turn_index)+1 (regression guard for the
             # collision bug found in pre-push audit).
@@ -189,10 +189,10 @@ class TestAgentLoopRun:
         mock_db_cls.return_value.insert_agent_turn.side_effect = Exception("db exploded")
 
         with patch("trelix.store.db.Database", mock_db_cls):
-            answer, session_id = loop.run("q")
+            result = loop.run("q")
 
-        assert answer == "still works"
-        assert isinstance(session_id, str)
+        assert result.content == "still works"
+        assert isinstance(result.session_id, str)
 
     def test_config_defaults(self, tmp_path: Path) -> None:
         from trelix.core.config import IndexConfig
@@ -202,6 +202,102 @@ class TestAgentLoopRun:
         assert cfg.retrieval.agent_max_turns == 8
         assert cfg.retrieval.agent_token_budget == 6000
         assert cfg.retrieval.agent_session_max_age_seconds == 604_800.0
+
+
+class TestAgentLoopClarify:
+    """SEP-2322: an explicit 'need more input' terminal state, distinguishable
+    from both a completed answer and a max-turns-exhausted fallback answer."""
+
+    def test_clarify_action_sets_needs_input(self, tmp_path: Path) -> None:
+        cfg = _make_config(tmp_path)
+        mock_client = MagicMock()
+        mock_client.tool_call.return_value = MagicMock(
+            tool_name="clarify",
+            tool_arguments={"question": "Which module — auth or billing?"},
+        )
+        loop = AgentLoop(cfg)
+        loop._llm_client = mock_client
+        loop._retriever = MagicMock()
+
+        with patch("trelix.store.db.Database", _mock_db_class()):
+            result = loop.run("how does it work")
+
+        assert result.needs_input is True
+        assert result.content == "Which module — auth or billing?"
+        assert isinstance(result.session_id, str)
+
+    def test_done_action_does_not_set_needs_input(self, tmp_path: Path) -> None:
+        cfg = _make_config(tmp_path)
+        mock_client = MagicMock()
+        mock_client.tool_call.return_value = MagicMock(
+            tool_name="done", tool_arguments={"answer": "Found it in auth.py."}
+        )
+        loop = AgentLoop(cfg)
+        loop._llm_client = mock_client
+        loop._retriever = MagicMock()
+
+        with patch("trelix.store.db.Database", _mock_db_class()):
+            result = loop.run("how does auth work")
+
+        assert result.needs_input is False
+        assert result.content == "Found it in auth.py."
+
+    def test_max_turns_exhausted_does_not_set_needs_input(self, tmp_path: Path) -> None:
+        """A fallback answer from exhausting agent_max_turns is a DIFFERENT
+        terminal state from an explicit clarify — both must be reachable and
+        distinguishable, not conflated into the same needs_input=True bucket."""
+        cfg = _make_config(tmp_path)
+        cfg.retrieval.agent_max_turns = 2
+        mock_client = MagicMock()
+        mock_client.tool_call.return_value = MagicMock(
+            tool_name="retrieve", tool_arguments={"query": "auth"}
+        )
+        mock_retriever = MagicMock()
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+        mock_retriever.retrieve.return_value = mock_ctx
+
+        loop = AgentLoop(cfg)
+        loop._llm_client = mock_client
+        loop._retriever = mock_retriever
+
+        with patch("trelix.store.db.Database", _mock_db_class()):
+            result = loop.run("how does auth work")
+
+        assert result.needs_input is False
+
+    def test_clarify_turn_is_persisted(self, tmp_path: Path) -> None:
+        cfg = _make_config(tmp_path)
+        mock_client = MagicMock()
+        mock_client.tool_call.return_value = MagicMock(
+            tool_name="clarify", tool_arguments={"question": "Which repo?"}
+        )
+        loop = AgentLoop(cfg)
+        loop._llm_client = mock_client
+        loop._retriever = MagicMock()
+
+        mock_db_cls = _mock_db_class()
+        with patch("trelix.store.db.Database", mock_db_cls):
+            loop.run("q")
+
+        calls = mock_db_cls.return_value.insert_agent_turn.call_args_list
+        assert len(calls) == 1
+        assert calls[0].kwargs["action_type"] == "clarify"
+        assert calls[0].kwargs["observation_content"] == "Which repo?"
+
+    def test_execute_action_clarify_returns_successful_observation(self, tmp_path: Path) -> None:
+        from trelix.agent.actions import ActionType, AgentAction
+
+        cfg = _make_config(tmp_path)
+        loop = AgentLoop(cfg)
+
+        obs = loop._execute_action(
+            AgentAction(action_type=ActionType.CLARIFY, arguments={"question": "Which repo?"})
+        )
+
+        assert obs.success is True
+        assert obs.source == "clarify"
+        assert obs.content == "Which repo?"
 
 
 def _symbol(qualified_name: str, body: str) -> MagicMock:
@@ -324,7 +420,10 @@ class TestSystemPromptReachesModel:
         kwargs = _capture_tool_call_kwargs(tmp_path)
         system = next(m.content for m in kwargs["messages"] if m.role == "system")
         assert "Never call done until you've done at least one retrieval." in system
-        assert "You have access to four tools: retrieve, grep, get_symbol, and done." in system
+        assert (
+            "You have access to five tools: retrieve, grep, get_symbol, done, and clarify."
+            in system
+        )
         assert "Be concise in thoughts; be thorough in answers." in system
 
     def test_user_message_still_carries_the_question(self, tmp_path: Path) -> None:
