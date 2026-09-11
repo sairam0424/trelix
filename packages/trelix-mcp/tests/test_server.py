@@ -570,8 +570,10 @@ def test_federation_search_all_reports_repos_skipped() -> None:
 def test_ask_agent_returns_dict_with_session_id() -> None:
     import trelix_mcp.server as srv
 
+    from trelix.agent.actions import AgentResult
+
     mock_loop = MagicMock()
-    mock_loop.run.return_value = ("answer text", "some-uuid")
+    mock_loop.run.return_value = AgentResult(content="answer text", session_id="some-uuid")
     mock_db = MagicMock()
     mock_db.get_agent_turns.return_value = [{"turn_index": 0}, {"turn_index": 1}]
 
@@ -594,8 +596,10 @@ def test_ask_agent_returns_dict_with_session_id() -> None:
 def test_ask_agent_generates_session_id_when_omitted() -> None:
     import trelix_mcp.server as srv
 
+    from trelix.agent.actions import AgentResult
+
     mock_loop = MagicMock()
-    mock_loop.run.return_value = ("answer", "freshly-generated-uuid")
+    mock_loop.run.return_value = AgentResult(content="answer", session_id="freshly-generated-uuid")
     mock_db = MagicMock()
     mock_db.get_agent_turns.return_value = []
 
@@ -609,6 +613,95 @@ def test_ask_agent_generates_session_id_when_omitted() -> None:
     mock_loop.run.assert_called_once_with("q", session_id=None)
     assert response["session_id"] == "freshly-generated-uuid"
     assert response["session_id"]
+
+
+def test_ask_agent_returns_input_required_result_when_agent_needs_clarification() -> None:
+    """SEP-2322: an explicit `clarify` action must surface as a real
+    InputRequiredToolResult, not just prose baked into the `answer` field —
+    so a SEP-2322-aware client can render/answer it and a naive client that
+    only reads {"answer", ...} still gets nothing misleading (it gets no
+    dict at all, distinguishable via isinstance)."""
+    import trelix_mcp.server as srv
+    from fastmcp.tools.base import InputRequiredToolResult
+
+    from trelix.agent.actions import AgentResult
+
+    mock_loop = MagicMock()
+    mock_loop.run.return_value = AgentResult(
+        content="Which module — auth or billing?", session_id="some-uuid", needs_input=True
+    )
+
+    with (
+        patch("trelix_mcp.server.IndexConfig"),
+        patch("trelix_mcp.server.AgentLoop", return_value=mock_loop),
+    ):
+        response = srv.ask_agent(query="how does it work", repo_path="/fake/repo")
+
+    assert isinstance(response, InputRequiredToolResult)
+    assert response.input_required.request_state == "some-uuid"
+    elicit_request = response.input_required.input_requests["clarification"]
+    assert elicit_request.params.message == "Which module — auth or billing?"
+    assert elicit_request.params.requested_schema["required"] == ["answer"]
+
+
+def test_ask_agent_resumes_with_the_clients_answer_on_retry() -> None:
+    """Per SEP-2322's retry contract, the client resends the ORIGINAL query
+    unchanged plus inputResponses — ask_agent must use the client's answer
+    as the next turn, not the stale original query text."""
+    import trelix_mcp.server as srv
+    from mcp.types import ElicitResult
+
+    from trelix.agent.actions import AgentResult
+
+    mock_loop = MagicMock()
+    mock_loop.run.return_value = AgentResult(content="Found it in auth.py.", session_id="some-uuid")
+    mock_db = MagicMock()
+    mock_db.get_agent_turns.return_value = []
+
+    ctx = MagicMock()
+    ctx.request_state = "some-uuid"
+    elicit_result = ElicitResult(action="accept", content={"answer": "the auth module"})
+    ctx.input_responses = {"clarification": elicit_result}
+
+    with (
+        patch("trelix_mcp.server.IndexConfig"),
+        patch("trelix_mcp.server.AgentLoop", return_value=mock_loop),
+        patch("trelix_mcp.server.Database", return_value=mock_db),
+    ):
+        response = srv.ask_agent(
+            query="how does it work", repo_path="/fake/repo", session_id=None, ctx=ctx
+        )
+
+    mock_loop.run.assert_called_once_with("the auth module", session_id="some-uuid")
+    assert response == {
+        "answer": "Found it in auth.py.",
+        "session_id": "some-uuid",
+        "turn_count": 0,
+    }
+
+
+def test_ask_agent_stops_cleanly_when_client_declines_to_answer() -> None:
+    """A decline/cancel is a definitive 'no answer available' — must not
+    re-ask the same clarify question, which would be indistinguishable from
+    an unresolvable loop to a client that already tried once."""
+    import trelix_mcp.server as srv
+    from mcp.types import ElicitResult
+
+    mock_loop = MagicMock()
+
+    ctx = MagicMock()
+    ctx.request_state = "some-uuid"
+    elicit_result = ElicitResult(action="decline")
+    ctx.input_responses = {"clarification": elicit_result}
+
+    with patch("trelix_mcp.server.AgentLoop", return_value=mock_loop):
+        response = srv.ask_agent(
+            query="how does it work", repo_path="/fake/repo", session_id=None, ctx=ctx
+        )
+
+    mock_loop.run.assert_not_called()
+    assert response["session_id"] == "some-uuid"
+    assert "answer" in response
 
 
 def test_agent_list_sessions_returns_dict() -> None:
