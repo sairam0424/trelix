@@ -181,6 +181,15 @@ class TestEmbedderConfig:
         cfg = EmbedderConfig()
         assert cfg.provider == "openai"
 
+    def test_bedrock_aws_region_defaults_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """anthropic-sdk-python v1.0.0 made AnthropicBedrock raise if no region is
+        configured, instead of silently defaulting to us-east-1 — trelix's Bedrock
+        embedder backends now match that posture rather than silently picking a
+        region the caller never chose."""
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        cfg = EmbedderConfig(_env_file=None)  # type: ignore[call-arg]
+        assert cfg.bedrock_aws_region is None
+
 
 class TestStoreConfig:
     def test_default_db_path(self) -> None:

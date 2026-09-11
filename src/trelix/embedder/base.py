@@ -571,6 +571,13 @@ class _BedrockEmbedderBase(BaseEmbedder):
             raise ImportError(
                 "Bedrock embedders require boto3. Install it with: pip install 'trelix[bedrock]'"
             ) from exc
+        if not config.bedrock_aws_region:
+            raise ValueError(
+                "AWS_REGION must be set explicitly for Bedrock embedders as of "
+                "trelix v4.0.0 (previously silently defaulted to 'us-east-1', "
+                "matching anthropic-sdk-python v1.0.0's AnthropicBedrock region "
+                "enforcement). Set the AWS_REGION environment variable."
+            )
         session_kwargs: dict[str, Any] = {}
         if config.bedrock_aws_profile:
             session_kwargs["profile_name"] = config.bedrock_aws_profile
