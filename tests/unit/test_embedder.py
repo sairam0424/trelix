@@ -665,7 +665,7 @@ class TestBedrockTitanEmbedder:
         assert call_body["normalize"] is True
 
     def test_factory_returns_titan_embedder(self) -> None:
-        config = EmbedderConfig(provider="bedrock-titan")
+        config = EmbedderConfig(provider="bedrock-titan", bedrock_aws_region="us-east-1")
         mock_boto3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = MagicMock()
@@ -678,6 +678,19 @@ class TestBedrockTitanEmbedder:
         config = EmbedderConfig(provider="bedrock-titan")
         with patch.dict(sys.modules, {"boto3": None}):  # type: ignore[dict-item]
             with pytest.raises(ImportError, match="pip install"):
+                BedrockTitanEmbedder(config)
+
+    def test_raises_without_region_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mirrors BedrockBackend's v4.0.0 region requirement (see
+        test_llm_bedrock_backend.py::test_raises_without_region_configured) —
+        anthropic-sdk-python v1.0.0 made AnthropicBedrock raise if no region is
+        set, instead of silently defaulting to us-east-1."""
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        config = EmbedderConfig(provider="bedrock-titan", _env_file=None)  # type: ignore[call-arg]
+        assert config.bedrock_aws_region is None
+        mock_boto3 = MagicMock()
+        with patch.dict(sys.modules, _mock_boto3_modules(mock_boto3)):
+            with pytest.raises(ValueError, match="AWS_REGION"):
                 BedrockTitanEmbedder(config)
 
     def test_effective_dimension_in_config(self) -> None:
@@ -770,7 +783,7 @@ class TestBedrockCohereEmbedder:
         assert call_body["texts"][1] == "short", "Short text must pass through unchanged"
 
     def test_factory_returns_cohere_embedder(self) -> None:
-        config = EmbedderConfig(provider="bedrock-cohere")
+        config = EmbedderConfig(provider="bedrock-cohere", bedrock_aws_region="us-east-1")
         mock_boto3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = MagicMock()
@@ -858,7 +871,7 @@ class TestEmbedderRetryContract:
         botocore.exceptions.ClientError — must retry like any other
         429-shaped failure, not just OpenAI's own exception types."""
         botocore = pytest.importorskip("botocore.exceptions")
-        config = EmbedderConfig(provider="bedrock-titan")
+        config = EmbedderConfig(provider="bedrock-titan", bedrock_aws_region="us-east-1")
         mock_boto3 = MagicMock()
         mock_client = MagicMock()
         mock_session = MagicMock()
@@ -914,14 +927,14 @@ class TestEmbedderClientRetryConfiguration:
 
     def test_bedrock_titan_embedder_client_has_sdk_retries_disabled(self) -> None:
         pytest.importorskip("boto3")
-        config = EmbedderConfig(provider="bedrock-titan")
+        config = EmbedderConfig(provider="bedrock-titan", bedrock_aws_region="us-east-1")
         embedder = BedrockTitanEmbedder(config)
         retries = embedder._client.meta.config.retries
         assert retries["total_max_attempts"] == 1
 
     def test_bedrock_cohere_embedder_client_has_sdk_retries_disabled(self) -> None:
         pytest.importorskip("boto3")
-        config = EmbedderConfig(provider="bedrock-cohere")
+        config = EmbedderConfig(provider="bedrock-cohere", bedrock_aws_region="us-east-1")
         embedder = BedrockCohereEmbedder(config)
         retries = embedder._client.meta.config.retries
         assert retries["total_max_attempts"] == 1

@@ -78,12 +78,10 @@ dependencies = [
     # --- Storage ---
     "sqlite-vec>=0.1.6",
     # --- Embeddings ---
-    # Ceiling pinned below openai-python v3.0.0 (2026-08-12): that release swaps the
-    # default HTTP transport to "httpx2", which src/trelix/core/retry.py's
-    # is_retryable_http_error() does not yet recognize (sys.modules check is hardcoded
-    # to "httpx" only). Raise the ceiling once retry.py adds httpx2 handling — see
-    # docs/reports/v4-0-0-upgrade-research-2026-09-11.md.
-    "openai>=1.35.0,<3.0.0",
+    # Bumped past openai-python v3.0.0's breaking "httpx2" default-transport
+    # switch — src/trelix/core/retry.py now recognizes httpx2 exception shapes
+    # (see is_retryable_http_error()), so this is safe to float past.
+    "openai>=3.0.0",
     "tiktoken>=0.7.0",
     # --- Retrieval math ---
     # scikit-learn was an unconditional core dependency with zero importers.
@@ -248,12 +246,17 @@ binary = [
 taint = [
     "semgrep>=1.60.0",
 ]
-# Ceiling pinned below anthropic-sdk-python v1.0.0 (2026-08-20): that release removes
-# temperature/top_p/top_k from every Messages method, which
-# src/trelix/llm/providers/anthropic_backend.py still passes unconditionally in
-# complete()/stream() today — raise the ceiling once that's fixed. See
-# docs/reports/v4-0-0-upgrade-research-2026-09-11.md.
-anthropic = ["anthropic>=0.40.0,<1.0.0"]
+# Bumped past anthropic-sdk-python v1.0.0's breaking release: temperature/
+# top_p/top_k removed from Messages methods (AnthropicBackend no longer sends
+# temperature — see anthropic_backend.py), and AnthropicBedrock now raises on
+# an unset region (trelix's own Bedrock backends match that posture — see
+# BedrockBackend._build_client / _make_boto3_client's region checks).
+anthropic = ["anthropic>=1.0.0"]
+# boto3/botocore: researched, no breaking major since this floor (both still
+# on the 1.x line at 1.43.92 as of 2026-09-11; Session/client construction
+# and the retries={"max_attempts": 0, "mode": "standard"} pattern trelix uses
+# are both unchanged in the changelog). No floor bump needed — nothing to
+# guard against.
 bedrock   = ["boto3>=1.35.0"]
 vertex    = ["google-genai>=1.0.0"]
 litellm   = ["litellm>=1.50.0"]

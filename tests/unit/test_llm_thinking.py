@@ -99,10 +99,10 @@ class TestSplitContent:
         content_blocks = [
             MockAnthropicContent("text", text="Hello, world!"),
         ]
-        text, thinking = backend._split_content(content_blocks)
+        text, thinking_blocks = backend._split_content(content_blocks)
 
         assert text == "Hello, world!"
-        assert thinking is None
+        assert thinking_blocks == []
 
     def test_thinking_then_text(self, mock_anthropic: MagicMock):
         """Thinking block followed by text block (typical extended thinking flow)."""
@@ -115,28 +115,30 @@ class TestSplitContent:
             MockAnthropicContent("thinking", thinking="Let me analyze this carefully..."),
             MockAnthropicContent("text", text="The answer is 42."),
         ]
-        text, thinking = backend._split_content(content_blocks)
+        text, thinking_blocks = backend._split_content(content_blocks)
 
         assert text == "The answer is 42."
-        assert thinking == "Let me analyze this carefully..."
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0].thinking == "Let me analyze this carefully..."
 
     def test_redacted_thinking(self, mock_anthropic: MagicMock):
-        """Thinking block with empty/redacted content."""
+        """Thinking block with empty content still produces a block (not dropped)."""
         from trelix.llm.providers.anthropic_backend import AnthropicBackend
 
         config = LLMConfig(provider="anthropic", anthropic_api_key=_TEST_FAKE_KEY, _env_file=None)
         backend = AnthropicBackend(config)
 
-        # Redacted thinking returns empty string but block still exists
         content_blocks = [
             MockAnthropicContent("thinking", thinking=""),
             MockAnthropicContent("text", text="Here's my answer."),
         ]
-        text, thinking = backend._split_content(content_blocks)
+        text, thinking_blocks = backend._split_content(content_blocks)
 
         assert text == "Here's my answer."
-        # Empty thinking string still returns "" (not None), as there WAS a thinking block
-        assert thinking == ""
+        # An empty "thinking" block still shows up as a block, not silently dropped.
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0].type == "thinking"
+        assert thinking_blocks[0].thinking == ""
 
     def test_empty_list(self, mock_anthropic: MagicMock):
         """Empty content list (edge case from API error or truncation)."""
@@ -145,10 +147,10 @@ class TestSplitContent:
         config = LLMConfig(provider="anthropic", anthropic_api_key=_TEST_FAKE_KEY, _env_file=None)
         backend = AnthropicBackend(config)
 
-        text, thinking = backend._split_content([])
+        text, thinking_blocks = backend._split_content([])
 
         assert text == ""
-        assert thinking is None
+        assert thinking_blocks == []
 
     def test_multiple_text_blocks(self, mock_anthropic: MagicMock):
         """Multiple text blocks concatenate correctly."""
@@ -162,13 +164,13 @@ class TestSplitContent:
             MockAnthropicContent("text", text="Second part. "),
             MockAnthropicContent("text", text="Third part."),
         ]
-        text, thinking = backend._split_content(content_blocks)
+        text, thinking_blocks = backend._split_content(content_blocks)
 
         assert text == "First part. Second part. Third part."
-        assert thinking is None
+        assert thinking_blocks == []
 
     def test_multiple_thinking_blocks(self, mock_anthropic: MagicMock):
-        """Multiple thinking blocks concatenate correctly."""
+        """Multiple thinking blocks are preserved as separate blocks, in order."""
         from trelix.llm.providers.anthropic_backend import AnthropicBackend
 
         config = LLMConfig(provider="anthropic", anthropic_api_key=_TEST_FAKE_KEY, _env_file=None)
@@ -179,10 +181,10 @@ class TestSplitContent:
             MockAnthropicContent("thinking", thinking="Second thought. "),
             MockAnthropicContent("text", text="My conclusion."),
         ]
-        text, thinking = backend._split_content(content_blocks)
+        text, thinking_blocks = backend._split_content(content_blocks)
 
         assert text == "My conclusion."
-        assert thinking == "First thought. Second thought. "
+        assert [b.thinking for b in thinking_blocks] == ["First thought. ", "Second thought. "]
 
     def test_interleaved_blocks(self, mock_anthropic: MagicMock):
         """Text and thinking blocks can appear in any order."""
@@ -198,10 +200,13 @@ class TestSplitContent:
             MockAnthropicContent("thinking", thinking="[more reasoning] "),
             MockAnthropicContent("text", text="End."),
         ]
-        text, thinking = backend._split_content(content_blocks)
+        text, thinking_blocks = backend._split_content(content_blocks)
 
         assert text == "Start: Middle: End."
-        assert thinking == "[internal reasoning] [more reasoning] "
+        assert [b.thinking for b in thinking_blocks] == [
+            "[internal reasoning] ",
+            "[more reasoning] ",
+        ]
 
 
 # =============================================================================
@@ -482,21 +487,25 @@ class TestContentAccessCrashFix:
 
 
 # =============================================================================
-# Integration: Temperature Auto-Correction
+# Integration: temperature is never sent (anthropic-sdk-python v1.0.0 removed it)
 # =============================================================================
 
 
-class TestTemperatureAutoCorrection:
-    """Verify thinking=True forces temperature=1.0 (API requirement)."""
+class TestTemperatureNeverSent:
+    """anthropic-sdk-python v1.0.0 removed `temperature` from Messages.create.
 
-    def test_temperature_forced_to_one_when_thinking_enabled(self, mock_anthropic: MagicMock):
-        """When thinking=True, temperature must be 1.0 regardless of config."""
+    AnthropicBackend no longer computes or passes it, with or without thinking
+    enabled — see tests/unit/test_llm_anthropic_backend.py for the dedicated
+    coverage of the drop and its one-time warning.
+    """
+
+    def test_temperature_not_passed_regardless_of_thinking(self, mock_anthropic: MagicMock):
         from trelix.llm.providers.anthropic_backend import AnthropicBackend
 
         config = LLMConfig(
             provider="anthropic",
             anthropic_api_key=_TEST_FAKE_KEY,
-            temperature=0.5,  # User wants 0.5
+            temperature=0.5,
             _env_file=None,
         )
         backend = AnthropicBackend(config)
@@ -511,28 +520,4 @@ class TestTemperatureAutoCorrection:
         backend.complete([ChatMessage(role="user", content="Test")], thinking=True)
 
         call_kwargs = mock_client.messages.create.call_args[1]
-        assert call_kwargs["temperature"] == 1.0  # Forced, not 0.5
-
-    def test_temperature_respected_when_thinking_disabled(self, mock_anthropic: MagicMock):
-        """When thinking=False, config.temperature is used normally."""
-        from trelix.llm.providers.anthropic_backend import AnthropicBackend
-
-        config = LLMConfig(
-            provider="anthropic",
-            anthropic_api_key=_TEST_FAKE_KEY,
-            temperature=0.3,
-            _env_file=None,
-        )
-        backend = AnthropicBackend(config)
-
-        mock_client = MagicMock()
-        mock_response = MockAnthropicResponse(
-            content_blocks=[MockAnthropicContent("text", text="ok")],
-        )
-        mock_client.messages.create.return_value = mock_response
-        backend._client = mock_client
-
-        backend.complete([ChatMessage(role="user", content="Test")], thinking=False)
-
-        call_kwargs = mock_client.messages.create.call_args[1]
-        assert call_kwargs["temperature"] == 0.3  # Config value respected
+        assert "temperature" not in call_kwargs

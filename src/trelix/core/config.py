@@ -383,7 +383,11 @@ class EmbedderConfig(BaseSettings):
     # Reuses AWS_* env vars — same credentials as BedrockBackend in LLMConfig.
     # bedrock-titan: amazon.titan-embed-text-v2:0 — 256/512/1024 configurable dims
     # bedrock-cohere: cohere.embed-english-v3 — 1024 dims, strong code retrieval
-    bedrock_aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+    # No default: as of v4.0.0 an unset region raises at BedrockBackend
+    # construction, matching anthropic-sdk-python v1.0.0's AnthropicBedrock
+    # enforcement — was silently "us-east-1", which is now the wrong region
+    # for someone who never chose it and never finds out.
+    bedrock_aws_region: str | None = Field(default=None, alias="AWS_REGION")
     bedrock_aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
     bedrock_aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
     bedrock_aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")
@@ -1293,7 +1297,11 @@ class LLMConfig(BaseSettings):
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
 
     # ── AWS Bedrock ───────────────────────────────────────────────────────────
-    aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+    # No default: as of v4.0.0 an unset region raises at BedrockBackend
+    # construction, matching anthropic-sdk-python v1.0.0's AnthropicBedrock
+    # enforcement — was silently "us-east-1", which is now the wrong region
+    # for someone who never chose it and never finds out.
+    aws_region: str | None = Field(default=None, alias="AWS_REGION")
     aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
     aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
     aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")

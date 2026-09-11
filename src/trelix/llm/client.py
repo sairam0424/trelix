@@ -12,7 +12,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,31 @@ class ChatMessage:
 
 
 @dataclass
+class ThinkingBlock:
+    """A single reasoning/thinking content block, unified across providers.
+
+    Field names mirror litellm's ChatCompletionThinkingBlock/
+    ChatCompletionRedactedThinkingBlock TypedDicts (litellm/types/llms/openai.py) for
+    interop — trelix normalizes Anthropic's thinking/redacted_thinking blocks and
+    Bedrock Converse's reasoningContent block (reasoningText.{text,signature} /
+    redactedContent) into this same shape.
+
+    `signature`/`data` are opaque and must be round-tripped verbatim if ever re-sent
+    in a follow-up turn — Anthropic 400s on a dropped/reordered thinking block in
+    multi-turn tool-use; Bedrock's signature is a tamper-evident hash of the whole
+    conversation. trelix's AgentLoop does not currently round-trip raw provider content
+    blocks (HistoryCompressor/TurnHistory build a compressed plain-text history
+    instead), so this isn't load-bearing yet — the fields exist so a future multi-turn
+    continuation feature has somewhere to put them without another schema break.
+    """
+
+    type: Literal["thinking", "redacted_thinking"]
+    thinking: str | None = None  # present only when type == "thinking"
+    signature: str | None = None  # present only when type == "thinking"; still nullable
+    data: str | None = None  # present only when type == "redacted_thinking"
+
+
+@dataclass
 class ChatResponse:
     """Normalized response from any provider's chat completion."""
 
@@ -34,7 +59,8 @@ class ChatResponse:
     finish_reason: str  # "stop" | "length" | "tool_calls" (normalized across providers)
     input_tokens: int = 0
     output_tokens: int = 0
-    thinking: str | None = None  # Extended thinking content (Anthropic only)
+    thinking: str | None = None  # back-compat: joined text of "thinking"-type blocks only
+    thinking_blocks: list[ThinkingBlock] = field(default_factory=list)
     cache_read_tokens: int = 0  # Prompt cache hits (Anthropic only)
     cache_write_tokens: int = 0  # Prompt cache writes (Anthropic only)
 

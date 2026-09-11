@@ -160,12 +160,12 @@ class TestAnthropicBackend:
         content_blocks = [
             MockAnthropicContent("text", text="Hello world"),
         ]
-        text, thinking = backend._split_content(content_blocks)
+        text, thinking_blocks = backend._split_content(content_blocks)
         assert text == "Hello world"
-        assert thinking is None
+        assert thinking_blocks == []
 
     def test_split_content_with_thinking(self):
-        """_split_content extracts both text and thinking."""
+        """_split_content extracts both text and thinking blocks."""
         from trelix.llm.providers.anthropic_backend import AnthropicBackend
 
         config = LLMConfig(provider="anthropic", anthropic_api_key="test")
@@ -175,12 +175,14 @@ class TestAnthropicBackend:
             MockAnthropicContent("thinking", thinking="Let me think..."),
             MockAnthropicContent("text", text="The answer is 42"),
         ]
-        text, thinking = backend._split_content(content_blocks)
+        text, thinking_blocks = backend._split_content(content_blocks)
         assert text == "The answer is 42"
-        assert thinking == "Let me think..."
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0].type == "thinking"
+        assert thinking_blocks[0].thinking == "Let me think..."
 
     def test_split_content_multiple_blocks(self):
-        """_split_content concatenates multiple blocks of same type."""
+        """_split_content preserves multiple blocks of the same type, in order."""
         from trelix.llm.providers.anthropic_backend import AnthropicBackend
 
         config = LLMConfig(provider="anthropic", anthropic_api_key="test")
@@ -192,9 +194,9 @@ class TestAnthropicBackend:
             MockAnthropicContent("text", text="First part"),
             MockAnthropicContent("text", text="Second part"),
         ]
-        text, thinking = backend._split_content(content_blocks)
+        text, thinking_blocks = backend._split_content(content_blocks)
         assert text == "First partSecond part"
-        assert thinking == "First thoughtSecond thought"
+        assert [b.thinking for b in thinking_blocks] == ["First thought", "Second thought"]
 
     def test_split_content_empty(self):
         """_split_content handles empty content."""
@@ -203,9 +205,9 @@ class TestAnthropicBackend:
         config = LLMConfig(provider="anthropic", anthropic_api_key="test")
         backend = AnthropicBackend(config)
 
-        text, thinking = backend._split_content([])
+        text, thinking_blocks = backend._split_content([])
         assert text == ""
-        assert thinking is None
+        assert thinking_blocks == []
 
     def test_thinking_kwargs_disabled(self):
         """_thinking_kwargs returns empty dict when thinking disabled."""
