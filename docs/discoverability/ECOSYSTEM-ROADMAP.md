@@ -16,7 +16,7 @@ Target audience: AI agent developers + IDE users + DevOps/CI engineers (all thre
 - ✅ GitHub PR API integration shipped (v2.4.0) — `trelix review --pr owner/repo#N`, GitHubPRClient, --post-comments, GITHUB_TOKEN
 - ✅ MCP search_code pagination shipped (v2.4.0) — **BREAKING**: returns `{results, next_cursor, total_available}` envelope; cursor= param added
 - ✅ Multi-query expansion observability shipped (v2.4.0) — ExpandResult dataclass, 3 new query_telemetry columns, expansion_result= kwarg
-- ✅ flare_max_retries backward-compat rename shipped (v2.4.0) — TRELIX_RETRIEVAL_FLARE_MAX_RETRIES (new) + TRELIX_RETRIEVAL_FLARE_MAX_ITER (deprecated until v3.0.0)
+- ✅ flare_max_retries backward-compat rename shipped (v2.4.0) — TRELIX_RETRIEVAL_FLARE_MAX_RETRIES (new) + TRELIX_RETRIEVAL_FLARE_MAX_ITER (deprecated v2.4.0, removed v4.0.0)
 
 **Previous updates (v2.0.0 — June 2026):**
 - ✅ LanceDB backend shipped

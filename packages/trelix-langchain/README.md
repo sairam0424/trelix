@@ -367,7 +367,7 @@ In addition to the env vars above, v2.4.0 adds:
 | `TRELIX_GRAPH_SEARCH_ENABLED` | `false` | Enable graph BFS retrieval leg |
 | `GITHUB_TOKEN` | — | Required for `trelix review --pr` GitHub integration |
 
-> `TRELIX_RETRIEVAL_FLARE_MAX_ITER` is still accepted but emits a `DeprecationWarning`. It will be removed in v3.0.0.
+> `TRELIX_RETRIEVAL_FLARE_MAX_ITER` was removed in v4.0.0 — it is no longer accepted and has no effect.
 
 ## Links
 

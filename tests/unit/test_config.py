@@ -219,50 +219,6 @@ class TestRetrievalConfig:
         cfg = RetrievalConfig()
         assert cfg.federation_max_repos == 10
 
-    def test_flare_max_iter_env_emits_deprecation_warning(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Regression test: TRELIX_RETRIEVAL_FLARE_MAX_ITER emits DeprecationWarning.
-
-        This test ensures that the old environment variable name triggers a
-        deprecation warning naming a removal target. The old name should still work
-        (backward compat via AliasChoices) but warn at runtime.
-
-        The target version is matched by SHAPE, not as a literal. This test used to
-        assert the string "v3.0.0"; v3.0.0 then shipped without the removal, the
-        message was retargeted to v4.0.0, and the test broke on a change that was
-        correcting a false statement. What matters is that the warning tells the user
-        *when* the name goes away — not which release that is this quarter.
-        """
-        import re
-        import warnings
-
-        monkeypatch.setenv("TRELIX_RETRIEVAL_FLARE_MAX_ITER", "1")
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            cfg = RetrievalConfig()
-
-        # Verify:
-        # 1. A DeprecationWarning was emitted
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1, (
-            f"Expected at least 1 DeprecationWarning, got {len(deprecation_warnings)}"
-        )
-
-        # 2. Warning message mentions the old env var name
-        warning_msg = str(deprecation_warnings[0].message)
-        assert "TRELIX_RETRIEVAL_FLARE_MAX_ITER" in warning_msg, (
-            f"Expected old env var name in warning: {warning_msg}"
-        )
-
-        # 3. Warning message names SOME removal target version
-        assert re.search(r"removed in v\d+\.\d+\.\d+", warning_msg), (
-            f"Expected the warning to name a removal target version: {warning_msg}"
-        )
-
-        # 4. Backward compat worked: the value was parsed correctly
-        assert cfg.flare_max_retries == 1
-
     def test_agent_session_max_age_default(self) -> None:
         cfg = RetrievalConfig()
         assert cfg.agent_session_max_age_seconds == 604_800.0
@@ -619,30 +575,6 @@ class TestRetrievalConfigFlareMaxRetries:
         cfg = RetrievalConfig()
         assert cfg.flare_max_retries == 3
 
-    def test_flare_max_iterations_old_env_var_still_works(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Old TRELIX_RETRIEVAL_FLARE_MAX_ITER env var still works (backward compat)."""
-        monkeypatch.setenv("TRELIX_RETRIEVAL_FLARE_MAX_ITER", "2")
-        cfg = RetrievalConfig()
-        assert cfg.flare_max_retries == 2
-
-    def test_flare_max_iterations_old_env_var_emits_deprecation(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Old TRELIX_RETRIEVAL_FLARE_MAX_ITER emits DeprecationWarning."""
-        import warnings
-
-        monkeypatch.setenv("TRELIX_RETRIEVAL_FLARE_MAX_ITER", "2")
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            RetrievalConfig()
-        assert any(
-            issubclass(warning.category, DeprecationWarning)
-            and "TRELIX_RETRIEVAL_FLARE_MAX_ITER" in str(warning.message)
-            for warning in w
-        ), "Expected DeprecationWarning mentioning old env var name"
-
     def test_flare_max_retries_default(self) -> None:
         """Default value is still 1."""
         cfg = RetrievalConfig()
@@ -651,6 +583,29 @@ class TestRetrievalConfigFlareMaxRetries:
             "Old field name 'flare_max_iterations' must be removed"
         )
         assert cfg.flare_max_retries == 1
+
+    def test_flare_max_iter_legacy_env_var_no_longer_recognized(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """v4.0.0 removal: TRELIX_RETRIEVAL_FLARE_MAX_ITER is silently ignored, not read.
+
+        docs/ROADMAP.md commits to removing this alias in v4.0.0 (deprecated since
+        v2.4.0). The old env var must no longer influence flare_max_retries, and the
+        removed deprecation validator must no longer fire.
+        """
+        import warnings
+
+        monkeypatch.setenv("TRELIX_RETRIEVAL_FLARE_MAX_ITER", "3")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            cfg = RetrievalConfig()
+
+        assert cfg.flare_max_retries == 1, (
+            "the legacy env var must be silently ignored (default applies), not read"
+        )
+        assert not any(issubclass(warning.category, DeprecationWarning) for warning in w), (
+            "the deprecation validator must be gone, not just non-firing"
+        )
 
 
 class TestShortQueryConfig:
