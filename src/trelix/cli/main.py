@@ -1289,15 +1289,17 @@ def ask(
             from trelix.agent import AgentLoop
 
             agent_loop = AgentLoop(config)
-            answer, resolved_session = agent_loop.run(query, session_id=session)
+            result = agent_loop.run(query, session_id=session)
             # Every answer/context blob printed in this command is escaped: an
             # LLM answer quotes the code it retrieved, and context_text below IS
             # that code verbatim. Rendering trelix's own rust.py line
             # `re.sub(r"^//[/!]?\s?", ...)` raised MarkupError, so `trelix ask`
             # printed nothing and exited nonzero. escape() is display-only —
             # nothing here is trelix-authored markup meant to be interpreted.
-            console.print(_safe_text(answer))
-            err_console.print(f"[dim]Session: {_safe_text(resolved_session)}[/dim]")
+            if result.needs_input:
+                err_console.print("[yellow]trelix needs more information:[/yellow]")
+            console.print(_safe_text(result.content))
+            err_console.print(f"[dim]Session: {_safe_text(result.session_id)}[/dim]")
             return
 
         retriever = Retriever(config)
