@@ -50,7 +50,8 @@ def _core_dependency_specifier(name: str) -> str:
 
 
 def _extra_dependency_specifier(extra: str, name: str) -> str:
-    """Return the exact specifier string for *name* inside [project.optional-dependencies][extra]."""
+    """Return the exact specifier string for *name* inside
+    [project.optional-dependencies][extra]."""
     extras = _load_pyproject()["project"]["optional-dependencies"]
     assert extra in extras, f"optional-dependencies has no {extra!r} extra"
     for dep in extras[extra]:
@@ -85,7 +86,8 @@ def test_openai_ceiling_excludes_unmigrated_httpx2_major() -> None:
 
 
 def test_anthropic_ceiling_excludes_removed_temperature_kwarg() -> None:
-    """anthropic-sdk-python v1.0.0 removes temperature/top_p/top_k; AnthropicBackend passes temperature today."""
+    """anthropic-sdk-python v1.0.0 removes temperature/top_p/top_k; AnthropicBackend
+    passes temperature today."""
     spec = _extra_dependency_specifier("anthropic", "anthropic")
     assert "<1.0.0" in spec or re.search(r">=\s*1\.", spec), (
         f"anthropic specifier is {spec!r} — with no upper bound, a fresh install can resolve "
