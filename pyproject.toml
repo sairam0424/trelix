@@ -78,7 +78,12 @@ dependencies = [
     # --- Storage ---
     "sqlite-vec>=0.1.6",
     # --- Embeddings ---
-    "openai>=1.35.0",
+    # Ceiling pinned below openai-python v3.0.0 (2026-08-12): that release swaps the
+    # default HTTP transport to "httpx2", which src/trelix/core/retry.py's
+    # is_retryable_http_error() does not yet recognize (sys.modules check is hardcoded
+    # to "httpx" only). Raise the ceiling once retry.py adds httpx2 handling — see
+    # docs/reports/v4-0-0-upgrade-research-2026-09-11.md.
+    "openai>=1.35.0,<3.0.0",
     "tiktoken>=0.7.0",
     # --- Retrieval math ---
     # scikit-learn was an unconditional core dependency with zero importers.
@@ -99,7 +104,11 @@ dependencies = [
     "rich>=13.7.0",
     # --- Config ---
     "pydantic>=2.8.0",
-    "pydantic-settings>=2.3.0",
+    # Floor raised to exclude CVE-2026-58203 (GHSA-4xgf-cpjx-pc3j): a symlink-traversal
+    # bug in NestedSecretsSettingsSource affecting 2.12.0-2.14.1, fixed in 2.14.2. trelix
+    # itself never sets secrets_nested_subdir (grep confirms zero hits), so this closes
+    # the resolution risk rather than an active exploit.
+    "pydantic-settings>=2.14.2",
     # --- Secure XML parsing (XXE/billion-laughs protection for .csproj) ---
     "defusedxml>=0.7.1",
     # --- Graph (PageRank) ---
@@ -239,7 +248,12 @@ binary = [
 taint = [
     "semgrep>=1.60.0",
 ]
-anthropic = ["anthropic>=0.40.0"]
+# Ceiling pinned below anthropic-sdk-python v1.0.0 (2026-08-20): that release removes
+# temperature/top_p/top_k from every Messages method, which
+# src/trelix/llm/providers/anthropic_backend.py still passes unconditionally in
+# complete()/stream() today — raise the ceiling once that's fixed. See
+# docs/reports/v4-0-0-upgrade-research-2026-09-11.md.
+anthropic = ["anthropic>=0.40.0,<1.0.0"]
 bedrock   = ["boto3>=1.35.0"]
 vertex    = ["google-genai>=1.0.0"]
 litellm   = ["litellm>=1.50.0"]
