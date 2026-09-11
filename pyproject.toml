@@ -41,7 +41,7 @@ description = "Fast, reliable code indexing and retrieval — contextual hybrid 
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Trelix Contributors" }]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 keywords = [
     "code-search", "code-intelligence", "tree-sitter", "semantic-search",
     "hybrid-search", "llm", "rag", "developer-tools", "code-indexing",
@@ -56,10 +56,9 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    # requires-python is an open ">=3.11", so pip has always been willing to install on
+    # requires-python is an open ">=3.12", so pip has always been willing to install on
     # 3.14 — the classifiers were the only place claiming otherwise, and they said 3.13.
     # Added once the suite was actually run there rather than on the strength of the
     # open bound: 3.14.6, every extra installed, 3256 passed, 0 skipped, 0 failed.
@@ -309,7 +308,7 @@ Changelog = "https://github.com/sairam0424/trelix/blob/main/CHANGELOG.md"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 # S (flake8-bandit) and B (flake8-bugbear) were both absent, so `ruff check` was
@@ -366,7 +365,7 @@ ignore = [
 "src/trelix/**" = ["S101"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 ignore_missing_imports = true
 

@@ -24,7 +24,7 @@ one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 | Requirement | Notes |
 |-------------|-------|
-| **Python 3.11, 3.12, or 3.13** | No known upper bound |
+| **Python 3.12, 3.13, or 3.14** | No known upper bound |
 | **pip** or **uv** | pip ships with Python; uv is optional but significantly faster |
 | **~500 MB free disk** | The local embedder model is downloaded on first use and cached by `sentence-transformers`/HuggingFace, i.e. under `$HF_HOME` (default `~/.cache/huggingface/hub/`). trelix passes no custom cache directory and has no `TRELIX_CACHE_DIR` setting. |
 | `OPENAI_API_KEY` | Optional — enables OpenAI embeddings (higher quality, requires internet) |
@@ -34,7 +34,7 @@ one-liner to Docker, standalone binaries, and virtual-environment setups.
 Check your Python version before installing:
 
 ```bash
-python --version   # must be 3.11.x or 3.12.x
+python --version   # must be 3.12.x, 3.13.x, or 3.14.x
 pip --version
 ```
 
@@ -414,7 +414,7 @@ If `trelix --version` prints nothing or fails, check that:
 
 1. Your virtual environment is activated (if using one).
 2. The Python executable that installed Trelix is on your `PATH`.
-3. You are using Python 3.11, 3.12, or 3.13 (`python --version`).
+3. You are using Python 3.12, 3.13, or 3.14 (`python --version`).
 
 ---
 

@@ -785,9 +785,9 @@ trelix update-index
 
 ### Python Version Too Old
 
-**Symptom:** Installation fails with `ERROR: Package 'trelix' requires a different Python: X.Y.Z not in '>=3.11'` or import errors about syntax features.
+**Symptom:** Installation fails with `ERROR: Package 'trelix' requires a different Python: X.Y.Z not in '>=3.12'` or import errors about syntax features.
 
-**Cause:** trelix requires Python 3.11 or later. Python 3.10 and older are not supported.
+**Cause:** trelix requires Python 3.12 or later. Python 3.11 and older are not supported.
 
 **Fix:**
 ```bash
@@ -795,16 +795,16 @@ trelix update-index
 python --version
 python3 --version
 
-# Install Python 3.11+ via pyenv (recommended)
-pyenv install 3.11.9
-pyenv global 3.11.9
+# Install Python 3.12+ via pyenv (recommended)
+pyenv install 3.12.8
+pyenv global 3.12.8
 
 # Or via Homebrew on macOS
-brew install python@3.11
+brew install python@3.12
 
 # Verify
-python3.11 --version
-pip3.11 install trelix
+python3.12 --version
+pip3.12 install trelix
 ```
 
 ---
@@ -861,21 +861,21 @@ LDFLAGS="-L/opt/homebrew/opt/sqlite/lib" pip install --force-reinstall "trelix[l
 
 **Fix — Standard venv:**
 ```bash
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install trelix trelix-mcp
 ```
 
 **Fix — uv (faster):**
 ```bash
-uv venv --python 3.11
+uv venv --python 3.12
 source .venv/bin/activate
 uv pip install trelix trelix-mcp
 ```
 
 **Fix — pyenv + virtualenv:**
 ```bash
-pyenv local 3.11.9
+pyenv local 3.12.8
 python -m venv .venv
 source .venv/bin/activate
 pip install trelix
