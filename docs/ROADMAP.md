@@ -67,11 +67,11 @@ This roadmap describes planned features, research directions, and long-term visi
 
 ---
 
-## 🌐 v3.3.0 — Breaking Changes & Ecosystem (H1 2027)
+## ✅ v3.3.0 — Breaking Changes & Ecosystem (shipped 2026-09-12)
 
 **Goal:** Clean API surface + first-class cloud deployment.
 
-- [ ] **Remove deprecated** — the `TRELIX_RETRIEVAL_FLARE_MAX_ITER` **env-var alias**
+- [x] **Remove deprecated** — the `TRELIX_RETRIEVAL_FLARE_MAX_ITER` **env-var alias**
       is removed (deprecated in v2.4). Naming precision matters here, because this
       item previously named `flare_max_iterations`: that *field* was renamed to
       `flare_max_retries` in v2.4.0 and is already gone — `test_config.py:621`
@@ -97,12 +97,13 @@ This roadmap describes planned features, research directions, and long-term visi
       elevated MINOR bump instead, so it moves to v3.3.0.
       See [BACKWARDS_COMPATIBILITY.md](BACKWARDS_COMPATIBILITY.md) and
       [migration/v2-to-v3.md](migration/v2-to-v3.md).
-- [ ] **MCP `InputRequiredResult` pattern** — adopt SEP-2322's
+- [x] **MCP `InputRequiredResult` pattern** — adopted SEP-2322's
       `InputRequiredResult` pattern for `ask_agent`'s input-wait behavior.
-      This is a real behavioral/protocol change, not a dependency-floor
-      edit — needs its own design pass. (The `mcp`/`fastmcp` version-floor
-      bump this item used to bundle shipped in v2.12.0 as
-      `mcp>=1.24.0,<2.0`/`fastmcp>=3.4.0`.)
+      `mcp`/`fastmcp` floors bumped to `mcp>=2.0.0,<3.0`/`fastmcp>=4.0.0,<5`
+      to unlock it.
+
+### Remaining backlog (carried forward, not part of v3.3.0)
+
 - [ ] **MCP streaming** — true streaming tool responses once MCP spec supports it
 - [ ] **GitHub App Marketplace listing** — the App itself (`infra/github-app/`)
       is installable and hardened as of v2.9.0 (signature verification,
