@@ -8,7 +8,13 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from trelix.core.retry import with_retry
-from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
+from trelix.llm.client import (
+    ChatMessage,
+    ChatResponse,
+    ThinkingBlock,
+    ToolCallResponse,
+    TrelixChatClient,
+)
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -93,6 +99,13 @@ class BedrockBackend(TrelixChatClient):
             raise ImportError(
                 "Bedrock backend requires boto3. Install it with: pip install 'trelix[bedrock]'"
             ) from exc
+        if not config.aws_region:
+            raise ValueError(
+                "AWS_REGION must be set explicitly for the Bedrock backend as of "
+                "trelix v3.3.0 (previously silently defaulted to 'us-east-1', "
+                "matching anthropic-sdk-python v1.0.0's AnthropicBedrock region "
+                "enforcement). Set the AWS_REGION environment variable."
+            )
         session_kwargs: dict[str, Any] = {}
         if config.aws_profile:
             session_kwargs["profile_name"] = config.aws_profile
@@ -123,13 +136,18 @@ class BedrockBackend(TrelixChatClient):
         system: str | None,
         tools: list[dict[str, Any]] | None = None,
         force_tool: str | None = None,
+        thinking: bool = False,
     ) -> dict[str, Any]:
         effective_system = system or next((m.content for m in messages if m.role == "system"), None)
         request: dict[str, Any] = {
             "modelId": self._model,
             "inferenceConfig": {
                 "maxTokens": max_tokens or self._config.max_tokens,
-                "temperature": self._config.temperature,
+                # Anthropic-on-Bedrock rejects a reasoning request unless
+                # temperature=1.0 -- overridden below when thinking is enabled,
+                # same as complete()/stream() force it regardless of an
+                # explicit temperature= argument.
+                "temperature": 1.0 if thinking else self._config.temperature,
             },
             "messages": [
                 {
@@ -147,6 +165,13 @@ class BedrockBackend(TrelixChatClient):
                 "tools": [self._convert_tool(t) for t in tools],
                 "toolChoice": ({"tool": {"name": force_tool}} if force_tool else {"auto": {}}),
             }
+        if thinking:
+            request["additionalModelRequestFields"] = {
+                "reasoning_config": {
+                    "type": "enabled",
+                    "budget_tokens": self._config.thinking_budget_tokens,
+                }
+            }
         return request
 
     def _convert_tool(self, openai_tool: dict[str, Any]) -> dict[str, Any]:
@@ -161,6 +186,33 @@ class BedrockBackend(TrelixChatClient):
 
     def _normalize_finish_reason(self, stop_reason: str) -> str:
         return _STOP_REASON_MAP.get(stop_reason, "stop")
+
+    def _extract_thinking_blocks(self, content: list[dict[str, Any]]) -> list[ThinkingBlock]:
+        """Extract Bedrock Converse reasoningContent blocks.
+
+        Each block is either {"reasoningText": {"text", "signature"}} (readable
+        reasoning) or {"redactedContent": <opaque>} (redacted) — never both.
+        Content extraction previously only ever looked for "text" in a block, so
+        these were read off the response and silently discarded.
+        """
+        blocks: list[ThinkingBlock] = []
+        for block in content:
+            reasoning = block.get("reasoningContent")
+            if reasoning is None:
+                continue
+            if "reasoningText" in reasoning:
+                blocks.append(
+                    ThinkingBlock(
+                        type="thinking",
+                        thinking=reasoning["reasoningText"].get("text"),
+                        signature=reasoning["reasoningText"].get("signature"),
+                    )
+                )
+            elif "redactedContent" in reasoning:
+                blocks.append(
+                    ThinkingBlock(type="redacted_thinking", data=reasoning["redactedContent"])
+                )
+        return blocks
 
     def _is_model_unavailable(self, exc: Exception) -> bool:
         """True when Bedrock signals the model isn't available on-demand."""
@@ -207,12 +259,19 @@ class BedrockBackend(TrelixChatClient):
         system: str | None = None,
         thinking: bool = False,
     ) -> ChatResponse:
-        request = self._build_request(messages, max_tokens, system)
-        if temperature is not None:
+        request = self._build_request(messages, max_tokens, system, thinking=thinking)
+        if temperature is not None and not thinking:
             request["inferenceConfig"]["temperature"] = temperature
         response = self._try_with_fallback(self._client.converse, request)
         output_msg = response["output"]["message"]
         content = next((block["text"] for block in output_msg["content"] if "text" in block), "")
+        thinking_blocks = self._extract_thinking_blocks(output_msg["content"])
+        thinking_text_blocks = [b for b in thinking_blocks if b.type == "thinking"]
+        thinking_text = (
+            "".join(b.thinking or "" for b in thinking_text_blocks)
+            if thinking_text_blocks
+            else None
+        )
         usage = response.get("usage", {})
         return ChatResponse(
             content=content,
@@ -220,6 +279,8 @@ class BedrockBackend(TrelixChatClient):
             finish_reason=self._normalize_finish_reason(response.get("stopReason", "end_turn")),
             input_tokens=usage.get("inputTokens", 0),
             output_tokens=usage.get("outputTokens", 0),
+            thinking=thinking_text,
+            thinking_blocks=thinking_blocks,
         )
 
     def stream(
@@ -230,8 +291,8 @@ class BedrockBackend(TrelixChatClient):
         system: str | None = None,
         thinking: bool = False,
     ) -> Iterator[str]:
-        request = self._build_request(messages, max_tokens, system)
-        if temperature is not None:
+        request = self._build_request(messages, max_tokens, system, thinking=thinking)
+        if temperature is not None and not thinking:
             request["inferenceConfig"]["temperature"] = temperature
         response = self._try_with_fallback(self._client.converse_stream, request)
         stream = response.get("stream")
@@ -240,6 +301,15 @@ class BedrockBackend(TrelixChatClient):
                 delta = event.get("contentBlockDelta", {}).get("delta", {})
                 if "text" in delta:
                     yield delta["text"]
+                elif "reasoningContent" in delta:
+                    # stream()'s contract is Iterator[str] of answer text only —
+                    # reasoning deltas aren't yielded, just no longer silently
+                    # discarded without a trace.
+                    logger.debug(
+                        "Bedrock reasoningContent delta received (not yielded to text "
+                        "stream): %d chars",
+                        len(delta["reasoningContent"].get("text", "")),
+                    )
 
     def tool_call(
         self,

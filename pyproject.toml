@@ -41,7 +41,7 @@ description = "Fast, reliable code indexing and retrieval — contextual hybrid 
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Trelix Contributors" }]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 keywords = [
     "code-search", "code-intelligence", "tree-sitter", "semantic-search",
     "hybrid-search", "llm", "rag", "developer-tools", "code-indexing",
@@ -56,10 +56,9 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    # requires-python is an open ">=3.11", so pip has always been willing to install on
+    # requires-python is an open ">=3.12", so pip has always been willing to install on
     # 3.14 — the classifiers were the only place claiming otherwise, and they said 3.13.
     # Added once the suite was actually run there rather than on the strength of the
     # open bound: 3.14.6, every extra installed, 3256 passed, 0 skipped, 0 failed.
@@ -72,13 +71,16 @@ classifiers = [
 ]
 dependencies = [
     # --- Parsing ---
-    "tree-sitter>=0.23",
-    "tree-sitter-language-pack>=1.13.0",
+    "tree-sitter>=0.26.0",
+    "tree-sitter-language-pack>=1.17.0",
     "PyYAML>=6.0",
     # --- Storage ---
     "sqlite-vec>=0.1.6",
     # --- Embeddings ---
-    "openai>=1.35.0",
+    # Bumped past openai-python v3.0.0's breaking "httpx2" default-transport
+    # switch — src/trelix/core/retry.py now recognizes httpx2 exception shapes
+    # (see is_retryable_http_error()), so this is safe to float past.
+    "openai>=3.0.0",
     "tiktoken>=0.7.0",
     # --- Retrieval math ---
     # scikit-learn was an unconditional core dependency with zero importers.
@@ -91,21 +93,25 @@ dependencies = [
     # the shipped binary never contained them — the exclusion was the tell.
     # Users on the local provider still get them transitively:
     # sentence-transformers requires scikit-learn>=0.22.0 and scipy>=1.0.0.
-    "numpy>=1.26.0",
+    "numpy>=2.0.0",
     # --- File walking ---
-    "pathspec>=0.12.1",
+    "pathspec>=1.0.0",
     # --- CLI ---
-    "typer>=0.12.0",
-    "rich>=13.7.0",
+    "typer>=0.26.0",
+    "rich>=15.0.0",
     # --- Config ---
-    "pydantic>=2.8.0",
-    "pydantic-settings>=2.3.0",
+    "pydantic>=2.13.5",
+    # Floor raised to exclude CVE-2026-58203 (GHSA-4xgf-cpjx-pc3j): a symlink-traversal
+    # bug in NestedSecretsSettingsSource affecting 2.12.0-2.14.1, fixed in 2.14.2. trelix
+    # itself never sets secrets_nested_subdir (grep confirms zero hits), so this closes
+    # the resolution risk rather than an active exploit.
+    "pydantic-settings>=2.14.2",
     # --- Secure XML parsing (XXE/billion-laughs protection for .csproj) ---
     "defusedxml>=0.7.1",
     # --- Graph (PageRank) ---
     "networkx>=3.3.0",
     # --- Retry/backoff (LLM, embedder, and connector HTTP calls) ---
-    "tenacity>=8.5.0",
+    "tenacity>=9.0.0",
     # --- HTTP client (connectors, GitHub PR client) — was only ever
     # transitively installed via openai/anthropic/etc.; declared explicitly
     # now that core/retry.py's error-classification imports it directly ---
@@ -239,7 +245,17 @@ binary = [
 taint = [
     "semgrep>=1.60.0",
 ]
-anthropic = ["anthropic>=0.40.0"]
+# Bumped past anthropic-sdk-python v1.0.0's breaking release: temperature/
+# top_p/top_k removed from Messages methods (AnthropicBackend no longer sends
+# temperature — see anthropic_backend.py), and AnthropicBedrock now raises on
+# an unset region (trelix's own Bedrock backends match that posture — see
+# BedrockBackend._build_client / _make_boto3_client's region checks).
+anthropic = ["anthropic>=1.0.0"]
+# boto3/botocore: researched, no breaking major since this floor (both still
+# on the 1.x line at 1.43.92 as of 2026-09-11; Session/client construction
+# and the retries={"max_attempts": 0, "mode": "standard"} pattern trelix uses
+# are both unchanged in the changelog). No floor bump needed — nothing to
+# guard against.
 bedrock   = ["boto3>=1.35.0"]
 vertex    = ["google-genai>=1.0.0"]
 litellm   = ["litellm>=1.50.0"]
@@ -292,7 +308,7 @@ Changelog = "https://github.com/sairam0424/trelix/blob/main/CHANGELOG.md"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 # S (flake8-bandit) and B (flake8-bugbear) were both absent, so `ruff check` was
@@ -349,7 +365,7 @@ ignore = [
 "src/trelix/**" = ["S101"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 ignore_missing_imports = true
 

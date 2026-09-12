@@ -1099,10 +1099,10 @@ The binary is not on your PATH. Fix:
 ```bash
 # Check where pip installed it
 python -m site --user-base
-# e.g. /Users/you/Library/Python/3.11
+# e.g. /Users/you/Library/Python/3.12
 
 # Add to PATH in ~/.zshrc or ~/.bashrc
-export PATH="$HOME/Library/Python/3.11/bin:$PATH"
+export PATH="$HOME/Library/Python/3.12/bin:$PATH"
 source ~/.zshrc
 
 # Verify (trelix-mcp takes no flags — starting it would launch the stdio server)

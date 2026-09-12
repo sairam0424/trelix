@@ -134,6 +134,18 @@ def _extract_status_code(exc: BaseException) -> int | None:
         except Exception:  # noqa: BLE001
             pass
 
+    # openai-python v3.0.0 and anthropic-sdk-python v1.0.0 both default to "httpx2"
+    # transport (a Pydantic-team fork, not a stopgap alias) — a raw httpx2 exception
+    # (as opposed to the SDK's own wrapped APIStatusError/APIConnectionError, handled
+    # below) needs the same recognition httpx itself gets above.
+    httpx2_mod = _loaded_module("httpx2")
+    if httpx2_mod is not None:
+        try:
+            if isinstance(exc, httpx2_mod.HTTPStatusError):
+                return int(exc.response.status_code)
+        except Exception:  # noqa: BLE001
+            pass
+
     requests_mod = _loaded_module("requests")
     if requests_mod is not None:
         try:
@@ -201,6 +213,16 @@ def _is_connection_level_error(exc: BaseException) -> bool:
         try:
             if isinstance(exc, httpx_mod.HTTPError) and not isinstance(
                 exc, httpx_mod.HTTPStatusError
+            ):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+
+    httpx2_mod = _loaded_module("httpx2")
+    if httpx2_mod is not None:
+        try:
+            if isinstance(exc, httpx2_mod.HTTPError) and not isinstance(
+                exc, httpx2_mod.HTTPStatusError
             ):
                 return True
         except Exception:  # noqa: BLE001

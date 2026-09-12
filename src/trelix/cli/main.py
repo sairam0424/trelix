@@ -1289,15 +1289,17 @@ def ask(
             from trelix.agent import AgentLoop
 
             agent_loop = AgentLoop(config)
-            answer, resolved_session = agent_loop.run(query, session_id=session)
+            result = agent_loop.run(query, session_id=session)
             # Every answer/context blob printed in this command is escaped: an
             # LLM answer quotes the code it retrieved, and context_text below IS
             # that code verbatim. Rendering trelix's own rust.py line
             # `re.sub(r"^//[/!]?\s?", ...)` raised MarkupError, so `trelix ask`
             # printed nothing and exited nonzero. escape() is display-only —
             # nothing here is trelix-authored markup meant to be interpreted.
-            console.print(_safe_text(answer))
-            err_console.print(f"[dim]Session: {_safe_text(resolved_session)}[/dim]")
+            if result.needs_input:
+                err_console.print("[yellow]trelix needs more information:[/yellow]")
+            console.print(_safe_text(result.content))
+            err_console.print(f"[dim]Session: {_safe_text(result.session_id)}[/dim]")
             return
 
         retriever = Retriever(config)
@@ -1310,9 +1312,11 @@ def ask(
         if config.retrieval.flare_enabled:
             from trelix.retrieval.flare import FLARELoop
 
+            # Synthesizer.synthesize() (called inside FLARELoop.run()) already
+            # streamed every token to stdout as it arrived — printing the
+            # returned string here would print the whole answer a second time.
             loop = FLARELoop(retriever, synth, config)
-            answer = loop.run(query)
-            console.print(_safe_text(answer))
+            loop.run(query)
         else:
             context = retriever.retrieve(query)
             # If provider=local (no API key), print the context text directly.

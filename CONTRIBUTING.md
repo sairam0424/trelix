@@ -322,7 +322,7 @@ findings = await reviewer.review(diff_text=raw_unified_diff)
 
 ## Coding Standards
 
-- Python 3.11+ type hints everywhere
+- Python 3.12+ type hints everywhere
 - Line length: 100 chars (ruff enforced)
 - No mutable default arguments
 - New objects, never mutate in-place
@@ -383,7 +383,7 @@ This file previously said "at least one minor version", contradicting the policy
 
 ### Python version support
 
-- Supported: Python 3.11, 3.12, 3.13
+- Supported: Python 3.12, 3.13, 3.14
 - Dropped versions are announced one minor release in advance
 
 ### Release checklist — the twelve version stamps

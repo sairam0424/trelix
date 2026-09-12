@@ -54,31 +54,35 @@ and broken the 3-month floor.
 
 ### Current deprecations
 
-| Symbol | Deprecated in | Removal target | Replacement |
-|--------|--------------|----------------|-------------|
-| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | v4.0.0 | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` |
+*(None at this time — the one tracked deprecation, `TRELIX_RETRIEVAL_FLARE_MAX_ITER`, was removed in v3.3.0; see "v3.3.0 Breaking Changes" below.)*
 
 ---
 
 ## Breaking Changes
 
-Breaking changes are only made in **MAJOR** versions (v3.0.0, v4.0.0, etc.).
+Breaking changes are only made in a release explicitly flagged for them in CHANGELOG
+under a `### Breaking Changes` heading. Historically that meant reserving them for a
+MAJOR bump (v3.0.0's own bump was major, though it shipped no breaking changes — see
+below); starting with this cycle, breaking changes are instead reserved for a
+deliberately elevated **MINOR** bump (v3.3.0) rather than a MAJOR one — trelix's version
+number is a risk signal for upgraders, not strict semver.
 
-Before a MAJOR release:
+Before a flagged breaking release:
 - All breaking changes are listed in CHANGELOG under a `### Breaking Changes` heading,
   with the exact old → new form
 - A minimum 3-month deprecation period for any removed feature
-- A standalone guide at `docs/migration/v{N}-to-v{N+1}.md` **only when that major
+- A standalone guide at `docs/migration/v{N}-to-v{N+1}.md` (or, for a flagged MINOR
+  bump like v3.3.0, `docs/migration/v{N.M}-to-v{N.M+1}.md`) **only when that release
   actually removes or changes something** — see immediately below
 
 **`docs/migration/v2-to-v3.md` exists, and v3.0.0 is not what earned it.** v3.0.0
 (2026-08-13) shipped no breaking changes at all; its CHANGELOG entry says so outright —
 "Everything here is additive and OFF by default. No breaking changes: upgrading from
 v2.12.0 needs no reindex and no migration" — because the one queued removal
-(`TRELIX_RETRIEVAL_FLARE_MAX_ITER`, retargeted to v4.0.0 in the section below) was
+(`TRELIX_RETRIEVAL_FLARE_MAX_ITER`, retargeted to v3.3.0 in the section below) was
 deferred, so the major bump bought a feature surface rather than an incompatibility. A
 guide written on that basis would have had "nothing to do" as its only honest content,
-and would have cost a reader their trust in the directory — precisely the trust v4.0.0
+and would have cost a reader their trust in the directory — precisely the trust v3.3.0
 will need when it puts something real there. What earned the guide was v3.0.1 retracting
 the "no reindex" claim: the Python extractor's off-by-one made 8,815 of 8,815 index
 references wrong, and the obvious remediation is a silent no-op — a plain `trelix index`
@@ -94,21 +98,21 @@ v3.0.0's.
 The earlier wording promised the file unconditionally, which made this document false
 the moment v3.0.0 tagged.
 
-### v4.0.0 Breaking Changes (planned)
+### v3.3.0 Breaking Changes
 
-The following deprecated items will be removed in v4.0.0. All have `DeprecationWarning` or `AliasChoices` backward-compat shims active since the version listed.
+The following deprecated item was removed in v3.3.0. Its `AliasChoices`/`DeprecationWarning` backward-compat shim had been active since v2.4.0.
 
 > **Retargeted from v3.0.0.** v3.0.0 shipped on 2026-08-13 without this
-> removal and the shim is still live, so the old deadline has already
-> passed. Per the policy above — remove only on a MAJOR bump — the next
-> opportunity is v4.0.0. The env var continues to work in all v3.x
-> releases, with a `DeprecationWarning`.
+> removal and the shim stayed live, so the original deadline passed. Per
+> the policy above — remove only in a release flagged for breaking changes,
+> now a deliberately elevated MINOR bump rather than a MAJOR one — the next
+> opportunity was v3.3.0.
 
-| Item | Deprecated in | Old name | New name | File:line |
-|------|--------------|----------|----------|-----------|
-| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | `TRELIX_RETRIEVAL_FLARE_MAX_ITER` | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `src/trelix/core/config.py:577` |
+| Item | Deprecated in | Removed in | Old name | New name |
+|------|--------------|-----------|----------|----------|
+| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | v3.3.0 | `TRELIX_RETRIEVAL_FLARE_MAX_ITER` | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` |
 
-**Migration**: Set `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` instead of `TRELIX_RETRIEVAL_FLARE_MAX_ITER` in your environment or config files. The old name emits `DeprecationWarning` at `RetrievalConfig()` instantiation and will be removed in v4.0.0.
+**Migration**: Set `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` instead of `TRELIX_RETRIEVAL_FLARE_MAX_ITER` in your environment or config files. As of v3.3.0 the old name is silently ignored — it no longer sets `flare_max_retries` and no longer emits `DeprecationWarning`.
 
 See [v3-0-0-breaking-changes.md](superpowers/plans/v3-0-0-breaking-changes.md) for the complete v3.0.0 deprecation audit and removal schedule.
 

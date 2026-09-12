@@ -134,7 +134,7 @@ GitHub -- pull_request webhook -->  this service (Express)
 - `GITHUB_APP_PRIVATE_KEY`/`GITHUB_WEBHOOK_SECRET` must come from your
   platform's secret manager, never a committed file — `src/config.ts`
   reads them from env only and throws at startup if either is missing.
-- `trelix` (the CLI) and a Python 3.11+ runtime must be present in the
+- `trelix` (the CLI) and a Python 3.12+ runtime must be present in the
   deployment image/environment — `review-runner.ts` shells out to it by
   name via `PATH`.
 - Logs (`console.error` on review failures) currently go to stdout/stderr

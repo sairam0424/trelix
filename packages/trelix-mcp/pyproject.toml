@@ -12,13 +12,13 @@ description = "MCP server for trelix — semantic code search for Claude Code, C
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Trelix Contributors" }]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 keywords = ["mcp", "model-context-protocol", "code-search", "claude-code", "cursor", "code-intelligence", "llm", "ai-agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 # The floor was `trelix>=2.8.0` and had been false since v2.8.1. The server calls five core
@@ -41,7 +41,13 @@ classifiers = [
 # at every earlier tag). Against core 3.1.2-3.1.4 the tool would raise AttributeError and
 # return nothing at all — worse than the bare concept_count it replaced. The two federation
 # line numbers above moved 767->787 and 858->878 in that same edit.
-dependencies = ["trelix>=3.1.5", "mcp>=1.24.0,<2.0", "fastmcp>=3.4.0,<4"]
+#
+# mcp>=2.0.0 / fastmcp>=4.0.0 (v3.3.0, SEP-2322): ask_agent's clarify path returns a
+# real InputRequiredToolResult (fastmcp.tools.base) wrapping mcp.types.InputRequiredResult —
+# neither type exists below these floors. mcp 2.x is backward compatible with pre-2026-07-28
+# clients (they simply never receive an input_required leg), so this is safe to raise
+# unconditionally rather than gating on protocol version.
+dependencies = ["trelix>=3.1.5", "mcp>=2.0.0,<3.0", "fastmcp>=4.0.0,<5"]
 
 [project.scripts]
 trelix-mcp = "trelix_mcp.server:main"

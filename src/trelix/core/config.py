@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Language
@@ -383,7 +383,11 @@ class EmbedderConfig(BaseSettings):
     # Reuses AWS_* env vars — same credentials as BedrockBackend in LLMConfig.
     # bedrock-titan: amazon.titan-embed-text-v2:0 — 256/512/1024 configurable dims
     # bedrock-cohere: cohere.embed-english-v3 — 1024 dims, strong code retrieval
-    bedrock_aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+    # No default: as of v3.3.0 an unset region raises at BedrockBackend
+    # construction, matching anthropic-sdk-python v1.0.0's AnthropicBedrock
+    # enforcement — was silently "us-east-1", which is now the wrong region
+    # for someone who never chose it and never finds out.
+    bedrock_aws_region: str | None = Field(default=None, alias="AWS_REGION")
     bedrock_aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
     bedrock_aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
     bedrock_aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")
@@ -788,32 +792,8 @@ class RetrievalConfig(BaseSettings):
         default=1,
         ge=1,
         le=3,
-        validation_alias=AliasChoices(
-            "TRELIX_RETRIEVAL_FLARE_MAX_RETRIES",
-            "TRELIX_RETRIEVAL_FLARE_MAX_ITER",  # legacy — deprecated in v2.4
-        ),
+        alias="TRELIX_RETRIEVAL_FLARE_MAX_RETRIES",
     )
-
-    @model_validator(mode="after")
-    def _warn_deprecated_flare_iter_env(self) -> RetrievalConfig:
-        # Warns; must not raise. A ValueError from any model-level validator (mode
-        # "before"/"after", or model_post_init) is re-raised by pydantic with
-        # input_value=<this model's whole input dict>, which on a measured run printed
-        # COHERE_API_KEY material — see the note above _parse_retrieval_weight. Reject a
-        # value from __init__ or a field_validator instead; a field_validator's
-        # input_value is only that field.
-        import os
-        import warnings
-
-        if "TRELIX_RETRIEVAL_FLARE_MAX_ITER" in os.environ:
-            warnings.warn(
-                "TRELIX_RETRIEVAL_FLARE_MAX_ITER is deprecated as of trelix v2.4.0. "
-                "Use TRELIX_RETRIEVAL_FLARE_MAX_RETRIES instead. "
-                "The old name will be removed in v4.0.0.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        return self
 
     # PageRank-based symbol importance boost
     pagerank_boost_enabled: bool = Field(
@@ -1293,7 +1273,11 @@ class LLMConfig(BaseSettings):
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
 
     # ── AWS Bedrock ───────────────────────────────────────────────────────────
-    aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+    # No default: as of v3.3.0 an unset region raises at BedrockBackend
+    # construction, matching anthropic-sdk-python v1.0.0's AnthropicBedrock
+    # enforcement — was silently "us-east-1", which is now the wrong region
+    # for someone who never chose it and never finds out.
+    aws_region: str | None = Field(default=None, alias="AWS_REGION")
     aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
     aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
     aws_profile: str | None = Field(default=None, alias="AWS_PROFILE")

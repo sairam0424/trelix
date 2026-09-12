@@ -101,6 +101,29 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "clarify",
+            "description": (
+                "Signal that the question is genuinely ambiguous or missing information "
+                "that retrieve/grep/get_symbol cannot resolve, and ask the user a specific "
+                "clarifying question instead of guessing. Use sparingly — prefer at least "
+                "one retrieval attempt first; do not call this merely because a search came "
+                "back empty."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The specific question to ask the user before continuing.",
+                    }
+                },
+                "required": ["question"],
+            },
+        },
+    },
 ]
 
 TOOL_NAMES: frozenset[str] = frozenset(t["function"]["name"] for t in AGENT_TOOLS)
