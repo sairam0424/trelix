@@ -139,7 +139,7 @@ shipped — see below.
 |------|--------|
 | VS Code extension scaffolded | ✅ Phase 3 Plan A |
 | GitHub App Actions workflow | ✅ Phase 3 Plan B |
-| JetBrains plugin (IntelliJ/PyCharm) | 📋 backlog |
+| JetBrains plugin (IntelliJ/PyCharm) | ✅ resolved docs-only — JetBrains 2025.2+ ships a built-in MCP client, no dedicated plugin needed (see [docs/MCP_GUIDE.md](MCP_GUIDE.md#7-setup-in-jetbrains-ides-20252) §7) |
 | Multi-repo workspace support in MCP | ✅ shipped v2.8.0 |
 
 ---
