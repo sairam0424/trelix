@@ -141,7 +141,7 @@ def unsubscribe_resource(subscription_id: str) -> dict[str, Any]:
     uri = _subscription_registry.get_uri(subscription_id)
     _subscription_registry.unsubscribe(subscription_id)
     _log.info("Unsubscribed: subscription_id=%s uri=%s", subscription_id, uri)
-    return {"unsubscribed": True, "subscription_id": subscription_id}
+    return {"unsubscribed": True, "subscription_id": subscription_id, "uri": uri}
 
 
 # ---------------------------------------------------------------------------

@@ -1312,9 +1312,11 @@ def ask(
         if config.retrieval.flare_enabled:
             from trelix.retrieval.flare import FLARELoop
 
+            # Synthesizer.synthesize() (called inside FLARELoop.run()) already
+            # streamed every token to stdout as it arrived — printing the
+            # returned string here would print the whole answer a second time.
             loop = FLARELoop(retriever, synth, config)
-            answer = loop.run(query)
-            console.print(_safe_text(answer))
+            loop.run(query)
         else:
             context = retriever.retrieve(query)
             # If provider=local (no API key), print the context text directly.
