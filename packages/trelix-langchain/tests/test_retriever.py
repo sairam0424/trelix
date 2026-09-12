@@ -231,3 +231,35 @@ def test_empty_results_returns_empty_list():
     tr = _make_retriever_with_mock(k=10, n_results=0)
     docs = tr.invoke("nothing here")
     assert docs == []
+
+
+# ---------------------------------------------------------------------------
+# 6. provider cast() stays in sync with core's real Literal
+# ---------------------------------------------------------------------------
+
+
+def test_provider_cast_covers_every_value_core_actually_accepts():
+    """_get_trelix_retriever() casts self.provider to a hardcoded Literal before
+    handing it to EmbedderConfig. cast() performs no runtime validation, so a
+    stale, narrower list here doesn't break anything at runtime -- it just
+    lies to IDEs/mypy about which providers are valid. Deriving the expected
+    set from EmbedderConfig.provider's own annotation means this test fails
+    the moment core adds a provider the adapter's cast doesn't yet list,
+    instead of silently drifting again."""
+    import inspect
+    import re
+    import typing
+
+    from trelix.core.config import EmbedderConfig
+
+    core_values = set(typing.get_args(typing.get_type_hints(EmbedderConfig)["provider"]))
+
+    source = inspect.getsource(TrelixRetriever._get_trelix_retriever)
+    match = re.search(r"Literal\[(.*?)\]", source, re.DOTALL)
+    assert match, "expected a Literal[...] cast target in _get_trelix_retriever"
+    adapter_values = {v.strip().strip('"') for v in match.group(1).split(",") if v.strip()}
+
+    assert adapter_values == core_values, (
+        f"adapter cast() Literal is stale: missing {core_values - adapter_values}, "
+        f"has-extra {adapter_values - core_values}"
+    )

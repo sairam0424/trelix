@@ -192,3 +192,32 @@ def test_constructor_custom_k():
 
     assert inst._k == 3
     assert inst._provider == "openai"
+
+
+def test_provider_cast_covers_every_value_core_actually_accepts():
+    """_get_trelix_retriever() casts self._provider to a hardcoded Literal
+    before handing it to EmbedderConfig. cast() performs no runtime
+    validation, so a stale, narrower list here doesn't break anything at
+    runtime -- it just lies to IDEs/mypy about which providers are valid.
+    Deriving the expected set from EmbedderConfig.provider's own annotation
+    means this test fails the moment core adds a provider the adapter's cast
+    doesn't yet list, instead of silently drifting again."""
+    import inspect
+    import re
+    import typing
+
+    from trelix_llama_index.retriever import TrelixIndexRetriever
+
+    from trelix.core.config import EmbedderConfig
+
+    core_values = set(typing.get_args(typing.get_type_hints(EmbedderConfig)["provider"]))
+
+    source = inspect.getsource(TrelixIndexRetriever._get_trelix_retriever)
+    match = re.search(r"Literal\[(.*?)\]", source, re.DOTALL)
+    assert match, "expected a Literal[...] cast target in _get_trelix_retriever"
+    adapter_values = {v.strip().strip('"') for v in match.group(1).split(",") if v.strip()}
+
+    assert adapter_values == core_values, (
+        f"adapter cast() Literal is stale: missing {core_values - adapter_values}, "
+        f"has-extra {adapter_values - core_values}"
+    )
