@@ -9,7 +9,7 @@
 #   dist/trelix.exe   (Windows x64, when run on Windows)
 #
 # Requirements:
-#   - Python 3.11+ available as python3.11 (or python3 if already 3.11)
+#   - Python 3.12+ available as python3.12 (or python3 if already 3.12)
 #   - Run from the trelix repo root
 
 set -euo pipefail
@@ -24,8 +24,8 @@ if [[ -f ".venv/bin/activate" ]]; then
     echo "==> Activating existing .venv"
     source .venv/bin/activate
 else
-    echo "==> Creating new .venv with python3.11"
-    python3.11 -m venv .venv
+    echo "==> Creating new .venv with python3.12"
+    python3.12 -m venv .venv
     source .venv/bin/activate
 fi
 

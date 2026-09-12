@@ -12,13 +12,13 @@ description = "MCP server for trelix — semantic code search for Claude Code, C
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Trelix Contributors" }]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 keywords = ["mcp", "model-context-protocol", "code-search", "claude-code", "cursor", "code-intelligence", "llm", "ai-agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 # The floor was `trelix>=2.8.0` and had been false since v2.8.1. The server calls five core

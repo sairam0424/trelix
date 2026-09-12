@@ -17,13 +17,13 @@ readme = "README.md"
 # MIT grant was in the artifact but invisible to anyone vetting the dependency.
 license = { file = "LICENSE" }
 authors = [{ name = "Trelix Contributors" }]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 keywords = ["langchain", "retriever", "rag", "code-search", "code-intelligence", "llm", "ai-agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 # The floor was `trelix>=0.4.0`, which is unsatisfiable-as-written and far too low:

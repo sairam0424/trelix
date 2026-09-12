@@ -29,14 +29,12 @@ from __future__ import annotations
 import functools
 import logging
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from opentelemetry.util.genai.handler import TelemetryHandler
 
 logger = logging.getLogger("trelix.retrieval.otel")
-
-_T = TypeVar("_T")
 
 _handler: TelemetryHandler | None = None
 _handler_service_name: str | None = None
@@ -107,7 +105,7 @@ def _handler_for(cfg: Any) -> TelemetryHandler | None:
     )
 
 
-def with_current_context(fn: Callable[..., _T]) -> Callable[..., _T]:
+def with_current_context[T](fn: Callable[..., T]) -> Callable[..., T]:
     """
     Wrap *fn* so it runs under the OTel context captured at wrap time.
 
@@ -128,7 +126,7 @@ def with_current_context(fn: Callable[..., _T]) -> Callable[..., _T]:
     captured = otel_context.get_current()
 
     @functools.wraps(fn)
-    def _wrapped(*args: Any, **kwargs: Any) -> _T:
+    def _wrapped(*args: Any, **kwargs: Any) -> T:
         token = otel_context.attach(captured)
         try:
             return fn(*args, **kwargs)

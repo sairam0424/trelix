@@ -1,6 +1,6 @@
 # trelix Architecture
 
-> **Version:** 3.2.3 | **Python:** 3.11+ | **140 source modules**
+> **Version:** 3.2.3 | **Python:** 3.12+ | **140 source modules**
 
 This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
 

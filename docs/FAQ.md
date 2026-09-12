@@ -71,7 +71,7 @@ TRELIX_STORE_BACKEND=qdrant trelix index ./my-repo  # Qdrant (set QDRANT_URL too
 
 ### Does trelix work on Windows, macOS, and Linux?
 
-Yes. trelix is a Python package and runs on any OS that supports Python 3.11+. Standalone binaries are provided for **macOS ARM64**, **Windows x64**, and **Linux x64** on the GitHub Release page. `pip install trelix` also works on all three.
+Yes. trelix is a Python package and runs on any OS that supports Python 3.12+. Standalone binaries are provided for **macOS ARM64**, **Windows x64**, and **Linux x64** on the GitHub Release page. `pip install trelix` also works on all three.
 
 macOS users can also install via Homebrew:
 ```bash
@@ -524,7 +524,7 @@ See the detailed answer in [MCP and Integrations](#what-changed-in-search_code-i
 ### Is trelix suitable for production use?
 
 Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
-- 1,703 tests (1,621 unit + 82 MCP) at 100% pass rate on Python 3.11, 3.12, and 3.13.
+- 1,703 tests (1,621 unit + 82 MCP) at 100% pass rate on Python 3.12, 3.13, and 3.14.
 - `mypy --strict` clean.
 - `ruff` lint and format clean.
 - No hardcoded secrets; all credentials sourced from environment variables.
