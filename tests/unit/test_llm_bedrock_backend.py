@@ -185,6 +185,75 @@ class TestBedrockBackend:
         assert result.thinking_blocks[0].type == "redacted_thinking"
         assert result.thinking_blocks[0].data == "opaque-blob"
 
+    def test_complete_thinking_true_requests_reasoning_from_bedrock(self) -> None:
+        """Confirmed bug (v4.0.0 pre-promotion dry run, live AWS call): complete()
+        accepted thinking=True but never translated it into Bedrock's
+        additionalModelRequestFields.reasoning_config, so AWS was never actually
+        asked for reasoning and thinking_blocks was always empty regardless of
+        the flag. AnthropicBackend._thinking_kwargs() wires the same flag for
+        direct Anthropic calls; BedrockBackend needs the equivalent."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        backend.complete([ChatMessage(role="user", content="hi")], thinking=True)
+
+        call_kwargs = mock_client.converse.call_args[1]
+        assert call_kwargs["additionalModelRequestFields"] == {
+            "reasoning_config": {"type": "enabled", "budget_tokens": 4096}
+        }
+
+    def test_complete_thinking_true_forces_temperature_to_one(self) -> None:
+        """Anthropic-on-Bedrock rejects a reasoning request unless
+        temperature=1.0 — verified live against a real Bedrock call."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        backend.complete([ChatMessage(role="user", content="hi")], temperature=0.2, thinking=True)
+
+        call_kwargs = mock_client.converse.call_args[1]
+        assert call_kwargs["inferenceConfig"]["temperature"] == 1.0
+
+    def test_complete_thinking_false_does_not_add_reasoning_config(self) -> None:
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        backend.complete([ChatMessage(role="user", content="hi")], thinking=False)
+
+        call_kwargs = mock_client.converse.call_args[1]
+        assert "additionalModelRequestFields" not in call_kwargs
+
+    def test_stream_thinking_true_requests_reasoning_from_bedrock(self) -> None:
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse_stream.return_value = {"stream": []}
+        backend._client = mock_client
+
+        list(backend.stream([ChatMessage(role="user", content="hi")], thinking=True))
+
+        call_kwargs = mock_client.converse_stream.call_args[1]
+        assert call_kwargs["additionalModelRequestFields"] == {
+            "reasoning_config": {"type": "enabled", "budget_tokens": 4096}
+        }
+        assert call_kwargs["inferenceConfig"]["temperature"] == 1.0
+
     def test_stream_does_not_crash_on_reasoning_content_delta(self) -> None:
         """Confirmed bug: stream() only ever checked `"text" in delta`, so a
         reasoningContent-only delta was read off the event stream and silently

@@ -136,13 +136,18 @@ class BedrockBackend(TrelixChatClient):
         system: str | None,
         tools: list[dict[str, Any]] | None = None,
         force_tool: str | None = None,
+        thinking: bool = False,
     ) -> dict[str, Any]:
         effective_system = system or next((m.content for m in messages if m.role == "system"), None)
         request: dict[str, Any] = {
             "modelId": self._model,
             "inferenceConfig": {
                 "maxTokens": max_tokens or self._config.max_tokens,
-                "temperature": self._config.temperature,
+                # Anthropic-on-Bedrock rejects a reasoning request unless
+                # temperature=1.0 -- overridden below when thinking is enabled,
+                # same as complete()/stream() force it regardless of an
+                # explicit temperature= argument.
+                "temperature": 1.0 if thinking else self._config.temperature,
             },
             "messages": [
                 {
@@ -159,6 +164,13 @@ class BedrockBackend(TrelixChatClient):
             request["toolConfig"] = {
                 "tools": [self._convert_tool(t) for t in tools],
                 "toolChoice": ({"tool": {"name": force_tool}} if force_tool else {"auto": {}}),
+            }
+        if thinking:
+            request["additionalModelRequestFields"] = {
+                "reasoning_config": {
+                    "type": "enabled",
+                    "budget_tokens": self._config.thinking_budget_tokens,
+                }
             }
         return request
 
@@ -247,8 +259,8 @@ class BedrockBackend(TrelixChatClient):
         system: str | None = None,
         thinking: bool = False,
     ) -> ChatResponse:
-        request = self._build_request(messages, max_tokens, system)
-        if temperature is not None:
+        request = self._build_request(messages, max_tokens, system, thinking=thinking)
+        if temperature is not None and not thinking:
             request["inferenceConfig"]["temperature"] = temperature
         response = self._try_with_fallback(self._client.converse, request)
         output_msg = response["output"]["message"]
@@ -279,8 +291,8 @@ class BedrockBackend(TrelixChatClient):
         system: str | None = None,
         thinking: bool = False,
     ) -> Iterator[str]:
-        request = self._build_request(messages, max_tokens, system)
-        if temperature is not None:
+        request = self._build_request(messages, max_tokens, system, thinking=thinking)
+        if temperature is not None and not thinking:
             request["inferenceConfig"]["temperature"] = temperature
         response = self._try_with_fallback(self._client.converse_stream, request)
         stream = response.get("stream")
