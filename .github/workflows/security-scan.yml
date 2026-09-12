@@ -155,7 +155,7 @@ jobs:
       # by the gate step below is the fallback there, and the gate still blocks.
       - name: Upload SARIF
         if: always() && hashFiles('taint.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
         with:
           sarif_file: taint.sarif
           category: semgrep-taint
@@ -229,7 +229,7 @@ jobs:
       # bar for blocking. `version` is pinned because the action's default is `latest`.
       - name: Scan the diff
         if: github.event_name == 'pull_request' || github.event_name == 'push'
-        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318  # v3.97.0
+        uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b  # v3.97.1
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -244,7 +244,7 @@ jobs:
       - name: Scan full history (report-only)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318  # v3.97.0
+        uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b  # v3.97.1
         with:
           path: ./
           base: ""
@@ -396,7 +396,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e  # v4.3.0
 
       # The slim (EXTRAS=serve) variant only. It is the tag docker-publish.yml recommends
       # as the default, it shares the gha build cache with ci.yml's `docker-build` job so
@@ -445,7 +445,7 @@ jobs:
 
       - name: Upload SARIF
         if: always() && hashFiles('trivy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
         with:
           sarif_file: trivy.sarif
           category: trivy-image
