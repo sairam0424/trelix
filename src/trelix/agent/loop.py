@@ -47,9 +47,11 @@ class AgentLoop:
 
     Usage:
         loop = AgentLoop(config)
-        answer, session_id = loop.run("how does the authentication system work?")
+        result = loop.run("how does the authentication system work?")
+        if result.needs_input:
+            ...  # ask the user result.content, then resume with their answer
         # Resume the same session later:
-        answer2, _ = loop.run("what about logout?", session_id=session_id)
+        result2 = loop.run("what about logout?", session_id=result.session_id)
     """
 
     def __init__(self, config: IndexConfig) -> None:
