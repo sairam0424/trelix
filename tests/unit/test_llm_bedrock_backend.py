@@ -47,7 +47,7 @@ class TestBedrockBackend:
         cfg = LLMConfig(
             provider="bedrock",
             model=model,
-            aws_region="us-east-1",  # v4.0.0: no default — tests that aren't
+            aws_region="us-east-1",  # v3.3.0: no default — tests that aren't
             # specifically about the region requirement need one set explicitly
             _env_file=None,  # type: ignore[call-arg]
         )
@@ -186,7 +186,7 @@ class TestBedrockBackend:
         assert result.thinking_blocks[0].data == "opaque-blob"
 
     def test_complete_thinking_true_requests_reasoning_from_bedrock(self) -> None:
-        """Confirmed bug (v4.0.0 pre-promotion dry run, live AWS call): complete()
+        """Confirmed bug (v3.3.0 pre-promotion dry run, live AWS call): complete()
         accepted thinking=True but never translated it into Bedrock's
         additionalModelRequestFields.reasoning_config, so AWS was never actually
         asked for reasoning and thinking_blocks was always empty regardless of

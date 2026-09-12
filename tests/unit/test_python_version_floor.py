@@ -1,4 +1,4 @@
-"""Python version-floor regression guard for v4.0.0's Python 3.11 -> 3.12 bump.
+"""Python version-floor regression guard for v3.3.0's Python 3.11 -> 3.12 bump.
 
 WHY THIS EXISTS. Python 3.11 has been security-fixes-only since April 2024 (EOL October
 2027); 3.12 is the most-adopted 3.x version in the wild and SPEC 0's 3-year convention marks
@@ -35,7 +35,7 @@ def test_requires_python_floor_is_3_12_everywhere() -> None:
             stale.append((path.relative_to(_ROOT), requires_python))
     assert not stale, (
         "these pyproject.toml files declare a requires-python floor other than '>=3.12': "
-        f"{stale} -- v4.0.0 bumps the floor everywhere, not just the root package"
+        f"{stale} -- v3.3.0 bumps the floor everywhere, not just the root package"
     )
 
 

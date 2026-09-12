@@ -587,9 +587,9 @@ class TestRetrievalConfigFlareMaxRetries:
     def test_flare_max_iter_legacy_env_var_no_longer_recognized(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """v4.0.0 removal: TRELIX_RETRIEVAL_FLARE_MAX_ITER is silently ignored, not read.
+        """v3.3.0 removal: TRELIX_RETRIEVAL_FLARE_MAX_ITER is silently ignored, not read.
 
-        docs/ROADMAP.md commits to removing this alias in v4.0.0 (deprecated since
+        docs/ROADMAP.md commits to removing this alias in v3.3.0 (deprecated since
         v2.4.0). The old env var must no longer influence flare_max_retries, and the
         removed deprecation validator must no longer fire.
         """

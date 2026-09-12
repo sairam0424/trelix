@@ -5,7 +5,7 @@ streamed token directly to `sys.stdout` as it arrives (that IS the point —
 the terminal shows tokens live), then also returns the fully-assembled
 string. `FLARELoop.run()` returns that same string unchanged. `ask`'s FLARE
 branch then did `console.print(_safe_text(answer))` on the return value,
-printing the whole answer a second time — found live during the v4.0.0
+printing the whole answer a second time — found live during the v3.3.0
 pre-promotion dry run (`TRELIX_RETRIEVAL_FLARE=true`, this repo's own
 documented default-recommended setting).
 

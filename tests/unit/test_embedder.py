@@ -753,7 +753,7 @@ class TestBedrockTitanEmbedder:
                 BedrockTitanEmbedder(config)
 
     def test_raises_without_region_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Mirrors BedrockBackend's v4.0.0 region requirement (see
+        """Mirrors BedrockBackend's v3.3.0 region requirement (see
         test_llm_bedrock_backend.py::test_raises_without_region_configured) —
         anthropic-sdk-python v1.0.0 made AnthropicBedrock raise if no region is
         set, instead of silently defaulting to us-east-1."""

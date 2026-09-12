@@ -2423,7 +2423,8 @@ was proven red first.
   that `TRELIX_RETRIEVAL_FLARE_MAX_ITER` "will be removed in v3.0.0". v3.0.0
   shipped on 2026-08-13 and the alias is still live, so a reader was told the env
   var was gone in v3.x when it still works. Since the project's own policy permits
-  removal only on a MAJOR bump, the target is retargeted to **v4.0.0** and the slip
+  removal only in a release flagged for breaking changes — a deliberately elevated
+  MINOR bump rather than a MAJOR one — the target is retargeted to **v3.3.0** and the slip
   is recorded rather than quietly rewritten. Also corrected in the same document:
   a source citation off by 143 lines (`config.py:434` → `:577`) and a relative link
   that resolved to `docs/docs/superpowers/…`.

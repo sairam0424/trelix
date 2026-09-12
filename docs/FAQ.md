@@ -429,14 +429,14 @@ This prevents the silent wrong-results bug that previously occurred when users s
 
 `flare_max_retries` is the v2.4.0 rename of the `flare_max_iterations` config field in `RetrievalConfig`. FLARE (Forward-Looking Active REtrieval) is the confidence-gated re-retrieval feature that detects low-confidence synthesis spans and re-queries before finalising the answer.
 
-Only the new environment variable name is recognized as of v4.0.0 — the old name was removed, not just deprecated:
+Only the new environment variable name is recognized as of v3.3.0 — the old name was removed, not just deprecated:
 
 ```bash
 TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=2   # the only name that binds
-TRELIX_RETRIEVAL_FLARE_MAX_ITER=2      # removed in v4.0.0 — silently ignored, no warning
+TRELIX_RETRIEVAL_FLARE_MAX_ITER=2      # removed in v3.3.0 — silently ignored, no warning
 ```
 
-**Important constraint added in v2.4.0:** The field now enforces `ge=1, le=3`. If you previously set `TRELIX_RETRIEVAL_FLARE_MAX_ITER` to a value greater than 3 (for example, 5 or 10), that value no longer applies at all as of v4.0.0 — switch to `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` (still bounded `ge=1, le=3`, so values above 3 still raise `ValidationError` at process startup):
+**Important constraint added in v2.4.0:** The field now enforces `ge=1, le=3`. If you previously set `TRELIX_RETRIEVAL_FLARE_MAX_ITER` to a value greater than 3 (for example, 5 or 10), that value no longer applies at all as of v3.3.0 — switch to `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` (still bounded `ge=1, le=3`, so values above 3 still raise `ValidationError` at process startup):
 
 ```
 pydantic_core.ValidationError: 1 validation error for RetrievalConfig

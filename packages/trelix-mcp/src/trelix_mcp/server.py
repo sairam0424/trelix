@@ -982,7 +982,7 @@ def ask_agent(
       TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS of inactivity (default
       7 days). Use agent_clear_session to delete one explicitly.
 
-    Clarifying questions (SEP-2322, v4.0.0+):
+    Clarifying questions (SEP-2322, v3.3.0+):
     - When the agent's question is genuinely ambiguous, this tool returns an
       `InputRequiredToolResult` instead of the usual dict — an MCP client
       that supports SEP-2322 elicitation surfaces it as a form and resends
