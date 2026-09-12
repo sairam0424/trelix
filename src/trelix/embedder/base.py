@@ -603,7 +603,7 @@ class _BedrockEmbedderBase(BaseEmbedder):
         if not config.bedrock_aws_region:
             raise ValueError(
                 "AWS_REGION must be set explicitly for Bedrock embedders as of "
-                "trelix v4.0.0 (previously silently defaulted to 'us-east-1', "
+                "trelix v3.3.0 (previously silently defaulted to 'us-east-1', "
                 "matching anthropic-sdk-python v1.0.0's AnthropicBedrock region "
                 "enforcement). Set the AWS_REGION environment variable."
             )

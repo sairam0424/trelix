@@ -383,7 +383,7 @@ class EmbedderConfig(BaseSettings):
     # Reuses AWS_* env vars — same credentials as BedrockBackend in LLMConfig.
     # bedrock-titan: amazon.titan-embed-text-v2:0 — 256/512/1024 configurable dims
     # bedrock-cohere: cohere.embed-english-v3 — 1024 dims, strong code retrieval
-    # No default: as of v4.0.0 an unset region raises at BedrockBackend
+    # No default: as of v3.3.0 an unset region raises at BedrockBackend
     # construction, matching anthropic-sdk-python v1.0.0's AnthropicBedrock
     # enforcement — was silently "us-east-1", which is now the wrong region
     # for someone who never chose it and never finds out.
@@ -1273,7 +1273,7 @@ class LLMConfig(BaseSettings):
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
 
     # ── AWS Bedrock ───────────────────────────────────────────────────────────
-    # No default: as of v4.0.0 an unset region raises at BedrockBackend
+    # No default: as of v3.3.0 an unset region raises at BedrockBackend
     # construction, matching anthropic-sdk-python v1.0.0's AnthropicBedrock
     # enforcement — was silently "us-east-1", which is now the wrong region
     # for someone who never chose it and never finds out.

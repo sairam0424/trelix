@@ -42,7 +42,7 @@ classifiers = [
 # return nothing at all — worse than the bare concept_count it replaced. The two federation
 # line numbers above moved 767->787 and 858->878 in that same edit.
 #
-# mcp>=2.0.0 / fastmcp>=4.0.0 (v4.0.0, SEP-2322): ask_agent's clarify path returns a
+# mcp>=2.0.0 / fastmcp>=4.0.0 (v3.3.0, SEP-2322): ask_agent's clarify path returns a
 # real InputRequiredToolResult (fastmcp.tools.base) wrapping mcp.types.InputRequiredResult —
 # neither type exists below these floors. mcp 2.x is backward compatible with pre-2026-07-28
 # clients (they simply never receive an input_required leg), so this is safe to raise

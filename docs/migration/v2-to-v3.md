@@ -8,7 +8,7 @@ first — this guide does not repeat them.
 **What this costs you:** one forced re-index, which is mandatory. Nothing else is required
 to keep working — but three things are worth five minutes each: moving any pinned
 `trelix-langchain` / `trelix-llama-index` to `==3.1.2` (the published `==2.4.0` will accept
-a 2.x core without complaining), an env var rename that is still optional until v4.0.0, and
+a 2.x core without complaining), an env var rename that is still optional until v3.3.0, and
 one `IndexConfig` kwarg that stopped being silently ignored. All three are below.
 
 ---
@@ -97,7 +97,7 @@ that did not happen is worse than no guide.
 
 | Change in v3.x | Breaking? | Verified how |
 |---|---|---|
-| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` removal (was scheduled for v3.0.0) | **No — deferred to v4.0.0** | The legacy alias is still live in the `AliasChoices(...)` on `RetrievalConfig.flare_max_retries`; setting it yields `flare_max_retries=3` plus a `DeprecationWarning` |
+| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` removal (was scheduled for v3.0.0) | **No — deferred to v3.3.0** | The legacy alias is still live in the `AliasChoices(...)` on `RetrievalConfig.flare_max_retries`; setting it yields `flare_max_retries=3` plus a `DeprecationWarning` |
 | `RetrievalConfig.context_token_budget` typed `int` → `int \| None` | **No** | A widening, and the default is still `12_000` — the exact v2.12.0 number |
 | `complete()` / `stream()` gained a `thinking` argument | **No** | Added as `thinking: bool = False`, so every existing call site is unaffected. `tool_call()` did not get it |
 | `declaration_boost_enabled` FTS5 reweighting | **No** | Default weight `1.0` is a verified no-op — byte-identical to the old unweighted ranking |
@@ -138,17 +138,17 @@ Passing by alias (`TRELIX_FILE_SUMMARIES_ENABLED=`) worked in v2 and still works
 
 ## Still deprecated — deadline moved, not lifted
 
-> **Update**: this deadline has now passed. v4.0.0 removed the alias outright — see
-> [v3-to-v4.md](v3-to-v4.md). The table and checklist item below describe accurately
-> what was true for a v2→v3 upgrade landing on v3.1.2; if you're upgrading from v3.x to
-> v4.0.0 instead, the rename below is no longer optional.
+> **Update**: this deadline has now passed. v3.3.0 removed the alias outright — see
+> [v3.2-to-v3.3.md](v3.2-to-v3.3.md). The table and checklist item below describe
+> accurately what was true for a v2→v3 upgrade landing on v3.1.2; if you're upgrading
+> from v3.2.x to v3.3.0 instead, the rename below is no longer optional.
 
 | Symbol | Deprecated in | Now removed in | Replacement |
 |---|---|---|---|
-| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | **v4.0.0** (was v3.0.0) | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` |
+| `TRELIX_RETRIEVAL_FLARE_MAX_ITER` env var | v2.4.0 | **v3.3.0** (was v3.0.0) | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` |
 
-It still works in every v3.x release and emits a `DeprecationWarning` at
-`RetrievalConfig()` instantiation. Rename it now rather than at the v4.0.0 upgrade:
+It still works in every v3.x release up to v3.2.x and emits a `DeprecationWarning` at
+`RetrievalConfig()` instantiation. Rename it now rather than at the v3.3.0 upgrade:
 
 ```bash
 -export TRELIX_RETRIEVAL_FLARE_MAX_ITER=2
@@ -214,4 +214,4 @@ it was renamed to `flare_max_retries` in v2.4.0. Only the env-var alias survives
 - [CHANGELOG.md](../../CHANGELOG.md) — `[3.0.0]` through `[3.1.2]` in full
 - [BACKWARDS_COMPATIBILITY.md](../BACKWARDS_COMPATIBILITY.md) — stability guarantees and
   the deprecation clock
-- [ROADMAP.md](../ROADMAP.md) — what v4.0.0 removes
+- [ROADMAP.md](../ROADMAP.md) — what v3.3.0 removes
