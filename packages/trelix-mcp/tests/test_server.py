@@ -1142,3 +1142,26 @@ class TestKnowledgeGraphPayloadIsCapped:
         payload = self._call(min_community_size=1, max_communities=0)
         assert len(payload["community_summary"]) == 6497
         assert payload["communities_omitted"] == 0
+
+
+# ---------------------------------------------------------------------------
+# subscribe_resource / unsubscribe_resource round trip
+# ---------------------------------------------------------------------------
+
+
+def test_unsubscribe_resource_returns_the_uri_it_unsubscribed() -> None:
+    """unsubscribe_resource computes the uri (and logs it) but was dropping it
+    from the returned payload -- a caller has no way to know WHICH subscription
+    just ended without re-deriving it from subscribe_resource's own earlier
+    response, defeating the point of the server confirming the action."""
+    import trelix_mcp.server as srv
+
+    srv.subscribe_resource("trelix://repo//path/manifest", "sub-uri-check")
+
+    result = srv.unsubscribe_resource("sub-uri-check")
+
+    assert result == {
+        "unsubscribed": True,
+        "subscription_id": "sub-uri-check",
+        "uri": "trelix://repo//path/manifest",
+    }
