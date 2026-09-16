@@ -251,22 +251,6 @@ export async function activate(
         }),
     );
 
-    async function openFileAtLine(
-        file: string,
-        line: number,
-        repoPath: string,
-    ): Promise<void> {
-        const absolutePath = vscode.Uri.file(
-            path.isAbsolute(file) ? file : path.join(repoPath, file),
-        );
-        const target = Math.max(0, line - 1); // entries are 1-indexed
-        const range = new vscode.Range(target, 0, target, 0);
-        const editor = await vscode.window.showTextDocument(absolutePath, {
-            selection: range,
-        });
-        editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-    }
-
     // Command: trelix.findSimilar — invoked from a code lens with [symbolName].
     // Runs a semantic search seeded by the symbol name and lets the user jump
     // to any match. Hidden from the palette (see package.json menus).
@@ -295,50 +279,6 @@ export async function activate(
                     { placeHolder: `Code similar to ${symbolName}` },
                 );
                 if (picked) await openResult(picked.result, repoPath);
-            },
-        ),
-    );
-
-    // Command: trelix.blastRadius — invoked from a code lens with [symbolName].
-    // Lists the symbols that depend on it and jumps to any of them. Hidden from
-    // the palette (see package.json menus).
-    context.subscriptions.push(
-        vscode.commands.registerCommand(
-            "trelix.blastRadius",
-            async (symbolName?: string) => {
-                if (!symbolName) return;
-                const c = await ensureConnected();
-                const repoPath = getRepoPath();
-                const entries = await vscode.window.withProgress(
-                    {
-                        location: vscode.ProgressLocation.Notification,
-                        title: `trelix: analyzing blast radius of ${symbolName}…`,
-                    },
-                    () => c.blastRadius(symbolName, repoPath),
-                );
-                if (entries.length === 0) {
-                    vscode.window.showInformationMessage(
-                        `trelix: nothing depends on ${symbolName}.`,
-                    );
-                    return;
-                }
-                const picked = await vscode.window.showQuickPick(
-                    entries.map((e) => ({
-                        label: e.symbol,
-                        description: `${e.file}:${e.lineStart} (${e.kind})`,
-                        entry: e,
-                    })),
-                    {
-                        placeHolder: `${entries.length} dependents of ${symbolName}`,
-                    },
-                );
-                if (picked) {
-                    await openFileAtLine(
-                        picked.entry.file,
-                        picked.entry.lineStart,
-                        repoPath,
-                    );
-                }
             },
         ),
     );
