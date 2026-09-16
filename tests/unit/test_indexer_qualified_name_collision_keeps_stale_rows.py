@@ -225,7 +225,7 @@ def _quiet_progress():
     bar.__exit__ = MagicMock(return_value=False)
     bar.add_task = MagicMock(return_value=0)
     bar.advance = MagicMock()
-    with patch("trelix.indexing.indexer.Progress", return_value=bar):
+    with patch("trelix.cli.progress.Progress", return_value=bar):
         yield bar
 
 
