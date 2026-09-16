@@ -48,3 +48,35 @@ jobs:
       - name: Helm template (ingress enabled)
         if: matrix.backend == 'sqlite'
         run: helm template test helm/trelix --set ingress.enabled=true
+
+  # ---------------------------------------------------------------------------
+  # The `lint` job above only checks chart CORRECTNESS (does it lint, does it render,
+  # does the image tag match appVersion) — it says nothing about the security posture of
+  # what actually ships in those manifests, e.g. missing resource limits/securityContext.
+  # Report-only: this is a brand-new check with an unmeasured baseline, so — following
+  # the same reasoning security-scan.yml's header documents for its own unmeasured
+  # `image` job — it does not block on day one.
+  # ---------------------------------------------------------------------------
+  security:
+    name: IaC scan (checkov)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Checkov
+        uses: bridgecrewio/checkov-action@a8664e3a0549367977f0cda990a34311835c87c0 # v12.3123.0
+        with:
+          directory: helm/trelix
+          framework: helm
+          output_format: sarif
+          output_file_path: results.sarif
+          soft_fail: true
+
+      - if: always() && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          sarif_file: results.sarif
+          category: checkov-helm
