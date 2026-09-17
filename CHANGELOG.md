@@ -8,6 +8,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.3.2] — 2026-09-17
+
+### Fixed
+- **Removed the dead `sqlite-vec` HNSW code path.** `sqlite-vec` has never shipped
+  `+hnsw()` syntax under any release, stable or alpha — the maintainer rejected HNSW
+  years ago (upstream issue #25) and built DiskANN/IVF/rescore instead (still alpha,
+  unrelated syntax). `SQLiteVectorStore`'s HNSW-table attempt always failed and always
+  fell back to flat `vec0` scan, so results were always correct, but the code's
+  `hnsw_active`/`hnsw_*` knobs and the docs described a feature that has never existed.
+  Removes the dead path entirely and corrects every doc claim to describe the actual,
+  permanent flat-scan behavior. Qdrant's own genuine HNSW support is untouched.
+
+### Added
+- CLI progress bars now show a literal "X of Y" count alongside the percentage, across
+  all 7 `Progress()` call sites in the indexer and CLI — de-duplicated into a single
+  `make_progress()` factory.
+- `SECURITY.md`'s existing "Prompt Injection via Indexed Content" disclosure now cites
+  external 2026 research (MCPTox, CodePoisonRAG, "Beyond the Payload") quantifying the
+  severity of the two attack classes already described structurally, without changing
+  the honest not-mitigated conclusion.
+
 ## [3.3.1] — 2026-09-17
 
 ### Fixed

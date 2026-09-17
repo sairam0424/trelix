@@ -1,4 +1,4 @@
-# trelix v3.3.1 — Providers Reference
+# trelix v3.3.2 — Providers Reference
 
 Complete guide to all embedding providers and LLM providers supported by trelix.
 
