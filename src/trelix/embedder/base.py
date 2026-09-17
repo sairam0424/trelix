@@ -1,5 +1,5 @@
 """
-Embedder abstraction — nine providers, same interface.
+Embedder abstraction — ten providers, same interface.
 
   local          → LocalEmbedder           (sentence-transformers, no API key)
   openai         → OpenAIEmbedder          (text-embedding-3-large, 3072 dims)
@@ -7,11 +7,12 @@ Embedder abstraction — nine providers, same interface.
   voyage         → VoyageEmbedder          (voyage-code-3, 1024 dims, 56.26 CoIR)
   local-code     → LocalCodeEmbedder       (SFR-Embedding-Code-2B_R, 2304 dims) EXPERIMENTAL
   bedrock-titan  → BedrockTitanEmbedder    (amazon.titan-embed-text-v2, 256/512/1024 dims)
-  bedrock-cohere → BedrockCohereEmbedder   (cohere.embed-english-v3, 1024 dims)
+  bedrock-cohere → BedrockCohereEmbedder   (cohere.embed-english-v3, 1024 dims, via Bedrock)
   bge-code       → BGECodeEmbedder         (bge_code.py; bge-code-v1, 1536 dims) EXPERIMENTAL
   nomic-code     → NomicCodeEmbedder       (nomic_code.py; CodeRankEmbed, 768 dims) EXPERIMENTAL
+  cohere         → CohereEmbedder          (cohere.py; embed-english-v3.0, 1024 dims, direct API)
 
-This docstring said "seven" and listed seven, while make_embedder() below has
+This docstring said "seven" and listed seven, while make_embedder() below had
 dispatched nine since v2 — bge-code and nomic-code were never added here.
 
 EXPERIMENTAL means: the wrapper's encoding protocol has been checked against the
@@ -949,7 +950,8 @@ def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
     Args:
         config: EmbedderConfig with provider set to one of:
             "local", "openai", "azure", "voyage", "local-code",
-            "bedrock-titan", "bedrock-cohere".
+            "bedrock-titan", "bedrock-cohere", "bge-code", "nomic-code",
+            "cohere".
 
     Returns:
         The appropriate BaseEmbedder subclass instance.
@@ -981,9 +983,14 @@ def make_embedder(config: EmbedderConfig) -> BaseEmbedder:
             from trelix.embedder.nomic_code import NomicCodeEmbedder
 
             return NomicCodeEmbedder(config)
+        case "cohere":
+            from trelix.embedder.cohere import CohereEmbedder
+
+            return CohereEmbedder(config)
         case _:
             raise ValueError(
                 f"Unknown embedder provider: {config.provider!r}. "
                 "Expected one of: 'local', 'openai', 'azure', 'voyage', "
-                "'local-code', 'bedrock-titan', 'bedrock-cohere', 'bge-code', 'nomic-code'."
+                "'local-code', 'bedrock-titan', 'bedrock-cohere', 'bge-code', "
+                "'nomic-code', 'cohere'."
             )
