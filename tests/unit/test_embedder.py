@@ -347,6 +347,23 @@ class TestLocalEmbedder:
         assert isinstance(result, list)
         assert len(result) == 384
 
+    def test_pins_device_to_cpu_rather_than_auto_detecting(self) -> None:
+        """MPS auto-detection crashes when this embedder is constructed inside a
+        child process spawned deep inside a sandboxed host (e.g. an Electron
+        extension host spawning trelix-mcp over stdio) -- the crash is native,
+        so it never surfaces as a catchable Python exception, only a closed
+        pipe. device="cpu" must always be passed explicitly, never left to
+        sentence-transformers' own auto-detection."""
+        config = EmbedderConfig(provider="local")
+        mock_st_module = MagicMock()
+        mock_model = MagicMock()
+        mock_model.get_sentence_embedding_dimension.return_value = 384
+        mock_st_module.SentenceTransformer.return_value = mock_model
+        with patch.dict(sys.modules, {"sentence_transformers": mock_st_module}):
+            LocalEmbedder(config)
+        call_kwargs = mock_st_module.SentenceTransformer.call_args
+        assert call_kwargs.kwargs.get("device") == "cpu"
+
 
 # ---------------------------------------------------------------------------
 # VoyageEmbedder
