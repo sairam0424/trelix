@@ -72,7 +72,7 @@ jobs:
           directory: helm/trelix
           framework: helm
           output_format: sarif
-          output_file_path: results.sarif
+          output_file_path: results.sarif,
           soft_fail: true
 
       - if: always() && hashFiles('results.sarif') != ''
