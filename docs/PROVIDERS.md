@@ -1,4 +1,4 @@
-# trelix v3.3.2 — Providers Reference
+# trelix v3.3.3 — Providers Reference
 
 Complete guide to all embedding providers and LLM providers supported by trelix.
 
@@ -19,6 +19,7 @@ Complete guide to all embedding providers and LLM providers supported by trelix.
 | `nomic-code` | No (HuggingFace) | 768 | — | Medium (CPU) | Self-hosted alternative |
 | `bedrock-titan` | AWS credentials | 256 / 512 / 1024 | — | Fast (API) | AWS-native deployments |
 | `bedrock-cohere` | AWS credentials | 1024 | — | Fast (API) | AWS + strong code retrieval |
+| `cohere` | `COHERE_API_KEY` | 1024 | — | Fast (API) | Direct Cohere API (no AWS account needed) |
 
 CoIR = Code Information Retrieval benchmark (higher is better). `—` means not yet benchmarked on CoIR.
 
@@ -265,6 +266,32 @@ AWS_REGION=us-east-1
 
 ---
 
+### cohere
+
+Cohere's own Embed API (`cohere.ClientV2`), not the Bedrock envelope above — no AWS
+account needed, and unlike `bedrock-cohere`, usage is reported (billed input tokens),
+since Cohere's own API surface carries that where the Bedrock envelope does not.
+Asymmetric retrieval (separate doc/query embeddings), same pattern as `voyage` and
+`bedrock-cohere`.
+
+- **Model**: `embed-english-v3.0`
+- **Dimensions**: 1024 (fixed for this model)
+- **Install**: `pip install trelix[cohere]`
+
+```bash
+COHERE_API_KEY=... TRELIX_EMBEDDER_PROVIDER=cohere trelix index ./my-repo
+```
+
+```env
+TRELIX_EMBEDDER_PROVIDER=cohere
+COHERE_API_KEY=...
+TRELIX_EMBEDDER_COHERE_MODEL=embed-english-v3.0   # default
+```
+
+The same `COHERE_API_KEY` is also read by the Cohere reranker (`TRELIX_RETRIEVAL_RERANK_PROVIDER=cohere`) — one account key covers both roles.
+
+---
+
 ### Switching Providers
 
 **Important**: embedding vectors from different providers are not compatible — dimensions and spaces differ. When switching providers, reset the index first.
@@ -449,7 +476,7 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider: `local`, `openai`, `azure`, `voyage`, `local-code`, `bge-code`, `nomic-code`, `bedrock-titan`, `bedrock-cohere` |
+| `TRELIX_EMBEDDER_PROVIDER` | `local` | Embedding provider: `local`, `openai`, `azure`, `voyage`, `local-code`, `bge-code`, `nomic-code`, `bedrock-titan`, `bedrock-cohere`, `cohere` |
 | `TRELIX_LLM_PROVIDER` | `openai` | LLM provider: `openai`, `azure`, `anthropic`, `bedrock`, `vertex`, `litellm` |
 | `TRELIX_LLM_MODEL` | `gpt-4o` | LLM model name |
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel parse threads during indexing |
@@ -490,6 +517,13 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 | `AWS_REGION` | `us-east-1` | AWS region |
 | `AWS_PROFILE` | — | AWS named profile (alternative to key/secret) |
 | `TRELIX_EMBEDDER_BEDROCK_TITAN_DIMENSIONS` | `1024` | Titan output dims: 256, 512, or 1024 |
+
+### Embedding — Cohere
+
+| Variable | Default | Description |
+|---|---|---|
+| `COHERE_API_KEY` | — (required) | Cohere API key — also used by the Cohere reranker |
+| `TRELIX_EMBEDDER_COHERE_MODEL` | `embed-english-v3.0` | Cohere embedding model |
 
 ### Embedding — Indexing Performance
 

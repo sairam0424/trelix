@@ -8,6 +8,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.3.3] — 2026-09-17
+
+### Added
+- **Direct `CohereEmbedder`.** trelix previously only reached Cohere via Bedrock (a
+  different API surface with no token-usage reporting). Adds a direct embedder using
+  Cohere's own `ClientV2.embed()` API — `embed-english-v3.0` by default (1024 dims),
+  asymmetric `search_document`/`search_query` input types, 96-texts/call batching, and
+  token metering via the response's `billed_units`. Configure with
+  `TRELIX_EMBEDDER_PROVIDER=cohere` / `COHERE_API_KEY`.
+- **Opt-in CodeRAG-style dataflow retrieval leg.** A new expansion leg,
+  `expand_with_dataflow`, correlates a symbol's intra-procedural def-use spans (already
+  extracted by `DataFlowExtractor`, but previously never read outside tests) against its
+  resolved call sites, surfacing only the callees a specific tracked variable is live
+  across — narrower than the existing call-graph leg's unconditional "every callee."
+  Off by default; enable via `RetrievalConfig.dataflow_expansion_enabled` (requires
+  `ParserConfig.dataflow_enabled` at index time too).
+- **Opt-in OpenAI Batch API support for large re-index jobs.** `trelix index
+  --use-batch-api` submits embedding requests via OpenAI's asynchronous Batch API (50%
+  cost discount, 24h completion window) instead of blocking synchronously; `--resume-batch`
+  checks a pending job and completes indexing once it finishes.
+
 ## [3.3.2] — 2026-09-17
 
 ### Fixed
