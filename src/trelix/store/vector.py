@@ -7,12 +7,9 @@ Backends:
 
 Use make_vector_store(config, dimension) to get the right backend.
 
-HNSW support (SQLite backend):
-    sqlite-vec >= 0.1.6 ships an HNSW index via the +hnsw() auxiliary
-    column syntax.  SQLiteVectorStore tries to create the table with HNSW
-    enabled and falls back to a plain flat vec0 scan when the installed
-    version does not support it.  The active mode is exposed via
-    ``hnsw_active`` and ``info()``.
+SQLite backend is always a flat vec0 scan: sqlite-vec has never shipped an
+HNSW (or any other ANN) index under any release, stable or alpha. Results
+are always exact, never approximate.
 """
 
 from __future__ import annotations
@@ -180,25 +177,15 @@ class SQLiteVectorStore(BaseVectorStore):
         store.upsert(chunk_id=1, embedding=[0.1, 0.2, ...])
         results = store.search(query_embedding, k=20)  # -> list of (chunk_id, score)
 
-    HNSW parameters:
-        hnsw            -- enable HNSW index (default True)
-        hnsw_m          -- max connections per layer, default 16
-        hnsw_ef_construction -- build-time beam width, default 200
+    Always a flat vec0 scan -- see the module docstring for why.
     """
 
     def __init__(
         self,
         db_path: Path,
         dimension: int = 1536,
-        *,
-        hnsw: bool = True,
-        hnsw_m: int = 16,
-        hnsw_ef_construction: int = 200,
     ) -> None:
         self._dim = dimension
-        self._hnsw_requested = hnsw
-        self._hnsw_m = hnsw_m
-        self._hnsw_ef_construction = hnsw_ef_construction
 
         # check_same_thread=False allows use from worker threads (retrieval is read-only).
         # _lock serialises all execute() calls so the connection's internal state stays consistent.
@@ -208,39 +195,15 @@ class SQLiteVectorStore(BaseVectorStore):
         sqlite_vec.load(self._conn)
         self._conn.enable_load_extension(False)
 
-        self._hnsw_active: bool = self._setup_table()
-
-        if self._hnsw_active:
-            logger.info(
-                "Vector store: HNSW (m=%d, ef_construction=%d)",
-                hnsw_m,
-                hnsw_ef_construction,
-            )
-        else:
-            logger.info("Vector store: flat scan")
+        self._setup_table()
+        logger.info("Vector store: flat scan")
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _setup_table(self) -> bool:
-        """
-        Create the vec0 virtual table.
-
-        Returns True when HNSW was successfully activated, False when the
-        installed sqlite-vec version does not support the +hnsw() syntax
-        and we fell back to flat vec0.
-        """
-        if self._hnsw_requested:
-            hnsw_active = self._try_create_hnsw_table()
-            if hnsw_active:
-                return True
-            logger.warning(
-                "sqlite-vec HNSW not supported by installed version — "
-                "falling back to flat vec0 scan"
-            )
-
-        # Plain flat vec0
+    def _setup_table(self) -> None:
+        """Create the flat vec0 virtual table."""
         self._conn.execute(
             f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS chunk_embeddings
@@ -251,7 +214,6 @@ class SQLiteVectorStore(BaseVectorStore):
             """
         )
         self._conn.commit()
-        return False
 
     def recreate(self) -> None:
         """Drop the vec0 table and rebuild it at `self._dim`.
@@ -275,52 +237,12 @@ class SQLiteVectorStore(BaseVectorStore):
             except Exception:
                 self._conn.execute("ROLLBACK")
                 raise
-        # Rebuilt through the normal path, so HNSW is re-applied exactly as it would be
-        # on a fresh index rather than being reimplemented here.
-        self._hnsw_active = self._setup_table()
-
-    def _try_create_hnsw_table(self) -> bool:
-        """
-        Attempt to create the chunk_embeddings table with an HNSW index.
-
-        sqlite-vec >= 0.1.6 supports the ``+hnsw(m=N, ef_construction=N)``
-        auxiliary column syntax.  If the table already exists (re-open) this
-        is a no-op and we infer HNSW is active by inspecting the table schema.
-
-        Returns True on success, False if the version does not support HNSW.
-        """
-        # If the table already exists, check whether it was created with HNSW.
-        existing = self._conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'"
-        ).fetchone()
-        if existing is not None:
-            return "+hnsw" in (existing[0] or "").lower()
-
-        try:
-            self._conn.execute(
-                f"""
-                CREATE VIRTUAL TABLE IF NOT EXISTS chunk_embeddings
-                USING vec0(
-                    chunk_id INTEGER PRIMARY KEY,
-                    embedding FLOAT[{self._dim}],
-                    +hnsw(m={self._hnsw_m}, ef_construction={self._hnsw_ef_construction})
-                )
-                """
-            )
-            self._conn.commit()
-            return True
-        except sqlite3.OperationalError:
-            # Either the syntax is unsupported or another error — fall back to flat.
-            return False
+        # Rebuilt through the normal path so table creation isn't reimplemented here.
+        self._setup_table()
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
-
-    @property
-    def hnsw_active(self) -> bool:
-        """True when the HNSW index is in use for this store."""
-        return self._hnsw_active
 
     def upsert(self, chunk_id: int, embedding: list[float]) -> None:
         packed = self._pack(embedding)
@@ -354,8 +276,7 @@ class SQLiteVectorStore(BaseVectorStore):
         sqlite-vec uses L2 distance by default.
         Thread-safe: guarded by _lock so concurrent worker threads don't interleave.
 
-        When HNSW is active, sqlite-vec automatically routes the MATCH query
-        through the HNSW index for O(log n) approximate nearest-neighbour search.
+        Always an exact flat scan (see the module docstring for why).
         """
         packed = self._pack(query_embedding)
         rows = self._knn(packed, k)
@@ -457,14 +378,12 @@ class SQLiteVectorStore(BaseVectorStore):
         Returns:
             {
                 "backend": "sqlite-vec",
-                "hnsw": bool,
                 "dimension": int,
                 "count": int,
             }
         """
         return {
             "backend": "sqlite-vec",
-            "hnsw": self._hnsw_active,
             "dimension": self._dim,
             "count": self.count(),
         }
