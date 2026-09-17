@@ -47,6 +47,12 @@ const makeUri = (fsPath: string, scheme = "file") => ({
 
 export const Uri = {
     file: (p: string) => makeUri(p, "file"),
+    parse: (value: string) => {
+        const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(.*)$/.exec(value);
+        if (!m) return makeUri(value, "file");
+        const [, scheme, rest] = m;
+        return makeUri(rest.startsWith("/") ? rest : `/${rest}`, scheme);
+    },
 };
 
 export class Location {

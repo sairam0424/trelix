@@ -239,6 +239,33 @@ The analysis behind this section made **zero LLM calls**. Consequently:
 - No mitigation is recommended here because none was evaluated. Any candidate
   defence would need model-in-the-loop measurement that has not been done.
 
+### External evidence this section's severity is not hypothetical
+
+Independent academic research (2026) quantifies the two attack classes this
+section describes structurally:
+
+- **MCP tool poisoning** (a malicious/compromised tool description
+  manipulating an LLM client) was demonstrated at scale against 45 real,
+  live production MCP servers — 36.5% average attack-success rate across 20
+  LLM-agent configurations, peaking at 72.8%; even the best-refusing model
+  tested rejected fewer than 3% of attempts. Source: MCPTox
+  (arXiv:2508.14925).
+- **Indirect prompt injection via retrieved/indexed content** — the class
+  this section's "Assembled retrieval context" and MCP-tool rows describe —
+  was shown to succeed 80–93% of the time from poisoning as little as 0.7%
+  of a code-retrieval corpus, via ordinary top-ranked retrieval (no
+  privileged access required). Defenses evaluated in the same research
+  reduced but did not eliminate this: 40–71% residual attack success even
+  with mitigations applied. Sources: CodePoisonRAG and "Beyond the Payload"
+  (both Sept 2026 preprints; see `docs/reports/post-v3.3.0-research-sweep-2026-09-16.md`
+  Tier 4 for full citations).
+
+Neither paper evaluates trelix specifically — both describe the general
+attack class an MCP server and a retrieval-augmented agent loop are exposed
+to. Nothing above changes the "documented, not mitigated" status: no
+mitigation evaluated in this research achieves reliable protection, so none
+is claimed here either.
+
 ### Practical guidance
 
 Before indexing a repository you do not fully trust:
