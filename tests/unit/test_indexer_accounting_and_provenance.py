@@ -111,7 +111,7 @@ def _quiet_progress():  # type: ignore[no-untyped-def]
     mock_progress.__exit__ = MagicMock(return_value=False)
     mock_progress.add_task = MagicMock(return_value=0)
     mock_progress.advance = MagicMock()
-    with patch("trelix.indexing.indexer.Progress", return_value=mock_progress):
+    with patch("trelix.cli.progress.Progress", return_value=mock_progress):
         yield mock_progress
 
 

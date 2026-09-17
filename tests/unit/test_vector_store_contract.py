@@ -281,6 +281,38 @@ class TestVectorStoreContract:
 
 
 # ---------------------------------------------------------------------------
+# SQLite-only: HNSW was never real (see src/trelix/store/vector.py module
+# docstring). Verified directly against sqlite-vec 0.1.9 (this venv): the
+# `+hnsw(m=16, ef_construction=200)` syntax the old code attempted does not
+# raise `sqlite3.OperationalError` -- it is parsed as vec0's *auxiliary
+# column* syntax (`+colname TYPE`), creating a junk metadata column literally
+# named "hnsw" with zero ANN-indexing effect. So the old code's `hnsw_active`
+# would misreport True there instead of falling back -- either way, no real
+# HNSW index has ever existed, and search has always been an exact flat
+# scan. This test is backend-specific (asserts on `chunk_embeddings` DDL and
+# a private `_conn`), so it lives outside `TestVectorStoreContract`.
+# ---------------------------------------------------------------------------
+
+
+def test_sqlite_store_never_uses_hnsw_syntax(tmp_path: Path) -> None:
+    """The store must always create a plain flat vec0 table, with no hnsw
+    kwarg, property, or info() key pretending otherwise."""
+    store = SQLiteVectorStore(tmp_path / "test.db", dimension=_DIM)
+
+    assert not hasattr(store, "hnsw_active")
+    sql = store._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'"
+    ).fetchone()[0]
+    assert "hnsw" not in sql.lower()
+    assert "hnsw" not in store.info()
+
+    store.upsert_batch([(1, _VEC)])
+    results = store.search(_VEC, k=1)
+    assert results[0][0] == 1
+    store.close()
+
+
+# ---------------------------------------------------------------------------
 # Qdrant: fully specified, not run here (no Docker in this environment).
 # ---------------------------------------------------------------------------
 

@@ -119,12 +119,12 @@ def _patch_rich_progress(*, fake_parser: bool = False):
     mock_progress.advance = MagicMock()
     if fake_parser:
         with (
-            patch("trelix.indexing.indexer.Progress", return_value=mock_progress),
+            patch("trelix.cli.progress.Progress", return_value=mock_progress),
             patch("trelix.indexing.indexer.get_parser", side_effect=_fake_get_parser),
         ):
             yield mock_progress
     else:
-        with patch("trelix.indexing.indexer.Progress", return_value=mock_progress):
+        with patch("trelix.cli.progress.Progress", return_value=mock_progress):
             yield mock_progress
 
 
