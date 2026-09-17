@@ -98,6 +98,107 @@ def expand_with_call_graph(
     return extra
 
 
+def expand_with_dataflow(
+    db: Database,
+    results: list[SearchResult],
+    max_extra: int = 10,
+) -> list[SearchResult]:
+    """
+    Expand result set with callees that a seed symbol's OWN local data flows into.
+
+    CodeRAG-style dataflow leg. For each seed symbol, pulls its intra-procedural
+    def-use spans (DataFlowExtractor / def_use_edges, via db.get_data_flows) and
+    its resolved call sites WITH line numbers (db.get_call_edges) and keeps only
+    the callees whose call site line falls inside a def-use span
+    (min(def_line, use_line) <= call.line <= max(def_line, use_line)).
+
+    That correlation is the new signal here: expand_with_call_graph already
+    returns "every function this symbol calls" unconditionally; this returns
+    the narrower "functions this symbol calls that a specific tracked variable
+    is live across" — distinguishing call topology from actual data flow.
+
+    Degrades to [] (never raises) when the seed symbol has no def_use_edges —
+    either ParserConfig.dataflow_enabled was False at index time (the default),
+    or the symbol genuinely has no local variables — or when none of its
+    resolved callees' call sites land inside a span.
+    """
+    if not results:
+        return []
+
+    seen_ids: set[int] = {r.chunk.symbol_id for r in results}
+    base_score = results[0].score if results else 0.5
+    score_discount = 0.4
+
+    # Collect matching callee_ids per seed, then interleave round-robin across
+    # seeds before truncating -- an earlier version truncated (and returned)
+    # as soon as a single seed's matches filled max_extra, which silently
+    # starved every later seed's candidates whenever one early, higher-ranked
+    # seed alone had more correlated calls than the budget. Round-robin gives
+    # every seed a turn before any seed gets a second slot, instead of
+    # exhausting the first seed's matches before later seeds are examined.
+    per_seed_candidates: list[list[int]] = []
+
+    for r in results:
+        symbol_id = r.chunk.symbol_id
+
+        flows = db.get_data_flows(symbol_id)
+        if not flows:
+            continue
+
+        spans = [(min(e.def_line, e.use_line), max(e.def_line, e.use_line)) for e in flows]
+
+        seed_candidates: list[int] = []
+        for call in db.get_call_edges(symbol_id):
+            if call.callee_id is None or call.callee_id in seen_ids:
+                continue
+            if not any(start <= call.line <= end for start, end in spans):
+                continue
+            seen_ids.add(call.callee_id)
+            seed_candidates.append(call.callee_id)
+
+        if seed_candidates:
+            per_seed_candidates.append(seed_candidates)
+
+    if not per_seed_candidates:
+        return []
+
+    candidates: list[int] = []
+    max_per_seed = max(len(c) for c in per_seed_candidates)
+    for i in range(max_per_seed):
+        for seed_candidates in per_seed_candidates:
+            if i < len(seed_candidates):
+                candidates.append(seed_candidates[i])
+
+    extra: list[SearchResult] = []
+
+    for callee_id in candidates[:max_extra]:
+        sym_file = db.get_symbol_with_file(callee_id)
+        if sym_file is None:
+            continue
+        symbol, file = sym_file
+
+        chunk = db.get_first_chunk_for_symbol(callee_id)
+        if chunk is None:
+            chunk = Chunk(
+                symbol_id=callee_id,
+                chunk_text=symbol.body[:2000],
+                token_count=0,
+            )
+
+        extra.append(
+            SearchResult(
+                chunk=chunk,
+                symbol=symbol,
+                file=file,
+                score=base_score * score_discount,
+                rank=len(extra) + 1,
+                source="dataflow_expansion",
+            )
+        )
+
+    return extra
+
+
 def expand_with_imports(
     db: Database,
     results: list[SearchResult],
