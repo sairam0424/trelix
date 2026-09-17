@@ -733,6 +733,15 @@ class RetrievalConfig(BaseSettings):
     graph_search_depth: int = 2  # BFS depth for graph expansion
     graph_search_max_results: int = 15  # Max results from graph search leg
 
+    # Dataflow expansion leg (CodeRAG-style, off by default) — QUERY-TIME only:
+    # correlates a seed symbol's existing def_use_edges (see get_data_flows)
+    # against its resolved call sites to find callees a tracked variable is
+    # live across. NOT the same flag as ParserConfig.dataflow_enabled, which
+    # controls whether def_use_edges get WRITTEN at INDEX time — this leg is a
+    # no-op reader that returns [] if that indexing-time flag was ever off.
+    dataflow_expansion_enabled: bool = False
+    dataflow_expansion_max_extra: int = 10
+
     # File-summary retrieval leg (5th leg — RAPTOR-style, off by default)
     # Requires file_summaries_enabled=True at index time to have any summaries stored.
     file_summary_leg_enabled: bool = Field(

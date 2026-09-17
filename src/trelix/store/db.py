@@ -1224,6 +1224,31 @@ class Database:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def get_call_edges(self, symbol_id: int) -> list[CallEdge]:
+        """Return resolved call edges (1 hop out) for symbol_id, WITH the call
+        site's line number.
+
+        Unlike get_callees() (bare callee ids), this preserves `line` — needed
+        to correlate a call site against a def-use span from get_data_flows()
+        (see expand_with_dataflow in retrieval/graph.py). Reads the same
+        `calls` table get_callees() does; no schema change.
+        """
+        rows = self._conn.execute(
+            "SELECT caller_id, callee_name, callee_id, line, callee_type_hint "
+            "FROM calls WHERE caller_id = ? AND callee_id IS NOT NULL",
+            (symbol_id,),
+        ).fetchall()
+        return [
+            CallEdge(
+                caller_id=row[0],
+                callee_name=row[1],
+                callee_id=row[2],
+                line=row[3],
+                callee_type_hint=row[4],
+            )
+            for row in rows
+        ]
+
     def get_callers(self, symbol_id: int) -> list[int]:
         """Return symbol ids that call symbol_id (1 hop in)."""
         rows = self._conn.execute(
