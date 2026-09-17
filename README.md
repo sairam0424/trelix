@@ -32,9 +32,7 @@
 [![trelix-langchain](https://img.shields.io/pypi/v/trelix-langchain?label=trelix-langchain)](https://pypi.org/project/trelix-langchain/)
 [![trelix-llama-index](https://img.shields.io/pypi/v/trelix-llama-index?label=trelix-llama-index)](https://pypi.org/project/trelix-llama-index/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
-```
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sairam0424/trelix/badge)](https://scorecard.dev/viewer/?uri=github.com/sairam0424/trelix)
-```
 
 <!-- mcp-name: trelix -->
 
