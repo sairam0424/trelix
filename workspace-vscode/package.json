@@ -66,6 +66,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show trelix code lenses (Find similar, blast radius) above symbols"
+        },
+        "trelix.mcpServerPath": {
+          "type": "string",
+          "default": "trelix-mcp",
+          "description": "Command or absolute path used to launch the trelix-mcp server. The bare command relies on this editor's own process PATH, which for GUI-launched apps often excludes directories a login shell would have (e.g. a pip/uv install location) -- set an absolute path here if 'Find similar' or @trelix chat silently fail to connect."
         }
       }
     }

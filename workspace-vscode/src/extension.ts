@@ -64,7 +64,10 @@ const LOAD_MORE_ITEM: LoadMoreItem = {
 export async function activate(
     context: vscode.ExtensionContext,
 ): Promise<void> {
-    client = new TrelixMcpClient();
+    const mcpServerPath = vscode.workspace
+        .getConfiguration("trelix")
+        .get<string>("mcpServerPath", "trelix-mcp");
+    client = new TrelixMcpClient(mcpServerPath);
 
     const previewProvider = new SnippetPreviewProvider();
     context.subscriptions.push(
