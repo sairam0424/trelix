@@ -1,0 +1,63 @@
+# CodeQL static analysis.
+#
+# Fills a gap the existing security tooling does not cover: config/semgrep-taint.yaml
+# (see security-scan.yml) is 6 hand-written taint rules scoped to this repo's own
+# auth/exec surface, not a substitute for CodeQL's much broader built-in query suites or
+# its native GitHub Security-tab integration. Before this file, no workflow in .github/
+# actually RAN CodeQL analysis — github/codeql-action/upload-sarif is used elsewhere only
+# as a generic SARIF sink for other scanners' output (semgrep, trivy).
+#
+# Two languages, matching this repo's primary languages: python (src/, packages/*/src,
+# scripts/) and javascript-typescript (workspace-vscode, infra/github-app,
+# packages/trelix-typescript). Both use build-mode: none — neither language needs a
+# compile step for CodeQL to extract from, so there is nothing here to keep in sync with
+# the real build.
+#
+# Non-blocking by design: findings land in the Security tab as alerts, the same
+# report-only posture security-scan.yml documents for findings a PR author usually
+# cannot single-handedly fix. Runs on push to both integration branches, on every PR
+# targeting them, and weekly to catch newly-published queries against unchanged code.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  # Sundays 04:00 UTC — ahead of security-scan.yml's Monday 05:23 UTC run.
+  schedule:
+    - cron: "0 4 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      # Only load-bearing for a private repo (lets upload-sarif read the workflow run's
+      # status); harmless here since the repo is public.
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          category: "/language:${{ matrix.language }}"
