@@ -358,11 +358,23 @@ class OpenAIEmbedder(BaseEmbedder):
 
 class LocalEmbedder(BaseEmbedder):
     """
-    sentence-transformers local model — no API key, runs on CPU/GPU.
+    sentence-transformers local model — no API key, always runs on CPU.
 
     Default model: all-MiniLM-L6-v2 (384 dimensions).
     Requires the optional 'local' extra:
         pip install 'trelix[local]'
+
+    Device is pinned to CPU rather than left to sentence-transformers'
+    auto-detection (which picks MPS on Apple Silicon): PyTorch's Metal
+    backend initializing inside a child process spawned deep inside a
+    sandboxed host (e.g. an Electron-based editor's extension host
+    spawning trelix-mcp over stdio) is a known native-crash class on
+    macOS, and it fails silently from this process's perspective — the
+    parent only sees the stdio pipe close. A 384-dim model's per-call
+    cost is small enough that CPU inference costs nothing that matters
+    for interactive use; large bulk re-index jobs are the one case where
+    GPU throughput would help, and those already batch requests, so the
+    per-call CPU cost amortizes fine there too.
 
     Async: CPU-bound — uses run_in_executor (BaseEmbedder default).
     """
@@ -391,7 +403,7 @@ class LocalEmbedder(BaseEmbedder):
                 "sentence-transformers is required for the local embedder. "
                 "Install it with: pip install 'trelix[local]'"
             ) from exc
-        self._model = SentenceTransformer(config.local_model)
+        self._model = SentenceTransformer(config.local_model, device="cpu")
         self._model_name = config.local_model  # self._model is the loaded model, not its id
         self._batch_size = config.batch_size
 

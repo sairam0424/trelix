@@ -8,6 +8,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.3.1] — 2026-09-17
+
+### Fixed
+- **`LocalEmbedder` pinned to CPU instead of auto-detecting MPS.** Auto-detected Metal
+  (MPS) on Apple Silicon is a known native-crash risk when the model loads inside a
+  child process spawned deep inside a sandboxed host — e.g. an Electron-based editor's
+  extension host spawning `trelix-mcp` over stdio. The crash is silent from the parent's
+  perspective (the stdio pipe just closes). CPU inference costs nothing that matters for
+  the 384-dim local model's per-call latency in interactive use, and bulk re-index jobs
+  already batch requests.
+- **VS Code extension: tool-call errors crashed the extension host instead of
+  surfacing.** FastMCP returns a human-readable `"Error calling tool ...: <message>"`
+  string on tool failure, not JSON — `search()`/`getSymbol()`/`ask()`/`blastRadius()`
+  were all blindly `JSON.parse`-ing that text, producing an uncaught `SyntaxError`.
+  Added an `isError` guard before each `JSON.parse` call.
+
+### Added
+- `trelix.mcpServerPath` VS Code setting — an absolute-path escape hatch for launching
+  `trelix-mcp` when the bare command relies on the editor's own process `PATH`, which
+  for GUI-launched apps often excludes directories a login shell would have (e.g. a
+  pip/uv install location).
+- VS Code extension: `stream.anchor()` for inline symbol links in `@trelix` chat prose,
+  and a Visual CodeLens (native Peek References popup) for the blast-radius lens,
+  replacing the previous global QuickPick.
+
 ## [3.3.0] — 2026-09-12
 
 A deliberately elevated MINOR release — trelix reserves breaking changes for a release
