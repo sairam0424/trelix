@@ -15,6 +15,7 @@ export interface ChatStream {
     progress(message: string): void;
     markdown(value: string): void;
     reference(value: vscode.Uri | vscode.Location): void;
+    anchor(value: vscode.Uri | vscode.Location, title?: string): void;
 }
 
 /** Minimal subset of vscode.ChatRequest we read. */
@@ -135,13 +136,15 @@ async function handleSearch(
         return;
     }
 
-    const lines: string[] = [`Found ${page.results.length} result(s):`, ""];
+    stream.markdown(`Found ${page.results.length} result(s):\n\n`);
     for (const r of page.results) {
         const [start, end] = parseLineRange(r.lines);
-        stream.reference(toReference(r.file, start, end, repoPath));
-        lines.push(`- \`${r.symbol}\` — ${r.file}:${r.lines} (${r.kind})`);
+        const location = toReference(r.file, start, end, repoPath);
+        stream.reference(location);
+        stream.markdown("- ");
+        stream.anchor(location, r.symbol);
+        stream.markdown(` — ${r.file}:${r.lines} (${r.kind})\n`);
     }
-    stream.markdown(lines.join("\n"));
 }
 
 async function handleExplain(
@@ -187,17 +190,21 @@ async function handleImpact(
         return;
     }
 
-    const lines: string[] = [
-        `\`${symbolName}\` has ${entries.length} dependent(s):`,
-        "",
-    ];
+    stream.markdown(
+        `\`${symbolName}\` has ${entries.length} dependent(s):\n\n`,
+    );
     for (const e of entries) {
-        stream.reference(
-            toReference(e.file, e.lineStart, e.lineStart, repoPath),
+        const location = toReference(
+            e.file,
+            e.lineStart,
+            e.lineStart,
+            repoPath,
         );
-        lines.push(`- \`${e.symbol}\` — ${e.file}:${e.lineStart} (${e.kind})`);
+        stream.reference(location);
+        stream.markdown("- ");
+        stream.anchor(location, e.symbol);
+        stream.markdown(` — ${e.file}:${e.lineStart} (${e.kind})\n`);
     }
-    stream.markdown(lines.join("\n"));
 }
 
 /**
