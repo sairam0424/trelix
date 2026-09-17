@@ -8,6 +8,105 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.3.1] — 2026-09-17
+
+### Fixed
+- **`LocalEmbedder` pinned to CPU instead of auto-detecting MPS.** Auto-detected Metal
+  (MPS) on Apple Silicon is a known native-crash risk when the model loads inside a
+  child process spawned deep inside a sandboxed host — e.g. an Electron-based editor's
+  extension host spawning `trelix-mcp` over stdio. The crash is silent from the parent's
+  perspective (the stdio pipe just closes). CPU inference costs nothing that matters for
+  the 384-dim local model's per-call latency in interactive use, and bulk re-index jobs
+  already batch requests.
+- **VS Code extension: tool-call errors crashed the extension host instead of
+  surfacing.** FastMCP returns a human-readable `"Error calling tool ...: <message>"`
+  string on tool failure, not JSON — `search()`/`getSymbol()`/`ask()`/`blastRadius()`
+  were all blindly `JSON.parse`-ing that text, producing an uncaught `SyntaxError`.
+  Added an `isError` guard before each `JSON.parse` call.
+
+### Added
+- `trelix.mcpServerPath` VS Code setting — an absolute-path escape hatch for launching
+  `trelix-mcp` when the bare command relies on the editor's own process `PATH`, which
+  for GUI-launched apps often excludes directories a login shell would have (e.g. a
+  pip/uv install location).
+- VS Code extension: `stream.anchor()` for inline symbol links in `@trelix` chat prose,
+  and a Visual CodeLens (native Peek References popup) for the blast-radius lens,
+  replacing the previous global QuickPick.
+
+## [3.3.0] — 2026-09-12
+
+A deliberately elevated MINOR release — trelix reserves breaking changes for a release
+like this rather than for a MAJOR bump (see docs/BACKWARDS_COMPATIBILITY.md). Covers the
+Python 3.12 floor, the deprecated FLARE env-var alias removal, an LLM provider SDK
+migration (reasoning-block abstraction, Anthropic SDK ≥1.0 compatibility, Bedrock
+reasoning fixes), MCP SEP-2322 support, 8 dependency floor bumps, and a closed
+pydantic-settings CVE — plus 5 fixes found by a live production dry run before this
+release was cut.
+
+### Breaking Changes
+- **Python floor raised to `>=3.12`** (root package and all three sub-packages). CI has
+  matrix-tested 3.11–3.14 identically for several releases and the Docker image was
+  already on `python:3.14-slim`, so this carries near-zero real-world risk — but Python
+  3.11 users must upgrade their interpreter before upgrading trelix. See
+  [docs/migration/v3.2-to-v3.3.md](docs/migration/v3.2-to-v3.3.md).
+- **`TRELIX_RETRIEVAL_FLARE_MAX_ITER` removed.** Deprecated since v2.4.0; the alias no
+  longer sets `flare_max_retries` and no longer emits `DeprecationWarning`. Use
+  `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` instead.
+- **`AWS_REGION` is now required for Bedrock** (LLM backend and embedders). Previously
+  silently defaulted to `us-east-1`, matching anthropic-sdk-python v1.0.0's
+  `AnthropicBedrock` region enforcement. An unset region now raises `ValueError` at
+  client construction instead of silently picking a region the caller never chose.
+- **Anthropic backend no longer accepts `temperature`.** anthropic-sdk-python v1.0.0
+  dropped `temperature`/`top_p`/`top_k` from Messages methods; the backend now logs a
+  one-time warning the first time a caller passes a non-`None` `temperature` and ignores
+  it, rather than raising `TypeError` from the SDK.
+
+### Added
+- `ReasoningBlock` type on `ChatResponse` — covers Anthropic's `thinking`/
+  `redacted_thinking` blocks and Bedrock Converse's `reasoningContent`/`redactedContent`
+  blocks under one shape. The existing `.thinking: str | None` field stays as a
+  back-compat alias (readable-block text only, never redacted).
+- MCP SEP-2322 `InputRequiredResult` support for `ask_agent` — the agent loop can now
+  signal "needs clarification" as a distinct result type instead of only a natural
+  language guess, with `AgentLoop` carrying the new signal underneath it. Additive: MCP
+  clients that ignore the new `resultType` field keep working unmodified.
+- `httpx2` recognition in the shared retry layer (`core/retry.py`), alongside the
+  existing `httpx` handling — `openai`/`anthropic` now default to it as their transport.
+
+### Fixed
+- **Bedrock `stream()` silently dropped `reasoningContent`/`toolUse` deltas** read off
+  the event stream. Now logged at debug level instead of vanishing untraced (the
+  `Iterator[str]` contract stays text-only; reasoning deltas still aren't yielded into
+  it).
+- **Bedrock `complete(thinking=True)` never actually requested reasoning from AWS** —
+  accepted the flag but never wired it into
+  `additionalModelRequestFields.reasoning_config`, so `thinking_blocks` was always empty
+  regardless of the flag. Found live during this release's own pre-promotion dry run
+  (real AWS Bedrock call).
+- **Anthropic `_split_content()` dropped `redacted_thinking` blocks** instead of
+  preserving them as opaque `ReasoningBlock`s.
+- **MCP `unsubscribe_resource` didn't return the `uri` it unsubscribed** — callers had no
+  way to confirm which subscription was removed from the response alone.
+- **`trelix-langchain`/`trelix-llama-index` retriever adapters cast to a stale 6-value
+  provider `Literal`** instead of core's real 9-value set, silently accepting an
+  unvalidated value for the 3 missing providers.
+- **CLI `ask`'s FLARE branch printed the synthesized answer twice** — `Synthesizer`
+  already streams tokens to stdout as they arrive; `ask` then printed the fully-assembled
+  return value again on top.
+- **`AgentLoop` class docstring showed a stale two-value tuple-unpack example** that no
+  longer matched `AgentResult`'s actual shape.
+- pydantic-settings CVE-2026-58203 (GHSA-4xgf-cpjx-pc3j, symlink traversal in
+  `NestedSecretsSettingsSource`) closed by raising the floor to `>=2.14.2`. trelix was
+  never exploitable (`secrets_nested_subdir` has zero call sites), shipped defensively.
+
+### Changed
+- 8 dependency floors (`tree-sitter`, `tree-sitter-language-pack`, `numpy`, `pathspec`,
+  `typer`, `rich`, `pydantic`, `tenacity`) bumped past their own breaking majors — each
+  individually confirmed, by reading trelix's actual call sites rather than by
+  assumption, to touch none of the changed/removed APIs.
+- `openai`/`anthropic` SDK ceilings raised to their new post-migration floors
+  (`openai>=1.35.0`, `anthropic>=1.0.0`).
+
 ## [3.2.5] — 2026-08-31
 
 ### Fixed
