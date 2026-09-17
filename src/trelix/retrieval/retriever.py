@@ -42,6 +42,7 @@ from .bm25 import bm25_search
 from .fusion import reciprocal_rank_fusion
 from .graph import (
     expand_with_call_graph,
+    expand_with_dataflow,
     expand_with_imports,
     expand_with_type_edges,
     seed_from_import_paths,
@@ -813,6 +814,22 @@ class Retriever:
                 except Exception as exc:
                     logger.warning("Graph search leg failed (non-fatal): %s", exc)
 
+            # Dataflow expansion leg (optional — CodeRAG-style def-use/call-site
+            # correlation, off by default). QUERY-TIME only: reuses def_use_edges
+            # already written by DataFlowExtractor at index time (see
+            # ParserConfig.dataflow_enabled) — degrades to [] non-fatally when
+            # that data doesn't exist, same as the graph_search leg above.
+            dataflow_expanded: list[SearchResult] = []
+            if cfg.dataflow_expansion_enabled:
+                try:
+                    dataflow_expanded = expand_with_dataflow(
+                        self.db,
+                        top,
+                        max_extra=cfg.dataflow_expansion_max_extra,
+                    )
+                except Exception as exc:
+                    logger.warning("Dataflow expansion leg failed (non-fatal): %s", exc)
+
             candidates = self._dedup(
                 fused
                 + call_expanded
@@ -820,17 +837,19 @@ class Retriever:
                 + type_expanded
                 + import_path_seeded
                 + graph_search_results
+                + dataflow_expanded
             )
 
             logger.info(
                 "Post-expansion candidates: fused=%d call_exp=%d import_exp=%d "
-                "type_exp=%d path_seed=%d graph_search=%d total=%d",
+                "type_exp=%d path_seed=%d graph_search=%d dataflow_exp=%d total=%d",
                 len(fused),
                 len(call_expanded),
                 len(import_expanded),
                 len(type_expanded),
                 len(import_path_seeded),
                 len(graph_search_results),
+                len(dataflow_expanded),
                 len(candidates),
             )
 
@@ -842,6 +861,7 @@ class Retriever:
                     "import_expanded": len(import_expanded),
                     "type_expanded": len(type_expanded),
                     "import_path_seeded": len(import_path_seeded),
+                    "dataflow_expanded": len(dataflow_expanded),
                     "total_candidates": len(candidates),
                     "import_strategy": {
                         "depth": strategy.import_depth,

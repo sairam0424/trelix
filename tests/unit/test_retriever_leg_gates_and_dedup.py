@@ -271,6 +271,7 @@ def _candidate_sources(retriever: object, plan: QueryPlan) -> set[str]:
     _StubSparseEmbedder.instances = 0
     graph_rows = [_result(900, 1.0, "graph_bfs")]
     sparse_rows = [_result(901, 1.0, "sparse")]
+    dataflow_rows = [_result(902, 1.0, "dataflow_expansion")]
     with ExitStack() as stack:
         p = stack.enter_context
         p(patch("trelix.retrieval.retriever.bm25_search", return_value=[]))
@@ -278,6 +279,7 @@ def _candidate_sources(retriever: object, plan: QueryPlan) -> set[str]:
         p(patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]))
         p(patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]))
         p(patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]))
+        p(patch("trelix.retrieval.retriever.expand_with_dataflow", return_value=dataflow_rows))
         p(patch("trelix.graph.code_graph.CodeGraph", _StubCodeGraph))
         p(patch("trelix.graph.search.graph_search", lambda **kw: graph_rows))
         p(patch("trelix.embedder.sparse.SparseEmbedder", _StubSparseEmbedder))
@@ -300,14 +302,15 @@ class TestDefaultOffLegsStayOff:
 
         MUTATION THAT MUST FAIL THIS: flipping any of
         `graph_search_enabled` / `file_summary_leg_enabled` /
-        `sub_chunk_search_enabled` / `sparse_enabled` to True in
-        core/config.py:RetrievalConfig.
+        `sub_chunk_search_enabled` / `sparse_enabled` /
+        `dataflow_expansion_enabled` to True in core/config.py:RetrievalConfig.
         """
         cfg = RetrievalConfig()
         assert cfg.graph_search_enabled is False
         assert cfg.file_summary_leg_enabled is False
         assert cfg.sub_chunk_search_enabled is False
         assert cfg.sparse_enabled is False
+        assert cfg.dataflow_expansion_enabled is False
 
     def test_default_config_contributes_only_the_vector_leg(self, tmp_path: Path) -> None:
         """Only "vector" reaches the candidate set under a default RetrievalConfig.
@@ -317,7 +320,8 @@ class TestDefaultOffLegsStayOff:
         -> `if plan.sub_queries:` (adds "file_summary");
         `if cfg.sub_chunk_search_enabled and plan.sub_queries:` ->
         `if plan.sub_queries:` (adds "sub_chunk"); `if cfg.sparse_enabled:` ->
-        `if True:` (adds "sparse").
+        `if True:` (adds "sparse"); `if cfg.dataflow_expansion_enabled:` ->
+        `if True:` (adds "dataflow_expansion").
         """
         retriever, _db, vs = _build(RetrievalConfig(), tmp_path)
         sources = _candidate_sources(retriever, _plan(IntentType.FEATURE_FLOW, ["vector"]))
@@ -328,6 +332,7 @@ class TestDefaultOffLegsStayOff:
         assert "file_summary" not in sources
         assert "sub_chunk" not in sources
         assert "sparse" not in sources
+        assert "dataflow_expansion" not in sources
         # _RecordingVectorStore precondition: the two summary/sub-chunk entry
         # points were never reached, and they WOULD have answered if they had
         # been (see test_opt_in_turns_every_optional_leg_on).
@@ -351,12 +356,20 @@ class TestDefaultOffLegsStayOff:
                 file_summary_leg_enabled=True,
                 sub_chunk_search_enabled=True,
                 sparse_enabled=True,
+                dataflow_expansion_enabled=True,
             ),
             tmp_path,
         )
         sources = _candidate_sources(retriever, _plan(IntentType.FEATURE_FLOW, ["vector"]))
 
-        assert sources == {"vector", "file_summary", "sub_chunk", "sparse", "graph_bfs"}
+        assert sources == {
+            "vector",
+            "file_summary",
+            "sub_chunk",
+            "sparse",
+            "graph_bfs",
+            "dataflow_expansion",
+        }
         assert "search_file_summaries" in vs.calls
         assert "search_sub_chunks" in vs.calls
         assert _StubSparseEmbedder.instances == 1
