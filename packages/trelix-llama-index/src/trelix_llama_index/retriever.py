@@ -34,6 +34,7 @@ class TrelixIndexRetriever(BaseRetriever):
                         "bedrock-cohere",
                         "bge-code",
                         "nomic-code",
+                        "cohere",
                     ],
                     self._provider,
                 )

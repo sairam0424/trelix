@@ -339,6 +339,7 @@ class TestMixedConfigurationSmoke:
             "bedrock-cohere",
             "bge-code",
             "nomic-code",
+            "cohere",
         ]
 
         for provider in providers:
