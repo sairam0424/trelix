@@ -502,8 +502,15 @@ def index(
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
             embedder=_build_embedder_config(provider),
-            use_batch_api=use_batch_api,
         )
+        # Set post-construction, not as a constructor kwarg: use_batch_api has an
+        # alias (TRELIX_USE_BATCH_API) and mypy has no pydantic plugin configured
+        # here, so it only recognises a Field's alias as a valid __init__ kwarg
+        # name, not the plain attribute name populate_by_name=True also accepts
+        # at runtime -- passing it as a kwarg type-checks against the wrong name
+        # and fails CI's `mypy src/trelix/` gate. Attribute assignment checks
+        # against the field's own declared type instead, and has no such gap.
+        config.use_batch_api = use_batch_api
     except _PydanticValidationError as exc:
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
