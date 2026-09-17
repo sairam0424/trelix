@@ -581,6 +581,49 @@ class TestArtifacts:
 
 
 # ---------------------------------------------------------------------------
+# Embed batch jobs (OpenAI Batch API job tracking)
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedBatchJobs:
+    def test_batch_job_insert_and_retrieve_pending(self, db: Database) -> None:
+        job_row_id = db.insert_batch_job(
+            repo_path="/fake/repo",
+            provider="openai",
+            job_id="batch_abc123",
+            pending_chunk_ids=[1, 2, 3],
+        )
+        pending = db.get_pending_batch_job("/fake/repo")
+        assert pending is not None
+        assert pending["job_id"] == "batch_abc123"
+        assert pending["status"] == "submitted"
+        assert pending["pending_chunk_ids"] == [1, 2, 3]
+
+        db.update_batch_job_status(job_row_id, status="completed")
+        assert db.get_pending_batch_job("/fake/repo") is None  # no longer pending
+
+    def test_get_pending_batch_job_returns_none_when_missing(self, db: Database) -> None:
+        assert db.get_pending_batch_job("/no/such/repo") is None
+
+    def test_get_pending_batch_job_scoped_to_repo_path(self, db: Database) -> None:
+        db.insert_batch_job(
+            repo_path="/repo/a",
+            provider="openai",
+            job_id="batch_a",
+            pending_chunk_ids=[1],
+        )
+        db.insert_batch_job(
+            repo_path="/repo/b",
+            provider="openai",
+            job_id="batch_b",
+            pending_chunk_ids=[2],
+        )
+        pending_a = db.get_pending_batch_job("/repo/a")
+        assert pending_a is not None
+        assert pending_a["job_id"] == "batch_a"
+
+
+# ---------------------------------------------------------------------------
 # Hydration
 # ---------------------------------------------------------------------------
 

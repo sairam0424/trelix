@@ -1626,6 +1626,17 @@ class IndexConfig(BaseSettings):
         alias="TRELIX_TELEMETRY_ENABLED",
     )
 
+    # Phase 3 strategy: submit chunks to the OpenAI Batch API (50% cheaper,
+    # 24h completion window) instead of embedding synchronously/concurrently
+    # in this run. Off by default — a 24h wait must be opt-in, never silently
+    # triggered, and it is only usable with an embedder that implements
+    # submit_batch/poll_batch (OpenAIEmbedder only; see Indexer.index()'s
+    # call-site guard).
+    use_batch_api: bool = Field(
+        default=False,
+        alias="TRELIX_USE_BATCH_API",
+    )
+
     @field_validator("repo_path")
     @classmethod
     def repo_must_exist(cls, v: str) -> str:

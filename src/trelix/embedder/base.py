@@ -285,6 +285,31 @@ class AzureOpenAIEmbedder(BaseEmbedder):
         return self._dimensions
 
 
+class BatchJobTerminalError(RuntimeError):
+    """OpenAI itself reported the batch job as dead (failed/expired/cancelled).
+
+    Deliberately its own type, not a bare RuntimeError: callers must be able
+    to distinguish "OpenAI says this job will never complete" from any other
+    exception poll_batch() can raise (a network error surviving retries, a
+    malformed/partial response) -- catching Exception broadly to mark a job
+    'failed' would also abandon jobs that only failed to be *fetched*, not
+    jobs that actually failed on OpenAI's side, and OpenAI still bills for
+    the abandoned one.
+    """
+
+
+class BatchJobIncompleteError(RuntimeError):
+    """poll_batch() got fewer result records than requests were submitted.
+
+    OpenAI can report overall batch status "completed" while individual
+    requests inside it failed (content filter, per-request error, etc.) --
+    failed rows have no usable embedding and are not silently droppable,
+    because a positional zip(chunk_ids, vectors) with a short vectors list
+    re-pairs every later chunk_id with the wrong vector instead of just the
+    missing one.
+    """
+
+
 class OpenAIEmbedder(BaseEmbedder):
     """
     Standard OpenAI text-embedding-3-large.
@@ -350,6 +375,145 @@ class OpenAIEmbedder(BaseEmbedder):
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed([text])[0]
+
+    # -- Batch API (submit_batch / poll_batch) -----------------------------
+    #
+    # OpenAI's Batch API: a 50%-cheaper, async, 24h-completion-window job —
+    # architecturally distinct from the embed()/_create() request batching
+    # above (which just chunks synchronous calls to self._batch_size). This
+    # is trelix's first long-running external job pattern: submit a job now,
+    # poll it later, pull results from an output file once it completes.
+    # Deliberately OpenAIEmbedder-only, not on BaseEmbedder: most providers
+    # (including Voyage — voyageai==0.5.0's Client has no batch-job method at
+    # all) have no equivalent, and forcing every embedder to implement an
+    # abstract method it cannot support is the wrong shape for that gap.
+    #
+    # Batch input-file JSONL shape (one line per text, each a full
+    # /v1/embeddings request keyed by index) follows OpenAI's documented,
+    # stable batch request format; it was not independently re-verified
+    # against live docs in this session (no network access) — flagged here
+    # per the task's own instruction to do so if unverified.
+
+    _BATCH_TERMINAL_FAILURE_STATUSES = frozenset({"failed", "expired", "cancelled"})
+
+    @with_retry(max_attempts=5)
+    def _files_create(self, **kwargs: Any) -> Any:
+        return self._client.files.create(**kwargs)
+
+    @with_retry(max_attempts=5)
+    def _batches_create(self, **kwargs: Any) -> Any:
+        return self._client.batches.create(**kwargs)
+
+    @with_retry(max_attempts=5)
+    def _batches_retrieve(self, batch_id: str) -> Any:
+        return self._client.batches.retrieve(batch_id)
+
+    @with_retry(max_attempts=5)
+    def _files_content(self, file_id: str) -> Any:
+        return self._client.files.content(file_id)
+
+    def submit_batch(self, texts: list[str]) -> str:
+        """Submit *texts* as an OpenAI Batch API embeddings job.
+
+        Uploads a JSONL input file (one /v1/embeddings request per line,
+        custom_id = str(index) into *texts*) and creates a batch job against
+        it with a 24h completion window. Returns immediately with the batch
+        job id — this does not wait for completion; pair with poll_batch().
+        """
+        import io
+        import json
+
+        lines = [
+            json.dumps(
+                {
+                    "custom_id": str(index),
+                    "method": "POST",
+                    "url": "/v1/embeddings",
+                    "body": {
+                        "model": self._model,
+                        "input": text,
+                        "dimensions": self._dimensions,
+                    },
+                }
+            )
+            for index, text in enumerate(texts)
+        ]
+        jsonl_file = io.BytesIO(("\n".join(lines) + "\n").encode("utf-8"))
+        uploaded = self._files_create(file=jsonl_file, purpose="batch")
+        batch = self._batches_create(
+            completion_window="24h",
+            endpoint="/v1/embeddings",
+            input_file_id=uploaded.id,
+        )
+        return batch.id  # type: ignore[no-any-return]
+
+    def poll_batch(
+        self, job_id: str, expected_count: int | None = None
+    ) -> list[list[float]] | None:
+        """Poll an OpenAI Batch API job by id.
+
+        Returns None while the job is still in flight (any non-terminal
+        status: "validating", "in_progress", "finalizing", ...). Once the
+        job's status is "completed", downloads its output file and returns
+        the embedding vectors re-ordered to match the original *texts*
+        passed to submit_batch() — the output file's line order is not
+        guaranteed to match input order, only custom_id is.
+
+        Raises BatchJobTerminalError if the job reaches a terminal failure
+        status (failed/expired/cancelled): there are no vectors to retrieve,
+        and the caller needs to know to resubmit rather than poll forever.
+        This is a dedicated exception, not a bare RuntimeError, precisely so
+        callers can catch only this and let every other exception (network,
+        parsing) propagate without marking the job dead.
+
+        Raises BatchJobIncompleteError if the batch reports "completed" but
+        one or more individual requests inside it failed (OpenAI allows
+        this: overall status can be "completed" with request_counts.failed
+        > 0, or even output_file_id=None if every request failed). Passing
+        `expected_count` (the number of texts originally submitted) lets
+        this be detected even when *no* per-line data is missing but the
+        count is still short — e.g. a line whose "response" is null rather
+        than absent entirely.
+        """
+        import json
+
+        batch = self._batches_retrieve(job_id)
+        if batch.status in self._BATCH_TERMINAL_FAILURE_STATUSES:
+            raise BatchJobTerminalError(
+                f"OpenAI batch job {job_id!r} ended with status {batch.status!r}"
+            )
+        if batch.status != "completed":
+            return None
+
+        if batch.output_file_id is None:
+            raise BatchJobIncompleteError(
+                f"OpenAI batch job {job_id!r} is 'completed' but has no output_file_id "
+                "-- every request in the batch failed. See the job's error_file_id "
+                "on OpenAI's side for details."
+            )
+
+        output = self._files_content(batch.output_file_id)
+        by_custom_id: dict[int, list[float]] = {}
+        failed_ids: list[str] = []
+        for line in output.text.splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            response = record.get("response")
+            if response is None:
+                failed_ids.append(record.get("custom_id", "<unknown>"))
+                continue
+            by_custom_id[int(record["custom_id"])] = response["body"]["data"][0]["embedding"]
+
+        total_expected = expected_count if expected_count is not None else len(by_custom_id)
+        if failed_ids or len(by_custom_id) < total_expected:
+            raise BatchJobIncompleteError(
+                f"OpenAI batch job {job_id!r} is 'completed' but only "
+                f"{len(by_custom_id)}/{total_expected} requests succeeded "
+                f"(failed custom_ids: {failed_ids or 'unknown -- count mismatch only'})."
+            )
+
+        return [by_custom_id[i] for i in sorted(by_custom_id)]
 
     @property
     def dimension(self) -> int:
