@@ -243,6 +243,27 @@ CREATE TABLE IF NOT EXISTS diff_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_diff_chunks_pr_ref ON diff_chunks(pr_ref);
 
+-- OpenAI Batch API job tracking. This is the first long-running external job
+-- pattern in trelix: submit a batch of embedding requests, poll/wait up to the
+-- 24h completion window, then retrieve results later — architecturally distinct
+-- from the ordinary request batching embedder.py already does via
+-- config.batch_size / embed_max_tokens_per_batch, which is synchronous and
+-- in-process. pending_chunk_ids is a JSON-encoded array (see json.dumps/loads
+-- callers below) rather than a join table, because the only consumer is "resume
+-- this exact submission" — there is no query that needs one row per chunk id.
+CREATE TABLE IF NOT EXISTS embed_batch_jobs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_path           TEXT    NOT NULL,
+    provider            TEXT    NOT NULL,
+    job_id              TEXT    NOT NULL,
+    status              TEXT    NOT NULL DEFAULT 'submitted',
+    submitted_at        TEXT    DEFAULT (datetime('now')),
+    pending_chunk_ids   TEXT    NOT NULL DEFAULT '[]',
+    created_at          TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_embed_batch_jobs_repo_path ON embed_batch_jobs(repo_path);
+
 -- FTS5 for BM25 keyword search over symbol content
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name,
@@ -2164,6 +2185,83 @@ class Database:
             )
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Embed batch jobs (OpenAI Batch API — async embedding job tracking)
+    # ------------------------------------------------------------------
+
+    def insert_batch_job(
+        self,
+        repo_path: str,
+        provider: str,
+        job_id: str,
+        pending_chunk_ids: list[int],
+    ) -> int:
+        """Record a newly-submitted OpenAI Batch API job. Returns the new row id.
+
+        Always inserted with status='submitted' — that is the only state a job
+        can be in the moment it is accepted by the API. update_batch_job_status()
+        is the only path that ever moves it to 'completed' or 'failed'.
+        """
+        cursor = self._conn.execute(
+            """
+            INSERT INTO embed_batch_jobs
+              (repo_path, provider, job_id, status, submitted_at, pending_chunk_ids)
+            VALUES (?, ?, ?, 'submitted', datetime('now'), ?)
+            """,
+            (repo_path, provider, job_id, json.dumps(pending_chunk_ids)),
+        )
+        self._conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    def get_pending_batch_job(self, repo_path: str) -> dict[str, Any] | None:
+        """Return the most recent non-terminal batch job for `repo_path`, or None.
+
+        "Pending" excludes 'completed' and 'failed' rather than matching
+        'submitted' alone, so a future intermediate status (e.g. 'validating')
+        is still treated as in-flight without a call-site change here. Ordered
+        by id DESC so a repo with more than one row (e.g. a re-submitted job
+        after a failure) returns the latest rather than an arbitrary one.
+
+        pending_chunk_ids is JSON-decoded back into a list[int] — see
+        insert_batch_job for why it is stored as JSON rather than a join table.
+        """
+        row = self._conn.execute(
+            """
+            SELECT id, repo_path, provider, job_id, status, submitted_at,
+                   pending_chunk_ids, created_at
+            FROM embed_batch_jobs
+            WHERE repo_path = ? AND status NOT IN ('completed', 'failed')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (repo_path,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "repo_path": row["repo_path"],
+            "provider": row["provider"],
+            "job_id": row["job_id"],
+            "status": row["status"],
+            "submitted_at": row["submitted_at"],
+            "pending_chunk_ids": json.loads(row["pending_chunk_ids"]),
+            "created_at": row["created_at"],
+        }
+
+    def update_batch_job_status(self, job_row_id: int, status: str) -> None:
+        """Move a batch job to a new status (typically 'completed' or 'failed').
+
+        Takes the row id rather than job_id so a caller that already holds the
+        id from insert_batch_job() (the common case — submit then immediately
+        remember the row) does not need a round trip through job_id to update it.
+        """
+        self._conn.execute(
+            "UPDATE embed_batch_jobs SET status = ? WHERE id = ?",
+            (status, job_row_id),
+        )
+        self._conn.commit()
 
     def get_file_by_id(self, file_id: int) -> IndexedFile | None:
         """Fetch a file record by primary key."""

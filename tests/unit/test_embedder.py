@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +15,8 @@ from trelix.embedder.base import (
     REMOTE_MODEL_CODE_ENV_VAR,
     AzureOpenAIEmbedder,
     BaseEmbedder,
+    BatchJobIncompleteError,
+    BatchJobTerminalError,
     BedrockCohereEmbedder,
     BedrockTitanEmbedder,
     LocalCodeEmbedder,
@@ -179,6 +182,182 @@ class TestOpenAIEmbedder:
         result = embedder.embed_query("search query")
         assert isinstance(result, list)
         assert len(result) == 3072
+
+
+# ---------------------------------------------------------------------------
+# OpenAIEmbedder — Batch API (submit_batch / poll_batch)
+#
+# The OpenAI Batch API (24h completion window, 50% cost discount) is
+# architecturally distinct from the ordinary request batching embed() already
+# does via config.batch_size — it is trelix's first long-running external job
+# pattern: submit a job, poll it later, retrieve results from an output file.
+# Scoped to OpenAIEmbedder only — voyageai==0.5.0's Client has no batch-job
+# mechanism at all (verified against the installed SDK), so VoyageEmbedder is
+# deliberately untouched.
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIEmbedderBatchAPI:
+    def test_submit_batch_returns_job_id(self) -> None:
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.files.create.return_value = MagicMock(id="file_xyz")
+            mock_client.batches.create.return_value = MagicMock(id="batch_xyz")
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            job_id = embedder.submit_batch(["def foo(): pass", "def bar(): pass"])
+
+        assert job_id == "batch_xyz"
+        mock_client.batches.create.assert_called_once()
+
+        # The input file must be JSONL, one line per text, custom_id = index,
+        # each line a full /v1/embeddings request body — OpenAI's documented
+        # batch input format.
+        uploaded_file = mock_client.files.create.call_args.kwargs["file"]
+        uploaded_lines = uploaded_file.getvalue().decode("utf-8").strip().split("\n")
+        assert len(uploaded_lines) == 2
+        first = json.loads(uploaded_lines[0])
+        assert first == {
+            "custom_id": "0",
+            "method": "POST",
+            "url": "/v1/embeddings",
+            "body": {
+                "model": config.openai_model,
+                "input": "def foo(): pass",
+                "dimensions": config.openai_dimensions,
+            },
+        }
+        assert mock_client.files.create.call_args.kwargs["purpose"] == "batch"
+
+        create_kwargs = mock_client.batches.create.call_args.kwargs
+        assert create_kwargs["completion_window"] == "24h"
+        assert create_kwargs["endpoint"] == "/v1/embeddings"
+        assert create_kwargs["input_file_id"] == "file_xyz"
+
+    def test_poll_batch_returns_none_while_processing(self) -> None:
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(status="in_progress")
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            assert embedder.poll_batch("batch_xyz") is None
+
+        mock_client.batches.retrieve.assert_called_once_with("batch_xyz")
+
+    def test_poll_batch_returns_vectors_when_completed(self) -> None:
+        """Output file lines are not guaranteed to preserve input order, so
+        poll_batch() must re-sort on custom_id — this test deliberately
+        supplies the completed-job lines out of order to prove that."""
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(
+                status="completed", output_file_id="file_out_123"
+            )
+            jsonl_lines = "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "custom_id": "1",
+                            "response": {"body": {"data": [{"embedding": [0.2] * 3072}]}},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "custom_id": "0",
+                            "response": {"body": {"data": [{"embedding": [0.1] * 3072}]}},
+                        }
+                    ),
+                ]
+            )
+            mock_client.files.content.return_value = MagicMock(text=jsonl_lines)
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            vectors = embedder.poll_batch("batch_xyz")
+
+        assert vectors == [[0.1] * 3072, [0.2] * 3072]
+        mock_client.files.content.assert_called_once_with("file_out_123")
+
+    def test_poll_batch_raises_on_failed_status(self) -> None:
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(status="failed")
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            with pytest.raises(BatchJobTerminalError, match="failed"):
+                embedder.poll_batch("batch_xyz")
+
+    def test_poll_batch_raises_incomplete_error_when_a_request_failed(self) -> None:
+        """OpenAI can report overall status "completed" while an individual
+        request inside the batch failed -- its output line has response=None
+        rather than embedding data. A positional zip downstream would silently
+        mis-pair every later chunk with the wrong vector, so poll_batch must
+        raise loudly instead of returning a short/wrong list."""
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(
+                status="completed", output_file_id="file_out_123"
+            )
+            jsonl_lines = "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "custom_id": "0",
+                            "response": {"body": {"data": [{"embedding": [0.1] * 3072}]}},
+                        }
+                    ),
+                    json.dumps({"custom_id": "1", "response": None, "error": {"code": "x"}}),
+                ]
+            )
+            mock_client.files.content.return_value = MagicMock(text=jsonl_lines)
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            with pytest.raises(BatchJobIncompleteError, match="1/2"):
+                embedder.poll_batch("batch_xyz", expected_count=2)
+
+    def test_poll_batch_raises_incomplete_error_when_count_short_but_no_response_null(
+        self,
+    ) -> None:
+        """Even if no line explicitly has response=None, a short output file
+        (e.g. a failed request landed only in error_file_id, never in
+        output_file_id at all) must still be caught via expected_count."""
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(
+                status="completed", output_file_id="file_out_123"
+            )
+            jsonl_lines = json.dumps(
+                {
+                    "custom_id": "0",
+                    "response": {"body": {"data": [{"embedding": [0.1] * 3072}]}},
+                }
+            )
+            mock_client.files.content.return_value = MagicMock(text=jsonl_lines)
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            with pytest.raises(BatchJobIncompleteError, match="1/3"):
+                embedder.poll_batch("batch_xyz", expected_count=3)
+
+    def test_poll_batch_raises_incomplete_error_when_output_file_id_is_none(self) -> None:
+        """OpenAI can report status "completed" with output_file_id=None when
+        every request in the batch failed -- must not crash on a None file id
+        or silently return an empty list."""
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(
+                status="completed", output_file_id=None
+            )
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            with pytest.raises(BatchJobIncompleteError):
+                embedder.poll_batch("batch_xyz", expected_count=1)
+            mock_client.files.content.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
