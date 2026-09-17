@@ -158,6 +158,24 @@ class TestSchemaCreation:
         cols = {r[1] for r in db2._conn.execute("PRAGMA table_info(artifacts)").fetchall()}
         assert "source_ref" in cols
 
+    def test_embed_batch_jobs_s3_uri_columns_exist(self, db: Database) -> None:
+        """embed_batch_jobs.s3_input_uri / s3_output_uri migration columns must
+        exist after init — needed so BedrockTitanEmbedder.poll_batch can find a
+        job's S3 output prefix on a later CLI invocation (a fresh process, not
+        the one that called submit_batch)."""
+        cols = {r[1] for r in db._conn.execute("PRAGMA table_info(embed_batch_jobs)").fetchall()}
+        assert {"s3_input_uri", "s3_output_uri"} <= cols
+
+    def test_embed_batch_jobs_s3_uri_migration_is_idempotent(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "index.db"
+        db1 = Database(db_path)
+        db1.init_schema()
+        db2 = Database(db_path)
+        db2.init_schema()
+
+        cols = {r[1] for r in db2._conn.execute("PRAGMA table_info(embed_batch_jobs)").fetchall()}
+        assert {"s3_input_uri", "s3_output_uri"} <= cols
+
 
 # ---------------------------------------------------------------------------
 # upsert_file
@@ -621,6 +639,36 @@ class TestEmbedBatchJobs:
         pending_a = db.get_pending_batch_job("/repo/a")
         assert pending_a is not None
         assert pending_a["job_id"] == "batch_a"
+
+    def test_batch_job_insert_stores_s3_uris(self, db: Database) -> None:
+        """Bedrock Titan Batch API jobs persist their S3 input/output URIs so a
+        later invocation of poll_batch (a fresh CLI process) can find them."""
+        db.insert_batch_job(
+            repo_path="/fake/repo",
+            provider="bedrock-titan",
+            job_id="arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/abc123",
+            pending_chunk_ids=[1, 2, 3],
+            s3_input_uri="s3://trelix-bucket/trelix-batch/uuid-1/input.jsonl",
+            s3_output_uri="s3://trelix-bucket/trelix-batch/uuid-1/output/",
+        )
+        pending = db.get_pending_batch_job("/fake/repo")
+        assert pending is not None
+        assert pending["s3_input_uri"] == "s3://trelix-bucket/trelix-batch/uuid-1/input.jsonl"
+        assert pending["s3_output_uri"] == "s3://trelix-bucket/trelix-batch/uuid-1/output/"
+
+    def test_batch_job_insert_without_s3_uris_defaults_to_none(self, db: Database) -> None:
+        """OpenAI Batch API jobs never pass S3 URIs — both columns default to
+        None rather than requiring every non-Bedrock caller to pass them."""
+        db.insert_batch_job(
+            repo_path="/fake/repo2",
+            provider="openai",
+            job_id="batch_xyz",
+            pending_chunk_ids=[1],
+        )
+        pending = db.get_pending_batch_job("/fake/repo2")
+        assert pending is not None
+        assert pending["s3_input_uri"] is None
+        assert pending["s3_output_uri"] is None
 
 
 # ---------------------------------------------------------------------------

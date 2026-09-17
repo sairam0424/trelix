@@ -967,6 +967,290 @@ class TestBedrockTitanEmbedder:
         assert config.effective_dimension == 512
 
 
+def _s3_output_body(records: list[dict]) -> bytes:
+    """Build a Bedrock batch inference output JSONL body from record dicts."""
+    return ("\n".join(json.dumps(r) for r in records) + "\n").encode("utf-8")
+
+
+def _make_batch_titan(
+    *,
+    bucket: str | None = "trelix-bucket",
+    role_arn: str | None = "arn:aws:iam::123456789012:role/BedrockBatch",
+    dims: int = 2,
+) -> BedrockTitanEmbedder:
+    """BedrockTitanEmbedder with mocked bedrock-runtime, bedrock (control-plane),
+    and S3 clients — bypasses __init__ (and therefore real boto3 client
+    construction) the same way TestBedrockTitanEmbedder._make does above."""
+    config = EmbedderConfig(
+        provider="bedrock-titan",
+        bedrock_titan_dimensions=dims,
+        bedrock_batch_s3_bucket=bucket,
+        bedrock_batch_role_arn=role_arn,
+    )
+    embedder = BedrockTitanEmbedder.__new__(BedrockTitanEmbedder)
+    embedder._model = config.bedrock_titan_model
+    embedder._dims = dims
+    embedder._normalize = config.bedrock_titan_normalize
+    embedder._config = config
+    embedder._client = MagicMock()
+    embedder._bedrock_control_client = MagicMock()
+    embedder._s3_client = MagicMock()
+    embedder.last_batch_s3_uris = None
+    return embedder
+
+
+class TestBedrockTitanBatchApi:
+    """submit_batch/poll_batch on BedrockTitanEmbedder — the Bedrock analogue of
+    OpenAIEmbedder's Batch API strategy. Deliberately Titan-only: Cohere Embed
+    is not in AWS's supported-models list for Bedrock batch inference at all,
+    so BedrockCohereEmbedder must structurally lack these methods (see
+    TestBedrockCohereEmbedderStructurallyLacksBatchApi below)."""
+
+    # -- submit_batch: config validation -----------------------------------
+
+    def test_submit_batch_raises_without_bucket(self) -> None:
+        embedder = _make_batch_titan(bucket=None)
+        with pytest.raises(ValueError, match="TRELIX_BEDROCK_BATCH_S3_BUCKET"):
+            embedder.submit_batch(["hello"])
+
+    def test_submit_batch_raises_without_role_arn(self) -> None:
+        embedder = _make_batch_titan(role_arn=None)
+        with pytest.raises(ValueError, match="TRELIX_BEDROCK_BATCH_ROLE_ARN"):
+            embedder.submit_batch(["hello"])
+
+    def test_submit_batch_error_names_both_required_vars(self) -> None:
+        """Naming only the one that happens to be missing would still leave the
+        operator to discover the second requirement via a second failed run."""
+        embedder = _make_batch_titan(bucket=None, role_arn=None)
+        with pytest.raises(ValueError) as exc_info:
+            embedder.submit_batch(["hello"])
+        message = str(exc_info.value)
+        assert "TRELIX_BEDROCK_BATCH_S3_BUCKET" in message
+        assert "TRELIX_BEDROCK_BATCH_ROLE_ARN" in message
+
+    # -- submit_batch: request shape ---------------------------------------
+
+    def test_submit_batch_uploads_correct_jsonl(self) -> None:
+        """Input JSONL must be {"recordId": "<index>", "modelInput": {"inputText":
+        ...}} per record, reusing the exact real-time invoke_model body shape
+        (dimensions/normalize included) rather than a second, possibly-drifted
+        copy of it."""
+        embedder = _make_batch_titan(dims=512)
+        embedder._bedrock_control_client.create_model_invocation_job.return_value = {
+            "jobArn": "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/abc"
+        }
+
+        embedder.submit_batch(["hello", "world"])
+
+        put_call = embedder._s3_client.put_object.call_args
+        assert put_call.kwargs["Bucket"] == "trelix-bucket"
+        body = put_call.kwargs["Body"].decode("utf-8")
+        lines = [json.loads(line) for line in body.splitlines() if line.strip()]
+        assert lines == [
+            {
+                "recordId": "0",
+                "modelInput": {"inputText": "hello", "dimensions": 512, "normalize": True},
+            },
+            {
+                "recordId": "1",
+                "modelInput": {"inputText": "world", "dimensions": 512, "normalize": True},
+            },
+        ]
+
+    def test_submit_batch_calls_create_model_invocation_job_correctly(self) -> None:
+        embedder = _make_batch_titan()
+        embedder._bedrock_control_client.create_model_invocation_job.return_value = {
+            "jobArn": "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/abc"
+        }
+
+        job_id = embedder.submit_batch(["hello", "world"])
+
+        assert job_id == "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/abc"
+        create_call = embedder._bedrock_control_client.create_model_invocation_job.call_args
+        assert create_call.kwargs["roleArn"] == "arn:aws:iam::123456789012:role/BedrockBatch"
+        assert create_call.kwargs["modelId"] == embedder._model
+        input_uri = create_call.kwargs["inputDataConfig"]["s3InputDataConfig"]["s3Uri"]
+        output_uri = create_call.kwargs["outputDataConfig"]["s3OutputDataConfig"]["s3Uri"]
+        assert input_uri.startswith("s3://trelix-bucket/trelix-batch/")
+        assert input_uri.endswith("/input.jsonl")
+        assert output_uri.startswith("s3://trelix-bucket/trelix-batch/")
+        assert output_uri.endswith("/output/")
+        # submit_batch does not return the S3 URIs (its return type is pinned to
+        # `str`, matching OpenAIEmbedder.submit_batch) -- the indexer needs them
+        # to persist via db.insert_batch_job, so they are exposed here instead.
+        assert embedder.last_batch_s3_uris == (input_uri, output_uri)
+
+    # -- poll_batch: non-terminal statuses -> None --------------------------
+
+    @pytest.mark.parametrize(
+        "status", ["Submitted", "Validating", "Scheduled", "InProgress", "Stopping"]
+    )
+    def test_poll_batch_returns_none_while_non_terminal(self, status: str) -> None:
+        embedder = _make_batch_titan()
+        embedder._bedrock_control_client.get_model_invocation_job.return_value = {"status": status}
+        assert embedder.poll_batch("job-arn") is None
+
+    # -- poll_batch: terminal failure statuses -> BatchJobTerminalError -----
+
+    @pytest.mark.parametrize("status", ["Failed", "Expired", "Stopped"])
+    def test_poll_batch_raises_on_terminal_failure(self, status: str) -> None:
+        embedder = _make_batch_titan()
+        embedder._bedrock_control_client.get_model_invocation_job.return_value = {"status": status}
+        with pytest.raises(BatchJobTerminalError):
+            embedder.poll_batch("job-arn")
+
+    # -- poll_batch: Completed -----------------------------------------------
+
+    def test_poll_batch_completed_returns_ordered_vectors_never_positional(self) -> None:
+        """Output records arrive out of S3-file order and don't start at index
+        0 -- a positional zip/index assumption would return them in the wrong
+        order (or crash); recordId-keyed lookup must not."""
+        embedder = _make_batch_titan()
+        embedder._bedrock_control_client.get_model_invocation_job.return_value = {
+            "status": "Completed",
+            "outputDataConfig": {
+                "s3OutputDataConfig": {"s3Uri": "s3://trelix-bucket/trelix-batch/xyz/output/"}
+            },
+        }
+        embedder._s3_client.list_objects_v2.return_value = {
+            "Contents": [
+                {"Key": "trelix-batch/xyz/output/manifest.json.out"},
+                {"Key": "trelix-batch/xyz/output/abc123/input.jsonl.out"},
+            ]
+        }
+        records = [
+            {"recordId": "2", "modelOutput": {"embedding": [2.0, 2.0]}},
+            {"recordId": "0", "modelOutput": {"embedding": [0.0, 0.0]}},
+            {"recordId": "1", "modelOutput": {"embedding": [1.0, 1.0]}},
+        ]
+        mock_body = MagicMock()
+        mock_body.read.return_value = _s3_output_body(records)
+        embedder._s3_client.get_object.return_value = {"Body": mock_body}
+
+        vectors = embedder.poll_batch("job-arn", expected_count=3)
+
+        assert vectors == [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]
+        get_call = embedder._s3_client.get_object.call_args
+        assert get_call.kwargs["Bucket"] == "trelix-bucket"
+        assert get_call.kwargs["Key"] == "trelix-batch/xyz/output/abc123/input.jsonl.out"
+        list_call = embedder._s3_client.list_objects_v2.call_args
+        assert list_call.kwargs["Prefix"] == "trelix-batch/xyz/output/"
+
+    # -- poll_batch: PartiallyCompleted (success, not an error) -------------
+
+    def test_poll_batch_partially_completed_is_not_an_error(self) -> None:
+        """PartiallyCompleted is a SUCCESS path per the design decision matching
+        trelix's own reconciliation story -- must NOT raise BatchJobIncompleteError
+        (or anything else) purely because len(vectors) < expected_count."""
+        embedder = _make_batch_titan()
+        embedder._bedrock_control_client.get_model_invocation_job.return_value = {
+            "status": "PartiallyCompleted",
+            "outputDataConfig": {
+                "s3OutputDataConfig": {"s3Uri": "s3://trelix-bucket/trelix-batch/xyz/output/"}
+            },
+        }
+        embedder._s3_client.list_objects_v2.return_value = {
+            "Contents": [{"Key": "trelix-batch/xyz/output/abc123/input.jsonl.out"}]
+        }
+        # Middle record (index 1) failed.
+        records = [
+            {"recordId": "0", "modelOutput": {"embedding": [0.0, 0.0]}},
+            {"recordId": "1", "error": {"errorCode": "ModelError", "errorMessage": "boom"}},
+            {"recordId": "2", "modelOutput": {"embedding": [2.0, 2.0]}},
+        ]
+        mock_body = MagicMock()
+        mock_body.read.return_value = _s3_output_body(records)
+        embedder._s3_client.get_object.return_value = {"Body": mock_body}
+
+        vectors = embedder.poll_batch("job-arn", expected_count=3)
+
+        # Failed record correctly OMITTED, not misaligned: [0, 2]'s vectors,
+        # never [0, 2]'s vectors with a garbage/duplicate third slot, and never
+        # index 2's vector shifted down into index 1's slot.
+        assert vectors == [[0.0, 0.0], [2.0, 2.0]]
+
+    def test_poll_batch_records_preserves_original_positions_for_partial(self) -> None:
+        """poll_batch_records (the indexer-facing, position-preserving variant)
+        must keep index 1 visibly MISSING rather than shifting index 2's vector
+        down to slot 1 -- this is what lets the indexer pair vectors back to
+        the correct chunk_ids without a positional zip/index assumption."""
+        embedder = _make_batch_titan()
+        embedder._bedrock_control_client.get_model_invocation_job.return_value = {
+            "status": "PartiallyCompleted",
+            "outputDataConfig": {
+                "s3OutputDataConfig": {"s3Uri": "s3://trelix-bucket/trelix-batch/xyz/output/"}
+            },
+        }
+        embedder._s3_client.list_objects_v2.return_value = {
+            "Contents": [{"Key": "trelix-batch/xyz/output/abc123/input.jsonl.out"}]
+        }
+        records = [
+            {"recordId": "0", "modelOutput": {"embedding": [0.0, 0.0]}},
+            {"recordId": "1", "error": {"errorCode": "ModelError"}},
+            {"recordId": "2", "modelOutput": {"embedding": [2.0, 2.0]}},
+        ]
+        mock_body = MagicMock()
+        mock_body.read.return_value = _s3_output_body(records)
+        embedder._s3_client.get_object.return_value = {"Body": mock_body}
+
+        by_position = embedder.poll_batch_records("job-arn")
+
+        assert by_position == {0: [0.0, 0.0], 2: [2.0, 2.0]}
+        assert 1 not in by_position
+
+    def test_poll_batch_records_merges_multiple_output_shards(self) -> None:
+        """Bedrock's own docs state it generates one output JSONL file PER
+        INPUT JSONL file -- if a job's input was ever split across multiple
+        files, ListObjectsV2 returns multiple matching .jsonl.out keys.
+        Reading only the first (an earlier version of this method did) would
+        silently drop every record in every shard after it, with no error."""
+        embedder = _make_batch_titan()
+        embedder._bedrock_control_client.get_model_invocation_job.return_value = {
+            "status": "Completed",
+            "outputDataConfig": {
+                "s3OutputDataConfig": {"s3Uri": "s3://trelix-bucket/trelix-batch/xyz/output/"}
+            },
+        }
+        embedder._s3_client.list_objects_v2.return_value = {
+            "Contents": [
+                {"Key": "trelix-batch/xyz/output/manifest.json.out"},
+                {"Key": "trelix-batch/xyz/output/shard-0/input.jsonl.out"},
+                {"Key": "trelix-batch/xyz/output/shard-1/input.jsonl.out"},
+            ]
+        }
+        shard_bodies = {
+            "trelix-batch/xyz/output/shard-0/input.jsonl.out": _s3_output_body(
+                [{"recordId": "0", "modelOutput": {"embedding": [0.0, 0.0]}}]
+            ),
+            "trelix-batch/xyz/output/shard-1/input.jsonl.out": _s3_output_body(
+                [{"recordId": "1", "modelOutput": {"embedding": [1.0, 1.0]}}]
+            ),
+        }
+
+        def fake_get_object(Bucket: str, Key: str) -> dict:
+            mock_body = MagicMock()
+            mock_body.read.return_value = shard_bodies[Key]
+            return {"Body": mock_body}
+
+        embedder._s3_client.get_object.side_effect = fake_get_object
+
+        by_position = embedder.poll_batch_records("job-arn")
+
+        assert by_position == {0: [0.0, 0.0], 1: [1.0, 1.0]}
+
+
+class TestBedrockCohereEmbedderStructurallyLacksBatchApi:
+    """Cohere Embed is NOT in AWS's supported-models list for Bedrock batch
+    inference at all -- BedrockCohereEmbedder must structurally lack
+    submit_batch/poll_batch, exactly like VoyageEmbedder does today."""
+
+    def test_no_submit_batch(self) -> None:
+        assert not hasattr(BedrockCohereEmbedder, "submit_batch")
+
+    def test_no_poll_batch(self) -> None:
+        assert not hasattr(BedrockCohereEmbedder, "poll_batch")
+
+
 # ---------------------------------------------------------------------------
 # BedrockCohereEmbedder (mocked — no real AWS calls)
 # ---------------------------------------------------------------------------

@@ -748,6 +748,13 @@ class LocalCodeEmbedder(BaseEmbedder):
         return 2304
 
 
+def _split_s3_uri(uri: str) -> tuple[str, str]:
+    """Split "s3://bucket/key/prefix" into ("bucket", "key/prefix")."""
+    without_scheme = uri.removeprefix("s3://")
+    bucket, _, key_prefix = without_scheme.partition("/")
+    return bucket, key_prefix
+
+
 class _BedrockEmbedderBase(BaseEmbedder):
     """
     Shared boto3 client setup and credential decode for both Bedrock embedders.
@@ -769,7 +776,23 @@ class _BedrockEmbedderBase(BaseEmbedder):
             pass
         return value
 
-    def _make_boto3_client(self, config: EmbedderConfig) -> Any:
+    def _make_boto3_client(
+        self, config: EmbedderConfig, service_name: str = "bedrock-runtime"
+    ) -> Any:
+        """Build a boto3 client for *service_name* using the same session,
+        region, profile, credentials, and zero-native-retries config every
+        Bedrock embedder client already uses.
+
+        *service_name* defaults to "bedrock-runtime" (both Titan's and
+        Cohere's real-time invoke_model client, the only client either needed
+        before batch support existed). BedrockTitanEmbedder's batch methods
+        reuse this same construction for two more AWS services — "bedrock"
+        (the control-plane client: create_model_invocation_job /
+        get_model_invocation_job) and "s3" (uploading the input JSONL,
+        discovering and downloading the output JSONL) — rather than
+        duplicating the region/profile/credential-decode logic a second and
+        third time.
+        """
         try:
             import boto3
             from botocore.config import Config as BotoConfig
@@ -791,8 +814,9 @@ class _BedrockEmbedderBase(BaseEmbedder):
         client_kwargs: dict[str, Any] = {
             "region_name": config.bedrock_aws_region,
             # max_attempts=0: @with_retry (via _invoke_model() on both
-            # Titan/Cohere embedders) is meant to be the sole retry layer —
-            # see BedrockBackend._build_client's comment for why.
+            # Titan/Cohere embedders, and via the batch-API methods on
+            # Titan) is meant to be the sole retry layer — see
+            # BedrockBackend._build_client's comment for why.
             "config": BotoConfig(retries={"max_attempts": 0, "mode": "standard"}),
         }
         if config.bedrock_aws_access_key_id:
@@ -803,7 +827,7 @@ class _BedrockEmbedderBase(BaseEmbedder):
             client_kwargs["aws_secret_access_key"] = self._decode_credential(
                 config.bedrock_aws_secret_access_key
             )
-        return session.client("bedrock-runtime", **client_kwargs)
+        return session.client(service_name, **client_kwargs)
 
 
 class BedrockTitanEmbedder(_BedrockEmbedderBase):
@@ -826,26 +850,109 @@ class BedrockTitanEmbedder(_BedrockEmbedderBase):
     # Titan API: one text per call — no native batching
     _BATCH_SIZE = 1
 
+    # -- Batch API (submit_batch / poll_batch) ------------------------------
+    #
+    # Amazon Bedrock's batch inference: a BYO-S3/BYO-IAM-role async job with no
+    # fixed completion window — trelix's second long-running external job
+    # pattern after OpenAIEmbedder's (see that class's own Batch API comment
+    # above for the shared design). Deliberately BedrockTitanEmbedder-only, not
+    # on _BedrockEmbedderBase or BedrockCohereEmbedder: Cohere Embed is not in
+    # AWS's supported-models list for Bedrock batch inference at all, only
+    # Titan Text Embeddings V2 supports it — the same reasoning that keeps
+    # submit_batch/poll_batch off BaseEmbedder entirely (VoyageEmbedder has no
+    # batch mechanism either).
+    #
+    # Verified against real AWS docs/boto3 reference during this session (not
+    # assumed from memory): CreateModelInvocationJob's request shape,
+    # GetModelInvocationJob's response shape (confirms outputDataConfig IS
+    # returned on every describe call, so poll_batch never needs to be handed
+    # the output URI by a caller), and a real AWS ML blog's worked example of
+    # locating a job's actual output object under its output prefix.
+
+    _BATCH_TERMINAL_FAILURE_STATUSES = frozenset({"Failed", "Expired", "Stopped"})
+    _BATCH_NON_TERMINAL_STATUSES = frozenset(
+        {"Submitted", "Validating", "Scheduled", "InProgress", "Stopping"}
+    )
+    # Bedrock writes the JSONL result next to a manifest.json.out summary file
+    # under the same output prefix — this suffix is what distinguishes it.
+    _BATCH_OUTPUT_SUFFIX = ".jsonl.out"
+
+    # Class-level default (not just an __init__ assignment) so that
+    # MagicMock(spec=BedrockTitanEmbedder) — the indexer test suite's mocking
+    # convention — exposes this attribute at all; a spec mock only sees
+    # attributes dir() finds on the class, not ones assigned solely inside
+    # __init__ on a real instance.
+    last_batch_s3_uris: tuple[str, str] | None = None
+
     def __init__(self, config: EmbedderConfig) -> None:
         self._client = self._make_boto3_client(config)
         self._model = config.bedrock_titan_model
         self._dims = config.bedrock_titan_dimensions
         self._normalize = config.bedrock_titan_normalize
+        self._config = config  # kept for lazy control-plane/S3 client construction
+        self._bedrock_control_client: Any | None = None
+        self._s3_client: Any | None = None
+        # Set by submit_batch(), read by the indexer immediately afterwards to
+        # persist via db.insert_batch_job() — submit_batch's return type is
+        # pinned to `str` (matching OpenAIEmbedder.submit_batch's contract), so
+        # the S3 URIs it generated ride along on the instance instead.
+        self.last_batch_s3_uris: tuple[str, str] | None = None
+
+    def _get_bedrock_control_client(self) -> Any:
+        """Lazily create the 'bedrock' control-plane client (create/get
+        model invocation job) — a different client from 'bedrock-runtime'
+        (self._client, used for real-time invoke_model)."""
+        if self._bedrock_control_client is None:
+            self._bedrock_control_client = self._make_boto3_client(self._config, "bedrock")
+        return self._bedrock_control_client
+
+    def _get_s3_client(self) -> Any:
+        """Lazily create the S3 client used to upload the batch input JSONL
+        and discover/download its output JSONL."""
+        if self._s3_client is None:
+            self._s3_client = self._make_boto3_client(self._config, "s3")
+        return self._s3_client
 
     @with_retry(max_attempts=5)
     def _invoke_model(self, **kwargs: Any) -> Any:
         return self._client.invoke_model(**kwargs)
 
+    @with_retry(max_attempts=5)
+    def _create_model_invocation_job(self, **kwargs: Any) -> Any:
+        return self._get_bedrock_control_client().create_model_invocation_job(**kwargs)
+
+    @with_retry(max_attempts=5)
+    def _get_model_invocation_job(self, **kwargs: Any) -> Any:
+        return self._get_bedrock_control_client().get_model_invocation_job(**kwargs)
+
+    @with_retry(max_attempts=5)
+    def _s3_put_object(self, **kwargs: Any) -> Any:
+        return self._get_s3_client().put_object(**kwargs)
+
+    @with_retry(max_attempts=5)
+    def _s3_list_objects_v2(self, **kwargs: Any) -> Any:
+        return self._get_s3_client().list_objects_v2(**kwargs)
+
+    @with_retry(max_attempts=5)
+    def _s3_get_object(self, **kwargs: Any) -> Any:
+        return self._get_s3_client().get_object(**kwargs)
+
+    def _invoke_body(self, text: str) -> dict[str, Any]:
+        """The real-time invoke_model request body for *text* — shared by
+        _embed_one() (the synchronous path) and submit_batch() (each batch
+        record's "modelInput", which Bedrock passes through to InvokeModel
+        verbatim for an InvokeModel-type batch job) so the two never drift
+        into two different shapes for the same model."""
+        return {
+            "inputText": text,
+            "dimensions": self._dims,
+            "normalize": self._normalize,
+        }
+
     def _embed_one(self, text: str) -> list[float]:
         import json
 
-        body = json.dumps(
-            {
-                "inputText": text,
-                "dimensions": self._dims,
-                "normalize": self._normalize,
-            }
-        )
+        body = json.dumps(self._invoke_body(text))
         response = self._invoke_model(
             modelId=self._model,
             body=body,
@@ -869,6 +976,186 @@ class BedrockTitanEmbedder(_BedrockEmbedderBase):
         loop = asyncio.get_event_loop()
         tasks = [loop.run_in_executor(_get_sync_executor(), self._embed_one, t) for t in texts]
         return list(await asyncio.gather(*tasks))
+
+    def submit_batch(self, texts: list[str]) -> str:
+        """Submit *texts* as a Bedrock batch inference job on Titan Text
+        Embeddings V2. Returns the job's jobArn immediately — this does not
+        wait for completion; pair with poll_batch()/poll_batch_records().
+
+        BYO-infrastructure: requires an S3 bucket and IAM role the operator
+        has already provisioned (TRELIX_BEDROCK_BATCH_S3_BUCKET /
+        TRELIX_BEDROCK_BATCH_ROLE_ARN). trelix never calls CreateBucket,
+        PutBucketPolicy, CreateRole, or PutRolePolicy — raises a clear
+        ValueError naming both required env vars up front rather than letting
+        an unset one surface as a confusing boto3 error three calls deep.
+
+        Each text becomes one JSONL record, {"recordId": str(index),
+        "modelInput": {...}} — recordId is the stringified position of *text*
+        in the *texts* list, which poll_batch()/poll_batch_records() map back
+        to when reading the output.
+        """
+        import json
+        import uuid
+
+        bucket = self._config.bedrock_batch_s3_bucket
+        role_arn = self._config.bedrock_batch_role_arn
+        if not bucket or not role_arn:
+            raise ValueError(
+                "Bedrock Titan Batch API requires both TRELIX_BEDROCK_BATCH_S3_BUCKET "
+                "and TRELIX_BEDROCK_BATCH_ROLE_ARN to be set. Both must name an S3 "
+                "bucket and IAM role the operator has already provisioned -- trelix "
+                "never creates either itself. Set both environment variables, or "
+                "leave --use-batch-api off for this provider."
+            )
+
+        job_uuid = str(uuid.uuid4())
+        prefix = f"trelix-batch/{job_uuid}/"
+        lines = [
+            json.dumps({"recordId": str(index), "modelInput": self._invoke_body(text)})
+            for index, text in enumerate(texts)
+        ]
+        input_key = f"{prefix}input.jsonl"
+        self._s3_put_object(
+            Bucket=bucket,
+            Key=input_key,
+            Body=("\n".join(lines) + "\n").encode("utf-8"),
+        )
+
+        input_uri = f"s3://{bucket}/{input_key}"
+        output_uri = f"s3://{bucket}/{prefix}output/"
+        response = self._create_model_invocation_job(
+            jobName=f"trelix-batch-{job_uuid}",
+            roleArn=role_arn,
+            modelId=self._model,
+            inputDataConfig={"s3InputDataConfig": {"s3Uri": input_uri}},
+            outputDataConfig={"s3OutputDataConfig": {"s3Uri": output_uri}},
+        )
+        self.last_batch_s3_uris = (input_uri, output_uri)
+        return response["jobArn"]  # type: ignore[no-any-return]
+
+    def _read_batch_output(self, job_id: str, s3_output_uri: str) -> dict[int, list[float]]:
+        """Discover and parse the JSONL Bedrock generated for *job_id* under
+        *s3_output_uri*, keyed by original input position (not by output-file
+        line order, and not by any positional zip/index assumption).
+
+        Bedrock generates the exact output object key itself — verified
+        against a real AWS ML blog's worked example
+        (job_details["outputDataConfig"]["s3OutputDataConfig"]["s3Uri"], with
+        the actual filename one level deeper than the prefix) — it is not
+        simply "output.jsonl". Rather than hardcode that exact nested path
+        (which could drift across model/API versions), this discovers the
+        real key(s) via ListObjectsV2 under the known output prefix and reads
+        every JSONL result file, excluding the manifest.json.out Bedrock also
+        writes there.
+
+        Bedrock's own docs state it "generates an output JSONL file for each
+        input JSONL file" — submit_batch() currently only ever uploads one
+        input.jsonl per job, so today there is exactly one matching object,
+        but this reads and merges ALL of them rather than assuming index [0]
+        is the only one: a future change that splits a large batch across
+        multiple input files (e.g. to respect a records-per-file quota) would
+        otherwise silently lose every record in every shard but the first,
+        with no error to signal it.
+        """
+        import json
+
+        bucket, key_prefix = _split_s3_uri(s3_output_uri)
+        listing = self._s3_list_objects_v2(Bucket=bucket, Prefix=key_prefix)
+        candidate_keys = [
+            obj["Key"]
+            for obj in listing.get("Contents", [])
+            if obj["Key"].endswith(self._BATCH_OUTPUT_SUFFIX)
+        ]
+        if not candidate_keys:
+            raise RuntimeError(
+                f"Bedrock batch inference job {job_id!r} is reported complete, but no "
+                f"{self._BATCH_OUTPUT_SUFFIX!r} output object was found under "
+                f"s3://{bucket}/{key_prefix} -- cannot recover any vectors from this job."
+            )
+
+        records: dict[int, list[float]] = {}
+        for key in candidate_keys:
+            output_object = self._s3_get_object(Bucket=bucket, Key=key)
+            body = output_object["Body"].read().decode("utf-8")
+            for line in body.splitlines():
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                record_id = record.get("recordId")
+                if record_id is None:
+                    continue
+                model_output = record.get("modelOutput")
+                if not model_output or "embedding" not in model_output:
+                    # Per-record failure ({"recordId": ..., "error": {...}}) --
+                    # correctly omitted, never filled with a placeholder that
+                    # would shift every later position out of alignment.
+                    continue
+                records[int(record_id)] = model_output["embedding"]
+        return records
+
+    def poll_batch_records(self, job_id: str) -> dict[int, list[float]] | None:
+        """Poll a Bedrock batch inference job by jobArn, returning vectors
+        keyed by their ORIGINAL input position (the int form of the recordId
+        submit_batch assigned) rather than a bare ordered list.
+
+        This is the position-preserving variant poll_batch() itself is built
+        from, and the one the indexer uses to pair vectors back to the
+        correct chunk_ids without a positional zip/index assumption: a
+        PartiallyCompleted job's dict simply has gaps (missing keys) where a
+        record failed, instead of every later vector shifting down to fill
+        the gap the way a plain list would.
+
+        Returns None while non-terminal (Submitted/Validating/Scheduled/
+        InProgress/Stopping). Raises BatchJobTerminalError for a terminal
+        failure (Failed/Expired/Stopped) -- there are no vectors to recover.
+        Completed and PartiallyCompleted both return a dict; PartiallyCompleted
+        is a SUCCESS path here (see poll_batch()'s docstring), not an error.
+        """
+        response = self._get_model_invocation_job(jobIdentifier=job_id)
+        status = response["status"]
+        if status in self._BATCH_NON_TERMINAL_STATUSES:
+            return None
+        if status in self._BATCH_TERMINAL_FAILURE_STATUSES:
+            raise BatchJobTerminalError(
+                f"Bedrock batch inference job {job_id!r} ended with status {status!r}"
+            )
+        # Completed or PartiallyCompleted: GetModelInvocationJob always
+        # returns outputDataConfig (verified against the real API response
+        # shape), so no caller ever needs to pass the output URI in.
+        output_uri = response["outputDataConfig"]["s3OutputDataConfig"]["s3Uri"]
+        return self._read_batch_output(job_id, output_uri)
+
+    def poll_batch(
+        self, job_id: str, expected_count: int | None = None
+    ) -> list[list[float]] | None:
+        """Poll a Bedrock batch inference job by jobArn.
+
+        Returns None while the job is still in flight. Once terminal, returns
+        the embedding vectors re-ordered by original input position (never a
+        positional zip/list-index assumption over the output file's own line
+        order). Raises BatchJobTerminalError if the job reaches
+        Failed/Expired/Stopped.
+
+        Unlike OpenAIEmbedder.poll_batch, a returned-count short of
+        *expected_count* never raises BatchJobIncompleteError here:
+        PartiallyCompleted is Bedrock's own status telling you upfront that
+        some records failed, which is a strictly better signal than inferring
+        it from a count mismatch after the fact -- OpenAI has no
+        PartiallyCompleted-equivalent status, which is why *it* needs the
+        count check and this does not. *expected_count* is accepted only for
+        interface parity with OpenAIEmbedder.poll_batch (the indexer calls
+        both polymorphically) and is intentionally unused for any raise
+        decision here; the returned list is simply shorter, and whatever
+        chunks it omits are picked up by trelix's own next-run reconciliation
+        exactly like a partial real-time embedding failure already degrades
+        today. Prefer poll_batch_records() when you need to know WHICH
+        original positions succeeded (the indexer does).
+        """
+        del expected_count  # status is the source of truth here, not the count
+        records = self.poll_batch_records(job_id)
+        if records is None:
+            return None
+        return [records[i] for i in sorted(records)]
 
     @property
     def dimension(self) -> int:

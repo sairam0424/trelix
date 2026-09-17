@@ -747,6 +747,26 @@ class Database:
         )
         self._conn.commit()
 
+        # Bedrock Titan Batch API migration: embed_batch_jobs.s3_input_uri /
+        # s3_output_uri. The OpenAI Batch API needs no S3 bookkeeping at all
+        # (its job_id round-trips through OpenAI's own files.content endpoint),
+        # but a Bedrock batch inference job's job_id (jobArn) is not itself
+        # enough for a LATER CLI invocation (a fresh process, not the one that
+        # called submit_batch) to know where its output landed if the input/
+        # output prefix was generated as a fresh UUID at submission time —
+        # these columns let poll_batch find it again. Nullable so existing
+        # OpenAI-provider rows (and any row inserted before this migration ran)
+        # are untouched.
+        batch_jobs_cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(embed_batch_jobs)").fetchall()
+        }
+        if "s3_input_uri" not in batch_jobs_cols:
+            self._conn.execute("ALTER TABLE embed_batch_jobs ADD COLUMN s3_input_uri TEXT")
+            self._conn.commit()
+        if "s3_output_uri" not in batch_jobs_cols:
+            self._conn.execute("ALTER TABLE embed_batch_jobs ADD COLUMN s3_output_uri TEXT")
+            self._conn.commit()
+
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Connection, None, None]:
         try:
@@ -2221,20 +2241,38 @@ class Database:
         provider: str,
         job_id: str,
         pending_chunk_ids: list[int],
+        s3_input_uri: str | None = None,
+        s3_output_uri: str | None = None,
     ) -> int:
-        """Record a newly-submitted OpenAI Batch API job. Returns the new row id.
+        """Record a newly-submitted Batch API job. Returns the new row id.
 
         Always inserted with status='submitted' — that is the only state a job
         can be in the moment it is accepted by the API. update_batch_job_status()
         is the only path that ever moves it to 'completed' or 'failed'.
+
+        s3_input_uri/s3_output_uri are optional and default to None: OpenAI
+        Batch API jobs have no S3 bookkeeping at all (OpenAI's own files.content
+        endpoint round-trips through job_id alone), so only the Bedrock Titan
+        Batch API path ever passes them. They exist so a LATER invocation of
+        poll_batch (a fresh CLI process, not the one that called submit_batch)
+        can find a Bedrock job's output prefix again — see the s3_input_uri /
+        s3_output_uri migration comment in _apply_migrations().
         """
         cursor = self._conn.execute(
             """
             INSERT INTO embed_batch_jobs
-              (repo_path, provider, job_id, status, submitted_at, pending_chunk_ids)
-            VALUES (?, ?, ?, 'submitted', datetime('now'), ?)
+              (repo_path, provider, job_id, status, submitted_at, pending_chunk_ids,
+               s3_input_uri, s3_output_uri)
+            VALUES (?, ?, ?, 'submitted', datetime('now'), ?, ?, ?)
             """,
-            (repo_path, provider, job_id, json.dumps(pending_chunk_ids)),
+            (
+                repo_path,
+                provider,
+                job_id,
+                json.dumps(pending_chunk_ids),
+                s3_input_uri,
+                s3_output_uri,
+            ),
         )
         self._conn.commit()
         return int(cursor.lastrowid or 0)
@@ -2250,11 +2288,12 @@ class Database:
 
         pending_chunk_ids is JSON-decoded back into a list[int] — see
         insert_batch_job for why it is stored as JSON rather than a join table.
+        s3_input_uri/s3_output_uri are None for every non-Bedrock row.
         """
         row = self._conn.execute(
             """
             SELECT id, repo_path, provider, job_id, status, submitted_at,
-                   pending_chunk_ids, created_at
+                   pending_chunk_ids, created_at, s3_input_uri, s3_output_uri
             FROM embed_batch_jobs
             WHERE repo_path = ? AND status NOT IN ('completed', 'failed')
             ORDER BY id DESC
@@ -2273,6 +2312,8 @@ class Database:
             "submitted_at": row["submitted_at"],
             "pending_chunk_ids": json.loads(row["pending_chunk_ids"]),
             "created_at": row["created_at"],
+            "s3_input_uri": row["s3_input_uri"],
+            "s3_output_uri": row["s3_output_uri"],
         }
 
     def update_batch_job_status(self, job_row_id: int, status: str) -> None:

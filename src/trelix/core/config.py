@@ -421,6 +421,21 @@ class EmbedderConfig(BaseSettings):
     bedrock_cohere_model: str = "cohere.embed-english-v3"
     bedrock_cohere_dimensions: int = 1024
 
+    # ── AWS Bedrock Batch API (Titan Text Embeddings V2 only) ────────────────
+    # Cohere Embed is NOT in AWS's supported-models list for Bedrock batch
+    # inference at all, so these apply only to BedrockTitanEmbedder.submit_batch/
+    # poll_batch. BYO-infrastructure, matching every other Bedrock/Azure config
+    # in this file: both must name an S3 bucket and IAM role the operator has
+    # already provisioned. trelix never calls CreateBucket, PutBucketPolicy,
+    # CreateRole, or PutRolePolicy — it only ever uses resources handed to it.
+    # None by default: batch is opt-in via IndexConfig.use_batch_api anyway, and
+    # an unset value raises a clear ValueError from submit_batch rather than a
+    # confusing boto3 error three calls deep.
+    bedrock_batch_s3_bucket: str | None = Field(
+        default=None, alias="TRELIX_BEDROCK_BATCH_S3_BUCKET"
+    )
+    bedrock_batch_role_arn: str | None = Field(default=None, alias="TRELIX_BEDROCK_BATCH_ROLE_ARN")
+
     batch_size: int = 64
 
     # ── Indexing performance / rate limiting ─────────────────────────────────

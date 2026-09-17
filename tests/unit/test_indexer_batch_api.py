@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from trelix.embedder.base import BatchJobTerminalError, OpenAIEmbedder
+from trelix.embedder.base import BatchJobTerminalError, BedrockTitanEmbedder, OpenAIEmbedder
 from trelix.indexing.indexer import Indexer, _PendingChunk
 
 
@@ -61,6 +61,30 @@ def _build_indexer_mock(max_tokens_per_batch: int = 1000) -> Indexer:
     indexer = object.__new__(Indexer)
     indexer.config = config
     indexer.embedder = MagicMock(spec=OpenAIEmbedder)
+    indexer.vector_store = MagicMock()
+    indexer.db = MagicMock()
+    indexer._console = MagicMock()
+    indexer._progress_cb = None
+
+    return indexer
+
+
+def _build_indexer_mock_bedrock(max_tokens_per_batch: int = 1000) -> Indexer:
+    """Same as _build_indexer_mock, but with a BedrockTitanEmbedder-spec'd
+    embedder mock — exercises the poll_batch_records/last_batch_s3_uris path
+    instead of OpenAI's poll_batch/positional-zip path."""
+    embedder_cfg = MagicMock()
+    embedder_cfg.embed_max_tokens_per_batch = max_tokens_per_batch
+    embedder_cfg.provider = "bedrock-titan"
+
+    config = MagicMock()
+    config.embedder = embedder_cfg
+    config.repo_path = "/fake/repo"
+    config.use_batch_api = True
+
+    indexer = object.__new__(Indexer)
+    indexer.config = config
+    indexer.embedder = MagicMock(spec=BedrockTitanEmbedder)
     indexer.vector_store = MagicMock()
     indexer.db = MagicMock()
     indexer._console = MagicMock()
@@ -194,4 +218,89 @@ class TestBatchEmbedAndStoreViaBatchApi:
             raise AssertionError("expected ConnectionError to propagate")
 
         indexer.db.update_batch_job_status.assert_not_called()
+        indexer.vector_store.upsert_batch.assert_not_called()
+
+
+class TestBatchEmbedAndStoreViaBatchApiBedrock:
+    """Bedrock Titan branch of the same strategy — dispatches on
+    isinstance(self.embedder, BedrockTitanEmbedder) to use
+    poll_batch_records()'s position-preserving dict instead of OpenAI's
+    poll_batch()/positional-zip path, and to persist submit_batch()'s S3
+    URIs (via embedder.last_batch_s3_uris) into db.insert_batch_job()."""
+
+    def test_first_invocation_submits_job_and_persists_s3_uris(self) -> None:
+        pending = [_make_chunk(i) for i in range(2)]
+        indexer = _build_indexer_mock_bedrock(max_tokens_per_batch=1000)
+        indexer.db.get_pending_batch_job.return_value = None
+        indexer.embedder.submit_batch.return_value = "arn:aws:bedrock:...:job/abc"
+        indexer.embedder.last_batch_s3_uris = (
+            "s3://bucket/trelix-batch/u1/input.jsonl",
+            "s3://bucket/trelix-batch/u1/output/",
+        )
+        stats: dict = {"chunks_embedded": 0}
+
+        indexer._batch_embed_and_store_via_batch_api(pending, stats)
+
+        indexer.embedder.submit_batch.assert_called_once_with([p.chunk_text for p in pending])
+        indexer.db.insert_batch_job.assert_called_once_with(
+            "/fake/repo",
+            "bedrock-titan",
+            "arn:aws:bedrock:...:job/abc",
+            [p.chunk_id for p in pending],
+            s3_input_uri="s3://bucket/trelix-batch/u1/input.jsonl",
+            s3_output_uri="s3://bucket/trelix-batch/u1/output/",
+        )
+        indexer.embedder.poll_batch_records.assert_not_called()
+        indexer.vector_store.upsert_batch.assert_not_called()
+
+    def test_resume_still_processing_returns_without_upsert(self) -> None:
+        indexer = _build_indexer_mock_bedrock()
+        indexer.db.get_pending_batch_job.return_value = dict(_PENDING_JOB_ROW)
+        indexer.embedder.poll_batch_records.return_value = None
+        stats: dict = {"chunks_embedded": 0}
+
+        indexer._batch_embed_and_store_via_batch_api([], stats)
+
+        indexer.vector_store.upsert_batch.assert_not_called()
+        indexer.db.update_batch_job_status.assert_not_called()
+
+    def test_resume_completed_pairs_by_position_not_positional_zip(self) -> None:
+        """poll_batch_records returns a dict keyed by ORIGINAL position, out of
+        order and with no assumption that it's the same length as chunk_ids —
+        the indexer must pair records[i] with chunk_ids[i], not zip a raw
+        values-list against chunk_ids positionally."""
+        indexer = _build_indexer_mock_bedrock()
+        job_row = dict(_PENDING_JOB_ROW)
+        job_row["pending_chunk_ids"] = [10, 20, 30]
+        indexer.db.get_pending_batch_job.return_value = job_row
+        # PartiallyCompleted: position 1 (chunk_id 20) failed and is simply
+        # absent from the dict -- a positional zip of chunk_ids against
+        # [vec_for_0, vec_for_2] would wrongly pair chunk_id 20 with position
+        # 2's vector and lose chunk_id 30 entirely.
+        indexer.embedder.poll_batch_records.return_value = {0: [0.0, 0.0], 2: [2.0, 2.0]}
+        stats: dict = {"chunks_embedded": 0}
+
+        indexer._batch_embed_and_store_via_batch_api([], stats)
+
+        indexer.embedder.poll_batch_records.assert_called_once_with("batch_123")
+        indexer.vector_store.upsert_batch.assert_called_once_with(
+            [(10, [0.0, 0.0]), (30, [2.0, 2.0])]
+        )
+        indexer.db.update_batch_job_status.assert_called_once_with(7, "completed")
+        assert stats["chunks_embedded"] == 2
+
+    def test_resume_terminal_failure_marks_job_failed(self) -> None:
+        indexer = _build_indexer_mock_bedrock()
+        indexer.db.get_pending_batch_job.return_value = dict(_PENDING_JOB_ROW)
+        indexer.embedder.poll_batch_records.side_effect = BatchJobTerminalError("job dead")
+        stats: dict = {"chunks_embedded": 0}
+
+        try:
+            indexer._batch_embed_and_store_via_batch_api([], stats)
+        except BatchJobTerminalError:
+            pass
+        else:
+            raise AssertionError("expected BatchJobTerminalError to propagate")
+
+        indexer.db.update_batch_job_status.assert_called_once_with(7, "failed")
         indexer.vector_store.upsert_batch.assert_not_called()

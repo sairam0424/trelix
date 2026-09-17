@@ -69,7 +69,7 @@ from trelix.cli.progress import make_progress
 from trelix.core.config import IndexConfig
 from trelix.core.console_safety import safe_text as _safe_text
 from trelix.core.models import IndexedFile, Language, Symbol
-from trelix.embedder.base import BaseEmbedder, OpenAIEmbedder, make_embedder
+from trelix.embedder.base import BaseEmbedder, BedrockTitanEmbedder, OpenAIEmbedder, make_embedder
 from trelix.indexing.chunker import Chunker, ContextualChunker
 from trelix.indexing.parser.base import ParseResult
 from trelix.indexing.parser.registry import get_parser
@@ -1015,19 +1015,23 @@ class Indexer:
         if record_early:
             self._record_embedding_dimension()
 
-        # OpenAI Batch API strategy (opt-in via `use_batch_api`): a 50%-cheaper, async
-        # job with up to a 24h completion window, in place of the default concurrent
-        # async embed below. Guarded on the embedder's actual type/capability rather
-        # than trusting the flag alone — `use_batch_api=True` with a non-OpenAI
-        # embedder (e.g. VoyageEmbedder, which has no batch mechanism at all) must
-        # fall through to the normal path rather than raise an AttributeError deep
-        # inside `_batch_embed_and_store_via_batch_api`.
-        use_batch_api = self.config.use_batch_api and isinstance(self.embedder, OpenAIEmbedder)
+        # Batch API strategy (opt-in via `use_batch_api`): a cheaper, async job
+        # with a long completion window, in place of the default concurrent async
+        # embed below. Guarded on the embedder's actual type/capability rather
+        # than trusting the flag alone — `use_batch_api=True` with an embedder
+        # that has no batch mechanism at all (e.g. VoyageEmbedder, or Bedrock's
+        # own BedrockCohereEmbedder — Cohere Embed is not in AWS's
+        # supported-models list for Bedrock batch inference) must fall through
+        # to the normal path rather than raise an AttributeError deep inside
+        # `_batch_embed_and_store_via_batch_api`.
+        use_batch_api = self.config.use_batch_api and isinstance(
+            self.embedder, OpenAIEmbedder | BedrockTitanEmbedder
+        )
         if self.config.use_batch_api and not use_batch_api:
             self._console.print(
                 "[yellow]--use-batch-api has no effect with provider="
-                f"{self.config.embedder.provider!r} (Batch API support is OpenAI-only) "
-                "— embedding synchronously instead.[/yellow]"
+                f"{self.config.embedder.provider!r} (Batch API support is OpenAI and "
+                "Bedrock Titan only) — embedding synchronously instead.[/yellow]"
             )
 
         if pending and use_batch_api:
@@ -2012,9 +2016,9 @@ class Indexer:
     ) -> None:
         """
         Third Phase 3 strategy (opt-in via `IndexConfig.use_batch_api`): submit
-        chunks to the OpenAI Batch API — a 50%-cheaper, async job with a 24h
-        completion window — instead of embedding them synchronously/concurrently
-        in this run.
+        chunks to the OpenAI Batch API or Bedrock Titan's batch inference — a
+        cheaper, async job with a long completion window — instead of embedding
+        them synchronously/concurrently in this run.
 
         This is trelix's first long-running external job pattern, so unlike
         `_batch_embed_and_store`/`_batch_embed_and_store_async` it is a
@@ -2027,27 +2031,49 @@ class Indexer:
               `self.embedder.submit_batch()`, and persisted immediately via
               `self.db.insert_batch_job()` — one insert per submission, so a
               crash between two submissions does not lose the first job's
-              tracking row.
+              tracking row. For a BedrockTitanEmbedder job, the S3 input/output
+              URIs `submit_batch()` generated (exposed via
+              `embedder.last_batch_s3_uris`, since `submit_batch`'s return
+              type is pinned to the job id alone) are persisted alongside it —
+              `poll_batch`/`poll_batch_records` re-derive the output URI from
+              Bedrock's own job description on a later run regardless, but
+              storing it here keeps the row self-describing.
             - Returns WITHOUT blocking. Nothing is embedded in this run; the
               caller must re-run indexing later to pick up results.
 
           Resume invocation (`self.db.get_pending_batch_job()` returns a job):
-            - Polls it via `self.embedder.poll_batch(job_id)`.
-            - `None` → still processing: log and return, still not blocking.
-            - Vectors → zipped back onto the job's persisted
-              `pending_chunk_ids` (the order that produced them) and upserted
-              via the existing `vector_store.upsert_batch` path, then the job
-              row is marked 'completed'.
-            - A terminal failure status makes `poll_batch` raise
-              `BatchJobTerminalError`; the job row is marked 'failed' (so it
-              stops being returned as "pending" forever) and the error
-              re-raised — there is no vector to recover, and the caller
-              needs to know to resubmit. Any OTHER exception from
-              `poll_batch` (network error, `BatchJobIncompleteError` from a
-              partially-failed batch, a parsing bug) propagates WITHOUT
-              touching the job's status — the job may still be alive on
-              OpenAI's side, and marking it 'failed' would both lose track
-              of it and cause a costly duplicate resubmission on the next run.
+            - OpenAIEmbedder: polls via `self.embedder.poll_batch(job_id,
+              expected_count=len(chunk_ids))`, which either returns None, a
+              full-length ordered vector list, or raises — OpenAI's Batch API
+              has no partial-success status, so a plain `zip(chunk_ids,
+              vectors, strict=True)` is safe (poll_batch's own count check
+              already guarantees they're the same length).
+            - BedrockTitanEmbedder: polls via
+              `self.embedder.poll_batch_records(job_id)`, which returns a dict
+              keyed by ORIGINAL input position rather than a bare list —
+              Bedrock's PartiallyCompleted status means a returned mapping can
+              legitimately be shorter than `chunk_ids`, with gaps anywhere
+              (not just at the end), so pairing is done via `chunk_ids[i]` for
+              each `i` actually present in the dict — never a positional
+              zip/index assumption over two differently-shaped sequences.
+            - `None` from either → still processing: log and return, still
+              not blocking.
+            - A terminal failure status makes `poll_batch`/`poll_batch_records`
+              raise `BatchJobTerminalError`; the job row is marked 'failed' (so
+              it stops being returned as "pending" forever) and the error
+              re-raised — there is no vector to recover, and the caller needs
+              to know to resubmit. Any OTHER exception (network error,
+              `BatchJobIncompleteError` from a partially-failed OpenAI batch, a
+              parsing bug) propagates WITHOUT touching the job's status — the
+              job may still be alive on the provider's side, and marking it
+              'failed' would both lose track of it and cause a costly
+              duplicate resubmission on the next run.
+            - Whatever chunk_ids a Bedrock PartiallyCompleted job's dict omits
+              are simply left un-embedded here; trelix's own next-run
+              reconciliation (re-embedding exactly the chunks still without a
+              vector) picks them up naturally, exactly like a partial
+              real-time embedding failure already degrades today — see
+              BedrockTitanEmbedder.poll_batch_records's docstring.
 
         Only ever resolves ONE job per call — the most recent non-terminal one
         for this repo_path, per `get_pending_batch_job`'s contract. If a prior
@@ -2055,18 +2081,21 @@ class Indexer:
         subsequent `trelix index` run rather than all at once.
 
         Callers must guard the call site: this method assumes `self.embedder`
-        implements `submit_batch`/`poll_batch` (OpenAIEmbedder only — Voyage's
-        SDK has no batch mechanism at all). Re-checked here too, not just at
-        the dispatch site in `index()` — a future refactor of that guard must
-        not turn into an opaque AttributeError three calls deep in
-        `poll_batch`/`submit_batch`, and mypy cannot narrow `self.embedder`
-        across the method boundary from the caller's isinstance check alone.
+        implements `submit_batch`/`poll_batch` (OpenAIEmbedder and
+        BedrockTitanEmbedder only — Voyage's SDK and Bedrock's own
+        BedrockCohereEmbedder have no batch mechanism at all). Re-checked here
+        too, not just at the dispatch site in `index()` — a future refactor of
+        that guard must not turn into an opaque AttributeError three calls
+        deep in `poll_batch`/`submit_batch`, and mypy cannot narrow
+        `self.embedder` across the method boundary from the caller's
+        isinstance check alone.
         """
-        if not isinstance(self.embedder, OpenAIEmbedder):
+        if not isinstance(self.embedder, OpenAIEmbedder | BedrockTitanEmbedder):
             raise TypeError(
-                "_batch_embed_and_store_via_batch_api requires an OpenAIEmbedder "
-                f"(got {type(self.embedder).__name__}); the call site in index() "
-                "should have guarded this with isinstance(self.embedder, OpenAIEmbedder)"
+                "_batch_embed_and_store_via_batch_api requires an OpenAIEmbedder or "
+                f"BedrockTitanEmbedder (got {type(self.embedder).__name__}); the call "
+                "site in index() should have guarded this with isinstance(self.embedder, "
+                "OpenAIEmbedder | BedrockTitanEmbedder)"
             )
 
         repo_path = self.config.repo_path
@@ -2078,20 +2107,37 @@ class Indexer:
             job_id = job["job_id"]
             chunk_ids = job["pending_chunk_ids"]
             try:
-                vectors = self.embedder.poll_batch(job_id, expected_count=len(chunk_ids))
+                if isinstance(self.embedder, BedrockTitanEmbedder):
+                    records = self.embedder.poll_batch_records(job_id)
+                    # Keyed by chunk_ids[i] for each original position i actually
+                    # present — NOT dict(zip(chunk_ids, records.values())), which
+                    # would silently re-pair every id after a gap with the wrong
+                    # vector the moment a PartiallyCompleted job drops a record
+                    # anywhere but the end.
+                    vectors_by_chunk_id = (
+                        None
+                        if records is None
+                        else {chunk_ids[i]: vector for i, vector in records.items()}
+                    )
+                else:
+                    vectors = self.embedder.poll_batch(job_id, expected_count=len(chunk_ids))
+                    vectors_by_chunk_id = (
+                        None if vectors is None else dict(zip(chunk_ids, vectors, strict=True))
+                    )
             except BatchJobTerminalError:
-                # OpenAI itself reported this job dead (failed/expired/cancelled) --
-                # there are no vectors to ever retrieve, so stop returning it as
-                # "pending" and let the caller resubmit. Any OTHER exception here
-                # (network error surviving retries, BatchJobIncompleteError, a
-                # parsing bug) must NOT land here: the job may still be perfectly
-                # alive on OpenAI's side, and marking it 'failed' would both lose
-                # track of it forever AND cause the submit branch below to pay for
-                # a duplicate job on the next run.
+                # The provider itself reported this job dead (failed/expired/
+                # cancelled/stopped) -- there are no vectors to ever retrieve,
+                # so stop returning it as "pending" and let the caller resubmit.
+                # Any OTHER exception here (network error surviving retries,
+                # BatchJobIncompleteError, a parsing bug) must NOT land here:
+                # the job may still be perfectly alive on the provider's side,
+                # and marking it 'failed' would both lose track of it forever
+                # AND cause the submit branch below to pay for a duplicate job
+                # on the next run.
                 self.db.update_batch_job_status(job["id"], "failed")
                 raise
 
-            if vectors is None:
+            if vectors_by_chunk_id is None:
                 self._console.print(
                     f"[dim]Batch API job {job_id} is still processing — "
                     f"re-run indexing later to check again.[/dim]"
@@ -2099,22 +2145,25 @@ class Indexer:
                 logger.info("Batch API job %s still processing for %s", job_id, repo_path)
                 return
 
-            # Safe now: poll_batch's expected_count check guarantees len(vectors)
-            # == len(chunk_ids), in the same custom_id order chunk_ids was
-            # submitted in (see submit_batch below) -- a positional zip would
-            # otherwise silently mis-pair everything after one missing/failed
-            # response.
-            pairs = list(zip(chunk_ids, vectors, strict=True))
+            pairs = list(vectors_by_chunk_id.items())
             self.vector_store.upsert_batch(pairs)
             self.db.update_batch_job_status(job["id"], "completed")
             stats["chunks_embedded"] = stats.get("chunks_embedded", 0) + len(pairs)
-            self._console.print(
-                f"[dim]Batch API job {job_id} completed — {len(pairs)} chunk(s) embedded.[/dim]"
-            )
+            if len(pairs) < len(chunk_ids):
+                self._console.print(
+                    f"[dim]Batch API job {job_id} completed with {len(pairs)}/"
+                    f"{len(chunk_ids)} chunk(s) embedded — the rest will be "
+                    "re-embedded on a future run.[/dim]"
+                )
+            else:
+                self._console.print(
+                    f"[dim]Batch API job {job_id} completed — {len(pairs)} chunk(s) embedded.[/dim]"
+                )
             logger.info(
-                "Batch API job %s completed: %d chunk(s) embedded for %s",
+                "Batch API job %s completed: %d/%d chunk(s) embedded for %s",
                 job_id,
                 len(pairs),
+                len(chunk_ids),
                 repo_path,
             )
             return
@@ -2126,11 +2175,25 @@ class Indexer:
         batches = _make_token_batches(pending, cfg.embed_max_tokens_per_batch)
         for batch in batches:
             job_id = self.embedder.submit_batch([p.chunk_text for p in batch])
-            self.db.insert_batch_job(repo_path, cfg.provider, job_id, [p.chunk_id for p in batch])
+            if isinstance(self.embedder, BedrockTitanEmbedder):
+                s3_uris = self.embedder.last_batch_s3_uris
+                s3_input_uri, s3_output_uri = s3_uris if s3_uris is not None else (None, None)
+                self.db.insert_batch_job(
+                    repo_path,
+                    cfg.provider,
+                    job_id,
+                    [p.chunk_id for p in batch],
+                    s3_input_uri=s3_input_uri,
+                    s3_output_uri=s3_output_uri,
+                )
+            else:
+                self.db.insert_batch_job(
+                    repo_path, cfg.provider, job_id, [p.chunk_id for p in batch]
+                )
 
         self._console.print(
             f"[yellow]Submitted {len(batches)} Batch API job(s) for "
-            f"{len(pending)} chunk(s). OpenAI's Batch API can take up to 24h "
+            f"{len(pending)} chunk(s). The Batch API can take a while "
             f"to complete — re-run indexing later to poll for results and "
             f"finish embedding.[/yellow]"
         )
