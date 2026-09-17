@@ -3,7 +3,7 @@ trelix CLI — Phase 14 full implementation.
 
 Commands:
     trelix index  <repo> [--provider local|openai|azure|voyage|local-code
-                          |bedrock-titan|bedrock-cohere] [-v]
+                          |bedrock-titan|bedrock-cohere|cohere] [-v]
     trelix search <repo> <query> [--provider ...] [--json]
     trelix ask    <repo> <query> [--provider ...]
     trelix query  <repo> <query> [--provider ...]
@@ -369,11 +369,12 @@ _EmbedderProvider = Literal[
     "nomic-code",
     "bedrock-titan",
     "bedrock-cohere",
+    "cohere",
 ]
 
 _PROVIDER_HELP = (
     "Embedding provider: local | openai | azure | voyage"
-    " | local-code | nomic-code | bedrock-titan | bedrock-cohere"
+    " | local-code | nomic-code | bedrock-titan | bedrock-cohere | cohere"
     " | bge-code (EXPERIMENTAL: pooling unverified, no quality claim)"
     " (default: TRELIX_EMBEDDER_PROVIDER env var, or 'local' if unset)"
 )
@@ -851,6 +852,7 @@ _EMBED_MODEL_FIELDS = {
     "nomic-code": "nomic_code_model",
     "bedrock-titan": "bedrock_titan_model",
     "bedrock-cohere": "bedrock_cohere_model",
+    "cohere": "cohere_model",
 }
 
 

@@ -25,6 +25,7 @@ from trelix.embedder.base import (
     VoyageEmbedder,
     make_embedder,
 )
+from trelix.embedder.cohere import CohereEmbedder
 
 
 def _status_error(status_code: int) -> openai.APIStatusError:
@@ -1072,6 +1073,136 @@ class TestBedrockCohereEmbedder:
 
 
 # ---------------------------------------------------------------------------
+# CohereEmbedder — direct Cohere API (cohere.ClientV2), not the Bedrock envelope
+# ---------------------------------------------------------------------------
+
+_FAKE_COHERE_KEY = "cohere-test-key-not-real"
+
+
+class TestCohereEmbedder:
+    """Tests for the direct Cohere API embedder (cohere.ClientV2)."""
+
+    def _make_response(self, dim: int = 1024, n: int = 1, tokens: float | None = 7.0) -> MagicMock:
+        response = MagicMock()
+        response.embeddings.float_ = [[0.1] * dim for _ in range(n)]
+        response.meta.billed_units.input_tokens = tokens
+        return response
+
+    def _make_client_mock(self, dim: int = 1024, n: int = 1) -> MagicMock:
+        mock_client = MagicMock()
+        mock_client.embed.return_value = self._make_response(dim, n)
+        return mock_client
+
+    def _make(self, dim: int = 1024) -> tuple[CohereEmbedder, MagicMock]:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        mock_client = self._make_client_mock(dim)
+        with patch("trelix.embedder.cohere.ClientV2", return_value=mock_client):
+            embedder = CohereEmbedder(config)
+        return embedder, mock_client
+
+    def test_is_base_embedder(self) -> None:
+        embedder, _ = self._make()
+        assert isinstance(embedder, BaseEmbedder)
+
+    def test_dimension_property_returns_configured_dimensions(self) -> None:
+        config = EmbedderConfig(
+            provider="cohere", cohere_api_key=_FAKE_COHERE_KEY, cohere_dimensions=999
+        )
+        mock_client = self._make_client_mock(dim=999)
+        with patch("trelix.embedder.cohere.ClientV2", return_value=mock_client):
+            embedder = CohereEmbedder(config)
+        assert embedder.dimension == 999
+
+    def test_embed_uses_search_document_input_type_and_float_embedding_type(self) -> None:
+        embedder, mock_client = self._make()
+        embedder.embed(["def foo(): pass"])
+        mock_client.embed.assert_called_once()
+        call_kwargs = mock_client.embed.call_args.kwargs
+        assert call_kwargs["input_type"] == "search_document"
+        assert call_kwargs["embedding_types"] == ["float"]
+        assert call_kwargs["texts"] == ["def foo(): pass"]
+
+    def test_embed_query_uses_search_query_input_type(self) -> None:
+        embedder, mock_client = self._make()
+        embedder.embed_query("find all async functions")
+        mock_client.embed.assert_called_once()
+        call_kwargs = mock_client.embed.call_args.kwargs
+        assert call_kwargs["input_type"] == "search_query"
+
+    def test_embed_returns_vectors_from_response_embeddings_float(self) -> None:
+        embedder, mock_client = self._make()
+        mock_client.embed.return_value = self._make_response(dim=1024, n=2)
+        result = embedder.embed(["hello", "world"])
+        assert len(result) == 2
+        assert all(len(v) == 1024 for v in result)
+
+    def test_embed_query_returns_single_vector(self) -> None:
+        embedder, mock_client = self._make()
+        mock_client.embed.return_value = self._make_response(dim=1024, n=1)
+        result = embedder.embed_query("search query")
+        assert isinstance(result, list)
+        assert len(result) == 1024
+
+    def test_large_batch_splits_at_96(self) -> None:
+        """Mirrors BedrockCohereEmbedder's real client-side 96-text batch limit."""
+        embedder, mock_client = self._make()
+
+        def _side_effect(**kwargs: object) -> MagicMock:
+            texts = kwargs["texts"]
+            assert isinstance(texts, list)
+            return self._make_response(dim=1024, n=len(texts))
+
+        mock_client.embed.side_effect = _side_effect
+        texts = [f"text {i}" for i in range(200)]
+        embedder.embed(texts)
+        # 200 texts → ceil(200/96) = 3 calls
+        assert mock_client.embed.call_count == 3
+
+    def test_factory_returns_cohere_embedder(self) -> None:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        mock_client = self._make_client_mock()
+        with patch("trelix.embedder.cohere.ClientV2", return_value=mock_client):
+            embedder = make_embedder(config)
+        assert isinstance(embedder, CohereEmbedder)
+
+    def test_import_error_with_helpful_message_if_cohere_missing(self) -> None:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        with patch("trelix.embedder.cohere.ClientV2", None):
+            with pytest.raises(ImportError, match="pip install"):
+                CohereEmbedder(config)
+
+    def test_effective_dimension_in_config(self) -> None:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        assert config.effective_dimension == 1024
+
+    def test_default_model_and_dimensions(self) -> None:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        assert config.cohere_model == "embed-english-v3.0"
+        assert config.cohere_dimensions == 1024
+
+    def test_embed_records_billed_input_tokens(self) -> None:
+        """Token metering reads response.meta.billed_units.input_tokens (Cohere's
+        own usage shape) rather than base.py's _usage_tokens() (which reads
+        response.usage.total_tokens / response.total_tokens and does not apply
+        here)."""
+        embedder, mock_client = self._make()
+        mock_client.embed.return_value = self._make_response(dim=1024, n=1, tokens=42.0)
+        with (
+            patch("trelix.embedder.base.otel_tracing.metrics_enabled", return_value=True),
+            patch("trelix.embedder.base.otel_tracing.record_embedding_call") as mock_record,
+        ):
+            embedder.embed(["hello"])
+        mock_record.assert_called_once()
+        assert mock_record.call_args.kwargs["tokens"] == 42
+
+    def test_import_error_message_names_cohere_extra(self) -> None:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        with patch("trelix.embedder.cohere.ClientV2", None):
+            with pytest.raises(ImportError, match=r"trelix\[cohere\]"):
+                CohereEmbedder(config)
+
+
+# ---------------------------------------------------------------------------
 # Shared retry contract — sync + true-async remote embedder paths
 # ---------------------------------------------------------------------------
 
@@ -1165,6 +1296,32 @@ class TestEmbedderRetryContract:
 
         assert result == [0.1, 0.2]
 
+    def test_cohere_embed_retries_on_real_too_many_requests_error_then_succeeds(self) -> None:
+        """The installed cohere==7.1.1 SDK does NOT raise httpx.HTTPStatusError
+        for API errors — it raises typed subclasses of
+        cohere.core.api_error.ApiError with a plain `.status_code` int
+        attribute. Must retry like any other 429-shaped failure. Uses a REAL
+        cohere.errors.TooManyRequestsError (not a MagicMock) because a
+        MagicMock instance would pass isinstance checks it shouldn't and
+        mask this exact bug."""
+        cohere_errors = pytest.importorskip("cohere.errors")
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        mock_client = MagicMock()
+        success = MagicMock()
+        success.embeddings.float_ = [[0.1] * 1024]
+        success.meta.billed_units.input_tokens = 7.0
+        throttled = cohere_errors.TooManyRequestsError(body={"message": "rate limited"})
+        mock_client.embed.side_effect = [throttled, success]
+
+        with patch("trelix.embedder.cohere.ClientV2", return_value=mock_client):
+            embedder = CohereEmbedder(config)
+
+        with patch("tenacity.nap.time.sleep"):
+            result = embedder.embed_query("hello")
+
+        assert result == [0.1] * 1024
+        assert mock_client.embed.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # Embedder client retry configuration — SDK's own retry must be disabled
@@ -1206,3 +1363,16 @@ class TestEmbedderClientRetryConfiguration:
         embedder = BedrockCohereEmbedder(config)
         retries = embedder._client.meta.config.retries
         assert retries["total_max_attempts"] == 1
+
+    def test_cohere_embedder_client_has_sdk_retries_disabled(self) -> None:
+        """cohere's base_client.py defaults max_retries to 2 when the caller
+        doesn't pass it (`_defaulted_max_retries = max_retries if max_retries
+        is not None else 2`) — CohereEmbedder must pass max_retries=0
+        explicitly so it isn't stacked underneath @with_retry's 5-attempt
+        tenacity loop. Real SDK client, no mocking, so this proves what
+        config actually reaches the client — the exact class of test whose
+        absence for Cohere let this gap through."""
+        pytest.importorskip("cohere")
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        embedder = CohereEmbedder(config)
+        assert embedder._client._client_wrapper.get_max_retries() == 0

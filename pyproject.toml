@@ -127,6 +127,19 @@ local = [
 rerank = [
     "cohere>=5.5.0",                  # Cohere reranker (best quality)
 ]
+cohere = [
+    # CohereEmbedder (embedder/cohere.py) — direct Cohere API via cohere.ClientV2,
+    # NOT the same code path as the `rerank` extra above. retrieval/reranker.py's
+    # Cohere reranker calls raw HTTP via `requests` (see its module docstring),
+    # so `rerank`'s own `cohere>=5.5.0` pin is unused by any SDK call site today
+    # and is the wrong floor to reuse here regardless: 5.5.0 predates the verified
+    # `ClientV2.embed(embedding_types=..., ...)` surface this embedder depends on.
+    # A dedicated extra also matches the existing per-provider convention (see
+    # voyage / bge-code / nomic-code below) rather than overloading `rerank`'s
+    # unrelated install intent. Floor is the exact version this embedder was
+    # verified against (see embedder/cohere.py's module docstring).
+    "cohere>=7.1.0",
+]
 plaid = [
     "ragatouille>=0.0.8",             # PLAID ColBERT late-interaction reranker
 ]

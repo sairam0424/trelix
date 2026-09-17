@@ -318,6 +318,7 @@ class EmbedderConfig(BaseSettings):
         "bedrock-cohere",
         "bge-code",
         "nomic-code",
+        "cohere",
     ] = "local"
 
     # ── OpenAI ───────────────────────────────────────────────────────────────
@@ -348,6 +349,27 @@ class EmbedderConfig(BaseSettings):
     # Matryoshka output dimension (voyage-code-3 supports 256/512/1024/2048).
     # None = use full voyage_dimensions. Set smaller for faster HNSW search.
     voyage_output_dimensions: int | None = None
+
+    # ── Cohere (direct API — cohere.ClientV2, not the Bedrock envelope) ──────
+    # Same COHERE_API_KEY alias as RetrievalConfig.cohere_api_key (the reranker,
+    # which calls raw HTTP, not this SDK — see retrieval/reranker.py). Deliberate:
+    # one Cohere account key covers both roles, and the two settings classes
+    # loading the same env var independently is how every other cross-cutting
+    # credential in this file already works (AWS_*, OPENAI_API_KEY are each read
+    # by more than one *Config class too).
+    cohere_api_key: str | None = Field(default=None, alias="COHERE_API_KEY")
+    cohere_model: str = "embed-english-v3.0"
+    # 1024, confirmed against the installed cohere==7.1.1 SDK's own bundled docs
+    # table (embed_jobs/client.py / raw_client.py: "- `embed-english-v3.0` : 1024"),
+    # not assumed from memory — the same discipline as the bge_code_dimensions /
+    # local_code_dimensions comments above. `output_dimension` (the knob that
+    # would change this) is only honoured by embed-v4-and-newer models per
+    # ClientV2.embed()'s own docstring, so it does not apply to this default
+    # model. `CohereEmbedder.dimension` returns this value directly (unlike
+    # e.g. LocalCodeEmbedder, which reads the loaded model first) — there is no
+    # loaded-model width to introspect here, since embed-english-v3.0's output
+    # width isn't configurable.
+    cohere_dimensions: int = 1024
 
     # ── Local-code (SFR-Embedding-Code-2B_R) ─────────────────────────────────
     local_code_model: str = "Salesforce/SFR-Embedding-Code-2B_R"
@@ -424,6 +446,8 @@ class EmbedderConfig(BaseSettings):
             return self.bge_code_dimensions
         if self.provider == "nomic-code":
             return self.nomic_code_dimensions
+        if self.provider == "cohere":
+            return self.cohere_dimensions
         return 384  # all-MiniLM-L6-v2
 
 
