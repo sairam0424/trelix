@@ -27,9 +27,9 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, cast
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
+from trelix.cli.progress import make_progress
 from trelix.core.console_safety import safe_text
 from trelix.federation.registry import RepoRegistry
 
@@ -837,13 +837,7 @@ def _print_cost_preview(config: IndexConfig) -> None:
     token_count = 0
     no_symbols = 0
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
+    with make_progress(console) as progress:
         task = progress.add_task("Chunking (no embedding)…", total=len(to_embed))
         for file in to_embed:
             progress.advance(task)
@@ -2354,13 +2348,7 @@ def migrate_vectors(
     offset = 0
     migrated = 0
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
+    with make_progress(console) as progress:
         task = progress.add_task("Migrating…", total=total)
 
         while True:

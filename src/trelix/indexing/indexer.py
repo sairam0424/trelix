@@ -64,8 +64,8 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
-from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
+from trelix.cli.progress import make_progress
 from trelix.core.config import IndexConfig
 from trelix.core.console_safety import safe_text as _safe_text
 from trelix.core.models import IndexedFile, Language, Symbol
@@ -1115,13 +1115,7 @@ class Indexer:
         total = len(files)
         done_count = 0
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=self._console,
-        ) as progress:
+        with make_progress(self._console) as progress:
             task = progress.add_task("Parsing…", total=len(files))
 
             with ThreadPoolExecutor(max_workers=self.config.parse_workers) as pool:
@@ -1208,13 +1202,7 @@ class Indexer:
         total = len(parsed)
         done_count = 0
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=self._console,
-        ) as progress:
+        with make_progress(self._console) as progress:
             task = progress.add_task("Writing symbols…", total=len(parsed))
 
             for pf in parsed:
@@ -1601,13 +1589,7 @@ class Indexer:
             )
 
         done = 0
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=self._console,
-        ) as progress:
+        with make_progress(self._console) as progress:
             task = progress.add_task("Summarizing…", total=total)
             with ThreadPoolExecutor(
                 max_workers=self._summary_workers, thread_name_prefix="trelix-summary"
@@ -1849,13 +1831,7 @@ class Indexer:
         embedded_so_far = 0
         failures: list[tuple[int, BaseException]] = []
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=self._console,
-        ) as progress:
+        with make_progress(self._console) as progress:
             task = progress.add_task("Embedding…", total=len(pending))
 
             for batch_index, batch in enumerate(batches):
@@ -1942,13 +1918,7 @@ class Indexer:
         skipped_batches = 0
         abort = False
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=self._console,
-        ) as progress:
+        with make_progress(self._console) as progress:
             task = progress.add_task("Embedding…", total=total_chunks)
 
             async def embed_one_batch(batch_index: int, batch: list[_PendingChunk]) -> None:
