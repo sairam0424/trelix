@@ -481,6 +481,22 @@ class StoreConfig(BaseSettings):
     qdrant_prefer_grpc: bool = Field(default=False, alias="QDRANT_PREFER_GRPC")
     qdrant_timeout: float = Field(default=10.0, alias="QDRANT_TIMEOUT")
 
+    # Vector quantization (Qdrant backend only -- sqlite-vec is a flat exact scan,
+    # so quantization there would save storage/CPU but not buy the "faster
+    # approximate search" these numbers assume; scoped out of that backend).
+    # None (default) = unquantized, zero behavior change for existing deployments.
+    # Only takes effect for a collection created AFTER this is set -- see
+    # QdrantVectorStore._ensure_collection / recreate().
+    qdrant_quantization: Literal["int8", "binary"] | None = Field(
+        default=None, alias="QDRANT_QUANTIZATION"
+    )
+    # Re-checks quantized candidates against full-precision vectors at search time.
+    # Defaults True: without rescore, real recall does not match the int8
+    # (~99.99%) / binary (90-98%) recall numbers this feature exists to capture.
+    # Still user-overridable -- disabling it trades recall for the maximum
+    # possible speed gain, a real tradeoff some deployments may want.
+    qdrant_quantization_rescore: bool = Field(default=True, alias="QDRANT_QUANTIZATION_RESCORE")
+
     # ── LanceDB connection ───────────────────────────────────────────────────
     lance_uri: str = Field(default=".trelix/lance", alias="LANCE_URI")
     lance_table: str = Field(default="chunks", alias="LANCE_TABLE")
