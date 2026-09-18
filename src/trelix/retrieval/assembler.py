@@ -23,6 +23,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger(__name__)
 
+# Intents for which call-graph topology (SearchResult.graph_context) is worth
+# rendering into the prompt: the three "how does X relate structurally"
+# intents where knowing WHICH symbol called/was-called-by another, and how far
+# away, is part of the answer shape itself. Mirrors IntentType.DEPENDENCY_MAP,
+# IntentType.BLAST_RADIUS and IntentType.FEATURE_FLOW's .value strings
+# (trelix.retrieval.planner.models) — hardcoded here (matching this module's
+# existing plain-string intent checks in _make_preamble) rather than importing
+# the enum, to avoid a new cross-package import for three literals that are
+# already load-bearing strings elsewhere in this file.
+_STRUCTURAL_INTENTS = frozenset({"dependency_map", "blast_radius", "feature_flow"})
+
 
 class ContextAssembler:
     """
@@ -331,6 +342,13 @@ class ContextAssembler:
                 header = (
                     f"[Lines {r.symbol.line_start}-{r.symbol.line_end}] {r.symbol.qualified_name}"
                 )
+                # Call-graph topology only earns a place in the prompt for the
+                # structural intents — everywhere else this must stay
+                # byte-identical to the pre-graph_context implementation, even
+                # when a result happens to carry a graph_context (e.g. a
+                # graph_expansion result reused across sub-queries).
+                if r.graph_context and intent in _STRUCTURAL_INTENTS:
+                    header = f"{header} — {r.graph_context}"
                 blocks.append(f"{header}\n{r.chunk.chunk_text}\n")
 
         body = "\n".join(blocks)
