@@ -39,19 +39,34 @@ def expand_with_call_graph(
         return []
 
     seen_ids: set[int] = {r.chunk.symbol_id for r in results}
-    # candidates: (symbol_id, hop_distance)
-    candidates: list[tuple[int, int]] = []
+    # candidates: (symbol_id, hop_distance, via_symbol_id, direction)
+    # via_symbol_id is the frontier symbol this neighbor was discovered through;
+    # direction is "callee" (neighbor is called BY via_symbol_id, i.e. found via
+    # db.get_callees(via_symbol_id)) or "caller" (neighbor CALLS via_symbol_id,
+    # found via db.get_callers(via_symbol_id)). Iterating callees and callers as
+    # two separate loops (rather than concatenating them into one list before
+    # iterating) preserves the exact same discovery order as the prior
+    # `db.get_callees(symbol_id) + db.get_callers(symbol_id)` combined list —
+    # `for x in a + b` and `for x in a: ...; for x in b: ...` visit elements in
+    # the same order — while letting each loop tag its own direction.
+    candidates: list[tuple[int, int, int, str]] = []
     frontier = [r.chunk.symbol_id for r in results]
 
     for hop in range(1, depth + 1):
         next_frontier: list[int] = []
         for symbol_id in frontier:
-            for neighbor_id in db.get_callees(symbol_id) + db.get_callers(symbol_id):
+            for neighbor_id in db.get_callees(symbol_id):
                 if neighbor_id in seen_ids:
                     continue
                 seen_ids.add(neighbor_id)
                 next_frontier.append(neighbor_id)
-                candidates.append((neighbor_id, hop))
+                candidates.append((neighbor_id, hop, symbol_id, "callee"))
+            for neighbor_id in db.get_callers(symbol_id):
+                if neighbor_id in seen_ids:
+                    continue
+                seen_ids.add(neighbor_id)
+                next_frontier.append(neighbor_id)
+                candidates.append((neighbor_id, hop, symbol_id, "caller"))
         frontier = next_frontier
 
     if not candidates:
@@ -60,9 +75,11 @@ def expand_with_call_graph(
     # Only apply PageRank re-sorting when the call graph is rich enough to matter.
     # On sparse graphs (few resolved callee_ids) PageRank scores are near-uniform
     # and the sort just shuffles BFS order, which hurts more than it helps.
-    total_resolved = sum(1 for sid, _ in candidates if db.get_callees(sid) or db.get_callers(sid))
+    total_resolved = sum(
+        1 for sid, _hop, _via, _dir in candidates if db.get_callees(sid) or db.get_callers(sid)
+    )
     if total_resolved >= 3:
-        all_ids = [r.chunk.symbol_id for r in results] + [sid for sid, _ in candidates]
+        all_ids = [r.chunk.symbol_id for r in results] + [c[0] for c in candidates]
         pr_scores = dict(rank_by_pagerank(all_ids, db, personalization_enabled))
         # Closer hops win; PageRank breaks ties within the same hop
         candidates.sort(key=lambda x: (x[1], -pr_scores.get(x[0], 0.0)))
@@ -70,7 +87,7 @@ def expand_with_call_graph(
     base_score = results[0].score if results else 0.5
     extra: list[SearchResult] = []
 
-    for symbol_id, hop in candidates[:max_extra]:
+    for symbol_id, hop, via_symbol_id, direction in candidates[:max_extra]:
         sym_file = db.get_symbol_with_file(symbol_id)
         if sym_file is None:
             continue
@@ -92,10 +109,32 @@ def expand_with_call_graph(
                 score=base_score * (0.5**hop),
                 rank=len(extra) + 1,
                 source="graph_expansion",
+                graph_context=_render_graph_context(db, via_symbol_id, direction, hop),
             )
         )
 
     return extra
+
+
+def _render_graph_context(db: Database, via_symbol_id: int, direction: str, hop: int) -> str:
+    """
+    Human-readable, self-contained description of how a call-graph-expanded
+    result relates to the frontier symbol it was discovered through.
+
+    direction="callee" — this result is CALLED BY via_symbol_id (discovered
+        via db.get_callees(via_symbol_id)).
+    direction="caller" — this result CALLS via_symbol_id (discovered via
+        db.get_callers(via_symbol_id)).
+
+    Names the actual via-parent (the immediate frontier symbol one hop closer
+    to the seed), not the original seed — so a 2+ hop result's context stays
+    truthful about the path it was actually reached through.
+    """
+    via_sym_file = db.get_symbol_with_file(via_symbol_id)
+    via_name = via_sym_file[0].qualified_name if via_sym_file else f"symbol#{via_symbol_id}"
+    verb = "called by" if direction == "callee" else "calls"
+    hop_word = "hop" if hop == 1 else "hops"
+    return f"{verb} {via_name} ({hop} {hop_word})"
 
 
 def expand_with_dataflow(

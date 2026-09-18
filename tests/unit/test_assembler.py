@@ -72,6 +72,7 @@ def _make_result(
     score: float,
     rank: int,
     source: str = "vector",
+    graph_context: str | None = None,
 ) -> SearchResult:
     return SearchResult(
         chunk=chunk,
@@ -80,6 +81,7 @@ def _make_result(
         score=score,
         rank=rank,
         source=source,
+        graph_context=graph_context,
     )
 
 
@@ -481,6 +483,121 @@ class TestContextText:
 
         # Without intent there should be no "# " preamble line
         assert not ctx.context_text.startswith("#")
+
+
+# ---------------------------------------------------------------------------
+# Tests: graph_context rendering (call-graph topology in the prompt)
+#
+# graph_context is only ever rendered for the three structural intents
+# (dependency_map / blast_radius / feature_flow) — every other intent must
+# produce BYTE-IDENTICAL context_text whether or not a result carries a
+# graph_context, matching this module docstring's "Format matters" contract
+# and the compression feature's own "byte-identical wherever no bug was
+# tripped" precedent.
+# ---------------------------------------------------------------------------
+
+GRAPH_SYM = _make_symbol(11, 1, "process_request", "process_request", 90, 100)
+GRAPH_CHUNK = _make_chunk(11, 11, "def process_request(): pass", 20)
+GRAPH_RESULT_WITH_CONTEXT = _make_result(
+    GRAPH_CHUNK,
+    GRAPH_SYM,
+    FILE_A,
+    score=0.4,
+    rank=1,
+    source="graph_expansion",
+    graph_context="called by validate_input (1 hop)",
+)
+
+STRUCTURAL_INTENTS = ["dependency_map", "blast_radius", "feature_flow"]
+NON_STRUCTURAL_INTENTS = [None, "symbol_lookup", "config_lookup", "project_overview", "comparison"]
+
+
+class TestGraphContextRendering:
+    def test_graph_context_appears_for_each_structural_intent(self) -> None:
+        for intent in STRUCTURAL_INTENTS:
+            assembler = ContextAssembler(token_budget=10_000)
+            ctx = assembler.assemble(
+                QUERY, [GRAPH_RESULT_WITH_CONTEXT], intent=intent, assembly_mode="greedy"
+            )
+            assert "called by validate_input (1 hop)" in ctx.context_text, (
+                f"graph_context missing for structural intent {intent!r}"
+            )
+
+    def test_graph_context_absent_for_non_structural_intents(self) -> None:
+        for intent in NON_STRUCTURAL_INTENTS:
+            assembler = ContextAssembler(token_budget=10_000)
+            ctx = assembler.assemble(
+                QUERY, [GRAPH_RESULT_WITH_CONTEXT], intent=intent, assembly_mode="greedy"
+            )
+            assert "called by validate_input (1 hop)" not in ctx.context_text, (
+                f"graph_context leaked into non-structural intent {intent!r}"
+            )
+
+    def test_graph_context_none_never_adds_text(self) -> None:
+        """A structural intent with a result that has no graph_context (e.g.
+        a plain vector/bm25 hit riding alongside expanded ones) must not add
+        any placeholder text."""
+        assembler = ContextAssembler(token_budget=10_000)
+        ctx = assembler.assemble(
+            QUERY, ALL_RESULTS, intent="dependency_map", assembly_mode="greedy"
+        )
+
+        for r in ALL_RESULTS:
+            assert r.graph_context is None
+        # Same content as the equivalent dependency_map run over ALL_RESULTS
+        # with no graph_context anywhere — nothing extra was injected.
+        baseline = ContextAssembler(token_budget=10_000).assemble(
+            QUERY, ALL_RESULTS, intent="dependency_map", assembly_mode="greedy"
+        )
+        assert ctx.context_text == baseline.context_text
+
+    def test_non_structural_intent_context_text_is_byte_identical_regression(self) -> None:
+        """Explicit regression pin: symbol_lookup context_text over ALL_RESULTS
+        (no graph_context on any result) must match the exact pre-change
+        string byte for byte. If this fails, either the fixtures moved or
+        graph_context rendering leaked outside its structural-intent gate."""
+        assembler = ContextAssembler(token_budget=10_000)
+        ctx = assembler.assemble(QUERY, ALL_RESULTS, intent="symbol_lookup", assembly_mode="greedy")
+
+        expected = (
+            "# Symbol: LoginView.authenticate_user (function) — src/auth/login.py\n"
+            "=== src/auth/login.py ===\n"
+            "\n"
+            "[Lines 10-30] LoginView.authenticate_user\n"
+            "# File: src/auth/login.py\ndef authenticate_user(): pass\n"
+            "\n"
+            "[Lines 32-45] LoginView.logout_user\n"
+            "# File: src/auth/login.py\ndef logout_user(): pass\n"
+            "\n"
+            "[Lines 47-60] LoginView.check_token\n"
+            "# File: src/auth/login.py\ndef check_token(): pass\n"
+            "\n"
+            "[Lines 62-80] LoginView.refresh_session\n"
+            "# File: src/auth/login.py\ndef refresh_session(): pass\n"
+            "\n"
+            "=== src/auth/models.py ===\n"
+            "\n"
+            "[Lines 5-40] User\n"
+            "# File: src/auth/models.py\nclass User: pass\n"
+            "\n"
+            "[Lines 42-70] Session\n"
+            "# File: src/auth/models.py\nclass Session: pass\n"
+            "\n"
+            "[Lines 72-85] get_user\n"
+            "# File: src/auth/models.py\ndef get_user(): pass\n"
+            "\n"
+            "=== src/utils/helpers.py ===\n"
+            "\n"
+            "[Lines 1-15] hash_password\n"
+            "# File: src/utils/helpers.py\ndef hash_password(): pass\n"
+            "\n"
+            "[Lines 17-30] verify_token\n"
+            "# File: src/utils/helpers.py\ndef verify_token(): pass\n"
+            "\n"
+            "[Lines 32-50] encode_jwt\n"
+            "# File: src/utils/helpers.py\ndef encode_jwt(): pass\n"
+        )
+        assert ctx.context_text == expected
 
 
 # ---------------------------------------------------------------------------

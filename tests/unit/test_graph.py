@@ -244,6 +244,131 @@ class TestExpandWithCallGraph:
         extra = expand_with_call_graph(db, [result])
         assert extra == []
 
+    # -----------------------------------------------------------------
+    # graph_context — topology metadata riding along on expanded results
+    # -----------------------------------------------------------------
+
+    def test_graph_context_direction_differs_for_caller_vs_callee(self, db: Database) -> None:
+        """
+        hub calls callee_of_hub (get_callees(hub)); caller_of_hub calls hub
+        (get_callers(hub)). Expanding on [hub] must tag each neighbor with a
+        graph_context that reflects its OWN direction relative to hub, not a
+        shared/undirected label — proving direction survives the BFS restructure.
+        """
+        fid = _insert_file(db)
+        hub_id = _insert_symbol(db, fid, "hub")
+        callee_id = _insert_symbol(db, fid, "callee_of_hub")
+        caller_id = _insert_symbol(db, fid, "caller_of_hub")
+        _insert_chunk(db, hub_id)
+        _insert_chunk(db, callee_id)
+        _insert_chunk(db, caller_id)
+
+        db.insert_call_edges(
+            [
+                CallEdge(
+                    caller_id=hub_id, callee_name="callee_of_hub", line=1, callee_id=callee_id
+                ),
+                CallEdge(caller_id=caller_id, callee_name="hub", line=2, callee_id=hub_id),
+            ]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, hub_id)
+        extra = expand_with_call_graph(db, [result])
+        by_id = {r.chunk.symbol_id: r for r in extra}
+
+        assert by_id[callee_id].graph_context is not None
+        assert by_id[caller_id].graph_context is not None
+        assert by_id[callee_id].graph_context != by_id[caller_id].graph_context
+        # callee_of_hub is CALLED BY hub
+        assert "called by" in by_id[callee_id].graph_context
+        assert "hub" in by_id[callee_id].graph_context
+        # caller_of_hub CALLS hub
+        assert "calls" in by_id[caller_id].graph_context
+        assert "hub" in by_id[caller_id].graph_context
+
+    def test_graph_context_names_actual_via_parent_at_two_hops(self, db: Database) -> None:
+        """
+        seed -> mid -> leaf (leaf is 2 hops from seed, reached VIA mid).
+        leaf's graph_context must name "mid" (the actual parent it was
+        discovered through), not "seed", and must say 2 hops.
+        """
+        fid = _insert_file(db)
+        seed_id = _insert_symbol(db, fid, "seed_fn")
+        mid_id = _insert_symbol(db, fid, "mid_fn")
+        leaf_id = _insert_symbol(db, fid, "leaf_fn")
+        _insert_chunk(db, seed_id)
+        _insert_chunk(db, mid_id)
+        _insert_chunk(db, leaf_id)
+
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=seed_id, callee_name="mid_fn", line=1, callee_id=mid_id),
+                CallEdge(caller_id=mid_id, callee_name="leaf_fn", line=2, callee_id=leaf_id),
+            ]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, seed_id)
+        extra = expand_with_call_graph(db, [result], depth=2)
+        by_id = {r.chunk.symbol_id: r for r in extra}
+
+        assert leaf_id in by_id
+        leaf_ctx = by_id[leaf_id].graph_context
+        assert leaf_ctx is not None
+        assert "mid_fn" in leaf_ctx
+        assert "seed_fn" not in leaf_ctx
+        assert "2 hops" in leaf_ctx
+
+    def test_graph_context_is_none_when_no_networkx_reordering_needed(self, db: Database) -> None:
+        """Sanity: a plain 1-hop callee still gets a non-empty graph_context —
+        the field isn't only populated on some code paths (e.g. only when the
+        PageRank re-sort branch runs)."""
+        fid = _insert_file(db)
+        caller_id = _insert_symbol(db, fid, "solo_caller")
+        callee_id = _insert_symbol(db, fid, "solo_callee")
+        _insert_chunk(db, caller_id)
+        _insert_chunk(db, callee_id)
+
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="solo_callee", line=1, callee_id=callee_id)]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, caller_id)
+        extra = expand_with_call_graph(db, [result])
+
+        assert len(extra) == 1
+        assert extra[0].graph_context == "called by solo_caller (1 hop)"
+
+    def test_regression_discovered_ids_and_hop_discount_unchanged(self, db: Database) -> None:
+        """No regression in WHAT gets discovered: same symbol_ids at the same
+        hop distances (verified indirectly through the hop-based score
+        discount, base_score * 0.5**hop) as the pre-topology implementation."""
+        fid = _insert_file(db)
+        seed_id = _insert_symbol(db, fid, "seed2")
+        mid_id = _insert_symbol(db, fid, "mid2")
+        leaf_id = _insert_symbol(db, fid, "leaf2")
+        _insert_chunk(db, seed_id)
+        _insert_chunk(db, mid_id)
+        _insert_chunk(db, leaf_id)
+
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=seed_id, callee_name="mid2", line=1, callee_id=mid_id),
+                CallEdge(caller_id=mid_id, callee_name="leaf2", line=2, callee_id=leaf_id),
+            ]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, seed_id, score=1.0)
+        extra = expand_with_call_graph(db, [result], depth=2)
+        by_id = {r.chunk.symbol_id: r for r in extra}
+
+        assert set(by_id) == {mid_id, leaf_id}
+        assert by_id[mid_id].score == pytest.approx(1.0 * 0.5)
+        assert by_id[leaf_id].score == pytest.approx(1.0 * 0.25)
+
 
 # ---------------------------------------------------------------------------
 # expand_with_dataflow

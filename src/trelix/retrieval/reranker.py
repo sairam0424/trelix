@@ -163,6 +163,7 @@ def _cross_encoder_rerank(
                 score=float(score),
                 rank=result.rank,
                 source=result.source,
+                graph_context=result.graph_context,
             )
         )
 
@@ -261,6 +262,7 @@ def _cohere_rerank(
                 score=item["relevance_score"],
                 rank=len(reranked) + 1,
                 source=result.source,
+                graph_context=result.graph_context,
             )
         )
     return reranked, RerankOutcome("cohere", applied=True)
@@ -340,6 +342,7 @@ def _xtr_rerank(
                 score=idx_to_xtr_score.get(idx, 0.0),
                 rank=i,
                 source=results[idx].source,
+                graph_context=results[idx].graph_context,
             )
             for i, idx in enumerate(order[:top_n], start=1)
         ], RerankOutcome(
