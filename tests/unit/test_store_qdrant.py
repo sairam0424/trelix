@@ -622,15 +622,11 @@ class TestQdrantQuantizationMismatchWarning:
         an intentional trade-off (see `_ensure_collection`): it trades away
         detecting this one reverse-mismatch direction for zero overhead on the
         much more common already-created, no-quantization-configured path."""
-        from qdrant_client.models import (
-            ScalarQuantization,
-            ScalarQuantizationConfig,
-            ScalarType,
-        )
-
-        self._set_existing_quantization(
-            ScalarQuantization(scalar=ScalarQuantizationConfig(type=ScalarType.INT8))
-        )
+        # No import needed: _quantization_kind() only ever checks hasattr(x,
+        # "scalar")/hasattr(x, "binary") on the real object (see its own
+        # docstring), so a bare MagicMock with a `.scalar` attribute is
+        # sufficient to simulate an existing int8-quantized collection.
+        self._set_existing_quantization(MagicMock(scalar=MagicMock()))
 
         with caplog.at_level("WARNING"):
             self._make_store(qdrant_quantization=None)
@@ -639,15 +635,9 @@ class TestQdrantQuantizationMismatchWarning:
         self.mock_client.get_collection.assert_not_called()
 
     def test_no_warning_when_int8_configured_matches_existing_int8(self, caplog: Any) -> None:
-        from qdrant_client.models import (
-            ScalarQuantization,
-            ScalarQuantizationConfig,
-            ScalarType,
-        )
-
-        self._set_existing_quantization(
-            ScalarQuantization(scalar=ScalarQuantizationConfig(type=ScalarType.INT8))
-        )
+        # No import needed -- see the identical note on
+        # test_no_warning_or_get_collection_when_existing_has_int8_but_config_unset above.
+        self._set_existing_quantization(MagicMock(scalar=MagicMock()))
 
         with caplog.at_level("WARNING"):
             self._make_store(qdrant_quantization="int8")
