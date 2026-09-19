@@ -515,6 +515,68 @@ class TestDedupKeepsHighestScore:
 
 
 # ---------------------------------------------------------------------------
+# 3b. _dedup distinguishes split-symbol chunk pieces from true duplicates
+# ---------------------------------------------------------------------------
+
+
+def _split_piece(sid: int, chunk_id: int, score: float, source: str, text: str) -> SearchResult:
+    """A SearchResult for one piece of a split symbol: same symbol_id and file
+    as any other piece of the same symbol, but its own distinct chunk.id and
+    chunk_text -- exactly the shape `chunker.py::_split_chunk_text` produces
+    for an oversized symbol (see PR #330)."""
+    return SearchResult(
+        chunk=Chunk(symbol_id=sid, chunk_text=text, token_count=2, id=chunk_id),
+        symbol=_symbol(sid),
+        file=_file(sid),
+        score=score,
+        rank=1,
+        source=source,
+    )
+
+
+class TestDedupPreservesDistinctSplitPieces:
+    """A symbol split into multiple chunks (chunker.py's split-not-truncate fix,
+    PR #330) must not have its pieces collapsed here the way `_fusion_identity()`
+    in fusion.py was fixed to no longer collapse them -- found by adversarial
+    review immediately downstream of that fix: `_dedup` ran on fusion's
+    already-correct output via the exact bare-`symbol_id` anti-pattern
+    `fusion.py`'s own docstring calls out, silently re-dropping one piece one
+    stage later.
+
+    MUTATION THAT MUST FAIL THIS: `identity = (r.file.path, r.chunk.symbol_id,
+    r.chunk.id)` -> `identity = r.chunk.symbol_id` (the pre-fix bare key).
+    """
+
+    def test_two_distinct_pieces_of_one_split_symbol_both_survive(self, tmp_path: Path) -> None:
+        piece1 = _split_piece(42, chunk_id=101, score=0.90, source="vector", text="piece 1")
+        piece2 = _split_piece(42, chunk_id=102, score=0.85, source="vector", text="piece 2")
+
+        retriever, _db, _vs = _build(RetrievalConfig(), tmp_path)
+        deduped = retriever._dedup([piece1, piece2])
+
+        assert len(deduped) == 2, "distinct split pieces must not collapse to one row"
+        texts = {r.chunk.chunk_text for r in deduped}
+        assert texts == {"piece 1", "piece 2"}
+
+    def test_the_same_chunk_found_by_two_legs_still_collapses_to_one(self, tmp_path: Path) -> None:
+        """The must-not-regress half: identical chunk.id from two legs is a
+        genuine duplicate discovery, not a split piece, and must still collapse
+        (the pinned `TestDedupKeepsHighestScore` behaviour, now keyed on
+        (path, symbol_id, chunk.id) instead of bare symbol_id)."""
+        via_vector = _split_piece(42, chunk_id=101, score=0.90, source="vector", text="piece 1")
+        via_call_graph = _split_piece(
+            42, chunk_id=101, score=0.30, source="call_graph", text="piece 1"
+        )
+
+        retriever, _db, _vs = _build(RetrievalConfig(), tmp_path)
+        deduped = retriever._dedup([via_vector, via_call_graph])
+
+        assert len(deduped) == 1, "same chunk.id from two legs is a real duplicate"
+        assert deduped[0].source == "vector"
+        assert deduped[0].score == pytest.approx(0.90)
+
+
+# ---------------------------------------------------------------------------
 # 4. Compression intent opt-out at ratio exactly 1.0
 # ---------------------------------------------------------------------------
 
