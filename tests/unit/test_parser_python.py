@@ -327,6 +327,229 @@ def test_method_call_extracted(parser: PythonParser) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Call-graph type-hint resolution: widened receiver resolution
+#
+# callee_type_hint originally resolved ONLY when the receiver was a plain
+# identifier that was directly an annotated function parameter. These tests
+# cover the widened forms: self.attr assignments tracked per-class, and
+# local variables assigned from a call to a function with a declared return
+# type — plus the pre-existing behavior and the deliberately out-of-scope
+# cases that must NOT get a (possibly wrong) type hint.
+# ---------------------------------------------------------------------------
+
+ANNOTATED_PARAM_SOURCE = """\
+class UserService:
+    def login(self, username):
+        pass
+
+
+def use_it(user_service: UserService):
+    user_service.login("x")
+"""
+
+
+def test_annotated_parameter_type_hint_still_resolves(parser: PythonParser) -> None:
+    """Pre-existing behavior must be completely unchanged by the widening."""
+    result = _parse(parser, ANNOTATED_PARAM_SOURCE)
+    edge = next(e for e in result.call_edges if e.callee_name == "login")
+    assert edge.callee_type_hint == "UserService"
+
+
+SELF_ATTR_CONSTRUCTOR_SOURCE = """\
+class Worker:
+    def __init__(self):
+        self.service = SomeService()
+
+    def process(self):
+        self.service.run()
+"""
+
+
+def test_self_attr_constructor_call_resolves_across_methods(parser: PythonParser) -> None:
+    """self.attr set in __init__, used in a DIFFERENT method of the same class."""
+    result = _parse(parser, SELF_ATTR_CONSTRUCTOR_SOURCE)
+    edge = next(e for e in result.call_edges if e.callee_name == "run")
+    assert edge.callee_type_hint == "SomeService"
+
+
+SELF_ATTR_ANNOTATED_SOURCE = """\
+class Worker:
+    def __init__(self):
+        self.service: SomeService = build_service()
+
+    def process(self):
+        self.service.run()
+"""
+
+
+def test_self_attr_annotated_assignment_resolves(parser: PythonParser) -> None:
+    """self.attr: SomeType = ... form also resolves callee_type_hint."""
+    result = _parse(parser, SELF_ATTR_ANNOTATED_SOURCE)
+    edge = next(e for e in result.call_edges if e.callee_name == "run")
+    assert edge.callee_type_hint == "SomeService"
+
+
+SELF_ATTR_BUILTIN_SOURCE = """\
+class Worker:
+    def __init__(self):
+        self.items = list()
+
+    def process(self):
+        self.items.append(1)
+"""
+
+
+def test_self_attr_builtin_constructor_no_type_hint(parser: PythonParser) -> None:
+    """A builtin constructor (list()) must not produce a misleading hint."""
+    result = _parse(parser, SELF_ATTR_BUILTIN_SOURCE)
+    edge = next(e for e in result.call_edges if e.callee_name == "append")
+    assert edge.callee_type_hint is None
+
+
+OTHER_OBJ_ATTR_CHAIN_SOURCE = """\
+class Worker:
+    def __init__(self):
+        self.service = SomeService()
+
+    def process(self, other_obj):
+        other_obj.service.run()
+"""
+
+
+def test_non_self_attribute_chain_gets_no_spurious_type_hint(parser: PythonParser) -> None:
+    """other_obj.attr_name.method() — chain not starting with literal `self` —
+    is explicitly out of scope and must not silently misresolve."""
+    result = _parse(parser, OTHER_OBJ_ATTR_CHAIN_SOURCE)
+    edge = next(e for e in result.call_edges if e.callee_name == "run")
+    assert edge.callee_type_hint is None
+
+
+LOCAL_VAR_RETURN_TYPE_SOURCE = """\
+def get_service() -> ServiceType:
+    return ServiceType()
+
+
+def use_it():
+    before.method()
+    x = get_service()
+    x.method()
+"""
+
+
+def test_local_var_from_return_type_resolves_after_assignment(parser: PythonParser) -> None:
+    """x = get_service(); x.method() resolves via get_service's -> ServiceType."""
+    result = _parse(parser, LOCAL_VAR_RETURN_TYPE_SOURCE)
+    edges = [e for e in result.call_edges if e.callee_name == "method"]
+    assert len(edges) == 2
+    before_assignment, after_assignment = edges
+    assert before_assignment.callee_type_hint is None
+    assert after_assignment.callee_type_hint == "ServiceType"
+
+
+LOCAL_VAR_REASSIGNMENT_SOURCE = """\
+def get_service() -> ServiceType:
+    return ServiceType()
+
+
+def other_thing():
+    return None
+
+
+def use_it():
+    x = get_service()
+    x.method()
+    x = other_thing()
+    x.method()
+"""
+
+
+def test_local_var_reassignment_clears_stale_type_hint(parser: PythonParser) -> None:
+    """Reassigning x to something without a known return type must stop
+    treating it as the old type from that point on (last-assignment-wins,
+    not a full data-flow analysis)."""
+    result = _parse(parser, LOCAL_VAR_REASSIGNMENT_SOURCE)
+    edges = [e for e in result.call_edges if e.callee_name == "method"]
+    assert len(edges) == 2
+    first_call, second_call = edges
+    assert first_call.callee_type_hint == "ServiceType"
+    assert second_call.callee_type_hint is None
+
+
+SELF_ATTR_FACTORY_WITH_RETURN_TYPE_SOURCE = """\
+def get_service() -> ServiceType:
+    return ServiceType()
+
+
+class Worker:
+    def __init__(self):
+        self.service = get_service()
+
+    def process(self):
+        self.service.run()
+"""
+
+
+def test_self_attr_factory_call_resolves_via_declared_return_type(
+    parser: PythonParser,
+) -> None:
+    """Regression: `self.attr = some_factory()` where `some_factory` has a
+    declared `-> ReturnType` annotation must resolve callee_type_hint to
+    that ReturnType — NOT to the bare factory function's own name
+    ("get_service"), which would either fail priority-2 resolution outright
+    or, worse, silently resolve to an unrelated symbol elsewhere in the
+    whole-project index that happens to share that name prefix."""
+    result = _parse(parser, SELF_ATTR_FACTORY_WITH_RETURN_TYPE_SOURCE)
+    edge = next(e for e in result.call_edges if e.callee_name == "run")
+    assert edge.callee_type_hint == "ServiceType"
+    assert edge.callee_type_hint != "get_service"
+
+
+SELF_ATTR_FACTORY_NO_RETURN_TYPE_SOURCE = """\
+class Worker:
+    def __init__(self):
+        self.logger = get_logger()
+
+    def process(self, x):
+        self.logger.info(x)
+"""
+
+
+def test_self_attr_factory_call_without_return_type_gets_no_hint(
+    parser: PythonParser,
+) -> None:
+    """Regression: `self.attr = get_logger()` — a lowercase, snake_case
+    factory-style call with NO declared return type anywhere in the file —
+    must NOT be treated as if `get_logger` were a class. Recording the bare
+    callee name as a type hint here is a false positive: idiomatic factory
+    patterns (get_x()/create_x()/load_x()/build_x()/make_x()) and bare
+    builtin calls (sorted()/open()/zip()) are extremely common and none of
+    them are classes. A wrong hint is worse than no hint."""
+    result = _parse(parser, SELF_ATTR_FACTORY_NO_RETURN_TYPE_SOURCE)
+    edge = next(e for e in result.call_edges if e.callee_name == "info")
+    assert edge.callee_type_hint is None
+
+
+SELF_ATTR_PASCAL_CASE_CONSTRUCTOR_SOURCE = """\
+class Worker:
+    def __init__(self):
+        self.client = RedisClient()
+
+    def process(self):
+        self.client.connect()
+"""
+
+
+def test_self_attr_pascal_case_constructor_still_resolves(parser: PythonParser) -> None:
+    """A genuine constructor call (PascalCase callee, e.g. an imported
+    class not defined in this file) must still produce a type hint —
+    the fix for the factory false-positive must not regress the
+    legitimate constructor-call case this feature exists for."""
+    result = _parse(parser, SELF_ATTR_PASCAL_CASE_CONSTRUCTOR_SOURCE)
+    edge = next(e for e in result.call_edges if e.callee_name == "connect")
+    assert edge.callee_type_hint == "RedisClient"
+
+
+# ---------------------------------------------------------------------------
 # Decorator extraction
 # ---------------------------------------------------------------------------
 
