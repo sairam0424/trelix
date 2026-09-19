@@ -8,6 +8,57 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.3.4] — 2026-09-19
+
+### Added
+- **Call-graph topology in the prompt for structural intents.** `expand_with_call_graph`
+  now tracks each expanded neighbor's hop distance and direction (caller/callee) and
+  renders it into the assembled context as a short phrase (e.g. "called by
+  process_request (1 hop)") for `dependency_map`/`blast_radius`/`feature_flow` intents
+  only — every other intent's context text is byte-identical to before. Rerankers
+  (`_cross_encoder_rerank`/`_cohere_rerank`/`_xtr_rerank`) previously silently dropped
+  this field on reconstruction, which would have made the feature a no-op under default
+  config (`rerank=True`); fixed before merge.
+- **Wider Python call-graph type-hint resolution.** `callee_type_hint` resolution on
+  `receiver.method()` calls now also tracks `self.attr` assignments (class-scoped) and
+  local-variable-to-return-type propagation, beyond the previous direct-annotated-
+  parameter-only coverage. A constructor-call heuristic that mistook snake_case factory
+  functions (e.g. `self.logger = get_logger()`) for class constructors — misdirecting
+  resolution — was found and fixed before merge.
+- **Opt-in scalar/binary quantization for the Qdrant backend.** `qdrant_quantization`
+  (`int8`/`binary`/`None`, default `None`) + `qdrant_quantization_rescore` (default
+  `True`), verified against the real installed `qdrant-client==1.19.0` SDK. Adds
+  `QdrantVectorStore.recreate()` (a real, previously-missing gap the base class already
+  contracted for) and a fail-soft mismatch warning when an existing collection's actual
+  quantization state disagrees with the configured setting. The SQLite backend is
+  untouched — its flat-scan design doesn't benefit from quantization the way Qdrant's
+  real HNSW index does.
+
+### Fixed
+- **Chunker no longer destructively truncates oversized symbols.** A symbol whose body
+  exceeded `max_tokens_per_chunk` (default 512) had its excess content silently
+  discarded and replaced with `"# ... (truncated)"` — recoverable by no retrieval leg,
+  since no row anywhere stored it. Now split into multiple sequential chunks sharing the
+  parent symbol's `symbol_id` instead (schema-safe — `chunks.symbol_id` carries no
+  unique constraint). Adversarial review found and fixed two real bugs before this
+  shipped: a symbol with an oversized header but an empty/tiny body produced *zero*
+  chunks (strictly worse than the truncation it replaced), and the property test meant
+  to fuzz that exact input shape explicitly skipped it. One known, accepted trade-off is
+  documented but intentionally not fixed: `fusion.py`'s `(path, symbol_id)` dedupe key
+  can now collapse two pieces of one split symbol into one fused result more often than
+  before (previously only reachable via the opt-in MGS3 leg) — `fusion.py`'s own
+  docstring forbids a second dedupe pass and documents real regression history from a
+  prior attempt to change its identity key.
+
+### Research
+- A Phase 6-style spike (`docs/reports/chunking-strategy-spike-2026-09-18.md`) verified
+  a controlled study finding trelix's per-symbol chunking underperforms alternative
+  strategies, but concluded a full chunking redesign is not worth building right now:
+  trelix already has three overlapping mechanisms (call-graph/dataflow expansion,
+  `ContextualChunker` summaries, and an existing-but-off-by-default MGS3 sub-chunk
+  indexer) that address much of the same gap, and several production-adoption claims
+  backing the case for a redesign failed independent verification.
+
 ## [3.3.3] — 2026-09-17
 
 ### Added
