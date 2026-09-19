@@ -6,6 +6,8 @@ All tests use in-memory mock SearchResult objects — no DB required.
 
 from __future__ import annotations
 
+import pytest
+
 from trelix.core.models import (
     Chunk,
     IndexedFile,
@@ -672,3 +674,225 @@ class TestExactScoreOrdering:
         scores = {r.chunk.symbol_id: r.score for r in fused}
         assert abs(scores[10] - expected_md) < 1e-12, f"markdown score {scores[10]}"
         assert abs(scores[20] - expected_py) < 1e-12, f"python score {scores[20]}"
+
+
+# ---------------------------------------------------------------------------
+# Split-symbol piece disambiguation (chunker.py's oversized-symbol split,
+# CHANGELOG [3.3.4] / docs/reports/chunking-strategy-spike-2026-09-18.md
+# addendum). A symbol over `max_tokens_per_chunk` now yields multiple `chunks`
+# rows sharing one `symbol_id` — _fusion_identity() must key on the per-piece
+# chunk.id (paired with path, never bare) to keep them apart, while a chunk
+# hydrated identically by two legs (same chunk.id) must still collapse.
+# ---------------------------------------------------------------------------
+
+
+def _make_piece_result(
+    symbol_id: int,
+    chunk_id: int | None,
+    chunk_text: str,
+    score: float,
+    rank: int = 1,
+    source: str = "vector",
+    file_path: str = "/repo/big_module.py",
+) -> SearchResult:
+    """Build a SearchResult the way a real hydration path would for one
+    piece of a split symbol: same file, same symbol_id, a real per-row
+    `chunk.id` (or None, for the graph-expansion synthetic-chunk fallback
+    that never sets one)."""
+    chunk = Chunk(id=chunk_id, symbol_id=symbol_id, chunk_text=chunk_text, token_count=10)
+    symbol = Symbol(
+        id=symbol_id,
+        file_id=1,
+        name=f"sym_{symbol_id}",
+        qualified_name=f"mod.sym_{symbol_id}",
+        kind=SymbolKind.FUNCTION,
+        line_start=1,
+        line_end=500,
+        signature=f"def sym_{symbol_id}()",
+        body=f"def sym_{symbol_id}(): pass",
+    )
+    file = IndexedFile(
+        id=1,
+        path=file_path,
+        rel_path="big_module.py",
+        language=Language.PYTHON,
+        hash="abc",
+        size_bytes=100,
+    )
+    return SearchResult(
+        chunk=chunk, symbol=symbol, file=file, score=score, rank=rank, source=source
+    )
+
+
+class TestSplitSymbolPieceDisambiguation:
+    """Proves and fixes the bug this task exists to fix: two `chunks` rows
+    from one split symbol (same file, same symbol_id, DIFFERENT chunk.id) must
+    both survive fusion as distinct rows, not collapse into one with the
+    second piece's content silently dropped.
+
+    Before the fix, `_fusion_identity()` returned `(path, symbol_id)` only, so
+    both pieces below hashed to the identical key and the `if identity not in
+    best_result` guard kept piece 1 and discarded piece 2 — exactly the
+    documented, accepted-but-now-fixed trade-off from CHANGELOG [3.3.4].
+    """
+
+    def test_two_pieces_of_one_split_symbol_both_survive_one_leg(self) -> None:
+        """Realistic shape: the vector leg's ANN search returns pieces 1 and 2
+        of the SAME oversized symbol at ranks 1 and 2 of one ranked list —
+        this is the reachable case the chunking-strategy spike addendum names
+        (`chunker.py`'s split path is unconditional and default-on)."""
+        piece_1 = _make_piece_result(
+            symbol_id=42, chunk_id=101, chunk_text="piece one body", score=0.95, rank=1
+        )
+        piece_2 = _make_piece_result(
+            symbol_id=42, chunk_id=102, chunk_text="piece two body", score=0.90, rank=2
+        )
+
+        fused = reciprocal_rank_fusion([[piece_1, piece_2]], k=60)
+
+        assert len(fused) == 2, (
+            "both pieces of the split symbol must survive fusion as distinct rows; "
+            f"got {len(fused)} — a piece's content was silently dropped"
+        )
+        texts = {r.chunk.chunk_text for r in fused}
+        assert texts == {"piece one body", "piece two body"}, (
+            f"both pieces' distinct chunk_text must reach the fused output; got {texts}"
+        )
+        # Rank 1 (piece 1) must still outrank rank 2 (piece 2) — pure RRF ordering.
+        assert [r.chunk.chunk_text for r in fused] == ["piece one body", "piece two body"]
+
+    def test_two_pieces_of_one_split_symbol_survive_across_different_legs(self) -> None:
+        """Piece 1 found by one leg, piece 2 found by another — genuinely
+        different content, so they must not collapse just because they share
+        a file and symbol_id."""
+        piece_1 = _make_piece_result(
+            symbol_id=7, chunk_id=201, chunk_text="piece one body", score=0.8, source="vector"
+        )
+        piece_2 = _make_piece_result(
+            symbol_id=7, chunk_id=202, chunk_text="piece two body", score=0.5, source="bm25"
+        )
+
+        fused = reciprocal_rank_fusion([[piece_1], [piece_2]], k=60)
+
+        assert len(fused) == 2
+        assert {r.chunk.chunk_text for r in fused} == {"piece one body", "piece two body"}
+
+    def test_three_pieces_of_one_split_symbol_all_survive(self) -> None:
+        """Generalizes beyond 2 pieces — kills a fix that only special-cases
+        pairs (e.g. comparing chunk.id to a single "first piece" sentinel
+        instead of using it as a genuine key component)."""
+        pieces = [
+            _make_piece_result(
+                symbol_id=99, chunk_id=300 + i, chunk_text=f"piece {i} body", score=1.0 - i * 0.1
+            )
+            for i in range(1, 4)
+        ]
+
+        fused = reciprocal_rank_fusion([pieces], k=60)
+
+        assert len(fused) == 3
+        assert {r.chunk.chunk_text for r in fused} == {
+            "piece 1 body",
+            "piece 2 body",
+            "piece 3 body",
+        }
+
+
+class TestSameChunkAcrossLegsStillCollapses:
+    """The must-not-regress half: a chunk hydrated independently by two legs
+    (vector finds it by cosine similarity, BM25 finds it by keyword match)
+    yields the SAME `chunks.id` from the SAME database row both times — via
+    `Database.get_chunk_with_context`/`get_first_chunk_for_symbol`/
+    `get_chunk_by_id`, all of which set `Chunk.id` from the real `chunks.id`
+    column — so it must still collapse onto one fused row with both legs'
+    RRF contributions summed, exactly like before chunk.id was added to the
+    identity key.
+    """
+
+    def test_identical_chunk_id_from_two_legs_collapses_and_sums_scores(self) -> None:
+        vector_hit = _make_piece_result(
+            symbol_id=5,
+            chunk_id=55,
+            chunk_text="def small(): pass",
+            score=0.7,
+            rank=1,
+            source="vector",
+        )
+        bm25_hit = _make_piece_result(
+            symbol_id=5,
+            chunk_id=55,  # same chunks.id — the SAME row, hydrated by a different leg
+            chunk_text="def small(): pass",
+            score=0.4,
+            rank=2,
+            source="bm25",
+        )
+
+        fused = reciprocal_rank_fusion([[vector_hit], [bm25_hit]], k=60)
+
+        assert len(fused) == 1, "the same chunk row found by two legs must collapse to one row"
+        assert fused[0].source == "vector", "first-seen leg keeps provenance"
+        assert fused[0].score == pytest.approx(1.0 / 61.0 + 1.0 / 61.0), (
+            "both legs ranked this row #1 in their own list — contributions must sum"
+        )
+
+    def test_multiple_distinct_symbols_with_real_chunk_ids_still_dedupe_correctly(self) -> None:
+        """Sanity check the new 3-tuple key doesn't over-fragment ordinary
+        (non-split) symbols, each with its own single real chunk.id, found by
+        two legs."""
+        vector_leg = [
+            _make_piece_result(symbol_id=1, chunk_id=11, chunk_text="a", score=0.9, rank=1),
+            _make_piece_result(symbol_id=2, chunk_id=12, chunk_text="b", score=0.8, rank=2),
+        ]
+        bm25_leg = [
+            _make_piece_result(
+                symbol_id=1, chunk_id=11, chunk_text="a", score=0.6, rank=1, source="bm25"
+            ),
+            _make_piece_result(
+                symbol_id=3, chunk_id=13, chunk_text="c", score=0.5, rank=2, source="bm25"
+            ),
+        ]
+
+        fused = reciprocal_rank_fusion([vector_leg, bm25_leg], k=60)
+
+        ids = {r.symbol.id for r in fused}
+        assert ids == {1, 2, 3}
+        assert len(fused) == 3
+
+
+class TestChunkIdNoneFallsBackToSymbolIdDedup:
+    """`chunk.id` is None whenever a leg's hydration path falls back to a
+    synthetic, unsaved `Chunk(symbol_id=..., ...)` because
+    `Database.get_first_chunk_for_symbol` returned None (no `chunks` row for
+    that symbol at all) — reachable from `hydrate_symbol`,
+    `_hydrate_symbol_id`, every `expand_with_*` helper in graph.py, and the
+    `_hydrate`/`bm25_search` fallbacks in grep_search.py/bm25.py. Two such
+    synthetic chunks for the SAME (path, symbol_id) both carry chunk.id=None,
+    so the identity tuple degrades to exactly the pre-fix (path, symbol_id)
+    behavior for that entry and must still collapse — this is the documented,
+    deliberate fallback, not an oversight.
+    """
+
+    def test_two_none_chunk_id_results_for_same_symbol_still_collapse(self) -> None:
+        graph_hit = _make_piece_result(
+            symbol_id=8,
+            chunk_id=None,
+            chunk_text="def f(): pass",
+            score=0.5,
+            rank=1,
+            source="graph_expansion",
+        )
+        bm25_hit = _make_piece_result(
+            symbol_id=8,
+            chunk_id=None,
+            chunk_text="def f(): pass",
+            score=0.3,
+            rank=1,
+            source="bm25",
+        )
+
+        fused = reciprocal_rank_fusion([[graph_hit], [bm25_hit]], k=60)
+
+        assert len(fused) == 1, (
+            "two chunk.id=None hydrations of the same symbol must still collapse to one row"
+        )
+        assert fused[0].score == pytest.approx(2.0 / 61.0)

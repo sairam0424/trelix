@@ -6,7 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+- **Fusion no longer drops one piece of a split symbol from search results.**
+  [3.3.4]'s chunker fix let one oversized symbol produce multiple chunks; `fusion.py`'s
+  `_fusion_identity()` dedupe key didn't account for that, and neither did
+  `Retriever._dedup()`, which runs immediately after fusion as an unexamined second
+  dedupe pass on every standard-intent query — silently re-dropping a split piece's
+  content one call stack frame downstream of the identity it was already correctly
+  disambiguated in. Both keys now include the per-piece `chunk.id` (always paired with
+  the absolute file path, never bare, to avoid repeating EXE-02's cross-repo collision
+  bug one level down). One further, smaller finding is documented but intentionally not
+  fixed: the MGS3 sub-chunk leg reuses a different table's autoincrement counter as
+  `Chunk.id`, creating a rare, probabilistic numeric-collision risk with real `chunks.id`
+  values — tracked as backlog, not part of this fix.
 
 ## [3.3.4] — 2026-09-19
 

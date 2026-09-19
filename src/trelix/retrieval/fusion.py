@@ -21,7 +21,7 @@ from collections import defaultdict
 from trelix.core.models import SearchResult
 
 
-def _fusion_identity(result: SearchResult) -> tuple[str, int]:
+def _fusion_identity(result: SearchResult) -> tuple[str, int, int | None]:
     """The key two SearchResults must agree on to be the same row.
 
     `chunk.symbol_id` alone is NOT that key, and using it alone was EXE-02.
@@ -45,10 +45,60 @@ def _fusion_identity(result: SearchResult) -> tuple[str, int]:
     all over again after this function was fixed; it has been deleted, because
     this function is now the single place cross-repo identity is decided.
 
-    Pairing path with symbol_id keeps intra-repo dedupe intact, which is the half
-    that must not regress: the vector, BM25, grep and summary legs of one repo
-    all hydrate from the same database, so the same chunk yields the same
-    (path, symbol_id) and still collapses onto a single fused row.
+    (path, symbol_id) alone is ALSO not enough, as of chunker.py's oversized-
+    symbol split (CHANGELOG [3.3.4], docs/reports/chunking-strategy-spike-
+    2026-09-18.md addendum): a symbol over `max_tokens_per_chunk` now yields
+    MULTIPLE `chunks` rows sharing one `symbol_id` — sequential pieces, not a
+    truncated single row. If two pieces of the same split symbol both rank in
+    one query's fused input (reachable on the always-on vector leg, whose ANN
+    search can legitimately return more than one piece of the same oversized
+    symbol), (path, symbol_id) collapsed them into one row and the first-seen
+    branch below silently dropped the second piece's distinct text, even
+    though it was a real, separate hit — that was the bug this key now fixes.
+    `chunk.id` (`chunks.id`, the per-piece `INTEGER PRIMARY KEY AUTOINCREMENT`)
+    is the piece-level discriminator: two pieces of one split symbol get two
+    distinct `chunks.id` values, so `(path, symbol_id, chunk.id)` keeps them
+    apart. Bare `chunk.id` would repeat EXE-02 one level down — it is exactly
+    as per-database an autoincrement rowid as `symbols.id` — so it is never
+    used unpaired from `path`; it only ever narrows an already-globally-unique
+    `(path, symbol_id)` prefix.
+
+    Pairing path with symbol_id AND chunk.id keeps intra-repo dedupe intact,
+    which is the half that must not regress: the vector, BM25, grep and
+    summary legs of one repo all hydrate the SAME chunk row through
+    `Database.get_chunk_with_context`/`get_first_chunk_for_symbol`/
+    `get_chunk_by_id` — all three set `Chunk.id` from the real `chunks.id`
+    column — so a chunk found by more than one leg still yields the same
+    (path, symbol_id, chunk.id) and still collapses onto a single fused row
+    with every leg's RRF contribution summed.
+
+    `chunk.id` is `None` on results hydrated through the graph-expansion
+    family (`hydrate_symbol`, `_hydrate_symbol_id` in retriever.py; every
+    `expand_with_*`/`seed_from_import_paths` helper in graph.py; the
+    `_hydrate`/`bm25_search` fallbacks in grep_search.py/bm25.py;
+    `graph_search` in graph/search.py) exactly when
+    `Database.get_first_chunk_for_symbol` returns None and the caller falls
+    back to a synthetic, unsaved `Chunk(symbol_id=..., ...)` with no `id=`
+    argument — reachable whenever a symbol has no row in `chunks` at all.
+    This is not a collision risk: two such synthetic chunks for the SAME
+    (path, symbol_id) both carry chunk.id=None, so their identity tuples are
+    still equal and they still collapse — the fallback degrades to exactly
+    the pre-fix (path, symbol_id) behavior for that entry, never regressing
+    it, which is why no extra `is None` branch is needed here.
+
+    `Database.get_first_chunk_for_symbol` always anchors to the FIRST chunk
+    row for a symbol ("the first (and usually only) chunk", per its own
+    docstring), so BM25/grep/graph-expansion legs can only ever surface piece
+    1 of a split symbol, never piece 2+, regardless of which piece is
+    actually the best match — only the vector leg's ANN search can reach a
+    later piece directly, since each piece is embedded and indexed
+    separately. A vector hit on piece 2 and a BM25 hit on piece 1 of the SAME
+    split symbol therefore now correctly do NOT collapse (their chunk.id
+    differs) — but they also do not get to sum RRF contributions the way two
+    legs finding the exact same chunk do. That is a pre-existing per-leg
+    granularity limitation (which piece a given leg can even see), not
+    something this identity-key fix is responsible for solving, and it is
+    strictly better than the silent content-drop it replaces.
 
     Not `make_scip_symbol_id()` (`trelix.federation.retriever`): that module
     imports this one, so importing it back here is a circular import — and this
@@ -56,7 +106,7 @@ def _fusion_identity(result: SearchResult) -> tuple[str, int]:
     package/version pair to hash.
     """
     chunk, indexed_file = result.chunk, result.file
-    return (indexed_file.path, chunk.symbol_id)
+    return (indexed_file.path, chunk.symbol_id, chunk.id)
 
 
 def reciprocal_rank_fusion(
@@ -85,16 +135,19 @@ def reciprocal_rank_fusion(
     Returns:
         Single merged list sorted by fused (weighted) RRF score, best first,
         deduplicated on _fusion_identity() — one row per (absolute file path,
-        symbol_id). Callers must NOT add a second dedupe pass on this output:
-        every distinct row here is already distinct, so any further pass can only
-        delete correct rows, which is exactly how a whole repo went missing.
+        symbol_id, chunk id). Callers must NOT add a second dedupe pass on this
+        output: every distinct row here is already distinct, so any further pass
+        can only delete correct rows, which is exactly how a whole repo went
+        missing.
     """
     # Map globally-unique row identity → accumulated RRF score. The key is
-    # (absolute file path, symbol_id), NOT symbol_id alone — see
-    # _fusion_identity() for the cross-repo erasure a bare symbol_id caused.
-    rrf_scores: dict[tuple[str, int], float] = defaultdict(float)
+    # (absolute file path, symbol_id, chunk id), NOT symbol_id alone and NOT
+    # (path, symbol_id) alone — see _fusion_identity() for the cross-repo
+    # erasure a bare symbol_id caused (EXE-02) and the split-symbol-piece
+    # collapse a bare (path, symbol_id) caused.
+    rrf_scores: dict[tuple[str, int, int | None], float] = defaultdict(float)
     # Keep the best SearchResult object per identity (highest contributing list)
-    best_result: dict[tuple[str, int], SearchResult] = {}
+    best_result: dict[tuple[str, int, int | None], SearchResult] = {}
 
     for list_idx, ranked_list in enumerate(ranked_lists):
         list_weight = list_weights[list_idx] if list_weights else 1.0
