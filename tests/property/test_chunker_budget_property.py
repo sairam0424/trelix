@@ -16,7 +16,14 @@ FALSIFYING INPUT CONFIRMED BY HAND (see round notes / PROOF PROTOCOL below):
 mutating chunker.py:92 `token_count > self.config.max_tokens_per_chunk` to
 `>=` breaks the "exactly at budget" case for EVERY (rel_path, language, budget)
 triple tried by hand (budget in {20, 30, 50, 100, 200}, default rel_path), not
-just budget=64. Verified: unmutated -- not truncated; mutated -- truncated.
+just budget=64. Verified: unmutated -- not split; mutated -- split.
+
+Over-budget bodies used to be truncated (and the tail permanently discarded);
+they are now split across multiple chunks instead, so the over-budget property
+below asserts content is fully preserved across however many pieces the split
+produces, rather than pinning an exact split count -- the number of pieces for
+a given (header, budget) combination depends on header-overhead arithmetic
+that is an implementation detail, not part of the contract under test.
 
 DERANDOMIZED: both `@settings` below pin `derandomize=True`, so the example
 sequence Hypothesis explores is a fixed hash of the test function rather
@@ -29,6 +36,7 @@ consecutive runs (see round report), so 30 is already sufficient here.
 
 from __future__ import annotations
 
+import re
 import string
 
 import tiktoken
@@ -36,11 +44,12 @@ from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 from trelix.core.config import ChunkerConfig
-from trelix.core.models import Symbol, SymbolKind
+from trelix.core.models import Chunk, Symbol, SymbolKind
 from trelix.indexing.chunker import Chunker
 
 _ENCODING = tiktoken.get_encoding("cl100k_base")
 _TRUNCATION_MARKER = "# ... (truncated)"
+_SPLIT_MARKER_RE = re.compile(r"# Split: chunk \d+ of \d+\n\n")
 
 # Path/language alphabet kept deliberately boring (ASCII letters, digits, and
 # the punctuation that appears in real repo-relative paths) -- the property
@@ -70,9 +79,32 @@ def _symbol(body: str) -> Symbol:
 
 
 def _build_one(chunker: Chunker, body: str, rel_path: str, language: str):
+    """For bodies that must NOT split -- asserts exactly one chunk comes back."""
     chunks = chunker.build_chunks([_symbol(body)], [], rel_path, language)
     assert len(chunks) == 1
     return chunks[0]
+
+
+def _build_all(chunker: Chunker, body: str, rel_path: str, language: str) -> list[Chunk]:
+    """For bodies that MAY split -- no length assertion."""
+    return chunker.build_chunks([_symbol(body)], [], rel_path, language)
+
+
+def _recombine_body(chunks: list[Chunk]) -> str:
+    """Strip each chunk's header+marker prefix and concatenate the remainder.
+
+    Fails loudly if a chunk is missing its "# Split: chunk i of n" marker,
+    rather than silently returning a wrong reconstruction.
+    """
+    pieces: list[str] = []
+    for chunk in chunks:
+        parts = _SPLIT_MARKER_RE.split(chunk.chunk_text, maxsplit=1)
+        assert len(parts) == 2, (
+            f"expected exactly one split marker in chunk_text, found "
+            f"{len(parts) - 1}: {chunk.chunk_text!r}"
+        )
+        pieces.append(parts[1])
+    return "".join(pieces)
 
 
 def _filler_body(token_count: int) -> str:
@@ -119,7 +151,7 @@ def _body_for_exact_total(
     language=st.text(alphabet=string.ascii_lowercase, min_size=1, max_size=12),
     budget=st.integers(min_value=20, max_value=300),
 )
-def test_exactly_at_budget_never_truncates_for_any_header(
+def test_exactly_at_budget_never_splits_for_any_header(
     rel_path: str, language: str, budget: int
 ) -> None:
     """Fails under: chunker.py Chunker.build_chunks `token_count >
@@ -134,6 +166,7 @@ def test_exactly_at_budget_never_truncates_for_any_header(
     chunker = Chunker(ChunkerConfig(max_tokens_per_chunk=budget))
     chunk = _build_one(chunker, body, rel_path, language)
 
+    assert "# Split:" not in chunk.chunk_text
     assert _TRUNCATION_MARKER not in chunk.chunk_text
     assert chunk.token_count == budget
 
@@ -150,23 +183,48 @@ def test_exactly_at_budget_never_truncates_for_any_header(
     language=st.text(alphabet=string.ascii_lowercase, min_size=1, max_size=12),
     budget=st.integers(min_value=20, max_value=300),
 )
-def test_one_token_above_budget_always_truncates_for_any_header(
+def test_one_token_above_budget_always_splits_for_any_header(
     rel_path: str, language: str, budget: int
 ) -> None:
-    """Fails under: `>` -> `<` in Chunker.build_chunks, or the truncation branch
-    being deleted, for ANY header/budget.
+    """Fails under: `>` -> `<` in Chunker.build_chunks, or the split branch
+    being deleted (or reverted to the old truncate-and-discard behavior), for
+    ANY header/budget.
     """
     measurer = Chunker(ChunkerConfig(max_tokens_per_chunk=100_000))
     body, overhead = _body_for_exact_total(measurer, rel_path, language, budget + 1)
     if body == "" and overhead >= budget + 1:
-        return  # header alone already exceeds budget+1; the "+1 over" shape doesn't apply
+        # Regression guard for a real bug found in review: the header alone
+        # (e.g. a very long docstring/import list) already exceeds budget+1
+        # with an empty body, so there is no body content to spread across
+        # further pieces. `_split_chunk_text` used to iterate
+        # `while idx < len(body_tokens):`, which never runs when body_tokens
+        # is empty, so the symbol silently got ZERO chunks -- unsearchable,
+        # strictly worse than the truncate-and-discard behavior this split
+        # path replaced. It must always produce exactly one (over-budget)
+        # chunk here instead.
+        chunker = Chunker(ChunkerConfig(max_tokens_per_chunk=budget))
+        chunks = _build_all(chunker, body, rel_path, language)
+        assert len(chunks) == 1
+        assert _TRUNCATION_MARKER not in chunks[0].chunk_text
+        assert chunks[0].token_count == _count(chunks[0].chunk_text)
+        # Confirms this really is the over-budget regime the fixture asked
+        # for, not a vacuously-true check on a chunk that happened to fit.
+        assert chunks[0].token_count > budget
+        assert _recombine_body(chunks) == body
+        return
 
     chunker = Chunker(ChunkerConfig(max_tokens_per_chunk=budget))
-    chunk = _build_one(chunker, body, rel_path, language)
+    chunks = _build_all(chunker, body, rel_path, language)
 
-    assert _TRUNCATION_MARKER in chunk.chunk_text
-    # token_count is recounted after truncation, so it reflects the actual
-    # truncated text (including the appended truncation suffix) rather than
-    # the pre-truncation budget -- it can exceed `budget` by the suffix's
-    # token cost.
-    assert chunk.token_count == _count(chunk.chunk_text)
+    # At least one further piece is required to hold the overflow -- the
+    # exact count depends on header-overhead arithmetic that varies with
+    # `rel_path`/`language`, so it is not pinned to a specific number here.
+    assert len(chunks) >= 2
+    assert all(_TRUNCATION_MARKER not in c.chunk_text for c in chunks)
+    # token_count is recounted per piece from its own final text (header +
+    # split marker + body slice), not derived from the pre-split budget.
+    for c in chunks:
+        assert c.token_count == _count(c.chunk_text)
+    # No content lost: stitching every piece's body back together in order
+    # reproduces the exact 1-token-over-budget body this fixture built.
+    assert _recombine_body(chunks) == body
