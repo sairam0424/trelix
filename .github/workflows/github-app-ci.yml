@@ -39,3 +39,17 @@ jobs:
 
       - name: Test
         run: npm test
+
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Build context is the repo root (the Dockerfile's Python stage
+      # needs src/ for the trelix CLI) — this is also the only thing that
+      # actually proves the root .dockerignore's `!infra/github-app/`
+      # negation (see .dockerignore's own comment) keeps working as the
+      # repo evolves, not just at the time it was added.
+      - name: Build image
+        run: docker build -f infra/github-app/Dockerfile -t trelix-github-app:ci .

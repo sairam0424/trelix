@@ -1,0 +1,27 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: connect this repo in the Render dashboard and point it at this
+# file (or run `render blueprint launch`). Build context is the repo
+# root, matching the Dockerfile's own requirement (it needs `src/` for
+# the Python `trelix` CLI stage) — Render's Docker runtime always uses the
+# repo root as build context; `dockerfilePath` only selects which
+# Dockerfile to run within it.
+services:
+  - type: web
+    name: trelix-github-app
+    runtime: docker
+    dockerfilePath: infra/github-app/Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # `sync: false` — Render prompts for each value in its dashboard;
+      # none of these are stored in this committed file. Do NOT list
+      # PORT here: Render injects its own, and config.ts already reads
+      # `process.env.PORT ?? 3000`, already compatible.
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
