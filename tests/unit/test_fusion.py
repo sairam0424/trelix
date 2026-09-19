@@ -896,3 +896,65 @@ class TestChunkIdNoneFallsBackToSymbolIdDedup:
             "two chunk.id=None hydrations of the same symbol must still collapse to one row"
         )
         assert fused[0].score == pytest.approx(2.0 / 61.0)
+
+
+class TestSubChunkResultsCollapseBySymbolNotByChunkId:
+    """`source == "sub_chunk"` is a deliberate exception to the chunk.id
+    discriminator: MGS3's sub-chunk leg emits one SearchResult per
+    `sub_chunks` rowid, a finer-grained, overlapping VIEW into a symbol the
+    primary chunk already covers -- not disjoint content like a split
+    primary chunk's pieces. `sub_chunk_results` is one of the six ranked
+    lists fed directly into `reciprocal_rank_fusion` (retriever.py, the
+    `_standard_candidates` fusion call), so this module's own dedup must
+    honor the same contract `Retriever._dedup()` is pinned to
+    (`test_two_sub_chunks_of_one_symbol_collapse_to_a_single_row`,
+    tests/unit/test_retriever_row_identity_and_leg_weights.py) -- a gap the
+    first version of this identity-key fix missed, since no test here
+    exercised a sub_chunk-sourced result at all.
+    """
+
+    def test_two_sub_chunk_hits_for_one_symbol_collapse_to_a_single_row(self) -> None:
+        sub_chunk_a = _make_piece_result(
+            symbol_id=99,
+            chunk_id=201,
+            chunk_text="block one",
+            score=0.7,
+            rank=1,
+            source="sub_chunk",
+        )
+        sub_chunk_b = _make_piece_result(
+            symbol_id=99,
+            chunk_id=202,
+            chunk_text="block two",
+            score=0.6,
+            rank=2,
+            source="sub_chunk",
+        )
+
+        fused = reciprocal_rank_fusion([[sub_chunk_a, sub_chunk_b]], k=60)
+
+        assert len(fused) == 1, (
+            "two sub_chunk-sourced results for the same symbol must collapse to one row, "
+            f"even though their chunk.id differs (201 vs 202); got {len(fused)}"
+        )
+
+    def test_a_sub_chunk_hit_does_not_collapse_a_genuinely_split_primary_chunk(self) -> None:
+        """Sanity check the exception is scoped to source=="sub_chunk" only:
+        a real split-piece (source="vector") sharing a symbol_id with a
+        sub_chunk hit must NOT collapse into it -- they are different chunks
+        tables, different content, different reasons to exist."""
+        primary_piece = _make_piece_result(
+            symbol_id=99, chunk_id=301, chunk_text="primary piece 2", score=0.9, rank=1
+        )
+        sub_chunk_hit = _make_piece_result(
+            symbol_id=99,
+            chunk_id=202,
+            chunk_text="block two",
+            score=0.6,
+            rank=2,
+            source="sub_chunk",
+        )
+
+        fused = reciprocal_rank_fusion([[primary_piece, sub_chunk_hit]], k=60)
+
+        assert len(fused) == 2, "a primary-chunk piece and a sub-chunk hit must both survive"

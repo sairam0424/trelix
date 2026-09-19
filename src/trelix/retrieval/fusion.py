@@ -100,12 +100,30 @@ def _fusion_identity(result: SearchResult) -> tuple[str, int, int | None]:
     something this identity-key fix is responsible for solving, and it is
     strictly better than the silent content-drop it replaces.
 
+    `chunk.id` must NOT be used for `source == "sub_chunk"` results, and this is
+    a second, distinct reason from the ones above — not a collision-safety
+    concern, a deliberate design one, confirmed by a pinned mutation test on
+    `Retriever._dedup()` (`test_two_sub_chunks_of_one_symbol_collapse_to_a_
+    single_row`, `tests/unit/test_retriever_row_identity_and_leg_weights.py`)
+    that this module's own sibling reduction must also honor: MGS3's sub-chunk
+    leg (`_sub_chunk_search`) emits one `SearchResult` per `sub_chunks` rowid,
+    a finer-grained, overlapping/redundant VIEW into a symbol whose full body
+    the primary chunk already covers -- unlike a split PRIMARY chunk (piece 1
+    vs. piece 2 of one oversized symbol), which is genuinely disjoint content.
+    Keying sub-chunk hits on `chunk.id` would let N sub-chunks of one symbol
+    all survive as N separate fused rows, each spending assembler budget on
+    text the caller already has via the primary chunk. Sub-chunk hits
+    therefore collapse on `(path, symbol_id)` alone, exactly as before this
+    fix; every other source uses the 3-tuple.
+
     Not `make_scip_symbol_id()` (`trelix.federation.retriever`): that module
     imports this one, so importing it back here is a circular import — and this
     function also runs for ordinary single-repo retrieval, where there is no
     package/version pair to hash.
     """
     chunk, indexed_file = result.chunk, result.file
+    if result.source == "sub_chunk":
+        return (indexed_file.path, chunk.symbol_id, None)
     return (indexed_file.path, chunk.symbol_id, chunk.id)
 
 
@@ -135,10 +153,11 @@ def reciprocal_rank_fusion(
     Returns:
         Single merged list sorted by fused (weighted) RRF score, best first,
         deduplicated on _fusion_identity() — one row per (absolute file path,
-        symbol_id, chunk id). Callers must NOT add a second dedupe pass on this
-        output: every distinct row here is already distinct, so any further pass
-        can only delete correct rows, which is exactly how a whole repo went
-        missing.
+        symbol_id, chunk id), except sub_chunk-sourced results, which collapse
+        on (path, symbol_id) alone (see _fusion_identity()'s docstring).
+        Callers must NOT add a second dedupe pass on this output: every
+        distinct row here is already distinct, so any further pass can only
+        delete correct rows, which is exactly how a whole repo went missing.
     """
     # Map globally-unique row identity → accumulated RRF score. The key is
     # (absolute file path, symbol_id, chunk id), NOT symbol_id alone and NOT

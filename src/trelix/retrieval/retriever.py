@@ -1615,10 +1615,27 @@ class Retriever:
         callers): defense in depth against the same EXE-02 cross-repo-collision
         class this method's identity resembles, at zero cost if it never fires
         cross-repo today.
+
+        `source == "sub_chunk"` results are the one deliberate exception,
+        collapsing on `(path, symbol_id)` alone instead -- MGS3's sub-chunk leg
+        emits one row per `sub_chunks` rowid, a finer-grained, overlapping VIEW
+        into a symbol the primary chunk already covers, not disjoint content
+        like a split primary chunk's pieces. This is not new here: it is the
+        exact, pre-existing, pinned contract this method already had
+        (`test_two_sub_chunks_of_one_symbol_collapse_to_a_single_row` in
+        `tests/unit/test_retriever_row_identity_and_leg_weights.py`), which the
+        first version of this fix broke by keying every source on chunk.id
+        uniformly -- caught by that test in CI, not by the adversarial review
+        that produced the first version (a real gap: none of that review's
+        test files exercised the sub_chunk leg through `_dedup`). Matches the
+        identical exception in `fusion.py::_fusion_identity()`, since
+        `sub_chunk_results` is one of the ranked lists fusion.py itself fuses,
+        before this method ever runs.
         """
         seen: dict[tuple[str, int, int | None], SearchResult] = {}
         for r in results:
-            identity = (r.file.path, r.chunk.symbol_id, r.chunk.id)
+            chunk_id = None if r.source == "sub_chunk" else r.chunk.id
+            identity = (r.file.path, r.chunk.symbol_id, chunk_id)
             if identity not in seen or r.score > seen[identity].score:
                 seen[identity] = r
         return sorted(seen.values(), key=lambda x: x.score, reverse=True)
