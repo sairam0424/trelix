@@ -249,7 +249,11 @@ class TestTokenCount:
         chunks = chunker.build_chunks([short, long], [], "src/foo.py", "python")
         assert chunks[1].token_count > chunks[0].token_count
 
-    def test_truncation_recounts_token_count(self) -> None:
+    def test_split_chunk_token_count_recounted_per_piece(self) -> None:
+        """An over-budget symbol is split (not truncated) into multiple
+        chunks; every piece's token_count reflects its OWN actual text
+        (header + split marker + body slice), not the pre-split budget.
+        """
         import tiktoken
 
         max_tokens = 20
@@ -257,12 +261,14 @@ class TestTokenCount:
         large_body = "def f():\n" + "    # comment line\n" * 200
         symbol = _make_symbol(body=large_body)
         chunks = chunker.build_chunks([symbol], [], "src/foo.py", "python")
-        # After truncation, token_count reflects the actual truncated text
-        # (including the appended "... (truncated)" suffix), not the
-        # pre-truncation budget -- so it can exceed max_tokens by the
-        # suffix's token cost.
+
+        # Precondition: this body actually overflows a single chunk, so the
+        # split path (not the single-chunk path) is what is under test.
+        assert len(chunks) > 1
+
         enc = tiktoken.get_encoding("cl100k_base")
-        assert chunks[0].token_count == len(enc.encode(chunks[0].chunk_text))
+        for chunk in chunks:
+            assert chunk.token_count == len(enc.encode(chunk.chunk_text))
 
 
 # ---------------------------------------------------------------------------

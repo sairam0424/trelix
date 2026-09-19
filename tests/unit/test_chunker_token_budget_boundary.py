@@ -1,13 +1,16 @@
 """Exact-boundary tests for the chunker token budget.
 
-Both Chunker.build_chunks and ContextualChunker.build_chunks gate truncation on
+Both Chunker.build_chunks and ContextualChunker.build_chunks gate splitting on
 
     if token_count > self.config.max_tokens_per_chunk:
 
-Flipping that ``>`` to ``>=`` truncates a chunk that exactly fills the budget --
-silent content loss on every at-the-limit chunk -- and the pre-existing suite of
-84 chunker tests does not notice, because none of them builds a chunk whose token
-count is exactly max_tokens_per_chunk.
+Flipping that ``>`` to ``>=`` splits a chunk that exactly fills the budget into
+an unnecessary extra piece -- wasteful (an extra row, an extra "# Split:"
+marker) but not, since the fix in this file's sibling
+tests/unit/test_chunker_split_on_overflow.py, content-lossy the way the old
+truncate-and-discard behavior was. The pre-existing suite of 84 chunker tests
+still would not notice this mutation on its own, because none of them builds a
+chunk whose token count is exactly max_tokens_per_chunk.
 
 Every test below states the mutation it must fail under.
 
@@ -18,19 +21,23 @@ expected numbers are not taken from the code being tested.
 
 from __future__ import annotations
 
+import re
+
 import tiktoken
 
 from trelix.core.config import ChunkerConfig
 from trelix.core.models import Chunk, Symbol, SymbolKind
 from trelix.indexing.chunker import Chunker, ContextualChunker
 
-# The literal suffix _truncate_chunk appends. Hard-coded here on purpose: it is
-# the observable marker of "this chunk was truncated", and importing it from the
-# module under test would make the assertion vacuous.
-_TRUNCATION_MARKER = "# ... (truncated)"
+# The literal marker _split_chunk_text inserts into every split piece. Hard-
+# coded here on purpose: it is the observable sign that a chunk was split, and
+# importing it from the module under test would make the assertion vacuous.
+_SPLIT_MARKER_RE = re.compile(r"# Split: chunk \d+ of \d+\n\n")
 
-# 7 = len(cl100k_base.encode("\n# ... (truncated)")), pinned below.
-_TRUNCATION_MARKER_TOKENS = 7
+# The literal suffix the OLD `_truncate_chunk` used to append. That method no
+# longer exists; every assertion below that this string is absent is a
+# regression guard against reintroducing truncate-and-discard.
+_TRUNCATION_MARKER = "# ... (truncated)"
 
 _ENCODING = tiktoken.get_encoding("cl100k_base")
 
@@ -44,10 +51,10 @@ _LANGUAGE = "python"
 # A budget small enough to build exactly, large enough to hold the header.
 _LIMIT = 64
 
-# Non-truncating budget used only to MEASURE a candidate body's token count.
+# Non-splitting budget used only to MEASURE a candidate body's token count.
 # Nothing at this size can reach the boundary, so the measurement is identical
 # under both `>` and `>=`.
-_NO_TRUNCATION_LIMIT = 100_000
+_NO_SPLIT_LIMIT = 100_000
 
 
 def _count(text: str) -> int:
@@ -77,13 +84,37 @@ def _symbol(body: str, *, id: int = 1) -> Symbol:
 
 
 def _build_one(chunker: Chunker, body: str) -> Chunk:
+    """For bodies that must NOT split -- asserts exactly one chunk comes back."""
     chunks = chunker.build_chunks([_symbol(body)], [], _REL_PATH, _LANGUAGE)
     assert len(chunks) == 1
     return chunks[0]
 
 
+def _build_all(chunker: Chunker, body: str) -> list[Chunk]:
+    """For bodies that MAY split -- no length assertion."""
+    return chunker.build_chunks([_symbol(body)], [], _REL_PATH, _LANGUAGE)
+
+
+def _recombine_body(chunks: list[Chunk]) -> str:
+    """Strip each chunk's header+marker prefix and concatenate the remainder.
+
+    Fails loudly (via the regex split's own length check) if a chunk is
+    missing its "# Split: chunk i of n" marker, rather than silently
+    returning a wrong reconstruction.
+    """
+    pieces: list[str] = []
+    for chunk in chunks:
+        parts = _SPLIT_MARKER_RE.split(chunk.chunk_text, maxsplit=1)
+        assert len(parts) == 2, (
+            f"expected exactly one split marker in chunk_text, found "
+            f"{len(parts) - 1}: {chunk.chunk_text!r}"
+        )
+        pieces.append(parts[1])
+    return "".join(pieces)
+
+
 def _filler_for_exact_total(chunker: Chunker, target_total: int) -> str:
-    """Return a body whose chunk_text is EXACTLY `target_total` tokens.
+    """Return a body whose (unsplit) chunk_text is EXACTLY `target_total` tokens.
 
     The header is fixed-size, so one filler token adds one chunk token. The
     result is verified with tiktoken (not with the chunker's own count) and the
@@ -159,112 +190,80 @@ def _contextual_chunker(max_tokens: int) -> tuple[ContextualChunker, _StubLLMCli
     return chunker, client
 
 
-class TestTruncationMarkerCost:
-    def test_truncation_suffix_is_seven_tokens(self) -> None:
-        """Pins the constant the +7 accounting bug below depends on.
-
-        Fails under: changing the appended suffix in Chunker._truncate_chunk
-        without updating _TRUNCATION_MARKER_TOKENS.
-        """
-        assert _count("\n" + _TRUNCATION_MARKER) == _TRUNCATION_MARKER_TOKENS
-
-
 class TestChunkerTokenBudgetBoundary:
     """Chunker.build_chunks: exactly at / one below / one above the budget."""
 
-    def test_exactly_at_budget_is_not_truncated(self) -> None:
+    def test_exactly_at_budget_is_not_split(self) -> None:
         """Fails under: chunker.py Chunker.build_chunks `token_count >
         self.config.max_tokens_per_chunk` -> `token_count >=
         self.config.max_tokens_per_chunk`.
         """
-        measurer = Chunker(ChunkerConfig(max_tokens_per_chunk=_NO_TRUNCATION_LIMIT))
+        measurer = Chunker(ChunkerConfig(max_tokens_per_chunk=_NO_SPLIT_LIMIT))
         body = _filler_for_exact_total(measurer, _LIMIT)
 
         chunker = Chunker(ChunkerConfig(max_tokens_per_chunk=_LIMIT))
         chunk = _build_one(chunker, body)
 
+        assert "# Split:" not in chunk.chunk_text
         assert _TRUNCATION_MARKER not in chunk.chunk_text
         assert _count(chunk.chunk_text) == 64
         assert chunk.token_count == 64
 
-    def test_one_token_below_budget_is_not_truncated(self) -> None:
+    def test_one_token_below_budget_is_not_split(self) -> None:
         """Fails under: `>` -> `<` or `>` -> `!=` in Chunker.build_chunks."""
-        measurer = Chunker(ChunkerConfig(max_tokens_per_chunk=_NO_TRUNCATION_LIMIT))
+        measurer = Chunker(ChunkerConfig(max_tokens_per_chunk=_NO_SPLIT_LIMIT))
         body = _filler_for_exact_total(measurer, _LIMIT - 1)
 
         chunker = Chunker(ChunkerConfig(max_tokens_per_chunk=_LIMIT))
         chunk = _build_one(chunker, body)
 
+        assert "# Split:" not in chunk.chunk_text
         assert _TRUNCATION_MARKER not in chunk.chunk_text
         assert _count(chunk.chunk_text) == 63
         assert chunk.token_count == 63
 
-    def test_one_token_above_budget_is_truncated(self) -> None:
-        """Fails under: `>` -> `<`, or deleting the truncation branch in
-        Chunker.build_chunks.
+    def test_one_token_above_budget_is_split_into_two_chunks(self) -> None:
+        """Fails under: `>` -> `<`, or deleting the split branch in
+        Chunker.build_chunks, or reverting `_split_chunk_text` to the old
+        truncate-and-discard `_truncate_chunk`.
         """
-        measurer = Chunker(ChunkerConfig(max_tokens_per_chunk=_NO_TRUNCATION_LIMIT))
+        measurer = Chunker(ChunkerConfig(max_tokens_per_chunk=_NO_SPLIT_LIMIT))
         body = _filler_for_exact_total(measurer, _LIMIT + 1)
 
         chunker = Chunker(ChunkerConfig(max_tokens_per_chunk=_LIMIT))
-        chunk = _build_one(chunker, body)
+        chunks = _build_all(chunker, body)
 
-        assert _TRUNCATION_MARKER in chunk.chunk_text
-        # token_count is recounted after truncation, so it reflects the actual
-        # text -- the 64 kept tokens plus the 7-token truncation suffix.
-        assert _count(chunk.chunk_text) == 64 + _TRUNCATION_MARKER_TOKENS
-        assert chunk.token_count == 64 + _TRUNCATION_MARKER_TOKENS
+        assert len(chunks) == 2
+        assert all(_TRUNCATION_MARKER not in c.chunk_text for c in chunks)
+        assert all(c.chunk_text.startswith(f"# File: {_REL_PATH}") for c in chunks)
+        # No content lost: stitching the two pieces back together reproduces
+        # the exact 1-token-over-budget body this fixture built.
+        assert _recombine_body(chunks) == body
 
-
-class TestTruncatedChunkTokenCountAccounting:
-    """Second, independent defect: the recorded token_count of a truncated
-    chunk excludes the truncation suffix, so every over-budget chunk is sent to
-    the embedder carrying more tokens than the row claims.
-
-    Chunker._truncate_chunk returns decode(tokens[:max_tokens]) + the suffix,
-    while build_chunks sets token_count = max_tokens. Measured on this tree with
-    max_tokens_per_chunk=512 and a 400-line padded body: token_count == 512 but
-    tiktoken counts 518 tokens in chunk_text (delta 6 -- the 7-token suffix,
-    less one token that merges with the trailing kept token; with a filler body
-    that does not merge, the delta is the full 7, as pinned above).
-    """
-
-    def test_truncated_chunk_token_count_matches_its_text(self) -> None:
-        """Passes now that build_chunks recounts token_count after truncating
-        (formerly xfail strict while token_count was set to the pre-truncation
-        budget instead).
+    def test_split_pieces_token_counts_match_their_own_text(self) -> None:
+        """token_count is recounted per piece from its OWN final text (header
+        + split marker + body slice), not derived from the pre-split budget.
         """
-        chunker = Chunker(ChunkerConfig(max_tokens_per_chunk=512))
-        body = "def f():\n" + "    # pad pad pad\n" * 400
-        chunk = _build_one(chunker, body)
+        measurer = Chunker(ChunkerConfig(max_tokens_per_chunk=_NO_SPLIT_LIMIT))
+        body = _filler_for_exact_total(measurer, _LIMIT + 1)
 
-        # Precondition: truncation actually happened, so this is not a
-        # vacuously-true assertion about a short chunk. Load-bearing -- keep it.
-        assert _TRUNCATION_MARKER in chunk.chunk_text
+        chunker = Chunker(ChunkerConfig(max_tokens_per_chunk=_LIMIT))
+        chunks = _build_all(chunker, body)
 
-        # NOTE: deliberately NO `assert chunk.token_count == 512` here.
-        #
-        # This file names two acceptable fixes for the defect: reserve room for the
-        # suffix before truncating (giving 512 == 512), or recount after truncating
-        # (giving 518 == 518). Pinning the CURRENT wrong value of 512 would make the
-        # second fix fail on that line FIRST, so the test would keep XFAILing and
-        # `strict=True` would never convert to a failure -- the stale expectation would
-        # rot silently, which is the exact thing strict xfail exists to prevent.
-        #
-        # With only the equality below, both candidate fixes XPASS and strict turns that
-        # into a build failure that says "remove this marker".
-        assert chunk.token_count == _count(chunk.chunk_text)
+        assert len(chunks) == 2
+        for chunk in chunks:
+            assert chunk.token_count == _count(chunk.chunk_text)
 
 
 class TestContextualChunkerTokenBudgetBoundary:
     """ContextualChunker.build_chunks has its own copy of the comparison."""
 
-    def test_exactly_at_budget_is_not_truncated(self) -> None:
+    def test_exactly_at_budget_is_not_split(self) -> None:
         """Fails under: chunker.py ContextualChunker.build_chunks `token_count >
         self.config.max_tokens_per_chunk` -> `token_count >=
         self.config.max_tokens_per_chunk`.
         """
-        measurer, _ = _contextual_chunker(_NO_TRUNCATION_LIMIT)
+        measurer, _ = _contextual_chunker(_NO_SPLIT_LIMIT)
         body = _filler_for_exact_total(measurer, _LIMIT)
 
         chunker, client = _contextual_chunker(_LIMIT)
@@ -275,15 +274,16 @@ class TestContextualChunkerTokenBudgetBoundary:
         assert client.completions.call_count == 1
         assert chunk.chunk_text.startswith(_SUMMARY + "\n\n")
 
+        assert "# Split:" not in chunk.chunk_text
         assert _TRUNCATION_MARKER not in chunk.chunk_text
         assert _count(chunk.chunk_text) == 64
         assert chunk.token_count == 64
 
-    def test_one_token_below_budget_is_not_truncated(self) -> None:
+    def test_one_token_below_budget_is_not_split(self) -> None:
         """Fails under: `>` -> `<` or `>` -> `!=` in
         ContextualChunker.build_chunks.
         """
-        measurer, _ = _contextual_chunker(_NO_TRUNCATION_LIMIT)
+        measurer, _ = _contextual_chunker(_NO_SPLIT_LIMIT)
         body = _filler_for_exact_total(measurer, _LIMIT - 1)
 
         chunker, client = _contextual_chunker(_LIMIT)
@@ -291,23 +291,39 @@ class TestContextualChunkerTokenBudgetBoundary:
 
         assert client.completions.call_count == 1
         assert chunk.chunk_text.startswith(_SUMMARY + "\n\n")
+        assert "# Split:" not in chunk.chunk_text
         assert _TRUNCATION_MARKER not in chunk.chunk_text
         assert _count(chunk.chunk_text) == 63
         assert chunk.token_count == 63
 
-    def test_one_token_above_budget_is_truncated(self) -> None:
-        """Fails under: `>` -> `<`, or deleting the truncation branch in
+    def test_one_token_above_budget_is_split_into_two_chunks(self) -> None:
+        """Fails under: `>` -> `<`, or deleting the split branch in
         ContextualChunker.build_chunks.
         """
-        measurer, _ = _contextual_chunker(_NO_TRUNCATION_LIMIT)
+        measurer, _ = _contextual_chunker(_NO_SPLIT_LIMIT)
         body = _filler_for_exact_total(measurer, _LIMIT + 1)
 
         chunker, client = _contextual_chunker(_LIMIT)
-        chunk = _build_one(chunker, body)
+        chunks = _build_all(chunker, body)
 
         assert client.completions.call_count == 1
-        assert _TRUNCATION_MARKER in chunk.chunk_text
-        # token_count is recounted after truncation, so it reflects the actual
-        # text -- the 64 kept tokens plus the 7-token truncation suffix.
-        assert _count(chunk.chunk_text) == 64 + _TRUNCATION_MARKER_TOKENS
-        assert chunk.token_count == 64 + _TRUNCATION_MARKER_TOKENS
+        assert len(chunks) == 2
+        assert all(_TRUNCATION_MARKER not in c.chunk_text for c in chunks)
+        # The summary describes the whole symbol once -- it belongs on the
+        # first piece only, never duplicated onto the second.
+        assert chunks[0].chunk_text.startswith(_SUMMARY + "\n\n")
+        assert _SUMMARY not in chunks[1].chunk_text
+        # No content lost, contextual summary aside: stitching the two
+        # pieces' bodies back together reproduces the original body exactly.
+        assert _recombine_body(chunks) == body
+
+    def test_split_pieces_token_counts_match_their_own_text(self) -> None:
+        measurer, _ = _contextual_chunker(_NO_SPLIT_LIMIT)
+        body = _filler_for_exact_total(measurer, _LIMIT + 1)
+
+        chunker, _client = _contextual_chunker(_LIMIT)
+        chunks = _build_all(chunker, body)
+
+        assert len(chunks) == 2
+        for chunk in chunks:
+            assert chunk.token_count == _count(chunk.chunk_text)
