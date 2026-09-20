@@ -101,7 +101,9 @@ describe("runReviewCli timeout", () => {
     it("kills a hung `trelix review` subprocess once the timeout elapses", async () => {
         const request = { owner: "o", repo: "r", prNumber: 1 };
 
-        await expect(runReviewCli(request, ".", 200)).rejects.toMatchObject({
+        await expect(
+            runReviewCli(request, ".", "fake-token", 200),
+        ).rejects.toMatchObject({
             killed: true,
             signal: "SIGTERM",
         });
@@ -113,7 +115,40 @@ describe("runReviewCli timeout", () => {
         chmodSync(shim, 0o755);
         const request = { owner: "o", repo: "r", prNumber: 1 };
 
-        await expect(runReviewCli(request, ".", 5000)).resolves.toEqual([]);
+        await expect(
+            runReviewCli(request, ".", "fake-token", 5000),
+        ).resolves.toEqual([]);
+    });
+
+    // Regression test — found live: `trelix review --pr` fetches the PR
+    // diff from GitHub's own API (src/trelix/cli/main.py's review()
+    // command) and hard-requires a GITHUB_TOKEN env var to do so, exactly
+    // like .github/workflows/trelix-review.yml's own
+    // `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` step does. Every real
+    // webhook failed with "GITHUB_TOKEN environment variable is required
+    // for --pr." because runReviewCli never passed the installation token
+    // it's given through to the subprocess's environment at all.
+    it("passes the installation token through as GITHUB_TOKEN in the subprocess environment", async () => {
+        const shim = join(binDir, "trelix");
+        writeFileSync(
+            shim,
+            [
+                "#!/bin/sh",
+                'if [ "$GITHUB_TOKEN" = "canary-installation-token" ]; then',
+                "  echo '[]'",
+                "else",
+                "  echo 'GITHUB_TOKEN missing or wrong' >&2",
+                "  exit 1",
+                "fi",
+                "",
+            ].join("\n"),
+        );
+        chmodSync(shim, 0o755);
+        const request = { owner: "o", repo: "r", prNumber: 1 };
+
+        await expect(
+            runReviewCli(request, ".", "canary-installation-token", 5000),
+        ).resolves.toEqual([]);
     });
 });
 
@@ -280,5 +315,54 @@ describe("runReview orchestration", () => {
             "ghs_faketoken",
             expect.objectContaining({ owner: "o", repo: "r", prNumber: 1 }),
         );
+    });
+
+    // Regression test — found live: this is the exact end-to-end path that
+    // failed against real GitHub with "GITHUB_TOKEN environment variable is
+    // required for --pr." runReview mints the installation token and passes
+    // it to checkoutPullRequest, but was never forwarding that same token to
+    // the `trelix review --pr ...` subprocess's environment, which requires
+    // GITHUB_TOKEN to fetch the PR diff via GitHub's API (see
+    // src/trelix/cli/main.py's review() command, and the identical
+    // GITHUB_TOKEN pattern .github/workflows/trelix-review.yml already uses).
+    it("forwards the minted installation token to the trelix review subprocess as GITHUB_TOKEN", async () => {
+        const config = makeConfig();
+        const { workspace, cleanup } = fakeWorkspace();
+        const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
+            vi.fn(async () => workspace);
+        const octokit = fakeOctokit("deadbeef");
+        const installationTokenForCli = "installation-token-for-cli-env";
+
+        const shim = join(binDir, "trelix");
+        writeFileSync(
+            shim,
+            [
+                "#!/bin/sh",
+                'if [ "$1" = "index" ]; then',
+                '  echo "simulated index failure" >&2',
+                "  exit 1",
+                "fi",
+                `if [ "$GITHUB_TOKEN" != "${installationTokenForCli}" ]; then`,
+                '  echo "GITHUB_TOKEN missing or wrong in orchestration" >&2',
+                "  exit 1",
+                "fi",
+                "echo '[]'",
+                "",
+            ].join("\n"),
+        );
+        chmodSync(shim, 0o755);
+
+        const findings = await runReview(
+            config,
+            { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+            {
+                checkoutPullRequest,
+                request: fakeAuthRequest(installationTokenForCli),
+                octokit,
+            },
+        );
+
+        expect(findings).toEqual([]);
+        expect(cleanup).toHaveBeenCalledTimes(1);
     });
 });

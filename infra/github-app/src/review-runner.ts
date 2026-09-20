@@ -69,17 +69,28 @@ export function toAnnotations(
  * findings. Requires PR #83's fix (stdout carries ONLY the JSON array;
  * status/progress messages go to stderr) — this function reads stdout
  * exclusively and would break against the pre-#83 CLI.
+ *
+ * `--pr` mode fetches the PR diff from GitHub's own API rather than the
+ * local clone (see src/trelix/cli/main.py's review() command) and hard-
+ * requires a GITHUB_TOKEN env var to do so — exactly like
+ * .github/workflows/trelix-review.yml's own
+ * `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` step. `token` here is the
+ * same installation token runReview already minted for checkoutPullRequest
+ * and the Checks API — found live: every real webhook failed with
+ * "GITHUB_TOKEN environment variable is required for --pr." until this
+ * was forwarded through.
  */
 export async function runReviewCli(
     request: ReviewRequest,
     repoPath: string,
+    token: string,
     timeoutMs: number = REVIEW_TIMEOUT_MS,
 ): Promise<ReviewFinding[]> {
     const prRef = `${request.owner}/${request.repo}#${request.prNumber}`;
     const { stdout } = await execFileAsync(
         "trelix",
         ["review", repoPath, "--pr", prRef, "--json"],
-        { timeout: timeoutMs },
+        { timeout: timeoutMs, env: { ...process.env, GITHUB_TOKEN: token } },
     );
     return JSON.parse(stdout) as ReviewFinding[];
 }
@@ -195,7 +206,7 @@ export async function runReview(
     const workspace = await checkoutPullRequest(token, request);
     try {
         await indexRepository(workspace.path);
-        const findings = await runReviewCli(request, workspace.path);
+        const findings = await runReviewCli(request, workspace.path, token);
         await postCheckRun(
             octokit,
             request.owner,
