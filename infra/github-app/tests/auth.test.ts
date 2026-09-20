@@ -103,6 +103,51 @@ describe("getInstallationToken", () => {
         expect(requestA).toHaveBeenCalledTimes(1);
         expect(requestB).toHaveBeenCalledTimes(1);
     });
+
+    // Regression test — found live against real GitHub, not in review: every
+    // other test above injects a fake `request`, so none of them exercise
+    // the actual production call signature (no third argument at all).
+    // createAppAuth({..., request}) with `request === undefined` still sets
+    // the *key* `request: undefined` on the options object; @octokit/auth-app
+    // builds its state via `Object.assign({request: <defaulted>}, options)`,
+    // and Object.assign copies a present key regardless of its value — so
+    // the explicit `undefined` silently overwrote the library's own default
+    // transport, and every real webhook crashed with "request is not a
+    // function" before ever reaching GitHub. Faking `globalThis.fetch`
+    // (the real underlying transport @octokit/request's fetch-wrapper uses)
+    // rather than injecting a `request` override is what makes this test
+    // actually exercise the previously-broken path.
+    it("mints a token via the real @octokit/request transport when no request override is passed at all", async () => {
+        const config = makeConfig();
+        const originalFetch = globalThis.fetch;
+        const canaryTokenValue = "unittest-transport-canary-value";
+        let capturedUrl: string | undefined;
+        globalThis.fetch = vi.fn(async (url: string) => {
+            capturedUrl = url;
+            return new Response(
+                JSON.stringify({
+                    token: canaryTokenValue,
+                    expires_at: "2099-01-01T00:00:00Z",
+                    permissions: {},
+                    repository_selection: "all",
+                }),
+                {
+                    status: 201,
+                    headers: { "content-type": "application/json" },
+                },
+            );
+        }) as never;
+
+        try {
+            const token = await getInstallationToken(config, 999);
+            expect(token).toBe(canaryTokenValue);
+            expect(capturedUrl).toContain(
+                "/app/installations/999/access_tokens",
+            );
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
 });
 
 describe("getAppJwt", () => {

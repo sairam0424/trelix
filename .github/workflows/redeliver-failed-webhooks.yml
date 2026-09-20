@@ -39,8 +39,14 @@ jobs:
       - name: Redeliver failed webhook deliveries
         run: npm run redeliver-failed-webhooks
         env:
-          GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
-          GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          # Actions rejects any repo secret named with a GITHUB_ prefix
+          # (reserved for GitHub's own automatic secrets/vars) — confirmed
+          # via a real `gh secret set` attempt, which fails with HTTP 422
+          # "Secret names must not start with GITHUB_." The env var NAMES
+          # the Node script itself reads (loadConfig() in config.ts) are
+          # unaffected; only the secret-STORE names below had to change.
+          GITHUB_APP_ID: ${{ secrets.TRELIX_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.TRELIX_APP_PRIVATE_KEY }}
           # loadConfig() requires this even though the redelivery script
           # itself never verifies a webhook signature — cheapest fix is a
           # placeholder, not relaxing the shared config loader's own

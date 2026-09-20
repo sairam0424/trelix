@@ -4,13 +4,11 @@
 # it into the manifest-flow UI. See:
 # https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
 #
-# url/hook_attributes.url below are placeholders — replace with your
-# deployed service's real HTTPS origin before registering. No
-# redirect_url/setup_url: this App has no /setup callback route: GitHub's
-# manifest flow displays the one-time `code` for manual exchange without
-# them (see README.md's registration step).
+# No redirect_url/setup_url: this App has no /setup callback route:
+# GitHub's manifest flow displays the one-time `code` for manual exchange
+# without them (see README.md's registration step).
 name: trelix-review
-url: https://trelix.example.com
+url: https://trelix-github-app.onrender.com
 description: >-
   Automatic PR code review as GitHub Check annotations, powered by trelix's
   retrieval-augmented diff analysis. Zero setup beyond installing the App —
@@ -18,7 +16,7 @@ description: >-
 public: true
 
 hook_attributes:
-  url: https://trelix.example.com/webhooks/github
+  url: https://trelix-github-app.onrender.com/webhooks/github
   active: true
 
 # Same three permissions the existing Actions-workflow-based integration

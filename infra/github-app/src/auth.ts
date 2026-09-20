@@ -24,7 +24,14 @@ function getAuthInstance(
         auth = createAppAuth({
             appId: config.appId,
             privateKey: config.privateKey,
-            request,
+            // Omit the key entirely when unset — @octokit/auth-app builds its
+            // state via `Object.assign({request: <defaulted>}, options, ...)`,
+            // and Object.assign copies a present key regardless of its value.
+            // `request: undefined` here would overwrite that default with
+            // undefined, crashing every real call (verified live: this was
+            // happening on 100% of production webhooks, since only tests ever
+            // pass a real `request` override).
+            ...(request ? { request } : {}),
         });
         authInstances.set(config, auth);
     }
