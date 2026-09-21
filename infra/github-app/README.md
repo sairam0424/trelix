@@ -222,42 +222,64 @@ GitHub -- pull_request webhook -->  this service (Express)
    environment variables (never commit them — see `.gitignore`'s `.env`
    entry).
 
-### Deploying on Render
+### Deploying on Railway
 
-`Dockerfile` builds this service and the `trelix` CLI it shells out to
-into one image; `render.yaml` is a Render Blueprint for a free-tier
-deploy. Free-tier caveats that shape the setup below:
+Migrated off Render: Render fronts every service through Cloudflare
+non-configurably, and Cloudflare's WAF blocked real GitHub `pull_request`
+webhooks whose body contained code-like content (curl examples, code
+fences) — a documented, unresolved false-positive class, not fixable from
+our side. Railway has no default content-inspecting WAF, so this class of
+failure can't recur there. `render.yaml`/the section this replaced is kept
+only as a historical fallback reference until Render is fully decommissioned.
 
-- **15-minute idle spin-down, ~1 minute cold start.** Render's free plan
-  spins the service down after 15 minutes with no traffic. The webhook
-  route acknowledges with an immediate `202` before running the review
-  (see `webhook.ts`), so only the *first* request after a cold start is
-  slow — the review itself always runs async regardless.
-- **Ephemeral filesystem, no persistent disk.** Every redeploy/restart/
-  spin-down wipes the filesystem. This is actually a good fit for
-  `repo-checkout.ts`'s per-request temp workspaces — nothing needs to
-  survive a restart — but means the App's own credentials must live in
-  Render's env var store, never written to a file at deploy time.
-- **750 free instance-hours/workspace/month.** One service running 24/7
-  for a 31-day month is 744h, fits with 6h to spare — but only if the
-  keep-warm pinger below actually prevents spin-down; without it, a quiet
-  repo's service spins down and back up organically, still within budget
-  but with cold-start latency on the first webhook after each idle gap.
+`Dockerfile` (same one, unchanged) builds this service and the `trelix`
+CLI it shells out to into one image. Configure via the Railway dashboard
+or CLI — **do not** add a `railway.json`/`railway.toml`; that config-as-code
+format is deprecated with a 2026-12-01 cutoff in favor of a new
+TypeScript/Python/Go IaC system, and our config needs are modest enough to
+skip it entirely:
 
-**Keep-warm pinger — [cron-job.org](https://cron-job.org):** create a free
-account, add a job hitting `https://<your-service>.onrender.com/health`
-every 10–14 minutes (comfortably under the 15-minute spin-down window).
-Chosen over UptimeRobot (5-minute floor, no advantage here) and over a
-GitHub Actions `schedule` workflow specifically as the *pinger* (rejected:
-public-repo scheduled workflows auto-disable after 60 days of repo
-inactivity, and GitHub documents real scheduling delays under high load —
-neither problem applies to a dedicated external pinger).
+- **Root Directory:** repo root (blank/`.`).
+- **Dockerfile path:** `infra/github-app/Dockerfile`, set via the
+  `RAILWAY_DOCKERFILE_PATH` service variable (or the dashboard's
+  Dockerfile-path field) — this also switches the effective builder to
+  `DOCKERFILE` automatically; there's no separate "Docker" builder enum
+  value to pick.
+- **Branch:** `develop`, matching this repo's deploy branch elsewhere.
+- **Health check:** path `/health`, generous timeout (300s) to cover a
+  cold start plus a real `git clone` + `trelix index`/`review` burst.
+- **Sleep (Serverless):** the Free plan *requires* `sleepApplication: true`
+  for any service without a cron schedule — it cannot be disabled short of
+  upgrading off Free. This means the same cold-start-drops-a-delivery risk
+  Render's 15-minute spin-down had is unavoidable here too, so the same two
+  mitigations apply, just repointed at the Railway URL:
+  - **Keep-warm pinger — [cron-job.org](https://cron-job.org):** a free
+    job hitting `https://<your-service>.up.railway.app/health` every
+    10–14 minutes.
+  - **Redelivery backstop:** `.github/workflows/redeliver-failed-webhooks.yml`
+    (schedule + `workflow_dispatch`) — unchanged, hosting-agnostic. Needs
+    `TRELIX_APP_ID`/`TRELIX_APP_PRIVATE_KEY` as repo secrets (Settings →
+    Secrets and variables → Actions) — renamed from `GITHUB_APP_ID`/
+    `GITHUB_APP_PRIVATE_KEY` in PR #337; the env var *names* `config.ts`
+    itself reads are unchanged, only the GitHub Actions secret-store names
+    changed.
+- **Replica/Usage Limits:** set a generous (not aggressive) Replica Limit
+  so a real review burst doesn't crash the instance, and only a *soft*
+  (notify-only) Usage Limit — no hard billing cutoff that could kill the
+  service unexpectedly. Configure via the dashboard; the underlying
+  `usageLimitSet` mutation is billing-workspace-scoped, not project-scoped,
+  so it's not something to script per-project.
+- **Free-tier deploy freeze:** Railway blocks Free-plan deploys roughly
+  8 AM–8 PM `America/Los_Angeles` daily, regardless of the service's own
+  region. A push that would trigger an auto-deploy during that window
+  simply fails until the window closes — worth knowing before assuming a
+  merged PR redeployed.
 
-**Redelivery backstop:** `.github/workflows/redeliver-failed-webhooks.yml`
-runs every 6 hours (`schedule`) and on-demand (`workflow_dispatch`),
-redelivering any webhook delivery GitHub itself marked failed and didn't
-retry. Needs `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY` as repo secrets
-(Settings → Secrets and variables → Actions).
+Env vars (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`)
+are the same shape as before. LLM synthesis uses `TRELIX_LLM_PROVIDER=azure`
+plus `AZURE_API_KEY`/`AZURE_ENDPOINT` (reusing the main app's existing,
+already-working Azure credentials) instead of a placeholder
+`OPENAI_API_KEY` — no new credential was provisioned for this.
 
 ### Local development
 
