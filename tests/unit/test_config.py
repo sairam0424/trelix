@@ -654,8 +654,17 @@ class TestCompressionConfig:
         monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_PROVIDER", "extractive")
         assert RetrievalConfig().compression_provider == "extractive"
 
-    def test_unknown_provider_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_abstractive_provider_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """ "abstractive" used to be this suite's example of a REJECTED value
+        (compression_provider was Literal["extractive"] only) -- v3.4 shipped
+        AbstractiveCompressor, so the Literal widened and this is now the
+        accepted case. See test_unknown_provider_rejected below for the
+        invariant this test used to cover."""
         monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_PROVIDER", "abstractive")
+        assert RetrievalConfig().compression_provider == "abstractive"
+
+    def test_unknown_provider_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_RETRIEVAL_COMPRESSION_PROVIDER", "made-up-provider-name")
         with pytest.raises(ValidationError):
             RetrievalConfig()
 

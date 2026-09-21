@@ -316,13 +316,20 @@ def test_make_compressor_defaults_to_extractive() -> None:
 
 
 def test_make_compressor_rejects_unknown_provider() -> None:
+    """ "abstractive" used to be this test's example -- it was the one
+    NotImplementedError case before v3.4 shipped AbstractiveCompressor (see
+    tests/unit/test_compression_abstractive.py, which now covers dispatching
+    TO "abstractive" instead of rejecting it). This test keeps its original
+    job -- a genuinely unrecognized provider name must still raise -- with a
+    name that isn't a real provider either way."""
+
     class _Cfg:
         class compression:  # noqa: N801 — mimic pydantic sub-config attribute access
-            provider = "abstractive"
+            provider = "made-up-provider-name"
 
     raised = False
     try:
         make_compressor(config=_Cfg(), db=_NoSubChunkDB(), embedder=None)
     except NotImplementedError:
         raised = True
-    assert raised, "unknown provider must raise NotImplementedError (reserved v3.4)"
+    assert raised, "an unrecognized provider must raise NotImplementedError"
