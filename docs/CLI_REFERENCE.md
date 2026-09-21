@@ -1850,4 +1850,56 @@ trelix audit export | jq -r '.principal' | sort | uniq -c
 
 ---
 
+### `trelix audit prune`
+
+#### Synopsis
+
+```
+trelix audit prune [--db PATH] [--retention-days N] [--batch-size N] [--dry-run]
+```
+
+#### Description
+
+Removes `audit_log` entries older than the retention window, in batches. This
+is the **only** `audit` subcommand that opens `audit.db` for write — `list`,
+`verify` and `export` all stay read-only. Not run automatically; wire it into
+cron, a scheduled CI workflow, or a systemd timer. See
+[AUDIT.md#retention-and-pruning](AUDIT.md#retention-and-pruning) for the
+integrity-model details (the prune watermark that lets `audit verify` tell a
+legitimate prune apart from a wipe).
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--db` | string | `TRELIX_AUDIT_DB_PATH`, else `<cwd>/.trelix/audit.db` | Path to `audit.db`. |
+| `--retention-days` | integer | `TRELIX_AUDIT_RETENTION_DAYS` (365) | Remove entries older than this many days. `0` means "keep nothing older than right now". Negative exits 2. |
+| `--batch-size` | integer | `1000` | Rows removed per transaction. |
+| `--dry-run` | flag | off | Report how many entries would be removed, without deleting anything. Stays read-only. |
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Pruned (or, with `--dry-run`, reported) successfully — including "0 entries qualified". |
+| `2` | Database does not exist, could not be opened, is not an audit database, or `--retention-days` is negative. |
+
+#### Examples
+
+```bash
+# See what would be removed first
+trelix audit prune --dry-run
+
+# Then actually remove it
+trelix audit prune
+
+# One-off shorter window, without changing TRELIX_AUDIT_RETENTION_DAYS
+trelix audit prune --retention-days 90
+
+# Cron entry: prune daily at 03:00
+0 3 * * * TRELIX_AUDIT_DB_PATH=/var/log/trelix/audit.db trelix audit prune >> /var/log/trelix/prune.log 2>&1
+```
+
+---
+
 *End of CLI Reference — trelix v3.3.5*

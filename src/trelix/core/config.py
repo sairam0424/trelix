@@ -1738,7 +1738,10 @@ class AuditConfig(BaseSettings):
     db_path: str | None = None
     log_queries: bool = False
     fail_closed: bool = False
-    retention_days: int = 365
+    # ge=0: 0 is legal ("keep nothing older than right now" — prune() treats it
+    # as an immediate full prune); negative has no meaning and used to be
+    # accepted silently before AuditStore.prune() existed to read this value.
+    retention_days: int = Field(default=365, ge=0)
 
     @property
     def resolved_db_path(self) -> Path:

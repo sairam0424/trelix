@@ -20,7 +20,9 @@ store is stdlib `sqlite3`, and the recorder is a Starlette middleware.
 
 Inspect the result with [`trelix audit list`](CLI_REFERENCE.md#trelix-audit-list),
 [`trelix audit verify`](CLI_REFERENCE.md#trelix-audit-verify) and
-[`trelix audit export`](CLI_REFERENCE.md#trelix-audit-export).
+[`trelix audit export`](CLI_REFERENCE.md#trelix-audit-export). Prune old
+entries with `trelix audit prune` (see [Retention and pruning](#retention-and-pruning)) —
+it is the one subcommand in the family that opens the database for write.
 
 ---
 
@@ -197,12 +199,16 @@ leaves no `seq` row at all, and a restored `sqlite3 .dump` legitimately carries 
 one row and `seq == COUNT(*)`" would call every restored dump tamper. `VACUUM`,
 `VACUUM INTO` and `.backup()` all preserve `seq` exactly.
 
-> **This check will become a false positive when retention pruning lands.**
-> `TRELIX_AUDIT_RETENTION_DAYS` is accepted but unimplemented and nothing in
-> `src/` issues `DELETE FROM audit_log` today — a fact pinned by a test — which is
-> the only reason a legitimately empty-but-used log cannot occur. Whoever
-> implements pruning must update `AuditStore._max_audit_log_seq_locked` and this
-> section, or every fully-pruned log will report `log_emptied`.
+> **Retention pruning (`trelix audit prune`) resolves this.** `AuditStore.prune()`
+> is now the one reviewed, tested `src/` path allowed to delete `audit_log` rows
+> — enforced by `tests/unit/test_audit_wipe_detection.py`'s allowlisted-file check.
+> It writes a `prune_watermark_id`/`prune_watermark_hash` anchor in the SAME
+> transaction as its `DELETE`, so `verify()` can tell a legitimately fully-pruned
+> log apart from the sloppy wipe above: it only reports `log_emptied` when the
+> watermark does NOT already account for every id `sqlite_sequence` says was ever
+> handed out. A hand-rolled `DELETE FROM audit_log` outside of `prune()` — with no
+> watermark written — is still reported as `log_emptied`, exactly as before. See
+> [Retention and pruning](#retention-and-pruning).
 
 What closes those rows is an anchor the attacker cannot write: **export the head
 hash and count off-box, somewhere the attacker does not control, and compare it
@@ -260,7 +266,56 @@ belong together and must survive re-indexing. See [SSO.md](SSO.md).
 | `TRELIX_AUDIT_DB_PATH` | _(none)_ → `<cwd>/.trelix/audit.db` | Path to the separate audit DB. Parent directories are created on first open. |
 | `TRELIX_AUDIT_LOG_QUERIES` | `false` | Store raw query text for `search`/`ask` actions instead of `sha256:<hex>` of it. **Currently has no observable effect through the HTTP API** — see [Query text](#query-text-and-log_queries). |
 | `TRELIX_AUDIT_FAIL_CLOSED` | `false` | `true` re-raises an audit-write failure into the request; `false` logs a WARNING and lets the request proceed. See [Failure contract](#failure-contract). |
-| `TRELIX_AUDIT_RETENTION_DAYS` | `365` | **Not implemented.** Accepted and validated-free (a negative value is accepted), but nothing in trelix reads it — there is no pruning job. Rotate or prune `audit.db` yourself, and read the `log_emptied` caveat in [what is and is not detected](#exactly-what-is-and-is-not-detected) first: pruning a log all the way to zero rows is currently reported as a wipe. |
+| `TRELIX_AUDIT_RETENTION_DAYS` | `365` | Read by `trelix audit prune` (not run automatically — see [Retention and pruning](#retention-and-pruning)). Validated: must be `>= 0`; a negative value is rejected at config load rather than accepted silently. `0` means "keep nothing older than right now". |
+
+---
+
+## Retention and pruning
+
+`trelix audit prune` removes `audit_log` entries older than
+`TRELIX_AUDIT_RETENTION_DAYS` (default 365). It is **not run automatically** —
+there is no in-process scheduler in trelix — so wire it up externally: a cron
+job, a scheduled CI workflow, or a systemd timer, hitting the same `audit.db`
+`trelix serve` is writing to.
+
+```bash
+# Report what would be removed, without deleting anything
+trelix audit prune --dry-run
+
+# Actually remove entries older than TRELIX_AUDIT_RETENTION_DAYS
+trelix audit prune
+
+# Override the configured retention window for one run
+trelix audit prune --retention-days 90
+
+# Point at a non-default DB, and tune the per-transaction batch size
+trelix audit prune --db /var/log/trelix/audit.db --batch-size 500
+```
+
+It is the **only** `audit` subcommand that opens the database for write —
+`list`, `verify` and `export` all stay `mode=ro` (see
+[Reading never writes](#reading-never-writes)). Rows are
+deleted in batches, each batch one transaction, and each batch atomically
+records a *prune watermark* (`prune_watermark_id`, `prune_watermark_hash`,
+`prune_removed_count` in `audit_meta`) — the id and hash of the oldest
+surviving row's expected predecessor, plus a running total of everything ever
+pruned. `verify()` reads that watermark to know where the chain is supposed to
+start (id 1 / the genesis hash if the log has never been pruned; one past the
+watermark otherwise) and to adjust the expected live row count for what
+`prune()` has legitimately removed. A hand-rolled `DELETE FROM audit_log`
+outside of `prune()` writes no such watermark and is still reported as tamper
+— see the `log_emptied` callout in
+[what is and is not detected](#exactly-what-is-and-is-not-detected).
+
+Pruning also runs `PRAGMA incremental_vacuum` after each batch to reclaim the
+freed pages, which only has an effect once `auto_vacuum=INCREMENTAL` is set —
+`AuditStore` retrofits that automatically on open (a one-time `VACUUM` the
+first time; a cheap no-op on every open after).
+
+**What pruning does NOT do:** decide what a compliant retention *period* is.
+No specific `TRELIX_AUDIT_RETENTION_DAYS` value is asserted here as meeting
+any particular regulatory requirement — set it according to your own
+compliance obligations.
 
 ---
 
@@ -270,7 +325,7 @@ One row per request in `audit_log`:
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | INTEGER | Primary key, autoincrement. Gapless `1..N` — a gap is itself tamper evidence. |
+| `id` | INTEGER | Primary key, autoincrement. Gapless from 1 (or from one past whatever `trelix audit prune` has removed, see [Retention and pruning](#retention-and-pruning)) — any other gap is tamper evidence. |
 | `ts` | TEXT | ISO-8601 UTC timestamp, stamped by the middleware when the response is produced. |
 | `principal` | TEXT | `static-token` in local/open mode; `sub@iss` for an OIDC-authenticated caller. Never an email, token, or header value. |
 | `action` | TEXT | Coarse verb — `search`, `ask`, `index`, or `admin` (see below). |
@@ -549,8 +604,10 @@ The one place they join: when OTel tracing is enabled, an audit row carries the
    requires exporting the head hash off-box; nothing in trelix does that.
 2. **HTTP API surface only** — MCP tool calls, the internal agent loop, CLI
    commands and direct library use are not audited.
-3. **`TRELIX_AUDIT_RETENTION_DAYS` is not implemented** — nothing prunes; the DB
-   grows without bound.
+3. **`trelix audit prune` is not run automatically** — `TRELIX_AUDIT_RETENTION_DAYS`
+   is only enforced when something actually invokes the command (cron, a
+   scheduled CI workflow, ...); the DB grows without bound until then. See
+   [Retention and pruning](#retention-and-pruning).
 4. **`TRELIX_AUDIT_LOG_QUERIES` is inert on the HTTP path** — `detail` is always
    `null` there.
 5. **Coarse events** — `action` is one of four path-derived verbs; no request
