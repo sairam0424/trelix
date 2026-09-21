@@ -149,7 +149,7 @@ shipped — see below.
 Ideas being researched but not yet committed to a release:
 
 - **CodeBERT fine-tuning** — domain-adapted embedding model trained on trelix's own telemetry data
-- ~~**Semantic diff** — diff-aware retrieval (weight recently-changed symbols higher)~~ ✅ shipped in Phase 2 Plan B
+- **Semantic diff** — diff-aware retrieval (weight recently-changed symbols higher). Phase 2 Plan B built the supporting code (`DiffEmbedder`, `src/trelix/review/diff_embedder.py`) and the `diff_chunks` schema (`db.py`), both tested, but neither is called from `trelix review`'s actual retrieval path — "shipped" here was inaccurate; it's built but not integrated.
 - ~~**IDE plugins** — VS Code extension with inline search~~ ✅ shipped in Phase 3 Plan A
 - ~~**GitHub App** — PR review comments posted automatically via GitHub App auth~~ ✅ shipped in Phase 3 Plan B
 - **Multi-modal** — index diagrams, comments referencing architecture docs
