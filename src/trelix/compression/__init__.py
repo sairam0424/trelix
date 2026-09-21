@@ -1,5 +1,6 @@
 """Compression abstraction — public API."""
 
+from trelix.compression.abstractive import AbstractiveCompressor
 from trelix.compression.base import (
     CompressionResult,
     CompressionUnit,
@@ -9,6 +10,7 @@ from trelix.compression.base import (
 from trelix.compression.extractive import ExtractiveCompressor
 
 __all__ = [
+    "AbstractiveCompressor",
     "Compressor",
     "CompressionResult",
     "CompressionUnit",

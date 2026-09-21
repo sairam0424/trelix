@@ -983,14 +983,17 @@ class RetrievalConfig(BaseSettings):
         default=False,
         alias="TRELIX_RETRIEVAL_COMPRESSION",
     )
-    compression_provider: Literal["extractive"] = Field(
+    compression_provider: Literal["extractive", "abstractive"] = Field(
         default="extractive",
         alias="TRELIX_RETRIEVAL_COMPRESSION_PROVIDER",
     )
     """
     Compression backend. "extractive" is zero-inference (it reuses already-stored
     sub-chunk vectors, or a lexical splitter) — it never makes an embedding, API,
-    or network call. Abstractive/LLM providers are reserved for v3.4.
+    or network call. "abstractive" (v3.4) makes one LLM call per compressed unit
+    via the already-configured `llm` provider (see IndexConfig.llm) — real cost
+    and latency per unit, layered on top of the same must-keep-signature/
+    docstring contract, not a replacement for it.
     """
 
     compression_target_ratio: float = Field(
