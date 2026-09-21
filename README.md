@@ -374,7 +374,7 @@ TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | `cohere` \| `cross_encoder` \| `plaid` \| `xtr` |
-| `TRELIX_RETRIEVAL_PLAID_MODEL` | `colbert-ir/colbertv2.0` | RAGatouille PLAID model (`trelix[plaid]`) |
+| `TRELIX_RETRIEVAL_PLAID_MODEL` | `colbert-ir/colbertv2.0` | RAGatouille PLAID model — install ragatouille manually (no dedicated extra anymore; its dependency chain caps `openai<3`, permanently incompatible with trelix's core `openai>=2.20.0,<3.0.0` floor) |
 
 ### Retrieval Tuning
 
