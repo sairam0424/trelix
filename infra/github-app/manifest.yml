@@ -8,7 +8,7 @@
 # GitHub's manifest flow displays the one-time `code` for manual exchange
 # without them (see README.md's registration step).
 name: trelix-review
-url: https://trelix-github-app.onrender.com
+url: https://trelix-github-app-production.up.railway.app
 description: >-
   Automatic PR code review as GitHub Check annotations, powered by trelix's
   retrieval-augmented diff analysis. Zero setup beyond installing the App —
@@ -16,7 +16,7 @@ description: >-
 public: true
 
 hook_attributes:
-  url: https://trelix-github-app.onrender.com/webhooks/github
+  url: https://trelix-github-app-production.up.railway.app/webhooks/github
   active: true
 
 # Same three permissions the existing Actions-workflow-based integration
