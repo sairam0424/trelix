@@ -307,6 +307,8 @@ Configuration for [`trelix link-tickets`](CLI_REFERENCE.md#trelix-link-tickets),
 
 Configuration for [`trelix connector sync`](CLI_REFERENCE.md#trelix-connector-sync), which fetches artifacts from an external system and writes them to trelix's `artifacts` table. Jira and TestRail use HTTP Basic auth; Xray Cloud exchanges a client_id/client_secret for a short-lived bearer JWT; Linear uses a personal API key sent directly in the `Authorization` header with no `Bearer` prefix. All required variables per connector must be set — missing any of them fails config validation before any HTTP call is made.
 
+The fifth connector, `diagram` (indexes local `.drawio` files — see [ROADMAP.md](ROADMAP.md)'s Multi-modal entry), has **no connector-specific variables of its own** — it needs none of the tables below, and reads `repo_path` from the same `<repo>` argument as every other command plus whichever `TRELIX_LLM_*` provider synthesis already uses.
+
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_JIRA_BASE_URL` | _(none, required)_ | Base URL of the Jira Cloud instance, e.g. `https://acme.atlassian.net` |

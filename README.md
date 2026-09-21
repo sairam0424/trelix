@@ -202,7 +202,7 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **FLARE confidence-gated re-retrieval** — detects low-confidence synthesis spans and re-queries before finalising the answer (`TRELIX_RETRIEVAL_FLARE=true`)
 - **PageRank symbol boost** — weights retrieval candidates by graph centrality so hub symbols surface first (`TRELIX_RETRIEVAL_PAGERANK_BOOST=true`)
 - **Personalized PageRank** — teleport mass weighted toward ticket/artifact-linked symbols instead of uniform, opt-in (`TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION=true`)
-- **Cross-source connectors** — `trelix connector sync ./repo <jira|testrail|xray|linear>` fetches tickets/tests and auto-links them into the code graph via `ArtifactLinker`
+- **Cross-source connectors** — `trelix connector sync ./repo <jira|testrail|xray|linear|diagram>` fetches tickets/tests (or captions local `.drawio` diagrams) and auto-links them into the code graph via `ArtifactLinker`
 - **Incremental graph updater** — `trelix watch` automatically patches the Code Property Graph on every file save (no manual `trelix graph` re-run needed)
 - **Query telemetry** — per-query latency, intent and result count via `trelix telemetry` CLI or `TRELIX_TELEMETRY_ENABLED=true`
 - **CoIR eval harness** — `trelix eval ./repo --golden <path>` measures nDCG@10, Recall@10, and MRR against a JSONL golden set

@@ -1244,23 +1244,30 @@ the ticket pattern, or no touched files are indexed yet.
 #### Synopsis
 
 ```
-trelix connector sync <repo> <jira|testrail|xray|linear> [--link/--no-link]
+trelix connector sync <repo> <jira|testrail|xray|linear|diagram> [--link/--no-link]
 ```
 
 #### Description
 
-Fetches artifacts (Jira tickets, TestRail test cases, Xray Cloud tests, or
-Linear issues) from an external system via the connector's
-`ArtifactSource.fetch()` and writes them to the `artifacts` table via
-`upsert_artifact()`, keyed by source reference so re-syncing updates existing
-rows rather than duplicating them.
+Fetches artifacts (Jira tickets, TestRail test cases, Xray Cloud tests,
+Linear issues, or local `.drawio` diagrams) and writes them to the
+`artifacts` table via `upsert_artifact()`, keyed by source reference so
+re-syncing updates existing rows rather than duplicating them.
+
+`jira`/`testrail`/`xray`/`linear` fetch via `ArtifactSource.fetch()` from an
+external HTTP API. `diagram` is different: it makes no HTTP call at all — it
+walks `<repo>` for local `.drawio` (diagrams.net/draw.io) files and captions
+each one's XML source via the already-configured LLM provider
+(`TRELIX_LLM_*`, same as everywhere else in trelix — no separate credential).
+Raster images (`.png`/`.jpg`) are not indexed by this connector; `.drawio`'s
+XML structure is fully describable as text, which raster images are not.
 
 Requires `<repo>` to already be indexed (checks that `.trelix/index.db`
-exists before making any HTTP call). Required environment variables differ
-per connector — see [CONFIGURATION.md](CONFIGURATION.md) for the full list of
+exists before doing anything). Required environment variables differ per
+connector — see [CONFIGURATION.md](CONFIGURATION.md) for the full list of
 `TRELIX_JIRA_*`, `TRELIX_TESTRAIL_*`, `TRELIX_XRAY_*`, and `TRELIX_LINEAR_*`
-variables. Missing required configuration fails fast with an error, before
-any network request is made.
+variables (`diagram` needs none of these). Missing required configuration
+fails fast with an error, before any network request is made.
 
 By default (`--link`, the default), each successfully-synced artifact is
 immediately linked into `generic_edges` via `ArtifactLinker` — it's reachable
@@ -1275,7 +1282,7 @@ afterward).
 | Argument | Description |
 |----------|-------------|
 | `repo` | Path to the indexed repository. |
-| `name` | Connector to sync: `jira`, `testrail`, `xray`, or `linear`. |
+| `name` | Connector to sync: `jira`, `testrail`, `xray`, `linear`, or `diagram`. |
 
 #### Options
 
@@ -1311,6 +1318,10 @@ trelix connector sync ./my-repo xray
 TRELIX_LINEAR_API_KEY=$LINEAR_API_KEY \
 TRELIX_LINEAR_TEAM_KEY=ENG \
 trelix connector sync ./my-repo linear
+
+# Sync local .drawio diagrams (no connector-specific env vars — uses
+# whichever TRELIX_LLM_* provider is already configured for synthesis)
+trelix connector sync ./my-repo diagram
 ```
 
 #### Output
