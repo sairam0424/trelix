@@ -18,6 +18,8 @@ existing callers.
 
 from __future__ import annotations
 
+import pytest
+
 from trelix.core.config import EmbedderConfig, LLMConfig
 from trelix.llm.providers.anthropic_backend import AnthropicBackend
 from trelix.llm.providers.openai_backend import OpenAIBackend
@@ -34,6 +36,15 @@ def _local_embedder() -> EmbedderConfig:
 
 
 def _anthropic_llm_config() -> LLMConfig:
+    """Skips the calling test when the optional `anthropic` extra isn't installed.
+
+    CI's unit-test job installs `.[local,otel,sso,bge-code,nomic-code,dev,graph-viz]`
+    -- no LLM-provider extras -- so `AnthropicBackend._build_client()`'s `import
+    anthropic` raises ImportError there even though it's present in this dev venv.
+    Matches the established pattern for exactly this gap (tests/unit/test_retry.py,
+    tests/unit/test_llm_anthropic_backend.py).
+    """
+    pytest.importorskip("anthropic")
     return LLMConfig(_env_file=None, **_ANTHROPIC_LLM_FIELDS)  # type: ignore[call-arg]
 
 
