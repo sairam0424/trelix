@@ -262,9 +262,16 @@ class Retriever:
             config=config,
             dimension=self.embedder.dimension,
         )
-        # Instantiate the LLM query planner. Falls back gracefully to
-        # default_plan() when no API key is set (provider=local).
-        self._planner = QueryPlanner(config.embedder, retrieval_config=config.retrieval)
+        # Instantiate the LLM query planner. Pass the real LLMConfig through so a
+        # `local`/`voyage`/etc. embedder doesn't force the planner onto an
+        # unauthenticated openai fallback when TRELIX_LLM_PROVIDER names a real,
+        # credentialed provider (Anthropic, Bedrock, Vertex, ...) — see
+        # QueryPlanner's own `llm_config` parameter and docs/ROADMAP.md's
+        # research-backlog entry on this coupling. Still falls back gracefully to
+        # default_plan() when no LLM credentials are configured at all.
+        self._planner = QueryPlanner(
+            config.embedder, retrieval_config=config.retrieval, llm_config=config.llm
+        )
         # Wrap with LRU plan cache when enabled (default: 128 entries).
         # plan() hits are returned in <1ms; cold misses delegate to the LLM unchanged.
         if config.retrieval.plan_cache_size > 0:
