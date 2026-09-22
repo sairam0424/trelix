@@ -161,7 +161,7 @@ suite("TrelixCodeLensProvider", () => {
         );
     });
 
-    test("resolveCodeLens populates the command with an N-dependents count", async () => {
+    test("resolveCodeLens wires the command to VS Code's native Peek References popup (Visual CodeLens), not a custom QuickPick command", async () => {
         const { client, blastCalls } = countingClient(async () => [
             fakeEntry(),
             fakeEntry({ symbol: "other" }),
@@ -171,21 +171,41 @@ suite("TrelixCodeLensProvider", () => {
             () => "/repo",
         );
 
-        const lens = new TrelixCodeLens(
-            new vscode.Range(0, 0, 0, 0),
-            "target",
-            "file:///a.py",
-            1,
-        );
-        const resolved = await provider.resolveCodeLens(lens, NO_CANCEL);
+        const range = new vscode.Range(3, 0, 3, 0);
+        const lens = new TrelixCodeLens(range, "target", "file:///a.py", 1);
+        const resolved = (await provider.resolveCodeLens(
+            lens,
+            NO_CANCEL,
+        )) as TrelixCodeLens;
 
         assert.strictEqual(blastCalls(), 1);
         assert.ok(resolved.command, "command must be populated after resolve");
-        assert.strictEqual(resolved.command!.command, "trelix.blastRadius");
-        assert.deepStrictEqual(resolved.command!.arguments, ["target"]);
+        assert.strictEqual(
+            resolved.command!.command,
+            "editor.action.showReferences",
+            "should invoke VS Code's built-in Peek References popup",
+        );
+        assert.notStrictEqual(
+            resolved.command!.command,
+            "trelix.blastRadius",
+            "must not route through the old Invokable-CodeLens command / QuickPick",
+        );
         assert.ok(
             resolved.command!.title.includes("2 dependents"),
             `title was: ${resolved.command!.title}`,
+        );
+
+        const [uri, position, locations] = resolved.command!.arguments as [
+            vscode.Uri,
+            vscode.Position,
+            vscode.Location[],
+        ];
+        assert.strictEqual(uri.toString(), "file:///a.py");
+        assert.deepStrictEqual(position, range.start);
+        assert.strictEqual(locations.length, 2, "one Location per dependent");
+        assert.ok(
+            locations.every((l) => l instanceof vscode.Location),
+            "each argument should be a real Location the peek popup can render",
         );
     });
 

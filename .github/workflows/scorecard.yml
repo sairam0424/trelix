@@ -1,0 +1,52 @@
+# OSSF Scorecard — a supply-chain health signal for a public repo publishing 4 PyPI
+# packages, 2 GHCR images, and 2 npm packages. Free, standard, and non-overlapping with
+# anything else in this repo: it does not scan this repo's own code (CodeQL/semgrep do
+# that) or its dependency graph for known CVEs (Dependabot/pip-audit do that) — it scores
+# repository and supply-chain PRACTICES (branch protection, SAST presence, pinned
+# dependencies, dangerous workflow patterns, etc.) and publishes both a Security-tab
+# SARIF report and the data the OSSF badge API serves.
+#
+# publish_results: true is required for the badge to resolve — otherwise the badge API
+# has nothing to serve for this repo — and that is the only network effect below.
+# Nothing here blocks a PR: Scorecard is a signal, not a gate. Several of its own checks
+# (e.g. "Pinned-Dependencies", "SAST") are already enforced elsewhere in this repo by
+# convention rather than by this workflow.
+
+name: OSSF Scorecard
+
+on:
+  push:
+    branches: [main]
+  # Saturdays 06:00 UTC — clear of security-scan.yml's Monday run and codeql.yml's
+  # Sunday run.
+  schedule:
+    - cron: "0 6 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required by ossf/scorecard-action to publish results and mint the badge.
+      id-token: write
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - if: always() && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          sarif_file: results.sarif

@@ -16,8 +16,14 @@ from typing import Any, Literal  # noqa: E402
 
 from fastmcp import Context, FastMCP  # noqa: E402
 from fastmcp.prompts import Message  # noqa: E402
-from mcp.server.lowlevel.server import NotificationOptions  # noqa: E402
-from mcp.types import ServerCapabilities  # noqa: E402
+from fastmcp.tools.base import InputRequiredToolResult  # noqa: E402
+from mcp.types import (  # noqa: E402
+    ElicitRequest,
+    ElicitRequestFormParams,
+    ElicitResult,
+    InputRequiredResult,
+    ServerCapabilities,
+)
 
 from trelix.agent.loop import AgentLoop  # noqa: E402
 from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig  # noqa: E402
@@ -49,17 +55,33 @@ _subscription_registry = SubscriptionRegistry(
 # subscribe and listChanged are independent optional fields; we only
 # opt-in to subscribe here — listChanged is handled separately by FastMCP's
 # notification_options.
+#
+# The wrapper is deliberately *args/**kwargs rather than a fixed
+# (notification_options, experimental_capabilities) signature: the mcp SDK's
+# own internal call sites for this method are not stable across SDK major
+# versions —
+#   mcp 1.x  Server.create_initialization_options() calls
+#            get_capabilities(notification_options, experimental_capabilities)
+#            — 2 positional args, no `extensions`/`protocol_version`.
+#   mcp 2.x  Server.create_initialization_options() calls
+#            get_capabilities(notification_options or ..., experimental_capabilities
+#            or ..., extensions if ... else ...) — 3 positional args.
+#   mcp 2.x  Server._handle_discover() calls
+#            get_capabilities(protocol_version=ctx.protocol_version) — 0
+#            positional args, one keyword-only arg unknown to the 1.x shape.
+# A fixed 2-positional-arg signature raises TypeError against the second and
+# third call shapes (confirmed against real mcp 2.1.1: "takes 2 positional
+# arguments but 3 were given"). Forwarding everything straight through to the
+# real bound method keeps this correct across SDK generations without
+# version-sniffing mcp's version at import time.
 # ---------------------------------------------------------------------------
 
 _orig_get_capabilities = mcp._mcp_server.get_capabilities
 
 
-def _get_capabilities_with_subscribe(
-    notification_options: NotificationOptions,
-    experimental_capabilities: dict[str, dict[str, Any]],
-) -> ServerCapabilities:
+def _get_capabilities_with_subscribe(*args: Any, **kwargs: Any) -> ServerCapabilities:
     """Wrap get_capabilities to advertise resources.subscribe=True."""
-    caps = _orig_get_capabilities(notification_options, experimental_capabilities)
+    caps = _orig_get_capabilities(*args, **kwargs)
     if caps.resources is not None:
         caps = caps.model_copy(
             update={"resources": caps.resources.model_copy(update={"subscribe": True})}
@@ -119,7 +141,7 @@ def unsubscribe_resource(subscription_id: str) -> dict[str, Any]:
     uri = _subscription_registry.get_uri(subscription_id)
     _subscription_registry.unsubscribe(subscription_id)
     _log.info("Unsubscribed: subscription_id=%s uri=%s", subscription_id, uri)
-    return {"unsubscribed": True, "subscription_id": subscription_id}
+    return {"unsubscribed": True, "subscription_id": subscription_id, "uri": uri}
 
 
 # ---------------------------------------------------------------------------
@@ -907,12 +929,37 @@ def federation_search_all(
     }
 
 
+def _extract_elicit_answer(ctx: Context | None) -> str | None:
+    """Read the client's answer to a prior ask_agent clarify request, if any.
+
+    None on the initial round (nothing asked yet), or if the client declined
+    or cancelled — both mean "no usable answer" and are handled distinctly
+    by the caller (a decline must not re-trigger the same clarify question).
+
+    The "clarification" key can only resolve to an ElicitResult in practice —
+    ask_agent is the only thing that ever mints that key's InputRequest, and
+    it always mints an ElicitRequest — but InputResponses' declared type is a
+    union across every SEP-2322 request kind, so this narrows explicitly
+    rather than assuming the attribute exists.
+    """
+    if ctx is None or ctx.input_responses is None:
+        return None
+    elicit_result = ctx.input_responses.get("clarification")
+    if not isinstance(elicit_result, ElicitResult):
+        return None
+    if elicit_result.action != "accept" or not elicit_result.content:
+        return None
+    answer = elicit_result.content.get("answer")
+    return answer if isinstance(answer, str) else None
+
+
 @mcp.tool()
 def ask_agent(
     query: str,
     repo_path: str,
     session_id: str | None = None,
-) -> dict[str, Any]:
+    ctx: Context | None = None,
+) -> dict[str, Any] | InputRequiredToolResult:
     """Ask a question using the multi-turn ReAct agentic loop, with persistent memory.
 
     ⚠️ IMPORTANT:
@@ -935,22 +982,76 @@ def ask_agent(
       TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS of inactivity (default
       7 days). Use agent_clear_session to delete one explicitly.
 
+    Clarifying questions (SEP-2322, v3.3.0+):
+    - When the agent's question is genuinely ambiguous, this tool returns an
+      `InputRequiredToolResult` instead of the usual dict — an MCP client
+      that supports SEP-2322 elicitation surfaces it as a form and resends
+      this SAME call (same query/repo_path/session_id) with the answer
+      attached as `inputResponses`; do not pass the answer as a new `query`.
+    - A client that declines/cancels gets a normal dict answer back
+      explaining the question could not be resolved — this tool never
+      re-asks the same clarify question on a decline.
+
     Returns:
-        {"answer": str, "session_id": str, "turn_count": int}
+        {"answer": str, "session_id": str, "turn_count": int} normally, or
+        an InputRequiredToolResult when the agent needs a clarifying answer
+        before it can continue.
     """
-    _log.info("ask_agent query=%r repo=%s session_id=%r", query, repo_path, session_id)
+    request_state = ctx.request_state if ctx is not None else None
+    resolved_session_id = request_state or session_id
+    client_answer = _extract_elicit_answer(ctx)
+
+    if ctx is not None and ctx.input_responses is not None and client_answer is None:
+        # The client responded, but declined or cancelled — there is no
+        # answer to resume with.
+        return {
+            "answer": "Cannot continue without an answer to the clarifying question.",
+            "session_id": resolved_session_id or "",
+            "turn_count": 0,
+        }
+
+    effective_query = client_answer or query
+    _log.info(
+        "ask_agent query=%r repo=%s session_id=%r", effective_query, repo_path, resolved_session_id
+    )
     config = IndexConfig(repo_path=repo_path)
     config.retrieval.agentic_enabled = True
     loop = AgentLoop(config)
-    answer, resolved_session_id = loop.run(query, session_id=session_id)
+    result = loop.run(effective_query, session_id=resolved_session_id)
+
+    if result.needs_input:
+        return InputRequiredToolResult(
+            InputRequiredResult(
+                input_requests={
+                    "clarification": ElicitRequest(
+                        params=ElicitRequestFormParams(
+                            message=result.content,
+                            requested_schema={
+                                "type": "object",
+                                "properties": {
+                                    "answer": {
+                                        "type": "string",
+                                        "description": (
+                                            "Your answer to trelix's clarifying question."
+                                        ),
+                                    }
+                                },
+                                "required": ["answer"],
+                            },
+                        )
+                    )
+                },
+                request_state=result.session_id,
+            )
+        )
 
     db = Database(config.db_path_absolute)
     try:
-        turns = db.get_agent_turns(resolved_session_id)
+        turns = db.get_agent_turns(result.session_id)
     finally:
         db.close()
 
-    return {"answer": answer, "session_id": resolved_session_id, "turn_count": len(turns)}
+    return {"answer": result.content, "session_id": result.session_id, "turn_count": len(turns)}
 
 
 @mcp.tool()

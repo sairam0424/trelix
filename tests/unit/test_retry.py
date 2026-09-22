@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+import httpx2
 import openai
 import pytest
 import requests
@@ -41,6 +42,12 @@ def _httpx_status_error(status_code: int) -> httpx.HTTPStatusError:
     request = httpx.Request("GET", "https://example.com")
     response = httpx.Response(status_code, request=request)
     return httpx.HTTPStatusError(f"{status_code} error", request=request, response=response)
+
+
+def _httpx2_status_error(status_code: int) -> httpx2.HTTPStatusError:
+    request = httpx2.Request("GET", "https://example.com")
+    response = httpx2.Response(status_code, request=request)
+    return httpx2.HTTPStatusError(f"{status_code} error", request=request, response=response)
 
 
 def _httpx_status_error_with_retry_after(
@@ -111,6 +118,25 @@ class TestIsRetryableHttpError:
 
     def test_httpx_timeout_is_retryable(self) -> None:
         exc = httpx.TimeoutException("timed out")
+        assert is_retryable_http_error(exc) is True
+
+    @pytest.mark.parametrize("status_code", sorted(RETRYABLE_STATUS_CODES))
+    def test_httpx2_retryable_status_codes(self, status_code: int) -> None:
+        """openai-python v3.0.0 and anthropic-sdk-python v1.0.0 both default to
+        httpx2 transport now — is_retryable_http_error() must recognize its
+        exception shapes too, not just plain httpx's."""
+        assert is_retryable_http_error(_httpx2_status_error(status_code)) is True
+
+    @pytest.mark.parametrize("status_code", [400, 401, 403, 404, 422])
+    def test_httpx2_non_retryable_status_codes(self, status_code: int) -> None:
+        assert is_retryable_http_error(_httpx2_status_error(status_code)) is False
+
+    def test_httpx2_connection_error_is_retryable(self) -> None:
+        exc = httpx2.ConnectError("connection refused")
+        assert is_retryable_http_error(exc) is True
+
+    def test_httpx2_timeout_is_retryable(self) -> None:
+        exc = httpx2.TimeoutException("timed out")
         assert is_retryable_http_error(exc) is True
 
     def test_requests_connection_error_is_retryable(self) -> None:

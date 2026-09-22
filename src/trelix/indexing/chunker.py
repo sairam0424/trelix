@@ -55,6 +55,14 @@ class Chunker:
         chunks = chunker.build_chunks(symbols, imports, file_rel_path, language)
     """
 
+    # Marker inserted into every piece of a split chunk, right after the
+    # structural header. Measured to cost the same 9 cl100k_base tokens
+    # regardless of digit count (tiktoken tokenizes 1-2 digit numbers as single
+    # tokens), so sizing the per-piece body budget off a 2-digit placeholder
+    # ("99 of 99") is a safe, if slightly conservative, upper bound for the
+    # realistic range of split counts.
+    _SPLIT_MARKER_TEMPLATE = "# Split: chunk {i} of {n}"
+
     def __init__(self, config: ChunkerConfig) -> None:
         self.config = config
         # cl100k_base works for most modern models (GPT-4, Claude via approximation)
@@ -88,18 +96,27 @@ class Chunker:
             )
             token_count = len(self._tokenizer.encode(chunk_text))
 
-            # If chunk exceeds budget, truncate body (keep header + signature + docstring)
+            # If the chunk exceeds budget, split the body across multiple
+            # sequential chunks instead of truncating (and losing) the tail.
             if token_count > self.config.max_tokens_per_chunk:
-                chunk_text = self._truncate_chunk(chunk_text, self.config.max_tokens_per_chunk)
-                token_count = len(self._tokenizer.encode(chunk_text))
-
-            chunks.append(
-                Chunk(
-                    symbol_id=symbol.id or 0,
-                    chunk_text=chunk_text,
-                    token_count=token_count,
+                for piece_text in self._split_chunk_text(
+                    symbol, chunk_text, self.config.max_tokens_per_chunk
+                ):
+                    chunks.append(
+                        Chunk(
+                            symbol_id=symbol.id or 0,
+                            chunk_text=piece_text,
+                            token_count=len(self._tokenizer.encode(piece_text)),
+                        )
+                    )
+            else:
+                chunks.append(
+                    Chunk(
+                        symbol_id=symbol.id or 0,
+                        chunk_text=chunk_text,
+                        token_count=token_count,
+                    )
                 )
-            )
 
         return chunks
 
@@ -138,7 +155,8 @@ class Chunker:
 
         lines.append("")  # blank line between header and body
 
-        # Docstring — surfaced before body so it survives truncation.
+        # Docstring — surfaced before body so it is part of the header and
+        # therefore repeated on every split piece if the symbol is split.
         # Skip if the body already starts with a string literal (Python docstrings
         # are part of the body AST node, so emitting twice doubles their embedding weight).
         if symbol.docstring and not symbol.body.lstrip().startswith(('"""', "'''", '"', "'")):
@@ -163,11 +181,121 @@ class Chunker:
                 seen.append(imp.imported_from)
         return ", ".join(seen)
 
-    def _truncate_chunk(self, chunk_text: str, max_tokens: int) -> str:
-        """Truncate chunk to max_tokens by cutting body lines from the bottom."""
-        tokens = self._tokenizer.encode(chunk_text)
-        truncated: str = str(self._tokenizer.decode(tokens[:max_tokens]))
-        return truncated + "\n# ... (truncated)"
+    def _split_chunk_text(
+        self,
+        symbol: Symbol,
+        base_chunk_text: str,
+        max_tokens: int,
+        prefix: str | None = None,
+    ) -> list[str]:
+        """
+        Split an over-budget chunk into multiple sequential pieces instead of
+        truncating it and discarding the tail.
+
+        `base_chunk_text` is the header+body text as built by
+        `_build_chunk_text` (i.e. it must end with exactly `symbol.body`, with
+        nothing appended after it). Every returned piece repeats the
+        structural context header (file/imports/parent/diagram/doc) plus a
+        "# Split: chunk i of n" marker, so each piece stays independently
+        embeddable and is never mistaken for the whole symbol — the same
+        design goal this module states for the header itself.
+
+        `prefix` (an LLM-generated context summary, from ContextualChunker) is
+        prepended ONLY to the first piece: it describes the whole symbol once,
+        so repeating it on every later piece would just eat into that piece's
+        body-token budget to duplicate a summary the reader already saw in
+        chunk 1 — a worse trade for embedding/retrieval quality than any
+        single piece missing it.
+
+        Always returns at least one piece, even when `symbol.body` is empty
+        (or tiny) and the header alone already exceeds `max_tokens` — e.g. a
+        very long docstring or import list with a near-empty function body.
+        Returning zero pieces there would make the symbol vanish from every
+        index (vector, BM25, everything) with no record it ever existed,
+        which is strictly worse than the truncate-and-discard behavior this
+        split path replaced. A single over-budget "header-only" chunk is far
+        preferable to a silently missing symbol.
+        """
+        body = symbol.body
+        assert base_chunk_text.endswith(body), (
+            "base_chunk_text must end with symbol.body exactly — "
+            "_build_chunk_text appends it as the final joined line"
+        )
+        header = base_chunk_text[: len(base_chunk_text) - len(body)]
+        header_stripped = header.rstrip("\n")
+        # Placeholder marker for sizing only: per the class-level comment on
+        # _SPLIT_MARKER_TEMPLATE, every "chunk {i} of {n}" with i, n <= 99
+        # encodes to the same token count, so measuring against "99 of 99"
+        # is a safe, if slightly conservative, stand-in for the real marker
+        # that gets substituted in once the final piece count `n` is known.
+        marker_placeholder = self._SPLIT_MARKER_TEMPLATE.format(i=99, n=99)
+
+        def assemble(piece_body: str, *, is_first: bool) -> str:
+            text = f"{header_stripped}\n{marker_placeholder}\n\n{piece_body}"
+            if is_first and prefix:
+                text = f"{prefix}\n\n{text}"
+            return text
+
+        body_tokens = self._tokenizer.encode(body)
+
+        def fit_end(start: int, *, is_first: bool) -> int:
+            """
+            Largest `end` such that `body_tokens[start:end]` fits `assemble()`
+            within `max_tokens`, always advancing by at least one token when
+            tokens remain (never silently drops body content).
+
+            The initial estimate comes from encoding the literal skeleton
+            (header + marker + blank line, with the prefix for the first
+            piece) as ONE string, rather than summing independently-encoded
+            header/marker/prefix token counts: tiktoken's BPE merges tokens
+            across concatenation boundaries, so separately-encoded lengths
+            don't reliably add up to the length of the joined string — this
+            was the source of split pieces measuring 1 token over budget
+            (e.g. 41 vs. a 40-token budget) despite the old per-piece math
+            "adding up." Encoding the true skeleton removes that drift.
+
+            That estimate still isn't a hard guarantee (the boundary between
+            the skeleton's trailing blank line and the real body's first
+            token can itself merge unpredictably), so the loop below verifies
+            by encoding the actual assembled candidate and shrinks by one
+            token at a time until it fits — capped at leaving exactly one
+            body token in this piece, so a pathologically small `max_tokens`
+            (smaller than the header+marker overhead alone) still makes
+            forward progress instead of looping forever or dropping tokens.
+            """
+            if start >= len(body_tokens):
+                return start
+            overhead = len(self._tokenizer.encode(assemble("", is_first=is_first)))
+            budget = max(max_tokens - overhead, 1)
+            end = min(start + budget, len(body_tokens))
+            while end > start + 1:
+                candidate = str(self._tokenizer.decode(body_tokens[start:end]))
+                if (
+                    len(self._tokenizer.encode(assemble(candidate, is_first=is_first)))
+                    <= max_tokens
+                ):
+                    break
+                end -= 1
+            return end
+
+        piece_bodies: list[str] = []
+        idx = 0
+        is_first = True
+        while idx < len(body_tokens) or is_first:
+            end = fit_end(idx, is_first=is_first)
+            piece_bodies.append(str(self._tokenizer.decode(body_tokens[idx:end])))
+            idx = max(end, idx + 1)
+            is_first = False
+
+        n = len(piece_bodies)
+        pieces: list[str] = []
+        for i, piece_body in enumerate(piece_bodies, start=1):
+            marker = self._SPLIT_MARKER_TEMPLATE.format(i=i, n=n)
+            piece_text = f"{header_stripped}\n{marker}\n\n{piece_body}"
+            if i == 1 and prefix:
+                piece_text = f"{prefix}\n\n{piece_text}"
+            pieces.append(piece_text)
+        return pieces
 
     def count_tokens(self, text: str) -> int:
         return len(self._tokenizer.encode(text))
@@ -255,16 +383,31 @@ class ContextualChunker(Chunker):
             token_count = len(self._tokenizer.encode(chunk_text))
 
             if token_count > self.config.max_tokens_per_chunk:
-                chunk_text = self._truncate_chunk(chunk_text, self.config.max_tokens_per_chunk)
-                token_count = len(self._tokenizer.encode(chunk_text))
-
-            chunks.append(
-                Chunk(
-                    symbol_id=symbol.id or 0,
-                    chunk_text=chunk_text,
-                    token_count=token_count,
+                # Split on `base_chunk_text` (no summary), not `chunk_text`
+                # (summary + base): _split_chunk_text prepends `prefix` to the
+                # first piece itself, so passing the already-prefixed text
+                # here would duplicate the summary onto chunk 1.
+                for piece_text in self._split_chunk_text(
+                    symbol,
+                    base_chunk_text,
+                    self.config.max_tokens_per_chunk,
+                    prefix=context_summary,
+                ):
+                    chunks.append(
+                        Chunk(
+                            symbol_id=symbol.id or 0,
+                            chunk_text=piece_text,
+                            token_count=len(self._tokenizer.encode(piece_text)),
+                        )
+                    )
+            else:
+                chunks.append(
+                    Chunk(
+                        symbol_id=symbol.id or 0,
+                        chunk_text=chunk_text,
+                        token_count=token_count,
+                    )
                 )
-            )
 
         return chunks
 

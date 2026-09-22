@@ -271,6 +271,7 @@ def _candidate_sources(retriever: object, plan: QueryPlan) -> set[str]:
     _StubSparseEmbedder.instances = 0
     graph_rows = [_result(900, 1.0, "graph_bfs")]
     sparse_rows = [_result(901, 1.0, "sparse")]
+    dataflow_rows = [_result(902, 1.0, "dataflow_expansion")]
     with ExitStack() as stack:
         p = stack.enter_context
         p(patch("trelix.retrieval.retriever.bm25_search", return_value=[]))
@@ -278,6 +279,7 @@ def _candidate_sources(retriever: object, plan: QueryPlan) -> set[str]:
         p(patch("trelix.retrieval.retriever.expand_with_call_graph", return_value=[]))
         p(patch("trelix.retrieval.retriever.expand_with_imports", return_value=[]))
         p(patch("trelix.retrieval.retriever.expand_with_type_edges", return_value=[]))
+        p(patch("trelix.retrieval.retriever.expand_with_dataflow", return_value=dataflow_rows))
         p(patch("trelix.graph.code_graph.CodeGraph", _StubCodeGraph))
         p(patch("trelix.graph.search.graph_search", lambda **kw: graph_rows))
         p(patch("trelix.embedder.sparse.SparseEmbedder", _StubSparseEmbedder))
@@ -300,14 +302,15 @@ class TestDefaultOffLegsStayOff:
 
         MUTATION THAT MUST FAIL THIS: flipping any of
         `graph_search_enabled` / `file_summary_leg_enabled` /
-        `sub_chunk_search_enabled` / `sparse_enabled` to True in
-        core/config.py:RetrievalConfig.
+        `sub_chunk_search_enabled` / `sparse_enabled` /
+        `dataflow_expansion_enabled` to True in core/config.py:RetrievalConfig.
         """
         cfg = RetrievalConfig()
         assert cfg.graph_search_enabled is False
         assert cfg.file_summary_leg_enabled is False
         assert cfg.sub_chunk_search_enabled is False
         assert cfg.sparse_enabled is False
+        assert cfg.dataflow_expansion_enabled is False
 
     def test_default_config_contributes_only_the_vector_leg(self, tmp_path: Path) -> None:
         """Only "vector" reaches the candidate set under a default RetrievalConfig.
@@ -317,7 +320,8 @@ class TestDefaultOffLegsStayOff:
         -> `if plan.sub_queries:` (adds "file_summary");
         `if cfg.sub_chunk_search_enabled and plan.sub_queries:` ->
         `if plan.sub_queries:` (adds "sub_chunk"); `if cfg.sparse_enabled:` ->
-        `if True:` (adds "sparse").
+        `if True:` (adds "sparse"); `if cfg.dataflow_expansion_enabled:` ->
+        `if True:` (adds "dataflow_expansion").
         """
         retriever, _db, vs = _build(RetrievalConfig(), tmp_path)
         sources = _candidate_sources(retriever, _plan(IntentType.FEATURE_FLOW, ["vector"]))
@@ -328,6 +332,7 @@ class TestDefaultOffLegsStayOff:
         assert "file_summary" not in sources
         assert "sub_chunk" not in sources
         assert "sparse" not in sources
+        assert "dataflow_expansion" not in sources
         # _RecordingVectorStore precondition: the two summary/sub-chunk entry
         # points were never reached, and they WOULD have answered if they had
         # been (see test_opt_in_turns_every_optional_leg_on).
@@ -351,12 +356,20 @@ class TestDefaultOffLegsStayOff:
                 file_summary_leg_enabled=True,
                 sub_chunk_search_enabled=True,
                 sparse_enabled=True,
+                dataflow_expansion_enabled=True,
             ),
             tmp_path,
         )
         sources = _candidate_sources(retriever, _plan(IntentType.FEATURE_FLOW, ["vector"]))
 
-        assert sources == {"vector", "file_summary", "sub_chunk", "sparse", "graph_bfs"}
+        assert sources == {
+            "vector",
+            "file_summary",
+            "sub_chunk",
+            "sparse",
+            "graph_bfs",
+            "dataflow_expansion",
+        }
         assert "search_file_summaries" in vs.calls
         assert "search_sub_chunks" in vs.calls
         assert _StubSparseEmbedder.instances == 1
@@ -499,6 +512,68 @@ class TestDedupKeepsHighestScore:
 
         assert len(deduped) == 1
         assert deduped[0].source == "vector"
+
+
+# ---------------------------------------------------------------------------
+# 3b. _dedup distinguishes split-symbol chunk pieces from true duplicates
+# ---------------------------------------------------------------------------
+
+
+def _split_piece(sid: int, chunk_id: int, score: float, source: str, text: str) -> SearchResult:
+    """A SearchResult for one piece of a split symbol: same symbol_id and file
+    as any other piece of the same symbol, but its own distinct chunk.id and
+    chunk_text -- exactly the shape `chunker.py::_split_chunk_text` produces
+    for an oversized symbol (see PR #330)."""
+    return SearchResult(
+        chunk=Chunk(symbol_id=sid, chunk_text=text, token_count=2, id=chunk_id),
+        symbol=_symbol(sid),
+        file=_file(sid),
+        score=score,
+        rank=1,
+        source=source,
+    )
+
+
+class TestDedupPreservesDistinctSplitPieces:
+    """A symbol split into multiple chunks (chunker.py's split-not-truncate fix,
+    PR #330) must not have its pieces collapsed here the way `_fusion_identity()`
+    in fusion.py was fixed to no longer collapse them -- found by adversarial
+    review immediately downstream of that fix: `_dedup` ran on fusion's
+    already-correct output via the exact bare-`symbol_id` anti-pattern
+    `fusion.py`'s own docstring calls out, silently re-dropping one piece one
+    stage later.
+
+    MUTATION THAT MUST FAIL THIS: `identity = (r.file.path, r.chunk.symbol_id,
+    r.chunk.id)` -> `identity = r.chunk.symbol_id` (the pre-fix bare key).
+    """
+
+    def test_two_distinct_pieces_of_one_split_symbol_both_survive(self, tmp_path: Path) -> None:
+        piece1 = _split_piece(42, chunk_id=101, score=0.90, source="vector", text="piece 1")
+        piece2 = _split_piece(42, chunk_id=102, score=0.85, source="vector", text="piece 2")
+
+        retriever, _db, _vs = _build(RetrievalConfig(), tmp_path)
+        deduped = retriever._dedup([piece1, piece2])
+
+        assert len(deduped) == 2, "distinct split pieces must not collapse to one row"
+        texts = {r.chunk.chunk_text for r in deduped}
+        assert texts == {"piece 1", "piece 2"}
+
+    def test_the_same_chunk_found_by_two_legs_still_collapses_to_one(self, tmp_path: Path) -> None:
+        """The must-not-regress half: identical chunk.id from two legs is a
+        genuine duplicate discovery, not a split piece, and must still collapse
+        (the pinned `TestDedupKeepsHighestScore` behaviour, now keyed on
+        (path, symbol_id, chunk.id) instead of bare symbol_id)."""
+        via_vector = _split_piece(42, chunk_id=101, score=0.90, source="vector", text="piece 1")
+        via_call_graph = _split_piece(
+            42, chunk_id=101, score=0.30, source="call_graph", text="piece 1"
+        )
+
+        retriever, _db, _vs = _build(RetrievalConfig(), tmp_path)
+        deduped = retriever._dedup([via_vector, via_call_graph])
+
+        assert len(deduped) == 1, "same chunk.id from two legs is a real duplicate"
+        assert deduped[0].source == "vector"
+        assert deduped[0].score == pytest.approx(0.90)
 
 
 # ---------------------------------------------------------------------------

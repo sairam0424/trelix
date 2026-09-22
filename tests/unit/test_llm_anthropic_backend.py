@@ -162,6 +162,136 @@ class TestAnthropicBackend:
         result = backend.complete([ChatMessage(role="user", content="hi")])
         assert result.finish_reason == "length"  # normalized
 
+    def test_complete_does_not_pass_temperature_to_create(self, mock_anthropic: MagicMock) -> None:
+        """anthropic-sdk-python v1.0.0 removed temperature from Messages.create —
+        confirmed via inspect.signature against the real installed SDK (no
+        'temperature' parameter). complete() must never pass it."""
+        backend = self._make_backend(mock_anthropic)
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_content_block = MagicMock()
+        mock_content_block.type = "text"
+        mock_content_block.text = "ok"
+        mock_response.content = [mock_content_block]
+        mock_response.model = "claude-3-5-sonnet-20241022"
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage.input_tokens = 1
+        mock_response.usage.output_tokens = 1
+        mock_client.messages.create.return_value = mock_response
+        backend._client = mock_client
+
+        backend.complete([ChatMessage(role="user", content="hi")], temperature=0.5)
+
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert "temperature" not in call_kwargs
+
+    def test_stream_does_not_pass_temperature(self, mock_anthropic: MagicMock) -> None:
+        backend = self._make_backend(mock_anthropic)
+        mock_client = MagicMock()
+        mock_stream = MagicMock()
+        mock_stream.text_stream = iter(["hi"])
+        mock_manager = MagicMock()
+        mock_manager.__enter__.return_value = mock_stream
+        mock_client.messages.stream.return_value = mock_manager
+        backend._client = mock_client
+
+        list(backend.stream([ChatMessage(role="user", content="hi")], temperature=0.5))
+
+        call_kwargs = mock_client.messages.stream.call_args[1]
+        assert "temperature" not in call_kwargs
+
+    def test_complete_warns_once_on_ignored_temperature(
+        self, mock_anthropic: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        backend = self._make_backend(mock_anthropic)
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_content_block = MagicMock()
+        mock_content_block.type = "text"
+        mock_content_block.text = "ok"
+        mock_response.content = [mock_content_block]
+        mock_response.model = "claude"
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage.input_tokens = 1
+        mock_response.usage.output_tokens = 1
+        mock_client.messages.create.return_value = mock_response
+        backend._client = mock_client
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="trelix.llm.anthropic_backend"):
+            backend.complete([ChatMessage(role="user", content="hi")], temperature=0.7)
+            backend.complete([ChatMessage(role="user", content="hi")], temperature=0.7)
+
+        temperature_warnings = [r for r in caplog.records if "temperature" in r.message]
+        assert len(temperature_warnings) == 1
+
+    def test_split_content_handles_redacted_thinking(self, mock_anthropic: MagicMock) -> None:
+        """Confirmed bug: _split_content only branched on 'text'/'thinking' block
+        types, silently dropping any 'redacted_thinking' block Anthropic returns."""
+        backend = self._make_backend(mock_anthropic)
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "answer"
+        redacted_block = MagicMock()
+        redacted_block.type = "redacted_thinking"
+        redacted_block.data = "opaque123"
+
+        text, thinking_blocks = backend._split_content([text_block, redacted_block])
+
+        assert text == "answer"
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0].type == "redacted_thinking"
+        assert thinking_blocks[0].data == "opaque123"
+        assert thinking_blocks[0].thinking is None
+
+    def test_split_content_handles_thinking_with_signature(self, mock_anthropic: MagicMock) -> None:
+        backend = self._make_backend(mock_anthropic)
+        thinking_block = MagicMock()
+        thinking_block.type = "thinking"
+        thinking_block.thinking = "because X"
+        thinking_block.signature = "sig456"
+
+        text, thinking_blocks = backend._split_content([thinking_block])
+
+        assert text == ""
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0].type == "thinking"
+        assert thinking_blocks[0].thinking == "because X"
+        assert thinking_blocks[0].signature == "sig456"
+
+    def test_complete_populates_reasoning_content_and_thinking_blocks(
+        self, mock_anthropic: MagicMock
+    ) -> None:
+        backend = self._make_backend(mock_anthropic)
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        thinking_block = MagicMock()
+        thinking_block.type = "thinking"
+        thinking_block.thinking = "step 1"
+        thinking_block.signature = "sig1"
+        redacted_block = MagicMock()
+        redacted_block.type = "redacted_thinking"
+        redacted_block.data = "blob"
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "final answer"
+        mock_response.content = [thinking_block, redacted_block, text_block]
+        mock_response.model = "claude-sonnet"
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage.input_tokens = 1
+        mock_response.usage.output_tokens = 1
+        mock_client.messages.create.return_value = mock_response
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi")], thinking=True)
+
+        assert result.content == "final answer"
+        assert result.thinking == "step 1"  # only the "thinking"-kind block's text
+        assert len(result.thinking_blocks) == 2
+        assert result.thinking_blocks[0].type == "thinking"
+        assert result.thinking_blocks[1].type == "redacted_thinking"
+
     def test_import_error_when_anthropic_not_installed(self) -> None:
         from trelix.llm.providers.anthropic_backend import AnthropicBackend
 

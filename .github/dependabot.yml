@@ -147,7 +147,7 @@ updates:
   # updates it can offer are 3.12/3.13/3.14-slim, and taking one moves the shipped runtime
   # off the 3.11 that ci.yml's lint job, release.yml (4 jobs) and build-binaries.yml all
   # pin via setup-python. Two of those three are the publish path. ci.yml's test matrix
-  # does already run 3.11/3.12/3.13, and requires-python is ">=3.11", so a bump to
+  # does already run 3.12/3.13/3.14, and requires-python is ">=3.12", so a bump to
   # 3.12-slim is tested — but 3.14-slim is not tested anywhere. Limit 2 so a bump that is
   # declined for that reason does not accumulate.
   #

@@ -107,10 +107,13 @@ def _extract_status_code(exc: BaseException) -> int | None:
     connection-level errors that never got a response at all.
 
     Covers both raw HTTP-client exceptions (httpx, requests, botocore) and
-    LLM-SDK exceptions (openai, anthropic, google-genai) — the latter wrap an
-    httpx.Response internally but expose their own status attribute rather
-    than being httpx.HTTPStatusError instances themselves. litellm's
-    exceptions subclass openai's, so the openai check covers both.
+    LLM-SDK exceptions (openai, anthropic, google-genai, voyageai, cohere) —
+    most of these wrap an httpx.Response internally but expose their own
+    status attribute rather than being httpx.HTTPStatusError instances
+    themselves. cohere's is a step further still: its typed ApiError
+    subclasses don't wrap an httpx.Response at all — `.status_code` is a
+    plain int the SDK sets directly when it raises. litellm's exceptions
+    subclass openai's, so the openai check covers both.
 
     Each block only runs its isinstance check when the relevant SDK module
     is already present in sys.modules (see _loaded_module()) — this
@@ -130,6 +133,18 @@ def _extract_status_code(exc: BaseException) -> int | None:
     if httpx_mod is not None:
         try:
             if isinstance(exc, httpx_mod.HTTPStatusError):
+                return int(exc.response.status_code)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # openai-python v3.0.0 and anthropic-sdk-python v1.0.0 both default to "httpx2"
+    # transport (a Pydantic-team fork, not a stopgap alias) — a raw httpx2 exception
+    # (as opposed to the SDK's own wrapped APIStatusError/APIConnectionError, handled
+    # below) needs the same recognition httpx itself gets above.
+    httpx2_mod = _loaded_module("httpx2")
+    if httpx2_mod is not None:
+        try:
+            if isinstance(exc, httpx2_mod.HTTPStatusError):
                 return int(exc.response.status_code)
         except Exception:  # noqa: BLE001
             pass
@@ -183,6 +198,23 @@ def _extract_status_code(exc: BaseException) -> int | None:
         except Exception:  # noqa: BLE001
             pass
 
+    # cohere==7.1.1 does NOT raise httpx.HTTPStatusError for API errors —
+    # raw_base_client.py parses the HTTP status itself and raises typed
+    # subclasses of cohere.core.api_error.ApiError (TooManyRequestsError for
+    # 429, InternalServerError for 500, ServiceUnavailableError for 503,
+    # GatewayTimeoutError for 504, ...), each carrying a plain `.status_code`
+    # int attribute rather than wrapping an httpx.Response the way openai's/
+    # anthropic's APIStatusError do. Without this branch, every real
+    # transient Cohere failure aborted @with_retry immediately instead of
+    # retrying.
+    cohere_api_error = _loaded_module("cohere.core.api_error")
+    if cohere_api_error is not None:
+        try:
+            if isinstance(exc, cohere_api_error.ApiError) and exc.status_code is not None:
+                return int(exc.status_code)
+        except Exception:  # noqa: BLE001
+            pass
+
     return None
 
 
@@ -201,6 +233,16 @@ def _is_connection_level_error(exc: BaseException) -> bool:
         try:
             if isinstance(exc, httpx_mod.HTTPError) and not isinstance(
                 exc, httpx_mod.HTTPStatusError
+            ):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+
+    httpx2_mod = _loaded_module("httpx2")
+    if httpx2_mod is not None:
+        try:
+            if isinstance(exc, httpx2_mod.HTTPError) and not isinstance(
+                exc, httpx2_mod.HTTPStatusError
             ):
                 return True
         except Exception:  # noqa: BLE001

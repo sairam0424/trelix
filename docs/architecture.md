@@ -1,6 +1,6 @@
 # trelix Architecture
 
-> **Version:** 3.2.5 | **Python:** 3.11+ | **140 source modules**
+> **Version:** 3.3.5 | **Python:** 3.12+ | **140 source modules**
 
 This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
 
@@ -47,7 +47,7 @@ Repo files
             └─ tree-sitter Parser (extracts Symbol, CallEdge, TypeEdge, ImportEdge)
                  └─ Chunker (context-headed Chunk per symbol, tiktoken-counted)
                       └─ Embedder (dense vectors; optionally sparse SPLADE)
-                           └─ SQLite Store (symbols + FTS5 BM25 + sqlite-vec HNSW)
+                           └─ SQLite Store (symbols + FTS5 BM25 + sqlite-vec)
                                 └─ Cross-file Resolution Pass
                                      └─ DimensionGuard (dimension mismatch detection)
 ```
@@ -593,10 +593,8 @@ class BaseVectorStore(ABC):
 ```
 
 **`SQLiteVecStore`** (default):
-- `vec0` virtual table with optional HNSW index (`TRELIX_STORE_HNSW=true`, default)
-- HNSW params: M=16, ef_construction=200, ef_search=50
+- `vec0` virtual table, always a flat scan (sqlite-vec has never shipped an ANN index under any release)
 - Separate virtual tables for file summaries and sub-chunks
-- Fallback: flat scan when sqlite-vec < 0.1.6 (no HNSW support)
 
 **`QdrantVectorStore`**: cloud-ready, TRELIX_STORE_BACKEND=qdrant, supports named collections, IVF+HNSW, metadata filtering.
 
@@ -2157,7 +2155,7 @@ repo/
      Phase 3: asyncio.gather (embed + store, Semaphore(4))
           │
           ├── embedder.embed_async(batch) ─► [embedding vectors]
-          └── vector_store.upsert_batch() ─► sqlite-vec HNSW (or Qdrant/LanceDB)
+          └── vector_store.upsert_batch() ─► sqlite-vec (or Qdrant/LanceDB)
           │
           └── [Optional] SparseEmbedder ──► sparse_embeddings table
 
@@ -2189,7 +2187,7 @@ User: "how does the authentication middleware work?"
      _retrieve_standard(plan)
           │
           ├── Sub-query leg execution (parallel)
-          │    ├── VECTOR: embed_query("auth middleware how") → HNSW → [SearchResult×20]
+          │    ├── VECTOR: embed_query("auth middleware how") → vector search → [SearchResult×20]
           │    ├── BM25:   FTS5("authentication middleware") → [SearchResult×20]
           │    └── GREP:   grep("authenticate") → [SearchResult×10]
           │
@@ -2286,4 +2284,4 @@ That's it — no changes to `Retriever` needed.
 
 ---
 
-*trelix v3.2.5 — last updated 2026-08-16*
+*trelix v3.3.5 — last updated 2026-08-16*

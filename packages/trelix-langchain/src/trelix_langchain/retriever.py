@@ -23,7 +23,18 @@ class TrelixRetriever(BaseRetriever):
             repo_path=self.repo_path,
             embedder=EmbedderConfig(
                 provider=cast(
-                    Literal["openai", "azure", "local", "voyage", "local-code"],
+                    Literal[
+                        "openai",
+                        "azure",
+                        "local",
+                        "voyage",
+                        "local-code",
+                        "bedrock-titan",
+                        "bedrock-cohere",
+                        "bge-code",
+                        "nomic-code",
+                        "cohere",
+                    ],
                     self.provider,
                 )
             ),

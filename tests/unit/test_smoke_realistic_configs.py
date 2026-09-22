@@ -149,8 +149,9 @@ class TestExtendedThinkingSmoke:
         assert "thinking" in call_kwargs
         assert call_kwargs["thinking"]["type"] == "enabled"
         assert call_kwargs["thinking"]["budget_tokens"] == 4096
-        # Temperature forced to 1.0 when thinking is enabled
-        assert call_kwargs["temperature"] == 1.0
+        # anthropic-sdk-python v1.0.0 removed temperature from Messages.create —
+        # AnthropicBackend never sends it, with or without thinking enabled.
+        assert "temperature" not in call_kwargs
 
     def test_thinking_with_various_budgets(self, mock_anthropic: MagicMock):
         """Different thinking budget values work correctly."""
@@ -338,6 +339,7 @@ class TestMixedConfigurationSmoke:
             "bedrock-cohere",
             "bge-code",
             "nomic-code",
+            "cohere",
         ]
 
         for provider in providers:

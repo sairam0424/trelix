@@ -47,6 +47,8 @@ class TestBedrockBackend:
         cfg = LLMConfig(
             provider="bedrock",
             model=model,
+            aws_region="us-east-1",  # v3.3.0: no default — tests that aren't
+            # specifically about the region requirement need one set explicitly
             _env_file=None,  # type: ignore[call-arg]
         )
         boto3_mock = _make_boto3_mock()
@@ -125,6 +127,152 @@ class TestBedrockBackend:
             assert isinstance(msg["content"], list)
             assert all(isinstance(block, dict) for block in msg["content"])
 
+    def test_complete_extracts_reasoning_content_block(self) -> None:
+        """Confirmed bug: complete()'s content extraction only ever looked for
+        "text" in a content block, silently skipping a reasoningContent block."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "reasoningContent": {
+                                "reasoningText": {"text": "step 1", "signature": "sig1"}
+                            }
+                        },
+                        {"text": "final answer"},
+                    ],
+                    "role": "assistant",
+                }
+            },
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "final answer"
+        assert result.thinking == "step 1"
+        assert len(result.thinking_blocks) == 1
+        assert result.thinking_blocks[0].type == "thinking"
+        assert result.thinking_blocks[0].thinking == "step 1"
+        assert result.thinking_blocks[0].signature == "sig1"
+
+    def test_complete_extracts_redacted_content_block(self) -> None:
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {
+                "message": {
+                    "content": [
+                        {"reasoningContent": {"redactedContent": "opaque-blob"}},
+                        {"text": "final answer"},
+                    ],
+                    "role": "assistant",
+                }
+            },
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "final answer"
+        assert len(result.thinking_blocks) == 1
+        assert result.thinking_blocks[0].type == "redacted_thinking"
+        assert result.thinking_blocks[0].data == "opaque-blob"
+
+    def test_complete_thinking_true_requests_reasoning_from_bedrock(self) -> None:
+        """Confirmed bug (v3.3.0 pre-promotion dry run, live AWS call): complete()
+        accepted thinking=True but never translated it into Bedrock's
+        additionalModelRequestFields.reasoning_config, so AWS was never actually
+        asked for reasoning and thinking_blocks was always empty regardless of
+        the flag. AnthropicBackend._thinking_kwargs() wires the same flag for
+        direct Anthropic calls; BedrockBackend needs the equivalent."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        backend.complete([ChatMessage(role="user", content="hi")], thinking=True)
+
+        call_kwargs = mock_client.converse.call_args[1]
+        assert call_kwargs["additionalModelRequestFields"] == {
+            "reasoning_config": {"type": "enabled", "budget_tokens": 4096}
+        }
+
+    def test_complete_thinking_true_forces_temperature_to_one(self) -> None:
+        """Anthropic-on-Bedrock rejects a reasoning request unless
+        temperature=1.0 — verified live against a real Bedrock call."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        backend.complete([ChatMessage(role="user", content="hi")], temperature=0.2, thinking=True)
+
+        call_kwargs = mock_client.converse.call_args[1]
+        assert call_kwargs["inferenceConfig"]["temperature"] == 1.0
+
+    def test_complete_thinking_false_does_not_add_reasoning_config(self) -> None:
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        backend.complete([ChatMessage(role="user", content="hi")], thinking=False)
+
+        call_kwargs = mock_client.converse.call_args[1]
+        assert "additionalModelRequestFields" not in call_kwargs
+
+    def test_stream_thinking_true_requests_reasoning_from_bedrock(self) -> None:
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse_stream.return_value = {"stream": []}
+        backend._client = mock_client
+
+        list(backend.stream([ChatMessage(role="user", content="hi")], thinking=True))
+
+        call_kwargs = mock_client.converse_stream.call_args[1]
+        assert call_kwargs["additionalModelRequestFields"] == {
+            "reasoning_config": {"type": "enabled", "budget_tokens": 4096}
+        }
+        assert call_kwargs["inferenceConfig"]["temperature"] == 1.0
+
+    def test_stream_does_not_crash_on_reasoning_content_delta(self) -> None:
+        """Confirmed bug: stream() only ever checked `"text" in delta`, so a
+        reasoningContent-only delta was read off the event stream and silently
+        discarded — not a crash, but silent data loss. This pins the non-crash
+        behavior; stream()'s Iterator[str] contract stays text-only."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse_stream.return_value = {
+            "stream": [
+                {"contentBlockDelta": {"delta": {"reasoningContent": {"text": "thinking..."}}}},
+                {"contentBlockDelta": {"delta": {"text": "hello"}}},
+            ]
+        }
+        backend._client = mock_client
+
+        chunks = list(backend.stream([ChatMessage(role="user", content="hi")]))
+
+        assert chunks == ["hello"]
+
     def test_tool_choice_auto_format(self) -> None:
         backend = self._make_backend()
         mock_client = MagicMock()
@@ -157,6 +305,21 @@ class TestBedrockBackend:
         cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
         with patch.dict("sys.modules", {"boto3": None}):
             with pytest.raises(ImportError, match="pip install"):
+                BedrockBackend(cfg)
+
+    def test_raises_without_region_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """anthropic-sdk-python v1.0.0 made AnthropicBedrock raise if no region is
+        set, instead of silently defaulting to us-east-1. BedrockBackend now
+        matches that posture — see test_config.py's
+        test_aws_region_defaults_to_none for the config-side default change."""
+        from trelix.llm.providers.bedrock_backend import BedrockBackend
+
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
+        assert cfg.aws_region is None
+        boto3_mock = _make_boto3_mock()
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
+            with pytest.raises(ValueError, match="AWS_REGION"):
                 BedrockBackend(cfg)
 
 
@@ -204,7 +367,7 @@ class TestBedrockDefaultModels:
         """Build a BedrockBackend with a mock boto3 client. model=None uses config default."""
         from trelix.llm.providers.bedrock_backend import BedrockBackend
 
-        kwargs: dict = {"provider": "bedrock", "_env_file": None}
+        kwargs: dict = {"provider": "bedrock", "aws_region": "us-east-1", "_env_file": None}
         if model is not None:
             kwargs["model"] = model
         cfg = LLMConfig(**kwargs)  # type: ignore[arg-type]
@@ -328,6 +491,7 @@ class TestBedrockDefaultModels:
 
         cfg = LLMConfig(
             provider="bedrock",
+            aws_region="us-east-1",
             bedrock_primary_model="us.anthropic.claude-opus-4-8",
             bedrock_fallback_model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
             _env_file=None,  # type: ignore[call-arg]
@@ -351,7 +515,7 @@ class TestBedrockClientRetryConfiguration:
         pytest.importorskip("boto3")
         from trelix.llm.providers.bedrock_backend import BedrockBackend
 
-        cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
+        cfg = LLMConfig(provider="bedrock", aws_region="us-east-1", _env_file=None)  # type: ignore[call-arg]
         backend = BedrockBackend(cfg)
         retries = backend._client.meta.config.retries
         assert retries["total_max_attempts"] == 1
@@ -375,7 +539,7 @@ class TestBedrockRetry:
     def _make_backend_with_mock_client(self):
         from trelix.llm.providers.bedrock_backend import BedrockBackend
 
-        cfg = LLMConfig(provider="bedrock", _env_file=None)  # type: ignore[call-arg]
+        cfg = LLMConfig(provider="bedrock", aws_region="us-east-1", _env_file=None)  # type: ignore[call-arg]
         boto3_mock = _make_boto3_mock()
         with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
             return BedrockBackend(cfg)

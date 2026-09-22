@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from trelix.core.config import IndexConfig
 
-from trelix.agent.actions import ActionType, AgentAction, Observation, Turn
+from trelix.agent.actions import ActionType, AgentAction, AgentResult, Observation, Turn
 from trelix.agent.history import HistoryCompressor, TurnHistory
 from trelix.agent.tools import AGENT_TOOLS
 from trelix.llm.prompt import fenced_block
@@ -27,14 +27,17 @@ logger = logging.getLogger("trelix.agent.loop")
 
 _SYSTEM_PROMPT = """\
 You are an expert code intelligence agent for a software repository.
-You have access to four tools: retrieve, grep, get_symbol, and done.
+You have access to five tools: retrieve, grep, get_symbol, done, and clarify.
 
 Strategy:
 1. Start by retrieving context relevant to the question.
 2. Use grep or get_symbol to drill into specific details.
 3. When you have sufficient context, call done with your final answer.
 4. Never call done until you've done at least one retrieval.
-5. Be concise in thoughts; be thorough in answers.
+5. If the question is genuinely ambiguous or missing information no amount
+   of retrieval can resolve, call clarify with a specific question instead
+   of guessing — but only after at least one retrieval attempt.
+6. Be concise in thoughts; be thorough in answers.
 """
 
 
@@ -44,9 +47,11 @@ class AgentLoop:
 
     Usage:
         loop = AgentLoop(config)
-        answer, session_id = loop.run("how does the authentication system work?")
+        result = loop.run("how does the authentication system work?")
+        if result.needs_input:
+            ...  # ask the user result.content, then resume with their answer
         # Resume the same session later:
-        answer2, _ = loop.run("what about logout?", session_id=session_id)
+        result2 = loop.run("what about logout?", session_id=result.session_id)
     """
 
     def __init__(self, config: IndexConfig) -> None:
@@ -68,7 +73,7 @@ class AgentLoop:
             self._llm_client = build_chat_client(self._config.llm)
         return self._llm_client
 
-    def run(self, query: str, session_id: str | None = None) -> tuple[str, str]:
+    def run(self, query: str, session_id: str | None = None) -> AgentResult:
         """
         Execute the ReAct loop for a user query, optionally resuming a
         persisted session.
@@ -82,9 +87,13 @@ class AgentLoop:
                 session_id back to resume later.
 
         Returns:
-            (answer, session_id) — session_id is always populated (either
-            the one passed in, or a freshly generated UUID4). Never raises —
-            falls back to a summary of observations on any failure.
+            An AgentResult. `session_id` is always populated (either the one
+            passed in, or a freshly generated UUID4). `needs_input` is True
+            only when the agent explicitly called `clarify` — a completed
+            answer and a max-turns-exhausted fallback answer both set it
+            False, since both are already a usable response, just with
+            different confidence. Never raises — falls back to a summary of
+            observations on any failure.
         """
         import uuid
 
@@ -125,11 +134,20 @@ class AgentLoop:
             self._persist_turn(resolved_session_id, turn)
 
             if action.action_type == ActionType.DONE:
-                return str(action.arguments.get("answer", "")), resolved_session_id
+                return AgentResult(
+                    content=str(action.arguments.get("answer", "")),
+                    session_id=resolved_session_id,
+                )
+            if action.action_type == ActionType.CLARIFY:
+                return AgentResult(
+                    content=str(action.arguments.get("question", "")),
+                    session_id=resolved_session_id,
+                    needs_input=True,
+                )
 
         # Max turns reached — synthesize from history
         answer = self._fallback_answer(query, history)
-        return answer, resolved_session_id
+        return AgentResult(content=answer, session_id=resolved_session_id)
 
     def _persist_turn(self, session_id: str, turn: Turn) -> None:
         """Best-effort persistence — never lets a DB error break the ReAct loop.
@@ -212,6 +230,12 @@ class AgentLoop:
                     return Observation(
                         content=action.arguments.get("answer", ""),
                         source="done",
+                        success=True,
+                    )
+                case ActionType.CLARIFY:
+                    return Observation(
+                        content=action.arguments.get("question", ""),
+                        source="clarify",
                         success=True,
                     )
                 case _:

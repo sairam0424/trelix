@@ -63,6 +63,29 @@ class PythonParser(BaseParser):
     # Base class names that make a class a Protocol (→ INTERFACE)
     _PROTOCOL_BASES: frozenset[str] = frozenset({"Protocol"})
 
+    # Builtin constructors that would produce a useless/misleading
+    # callee_type_hint if captured (e.g. `self.items = list()` should NOT
+    # make later `self.items.append(...)` calls look like `list.append`
+    # method calls on a user-defined "list" type). Mirrors the same
+    # conservative philosophy as _extract_param_types, which skips
+    # ambiguous/generic annotations rather than guess.
+    _BUILTIN_CONSTRUCTORS: frozenset[str] = frozenset(
+        {
+            "list",
+            "dict",
+            "str",
+            "int",
+            "set",
+            "tuple",
+            "frozenset",
+            "bool",
+            "float",
+            "bytes",
+            "bytearray",
+            "object",
+        }
+    )
+
     def __init__(self) -> None:
         self._ts_lang = load_language("python")
         self._parser = make_parser("python")
@@ -112,6 +135,13 @@ class PythonParser(BaseParser):
         if module_doc:
             symbols.append(self._module_symbol(file_id, root, module_doc))
 
+        # Map every function/method NAME in the file to its declared return
+        # type annotation, computed ONCE up front (independent of the walk's
+        # scoping) so that `x = some_func(); x.method()` can resolve
+        # `x`'s type from `some_func`'s `-> ReturnType` no matter where
+        # `some_func` is defined relative to the call site.
+        func_return_types = self._collect_function_return_types(root, source_bytes)
+
         # Walk the module-level children to extract top-level constructs
         self._walk(
             node=root,
@@ -124,6 +154,8 @@ class PythonParser(BaseParser):
             parent_class_local_idx=None,
             current_func_local_idx=None,
             param_types={},
+            class_attr_types={},
+            func_return_types=func_return_types,
             depth=0,
         )
 
@@ -204,9 +236,21 @@ class PythonParser(BaseParser):
         parent_class_local_idx: int | None,
         current_func_local_idx: int | None,
         param_types: dict[str, str],
+        class_attr_types: dict[str, str],
+        func_return_types: dict[str, str],
         depth: int,
     ) -> None:
-        """Recursive depth-first walk. depth guards against absurdly nested code."""
+        """Recursive depth-first walk. depth guards against absurdly nested code.
+
+        `param_types` is mutated in place as local-variable assignments are
+        encountered in source order (see `_handle_local_var_assignment`) —
+        everything else threaded through this walk is read-only for the
+        duration of the walk. `class_attr_types` is the enclosing class's
+        `self.attr` -> type map (built once per class before any of its
+        methods are walked; empty at module scope). `func_return_types` is
+        the whole-file function/method-name -> declared-return-type map,
+        computed once in `parse()`.
+        """
         if depth > 20:
             return
 
@@ -216,7 +260,15 @@ class PythonParser(BaseParser):
             # ---- Class definition ----------------------------------------
             if ntype == "class_definition":
                 self._handle_class(
-                    child, src, file_id, symbols, raw_calls, import_edges, type_edges, depth
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    func_return_types,
+                    depth,
                 )
 
             # ---- Function / method definition ----------------------------
@@ -231,6 +283,8 @@ class PythonParser(BaseParser):
                     type_edges,
                     parent_class_local_idx,
                     current_func_local_idx,
+                    class_attr_types,
+                    func_return_types,
                     depth,
                 )
 
@@ -249,6 +303,8 @@ class PythonParser(BaseParser):
                         type_edges,
                         parent_class_local_idx,
                         current_func_local_idx,
+                        class_attr_types,
+                        func_return_types,
                         depth,
                         decorators=decs,
                     )
@@ -263,6 +319,7 @@ class PythonParser(BaseParser):
                             raw_calls,
                             import_edges,
                             type_edges,
+                            func_return_types,
                             depth,
                             decorators=decs,
                         )
@@ -311,9 +368,38 @@ class PythonParser(BaseParser):
                         child, src, file_id, symbols, parent_class_local_idx
                     )
 
+            # ---- Local variable assignment inside a function/method body -----
+            # `x = some_func()` — widens callee_type_hint resolution to local
+            # variables assigned from a call to a function/method with a
+            # declared return type annotation (see _handle_local_var_assignment
+            # for the "no retroactive application" / reassignment semantics).
+            # Fires for ANY assignment inside a function body (current_func_local_idx
+            # is set), which is everything the two branches above do NOT already
+            # claim (those both require current_func_local_idx is None).
+            elif ntype == "assignment" and current_func_local_idx is not None:
+                self._handle_local_var_assignment(child, src, param_types, func_return_types)
+                # Still recurse into the assignment for nested calls in the RHS
+                self._walk(
+                    child,
+                    src,
+                    file_id,
+                    symbols,
+                    raw_calls,
+                    import_edges,
+                    type_edges,
+                    parent_class_local_idx,
+                    current_func_local_idx,
+                    param_types,
+                    class_attr_types,
+                    func_return_types,
+                    depth + 1,
+                )
+
             # ---- Call sites (track for call graph) -----------------------
             elif ntype == "call":
-                self._handle_call(child, src, raw_calls, current_func_local_idx, param_types)
+                self._handle_call(
+                    child, src, raw_calls, current_func_local_idx, param_types, class_attr_types
+                )
                 # Still recurse into call arguments for nested calls
                 self._walk(
                     child,
@@ -326,6 +412,8 @@ class PythonParser(BaseParser):
                     parent_class_local_idx,
                     current_func_local_idx,
                     param_types,
+                    class_attr_types,
+                    func_return_types,
                     depth + 1,
                 )
 
@@ -353,7 +441,13 @@ class PythonParser(BaseParser):
                 "with_clause",
                 "with_item",
                 # expression containers (calls live inside these)
-                "assignment",
+                # NOTE: "assignment" is deliberately absent here — every
+                # (parent_class_local_idx, current_func_local_idx) combination
+                # for an `assignment` node is already fully covered by the
+                # three dedicated `assignment` branches above (module-const,
+                # class-field, local-var), so it can never reach this generic
+                # fallback. augmented_assignment (x += 1) is NOT one of those
+                # three branches and still needs this generic recursion.
                 "augmented_assignment",
                 "return_statement",
                 "assert_statement",
@@ -405,6 +499,8 @@ class PythonParser(BaseParser):
                     parent_class_local_idx,
                     current_func_local_idx,
                     param_types,
+                    class_attr_types,
+                    func_return_types,
                     depth + 1,
                 )
 
@@ -421,6 +517,7 @@ class PythonParser(BaseParser):
         raw_calls: list[tuple[int | None, str, int, str | None]],
         import_edges: list[ImportEdge],
         type_edges: list[TypeEdge],
+        func_return_types: dict[str, str],
         depth: int,
         decorators: list[str] | None = None,
     ) -> None:
@@ -481,6 +578,12 @@ class PythonParser(BaseParser):
 
         # Walk the class body: extract methods (pass is_enum so all members get extracted)
         if body_node:
+            # Two-pass: collect every self.attr assignment ACROSS ALL METHODS of
+            # this class (e.g. set in __init__, used in process()) BEFORE walking
+            # any method's calls — a call in one method can reference an
+            # attribute set in a different method, so the map must exist in
+            # full before _handle_call ever consults it.
+            self_attr_types = self._collect_self_attr_types(body_node, src, func_return_types)
             self._walk(
                 body_node,
                 src,
@@ -492,6 +595,8 @@ class PythonParser(BaseParser):
                 parent_class_local_idx=class_local_idx,
                 current_func_local_idx=None,
                 param_types={},
+                class_attr_types=self_attr_types,
+                func_return_types=func_return_types,
                 depth=depth + 1,
             )
 
@@ -506,6 +611,8 @@ class PythonParser(BaseParser):
         type_edges: list[TypeEdge],
         parent_class_local_idx: int | None,
         current_func_local_idx: int | None,
+        class_attr_types: dict[str, str],
+        func_return_types: dict[str, str],
         depth: int,
         decorators: list[str] | None = None,
     ) -> None:
@@ -549,6 +656,10 @@ class PythonParser(BaseParser):
 
         # Build param_types: {param_name: type_name} for typed parameters.
         # Used in _handle_call to infer callee_type_hint for method calls.
+        # This dict is also MUTATED as the body walk encounters
+        # `x = some_func()` local-variable assignments (see
+        # _handle_local_var_assignment) — it is fresh per function, so that
+        # mutation never leaks into a sibling or enclosing function's scope.
         params_node = node.child_by_field_name("parameters")
         func_param_types: dict[str, str] = (
             self._extract_param_types(params_node, src) if params_node else {}
@@ -567,6 +678,8 @@ class PythonParser(BaseParser):
                 parent_class_local_idx=parent_class_local_idx,
                 current_func_local_idx=func_local_idx,
                 param_types=func_param_types,
+                class_attr_types=class_attr_types,
+                func_return_types=func_return_types,
                 depth=depth + 1,
             )
 
@@ -845,15 +958,29 @@ class PythonParser(BaseParser):
         raw_calls: list[tuple[int | None, str, int, str | None]],
         current_func_local_idx: int | None,
         param_types: dict[str, str],
+        class_attr_types: dict[str, str],
     ) -> None:
         """Extract the callee name from a call node.
 
         For method calls of the form ``receiver.method()``, attempts to resolve
-        the static type of ``receiver`` from the enclosing function's annotated
-        parameter list (stored in ``param_types``).  When found, the type name
-        is stored as ``callee_type_hint`` on the resulting CallEdge so that
-        ``resolve_cross_file_calls()`` can use priority-2 type-hint resolution
-        instead of falling back to ambiguous name-only matching.
+        the static type of ``receiver`` two ways:
+
+          1. ``receiver`` is a plain identifier — resolved from the enclosing
+             function's annotated parameter list OR a local variable assigned
+             from a call to a function with a declared return type (both live
+             in ``param_types``; see ``_handle_local_var_assignment``).
+          2. ``receiver`` is the literal attribute expression ``self.attr`` —
+             resolved from the enclosing class's self-attribute type map
+             (``class_attr_types``; see ``_collect_self_attr_types``). Any
+             OTHER attribute chain (``other_obj.attr.method()``,
+             ``self.attr.nested.method()``) is deliberately left unresolved —
+             widening beyond the literal ``self.attr`` pattern risks a wrong
+             hint, which is worse than no hint.
+
+        When found, the type name is stored as ``callee_type_hint`` on the
+        resulting CallEdge so that ``resolve_cross_file_calls()`` can use
+        priority-2 type-hint resolution instead of falling back to ambiguous
+        name-only matching.
         """
         func_node = node.child_by_field_name("function")
         if not func_node:
@@ -868,11 +995,25 @@ class PythonParser(BaseParser):
             # Method call: obj.foo()
             attr = func_node.child_by_field_name("attribute")
             name = self._txt(attr, src) if attr else ""
-            # Try to resolve receiver type hint from param annotations
             obj_node = func_node.child_by_field_name("object")
             if obj_node and obj_node.type == "identifier":
+                # receiver.foo() — try param annotation / local-var return type
                 receiver_name = self._txt(obj_node, src)
                 type_hint = param_types.get(receiver_name)
+            elif obj_node and obj_node.type == "attribute":
+                # self.attr.foo() — try the class-scoped self-attr map, but
+                # ONLY for the literal `self.attr` shape (object is exactly
+                # the identifier "self"), never a longer or non-self chain.
+                inner_obj = obj_node.child_by_field_name("object")
+                inner_attr = obj_node.child_by_field_name("attribute")
+                if (
+                    inner_obj is not None
+                    and inner_obj.type == "identifier"
+                    and self._txt(inner_obj, src) == "self"
+                    and inner_attr is not None
+                ):
+                    attr_name = self._txt(inner_attr, src)
+                    type_hint = class_attr_types.get(attr_name)
         else:
             return
 
@@ -921,6 +1062,214 @@ class PythonParser(BaseParser):
                 # plain untyped parameter — no hint available, skip
                 pass
         return result
+
+    # ------------------------------------------------------------------
+    # Local-variable-from-return-type propagation (for callee_type_hint)
+    # ------------------------------------------------------------------
+
+    def _collect_function_return_types(self, root: Node, src: bytes) -> dict[str, str]:
+        """
+        Map every function/method NAME (bare, unqualified) in the file to its
+        declared return type annotation, when that annotation is a single
+        plain identifier (e.g. ``-> ServiceType:``).  Generic/union return
+        types (``-> Optional[Foo]``, ``-> list[Bar]``) are skipped for the
+        same reason ``_extract_param_types`` skips them: they cannot be
+        reliably matched against a single qualified_name prefix.
+
+        Computed ONCE for the whole file (module functions AND methods,
+        keyed by bare name — collisions between same-named methods on
+        different classes are an accepted, rare imprecision; this mirrors
+        the same "simple, not a whole-program analysis" scope as the
+        local-variable propagation that consumes this map).
+        """
+        result: dict[str, str] = {}
+        self._scan_function_return_types(root, src, result)
+        return result
+
+    def _scan_function_return_types(self, node: Node, src: bytes, result: dict[str, str]) -> None:
+        for child in node.children:
+            target = child
+            if target.type == "decorated_definition":
+                target = self._get_child_by_type(target, "function_definition") or target
+            if target.type == "function_definition":
+                name_node = self._get_child_by_type(target, "identifier")
+                return_node = target.child_by_field_name("return_type")
+                if name_node and return_node is not None and return_node.type == "type":
+                    inner = self._get_child_by_type(return_node, "identifier")
+                    if inner:
+                        result[self._txt(name_node, src)] = self._txt(inner, src)
+            self._scan_function_return_types(child, src, result)
+
+    def _handle_local_var_assignment(
+        self,
+        assign_node: Node,
+        src: bytes,
+        param_types: dict[str, str],
+        func_return_types: dict[str, str],
+    ) -> None:
+        """
+        Track ``x = some_func()`` inside a function/method body so that a
+        LATER ``x.method()`` call in the SAME body can resolve
+        ``callee_type_hint`` from ``some_func``'s declared return type.
+
+        Mutates ``param_types`` IN PLACE — the same dict ``_handle_call``
+        reads from for receiver resolution — so the effect is visible only
+        for statements that come AFTER this assignment in source order.
+        ``_walk`` iterates a block's children in source order, so a call on
+        `x` BEFORE this assignment is visited (and resolved, or not) before
+        this mutation ever happens: no retroactive application is possible.
+
+        Only a plain ``x = ...`` (bare identifier target) is handled — tuple
+        unpacking, attribute targets (``self.x = ...``, tracked separately
+        per-class in ``_collect_self_attr_types``), and subscript targets are
+        left untouched.
+
+        Deliberately simple "last assignment wins" semantics, not a full
+        data-flow analysis: reassigning ``x`` to something that does NOT
+        resolve to a known return type clears any previous mapping for that
+        name, so a stale type is never carried past a reassignment.
+        """
+        left = assign_node.child_by_field_name("left")
+        if not left or left.type != "identifier":
+            return
+        var_name = self._txt(left, src)
+
+        resolved_type: str | None = None
+        right = assign_node.child_by_field_name("right")
+        if right is not None and right.type == "call":
+            func_node = right.child_by_field_name("function")
+            if func_node is not None and func_node.type == "identifier":
+                callee_name = self._txt(func_node, src)
+                resolved_type = func_return_types.get(callee_name)
+
+        if resolved_type:
+            param_types[var_name] = resolved_type
+        else:
+            param_types.pop(var_name, None)
+
+    # ------------------------------------------------------------------
+    # self.attr type tracking, per-class (for callee_type_hint)
+    # ------------------------------------------------------------------
+
+    def _collect_self_attr_types(
+        self, class_body: Node, src: bytes, func_return_types: dict[str, str]
+    ) -> dict[str, str]:
+        """
+        Scan every method in a class body for ``self.attr = ...`` assignments
+        and build a name -> type map BEFORE any method's calls are resolved,
+        since an attribute set in one method (typically ``__init__``) is
+        commonly used in another (e.g. ``process()``). Two forms are captured
+        (see ``_record_self_attr_assignment`` for the exact rules):
+
+          - Annotated:        ``self.attr: SomeType = ...``
+          - Constructor-call:  ``self.attr = SomeClass(...)``
+
+        ``func_return_types`` (the same whole-file function/method-name ->
+        declared-return-type map used by ``_handle_local_var_assignment``) is
+        threaded through so the constructor-call form can tell a factory
+        FUNCTION call (``self.attr = get_service()``) apart from an actual
+        class constructor call — see ``_record_self_attr_assignment``.
+
+        Nested class bodies are skipped entirely — ``self`` inside a nested
+        class's own methods refers to instances of THAT class, not this one.
+        """
+        attr_types: dict[str, str] = {}
+        for child in class_body.children:
+            target = child
+            if target.type == "decorated_definition":
+                target = self._get_child_by_type(target, "function_definition") or target
+            if target.type != "function_definition":
+                continue
+            method_body = target.child_by_field_name("body")
+            if method_body is not None:
+                self._scan_self_attr_assignments(method_body, src, attr_types, func_return_types)
+        return attr_types
+
+    def _scan_self_attr_assignments(
+        self,
+        node: Node,
+        src: bytes,
+        attr_types: dict[str, str],
+        func_return_types: dict[str, str],
+    ) -> None:
+        for child in node.children:
+            if child.type == "class_definition":
+                continue  # nested class has its own `self` — do not descend
+            if child.type == "assignment":
+                self._record_self_attr_assignment(child, src, attr_types, func_return_types)
+            self._scan_self_attr_assignments(child, src, attr_types, func_return_types)
+
+    def _record_self_attr_assignment(
+        self,
+        assign_node: Node,
+        src: bytes,
+        attr_types: dict[str, str],
+        func_return_types: dict[str, str],
+    ) -> None:
+        left = assign_node.child_by_field_name("left")
+        if not left or left.type != "attribute":
+            return  # not `self.attr = ...` — plain-name / tuple / subscript target
+
+        obj_node = left.child_by_field_name("object")
+        attr_node = left.child_by_field_name("attribute")
+        if (
+            obj_node is None
+            or obj_node.type != "identifier"
+            or self._txt(obj_node, src) != "self"
+            or attr_node is None
+        ):
+            return
+        attr_name = self._txt(attr_node, src)
+
+        # Annotated form takes priority: self.attr: SomeType = ...
+        type_node = assign_node.child_by_field_name("type")
+        if type_node is not None:
+            inner = self._get_child_by_type(type_node, "identifier")
+            if inner:
+                attr_types[attr_name] = self._txt(inner, src)
+            return
+
+        # Constructor-call inference: self.attr = SomeClass(...) — only when
+        # the callee is a plain identifier (not `module.Class()`, which is a
+        # multi-level chain out of scope here).
+        right = assign_node.child_by_field_name("right")
+        if right is None or right.type != "call":
+            return
+        func_node = right.child_by_field_name("function")
+        if func_node is None or func_node.type != "identifier":
+            return
+        callee_name = self._txt(func_node, src)
+
+        # 1) Factory-FUNCTION call: `self.attr = get_service()` where
+        #    `get_service` has a declared `-> ReturnType` annotation
+        #    elsewhere in the file (mirrors `_handle_local_var_assignment`,
+        #    which resolves the exact same shape for plain local variables).
+        #    The factory function's own bare name (e.g. "get_service") must
+        #    NEVER be recorded as the hint — that would either fail
+        #    resolve_cross_file_calls' priority-2 lookup outright, or, worse,
+        #    silently match an unrelated symbol elsewhere in the whole-project
+        #    index that happens to share that name as a qualified_name prefix.
+        if callee_name in func_return_types:
+            resolved_type = func_return_types[callee_name]
+            if resolved_type:
+                attr_types[attr_name] = resolved_type
+            return
+
+        # 2) Constructor call: `self.attr = SomeClass(...)`. `callee_name` is
+        #    NOT a known function/method (checked above), so it cannot be
+        #    confirmed as a factory — but nothing here confirms it IS a class
+        #    either (classes may be imported from other files and are
+        #    invisible to this whole-file walk). Require it to at least LOOK
+        #    like a class per PEP 8 convention (PascalCase) and not be one of
+        #    the builtin type constructors that would produce a
+        #    useless/misleading hint (self.attr = list()). This rejects the
+        #    common idiomatic factory patterns that are NOT classes
+        #    (get_x()/create_x()/load_x()/build_x()/make_x(), or bare
+        #    builtins like sorted()/open()/zip()) — all lowercase — while
+        #    still accepting genuine constructor calls, including on classes
+        #    defined in other files. A wrong hint is worse than no hint.
+        if callee_name[0].isupper() and callee_name not in self._BUILTIN_CONSTRUCTORS:
+            attr_types[attr_name] = callee_name
 
     # ------------------------------------------------------------------
     # Import extraction

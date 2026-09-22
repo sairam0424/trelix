@@ -39,19 +39,34 @@ def expand_with_call_graph(
         return []
 
     seen_ids: set[int] = {r.chunk.symbol_id for r in results}
-    # candidates: (symbol_id, hop_distance)
-    candidates: list[tuple[int, int]] = []
+    # candidates: (symbol_id, hop_distance, via_symbol_id, direction)
+    # via_symbol_id is the frontier symbol this neighbor was discovered through;
+    # direction is "callee" (neighbor is called BY via_symbol_id, i.e. found via
+    # db.get_callees(via_symbol_id)) or "caller" (neighbor CALLS via_symbol_id,
+    # found via db.get_callers(via_symbol_id)). Iterating callees and callers as
+    # two separate loops (rather than concatenating them into one list before
+    # iterating) preserves the exact same discovery order as the prior
+    # `db.get_callees(symbol_id) + db.get_callers(symbol_id)` combined list —
+    # `for x in a + b` and `for x in a: ...; for x in b: ...` visit elements in
+    # the same order — while letting each loop tag its own direction.
+    candidates: list[tuple[int, int, int, str]] = []
     frontier = [r.chunk.symbol_id for r in results]
 
     for hop in range(1, depth + 1):
         next_frontier: list[int] = []
         for symbol_id in frontier:
-            for neighbor_id in db.get_callees(symbol_id) + db.get_callers(symbol_id):
+            for neighbor_id in db.get_callees(symbol_id):
                 if neighbor_id in seen_ids:
                     continue
                 seen_ids.add(neighbor_id)
                 next_frontier.append(neighbor_id)
-                candidates.append((neighbor_id, hop))
+                candidates.append((neighbor_id, hop, symbol_id, "callee"))
+            for neighbor_id in db.get_callers(symbol_id):
+                if neighbor_id in seen_ids:
+                    continue
+                seen_ids.add(neighbor_id)
+                next_frontier.append(neighbor_id)
+                candidates.append((neighbor_id, hop, symbol_id, "caller"))
         frontier = next_frontier
 
     if not candidates:
@@ -60,9 +75,11 @@ def expand_with_call_graph(
     # Only apply PageRank re-sorting when the call graph is rich enough to matter.
     # On sparse graphs (few resolved callee_ids) PageRank scores are near-uniform
     # and the sort just shuffles BFS order, which hurts more than it helps.
-    total_resolved = sum(1 for sid, _ in candidates if db.get_callees(sid) or db.get_callers(sid))
+    total_resolved = sum(
+        1 for sid, _hop, _via, _dir in candidates if db.get_callees(sid) or db.get_callers(sid)
+    )
     if total_resolved >= 3:
-        all_ids = [r.chunk.symbol_id for r in results] + [sid for sid, _ in candidates]
+        all_ids = [r.chunk.symbol_id for r in results] + [c[0] for c in candidates]
         pr_scores = dict(rank_by_pagerank(all_ids, db, personalization_enabled))
         # Closer hops win; PageRank breaks ties within the same hop
         candidates.sort(key=lambda x: (x[1], -pr_scores.get(x[0], 0.0)))
@@ -70,7 +87,7 @@ def expand_with_call_graph(
     base_score = results[0].score if results else 0.5
     extra: list[SearchResult] = []
 
-    for symbol_id, hop in candidates[:max_extra]:
+    for symbol_id, hop, via_symbol_id, direction in candidates[:max_extra]:
         sym_file = db.get_symbol_with_file(symbol_id)
         if sym_file is None:
             continue
@@ -92,6 +109,129 @@ def expand_with_call_graph(
                 score=base_score * (0.5**hop),
                 rank=len(extra) + 1,
                 source="graph_expansion",
+                graph_context=_render_graph_context(db, via_symbol_id, direction, hop),
+            )
+        )
+
+    return extra
+
+
+def _render_graph_context(db: Database, via_symbol_id: int, direction: str, hop: int) -> str:
+    """
+    Human-readable, self-contained description of how a call-graph-expanded
+    result relates to the frontier symbol it was discovered through.
+
+    direction="callee" — this result is CALLED BY via_symbol_id (discovered
+        via db.get_callees(via_symbol_id)).
+    direction="caller" — this result CALLS via_symbol_id (discovered via
+        db.get_callers(via_symbol_id)).
+
+    Names the actual via-parent (the immediate frontier symbol one hop closer
+    to the seed), not the original seed — so a 2+ hop result's context stays
+    truthful about the path it was actually reached through.
+    """
+    via_sym_file = db.get_symbol_with_file(via_symbol_id)
+    via_name = via_sym_file[0].qualified_name if via_sym_file else f"symbol#{via_symbol_id}"
+    verb = "called by" if direction == "callee" else "calls"
+    hop_word = "hop" if hop == 1 else "hops"
+    return f"{verb} {via_name} ({hop} {hop_word})"
+
+
+def expand_with_dataflow(
+    db: Database,
+    results: list[SearchResult],
+    max_extra: int = 10,
+) -> list[SearchResult]:
+    """
+    Expand result set with callees that a seed symbol's OWN local data flows into.
+
+    CodeRAG-style dataflow leg. For each seed symbol, pulls its intra-procedural
+    def-use spans (DataFlowExtractor / def_use_edges, via db.get_data_flows) and
+    its resolved call sites WITH line numbers (db.get_call_edges) and keeps only
+    the callees whose call site line falls inside a def-use span
+    (min(def_line, use_line) <= call.line <= max(def_line, use_line)).
+
+    That correlation is the new signal here: expand_with_call_graph already
+    returns "every function this symbol calls" unconditionally; this returns
+    the narrower "functions this symbol calls that a specific tracked variable
+    is live across" — distinguishing call topology from actual data flow.
+
+    Degrades to [] (never raises) when the seed symbol has no def_use_edges —
+    either ParserConfig.dataflow_enabled was False at index time (the default),
+    or the symbol genuinely has no local variables — or when none of its
+    resolved callees' call sites land inside a span.
+    """
+    if not results:
+        return []
+
+    seen_ids: set[int] = {r.chunk.symbol_id for r in results}
+    base_score = results[0].score if results else 0.5
+    score_discount = 0.4
+
+    # Collect matching callee_ids per seed, then interleave round-robin across
+    # seeds before truncating -- an earlier version truncated (and returned)
+    # as soon as a single seed's matches filled max_extra, which silently
+    # starved every later seed's candidates whenever one early, higher-ranked
+    # seed alone had more correlated calls than the budget. Round-robin gives
+    # every seed a turn before any seed gets a second slot, instead of
+    # exhausting the first seed's matches before later seeds are examined.
+    per_seed_candidates: list[list[int]] = []
+
+    for r in results:
+        symbol_id = r.chunk.symbol_id
+
+        flows = db.get_data_flows(symbol_id)
+        if not flows:
+            continue
+
+        spans = [(min(e.def_line, e.use_line), max(e.def_line, e.use_line)) for e in flows]
+
+        seed_candidates: list[int] = []
+        for call in db.get_call_edges(symbol_id):
+            if call.callee_id is None or call.callee_id in seen_ids:
+                continue
+            if not any(start <= call.line <= end for start, end in spans):
+                continue
+            seen_ids.add(call.callee_id)
+            seed_candidates.append(call.callee_id)
+
+        if seed_candidates:
+            per_seed_candidates.append(seed_candidates)
+
+    if not per_seed_candidates:
+        return []
+
+    candidates: list[int] = []
+    max_per_seed = max(len(c) for c in per_seed_candidates)
+    for i in range(max_per_seed):
+        for seed_candidates in per_seed_candidates:
+            if i < len(seed_candidates):
+                candidates.append(seed_candidates[i])
+
+    extra: list[SearchResult] = []
+
+    for callee_id in candidates[:max_extra]:
+        sym_file = db.get_symbol_with_file(callee_id)
+        if sym_file is None:
+            continue
+        symbol, file = sym_file
+
+        chunk = db.get_first_chunk_for_symbol(callee_id)
+        if chunk is None:
+            chunk = Chunk(
+                symbol_id=callee_id,
+                chunk_text=symbol.body[:2000],
+                token_count=0,
+            )
+
+        extra.append(
+            SearchResult(
+                chunk=chunk,
+                symbol=symbol,
+                file=file,
+                score=base_score * score_discount,
+                rank=len(extra) + 1,
+                source="dataflow_expansion",
             )
         )
 

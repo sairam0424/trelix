@@ -14,7 +14,7 @@ pip install "trelix[local]"
 
 The `local` extra bundles `sentence-transformers` so embeddings run entirely on your machine — no API key required to index and search.
 
-Trelix requires **Python 3.11+** and supports over 20 programming languages via tree-sitter parsers (Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, Swift, Kotlin, and more).
+Trelix requires **Python 3.12+** and supports over 20 programming languages via tree-sitter parsers (Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, Swift, Kotlin, and more).
 
 Verify the install:
 

@@ -7,7 +7,13 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from trelix.core.retry import with_retry
-from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
+from trelix.llm.client import (
+    ChatMessage,
+    ChatResponse,
+    ThinkingBlock,
+    ToolCallResponse,
+    TrelixChatClient,
+)
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -20,6 +26,10 @@ _FINISH_REASON_MAP = {
     "stop_sequence": "stop",
     "tool_use": "tool_calls",
 }
+
+# Log once per process, not once per call — a per-query retrieval/synthesis path would
+# otherwise emit this on every single request once a caller starts passing temperature=.
+_TEMPERATURE_DROP_WARNED = False
 
 
 class AnthropicBackend(TrelixChatClient):
@@ -66,6 +76,22 @@ class AnthropicBackend(TrelixChatClient):
     def _normalize_finish_reason(self, stop_reason: str) -> str:
         return _FINISH_REASON_MAP.get(stop_reason, "stop")
 
+    def _warn_if_temperature_given(self, temperature: float | None) -> None:
+        """anthropic-sdk-python v1.0.0 removed temperature from Messages.create.
+
+        Warn once per process rather than raising or silently swallowing —
+        callers that still pass temperature= get told their value is now
+        ignored, instead of either crashing or silently changing behavior."""
+        global _TEMPERATURE_DROP_WARNED
+        if temperature is not None and not _TEMPERATURE_DROP_WARNED:
+            _TEMPERATURE_DROP_WARNED = True
+            logger.warning(
+                "temperature=%s ignored: anthropic-sdk-python v1.0.0 removed the "
+                "temperature parameter from Messages.create. AnthropicBackend no "
+                "longer accepts it.",
+                temperature,
+            )
+
     def _thinking_kwargs(self, thinking: bool) -> dict[str, Any]:
         """
         Build extended thinking kwargs for Anthropic API.
@@ -81,23 +107,35 @@ class AnthropicBackend(TrelixChatClient):
             }
         }
 
-    def _split_content(self, content_blocks: list[Any]) -> tuple[str, str | None]:
+    def _split_content(self, content_blocks: list[Any]) -> tuple[str, list[ThinkingBlock]]:
         """
-        Split Anthropic response content into (text, thinking).
-        Returns ("", None) if content is empty.
+        Split Anthropic response content into (text, thinking_blocks).
+
+        Handles both "thinking" blocks (readable text + signature) and
+        "redacted_thinking" blocks (opaque data, no readable text) — the latter
+        used to be silently dropped here, since this method only ever branched on
+        "text"/"thinking".
         """
         if not content_blocks:
-            return "", None
+            return "", []
         text_parts: list[str] = []
-        thinking_parts: list[str] = []
+        thinking_blocks: list[ThinkingBlock] = []
         for block in content_blocks:
             if block.type == "text":
                 text_parts.append(block.text)
             elif block.type == "thinking":
-                thinking_parts.append(block.thinking)
-        text = "".join(text_parts)
-        thinking = "".join(thinking_parts) if thinking_parts else None
-        return text, thinking
+                thinking_blocks.append(
+                    ThinkingBlock(
+                        type="thinking",
+                        thinking=block.thinking,
+                        signature=getattr(block, "signature", None),
+                    )
+                )
+            elif block.type == "redacted_thinking":
+                thinking_blocks.append(
+                    ThinkingBlock(type="redacted_thinking", data=getattr(block, "data", None))
+                )
+        return "".join(text_parts), thinking_blocks
 
     @with_retry(max_attempts=5)
     def _create(self, **kwargs: Any) -> Any:
@@ -129,32 +167,33 @@ class AnthropicBackend(TrelixChatClient):
                 model="none",
                 finish_reason="stop",
             )
+        self._warn_if_temperature_given(temperature)
         sys_prompt, user_msgs = self._extract_system(messages, system)
         kwargs: dict[str, Any] = {}
         if sys_prompt:
             kwargs["system"] = sys_prompt
-        # Thinking requires temperature=1.0
-        effective_temp = (
-            1.0
-            if thinking
-            else (temperature if temperature is not None else self._config.temperature)
-        )
         kwargs.update(self._thinking_kwargs(thinking))
         response = self._create(
             model=self._model,
             messages=user_msgs,
             max_tokens=max_tokens or self._config.max_tokens,
-            temperature=effective_temp,
             **kwargs,
         )
-        content, thinking_content = self._split_content(response.content)
+        content, thinking_blocks = self._split_content(response.content)
+        thinking_text_blocks = [b for b in thinking_blocks if b.type == "thinking"]
+        thinking_text = (
+            "".join(b.thinking or "" for b in thinking_text_blocks)
+            if thinking_text_blocks
+            else None
+        )
         return ChatResponse(
             content=content,
             model=response.model,
             finish_reason=self._normalize_finish_reason(response.stop_reason or "end_turn"),
             input_tokens=response.usage.input_tokens if response.usage else 0,
             output_tokens=response.usage.output_tokens if response.usage else 0,
-            thinking=thinking_content,
+            thinking=thinking_text,
+            thinking_blocks=thinking_blocks,
             cache_read_tokens=response.usage.cache_read_input_tokens
             if hasattr(response.usage, "cache_read_input_tokens")
             else 0,
@@ -174,22 +213,16 @@ class AnthropicBackend(TrelixChatClient):
         if self._client is None:
             yield "[trelix] Anthropic not configured — set ANTHROPIC_API_KEY."
             return
+        self._warn_if_temperature_given(temperature)
         sys_prompt, user_msgs = self._extract_system(messages, system)
         kwargs: dict[str, Any] = {}
         if sys_prompt:
             kwargs["system"] = sys_prompt
-        # Thinking requires temperature=1.0
-        effective_temp = (
-            1.0
-            if thinking
-            else (temperature if temperature is not None else self._config.temperature)
-        )
         kwargs.update(self._thinking_kwargs(thinking))
         manager, stream = self._open_stream(
             model=self._model,
             messages=user_msgs,
             max_tokens=max_tokens or self._config.max_tokens,
-            temperature=effective_temp,
             **kwargs,
         )
         try:

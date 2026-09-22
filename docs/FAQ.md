@@ -1,4 +1,4 @@
-# trelix v3.2.5 — Frequently Asked Questions
+# trelix v3.3.5 — Frequently Asked Questions
 
 > Last updated: 2026-08-17 — covers trelix 3.1.5, trelix-mcp 3.1.5, trelix-langchain 3.1.5, and trelix-llama-index 3.1.5.
 
@@ -71,7 +71,7 @@ TRELIX_STORE_BACKEND=qdrant trelix index ./my-repo  # Qdrant (set QDRANT_URL too
 
 ### Does trelix work on Windows, macOS, and Linux?
 
-Yes. trelix is a Python package and runs on any OS that supports Python 3.11+. Standalone binaries are provided for **macOS ARM64**, **Windows x64**, and **Linux x64** on the GitHub Release page. `pip install trelix` also works on all three.
+Yes. trelix is a Python package and runs on any OS that supports Python 3.12+. Standalone binaries are provided for **macOS ARM64**, **Windows x64**, and **Linux x64** on the GitHub Release page. `pip install trelix` also works on all three.
 
 macOS users can also install via Homebrew:
 ```bash
@@ -429,14 +429,14 @@ This prevents the silent wrong-results bug that previously occurred when users s
 
 `flare_max_retries` is the v2.4.0 rename of the `flare_max_iterations` config field in `RetrievalConfig`. FLARE (Forward-Looking Active REtrieval) is the confidence-gated re-retrieval feature that detects low-confidence synthesis spans and re-queries before finalising the answer.
 
-Both the old and new environment variable names are accepted for backward compatibility:
+Only the new environment variable name is recognized as of v3.3.0 — the old name was removed, not just deprecated:
 
 ```bash
-TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=2   # new name (preferred)
-TRELIX_RETRIEVAL_FLARE_MAX_ITER=2      # old name (emits DeprecationWarning; removed in v4.0.0)
+TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=2   # the only name that binds
+TRELIX_RETRIEVAL_FLARE_MAX_ITER=2      # removed in v3.3.0 — silently ignored, no warning
 ```
 
-**Important constraint added in v2.4.0:** The field now enforces `ge=1, le=3`. If you previously set `TRELIX_RETRIEVAL_FLARE_MAX_ITER` to a value greater than 3 (for example, 5 or 10), you must lower it to 3 or below before upgrading. Otherwise pydantic raises `ValidationError` at process startup:
+**Important constraint added in v2.4.0:** The field now enforces `ge=1, le=3`. If you previously set `TRELIX_RETRIEVAL_FLARE_MAX_ITER` to a value greater than 3 (for example, 5 or 10), that value no longer applies at all as of v3.3.0 — switch to `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` (still bounded `ge=1, le=3`, so values above 3 still raise `ValidationError` at process startup):
 
 ```
 pydantic_core.ValidationError: 1 validation error for RetrievalConfig
@@ -524,7 +524,7 @@ See the detailed answer in [MCP and Integrations](#what-changed-in-search_code-i
 ### Is trelix suitable for production use?
 
 Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
-- 1,703 tests (1,621 unit + 82 MCP) at 100% pass rate on Python 3.11, 3.12, and 3.13.
+- 1,703 tests (1,621 unit + 82 MCP) at 100% pass rate on Python 3.12, 3.13, and 3.14.
 - `mypy --strict` clean.
 - `ruff` lint and format clean.
 - No hardcoded secrets; all credentials sourced from environment variables.
@@ -536,10 +536,10 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 So pin all four to the same version in your `requirements.txt`:
 
 ```
-trelix==3.2.5
-trelix-mcp==3.2.5
-trelix-langchain==3.2.5
-trelix-llama-index==3.2.5
+trelix==3.3.5
+trelix-mcp==3.3.5
+trelix-langchain==3.3.5
+trelix-llama-index==3.3.5
 ```
 
 The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.1.5 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.1.5 resolving against core 3.0.0 is supported and intended — the four-way 3.1.5 pin above is the combination CI installs and tests, not the only one that works.

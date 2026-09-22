@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
+from trelix.llm.client import (
+    ChatMessage,
+    ChatResponse,
+    ThinkingBlock,
+    ToolCallResponse,
+    TrelixChatClient,
+)
 
 
 class TestDataclasses:
@@ -17,6 +23,8 @@ class TestDataclasses:
         r = ChatResponse(content="hi", model="gpt-4o", finish_reason="stop")
         assert r.input_tokens == 0
         assert r.output_tokens == 0
+        assert r.thinking is None
+        assert r.thinking_blocks == []
 
     def test_chat_response_full(self) -> None:
         r = ChatResponse(
@@ -29,6 +37,43 @@ class TestDataclasses:
         t = ToolCallResponse(tool_name="fn", tool_arguments={"x": 1}, raw_response=None)
         assert t.tool_name == "fn"
         assert t.tool_arguments == {"x": 1}
+
+
+class TestThinkingBlock:
+    """Field names mirror litellm's ChatCompletionThinkingBlock/
+    ChatCompletionRedactedThinkingBlock TypedDicts (litellm/types/llms/openai.py) for
+    interop: trelix normalizes Anthropic's thinking/redacted_thinking blocks and Bedrock
+    Converse's reasoningContent block into this one shape.
+    """
+
+    def test_thinking_block_carries_text_and_signature(self) -> None:
+        block = ThinkingBlock(type="thinking", thinking="because X implies Y", signature="sig123")
+        assert block.type == "thinking"
+        assert block.thinking == "because X implies Y"
+        assert block.signature == "sig123"
+        assert block.data is None
+
+    def test_redacted_thinking_block_carries_only_data(self) -> None:
+        block = ThinkingBlock(type="redacted_thinking", data="opaque-blob")
+        assert block.type == "redacted_thinking"
+        assert block.data == "opaque-blob"
+        assert block.thinking is None
+        assert block.signature is None
+
+    def test_chat_response_thinking_blocks_accepts_a_list(self) -> None:
+        blocks = [
+            ThinkingBlock(type="thinking", thinking="step 1", signature="sig1"),
+            ThinkingBlock(type="redacted_thinking", data="blob"),
+        ]
+        r = ChatResponse(
+            content="answer",
+            model="claude-sonnet",
+            finish_reason="stop",
+            thinking="step 1",
+            thinking_blocks=blocks,
+        )
+        assert r.thinking == "step 1"
+        assert r.thinking_blocks == blocks
 
 
 class TestTrelixChatClientABC:
@@ -110,3 +155,14 @@ class TestLLMConfig:
         monkeypatch.setenv("TRELIX_LLM_PROVIDER", "anthropic")
         cfg = LLMConfig(_env_file=None)  # type: ignore[call-arg]
         assert cfg.provider == "anthropic"
+
+    def test_aws_region_defaults_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """anthropic-sdk-python v1.0.0 made AnthropicBedrock raise if no region is
+        configured, instead of silently defaulting to us-east-1 — BedrockBackend
+        now matches that posture (see test_llm_bedrock_backend.py) rather than
+        silently picking a region the caller never chose."""
+        from trelix.core.config import LLMConfig
+
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        cfg = LLMConfig(_env_file=None)  # type: ignore[call-arg]
+        assert cfg.aws_region is None
