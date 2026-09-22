@@ -40,6 +40,7 @@ import pytest  # noqa: E402 - must follow the env vars above
 from tests._env_isolation import (  # noqa: E402
     apply_env_isolation,
     disable_litellm_dotenv_autoload,
+    neutralize_operator_env_file,
     scrub_operator_env,
 )
 
@@ -84,6 +85,12 @@ def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     Order matters: `apply_env_isolation` SETS `TRELIX_*` names and the scrub DELETES every
     `TRELIX_*` name, so scrubbing second would undo the pins.
 
+    `neutralize_operator_env_file` closes a third, independent channel that the
+    `os.environ`-based scrub above cannot reach: `config.py`'s settings classes read the
+    operator's dotenv FILE directly (`OPERATOR_ENV_FILE`), bypassing `os.environ` entirely.
+    See its docstring in tests/_env_isolation.py for why this is a separate function rather
+    than folded into `scrub_operator_env`.
+
     Only tests/unit does this. tests/integration and tests/eval exist to reach live Azure
     and Bedrock and read those very credentials, so applying the scrub to the shared helper
     would "fix" the hermetic suite by breaking the two that are supposed to see operator
@@ -91,6 +98,7 @@ def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     omission.
     """
     scrub_operator_env(monkeypatch)
+    neutralize_operator_env_file(monkeypatch)
     apply_env_isolation(monkeypatch)
 
 

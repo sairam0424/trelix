@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import inspect
 import os
+from pathlib import Path
 
 import pytest
 from pydantic_settings import BaseSettings
@@ -54,6 +55,7 @@ from tests import _env_isolation
 from tests._env_isolation import (
     CONFIG_NON_PREFIXED_ENV,
     SCRUB_PREFIXES,
+    neutralize_operator_env_file,
     scrub_operator_env,
 )
 from trelix.core import config as config_module
@@ -314,6 +316,39 @@ def test_scrub_removes_a_planted_provider_leak(monkeypatch: pytest.MonkeyPatch) 
     )
     declared_left = sorted(k for k in os.environ if k.upper() in declared_azure)
     assert declared_left == [], f"the scrub left declared Azure aliases in place: {declared_left}"
+
+
+def test_neutralize_operator_env_file_removes_a_planted_file_leak(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``neutralize_operator_env_file`` closes the channel ``scrub_operator_env``
+    cannot reach: pydantic-settings' dotenv-FILE source (``OPERATOR_ENV_FILE``),
+    which is read independently of ``os.environ`` and therefore survives it.
+
+    Self-contained: plants a real file and points ``EmbedderConfig.model_config``
+    at it directly, rather than relying on a real ``~/.config/trelix/env`` (or
+    ``$TRELIX_CONFIG_FILE``) existing on the machine -- so this discriminates on
+    a clean checkout and in CI too. That file existing on a developer's machine
+    is exactly how this channel was originally found: `scrub_operator_env` alone
+    left `EmbedderConfig().provider == "azure"` there even with every
+    `TRELIX_*`/`AZURE_*` name absent from `os.environ`.
+
+    MUTATION that must make this fail: make ``neutralize_operator_env_file`` a
+    no-op ``return``.
+    """
+    leak_file = tmp_path / "operator-env"
+    leak_file.write_text("TRELIX_EMBEDDER_PROVIDER=azure\n", encoding="utf-8")
+
+    from trelix.core.config import EmbedderConfig
+
+    monkeypatch.setitem(EmbedderConfig.model_config, "env_file", leak_file)
+
+    # Precondition: the plant took, so the assertion below has something to remove.
+    assert EmbedderConfig().provider == "azure", "the planted file leak did not take effect"
+
+    neutralize_operator_env_file(monkeypatch)
+
+    assert EmbedderConfig().provider == "local"
 
 
 def test_scrub_does_not_touch_unrelated_env(monkeypatch: pytest.MonkeyPatch) -> None:
