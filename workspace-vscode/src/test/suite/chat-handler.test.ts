@@ -11,7 +11,8 @@ import { TrelixMcpClient } from "../../mcp-client";
 type Recorded =
     | { kind: "progress"; value: string }
     | { kind: "markdown"; value: string }
-    | { kind: "reference"; value: vscode.Uri | vscode.Location };
+    | { kind: "reference"; value: vscode.Uri | vscode.Location }
+    | { kind: "anchor"; value: vscode.Uri | vscode.Location; title?: string };
 
 /** Fake stream that records every call in order — mirrors the real stream's shape. */
 class FakeStream implements ChatStream {
@@ -25,11 +26,19 @@ class FakeStream implements ChatStream {
     reference(value: vscode.Uri | vscode.Location): void {
         this.calls.push({ kind: "reference", value });
     }
+    anchor(value: vscode.Uri | vscode.Location, title?: string): void {
+        this.calls.push({ kind: "anchor", value, title });
+    }
     kinds(): string[] {
         return this.calls.map((c) => c.kind);
     }
     references(): Recorded[] {
         return this.calls.filter((c) => c.kind === "reference");
+    }
+    anchors(): Array<Recorded & { kind: "anchor" }> {
+        return this.calls.filter(
+            (c): c is Recorded & { kind: "anchor" } => c.kind === "anchor",
+        );
     }
     markdownText(): string {
         return this.calls
@@ -143,8 +152,101 @@ suite("createTrelixChatHandler", () => {
             2,
             "one reference per result",
         );
-        assert.ok(stream.markdownText().includes("validate_token"));
-        assert.ok(stream.markdownText().includes("issue_token"));
+        // Symbol names are now inline anchors (see the dedicated anchor test
+        // below), not plain text inside the markdown blob — the surrounding
+        // list formatting still is.
+        assert.ok(stream.markdownText().includes("src/auth.py:10-25"));
+        assert.ok(stream.markdownText().includes("src/auth.py:30-40"));
+    });
+
+    test("/search emits one anchor per result, linking the inline symbol mention to its Location", async () => {
+        const fakeClient = {
+            search: async () => ({
+                results: [
+                    {
+                        symbol: "validate_token",
+                        file: "src/auth.py",
+                        kind: "function",
+                        lines: "10-25",
+                        score: 0.9,
+                        source: "vector",
+                        body: "",
+                        language: "python",
+                    },
+                    {
+                        symbol: "issue_token",
+                        file: "src/auth.py",
+                        kind: "function",
+                        lines: "30-40",
+                        score: 0.8,
+                        source: "bm25",
+                        body: "",
+                        language: "python",
+                    },
+                ],
+                nextCursor: null,
+                totalAvailable: 2,
+            }),
+        } as unknown as TrelixMcpClient;
+
+        const handler = createTrelixChatHandler({
+            getClient: async () => fakeClient,
+            getRepoPath: DEPS_REPO,
+        });
+        const stream = new FakeStream();
+
+        await handler(
+            request({ prompt: "token", command: "search" }),
+            ctx([]),
+            stream,
+            NO_CANCEL,
+        );
+
+        const anchors = stream.anchors();
+        assert.strictEqual(anchors.length, 2, "one anchor per result");
+        assert.deepStrictEqual(
+            anchors.map((a) => a.title),
+            ["validate_token", "issue_token"],
+            "each anchor's title should be the symbol it links to",
+        );
+        for (const a of anchors) {
+            assert.ok(
+                a.value instanceof vscode.Location,
+                "each anchor should carry a Location, not a bare Uri",
+            );
+        }
+    });
+
+    test("/impact emits one anchor per dependent, linking the inline symbol mention to its Location", async () => {
+        const fakeClient = {
+            blastRadius: async () => [
+                {
+                    file: "src/caller.py",
+                    symbol: "caller",
+                    kind: "function",
+                    lineStart: 42,
+                    language: "python",
+                },
+            ],
+        } as unknown as TrelixMcpClient;
+
+        const handler = createTrelixChatHandler({
+            getClient: async () => fakeClient,
+            getRepoPath: DEPS_REPO,
+        });
+        const stream = new FakeStream();
+
+        await handler(
+            request({ prompt: "validate_token", command: "impact" }),
+            ctx([]),
+            stream,
+            NO_CANCEL,
+        );
+
+        const anchors = stream.anchors();
+        assert.strictEqual(anchors.length, 1, "one anchor per dependent");
+        assert.strictEqual(anchors[0].title, "caller");
+        assert.ok(anchors[0].value instanceof vscode.Location);
     });
 
     test("a thrown client error is rendered as markdown and never rejects", async () => {

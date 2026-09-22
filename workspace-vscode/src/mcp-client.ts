@@ -55,10 +55,20 @@ export class TrelixMcpClient {
     private client: Client | null = null;
     private transport: StdioClientTransport | null = null;
 
+    constructor(private readonly serverCommand: string = "trelix-mcp") {}
+
     async connect(): Promise<void> {
         this.transport = new StdioClientTransport({
-            command: "trelix-mcp",
+            command: this.serverCommand,
             args: [],
+            // StdioClientTransport's own default only inherits HOME/LOGNAME/
+            // PATH/SHELL/TERM/USER (see @modelcontextprotocol/sdk's
+            // getDefaultEnvironment) -- a user's OPENAI_API_KEY, VOYAGE_API_KEY,
+            // or any TRELIX_* override in their shell/.env would silently never
+            // reach this process without this override, so provider selection
+            // here can disagree with what `trelix` resolves to on the command
+            // line for the exact same repo.
+            env: process.env as Record<string, string>,
         });
         this.client = new Client(
             { name: "trelix-vscode", version: "0.1.0" },
@@ -87,6 +97,10 @@ export class TrelixMcpClient {
         });
         const content = result.content as Array<{ type: string; text: string }>;
         const text = content.find((c) => c.type === "text")?.text ?? "{}";
+        // FastMCP returns a human-readable "Error calling tool ...: <message>"
+        // string here on failure, not JSON -- JSON.parse-ing it unconditionally
+        // crashes the extension host instead of surfacing the real error.
+        if (result.isError) throw new Error(text);
         const parsed = JSON.parse(text) as {
             results?: Array<{
                 symbol?: string;
@@ -137,6 +151,7 @@ export class TrelixMcpClient {
         });
         const content = result.content as Array<{ type: string; text: string }>;
         const text = content.find((c) => c.type === "text")?.text ?? "null";
+        if (result.isError) throw new Error(text);
         const parsed = JSON.parse(text) as {
             name?: string;
             qualified_name?: string;
@@ -184,6 +199,7 @@ export class TrelixMcpClient {
         });
         const content = result.content as Array<{ type: string; text: string }>;
         const text = content.find((c) => c.type === "text")?.text ?? "{}";
+        if (result.isError) throw new Error(text);
         const parsed = JSON.parse(text) as {
             answer?: string;
             session_id?: string;
@@ -214,6 +230,7 @@ export class TrelixMcpClient {
         });
         const content = result.content as Array<{ type: string; text: string }>;
         const text = content.find((c) => c.type === "text")?.text ?? "[]";
+        if (result.isError) throw new Error(text);
         const parsed = JSON.parse(text) as Array<{
             file?: string;
             symbol?: string;

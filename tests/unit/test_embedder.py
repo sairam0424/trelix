@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +15,8 @@ from trelix.embedder.base import (
     REMOTE_MODEL_CODE_ENV_VAR,
     AzureOpenAIEmbedder,
     BaseEmbedder,
+    BatchJobIncompleteError,
+    BatchJobTerminalError,
     BedrockCohereEmbedder,
     BedrockTitanEmbedder,
     LocalCodeEmbedder,
@@ -22,6 +25,7 @@ from trelix.embedder.base import (
     VoyageEmbedder,
     make_embedder,
 )
+from trelix.embedder.cohere import CohereEmbedder
 
 
 def _status_error(status_code: int) -> openai.APIStatusError:
@@ -179,6 +183,182 @@ class TestOpenAIEmbedder:
         result = embedder.embed_query("search query")
         assert isinstance(result, list)
         assert len(result) == 3072
+
+
+# ---------------------------------------------------------------------------
+# OpenAIEmbedder — Batch API (submit_batch / poll_batch)
+#
+# The OpenAI Batch API (24h completion window, 50% cost discount) is
+# architecturally distinct from the ordinary request batching embed() already
+# does via config.batch_size — it is trelix's first long-running external job
+# pattern: submit a job, poll it later, retrieve results from an output file.
+# Scoped to OpenAIEmbedder only — voyageai==0.5.0's Client has no batch-job
+# mechanism at all (verified against the installed SDK), so VoyageEmbedder is
+# deliberately untouched.
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIEmbedderBatchAPI:
+    def test_submit_batch_returns_job_id(self) -> None:
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.files.create.return_value = MagicMock(id="file_xyz")
+            mock_client.batches.create.return_value = MagicMock(id="batch_xyz")
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            job_id = embedder.submit_batch(["def foo(): pass", "def bar(): pass"])
+
+        assert job_id == "batch_xyz"
+        mock_client.batches.create.assert_called_once()
+
+        # The input file must be JSONL, one line per text, custom_id = index,
+        # each line a full /v1/embeddings request body — OpenAI's documented
+        # batch input format.
+        uploaded_file = mock_client.files.create.call_args.kwargs["file"]
+        uploaded_lines = uploaded_file.getvalue().decode("utf-8").strip().split("\n")
+        assert len(uploaded_lines) == 2
+        first = json.loads(uploaded_lines[0])
+        assert first == {
+            "custom_id": "0",
+            "method": "POST",
+            "url": "/v1/embeddings",
+            "body": {
+                "model": config.openai_model,
+                "input": "def foo(): pass",
+                "dimensions": config.openai_dimensions,
+            },
+        }
+        assert mock_client.files.create.call_args.kwargs["purpose"] == "batch"
+
+        create_kwargs = mock_client.batches.create.call_args.kwargs
+        assert create_kwargs["completion_window"] == "24h"
+        assert create_kwargs["endpoint"] == "/v1/embeddings"
+        assert create_kwargs["input_file_id"] == "file_xyz"
+
+    def test_poll_batch_returns_none_while_processing(self) -> None:
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(status="in_progress")
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            assert embedder.poll_batch("batch_xyz") is None
+
+        mock_client.batches.retrieve.assert_called_once_with("batch_xyz")
+
+    def test_poll_batch_returns_vectors_when_completed(self) -> None:
+        """Output file lines are not guaranteed to preserve input order, so
+        poll_batch() must re-sort on custom_id — this test deliberately
+        supplies the completed-job lines out of order to prove that."""
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(
+                status="completed", output_file_id="file_out_123"
+            )
+            jsonl_lines = "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "custom_id": "1",
+                            "response": {"body": {"data": [{"embedding": [0.2] * 3072}]}},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "custom_id": "0",
+                            "response": {"body": {"data": [{"embedding": [0.1] * 3072}]}},
+                        }
+                    ),
+                ]
+            )
+            mock_client.files.content.return_value = MagicMock(text=jsonl_lines)
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            vectors = embedder.poll_batch("batch_xyz")
+
+        assert vectors == [[0.1] * 3072, [0.2] * 3072]
+        mock_client.files.content.assert_called_once_with("file_out_123")
+
+    def test_poll_batch_raises_on_failed_status(self) -> None:
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(status="failed")
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            with pytest.raises(BatchJobTerminalError, match="failed"):
+                embedder.poll_batch("batch_xyz")
+
+    def test_poll_batch_raises_incomplete_error_when_a_request_failed(self) -> None:
+        """OpenAI can report overall status "completed" while an individual
+        request inside the batch failed -- its output line has response=None
+        rather than embedding data. A positional zip downstream would silently
+        mis-pair every later chunk with the wrong vector, so poll_batch must
+        raise loudly instead of returning a short/wrong list."""
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(
+                status="completed", output_file_id="file_out_123"
+            )
+            jsonl_lines = "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "custom_id": "0",
+                            "response": {"body": {"data": [{"embedding": [0.1] * 3072}]}},
+                        }
+                    ),
+                    json.dumps({"custom_id": "1", "response": None, "error": {"code": "x"}}),
+                ]
+            )
+            mock_client.files.content.return_value = MagicMock(text=jsonl_lines)
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            with pytest.raises(BatchJobIncompleteError, match="1/2"):
+                embedder.poll_batch("batch_xyz", expected_count=2)
+
+    def test_poll_batch_raises_incomplete_error_when_count_short_but_no_response_null(
+        self,
+    ) -> None:
+        """Even if no line explicitly has response=None, a short output file
+        (e.g. a failed request landed only in error_file_id, never in
+        output_file_id at all) must still be caught via expected_count."""
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(
+                status="completed", output_file_id="file_out_123"
+            )
+            jsonl_lines = json.dumps(
+                {
+                    "custom_id": "0",
+                    "response": {"body": {"data": [{"embedding": [0.1] * 3072}]}},
+                }
+            )
+            mock_client.files.content.return_value = MagicMock(text=jsonl_lines)
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            with pytest.raises(BatchJobIncompleteError, match="1/3"):
+                embedder.poll_batch("batch_xyz", expected_count=3)
+
+    def test_poll_batch_raises_incomplete_error_when_output_file_id_is_none(self) -> None:
+        """OpenAI can report status "completed" with output_file_id=None when
+        every request in the batch failed -- must not crash on a None file id
+        or silently return an empty list."""
+        config = EmbedderConfig(provider="openai", openai_api_key=_FAKE_OPENAI_KEY)
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_client.batches.retrieve.return_value = MagicMock(
+                status="completed", output_file_id=None
+            )
+            mock_openai_cls.return_value = mock_client
+            embedder = OpenAIEmbedder(config)
+            with pytest.raises(BatchJobIncompleteError):
+                embedder.poll_batch("batch_xyz", expected_count=1)
+            mock_client.files.content.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +526,23 @@ class TestLocalEmbedder:
         result = embedder.embed_query("a single query")
         assert isinstance(result, list)
         assert len(result) == 384
+
+    def test_pins_device_to_cpu_rather_than_auto_detecting(self) -> None:
+        """MPS auto-detection crashes when this embedder is constructed inside a
+        child process spawned deep inside a sandboxed host (e.g. an Electron
+        extension host spawning trelix-mcp over stdio) -- the crash is native,
+        so it never surfaces as a catchable Python exception, only a closed
+        pipe. device="cpu" must always be passed explicitly, never left to
+        sentence-transformers' own auto-detection."""
+        config = EmbedderConfig(provider="local")
+        mock_st_module = MagicMock()
+        mock_model = MagicMock()
+        mock_model.get_sentence_embedding_dimension.return_value = 384
+        mock_st_module.SentenceTransformer.return_value = mock_model
+        with patch.dict(sys.modules, {"sentence_transformers": mock_st_module}):
+            LocalEmbedder(config)
+        call_kwargs = mock_st_module.SentenceTransformer.call_args
+        assert call_kwargs.kwargs.get("device") == "cpu"
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +1073,136 @@ class TestBedrockCohereEmbedder:
 
 
 # ---------------------------------------------------------------------------
+# CohereEmbedder — direct Cohere API (cohere.ClientV2), not the Bedrock envelope
+# ---------------------------------------------------------------------------
+
+_FAKE_COHERE_KEY = "cohere-test-key-not-real"
+
+
+class TestCohereEmbedder:
+    """Tests for the direct Cohere API embedder (cohere.ClientV2)."""
+
+    def _make_response(self, dim: int = 1024, n: int = 1, tokens: float | None = 7.0) -> MagicMock:
+        response = MagicMock()
+        response.embeddings.float_ = [[0.1] * dim for _ in range(n)]
+        response.meta.billed_units.input_tokens = tokens
+        return response
+
+    def _make_client_mock(self, dim: int = 1024, n: int = 1) -> MagicMock:
+        mock_client = MagicMock()
+        mock_client.embed.return_value = self._make_response(dim, n)
+        return mock_client
+
+    def _make(self, dim: int = 1024) -> tuple[CohereEmbedder, MagicMock]:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        mock_client = self._make_client_mock(dim)
+        with patch("trelix.embedder.cohere.ClientV2", return_value=mock_client):
+            embedder = CohereEmbedder(config)
+        return embedder, mock_client
+
+    def test_is_base_embedder(self) -> None:
+        embedder, _ = self._make()
+        assert isinstance(embedder, BaseEmbedder)
+
+    def test_dimension_property_returns_configured_dimensions(self) -> None:
+        config = EmbedderConfig(
+            provider="cohere", cohere_api_key=_FAKE_COHERE_KEY, cohere_dimensions=999
+        )
+        mock_client = self._make_client_mock(dim=999)
+        with patch("trelix.embedder.cohere.ClientV2", return_value=mock_client):
+            embedder = CohereEmbedder(config)
+        assert embedder.dimension == 999
+
+    def test_embed_uses_search_document_input_type_and_float_embedding_type(self) -> None:
+        embedder, mock_client = self._make()
+        embedder.embed(["def foo(): pass"])
+        mock_client.embed.assert_called_once()
+        call_kwargs = mock_client.embed.call_args.kwargs
+        assert call_kwargs["input_type"] == "search_document"
+        assert call_kwargs["embedding_types"] == ["float"]
+        assert call_kwargs["texts"] == ["def foo(): pass"]
+
+    def test_embed_query_uses_search_query_input_type(self) -> None:
+        embedder, mock_client = self._make()
+        embedder.embed_query("find all async functions")
+        mock_client.embed.assert_called_once()
+        call_kwargs = mock_client.embed.call_args.kwargs
+        assert call_kwargs["input_type"] == "search_query"
+
+    def test_embed_returns_vectors_from_response_embeddings_float(self) -> None:
+        embedder, mock_client = self._make()
+        mock_client.embed.return_value = self._make_response(dim=1024, n=2)
+        result = embedder.embed(["hello", "world"])
+        assert len(result) == 2
+        assert all(len(v) == 1024 for v in result)
+
+    def test_embed_query_returns_single_vector(self) -> None:
+        embedder, mock_client = self._make()
+        mock_client.embed.return_value = self._make_response(dim=1024, n=1)
+        result = embedder.embed_query("search query")
+        assert isinstance(result, list)
+        assert len(result) == 1024
+
+    def test_large_batch_splits_at_96(self) -> None:
+        """Mirrors BedrockCohereEmbedder's real client-side 96-text batch limit."""
+        embedder, mock_client = self._make()
+
+        def _side_effect(**kwargs: object) -> MagicMock:
+            texts = kwargs["texts"]
+            assert isinstance(texts, list)
+            return self._make_response(dim=1024, n=len(texts))
+
+        mock_client.embed.side_effect = _side_effect
+        texts = [f"text {i}" for i in range(200)]
+        embedder.embed(texts)
+        # 200 texts → ceil(200/96) = 3 calls
+        assert mock_client.embed.call_count == 3
+
+    def test_factory_returns_cohere_embedder(self) -> None:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        mock_client = self._make_client_mock()
+        with patch("trelix.embedder.cohere.ClientV2", return_value=mock_client):
+            embedder = make_embedder(config)
+        assert isinstance(embedder, CohereEmbedder)
+
+    def test_import_error_with_helpful_message_if_cohere_missing(self) -> None:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        with patch("trelix.embedder.cohere.ClientV2", None):
+            with pytest.raises(ImportError, match="pip install"):
+                CohereEmbedder(config)
+
+    def test_effective_dimension_in_config(self) -> None:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        assert config.effective_dimension == 1024
+
+    def test_default_model_and_dimensions(self) -> None:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        assert config.cohere_model == "embed-english-v3.0"
+        assert config.cohere_dimensions == 1024
+
+    def test_embed_records_billed_input_tokens(self) -> None:
+        """Token metering reads response.meta.billed_units.input_tokens (Cohere's
+        own usage shape) rather than base.py's _usage_tokens() (which reads
+        response.usage.total_tokens / response.total_tokens and does not apply
+        here)."""
+        embedder, mock_client = self._make()
+        mock_client.embed.return_value = self._make_response(dim=1024, n=1, tokens=42.0)
+        with (
+            patch("trelix.embedder.base.otel_tracing.metrics_enabled", return_value=True),
+            patch("trelix.embedder.base.otel_tracing.record_embedding_call") as mock_record,
+        ):
+            embedder.embed(["hello"])
+        mock_record.assert_called_once()
+        assert mock_record.call_args.kwargs["tokens"] == 42
+
+    def test_import_error_message_names_cohere_extra(self) -> None:
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        with patch("trelix.embedder.cohere.ClientV2", None):
+            with pytest.raises(ImportError, match=r"trelix\[cohere\]"):
+                CohereEmbedder(config)
+
+
+# ---------------------------------------------------------------------------
 # Shared retry contract — sync + true-async remote embedder paths
 # ---------------------------------------------------------------------------
 
@@ -969,6 +1296,32 @@ class TestEmbedderRetryContract:
 
         assert result == [0.1, 0.2]
 
+    def test_cohere_embed_retries_on_real_too_many_requests_error_then_succeeds(self) -> None:
+        """The installed cohere==7.1.1 SDK does NOT raise httpx.HTTPStatusError
+        for API errors — it raises typed subclasses of
+        cohere.core.api_error.ApiError with a plain `.status_code` int
+        attribute. Must retry like any other 429-shaped failure. Uses a REAL
+        cohere.errors.TooManyRequestsError (not a MagicMock) because a
+        MagicMock instance would pass isinstance checks it shouldn't and
+        mask this exact bug."""
+        cohere_errors = pytest.importorskip("cohere.errors")
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        mock_client = MagicMock()
+        success = MagicMock()
+        success.embeddings.float_ = [[0.1] * 1024]
+        success.meta.billed_units.input_tokens = 7.0
+        throttled = cohere_errors.TooManyRequestsError(body={"message": "rate limited"})
+        mock_client.embed.side_effect = [throttled, success]
+
+        with patch("trelix.embedder.cohere.ClientV2", return_value=mock_client):
+            embedder = CohereEmbedder(config)
+
+        with patch("tenacity.nap.time.sleep"):
+            result = embedder.embed_query("hello")
+
+        assert result == [0.1] * 1024
+        assert mock_client.embed.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # Embedder client retry configuration — SDK's own retry must be disabled
@@ -1010,3 +1363,16 @@ class TestEmbedderClientRetryConfiguration:
         embedder = BedrockCohereEmbedder(config)
         retries = embedder._client.meta.config.retries
         assert retries["total_max_attempts"] == 1
+
+    def test_cohere_embedder_client_has_sdk_retries_disabled(self) -> None:
+        """cohere's base_client.py defaults max_retries to 2 when the caller
+        doesn't pass it (`_defaulted_max_retries = max_retries if max_retries
+        is not None else 2`) — CohereEmbedder must pass max_retries=0
+        explicitly so it isn't stacked underneath @with_retry's 5-attempt
+        tenacity loop. Real SDK client, no mocking, so this proves what
+        config actually reaches the client — the exact class of test whose
+        absence for Cohere let this gap through."""
+        pytest.importorskip("cohere")
+        config = EmbedderConfig(provider="cohere", cohere_api_key=_FAKE_COHERE_KEY)
+        embedder = CohereEmbedder(config)
+        assert embedder._client._client_wrapper.get_max_retries() == 0

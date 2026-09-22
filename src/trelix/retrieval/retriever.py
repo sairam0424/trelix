@@ -42,6 +42,7 @@ from .bm25 import bm25_search
 from .fusion import reciprocal_rank_fusion
 from .graph import (
     expand_with_call_graph,
+    expand_with_dataflow,
     expand_with_imports,
     expand_with_type_edges,
     seed_from_import_paths,
@@ -813,6 +814,22 @@ class Retriever:
                 except Exception as exc:
                     logger.warning("Graph search leg failed (non-fatal): %s", exc)
 
+            # Dataflow expansion leg (optional — CodeRAG-style def-use/call-site
+            # correlation, off by default). QUERY-TIME only: reuses def_use_edges
+            # already written by DataFlowExtractor at index time (see
+            # ParserConfig.dataflow_enabled) — degrades to [] non-fatally when
+            # that data doesn't exist, same as the graph_search leg above.
+            dataflow_expanded: list[SearchResult] = []
+            if cfg.dataflow_expansion_enabled:
+                try:
+                    dataflow_expanded = expand_with_dataflow(
+                        self.db,
+                        top,
+                        max_extra=cfg.dataflow_expansion_max_extra,
+                    )
+                except Exception as exc:
+                    logger.warning("Dataflow expansion leg failed (non-fatal): %s", exc)
+
             candidates = self._dedup(
                 fused
                 + call_expanded
@@ -820,17 +837,19 @@ class Retriever:
                 + type_expanded
                 + import_path_seeded
                 + graph_search_results
+                + dataflow_expanded
             )
 
             logger.info(
                 "Post-expansion candidates: fused=%d call_exp=%d import_exp=%d "
-                "type_exp=%d path_seed=%d graph_search=%d total=%d",
+                "type_exp=%d path_seed=%d graph_search=%d dataflow_exp=%d total=%d",
                 len(fused),
                 len(call_expanded),
                 len(import_expanded),
                 len(type_expanded),
                 len(import_path_seeded),
                 len(graph_search_results),
+                len(dataflow_expanded),
                 len(candidates),
             )
 
@@ -842,6 +861,7 @@ class Retriever:
                     "import_expanded": len(import_expanded),
                     "type_expanded": len(type_expanded),
                     "import_path_seeded": len(import_path_seeded),
+                    "dataflow_expanded": len(dataflow_expanded),
                     "total_candidates": len(candidates),
                     "import_strategy": {
                         "depth": strategy.import_depth,
@@ -1575,12 +1595,49 @@ class Retriever:
     # ------------------------------------------------------------------
 
     def _dedup(self, results: list[SearchResult]) -> list[SearchResult]:
-        """Remove duplicate symbols, keeping highest score."""
-        seen: dict[int, SearchResult] = {}
+        """Remove duplicate discoveries of the same chunk, keeping highest score.
+
+        Keyed on `(file.path, chunk.symbol_id, chunk.id)`, matching
+        `fusion.py::_fusion_identity()` exactly, and for the same reason: this
+        runs immediately after `reciprocal_rank_fusion` on
+        `fused + call_expanded + import_expanded + ...` (see
+        `_standard_candidates`), so it is a second dedupe pass over fusion's
+        already-correct output plus several never-fused expansion tails. Before
+        the chunker split oversized symbols into multiple chunks (chunker.py's
+        `_split_chunk_text`), `symbol_id` alone was equivalent to
+        `(symbol_id, chunk.id)` -- one symbol, one chunk, always. It no longer
+        is: two distinct chunks of one split symbol now share a `symbol_id`,
+        and a bare-`symbol_id` key here silently collapsed them exactly the way
+        fusion.py's own docstring warns a second dedupe pass will -- found live,
+        by adversarial review, immediately downstream of the fusion.py fix for
+        this exact defect. `file.path` is included even though this method
+        only ever sees one repo's results (unlike fusion.py's federated
+        callers): defense in depth against the same EXE-02 cross-repo-collision
+        class this method's identity resembles, at zero cost if it never fires
+        cross-repo today.
+
+        `source == "sub_chunk"` results are the one deliberate exception,
+        collapsing on `(path, symbol_id)` alone instead -- MGS3's sub-chunk leg
+        emits one row per `sub_chunks` rowid, a finer-grained, overlapping VIEW
+        into a symbol the primary chunk already covers, not disjoint content
+        like a split primary chunk's pieces. This is not new here: it is the
+        exact, pre-existing, pinned contract this method already had
+        (`test_two_sub_chunks_of_one_symbol_collapse_to_a_single_row` in
+        `tests/unit/test_retriever_row_identity_and_leg_weights.py`), which the
+        first version of this fix broke by keying every source on chunk.id
+        uniformly -- caught by that test in CI, not by the adversarial review
+        that produced the first version (a real gap: none of that review's
+        test files exercised the sub_chunk leg through `_dedup`). Matches the
+        identical exception in `fusion.py::_fusion_identity()`, since
+        `sub_chunk_results` is one of the ranked lists fusion.py itself fuses,
+        before this method ever runs.
+        """
+        seen: dict[tuple[str, int, int | None], SearchResult] = {}
         for r in results:
-            sid = r.chunk.symbol_id
-            if sid not in seen or r.score > seen[sid].score:
-                seen[sid] = r
+            chunk_id = None if r.source == "sub_chunk" else r.chunk.id
+            identity = (r.file.path, r.chunk.symbol_id, chunk_id)
+            if identity not in seen or r.score > seen[identity].score:
+                seen[identity] = r
         return sorted(seen.values(), key=lambda x: x.score, reverse=True)
 
     def _assemble(

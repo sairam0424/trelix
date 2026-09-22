@@ -318,6 +318,7 @@ class EmbedderConfig(BaseSettings):
         "bedrock-cohere",
         "bge-code",
         "nomic-code",
+        "cohere",
     ] = "local"
 
     # ── OpenAI ───────────────────────────────────────────────────────────────
@@ -348,6 +349,27 @@ class EmbedderConfig(BaseSettings):
     # Matryoshka output dimension (voyage-code-3 supports 256/512/1024/2048).
     # None = use full voyage_dimensions. Set smaller for faster HNSW search.
     voyage_output_dimensions: int | None = None
+
+    # ── Cohere (direct API — cohere.ClientV2, not the Bedrock envelope) ──────
+    # Same COHERE_API_KEY alias as RetrievalConfig.cohere_api_key (the reranker,
+    # which calls raw HTTP, not this SDK — see retrieval/reranker.py). Deliberate:
+    # one Cohere account key covers both roles, and the two settings classes
+    # loading the same env var independently is how every other cross-cutting
+    # credential in this file already works (AWS_*, OPENAI_API_KEY are each read
+    # by more than one *Config class too).
+    cohere_api_key: str | None = Field(default=None, alias="COHERE_API_KEY")
+    cohere_model: str = "embed-english-v3.0"
+    # 1024, confirmed against the installed cohere==7.1.1 SDK's own bundled docs
+    # table (embed_jobs/client.py / raw_client.py: "- `embed-english-v3.0` : 1024"),
+    # not assumed from memory — the same discipline as the bge_code_dimensions /
+    # local_code_dimensions comments above. `output_dimension` (the knob that
+    # would change this) is only honoured by embed-v4-and-newer models per
+    # ClientV2.embed()'s own docstring, so it does not apply to this default
+    # model. `CohereEmbedder.dimension` returns this value directly (unlike
+    # e.g. LocalCodeEmbedder, which reads the loaded model first) — there is no
+    # loaded-model width to introspect here, since embed-english-v3.0's output
+    # width isn't configurable.
+    cohere_dimensions: int = 1024
 
     # ── Local-code (SFR-Embedding-Code-2B_R) ─────────────────────────────────
     local_code_model: str = "Salesforce/SFR-Embedding-Code-2B_R"
@@ -424,6 +446,8 @@ class EmbedderConfig(BaseSettings):
             return self.bge_code_dimensions
         if self.provider == "nomic-code":
             return self.nomic_code_dimensions
+        if self.provider == "cohere":
+            return self.cohere_dimensions
         return 384  # all-MiniLM-L6-v2
 
 
@@ -456,6 +480,22 @@ class StoreConfig(BaseSettings):
     qdrant_collection: str = Field(default="trelix", alias="QDRANT_COLLECTION")
     qdrant_prefer_grpc: bool = Field(default=False, alias="QDRANT_PREFER_GRPC")
     qdrant_timeout: float = Field(default=10.0, alias="QDRANT_TIMEOUT")
+
+    # Vector quantization (Qdrant backend only -- sqlite-vec is a flat exact scan,
+    # so quantization there would save storage/CPU but not buy the "faster
+    # approximate search" these numbers assume; scoped out of that backend).
+    # None (default) = unquantized, zero behavior change for existing deployments.
+    # Only takes effect for a collection created AFTER this is set -- see
+    # QdrantVectorStore._ensure_collection / recreate().
+    qdrant_quantization: Literal["int8", "binary"] | None = Field(
+        default=None, alias="QDRANT_QUANTIZATION"
+    )
+    # Re-checks quantized candidates against full-precision vectors at search time.
+    # Defaults True: without rescore, real recall does not match the int8
+    # (~99.99%) / binary (90-98%) recall numbers this feature exists to capture.
+    # Still user-overridable -- disabling it trades recall for the maximum
+    # possible speed gain, a real tradeoff some deployments may want.
+    qdrant_quantization_rescore: bool = Field(default=True, alias="QDRANT_QUANTIZATION_RESCORE")
 
     # ── LanceDB connection ───────────────────────────────────────────────────
     lance_uri: str = Field(default=".trelix/lance", alias="LANCE_URI")
@@ -708,6 +748,15 @@ class RetrievalConfig(BaseSettings):
     graph_search_enabled: bool = False  # Enable CodeGraph as 4th retrieval leg
     graph_search_depth: int = 2  # BFS depth for graph expansion
     graph_search_max_results: int = 15  # Max results from graph search leg
+
+    # Dataflow expansion leg (CodeRAG-style, off by default) — QUERY-TIME only:
+    # correlates a seed symbol's existing def_use_edges (see get_data_flows)
+    # against its resolved call sites to find callees a tracked variable is
+    # live across. NOT the same flag as ParserConfig.dataflow_enabled, which
+    # controls whether def_use_edges get WRITTEN at INDEX time — this leg is a
+    # no-op reader that returns [] if that indexing-time flag was ever off.
+    dataflow_expansion_enabled: bool = False
+    dataflow_expansion_max_extra: int = 10
 
     # File-summary retrieval leg (5th leg — RAPTOR-style, off by default)
     # Requires file_summaries_enabled=True at index time to have any summaries stored.
@@ -1624,6 +1673,17 @@ class IndexConfig(BaseSettings):
     telemetry_enabled: bool = Field(
         default=False,
         alias="TRELIX_TELEMETRY_ENABLED",
+    )
+
+    # Phase 3 strategy: submit chunks to the OpenAI Batch API (50% cheaper,
+    # 24h completion window) instead of embedding synchronously/concurrently
+    # in this run. Off by default — a 24h wait must be opt-in, never silently
+    # triggered, and it is only usable with an embedder that implements
+    # submit_batch/poll_batch (OpenAIEmbedder only; see Indexer.index()'s
+    # call-site guard).
+    use_batch_api: bool = Field(
+        default=False,
+        alias="TRELIX_USE_BATCH_API",
     )
 
     @field_validator("repo_path")

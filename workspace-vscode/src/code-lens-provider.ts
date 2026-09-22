@@ -1,5 +1,22 @@
+import * as path from "path";
 import * as vscode from "vscode";
 import { TrelixMcpClient, BlastRadiusEntry } from "./mcp-client";
+
+/** VS Code's built-in command that opens the native "Peek References" popup. */
+const SHOW_REFERENCES_COMMAND = "editor.action.showReferences";
+
+/** Resolve a blast-radius entry (1-indexed lineStart) into a Location the Peek popup can render. */
+function entryLocation(
+    entry: BlastRadiusEntry,
+    repoPath: string,
+): vscode.Location {
+    const abs = path.isAbsolute(entry.file)
+        ? entry.file
+        : path.join(repoPath, entry.file);
+    const uri = vscode.Uri.file(abs);
+    const line = Math.max(0, entry.lineStart - 1);
+    return new vscode.Location(uri, new vscode.Range(line, 0, line, 0));
+}
 
 /** Max symbols we annotate per document — a hard cap so huge files stay fast. */
 const MAX_SYMBOLS = 200;
@@ -131,6 +148,12 @@ export class TrelixCodeLensProvider implements vscode.CodeLensProvider {
      * `${uri}@${version}` the lens was produced for, so re-resolves (scroll-back,
      * repeated paints) at the same revision are free; a document edit bumps the
      * version and correctly misses the cache.
+     *
+     * Visual CodeLens, not Invokable CodeLens: the command is VS Code's own
+     * editor.action.showReferences, which opens the native "Peek References"
+     * popup anchored at the lens's line — the same mechanism the built-in
+     * TS/JS "N references" CodeLens uses. Clicking never leaves the editor
+     * for a separate QuickPick.
      */
     async resolveCodeLens(
         codeLens: vscode.CodeLens,
@@ -139,13 +162,15 @@ export class TrelixCodeLensProvider implements vscode.CodeLensProvider {
         const lens = codeLens as TrelixCodeLens;
         const symbolName = lens.symbolName;
         const repoPath = this.getRepoPath();
+        const docUri = vscode.Uri.parse(lens.docUri);
+        const position = lens.range.start;
 
         // Defensive: a lens without our metadata still gets a usable command.
         if (!symbolName) {
             lens.command = {
                 title: "$(references) Blast radius",
-                command: "trelix.blastRadius",
-                arguments: [],
+                command: SHOW_REFERENCES_COMMAND,
+                arguments: [docUri, position, []],
             };
             return lens;
         }
@@ -163,8 +188,12 @@ export class TrelixCodeLensProvider implements vscode.CodeLensProvider {
                 // Don't cache a result computed for a cancelled request.
                 lens.command = {
                     title: "$(references) Blast radius",
-                    command: "trelix.blastRadius",
-                    arguments: [symbolName],
+                    command: SHOW_REFERENCES_COMMAND,
+                    arguments: [
+                        docUri,
+                        position,
+                        entries.map((e) => entryLocation(e, repoPath)),
+                    ],
                 };
                 return lens;
             }
@@ -174,8 +203,12 @@ export class TrelixCodeLensProvider implements vscode.CodeLensProvider {
         const count = entries.length;
         lens.command = {
             title: `$(references) ${count} dependent${count === 1 ? "" : "s"}`,
-            command: "trelix.blastRadius",
-            arguments: [symbolName],
+            command: SHOW_REFERENCES_COMMAND,
+            arguments: [
+                docUri,
+                position,
+                entries.map((e) => entryLocation(e, repoPath)),
+            ],
         };
         return lens;
     }

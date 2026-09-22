@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from trelix.analysis.defuse import DefUseEdge
 from trelix.core.models import (
     CallEdge,
     Chunk,
@@ -25,6 +26,7 @@ from trelix.core.models import (
 )
 from trelix.retrieval.graph import (
     expand_with_call_graph,
+    expand_with_dataflow,
     expand_with_imports,
     expand_with_type_edges,
     rank_by_pagerank,
@@ -241,6 +243,353 @@ class TestExpandWithCallGraph:
         result = _make_search_result(db, lone_id)
         extra = expand_with_call_graph(db, [result])
         assert extra == []
+
+    # -----------------------------------------------------------------
+    # graph_context — topology metadata riding along on expanded results
+    # -----------------------------------------------------------------
+
+    def test_graph_context_direction_differs_for_caller_vs_callee(self, db: Database) -> None:
+        """
+        hub calls callee_of_hub (get_callees(hub)); caller_of_hub calls hub
+        (get_callers(hub)). Expanding on [hub] must tag each neighbor with a
+        graph_context that reflects its OWN direction relative to hub, not a
+        shared/undirected label — proving direction survives the BFS restructure.
+        """
+        fid = _insert_file(db)
+        hub_id = _insert_symbol(db, fid, "hub")
+        callee_id = _insert_symbol(db, fid, "callee_of_hub")
+        caller_id = _insert_symbol(db, fid, "caller_of_hub")
+        _insert_chunk(db, hub_id)
+        _insert_chunk(db, callee_id)
+        _insert_chunk(db, caller_id)
+
+        db.insert_call_edges(
+            [
+                CallEdge(
+                    caller_id=hub_id, callee_name="callee_of_hub", line=1, callee_id=callee_id
+                ),
+                CallEdge(caller_id=caller_id, callee_name="hub", line=2, callee_id=hub_id),
+            ]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, hub_id)
+        extra = expand_with_call_graph(db, [result])
+        by_id = {r.chunk.symbol_id: r for r in extra}
+
+        assert by_id[callee_id].graph_context is not None
+        assert by_id[caller_id].graph_context is not None
+        assert by_id[callee_id].graph_context != by_id[caller_id].graph_context
+        # callee_of_hub is CALLED BY hub
+        assert "called by" in by_id[callee_id].graph_context
+        assert "hub" in by_id[callee_id].graph_context
+        # caller_of_hub CALLS hub
+        assert "calls" in by_id[caller_id].graph_context
+        assert "hub" in by_id[caller_id].graph_context
+
+    def test_graph_context_names_actual_via_parent_at_two_hops(self, db: Database) -> None:
+        """
+        seed -> mid -> leaf (leaf is 2 hops from seed, reached VIA mid).
+        leaf's graph_context must name "mid" (the actual parent it was
+        discovered through), not "seed", and must say 2 hops.
+        """
+        fid = _insert_file(db)
+        seed_id = _insert_symbol(db, fid, "seed_fn")
+        mid_id = _insert_symbol(db, fid, "mid_fn")
+        leaf_id = _insert_symbol(db, fid, "leaf_fn")
+        _insert_chunk(db, seed_id)
+        _insert_chunk(db, mid_id)
+        _insert_chunk(db, leaf_id)
+
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=seed_id, callee_name="mid_fn", line=1, callee_id=mid_id),
+                CallEdge(caller_id=mid_id, callee_name="leaf_fn", line=2, callee_id=leaf_id),
+            ]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, seed_id)
+        extra = expand_with_call_graph(db, [result], depth=2)
+        by_id = {r.chunk.symbol_id: r for r in extra}
+
+        assert leaf_id in by_id
+        leaf_ctx = by_id[leaf_id].graph_context
+        assert leaf_ctx is not None
+        assert "mid_fn" in leaf_ctx
+        assert "seed_fn" not in leaf_ctx
+        assert "2 hops" in leaf_ctx
+
+    def test_graph_context_is_none_when_no_networkx_reordering_needed(self, db: Database) -> None:
+        """Sanity: a plain 1-hop callee still gets a non-empty graph_context —
+        the field isn't only populated on some code paths (e.g. only when the
+        PageRank re-sort branch runs)."""
+        fid = _insert_file(db)
+        caller_id = _insert_symbol(db, fid, "solo_caller")
+        callee_id = _insert_symbol(db, fid, "solo_callee")
+        _insert_chunk(db, caller_id)
+        _insert_chunk(db, callee_id)
+
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="solo_callee", line=1, callee_id=callee_id)]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, caller_id)
+        extra = expand_with_call_graph(db, [result])
+
+        assert len(extra) == 1
+        assert extra[0].graph_context == "called by solo_caller (1 hop)"
+
+    def test_regression_discovered_ids_and_hop_discount_unchanged(self, db: Database) -> None:
+        """No regression in WHAT gets discovered: same symbol_ids at the same
+        hop distances (verified indirectly through the hop-based score
+        discount, base_score * 0.5**hop) as the pre-topology implementation."""
+        fid = _insert_file(db)
+        seed_id = _insert_symbol(db, fid, "seed2")
+        mid_id = _insert_symbol(db, fid, "mid2")
+        leaf_id = _insert_symbol(db, fid, "leaf2")
+        _insert_chunk(db, seed_id)
+        _insert_chunk(db, mid_id)
+        _insert_chunk(db, leaf_id)
+
+        db.insert_call_edges(
+            [
+                CallEdge(caller_id=seed_id, callee_name="mid2", line=1, callee_id=mid_id),
+                CallEdge(caller_id=mid_id, callee_name="leaf2", line=2, callee_id=leaf_id),
+            ]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, seed_id, score=1.0)
+        extra = expand_with_call_graph(db, [result], depth=2)
+        by_id = {r.chunk.symbol_id: r for r in extra}
+
+        assert set(by_id) == {mid_id, leaf_id}
+        assert by_id[mid_id].score == pytest.approx(1.0 * 0.5)
+        assert by_id[leaf_id].score == pytest.approx(1.0 * 0.25)
+
+
+# ---------------------------------------------------------------------------
+# expand_with_dataflow
+# ---------------------------------------------------------------------------
+
+
+class TestExpandWithDataflow:
+    """expand_with_dataflow correlates a seed symbol's def-use spans (from
+    DataFlowExtractor / def_use_edges) against its resolved call sites
+    (calls.line) — the new signal that distinguishes "every callee" (plain
+    call-graph expansion) from "callees a specific tracked variable is live
+    across". See docs/reports/post-v3.3.0-research-sweep-2026-09-16.md §6.2.
+    """
+
+    def test_empty_results_returns_empty(self, db: Database) -> None:
+        extra = expand_with_dataflow(db, results=[])
+        assert extra == []
+
+    def test_callee_call_site_inside_def_use_span_is_included(self, db: Database) -> None:
+        """
+        caller defines `x` on line 2 and reads it on line 6. A call to
+        `callee` at line 4 (inside [2, 6]) is data-flow-correlated and must
+        be surfaced.
+        """
+        fid = _insert_file(db)
+        caller_id = _insert_symbol(db, fid, "caller")
+        callee_id = _insert_symbol(db, fid, "callee")
+        _insert_chunk(db, caller_id)
+        _insert_chunk(db, callee_id)
+
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="callee", line=4, callee_id=callee_id)]
+        )
+        db.insert_def_use_edges(
+            [DefUseEdge(symbol_id=caller_id, var_name="x", def_line=2, use_line=6, edge_type="use")]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, caller_id)
+        extra = expand_with_dataflow(db, [result])
+
+        ids = [r.chunk.symbol_id for r in extra]
+        assert callee_id in ids
+
+    def test_callee_call_site_outside_every_def_use_span_is_excluded(self, db: Database) -> None:
+        """
+        Core correctness property: a resolved callee whose call site line
+        falls OUTSIDE every def-use span must NOT be surfaced, even though
+        expand_with_call_graph would return it unconditionally.
+        """
+        fid = _insert_file(db)
+        caller_id = _insert_symbol(db, fid, "caller2")
+        callee_id = _insert_symbol(db, fid, "callee2")
+        _insert_chunk(db, caller_id)
+        _insert_chunk(db, callee_id)
+
+        # Call site at line 20 — nowhere near the def-use span [2, 6].
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="callee2", line=20, callee_id=callee_id)]
+        )
+        db.insert_def_use_edges(
+            [DefUseEdge(symbol_id=caller_id, var_name="x", def_line=2, use_line=6, edge_type="use")]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, caller_id)
+        extra = expand_with_dataflow(db, [result])
+
+        ids = [r.chunk.symbol_id for r in extra]
+        assert callee_id not in ids
+        assert extra == []
+
+    def test_no_def_use_data_returns_empty_gracefully(self, db: Database) -> None:
+        """
+        No def_use_edges rows for the symbol (dataflow_enabled was off at
+        index time, or the symbol genuinely has no local variables) — must
+        degrade to [] without raising, even when callees exist.
+        """
+        fid = _insert_file(db)
+        caller_id = _insert_symbol(db, fid, "caller3")
+        callee_id = _insert_symbol(db, fid, "callee3")
+        _insert_chunk(db, caller_id)
+        _insert_chunk(db, callee_id)
+
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="callee3", line=3, callee_id=callee_id)]
+        )
+        db._conn.commit()
+        # No insert_def_use_edges call at all.
+
+        result = _make_search_result(db, caller_id)
+        extra = expand_with_dataflow(db, [result])
+        assert extra == []
+
+    def test_max_extra_is_respected(self, db: Database) -> None:
+        fid = _insert_file(db)
+        root_id = _insert_symbol(db, fid, "root_df")
+        _insert_chunk(db, root_id)
+
+        for i in range(10):
+            cid = _insert_symbol(db, fid, f"callee_df_{i}")
+            _insert_chunk(db, cid)
+            db.insert_call_edges(
+                [
+                    CallEdge(
+                        caller_id=root_id, callee_name=f"callee_df_{i}", line=i + 1, callee_id=cid
+                    )
+                ]
+            )
+        db.insert_def_use_edges(
+            [
+                DefUseEdge(
+                    symbol_id=root_id, var_name="shared", def_line=0, use_line=20, edge_type="use"
+                )
+            ]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, root_id)
+        extra = expand_with_dataflow(db, [result], max_extra=3)
+        assert len(extra) <= 3
+
+    def test_already_seen_symbol_ids_are_not_duplicated(self, db: Database) -> None:
+        """A callee that is ALSO one of the seed results must not be duplicated
+        into `extra`, mirroring expand_with_call_graph's seen_ids pattern."""
+        fid = _insert_file(db)
+        caller_id = _insert_symbol(db, fid, "caller4")
+        callee_id = _insert_symbol(db, fid, "callee4")
+        _insert_chunk(db, caller_id)
+        _insert_chunk(db, callee_id)
+
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="callee4", line=3, callee_id=callee_id)]
+        )
+        db.insert_def_use_edges(
+            [DefUseEdge(symbol_id=caller_id, var_name="y", def_line=1, use_line=5, edge_type="use")]
+        )
+        db._conn.commit()
+
+        caller_result = _make_search_result(db, caller_id)
+        callee_result = _make_search_result(db, callee_id)
+        extra = expand_with_dataflow(db, [caller_result, callee_result])
+
+        assert extra == []
+
+    def test_max_extra_does_not_starve_later_seeds(self, db: Database) -> None:
+        """A single early, higher-ranked seed with more correlated callees than
+        max_extra must not exhaust the whole budget before later seeds are even
+        examined -- every seed's candidates need to be collected before any
+        truncation happens, mirroring expand_with_call_graph's collect-then-
+        truncate shape."""
+        fid = _insert_file(db)
+        seed_a = _insert_symbol(db, fid, "seed_a")
+        seed_b = _insert_symbol(db, fid, "seed_b")
+        _insert_chunk(db, seed_a)
+        _insert_chunk(db, seed_b)
+
+        for i in range(5):
+            cid = _insert_symbol(db, fid, f"seed_a_callee_{i}")
+            _insert_chunk(db, cid)
+            db.insert_call_edges(
+                [
+                    CallEdge(
+                        caller_id=seed_a,
+                        callee_name=f"seed_a_callee_{i}",
+                        line=i + 1,
+                        callee_id=cid,
+                    )
+                ]
+            )
+        db.insert_def_use_edges(
+            [
+                DefUseEdge(
+                    symbol_id=seed_a, var_name="shared", def_line=0, use_line=10, edge_type="use"
+                )
+            ]
+        )
+
+        seed_b_callee = _insert_symbol(db, fid, "seed_b_callee")
+        _insert_chunk(db, seed_b_callee)
+        db.insert_call_edges(
+            [
+                CallEdge(
+                    caller_id=seed_b, callee_name="seed_b_callee", line=3, callee_id=seed_b_callee
+                )
+            ]
+        )
+        db.insert_def_use_edges(
+            [DefUseEdge(symbol_id=seed_b, var_name="y", def_line=1, use_line=5, edge_type="use")]
+        )
+        db._conn.commit()
+
+        seed_a_result = _make_search_result(db, seed_a, score=1.0)
+        seed_b_result = _make_search_result(db, seed_b, score=0.9)
+        extra = expand_with_dataflow(db, [seed_a_result, seed_b_result], max_extra=3)
+
+        ids = [r.chunk.symbol_id for r in extra]
+        assert seed_b_callee in ids, (
+            "seed_b's callee was starved because seed_a's 5 candidates alone "
+            "filled max_extra before seed_b was ever examined"
+        )
+
+    def test_source_is_dataflow_expansion(self, db: Database) -> None:
+        fid = _insert_file(db)
+        caller_id = _insert_symbol(db, fid, "caller5")
+        callee_id = _insert_symbol(db, fid, "callee5")
+        _insert_chunk(db, caller_id)
+        _insert_chunk(db, callee_id)
+
+        db.insert_call_edges(
+            [CallEdge(caller_id=caller_id, callee_name="callee5", line=3, callee_id=callee_id)]
+        )
+        db.insert_def_use_edges(
+            [DefUseEdge(symbol_id=caller_id, var_name="z", def_line=1, use_line=5, edge_type="use")]
+        )
+        db._conn.commit()
+
+        result = _make_search_result(db, caller_id)
+        extra = expand_with_dataflow(db, [result])
+        assert extra
+        assert all(r.source == "dataflow_expansion" for r in extra)
 
 
 # ---------------------------------------------------------------------------

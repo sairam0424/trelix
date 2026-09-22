@@ -51,7 +51,12 @@ def _make_file() -> IndexedFile:
     )
 
 
-def _make_result(text: str, score: float = 0.5, rank: int = 1) -> SearchResult:
+def _make_result(
+    text: str,
+    score: float = 0.5,
+    rank: int = 1,
+    graph_context: str | None = None,
+) -> SearchResult:
     chunk = Chunk(
         symbol_id=1,
         chunk_text=text,
@@ -64,6 +69,7 @@ def _make_result(text: str, score: float = 0.5, rank: int = 1) -> SearchResult:
         score=score,
         rank=rank,
         source="vector",
+        graph_context=graph_context,
     )
 
 
@@ -231,6 +237,33 @@ class TestCrossEncoderReranker:
 
         assert [r.score for r in results] == original_scores
         assert [r.rank for r in results] == original_ranks
+
+    def test_preserves_graph_context(self) -> None:
+        """Regression: cross-encoder reranking rebuilt SearchResult by
+        explicitly enumerating fields and dropped graph_context, silently
+        resetting it to None (the dataclass default) for every
+        call-graph-expanded result that passed through this reranker."""
+        from trelix.retrieval.reranker import rerank
+
+        results = [
+            _make_result("doc A", score=0.5, rank=1, graph_context="called by foo (1 hop)"),
+            _make_result("doc B", score=0.5, rank=2, graph_context="calls bar (2 hops)"),
+        ]
+
+        mock_model = MagicMock()
+        mock_model.predict.return_value = [0.9, 0.1]
+        mock_ce_cls = MagicMock(return_value=mock_model)
+        mock_st_module = MagicMock()
+        mock_st_module.CrossEncoder = mock_ce_cls
+
+        cfg = _cfg(rerank_provider="cross_encoder", rerank_model="cross-encoder/mock")
+
+        with patch.dict(sys.modules, {"sentence_transformers": mock_st_module}):
+            out = rerank("q", results, cfg, top_n=2)
+
+        by_text = {r.chunk.chunk_text: r.graph_context for r in out}
+        assert by_text["doc A"] == "called by foo (1 hop)"
+        assert by_text["doc B"] == "calls bar (2 hops)"
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +460,29 @@ class TestCohereReranker:
         assert mock_req_mod.post.call_count == 1
         assert out == results[:2]
 
+    def test_preserves_graph_context(self) -> None:
+        """Regression: _cohere_rerank rebuilt SearchResult by explicitly
+        enumerating fields and dropped graph_context, silently resetting it
+        to None (the dataclass default) for every call-graph-expanded
+        result that passed through Cohere reranking -- the default
+        rerank_provider, with rerank=True by default, making this a
+        silent no-op for structural intents in the common configuration."""
+        from trelix.retrieval.reranker import rerank
+
+        results = [
+            _make_result("doc A", rank=1, graph_context="called by bar (1 hop)"),
+            _make_result("doc B", rank=2, graph_context="calls baz (2 hops)"),
+        ]
+        mock_resp = self._cohere_response(order=[1, 0], scores=[0.9, 0.5])
+        mock_req_mod = self._mock_requests_module(mock_resp)
+
+        with patch.dict(sys.modules, {"requests": mock_req_mod}):
+            out = rerank("q", results, self._cohere_cfg(), top_n=2)
+
+        by_text = {r.chunk.chunk_text: r.graph_context for r in out}
+        assert by_text["doc A"] == "called by bar (1 hop)"
+        assert by_text["doc B"] == "calls baz (2 hops)"
+
 
 # ---------------------------------------------------------------------------
 # XTR late-interaction scoring (pure-Python, experimental)
@@ -590,3 +646,35 @@ class TestXTRRerankerProvider:
             out = rerank("login", results, cfg, top_n=3)
 
         assert len(out) == 3
+
+    def test_preserves_graph_context(self) -> None:
+        """Regression: _xtr_rerank rebuilt SearchResult by explicitly
+        enumerating fields and dropped graph_context, silently resetting it
+        to None (the dataclass default) for every call-graph-expanded
+        result that passed through XTR reranking."""
+        from unittest.mock import patch
+
+        from trelix.retrieval.reranker import rerank
+
+        results = [
+            _make_result("doc 0", score=0.3, rank=1, graph_context="called by foo (1 hop)"),
+            _make_result("doc 1", score=0.9, rank=2, graph_context="calls bar (2 hops)"),
+        ]
+        cfg = _cfg(rerank_provider="xtr")
+
+        with (
+            patch("trelix.retrieval.reranker_xtr.warn_experimental"),
+            patch(
+                "trelix.retrieval.reranker.xtr_score_documents",
+                side_effect=lambda query_token_scores, candidate_doc_ids, k_impute: sorted(
+                    [(cid, {0: 0.4, 1: 0.95}.get(cid, 0.0)) for cid in candidate_doc_ids],
+                    key=lambda x: x[1],
+                    reverse=True,
+                ),
+            ),
+        ):
+            out = rerank("login", results, cfg, top_n=2)
+
+        by_text = {r.chunk.chunk_text: r.graph_context for r in out}
+        assert by_text["doc 0"] == "called by foo (1 hop)"
+        assert by_text["doc 1"] == "calls bar (2 hops)"

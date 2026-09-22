@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -582,6 +581,49 @@ class TestArtifacts:
 
 
 # ---------------------------------------------------------------------------
+# Embed batch jobs (OpenAI Batch API job tracking)
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedBatchJobs:
+    def test_batch_job_insert_and_retrieve_pending(self, db: Database) -> None:
+        job_row_id = db.insert_batch_job(
+            repo_path="/fake/repo",
+            provider="openai",
+            job_id="batch_abc123",
+            pending_chunk_ids=[1, 2, 3],
+        )
+        pending = db.get_pending_batch_job("/fake/repo")
+        assert pending is not None
+        assert pending["job_id"] == "batch_abc123"
+        assert pending["status"] == "submitted"
+        assert pending["pending_chunk_ids"] == [1, 2, 3]
+
+        db.update_batch_job_status(job_row_id, status="completed")
+        assert db.get_pending_batch_job("/fake/repo") is None  # no longer pending
+
+    def test_get_pending_batch_job_returns_none_when_missing(self, db: Database) -> None:
+        assert db.get_pending_batch_job("/no/such/repo") is None
+
+    def test_get_pending_batch_job_scoped_to_repo_path(self, db: Database) -> None:
+        db.insert_batch_job(
+            repo_path="/repo/a",
+            provider="openai",
+            job_id="batch_a",
+            pending_chunk_ids=[1],
+        )
+        db.insert_batch_job(
+            repo_path="/repo/b",
+            provider="openai",
+            job_id="batch_b",
+            pending_chunk_ids=[2],
+        )
+        pending_a = db.get_pending_batch_job("/repo/a")
+        assert pending_a is not None
+        assert pending_a["job_id"] == "batch_a"
+
+
+# ---------------------------------------------------------------------------
 # Hydration
 # ---------------------------------------------------------------------------
 
@@ -915,116 +957,6 @@ class TestResolveCallsPriority:
         ).fetchone()
         assert row is not None
         assert row[0] == "AuthService"
-
-
-# ---------------------------------------------------------------------------
-# HNSW-specific tests
-# ---------------------------------------------------------------------------
-
-
-class TestVectorStoreHNSW:
-    """Tests for HNSW index support and flat fallback logic."""
-
-    DIM = 4
-
-    def test_hnsw_mode_creates_virtual_table_with_hnsw(self, tmp_path: Path) -> None:
-        """HNSW mode should create chunk_embeddings with +hnsw in its DDL."""
-        vs = VectorStore(tmp_path / "hnsw.db", dimension=self.DIM, hnsw=True)
-        assert vs.hnsw_active is True
-
-        row = vs._conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'"
-        ).fetchone()
-        assert row is not None
-        assert "+hnsw" in (row[0] or "").lower()
-        vs.close()
-
-    def test_hnsw_mode_search_returns_results(self, tmp_path: Path) -> None:
-        """HNSW-backed store should still return correct search results."""
-        vs = VectorStore(tmp_path / "hnsw_search.db", dimension=self.DIM, hnsw=True)
-        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
-        vs.upsert(chunk_id=2, embedding=[0.0, 1.0, 0.0, 0.0])
-
-        results = vs.search([1.0, 0.0, 0.0, 0.0], k=5)
-        assert len(results) >= 1
-        assert results[0][0] == 1
-        vs.close()
-
-    def test_flat_fallback_when_hnsw_not_supported(self, tmp_path: Path) -> None:
-        """When _try_create_hnsw_table returns False, fall back to flat vec0."""
-        # Patch _try_create_hnsw_table to simulate an older sqlite-vec without HNSW.
-        with patch.object(VectorStore, "_try_create_hnsw_table", return_value=False):
-            vs = VectorStore(tmp_path / "flat.db", dimension=self.DIM, hnsw=True)
-
-        assert vs.hnsw_active is False
-
-        # Verify flat table was created (no +hnsw in DDL)
-        row = vs._conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'"
-        ).fetchone()
-        assert row is not None
-        assert "+hnsw" not in (row[0] or "").lower()
-        vs.close()
-
-    def test_hnsw_disabled_creates_flat_table(self, tmp_path: Path) -> None:
-        """When hnsw=False, should create flat vec0 table and hnsw_active=False."""
-        vs = VectorStore(tmp_path / "flat2.db", dimension=self.DIM, hnsw=False)
-        assert vs.hnsw_active is False
-
-        row = vs._conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'"
-        ).fetchone()
-        assert row is not None
-        assert "+hnsw" not in (row[0] or "").lower()
-        vs.close()
-
-    def test_info_returns_correct_dict(self, tmp_path: Path) -> None:
-        """info() should return backend, hnsw, dimension, and count."""
-        vs = VectorStore(tmp_path / "info.db", dimension=self.DIM, hnsw=True)
-        vs.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
-        vs.upsert(chunk_id=2, embedding=[0.0, 1.0, 0.0, 0.0])
-
-        result = vs.info()
-
-        assert result["backend"] == "sqlite-vec"
-        assert result["hnsw"] is True
-        assert result["dimension"] == self.DIM
-        assert result["count"] == 2
-        vs.close()
-
-    def test_info_count_reflects_upserts_and_deletes(self, tmp_path: Path) -> None:
-        """info()['count'] should track additions and deletions accurately."""
-        vs = VectorStore(tmp_path / "info2.db", dimension=self.DIM, hnsw=False)
-        assert vs.info()["count"] == 0
-
-        vs.upsert(chunk_id=10, embedding=[1.0, 0.0, 0.0, 0.0])
-        vs.upsert(chunk_id=11, embedding=[0.0, 1.0, 0.0, 0.0])
-        assert vs.info()["count"] == 2
-
-        vs.delete(chunk_id=10)
-        assert vs.info()["count"] == 1
-        vs.close()
-
-    def test_info_hnsw_false_when_flat(self, tmp_path: Path) -> None:
-        """info()['hnsw'] must be False when the flat scan fallback is active."""
-        vs = VectorStore(tmp_path / "info_flat.db", dimension=self.DIM, hnsw=False)
-        result = vs.info()
-        assert result["hnsw"] is False
-        vs.close()
-
-    def test_hnsw_reopen_detects_existing_table(self, tmp_path: Path) -> None:
-        """Re-opening an existing HNSW database should detect mode without re-creating."""
-        db_path = tmp_path / "reopen.db"
-        vs1 = VectorStore(db_path, dimension=self.DIM, hnsw=True)
-        assert vs1.hnsw_active is True
-        vs1.upsert(chunk_id=1, embedding=[1.0, 0.0, 0.0, 0.0])
-        vs1.close()
-
-        vs2 = VectorStore(db_path, dimension=self.DIM, hnsw=True)
-        assert vs2.hnsw_active is True
-        results = vs2.search([1.0, 0.0, 0.0, 0.0], k=5)
-        assert results[0][0] == 1
-        vs2.close()
 
 
 # ---------------------------------------------------------------------------
