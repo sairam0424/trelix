@@ -3718,11 +3718,14 @@ def agent_sessions_clear(
 
 
 # ---------------------------------------------------------------------------
-# connector sub-app (Jira/TestRail/Xray/Linear source-connector sync)
+# connector sub-app (Jira/TestRail/Xray/Linear/diagram source-connector sync)
 # ---------------------------------------------------------------------------
 
 connector_app = typer.Typer(
-    help="Sync external artefacts (Jira tickets, TestRail cases, Xray tests, Linear issues)."
+    help=(
+        "Sync external artefacts (Jira tickets, TestRail cases, Xray tests, "
+        "Linear issues, local .drawio diagrams)."
+    )
 )
 app.add_typer(connector_app, name="connector")
 
@@ -3731,7 +3734,10 @@ app.add_typer(connector_app, name="connector")
 def connector_sync(
     repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")],
     name: Annotated[
-        str, typer.Argument(help="Connector to sync: 'jira', 'testrail', 'xray', or 'linear'.")
+        str,
+        typer.Argument(
+            help="Connector to sync: 'jira', 'testrail', 'xray', 'linear', or 'diagram'."
+        ),
     ],
     link: Annotated[
         bool,
@@ -3768,7 +3774,7 @@ def connector_sync(
         raise typer.Exit(1)
 
     try:
-        source = get_artifact_source(name)  # type: ignore[arg-type]
+        source = get_artifact_source(name, index_config=config)  # type: ignore[arg-type]
     except ValueError as exc:
         _print_error("Error", exc)
         raise typer.Exit(1) from exc

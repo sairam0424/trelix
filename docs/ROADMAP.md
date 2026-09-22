@@ -152,7 +152,7 @@ Ideas being researched but not yet committed to a release:
 - **Semantic diff** — diff-aware retrieval (weight recently-changed symbols higher). Phase 2 Plan B built the supporting code (`DiffEmbedder`, `src/trelix/review/diff_embedder.py`) and the `diff_chunks` schema (`db.py`), both tested, but neither is called from `trelix review`'s actual retrieval path — "shipped" here was inaccurate; it's built but not integrated.
 - ~~**IDE plugins** — VS Code extension with inline search~~ ✅ shipped in Phase 3 Plan A
 - ~~**GitHub App** — PR review comments posted automatically via GitHub App auth~~ ✅ shipped in Phase 3 Plan B
-- **Multi-modal** — index diagrams, comments referencing architecture docs
+- **Multi-modal** — index diagrams, comments referencing architecture docs. `.drawio` diagrams shipped as a scoped pilot: `trelix connector sync <repo> diagram` captions local `.drawio` files via the existing text-only LLM client (XML source is fully describable as text — no new provider code needed) and links them as Artifacts via `ArtifactLinker`, same as a Jira ticket. Raster images (`.png`/`.jpg`) are NOT indexed — that needs a genuinely new vision/multimodal provider integration, deliberately deferred as a separate, larger piece of work.
 - ~~**Agent memory** — persist AgentLoop history across sessions~~ ✅ shipped v2.8.0
 
 ---
