@@ -51,7 +51,7 @@ def _patch_rich_progress():
     mock_progress.add_task = MagicMock(return_value=0)
     mock_progress.advance = MagicMock()
 
-    with patch("trelix.indexing.indexer.Progress", return_value=mock_progress):
+    with patch("trelix.cli.progress.Progress", return_value=mock_progress):
         yield mock_progress
 
 

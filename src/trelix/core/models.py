@@ -295,6 +295,14 @@ class SearchResult:
     """
     A single result from any retrieval method, before fusion/reranking.
     `source` tracks which retrieval method produced it for RRF fusion.
+
+    `graph_context` is a short, pre-formatted, human-readable description of
+    HOW a call-graph-expanded result relates to the symbol it was discovered
+    through — e.g. "called by process_request (1 hop)". It is populated only
+    by expand_with_call_graph (see trelix.retrieval.graph) and is None for
+    every other retrieval leg/expansion, and for graph_expansion results
+    hydrated before this field existed. Self-contained and cheap to render:
+    the assembler never has to re-query the DB to use it.
     """
 
     chunk: Chunk
@@ -303,6 +311,7 @@ class SearchResult:
     score: float
     rank: int
     source: str  # "vector" | "bm25" | "graph_expansion"
+    graph_context: str | None = None
 
 
 # ---------------------------------------------------------------------------

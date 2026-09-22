@@ -1,4 +1,4 @@
-# trelix User Guide — v3.3.1
+# trelix User Guide — v3.3.5
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -152,7 +152,7 @@ Repository files
        v
   [SQLite store]
   Saves everything: symbols, call_graph, imports, type_edges,
-  BM25 FTS5 index, HNSW vector index.
+  BM25 FTS5 index, vector index (flat scan).
   Zero external infrastructure — one file.
 ```
 
@@ -236,18 +236,11 @@ User Query
 
 ### Leg 1 — Vector (always active)
 
-**What it does:** Converts your query into a dense vector using the same embedding model used at index time, then runs an Approximate Nearest Neighbor (ANN) search over all chunk vectors using an HNSW index (O(log n) lookup).
+**What it does:** Converts your query into a dense vector using the same embedding model used at index time, then searches over all chunk vectors — an exact flat scan on the default SQLite backend, or an Approximate Nearest Neighbor (ANN) search over a real HNSW index on the optional Qdrant backend (scales to 500k+ chunks).
 
 **Why it matters:** This is the semantic leg. It finds code that *means the same thing* as your query even when no words match. "User credential verification" will find `authenticate_user()` even if neither word appears in the function.
 
 **When it leads:** Abstract natural-language queries, questions about behavior, anything phrased in terms of concepts rather than identifiers.
-
-**Configuration:**
-```bash
-TRELIX_STORE_HNSW=true          # Enable HNSW (default)
-TRELIX_STORE_HNSW_M=16          # HNSW M parameter (higher = more accurate, more memory)
-TRELIX_STORE_HNSW_EF_SEARCH=50  # ef_search (higher = more accurate, slower)
-```
 
 ### Leg 2 — BM25 (always active)
 
@@ -399,7 +392,7 @@ trelix v3.1.2 — indexing ./my-repo
   Files:         243
   Symbols:       4,891
   Chunks:        9,241
-  Vectors:       9,241  (sqlite-vec HNSW, M=16)
+  Vectors:       9,241
 ─────────────────────────────────────────────
 Done. Run: trelix search ./my-repo "your query"
 ```
@@ -489,7 +482,7 @@ trelix stats — ./my-repo
     methods:    1,847
     other:      628
   Chunks:       9,241
-  Vectors:      9,241  (sqlite-vec HNSW)
+  Vectors:      9,241
   Call edges:   8,204
   Import edges: 1,024
   Type edges:   312
@@ -2208,4 +2201,4 @@ Everything below is **additive and off by default** — a v2.12.0 setup keeps be
 
 ---
 
-*trelix v3.3.1 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v3.3.5 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

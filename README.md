@@ -32,9 +32,7 @@
 [![trelix-langchain](https://img.shields.io/pypi/v/trelix-langchain?label=trelix-langchain)](https://pypi.org/project/trelix-langchain/)
 [![trelix-llama-index](https://img.shields.io/pypi/v/trelix-llama-index?label=trelix-llama-index)](https://pypi.org/project/trelix-llama-index/)
 [![Downloads](https://img.shields.io/pypi/dm/trelix)](https://pypi.org/project/trelix/)
-```
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sairam0424/trelix/badge)](https://scorecard.dev/viewer/?uri=github.com/sairam0424/trelix)
-```
 
 <!-- mcp-name: trelix -->
 
@@ -188,7 +186,7 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **Reranking** — Cohere, cross-encoder, or PLAID late-interaction reranker for final precision
 - **LLM synthesis** — `trelix ask` streams tokens live; GraphRAG map-reduce for large corpora
 - **Universal LLM client** — OpenAI, Azure, Anthropic, Bedrock, Vertex AI, LiteLLM (100+ providers)
-- **Zero-infra default** — single SQLite file (`.trelix/index.db`) with sqlite-vec HNSW + FTS5 BM25
+- **Zero-infra default** — single SQLite file (`.trelix/index.db`) with sqlite-vec (flat scan) + FTS5 BM25
 - **Real-time watching** — `trelix watch` auto-indexes on every file save
 - **Works offline** — `--provider local` uses sentence-transformers, no API key needed for embeddings. It selects the *embedder* only: if a chat credential is present, the retrieval planner still makes one LLM call per distinct query. Unset it for a fully offline path
 - **BGE-Code-v1 / Nomic CodeRankEmbed** — code-specialized embedding providers (`bge-code`, `nomic-code`). `bge-code` is **experimental**: its pooling is unverified against BAAI's published `pooling_mode_lasttoken: true`, so no quality claim is made — see [docs/PROVIDERS.md](docs/PROVIDERS.md#bge-code-baaibge-code-v1)
@@ -361,9 +359,6 @@ TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_STORE_BACKEND` | `sqlite` | `sqlite` \| `qdrant` \| `lance` |
-| `TRELIX_STORE_HNSW` | `true` | Enable HNSW index (sqlite backend) |
-| `TRELIX_STORE_HNSW_M` | `16` | HNSW M parameter |
-| `TRELIX_STORE_HNSW_EF_SEARCH` | `50` | HNSW ef_search at query time |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
 | `QDRANT_API_KEY` | — | Qdrant API key (cloud) |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
@@ -504,7 +499,7 @@ flowchart TD
         B --> C[Parser: 26 languages]
         C --> D[Chunker: context header + optional LLM summary]
         D --> E[Embedder: voyage / local-code / openai / azure / bedrock / local]
-        E --> F[(sqlite-vec HNSW / Qdrant / LanceDB)]
+        E --> F[(sqlite-vec / Qdrant / LanceDB)]
         C --> G[(SQLite: symbols, calls, FTS5 BM25, sparse/file-summary tables)]
     end
 
@@ -586,7 +581,7 @@ Single SQLite file (`.trelix/index.db`) — zero external infrastructure by defa
 | `type_edges` | Inheritance / implements / trait edges |
 | `chunks` | Embeddable text (context header + summary + symbol body) |
 | `symbols_fts` | FTS5 virtual table for BM25 |
-| `chunk_embeddings` | sqlite-vec HNSW vector table (or Qdrant/LanceDB) |
+| `chunk_embeddings` | sqlite-vec vector table (flat scan; or Qdrant/LanceDB) |
 | `sub_chunks`, `file_summaries`, `sparse_embeddings` | Back the optional sub-chunk, file-summary, and sparse retrieval legs above |
 
 4 more tables (`index_metadata` dimension guard, `query_telemetry`, `def_use_edges`, `taint_flows`) are covered in [docs/architecture.md §4](docs/architecture.md#4-storage-layer). `diff_chunks` and the knowledge-graph metadata/concepts tables (written by `trelix graph`) live in the same file but aren't documented there yet.

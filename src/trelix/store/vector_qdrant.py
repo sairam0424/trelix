@@ -13,12 +13,15 @@ collapsing under high cardinality, matching the research recommendation.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import logging
+from typing import TYPE_CHECKING, Any
 
 from trelix.store.vector import BaseVectorStore
 
 if TYPE_CHECKING:
     from trelix.core.config import IndexConfig
+
+logger = logging.getLogger(__name__)
 
 _QDRANT_MISSING_MSG = (
     "qdrant-client is not installed. "
@@ -57,6 +60,8 @@ class QdrantVectorStore(BaseVectorStore):
 
         self._dimension = dimension
         self._collection = config.store.qdrant_collection
+        self._quantization = config.store.qdrant_quantization
+        self._quantization_rescore = config.store.qdrant_quantization_rescore
 
         self._client = QdrantClient(
             url=config.store.qdrant_url,
@@ -65,32 +70,199 @@ class QdrantVectorStore(BaseVectorStore):
             timeout=int(config.store.qdrant_timeout),
         )
 
-        self._ensure_collection(VectorParams, HnswConfigDiff, Distance)
+        quantization_config = self._build_quantization_config()
+        self._ensure_collection(VectorParams, HnswConfigDiff, Distance, quantization_config)
 
     # ------------------------------------------------------------------
     # Collection management
     # ------------------------------------------------------------------
+
+    def _build_quantization_config(self) -> Any:
+        """Build the qdrant-client `quantization_config` object for collection creation.
+
+        Returns None when `qdrant_quantization` is unset -- today's unquantized
+        behavior, unchanged. The returned value is only ever consulted by
+        `_ensure_collection` at collection-CREATION time (or by `recreate()`,
+        which deletes and re-creates): Qdrant fixes a collection's quantization
+        at creation and does not expose a way to change it via update.
+
+        Typed `Any` rather than a real qdrant-client union type: those classes
+        are only reachable behind the deferred, try/except-guarded import this
+        method itself does (`qdrant_client` is an optional extra -- see
+        `_QDRANT_MISSING_MSG`), so a module-level import for annotation
+        purposes alone would defeat that. `object | None` was tried first and
+        rejected: mypy still requires the *exact* SDK union at the
+        `create_collection(quantization_config=...)` call site, and `object`
+        does not satisfy it.
+        """
+        if self._quantization is None:
+            return None
+        try:
+            from qdrant_client.models import (
+                BinaryQuantization,
+                BinaryQuantizationConfig,
+                ScalarQuantization,
+                ScalarQuantizationConfig,
+                ScalarType,
+            )
+        except ImportError as exc:
+            raise ImportError(_QDRANT_MISSING_MSG) from exc
+
+        if self._quantization == "int8":
+            return ScalarQuantization(scalar=ScalarQuantizationConfig(type=ScalarType.INT8))
+        if self._quantization == "binary":
+            return BinaryQuantization(binary=BinaryQuantizationConfig())
+        # Unreachable: config.py's Literal["int8", "binary"] | None already rejects
+        # anything else at settings-load time. Kept as a loud failure rather than an
+        # `else: return None` so a future third literal value can't silently skip
+        # quantization instead of raising here to be implemented.
+        raise ValueError(f"Unsupported qdrant_quantization value: {self._quantization!r}")
+
+    @staticmethod
+    def _quantization_kind(quantization_config: object | None) -> str | None:
+        """Map a real `CollectionConfig.quantization_config` value to our vocabulary.
+
+        Returns None (no quantization), "int8", "binary", or "other" for a
+        quantization kind trelix never configures itself (Qdrant's
+        ProductQuantization / TurboQuantization) but that could exist on a
+        collection created or modified outside trelix. Checked via `hasattr`
+        rather than `isinstance` so this needs no import of the real qdrant
+        model classes -- it only has to distinguish the *shapes* trelix itself
+        ever writes (`scalar=...` vs `binary=...`).
+        """
+        if quantization_config is None:
+            return None
+        if hasattr(quantization_config, "scalar"):
+            return "int8"
+        if hasattr(quantization_config, "binary"):
+            return "binary"
+        return "other"
+
+    def _warn_if_quantization_mismatch(self) -> None:
+        """Log a warning if this store's configured quantization does not match
+        what the EXISTING collection actually has.
+
+        `_ensure_collection` no-ops when the collection already exists --
+        Qdrant fixes `quantization_config` at collection-creation time, so a
+        user who changes `qdrant_quantization` for an existing collection would
+        otherwise see the setting take zero effect with nothing telling them
+        why. This does not fix that (only `recreate()` can); it only makes the
+        mismatch visible instead of silent. Callers must only invoke this when
+        `self._quantization is not None` -- see `_ensure_collection`.
+
+        `get_collection()` failures (timeout, transient outage, an API key
+        scoped to write-only, a race where the collection was just deleted)
+        are caught and logged rather than propagated: this is a best-effort
+        diagnostic check, and letting it fail store construction would turn
+        "collection already exists" from a guaranteed no-op success into a
+        new failure mode.
+        """
+        try:
+            info = self._client.get_collection(self._collection)
+        except Exception:
+            logger.warning(
+                "Could not verify quantization for existing collection '%s' -- "
+                "get_collection() failed, skipping the quantization mismatch check.",
+                self._collection,
+                exc_info=True,
+            )
+            return
+        actual = self._quantization_kind(info.config.quantization_config)
+        if actual != self._quantization:
+            logger.warning(
+                "Collection '%s' already exists with quantization=%r, but "
+                "qdrant_quantization=%r is configured. Qdrant fixes "
+                "quantization_config at collection-creation time -- this setting "
+                "has NO effect on an existing collection. Call recreate() to "
+                "rebuild it with the new setting (this permanently deletes every "
+                "vector currently stored in this collection).",
+                self._collection,
+                actual,
+                self._quantization,
+            )
 
     def _ensure_collection(
         self,
         VectorParams: type,  # noqa: N803
         HnswConfigDiff: type,  # noqa: N803
         Distance: type,
+        quantization_config: Any,
     ) -> None:
-        """Create the Qdrant collection if it does not already exist."""
+        """Create the Qdrant collection if it does not already exist.
+
+        `quantization_config` is only applied on the create path: it is fixed
+        for the lifetime of a collection once created, so setting/changing
+        `qdrant_quantization` has NO effect on a collection that already
+        exists -- see `_warn_if_quantization_mismatch` for how that is
+        surfaced, and `recreate()` for the only way to actually change it.
+
+        The mismatch check itself is skipped entirely when `qdrant_quantization`
+        is unset: with nothing configured there is nothing to mismatch, so
+        there is no reason to pay for a `get_collection()` network round-trip
+        on every `__init__()` against an already-created collection -- the
+        common case for essentially every `trelix search`/index invocation
+        against a Qdrant backend, quantization or not.
+        """
         existing = {c.name for c in self._client.get_collections().collections}
         if self._collection not in existing:
-            self._client.create_collection(
-                collection_name=self._collection,
-                vectors_config=VectorParams(
-                    size=self._dimension,
-                    distance=Distance.COSINE,  # type: ignore[attr-defined]
-                    hnsw_config=HnswConfigDiff(
-                        m=16,
-                        ef_construct=200,
-                    ),
+            vectors_config = VectorParams(
+                size=self._dimension,
+                distance=Distance.COSINE,  # type: ignore[attr-defined]
+                hnsw_config=HnswConfigDiff(
+                    m=16,
+                    ef_construct=200,
                 ),
             )
+            # `quantization_config` kwarg omitted entirely (rather than passed
+            # as `quantization_config=None`) when unset, so this call stays
+            # byte-for-byte identical to the pre-quantization call when the
+            # feature is off. Two explicit calls rather than one call built
+            # from a conditionally-populated kwargs dict: unpacking a
+            # `dict[str, object]` into `create_collection`'s precisely-typed
+            # kwargs erases every parameter's real type for mypy.
+            if quantization_config is not None:
+                self._client.create_collection(
+                    collection_name=self._collection,
+                    vectors_config=vectors_config,
+                    quantization_config=quantization_config,
+                )
+            else:
+                self._client.create_collection(
+                    collection_name=self._collection,
+                    vectors_config=vectors_config,
+                )
+            return
+
+        if self._quantization is not None:
+            self._warn_if_quantization_mismatch()
+
+    def recreate(self) -> None:
+        """Delete this Qdrant collection and recreate it fresh.
+
+        The only way trelix exposes to adopt (or drop) `qdrant_quantization` on
+        a collection that already has data: quantization is fixed at
+        collection-creation time (see `_ensure_collection`), so the config
+        alone has no effect on an existing collection. Also usable the same
+        way `SQLiteVectorStore.recreate()` is -- e.g. to recover from an
+        embedding-provider dimension change.
+
+        Matches the `BaseVectorStore.recreate()` contract: discards EVERY
+        stored vector (real chunks, file summaries, sub-chunks -- there is no
+        partial recreate) and leaves the collection usable at
+        `self._dimension` immediately afterward, now created with whichever
+        quantization setting is currently configured. Callers are responsible
+        for invalidating whatever tracks "already embedded" state (see
+        `Database.clear_all_embeddings`) -- this only rebuilds the vector
+        store itself, it has no notion of chunks or content hashes.
+        """
+        try:
+            from qdrant_client.models import Distance, HnswConfigDiff, VectorParams
+        except ImportError as exc:
+            raise ImportError(_QDRANT_MISSING_MSG) from exc
+
+        self._client.delete_collection(collection_name=self._collection)
+        quantization_config = self._build_quantization_config()
+        self._ensure_collection(VectorParams, HnswConfigDiff, Distance, quantization_config)
 
     # ------------------------------------------------------------------
     # BaseVectorStore interface
@@ -117,6 +289,34 @@ class QdrantVectorStore(BaseVectorStore):
                 points=points,
             )
 
+    def _build_search_params(self) -> Any:
+        """Build the `SearchParams` to pass to `query_points()`, or None.
+
+        None (rather than an empty `SearchParams()`) when `qdrant_quantization`
+        is unset, so `search()` sends `query_points()` NO `search_params` kwarg
+        at all when the feature is off -- byte-for-byte identical to the
+        pre-quantization call, not merely functionally equivalent.
+
+        `rescore=True` (the default, see config.py) re-checks the quantized
+        candidates against full-precision vectors -- how the ~99.99%
+        (int8) / 90-98% (binary) recall numbers this feature exists to
+        capture are actually achieved. Disabling it trades recall for the
+        maximum possible speed gain.
+
+        Typed `Any` for the same reason as `_build_quantization_config`: the
+        real return type is only reachable behind a deferred, optional import.
+        """
+        if self._quantization is None:
+            return None
+        try:
+            from qdrant_client.models import QuantizationSearchParams, SearchParams
+        except ImportError as exc:
+            raise ImportError(_QDRANT_MISSING_MSG) from exc
+
+        return SearchParams(
+            quantization=QuantizationSearchParams(rescore=self._quantization_rescore)
+        )
+
     def search(self, query: list[float], k: int) -> list[tuple[int, float]]:
         """
         Return top-k (chunk_id, score) pairs using cosine similarity.
@@ -127,11 +327,26 @@ class QdrantVectorStore(BaseVectorStore):
         result; since Qdrant already returns similarity scores in [0, 1],
         results pass through correctly.
         """
-        response = self._client.query_points(
-            collection_name=self._collection,
-            query=query,
-            limit=k,
-        )
+        search_params = self._build_search_params()
+        # `search_params` kwarg omitted entirely (rather than passed as
+        # `search_params=None`) when quantization is off, so this call stays
+        # byte-for-byte identical to the pre-quantization call. Two explicit
+        # calls rather than one built from a conditionally-populated kwargs
+        # dict: unpacking a `dict[str, object]` into query_points' precisely
+        # -typed kwargs erases every parameter's real type for mypy.
+        if search_params is not None:
+            response = self._client.query_points(
+                collection_name=self._collection,
+                query=query,
+                limit=k,
+                search_params=search_params,
+            )
+        else:
+            response = self._client.query_points(
+                collection_name=self._collection,
+                query=query,
+                limit=k,
+            )
         return [(int(hit.id), hit.score) for hit in response.points]
 
     def delete_batch(self, chunk_ids: list[int]) -> None:

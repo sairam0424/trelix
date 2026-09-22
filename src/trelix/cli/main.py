@@ -3,7 +3,7 @@ trelix CLI — Phase 14 full implementation.
 
 Commands:
     trelix index  <repo> [--provider local|openai|azure|voyage|local-code
-                          |bedrock-titan|bedrock-cohere] [-v]
+                          |bedrock-titan|bedrock-cohere|cohere] [-v]
     trelix search <repo> <query> [--provider ...] [--json]
     trelix ask    <repo> <query> [--provider ...]
     trelix query  <repo> <query> [--provider ...]
@@ -27,9 +27,9 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, cast
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
+from trelix.cli.progress import make_progress
 from trelix.core.console_safety import safe_text
 from trelix.federation.registry import RepoRegistry
 
@@ -369,11 +369,12 @@ _EmbedderProvider = Literal[
     "nomic-code",
     "bedrock-titan",
     "bedrock-cohere",
+    "cohere",
 ]
 
 _PROVIDER_HELP = (
     "Embedding provider: local | openai | azure | voyage"
-    " | local-code | nomic-code | bedrock-titan | bedrock-cohere"
+    " | local-code | nomic-code | bedrock-titan | bedrock-cohere | cohere"
     " | bge-code (EXPERIMENTAL: pooling unverified, no quality claim)"
     " (default: TRELIX_EMBEDDER_PROVIDER env var, or 'local' if unset)"
 )
@@ -448,6 +449,24 @@ def index(
             "Raise it only after reading the previewed list."
         ),
     ),
+    use_batch_api: bool = typer.Option(
+        False,
+        "--use-batch-api",
+        help=(
+            "Submit new embeddings via OpenAI's Batch API (50% cheaper, up to 24h "
+            "completion window) instead of embedding synchronously in this run. "
+            "Only takes effect with the openai provider — falls through to the "
+            "normal path otherwise. Re-run with --resume-batch later to collect results."
+        ),
+    ),
+    resume_batch: bool = typer.Option(
+        False,
+        "--resume-batch",
+        help=(
+            "Check for and resolve a pending Batch API job submitted by an earlier "
+            "--use-batch-api run, without re-walking or re-parsing the repository."
+        ),
+    ),
 ) -> None:
     """Index a repository — builds the search index at <repo>/.trelix/index.db"""
     _setup_logging(verbose)
@@ -472,12 +491,27 @@ def index(
             "--yes only applies to --prune. Add --prune, or drop --yes.",
         )
         raise typer.Exit(1)
+    if resume_batch and (dry_run or prune or use_batch_api):
+        _print_error(
+            "Contradictory flags",
+            "--resume-batch only resolves a pending job; it does not walk, prune, "
+            "or submit anything new. Drop --dry-run/--prune/--use-batch-api.",
+        )
+        raise typer.Exit(1)
 
     try:
         config = IndexConfig(
             repo_path=str(Path(repo).resolve()),
             embedder=_build_embedder_config(provider),
         )
+        # Set post-construction, not as a constructor kwarg: use_batch_api has an
+        # alias (TRELIX_USE_BATCH_API) and mypy has no pydantic plugin configured
+        # here, so it only recognises a Field's alias as a valid __init__ kwarg
+        # name, not the plain attribute name populate_by_name=True also accepts
+        # at runtime -- passing it as a kwarg type-checks against the wrong name
+        # and fails CI's `mypy src/trelix/` gate. Attribute assignment checks
+        # against the field's own declared type instead, and has no such gap.
+        config.use_batch_api = use_batch_api
     except _PydanticValidationError as exc:
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
@@ -488,6 +522,34 @@ def index(
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
+
+    if resume_batch:
+        try:
+            indexer = Indexer(config)
+            job = indexer.db.get_pending_batch_job(config.repo_path)
+            if job is None:
+                _print_error(
+                    "No pending Batch API job",
+                    f"No pending job found for {_safe_text(repo)}. "
+                    "Run with --use-batch-api first to submit one.",
+                )
+                raise typer.Exit(1)
+            if job["provider"] != config.embedder.provider:
+                _print_error(
+                    "Provider mismatch",
+                    f"This job was submitted with provider={job['provider']!r}, but "
+                    f"this invocation resolved provider={config.embedder.provider!r}. "
+                    f"Re-run with --provider {job['provider']} to resume it.",
+                )
+                raise typer.Exit(1)
+            stats: dict[str, int] = {"chunks_embedded": 0}
+            indexer._batch_embed_and_store_via_batch_api([], stats)
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            _print_error("Batch API resume failed", exc)
+            raise typer.Exit(1) from exc
+        return
 
     # _safe_text(repo): a directory legitimately named e.g. "Project [old]" would
     # otherwise render with "[old]" swallowed as a markup tag.
@@ -790,6 +852,7 @@ _EMBED_MODEL_FIELDS = {
     "nomic-code": "nomic_code_model",
     "bedrock-titan": "bedrock_titan_model",
     "bedrock-cohere": "bedrock_cohere_model",
+    "cohere": "cohere_model",
 }
 
 
@@ -837,13 +900,7 @@ def _print_cost_preview(config: IndexConfig) -> None:
     token_count = 0
     no_symbols = 0
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
+    with make_progress(console) as progress:
         task = progress.add_task("Chunking (no embedding)…", total=len(to_embed))
         for file in to_embed:
             progress.advance(task)
@@ -2354,13 +2411,7 @@ def migrate_vectors(
     offset = 0
     migrated = 0
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
+    with make_progress(console) as progress:
         task = progress.add_task("Migrating…", total=total)
 
         while True:

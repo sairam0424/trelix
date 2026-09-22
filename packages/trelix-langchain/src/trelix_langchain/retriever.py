@@ -33,6 +33,7 @@ class TrelixRetriever(BaseRetriever):
                         "bedrock-cohere",
                         "bge-code",
                         "nomic-code",
+                        "cohere",
                     ],
                     self.provider,
                 )

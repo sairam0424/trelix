@@ -8,6 +8,121 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.3.5] — 2026-09-19
+
+### Fixed
+- **Fusion no longer drops one piece of a split symbol from search results.**
+  [3.3.4]'s chunker fix let one oversized symbol produce multiple chunks; `fusion.py`'s
+  `_fusion_identity()` dedupe key didn't account for that, and neither did
+  `Retriever._dedup()`, which runs immediately after fusion as an unexamined second
+  dedupe pass on every standard-intent query — silently re-dropping a split piece's
+  content one call stack frame downstream of the identity it was already correctly
+  disambiguated in. Both keys now include the per-piece `chunk.id` (always paired with
+  the absolute file path, never bare, to avoid repeating EXE-02's cross-repo collision
+  bug one level down). CI caught a real second regression before this shipped: a
+  pre-existing pinned test required MGS3 sub-chunk results (`source == "sub_chunk"`) to
+  keep collapsing by symbol alone, since they're a finer-grained, overlapping *view* into
+  a symbol the primary chunk already covers — not disjoint content like a split primary
+  chunk's pieces. Both keys now special-case that source; a full, uncurated test-suite
+  run (not just the touched files) is what caught this, after a curated sweep missed it.
+  One further, smaller finding is documented but intentionally not fixed: the MGS3
+  sub-chunk leg reuses a different table's autoincrement counter as `Chunk.id`, creating
+  a rare, probabilistic numeric-collision risk with real `chunks.id` values — tracked as
+  backlog, not part of this fix.
+
+## [3.3.4] — 2026-09-19
+
+### Added
+- **Call-graph topology in the prompt for structural intents.** `expand_with_call_graph`
+  now tracks each expanded neighbor's hop distance and direction (caller/callee) and
+  renders it into the assembled context as a short phrase (e.g. "called by
+  process_request (1 hop)") for `dependency_map`/`blast_radius`/`feature_flow` intents
+  only — every other intent's context text is byte-identical to before. Rerankers
+  (`_cross_encoder_rerank`/`_cohere_rerank`/`_xtr_rerank`) previously silently dropped
+  this field on reconstruction, which would have made the feature a no-op under default
+  config (`rerank=True`); fixed before merge.
+- **Wider Python call-graph type-hint resolution.** `callee_type_hint` resolution on
+  `receiver.method()` calls now also tracks `self.attr` assignments (class-scoped) and
+  local-variable-to-return-type propagation, beyond the previous direct-annotated-
+  parameter-only coverage. A constructor-call heuristic that mistook snake_case factory
+  functions (e.g. `self.logger = get_logger()`) for class constructors — misdirecting
+  resolution — was found and fixed before merge.
+- **Opt-in scalar/binary quantization for the Qdrant backend.** `qdrant_quantization`
+  (`int8`/`binary`/`None`, default `None`) + `qdrant_quantization_rescore` (default
+  `True`), verified against the real installed `qdrant-client==1.19.0` SDK. Adds
+  `QdrantVectorStore.recreate()` (a real, previously-missing gap the base class already
+  contracted for) and a fail-soft mismatch warning when an existing collection's actual
+  quantization state disagrees with the configured setting. The SQLite backend is
+  untouched — its flat-scan design doesn't benefit from quantization the way Qdrant's
+  real HNSW index does.
+
+### Fixed
+- **Chunker no longer destructively truncates oversized symbols.** A symbol whose body
+  exceeded `max_tokens_per_chunk` (default 512) had its excess content silently
+  discarded and replaced with `"# ... (truncated)"` — recoverable by no retrieval leg,
+  since no row anywhere stored it. Now split into multiple sequential chunks sharing the
+  parent symbol's `symbol_id` instead (schema-safe — `chunks.symbol_id` carries no
+  unique constraint). Adversarial review found and fixed two real bugs before this
+  shipped: a symbol with an oversized header but an empty/tiny body produced *zero*
+  chunks (strictly worse than the truncation it replaced), and the property test meant
+  to fuzz that exact input shape explicitly skipped it. One known, accepted trade-off is
+  documented but intentionally not fixed: `fusion.py`'s `(path, symbol_id)` dedupe key
+  can now collapse two pieces of one split symbol into one fused result more often than
+  before (previously only reachable via the opt-in MGS3 leg) — `fusion.py`'s own
+  docstring forbids a second dedupe pass and documents real regression history from a
+  prior attempt to change its identity key.
+
+### Research
+- A Phase 6-style spike (`docs/reports/chunking-strategy-spike-2026-09-18.md`) verified
+  a controlled study finding trelix's per-symbol chunking underperforms alternative
+  strategies, but concluded a full chunking redesign is not worth building right now:
+  trelix already has three overlapping mechanisms (call-graph/dataflow expansion,
+  `ContextualChunker` summaries, and an existing-but-off-by-default MGS3 sub-chunk
+  indexer) that address much of the same gap, and several production-adoption claims
+  backing the case for a redesign failed independent verification.
+
+## [3.3.3] — 2026-09-17
+
+### Added
+- **Direct `CohereEmbedder`.** trelix previously only reached Cohere via Bedrock (a
+  different API surface with no token-usage reporting). Adds a direct embedder using
+  Cohere's own `ClientV2.embed()` API — `embed-english-v3.0` by default (1024 dims),
+  asymmetric `search_document`/`search_query` input types, 96-texts/call batching, and
+  token metering via the response's `billed_units`. Configure with
+  `TRELIX_EMBEDDER_PROVIDER=cohere` / `COHERE_API_KEY`.
+- **Opt-in CodeRAG-style dataflow retrieval leg.** A new expansion leg,
+  `expand_with_dataflow`, correlates a symbol's intra-procedural def-use spans (already
+  extracted by `DataFlowExtractor`, but previously never read outside tests) against its
+  resolved call sites, surfacing only the callees a specific tracked variable is live
+  across — narrower than the existing call-graph leg's unconditional "every callee."
+  Off by default; enable via `RetrievalConfig.dataflow_expansion_enabled` (requires
+  `ParserConfig.dataflow_enabled` at index time too).
+- **Opt-in OpenAI Batch API support for large re-index jobs.** `trelix index
+  --use-batch-api` submits embedding requests via OpenAI's asynchronous Batch API (50%
+  cost discount, 24h completion window) instead of blocking synchronously; `--resume-batch`
+  checks a pending job and completes indexing once it finishes.
+
+## [3.3.2] — 2026-09-17
+
+### Fixed
+- **Removed the dead `sqlite-vec` HNSW code path.** `sqlite-vec` has never shipped
+  `+hnsw()` syntax under any release, stable or alpha — the maintainer rejected HNSW
+  years ago (upstream issue #25) and built DiskANN/IVF/rescore instead (still alpha,
+  unrelated syntax). `SQLiteVectorStore`'s HNSW-table attempt always failed and always
+  fell back to flat `vec0` scan, so results were always correct, but the code's
+  `hnsw_active`/`hnsw_*` knobs and the docs described a feature that has never existed.
+  Removes the dead path entirely and corrects every doc claim to describe the actual,
+  permanent flat-scan behavior. Qdrant's own genuine HNSW support is untouched.
+
+### Added
+- CLI progress bars now show a literal "X of Y" count alongside the percentage, across
+  all 7 `Progress()` call sites in the indexer and CLI — de-duplicated into a single
+  `make_progress()` factory.
+- `SECURITY.md`'s existing "Prompt Injection via Indexed Content" disclosure now cites
+  external 2026 research (MCPTox, CodePoisonRAG, "Beyond the Payload") quantifying the
+  severity of the two attack classes already described structurally, without changing
+  the honest not-mitigated conclusion.
+
 ## [3.3.1] — 2026-09-17
 
 ### Fixed
