@@ -1,4 +1,4 @@
-# trelix User Guide — v3.3.5
+# trelix User Guide — v3.3.6
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -2201,4 +2201,4 @@ Everything below is **additive and off by default** — a v2.12.0 setup keeps be
 
 ---
 
-*trelix v3.3.5 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v3.3.6 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

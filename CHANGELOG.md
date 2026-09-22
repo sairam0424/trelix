@@ -8,6 +8,53 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.3.6] — 2026-09-22
+
+### Fixed
+- **`litellm` security floor bumped past 3 real CVEs** (2 CRITICAL, CVSS 9.8: an
+  unauthenticated Host-header auth-bypass and an unauthenticated SSTI-to-RCE; 1 Medium
+  SSRF). `pyproject.toml`'s floor was `litellm>=1.50.0` — dangerously low even though the
+  locked version was already safe, because a fresh resolve could still land on a
+  vulnerable one. Bumping it surfaced two pre-existing, unrelated resolver conflicts: the
+  `plaid` extra was permanently unresolvable against a real `openai>=3.0.0` (removed
+  outright; `PlaidReranker` itself is untouched and still works if `ragatouille` is
+  installed manually), and the core `openai` floor was lowered to `>=2.20.0,<3.0.0` to
+  keep `trelix[litellm]` installable while still fencing off `openai-python` v3's breaking
+  transport switch.
+- **`QueryPlanner`'s LLM provider was coupled to the embedder's provider, not
+  `TRELIX_LLM_PROVIDER`.** A `local`/`voyage`/etc. embedder always forced an
+  unauthenticated `openai` client onto the query planner, silently collapsing every
+  `plan()` call to `default_plan()` even when a real, credentialed LLM provider
+  (Anthropic, Bedrock, Vertex) was configured — there was no way to combine a free/local
+  embedder with a working LLM-backed planner. `QueryPlanner`/`AdaptiveRouter` gained an
+  `llm_config` parameter (mirroring `Synthesizer`'s existing, identical shape) that's used
+  directly when supplied, and `Retriever` now passes `IndexConfig.llm` through. Existing
+  callers that don't pass `llm_config` keep the exact prior behavior.
+- **`trelix audit prune` actually removes rows now.** `TRELIX_AUDIT_RETENTION_DAYS` had
+  been accepted-but-unimplemented since it was added — nothing pruned `audit_log`. Pruning
+  is now real, batched, and hash-chain-aware: `verify()` resolves its walk from a written
+  prune watermark instead of assuming the chain always starts at row 1, so a legitimately
+  pruned log verifies clean instead of false-positiving as tampered (`log_emptied`).
+  `PRAGMA auto_vacuum=INCREMENTAL` is retrofitted on open so pruning actually reclaims
+  disk. New `trelix audit prune` CLI command (`--dry-run`, `--retention-days`,
+  `--batch-size`) — not wired into any scheduler; run it externally via cron.
+
+### Added
+- **Abstractive compression provider** (`TRELIX_RETRIEVAL_COMPRESSION_PROVIDER=abstractive`).
+  Layers an LLM-synthesized summary on top of extractive compression's existing
+  verbatim-declaration-line guarantee — the signature/docstring line is always kept
+  byte-for-byte; only the remaining body is replaced with a summary, rendered under an
+  explicit "not verbatim source" header so `kept_spans` never claims the summary as a
+  citable span. Same graceful-degradation contract as the extractive provider: any LLM
+  failure degrades to passthrough rather than propagating into retrieval.
+- **`.drawio` diagram connector** (`trelix connector sync <repo> diagram`) — a scoped
+  multi-modal pilot. Captions local `.drawio` (diagrams.net) files via the existing
+  text-only `TrelixChatClient` (the format is plain XML, fully describable as text — no
+  new vision/provider code needed) and links them as `Artifact`s via the existing
+  `ArtifactLinker`, exactly like a Jira ticket. Raster images (`.png`/`.jpg`) are
+  deliberately out of scope — that needs genuinely new vision-provider code, tracked
+  separately.
+
 ## [3.3.5] — 2026-09-19
 
 ### Fixed
