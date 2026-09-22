@@ -1,20 +1,27 @@
 """LLM SDK floor-regression guards.
 
-WHY THIS EXISTS. openai>=3.0.0 and anthropic>=1.0.0 are not just "latest and greatest"
-floors -- they're the exact versions this codebase's LLM backends were fixed to require:
+WHY THIS EXISTS. anthropic>=1.0.0 is not just a "latest and greatest" floor -- it's the
+exact version this codebase's LLM backend was fixed to require: AnthropicBackend no
+longer sends `temperature=` to Messages.create (removed in anthropic-sdk-python v1.0.0)
+and Bedrock's region check matches AnthropicBedrock's v1.0.0 enforcement. Lowering this
+floor would silently resurrect a fixed TypeError-on-first-call bug the moment pip
+resolves back below 1.0.0.
 
-  * anthropic>=1.0.0: AnthropicBackend no longer sends `temperature=` to
-    Messages.create (removed in anthropic-sdk-python v1.0.0) and Bedrock's region check
-    matches AnthropicBedrock's v1.0.0 enforcement. Lowering this floor would silently
-    resurrect a fixed TypeError-on-first-call bug the moment pip resolves back below 1.0.0.
-  * openai>=3.0.0: src/trelix/core/retry.py recognizes httpx2 exception shapes
-    specifically because openai-python v3.0.0 made httpx2 the default transport.
-    Lowering this floor doesn't break anything by itself, but re-couples the floor to a
-    fact (the retry classifier's httpx2 support) that was added FOR this version.
+openai's floor tells a DIFFERENT, since-revised story: it was raised to >=3.0.0 to
+safely adopt openai-python v3.0.0's "httpx2" default-transport switch (src/trelix/
+core/retry.py's is_retryable_http_error() was updated for it), but every litellm
+release through 1.102.0 caps openai<3.0.0 -- making trelix[litellm] permanently
+unresolvable from a fresh lock at >=3.0.0 (see pyproject.toml's own comment on the
+openai dependency, and tests/unit/test_dependency_floor_guards.py's ceiling guard).
+The floor was deliberately re-lowered to >=2.20.0 with an explicit <3.0.0 ceiling --
+retry.py's is_retryable_http_error() is attribute/duck-typed rather than
+httpx2-specific, so it tolerates the older, pre-3.0.0 transport shape that <3.0.0
+actually resolves to.
 
 These tests pin the current, deliberate floors so a future contributor loosening one
 during an unrelated dependency bump gets a named, specific failure instead of silently
-reopening a fixed bug.
+reopening a fixed bug (anthropic) or re-exposing the httpx2 major (openai, guarded
+separately in test_dependency_floor_guards.py).
 """
 
 from __future__ import annotations
@@ -48,17 +55,18 @@ def _extra_dependency_specifier(extra: str, name: str) -> str:
     raise AssertionError(f"{name!r} not found in the {extra!r} extra")
 
 
-def test_openai_floor_is_at_or_above_3_0_0() -> None:
-    """Below 3.0.0, retry.py's httpx2 recognition is guarding against a
-    transport switch that hasn't happened yet for the resolved version --
-    harmless, but the floor should track the fact it was raised for."""
+def test_openai_floor_has_deliberate_sub_3_0_0_ceiling() -> None:
+    """openai>=3.0.0 was raised for retry.py's httpx2 recognition, then deliberately
+    re-lowered below 3.0.0 because litellm permanently caps openai<3.0.0 -- this
+    guard checks the re-lowering kept its <3.0.0 ceiling (an unbounded floor here
+    would silently re-expose the unmigrated httpx2 major, see
+    test_dependency_floor_guards.py::test_openai_ceiling_excludes_unmigrated_httpx2_major)
+    rather than that the floor itself stayed at any particular value."""
     spec = _core_dependency_specifier("openai")
-    match = re.search(r">=\s*(\d+)\.(\d+)\.(\d+)", spec)
-    assert match is not None, f"openai specifier {spec!r} has no >=X.Y.Z floor to check"
-    floor = tuple(int(x) for x in match.groups())
-    assert floor >= (3, 0, 0), (
-        f"openai floor is {spec!r} -- below 3.0.0 this no longer needs retry.py's httpx2 "
-        "recognition, but re-lowering it defeats the reason the floor was raised"
+    assert "<3.0.0" in spec, (
+        f"openai specifier is {spec!r} -- litellm permanently caps openai<3.0.0, so the "
+        "core floor must keep an explicit <3.0.0 ceiling (not just a >=X floor) or a "
+        "fresh install could still silently resolve the unmigrated httpx2 major"
     )
 
 

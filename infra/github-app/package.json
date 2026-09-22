@@ -13,7 +13,8 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "redeliver-failed-webhooks": "node dist/scripts/redeliver-webhook-deliveries.js"
   },
   "dependencies": {
     "@octokit/auth-app": "^8.3.0",

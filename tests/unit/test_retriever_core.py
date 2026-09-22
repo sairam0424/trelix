@@ -196,6 +196,37 @@ class TestRetrieverInit:
         assert retriever.embedder is mock_embedder
         assert retriever.vector_store is mock_make_vs.return_value
 
+    def test_init_passes_the_real_llm_config_to_the_planner(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
+        """Retriever must thread `config.llm` through to QueryPlanner.
+
+        Before this fix, `Retriever.__init__` never passed `llm_config` at all, so a
+        `local`/`voyage`/etc. embedder always forced QueryPlanner onto an
+        unauthenticated openai fallback regardless of `TRELIX_LLM_PROVIDER` — see
+        tests/unit/test_planner_llm_provider_coupling.py for the coupling bug itself.
+
+        MUTATION: drop `llm_config=config.llm` from Retriever.__init__'s
+        `QueryPlanner(...)` call.
+        """
+        from trelix.retrieval.retriever import Retriever
+
+        with (
+            patch("trelix.retrieval.retriever.Database"),
+            patch("trelix.retrieval.retriever.make_embedder") as mock_make_embedder,
+            patch("trelix.retrieval.retriever.make_vector_store"),
+            patch("trelix.retrieval.retriever.QueryPlanner") as mock_planner_cls,
+            patch.dict(os.environ, {"OPENAI_API_KEY": "test-placeholder-not-real"}),
+        ):
+            mock_embedder = MagicMock()
+            mock_embedder.dimension = 1536
+            mock_make_embedder.return_value = mock_embedder
+
+            config = IndexConfig(repo_path=str(tmp_path))
+            Retriever(config)
+
+        assert mock_planner_cls.call_args.kwargs.get("llm_config") is config.llm, (
+            "Retriever did not pass the real IndexConfig.llm through to QueryPlanner"
+        )
+
     def test_init_creates_debug_dir_path(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
         """_debug_dir is set to <repo_path>/.trelix/debug."""
         from pathlib import Path

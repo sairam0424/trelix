@@ -202,7 +202,7 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **FLARE confidence-gated re-retrieval** — detects low-confidence synthesis spans and re-queries before finalising the answer (`TRELIX_RETRIEVAL_FLARE=true`)
 - **PageRank symbol boost** — weights retrieval candidates by graph centrality so hub symbols surface first (`TRELIX_RETRIEVAL_PAGERANK_BOOST=true`)
 - **Personalized PageRank** — teleport mass weighted toward ticket/artifact-linked symbols instead of uniform, opt-in (`TRELIX_RETRIEVAL_PAGERANK_PERSONALIZATION=true`)
-- **Cross-source connectors** — `trelix connector sync ./repo <jira|testrail|xray|linear>` fetches tickets/tests and auto-links them into the code graph via `ArtifactLinker`
+- **Cross-source connectors** — `trelix connector sync ./repo <jira|testrail|xray|linear|diagram>` fetches tickets/tests (or captions local `.drawio` diagrams) and auto-links them into the code graph via `ArtifactLinker`
 - **Incremental graph updater** — `trelix watch` automatically patches the Code Property Graph on every file save (no manual `trelix graph` re-run needed)
 - **Query telemetry** — per-query latency, intent and result count via `trelix telemetry` CLI or `TRELIX_TELEMETRY_ENABLED=true`
 - **CoIR eval harness** — `trelix eval ./repo --golden <path>` measures nDCG@10, Recall@10, and MRR against a JSONL golden set
@@ -374,7 +374,7 @@ TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | `cohere` \| `cross_encoder` \| `plaid` \| `xtr` |
-| `TRELIX_RETRIEVAL_PLAID_MODEL` | `colbert-ir/colbertv2.0` | RAGatouille PLAID model (`trelix[plaid]`) |
+| `TRELIX_RETRIEVAL_PLAID_MODEL` | `colbert-ir/colbertv2.0` | RAGatouille PLAID model — install ragatouille manually (no dedicated extra anymore; its dependency chain caps `openai<3`, permanently incompatible with trelix's core `openai>=2.20.0,<3.0.0` floor) |
 
 ### Retrieval Tuning
 

@@ -77,10 +77,16 @@ dependencies = [
     # --- Storage ---
     "sqlite-vec>=0.1.6",
     # --- Embeddings ---
-    # Bumped past openai-python v3.0.0's breaking "httpx2" default-transport
-    # switch — src/trelix/core/retry.py now recognizes httpx2 exception shapes
-    # (see is_retryable_http_error()), so this is safe to float past.
-    "openai>=3.0.0",
+    # Lowered from an unbounded >=3.0.0 to >=2.20.0,<3.0.0: every litellm release
+    # through 1.102.0 caps openai<3.0.0 (verified via `uv pip compile`'s full
+    # resolver trace), so >=3.0.0 made trelix[litellm] permanently unresolvable
+    # from a fresh lock — the old lock only "worked" because it had a stale,
+    # pre-floor-bump openai==2.44.0 nobody re-verified against. The original
+    # >=3.0.0 bump was to safely adopt openai-python v3.0.0's "httpx2" transport
+    # switch; the explicit <3.0.0 ceiling here is deliberate, not an oversight —
+    # see tests/unit/test_dependency_floor_guards.py and
+    # tests/unit/test_llm_sdk_floor_guards.py, both updated alongside this change.
+    "openai>=2.20.0,<3.0.0",
     "tiktoken>=0.7.0",
     # --- Retrieval math ---
     # scikit-learn was an unconditional core dependency with zero importers.
@@ -139,9 +145,6 @@ cohere = [
     # unrelated install intent. Floor is the exact version this embedder was
     # verified against (see embedder/cohere.py's module docstring).
     "cohere>=7.1.0",
-]
-plaid = [
-    "ragatouille>=0.0.8",             # PLAID ColBERT late-interaction reranker
 ]
 voyage = [
     "voyageai>=0.2.0",               # VoyageEmbedder (voyage-code-3, 56.26 CoIR)
@@ -271,20 +274,32 @@ anthropic = ["anthropic>=1.0.0"]
 # guard against.
 bedrock   = ["boto3>=1.35.0"]
 vertex    = ["google-genai>=1.0.0"]
-litellm   = ["litellm>=1.50.0"]
+# 1.90.2 matches uv.lock's already-resolved version and clears three real CVEs below
+# 1.84.0: GHSA-4xpc-pv4p-pm3w (Host-header auth-bypass, CVSS 9.8), GHSA-6wvf-77m9-58rm
+# (unauthenticated SSTI->RCE via /prompts/test, CVSS 9.8), GHSA-hx8v-g79f-8w5f (SSRF via
+# nested user_config, fixed 1.83.9). The prior >=1.50.0 floor let a fresh resolve land
+# on any of these; the lock was already safe, the floor was not.
+litellm   = ["litellm>=1.90.2"]
 llm-all   = ["trelix[anthropic,bedrock,vertex,litellm]"]
 graph-viz = ["pyvis>=0.3.2"]
 knowledge-graph = ["networkx>=3.3.0", "pyvis>=0.3.2"]
+# `plaid` (RAGatouille PLAID reranker) was removed entirely, not just excluded from
+# `all`: every ragatouille release resolves llama-index-llms-openai, which caps
+# `openai<3` on every version through 0.7.10 (verified via `uv pip compile`'s full
+# resolver trace) — permanently incompatible with the core `openai>=3.0.0` floor
+# above. `PlaidReranker` (retrieval/reranker_plaid.py) is untouched and still works
+# via `TRELIX_RETRIEVAL_RERANK_PROVIDER=plaid`; it lazily imports ragatouille and
+# degrades gracefully if missing. Install it manually (`pip install ragatouille`)
+# outside trelix's own extras if you accept the openai<3 downgrade risk yourself;
+# re-add this extra once ragatouille/llama-index ship openai>=3 support upstream.
 # `all` previously resolved to local,rerank,voyage,qdrant,watch,sso, which silently
 # omitted three shipped, documented features: `trelix serve` (docs/FAQ.md:520 and
 # docs/AUDIT.md:18 both instruct `pip install 'trelix[serve]'`), OTel export
 # (docs/CONFIGURATION.md:293), and the pyvis graph export (CONTRIBUTING.md:97).
 # `pip install trelix[all]` then `trelix serve` was an ImportError.
 #
-# The line drawn here: every runtime extra EXCEPT the four below, each excluded for a
+# The line drawn here: every runtime extra EXCEPT the three below, each excluded for a
 # reason verified against installed metadata rather than assumed —
-#   plaid      ragatouille requires llama-index, langchain, langchain_core, faiss-cpu,
-#              colbert-ai and onnx; two whole LLM frameworks for one reranker.
 #   bge-code   FlagEmbedding requires torch, transformers, datasets, accelerate and
 #              peft — a fine-tuning stack, not an inference dependency.
 #   taint      semgrep is LGPLv2 (its only License classifier); trelix is MIT, so a

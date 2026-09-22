@@ -8,6 +8,7 @@ pattern for an external API client in this codebase.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1111,6 +1112,22 @@ class TestConnectorRegistry:
     def test_unknown_name_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown connector"):
             get_artifact_source("bogus")  # type: ignore[arg-type]
+
+    def test_diagram_resolves_to_diagram_connector_given_an_index_config(
+        self, tmp_path: Path
+    ) -> None:
+        """ "diagram" is the one connector that needs index_config (repo_path
+        + llm) -- see tests/unit/test_connector_diagram.py for the rest of
+        DiagramConnector's own coverage."""
+        from trelix.core.config import IndexConfig
+        from trelix.indexing.connectors.diagram import DiagramConnector
+
+        config = IndexConfig(repo_path=str(tmp_path))
+        assert isinstance(get_artifact_source("diagram", index_config=config), DiagramConnector)
+
+    def test_diagram_without_index_config_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="index_config"):
+            get_artifact_source("diagram")
 
 
 # ---------------------------------------------------------------------------

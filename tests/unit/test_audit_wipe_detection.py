@@ -339,16 +339,42 @@ def test_a_wipe_that_leaves_the_anchor_behind_is_still_a_count_mismatch(tmp_path
     assert _verify(db) == (1, REASON_COUNT_MISMATCH)
 
 
-def test_deleting_rows_would_report_log_emptied_which_is_why_pruning_must_update_this(
+def test_pruning_to_empty_via_prune_verifies_clean_not_log_emptied(tmp_path: Path) -> None:
+    """The resolution of the future false positive the old version of this test pinned.
+
+    Before AuditStore.prune() existed, deleting all rows left `count`/`head_hash`
+    reset to a fresh-database shape but the AUTOINCREMENT high-water mark still
+    at 5 — indistinguishable from a wipe, so log_emptied was correct. prune()
+    additionally writes a prune_watermark_id/_hash/prune_removed_count anchor in
+    the SAME transaction as its DELETE; verify() checks whether that watermark
+    already accounts for every id ever handed out before reporting log_emptied,
+    so a REAL prune() call — not a hand-simulated one — verifies clean even when
+    it empties the log completely.
+    """
+    db = tmp_path / "audit.db"
+    store = AuditStore(db)
+    for i in range(1, 6):
+        assert store.append(_event(i)) is True
+    assert store.verify_chain() is None
+
+    removed = store.prune(older_than_days=0)  # "older than right now" -> everything
+    store.close()
+
+    assert removed == 5
+    assert _seq_rows(db) == [("audit_log", 5)]
+    assert _verify(db) == (None, None)
+
+
+def test_deleting_rows_by_hand_without_the_prune_watermark_is_still_log_emptied(
     tmp_path: Path,
 ) -> None:
-    """The documented future false positive, pinned so it cannot be a surprise.
+    """The shape prune() exists to be the ONLY legitimate way to reach.
 
-    ``TRELIX_AUDIT_RETENTION_DAYS`` is accepted but unimplemented. The moment a
-    pruning job issues ``DELETE FROM audit_log``, a fully-pruned log will report
-    ``log_emptied`` — exactly what this test does. Whoever implements pruning will
-    have to change this test, and that is the point: the caveat in docs/AUDIT.md
-    and in ``_max_audit_log_seq_locked`` has a failing test attached to it.
+    A hand-rolled DELETE that resets count/head_hash but never writes prune()'s
+    watermark anchor is exactly as undetectable-from-a-wipe as it always was —
+    this is what confirms the new watermark check is actually load-bearing,
+    rather than verify() having quietly started trusting an empty log by
+    default.
     """
     db = _seed(tmp_path / "audit.db")
 
@@ -362,28 +388,47 @@ def test_deleting_rows_would_report_log_emptied_which_is_why_pruning_must_update
     assert _verify(db) == (1, REASON_LOG_EMPTIED)
 
 
-def test_no_shipped_code_path_deletes_from_audit_log_today() -> None:
+#: The one reviewed, deliberate location allowed to delete audit rows.
+#: AuditStore.prune() is what makes "a log that reaches zero rows was wiped"
+#: no longer universally true — see verify()'s prune-watermark check, which is
+#: the actual mechanism that tells a legitimate prune apart from a real wipe.
+_ALLOWED_TO_DELETE_AUDIT_LOG_ROWS = frozenset({"audit/store.py"})
+
+
+def test_no_shipped_code_path_deletes_from_audit_log_except_the_reviewed_pruner() -> None:
     """The premise the check rests on, checked instead of asserted in prose.
 
-    "A log that reaches zero rows was wiped" only holds while no shipped code path
-    deletes audit rows. This walks every string literal in ``src/`` that is not a
-    docstring — so the prose in ``_max_audit_log_seq_locked`` describing the future
-    false positive does not match itself — and fails the moment someone adds
-    pruning without revisiting the check.
+    "A log that reaches zero rows was wiped" no longer holds unconditionally —
+    AuditStore.prune() deletes audit rows on purpose, and verify() knows how to
+    tell that apart from a wipe (see the prune-watermark check added alongside
+    it). This walks every string literal in ``src/`` that is not a docstring and
+    fails if ANY file OTHER than the one reviewed pruner contains the deletion
+    literal — so a future, unreviewed deletion path still gets caught, which was
+    the entire point of the original check.
     """
     src = Path(__file__).resolve().parents[2] / "src" / "trelix"
-    offenders = sorted(
+    files_with_the_literal = {
         path.relative_to(src).as_posix()
         for path in src.rglob("*.py")
         if any(
             "delete from audit_log" in literal.lower()
             for literal in _non_docstring_literals(path.read_text(encoding="utf-8"))
         )
+    }
+
+    offenders = sorted(files_with_the_literal - _ALLOWED_TO_DELETE_AUDIT_LOG_ROWS)
+    assert offenders == [], (
+        "an unreviewed src/ file now deletes audit rows — either it should be "
+        "AuditStore.prune()'s job instead, or verify()'s watermark check needs "
+        "to know about this new path too"
     )
 
-    assert offenders == [], (
-        "src/ now deletes audit rows, so an empty log is no longer proof of a wipe — "
-        "update AuditStore._max_audit_log_seq_locked and docs/AUDIT.md"
+    # The allowlist itself must stay truthful: if prune() is ever removed or
+    # rewritten to no longer contain the literal, this fails loudly instead of
+    # leaving a stale, silently-permissive entry behind.
+    assert _ALLOWED_TO_DELETE_AUDIT_LOG_ROWS <= files_with_the_literal, (
+        "audit/store.py no longer contains a 'delete from audit_log' literal — "
+        "remove it from _ALLOWED_TO_DELETE_AUDIT_LOG_ROWS"
     )
 
 

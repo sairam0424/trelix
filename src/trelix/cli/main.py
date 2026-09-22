@@ -3718,11 +3718,14 @@ def agent_sessions_clear(
 
 
 # ---------------------------------------------------------------------------
-# connector sub-app (Jira/TestRail/Xray/Linear source-connector sync)
+# connector sub-app (Jira/TestRail/Xray/Linear/diagram source-connector sync)
 # ---------------------------------------------------------------------------
 
 connector_app = typer.Typer(
-    help="Sync external artefacts (Jira tickets, TestRail cases, Xray tests, Linear issues)."
+    help=(
+        "Sync external artefacts (Jira tickets, TestRail cases, Xray tests, "
+        "Linear issues, local .drawio diagrams)."
+    )
 )
 app.add_typer(connector_app, name="connector")
 
@@ -3731,7 +3734,10 @@ app.add_typer(connector_app, name="connector")
 def connector_sync(
     repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")],
     name: Annotated[
-        str, typer.Argument(help="Connector to sync: 'jira', 'testrail', 'xray', or 'linear'.")
+        str,
+        typer.Argument(
+            help="Connector to sync: 'jira', 'testrail', 'xray', 'linear', or 'diagram'."
+        ),
     ],
     link: Annotated[
         bool,
@@ -3768,7 +3774,7 @@ def connector_sync(
         raise typer.Exit(1)
 
     try:
-        source = get_artifact_source(name)  # type: ignore[arg-type]
+        source = get_artifact_source(name, index_config=config)  # type: ignore[arg-type]
     except ValueError as exc:
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
@@ -4015,6 +4021,100 @@ def audit_export(
             print(json.dumps(row, default=str))
     except sqlite3.DatabaseError as exc:
         _audit_db_unreadable(path, exc)
+
+
+@audit_app.command("prune")
+def audit_prune(
+    db: Annotated[str | None, typer.Option("--db", help="Path to audit.db")] = None,
+    retention_days: Annotated[
+        int | None,
+        typer.Option(
+            "--retention-days",
+            help="Override TRELIX_AUDIT_RETENTION_DAYS for this run",
+        ),
+    ] = None,
+    batch_size: Annotated[
+        int, typer.Option("--batch-size", help="Rows removed per transaction")
+    ] = 1000,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report what would be removed; delete nothing"),
+    ] = False,
+) -> None:
+    """Remove audit_log entries older than the retention window.
+
+    Meant to be run externally on a schedule (cron, a CI scheduled workflow) —
+    there is no in-process scheduler for this. Opens for WRITE, unlike every
+    other `audit` subcommand: this is the one command in the family that is
+    allowed to modify the database it reports on. `--dry-run` stays read-only.
+    """
+    import sqlite3
+
+    from trelix.audit.store import AuditStore
+    from trelix.core.config import AuditConfig
+
+    days = retention_days if retention_days is not None else AuditConfig().retention_days
+    if days < 0:
+        _print_error("Invalid --retention-days", f"{days} (must be >= 0)")
+        raise typer.Exit(2)
+
+    path = Path(db) if db else AuditConfig().resolved_db_path
+    if not path.exists():
+        err_console.print(
+            f"[red]Audit database does not exist[/red] at {_safe_text(str(path))} — "
+            "nothing to prune."
+        )
+        raise typer.Exit(2)
+
+    if dry_run:
+        store = AuditStore(path, read_only=True)
+        try:
+            if store.missing_tables:
+                err_console.print(
+                    f"[red]Not an audit database[/red] at {_safe_text(str(path))} — no "
+                    f"{_safe_text(', '.join(store.missing_tables))} table."
+                )
+                raise typer.Exit(2)
+            if not store.is_open:
+                err_console.print(
+                    f"[red]Could not open audit database[/red] at {_safe_text(str(path))}"
+                )
+                raise typer.Exit(2)
+            try:
+                would_remove = store.count_prunable(older_than_days=days)
+            except sqlite3.DatabaseError as exc:
+                _audit_db_unreadable(path, exc)
+            console.print(
+                f"[cyan]{would_remove}[/cyan] entr{'y' if would_remove == 1 else 'ies'} "
+                f"older than {days} day(s) would be removed from "
+                f"{_safe_text(str(path))} (--dry-run: nothing was deleted)."
+            )
+        finally:
+            store.close()
+        return
+
+    # Real prune: opened read-write. AuditStore's init never raises, so an
+    # unreadable/unwritable path silently disables the store — check is_open
+    # explicitly rather than trust a return value that would otherwise look
+    # identical to "zero rows qualified".
+    store = AuditStore(path)
+    try:
+        if not store.is_open:
+            err_console.print(
+                f"[red]Could not open audit database for writing[/red] at "
+                f"{_safe_text(str(path))} — nothing was pruned."
+            )
+            raise typer.Exit(2)
+        try:
+            removed = store.prune(older_than_days=days, batch_size=batch_size)
+        except sqlite3.DatabaseError as exc:
+            _audit_db_unreadable(path, exc)
+        console.print(
+            f"[green]Removed {removed} entr{'y' if removed == 1 else 'ies'}[/green] "
+            f"older than {days} day(s) from {_safe_text(str(path))}."
+        )
+    finally:
+        store.close()
 
 
 # ---------------------------------------------------------------------------

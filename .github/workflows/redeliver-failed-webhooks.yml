@@ -1,0 +1,54 @@
+name: Redeliver failed GitHub App webhook deliveries
+
+# Backstop for GitHub's own webhook-delivery contract: a non-2xx response
+# (or no response within 10s) is marked failed with NO automatic retry —
+# manual redelivery (a 3-day window) or a self-written poller is the only
+# recovery. Runs on both a schedule AND workflow_dispatch — trelix is an
+# actively-committed repo, so scheduled-workflow auto-disable after 60
+# days of inactivity (the risk that ruled out GitHub Actions as the
+# keep-warm *pinger* — see README.md) is negligible here, and a
+# manual-only trigger would only help if someone remembers to run it,
+# which defeats the point of a safety net.
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  redeliver:
+    name: Redeliver failed deliveries
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/github-app
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Redeliver failed webhook deliveries
+        run: npm run redeliver-failed-webhooks
+        env:
+          # Actions rejects any repo secret named with a GITHUB_ prefix
+          # (reserved for GitHub's own automatic secrets/vars) — confirmed
+          # via a real `gh secret set` attempt, which fails with HTTP 422
+          # "Secret names must not start with GITHUB_." The env var NAMES
+          # the Node script itself reads (loadConfig() in config.ts) are
+          # unaffected; only the secret-STORE names below had to change.
+          GITHUB_APP_ID: ${{ secrets.TRELIX_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.TRELIX_APP_PRIVATE_KEY }}
+          # loadConfig() requires this even though the redelivery script
+          # itself never verifies a webhook signature — cheapest fix is a
+          # placeholder, not relaxing the shared config loader's own
+          # required-env validation for every other caller.
+          GITHUB_WEBHOOK_SECRET: unused-by-this-script

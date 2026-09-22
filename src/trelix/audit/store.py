@@ -31,8 +31,10 @@ live inside the same file as the thing they check:
   3. **SQLite's own ``sqlite_sequence`` high-water mark**, read only, for the one
      shape neither gate above can see: a log emptied completely. See
      :meth:`AuditStore._max_audit_log_seq_locked` — including the four ways to
-     defeat it, all of which still work, and the false positive it will become
-     when retention pruning lands.
+     defeat it, all of which still work — and the ``prune_watermark_id`` anchor
+     :meth:`AuditStore.prune` writes, which is what lets ``verify`` tell a
+     legitimately fully-pruned log apart from a wipe that reaches the same
+     zero-rows-with-``seq``-set shape.
 
 What is and is not detected. Every shape below is pinned by a test —
 tests/unit/test_audit_anchor_presence.py, tests/unit/test_audit_store.py and
@@ -182,6 +184,17 @@ CREATE TABLE IF NOT EXISTS audit_meta (
 
 _META_COUNT = "count"
 _META_HEAD = "head_hash"
+#: Records where a completed prune left off: the highest id ever removed, and
+#: that row's entry_hash (the prev_hash the next surviving row is expected to
+#: have). Absent means "never pruned" — verify() then falls back to id 1 /
+#: GENESIS_HASH exactly as before pruning existed. Written atomically with the
+#: DELETE in the same transaction (see AuditStore.prune()), never independently.
+_META_PRUNE_WATERMARK_ID = "prune_watermark_id"
+_META_PRUNE_WATERMARK_HASH = "prune_watermark_hash"
+#: Cumulative rows ever removed by prune() — lets verify() compute the expected
+#: LIVE row count as (total ever appended) - (total ever pruned), since `count`
+#: itself keeps meaning "total appends ever" and is never decremented.
+_META_PRUNE_REMOVED_COUNT = "prune_removed_count"
 
 #: Tables a file must already contain before this module will call it an audit log.
 #: A read-only open that cannot find both reports nothing rather than a verdict —
@@ -350,7 +363,32 @@ class AuditStore:
         conn.text_factory = _text_or_bytes
         conn.executescript(_DDL)
         conn.commit()
+        self._retrofit_incremental_auto_vacuum(conn)
         return conn
+
+    def _retrofit_incremental_auto_vacuum(self, conn: sqlite3.Connection) -> None:
+        """Enable ``auto_vacuum=INCREMENTAL`` if it is not already set.
+
+        ``PRAGMA auto_vacuum`` only takes effect on an EMPTY database or via a
+        full ``VACUUM`` — setting it on a populated file that was never vacuumed
+        is a no-op until one runs. This does that one-time ``VACUUM`` so
+        :meth:`prune`'s per-batch ``incremental_vacuum`` calls actually reclaim
+        space instead of silently doing nothing. Idempotent and cheap once
+        applied: ``PRAGMA auto_vacuum`` is a plain integer read, so every open
+        after the first is a single query, not a VACUUM.
+        """
+        try:
+            current = conn.execute("PRAGMA auto_vacuum").fetchone()[0]
+            if current == 2:  # already INCREMENTAL
+                return
+            conn.execute("PRAGMA auto_vacuum = 2")
+            conn.execute("VACUUM")
+        except sqlite3.Error as exc:  # noqa: BLE001 — must never block serving
+            logger.warning(
+                "Could not retrofit auto_vacuum=INCREMENTAL on %s (non-fatal): %s",
+                self._db_path,
+                exc,
+            )
 
     def _open_read_only(self) -> sqlite3.Connection | None:
         """Open for reading only, or return ``None`` with :attr:`missing_tables` set.
@@ -491,14 +529,140 @@ class AuditStore:
             "detail": detail,
         }
 
+    # -- prune -----------------------------------------------------------------
+    def prune(self, *, older_than_days: int, batch_size: int = 1000) -> int:
+        """Remove the oldest CONTIGUOUS-BY-ID prefix of ``audit_log`` older than
+        ``older_than_days`` days, in batches. Returns the total rows removed.
+
+        ``older_than_days < 0`` is a caller mistake, not a database finding —
+        mirrors :meth:`recent`'s ``n <= 0`` guard — and returns 0 without
+        touching the database. ``0`` is legal and means "keep nothing older
+        than right now": every row already appended qualifies.
+
+        Deletes by id, not by an independent ``ts`` re-scan, and stops a batch
+        at the first row whose ``ts`` is not old enough — even if a later id in
+        the same fetched page would otherwise qualify — because the whole
+        integrity model assumes ``audit_log`` is read as one CONTIGUOUS run of
+        ids from a known starting point (id 1, or the prune watermark below).
+        A gap in the middle would make every row after it unverifiable, which
+        is a self-inflicted version of the exact tamper shape this module
+        exists to detect. In practice ``ts`` is stamped at insert time under
+        the same lock ``append`` uses, so it is monotonic with id; this
+        ordering-by-construction is what makes that assumption safe rather
+        than merely convenient.
+
+        Each batch is one transaction: the ``DELETE`` and the watermark/count
+        update in ``audit_meta`` commit together, the same atomicity
+        :meth:`append` already relies on for its own row+anchor writes. A
+        crash between batches leaves a smaller, still-internally-consistent
+        log — the watermark always describes exactly what has actually been
+        deleted, never a delete that did not commit.
+        """
+        if self._conn is None or older_than_days < 0:
+            return 0
+        from datetime import UTC, datetime, timedelta
+
+        cutoff = (datetime.now(UTC) - timedelta(days=older_than_days)).isoformat()
+        total_removed = 0
+        while True:
+            with self._lock:
+                if self._conn is None:
+                    break
+                candidates = self._conn.execute(
+                    "SELECT id, ts, entry_hash FROM audit_log ORDER BY id ASC LIMIT ?",
+                    (batch_size,),
+                ).fetchall()
+                prefix = []
+                for row in candidates:
+                    if row["ts"] >= cutoff:
+                        break
+                    prefix.append(row)
+                if not prefix:
+                    break
+                last_id = int(prefix[-1]["id"])
+                last_hash = prefix[-1]["entry_hash"]
+                removed = len(prefix)
+                with self._conn:  # atomic: delete + watermark + removed-count
+                    self._conn.execute(
+                        "DELETE FROM audit_log WHERE id <= ? AND ts < ?", (last_id, cutoff)
+                    )
+                    self._conn.execute(
+                        "INSERT INTO audit_meta(key, value) VALUES(?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (_META_PRUNE_WATERMARK_ID, str(last_id)),
+                    )
+                    self._conn.execute(
+                        "INSERT INTO audit_meta(key, value) VALUES(?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (_META_PRUNE_WATERMARK_HASH, last_hash),
+                    )
+                    self._conn.execute(
+                        "INSERT INTO audit_meta(key, value) VALUES(?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = "
+                        "CAST(value AS INTEGER) + CAST(excluded.value AS INTEGER)",
+                        (_META_PRUNE_REMOVED_COUNT, str(removed)),
+                    )
+                total_removed += removed
+                ran_short = len(prefix) < len(candidates)
+                try:
+                    self._conn.execute(f"PRAGMA incremental_vacuum({batch_size})")
+                except sqlite3.OperationalError:
+                    pass  # auto_vacuum retrofit hasn't landed on this file yet
+            if ran_short:
+                # Stopped mid-page on a not-old-enough row: no more contiguous
+                # work exists right now, regardless of what a further SELECT
+                # might still return.
+                break
+        return total_removed
+
+    def count_prunable(self, *, older_than_days: int) -> int:
+        """How many rows :meth:`prune` would remove right now, without
+        removing them. Read-only — safe on a ``read_only=True`` store, which
+        is what makes ``trelix audit prune --dry-run`` possible without ever
+        opening the database for write.
+
+        Uses the exact same contiguous-prefix-by-id rule ``prune`` does (stop
+        counting at the first row whose ``ts`` is not old enough), so this
+        number matches what a real ``prune`` call would remove — not a looser
+        ``COUNT(*) WHERE ts < cutoff`` that could overcount if ``ts`` were
+        ever non-monotonic with id.
+        """
+        if self._conn is None or older_than_days < 0:
+            return 0
+        from datetime import UTC, datetime, timedelta
+
+        cutoff = (datetime.now(UTC) - timedelta(days=older_than_days)).isoformat()
+        with self._lock:
+            rows = self._conn.execute("SELECT ts FROM audit_log ORDER BY id ASC").fetchall()
+        count = 0
+        for row in rows:
+            if row["ts"] >= cutoff:
+                break
+            count += 1
+        return count
+
     def _head_hash_locked(self) -> str:
-        """Current chain head (last entry_hash), or GENESIS_HASH if empty.
-        Caller must hold ``self._lock``."""
+        """Current chain head: the last live row's entry_hash, or — if
+        prune() has removed every row that ever existed — the hash it left
+        in the prune watermark, or GENESIS_HASH if this log has never had a
+        row at all. Caller must hold ``self._lock``.
+
+        Without the watermark fallback, appending right after a prune() that
+        emptied the table would read no rows here, fall back to GENESIS_HASH,
+        and stamp the new row with a ``prev_hash`` that does not match what
+        ``verify()`` expects to see next (the watermark hash) — turning a
+        legitimate append into a self-inflicted ``row_mislinked`` finding.
+        """
         assert self._conn is not None
         row = self._conn.execute(
             "SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1"
         ).fetchone()
-        return row["entry_hash"] if row is not None else GENESIS_HASH
+        if row is not None:
+            return str(row["entry_hash"])
+        watermark = self._conn.execute(
+            "SELECT value FROM audit_meta WHERE key = ?", (_META_PRUNE_WATERMARK_HASH,)
+        ).fetchone()
+        return str(watermark["value"]) if watermark is not None else GENESIS_HASH
 
     @contextmanager
     def _read_snapshot_locked(self) -> Iterator[sqlite3.Connection]:
@@ -554,7 +718,16 @@ class AuditStore:
           - an anchor row absent, with entries    -> the anchor itself is gone.
           - an anchor value malformed             -> the anchor is unusable.
           - live count/head != meta anchor        -> truncated/deleted tail.
-          - no rows, but ids were handed out      -> the log was emptied.
+          - no rows, but ids were handed out,
+            and no prune() watermark covers them  -> the log was emptied.
+
+        The walk above starts at id 1 / GENESIS_HASH unless ``prune()`` has
+        recorded a watermark (``prune_watermark_id``/``_hash``) — see that
+        method — in which case it starts one past whatever ``prune()``
+        legitimately removed. A half-written watermark (present for some of
+        the three prune-related keys but not all) is reported the same way a
+        half-written count/head anchor is: as ``anchor_corrupt``, since
+        ``prune()`` writes all three atomically with its ``DELETE``.
 
         Never raises on the *content* of ``audit_meta`` or ``audit_log``: a value
         this method exists to judge must be reported as a finding, not allowed to
@@ -583,19 +756,6 @@ class AuditStore:
             meta = self._read_meta_locked()
             seq_high = self._max_audit_log_seq_locked(conn)
 
-        prev = GENESIS_HASH
-        expected_id = 1
-        for row in rows:
-            if row["id"] != expected_id:  # gapless check catches middle deletes
-                return VerifyResult(expected_id, REASON_ID_GAP)
-            content = {col: row[col] for col in _CONTENT_COLUMNS}
-            if row["prev_hash"] != prev:
-                return VerifyResult(int(row["id"]), REASON_ROW_MISLINKED)
-            if row["entry_hash"] != _canonical_hash(prev, content):
-                return VerifyResult(int(row["id"]), REASON_ROW_MUTATED)
-            prev = row["entry_hash"]
-            expected_id += 1
-
         actual_count = len(rows)
         raw_count = meta.get(_META_COUNT)
         raw_head = meta.get(_META_HEAD)
@@ -607,6 +767,54 @@ class AuditStore:
         # existed, which is the id the count-mismatch branch below has always
         # returned for the same reason.
         first_unprovable = actual_count + 1
+
+        # -- prune watermark: resolve where the walk should start ---------------
+        # Absent (all three keys) is the default, common case: this log has never
+        # been pruned, and the walk starts at id 1 / GENESIS_HASH exactly as it
+        # always has. prune() writes all three in the SAME transaction as the
+        # DELETE it protects (mirrors append()'s row+anchor atomicity), so any
+        # state other than "all present" or "all absent" is one a legitimate
+        # writer cannot produce.
+        raw_watermark_id = meta.get(_META_PRUNE_WATERMARK_ID)
+        raw_watermark_hash = meta.get(_META_PRUNE_WATERMARK_HASH)
+        raw_pruned_count = meta.get(_META_PRUNE_REMOVED_COUNT)
+        prune_keys_present = {
+            raw_watermark_id is not None,
+            raw_watermark_hash is not None,
+            raw_pruned_count is not None,
+        }
+        if len(prune_keys_present) != 1:  # some present, some absent
+            return VerifyResult(first_unprovable, REASON_ANCHOR_CORRUPT)
+        if raw_watermark_id is not None and not _anchor_value_is_wellformed(
+            raw_watermark_id, _COUNT_RE
+        ):
+            return VerifyResult(first_unprovable, REASON_ANCHOR_CORRUPT)
+        if raw_watermark_hash is not None and not _anchor_value_is_wellformed(
+            raw_watermark_hash, _HEAD_RE
+        ):
+            return VerifyResult(first_unprovable, REASON_ANCHOR_CORRUPT)
+        if raw_pruned_count is not None and not _anchor_value_is_wellformed(
+            raw_pruned_count, _COUNT_RE
+        ):
+            return VerifyResult(first_unprovable, REASON_ANCHOR_CORRUPT)
+
+        if raw_watermark_id is not None:
+            prev = raw_watermark_hash
+            expected_id = int(raw_watermark_id) + 1
+        else:
+            prev = GENESIS_HASH
+            expected_id = 1
+
+        for row in rows:
+            if row["id"] != expected_id:  # gapless check catches middle deletes
+                return VerifyResult(expected_id, REASON_ID_GAP)
+            content = {col: row[col] for col in _CONTENT_COLUMNS}
+            if row["prev_hash"] != prev:
+                return VerifyResult(int(row["id"]), REASON_ROW_MISLINKED)
+            if row["entry_hash"] != _canonical_hash(prev, content):
+                return VerifyResult(int(row["id"]), REASON_ROW_MUTATED)
+            prev = row["entry_hash"]
+            expected_id += 1
 
         # PRESENCE, not merely consistency. `append` writes the entry and BOTH
         # anchor rows in one transaction, so "entries present, an anchor row
@@ -636,19 +844,37 @@ class AuditStore:
 
         # External anchor: detect a truncated/deleted tail the chain can't see.
         # `raw_count` matched _COUNT_RE above, so int() here cannot raise.
+        #
+        # `count` keeps meaning "total appends ever" — append() only ever
+        # increments it, pruning does not touch it — so the LIVE row count a
+        # healthy database should have is that total minus whatever prune() has
+        # cumulatively removed, not the raw total itself.
+        pruned_count = int(raw_pruned_count) if raw_pruned_count is not None else 0
         if raw_count is not None:
             meta_count = int(raw_count)
-            if actual_count != meta_count:
-                # first missing id (ids are gapless 1..actual_count at this point)
-                return VerifyResult(min(actual_count, meta_count) + 1, REASON_COUNT_MISMATCH)
+            expected_live_count = meta_count - pruned_count
+            if actual_count != expected_live_count:
+                # first missing id (ids are gapless from the walk's start point)
+                return VerifyResult(
+                    min(actual_count, expected_live_count) + 1, REASON_COUNT_MISMATCH
+                )
         if raw_head is not None and prev != raw_head:
             return VerifyResult(actual_count if actual_count > 0 else 1, REASON_HEAD_MISMATCH)
 
         # Last, and only for an empty log, because every gate above is more
         # specific: a wipe that leaves the anchor behind is already a
         # count_mismatch, and that names the fault better than this does.
+        #
+        # A legitimate prune() can also reach zero rows (retention shorter than
+        # the age of every entry) — that must NOT report log_emptied. The
+        # discriminator is the same watermark checked above: if it names an id
+        # equal to the highest id SQLite ever handed out, every row that ever
+        # existed has been accounted for by a real prune() transaction, not by
+        # deleting out from under the anchor.
         if actual_count == 0 and seq_high is not None and seq_high > 0:
-            return VerifyResult(first_unprovable, REASON_LOG_EMPTIED)
+            fully_pruned = raw_watermark_id is not None and int(raw_watermark_id) == seq_high
+            if not fully_pruned:
+                return VerifyResult(first_unprovable, REASON_LOG_EMPTIED)
         return VerifyResult(None)
 
     def _read_meta_locked(self) -> dict[str, Any]:
@@ -703,12 +929,15 @@ class AuditStore:
         A check written as "exactly one row" would call every restored dump tamper.
         (``VACUUM``, ``VACUUM INTO`` and ``.backup()`` all preserve ``seq`` exactly.)
 
-        **This check WILL become a false positive when retention pruning lands.**
-        ``TRELIX_AUDIT_RETENTION_DAYS`` is accepted but unimplemented and nothing in
-        ``src/`` issues ``DELETE FROM audit_log`` today, which is the only reason a
-        pruned-to-empty log cannot occur. Whoever implements pruning must update
-        this check (and docs/AUDIT.md) or every fully-pruned log will report
-        ``log_emptied``.
+        **Retention pruning landed** (:meth:`AuditStore.prune`, backing
+        ``TRELIX_AUDIT_RETENTION_DAYS`` / ``trelix audit prune``), and this
+        check by itself would now false-positive on every fully-pruned log —
+        the same shape as a real wipe, since both leave zero rows with
+        ``seq > 0``. :meth:`verify` resolves the ambiguity, not this method: it
+        additionally checks the ``prune_watermark_id`` anchor prune() writes in
+        the same transaction as its ``DELETE``, and only reports
+        ``log_emptied`` when that watermark does NOT already account for every
+        id this method reports as ever having been handed out.
 
         Caller must hold ``self._lock``.
         """

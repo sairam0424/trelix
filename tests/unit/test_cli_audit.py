@@ -492,3 +492,85 @@ def test_export_preserves_markup_shaped_values_byte_for_byte(tmp_path: Path) -> 
     assert row["resource"] == hostile
     assert row["outcome"] == OUTCOME_DENIED
     assert row["status_code"] == 401
+
+
+# ---------------------------------------------------------------------------
+# `audit prune` — the one subcommand in the family that opens for WRITE.
+# See tests/unit/test_audit_prune.py for AuditStore.prune() itself; these
+# cover the CLI layer specifically: --dry-run staying read-only, exit codes,
+# and --retention-days overriding TRELIX_AUDIT_RETENTION_DAYS.
+# ---------------------------------------------------------------------------
+
+
+def test_prune_on_nonexistent_db_exits_2_and_creates_nothing(tmp_path: Path) -> None:
+    missing = tmp_path / "nope.db"
+
+    result = runner.invoke(app, ["audit", "prune", "--db", str(missing), "--retention-days", "1"])
+
+    assert result.exit_code == 2
+    assert not missing.exists()
+
+
+def test_prune_dry_run_reports_a_count_and_deletes_nothing(tmp_path: Path) -> None:
+    db = tmp_path / "audit.db"
+    _seed(db, count=3)  # all seeded with the hardcoded 2026-08-12 timestamp
+
+    result = runner.invoke(
+        app, ["audit", "prune", "--db", str(db), "--retention-days", "1", "--dry-run"]
+    )
+
+    assert result.exit_code == 0
+    assert "3" in result.output
+    store = AuditStore(db, read_only=True)
+    try:
+        assert len(store.recent(10)) == 3  # nothing actually removed
+    finally:
+        store.close()
+
+
+def test_prune_for_real_removes_rows_and_leaves_a_verifiable_chain(tmp_path: Path) -> None:
+    db = tmp_path / "audit.db"
+    _seed(db, count=3)
+
+    result = runner.invoke(app, ["audit", "prune", "--db", str(db), "--retention-days", "1"])
+
+    assert result.exit_code == 0
+    assert "3" in result.output
+    verify_result = runner.invoke(app, ["audit", "verify", "--db", str(db)])
+    assert verify_result.exit_code == 0
+    assert "intact" in verify_result.output.lower()
+
+
+def test_prune_with_negative_retention_days_exits_2_without_touching_the_db(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "audit.db"
+    _seed(db, count=3)
+
+    result = runner.invoke(app, ["audit", "prune", "--db", str(db), "--retention-days", "-1"])
+
+    assert result.exit_code == 2
+    store = AuditStore(db, read_only=True)
+    try:
+        assert len(store.recent(10)) == 3
+    finally:
+        store.close()
+
+
+def test_prune_uses_the_configured_retention_days_when_not_overridden(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No --retention-days flag -> falls back to TRELIX_AUDIT_RETENTION_DAYS,
+    not some CLI-local default disconnected from the config."""
+    db = tmp_path / "audit.db"
+    _seed(db, count=3)
+    monkeypatch.setenv("TRELIX_AUDIT_RETENTION_DAYS", "0")
+
+    result = runner.invoke(app, ["audit", "prune", "--db", str(db)])
+
+    assert result.exit_code == 0
+    store = AuditStore(db, read_only=True)
+    try:
+        assert store.recent(10) == []  # retention_days=0 -> everything qualifies
+    finally:
+        store.close()

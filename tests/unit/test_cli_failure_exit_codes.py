@@ -153,7 +153,7 @@ def test_connector_sync_exits_nonzero_when_the_sync_reported_errors(
     repo = _repo_with_empty_index(tmp_path)
     monkeypatch.setattr(
         "trelix.indexing.connectors.registry.get_artifact_source",
-        lambda name: _PartiallyFailingSource(),
+        lambda name, index_config=None: _PartiallyFailingSource(),
     )
 
     result = runner.invoke(app, ["connector", "sync", str(repo), "jira"])

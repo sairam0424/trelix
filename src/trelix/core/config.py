@@ -983,14 +983,17 @@ class RetrievalConfig(BaseSettings):
         default=False,
         alias="TRELIX_RETRIEVAL_COMPRESSION",
     )
-    compression_provider: Literal["extractive"] = Field(
+    compression_provider: Literal["extractive", "abstractive"] = Field(
         default="extractive",
         alias="TRELIX_RETRIEVAL_COMPRESSION_PROVIDER",
     )
     """
     Compression backend. "extractive" is zero-inference (it reuses already-stored
     sub-chunk vectors, or a lexical splitter) — it never makes an embedding, API,
-    or network call. Abstractive/LLM providers are reserved for v3.4.
+    or network call. "abstractive" (v3.4) makes one LLM call per compressed unit
+    via the already-configured `llm` provider (see IndexConfig.llm) — real cost
+    and latency per unit, layered on top of the same must-keep-signature/
+    docstring contract, not a replacement for it.
     """
 
     compression_target_ratio: float = Field(
@@ -1738,7 +1741,10 @@ class AuditConfig(BaseSettings):
     db_path: str | None = None
     log_queries: bool = False
     fail_closed: bool = False
-    retention_days: int = 365
+    # ge=0: 0 is legal ("keep nothing older than right now" — prune() treats it
+    # as an immediate full prune); negative has no meaning and used to be
+    # accepted silently before AuditStore.prune() existed to read this value.
+    retention_days: int = Field(default=365, ge=0)
 
     @property
     def resolved_db_path(self) -> Path:

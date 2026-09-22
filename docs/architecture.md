@@ -1240,7 +1240,8 @@ def rerank(query, candidates, config, top_n) -> list[SearchResult]
 # Routes to:
 # - CrossEncoderReranker when rerank_provider="cross_encoder" (sentence-transformers)
 # - CohereReranker when rerank_provider="cohere" (requires COHERE_API_KEY)
-# - PlaidReranker when rerank_provider="plaid" (requires trelix[plaid])
+# - PlaidReranker when rerank_provider="plaid" (requires manual `pip install ragatouille`
+#   — no longer a `trelix[plaid]` extra, see pyproject.toml's plaid-removal comment)
 
 class PlaidReranker:
     # RAGatouille ColBERT late-interaction reranker

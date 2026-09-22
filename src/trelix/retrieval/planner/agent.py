@@ -47,7 +47,7 @@ from trelix.retrieval.planner.prompts import (
 )
 
 if TYPE_CHECKING:
-    from trelix.core.config import EmbedderConfig, RetrievalConfig
+    from trelix.core.config import EmbedderConfig, LLMConfig, RetrievalConfig
 
 logger = logging.getLogger(__name__)
 
@@ -284,8 +284,12 @@ class AdaptiveRouter:
         self,
         config: EmbedderConfig,
         retrieval_config: RetrievalConfig | None = None,
+        llm_config: LLMConfig | None = None,
     ) -> None:
         self._config = config
+        # Stashed only to hand to the nested QueryPlanner it lazily builds for Tier 3
+        # sub-question planning (_get_planner below) — same object, not re-derived.
+        self._llm_config = llm_config
         # Lazy — only built when an LLM call is actually needed.
         self._planner: QueryPlanner | None = None
         # Use provided retrieval config, or fall back to building from env vars.
@@ -542,7 +546,11 @@ class AdaptiveRouter:
         the router's own `retrieval_config` parameter was added to fix, one level down.
         """
         if self._planner is None:
-            self._planner = QueryPlanner(self._config, retrieval_config=self._retrieval_config)
+            self._planner = QueryPlanner(
+                self._config,
+                retrieval_config=self._retrieval_config,
+                llm_config=self._llm_config,
+            )
         return self._planner
 
 
@@ -569,38 +577,59 @@ class QueryPlanner:
         self,
         config: EmbedderConfig,
         retrieval_config: RetrievalConfig | None = None,
+        llm_config: LLMConfig | None = None,
     ) -> None:
         self._config = config
         self._retrieval_config = retrieval_config
+        # Stashed so a lazily-built AdaptiveRouter (below) hands the SAME LLMConfig to
+        # its own nested QueryPlanner for Tier 3 sub-question planning, rather than
+        # losing it one level down.
+        self._llm_config = llm_config
         # Build LLM client via factory
-        from trelix.core.config import LLMConfig
         from trelix.llm.client import ChatMessage as _ChatMessage  # noqa: F401
         from trelix.llm.factory import build_chat_client
 
-        llm_cfg = LLMConfig(
-            provider=config.provider if config.provider in ("openai", "azure") else "openai",
-            _env_file=None,  # type: ignore[call-arg]
-        )
-        # Carry over credentials — `_env_file=None` above means this LLMConfig reads no
-        # dotenv of its own, so anything supplied via `.env` has to arrive on the
-        # EmbedderConfig. Without this step the client came out unauthenticated and
-        # `_plan_direct` fell back to `default_plan()` on every call, collapsing all eight
-        # IntentType values to FEATURE_FLOW — and since INTENT_STRATEGIES keys off intent,
-        # every query then got an identical set of retrieval legs and expansion depth.
-        # It logged at DEBUG while the CLI runs at WARNING, so nothing said so.
-        #
-        # Synthesizer and graph_rag already do exactly this after the same shim; the
-        # planner was the one site that skipped it.
-        llm_cfg = llm_cfg.model_copy(
-            update={
-                "openai_api_key": config.openai_api_key,
-                "azure_api_key": config.azure_api_key,
-                "azure_endpoint": config.azure_endpoint,
-                "azure_api_version": config.azure_api_version,
-                "azure_chat_deployment": config.azure_chat_deployment,
-            }
-        )
-        self._llm_client = build_chat_client(llm_cfg)
+        if llm_config is not None:
+            # Use the explicitly supplied LLMConfig directly — the correct path for
+            # any provider, including ones the shim below never handles (Anthropic,
+            # Bedrock, Vertex). Mirrors Synthesizer's identical `llm_config` parameter
+            # (retrieval/synthesizer.py): the embedder's OWN provider is irrelevant
+            # here, because TRELIX_LLM_PROVIDER already resolved this LLMConfig
+            # correctly before it ever reached this constructor.
+            self._llm_client = build_chat_client(llm_config)
+        else:
+            # Backward-compat shim for callers that don't pass an llm_config: derive
+            # a best-effort provider from the embedder's, openai/azure only. Only
+            # valid when the embedder provider IS openai or azure — every other
+            # provider (including "local") falls back to an unauthenticated openai
+            # client and silently degrades every plan() call to default_plan(),
+            # which is exactly the coupling bug this parameter exists to let callers
+            # route around; see docs/ROADMAP.md's research-backlog entry.
+            from trelix.core.config import LLMConfig as _LLMConfig
+
+            llm_cfg = _LLMConfig(
+                provider=config.provider if config.provider in ("openai", "azure") else "openai",
+                _env_file=None,  # type: ignore[call-arg]
+            )
+            # Carry over credentials — `_env_file=None` above means this LLMConfig reads no
+            # dotenv of its own, so anything supplied via `.env` has to arrive on the
+            # EmbedderConfig. Without this step the client came out unauthenticated and
+            # `_plan_direct` fell back to `default_plan()` on every call, collapsing all eight
+            # IntentType values to FEATURE_FLOW — and since INTENT_STRATEGIES keys off intent,
+            # every query then got an identical set of retrieval legs and expansion depth.
+            # It logged at DEBUG while the CLI runs at WARNING, so nothing said so.
+            #
+            # Synthesizer and graph_rag already do exactly this after the same shim.
+            llm_cfg = llm_cfg.model_copy(
+                update={
+                    "openai_api_key": config.openai_api_key,
+                    "azure_api_key": config.azure_api_key,
+                    "azure_endpoint": config.azure_endpoint,
+                    "azure_api_version": config.azure_api_version,
+                    "azure_chat_deployment": config.azure_chat_deployment,
+                }
+            )
+            self._llm_client = build_chat_client(llm_cfg)
         # Keep _client for the None check in _plan_direct and AdaptiveRouter
         self._client = (
             self._llm_client._client if hasattr(self._llm_client, "_client") else self._llm_client
@@ -632,7 +661,11 @@ class QueryPlanner:
             frozen plan cache is configured and misses; see below.
         """
         if self._router is None:
-            self._router = AdaptiveRouter(self._config, retrieval_config=self._retrieval_config)
+            self._router = AdaptiveRouter(
+                self._config,
+                retrieval_config=self._retrieval_config,
+                llm_config=self._llm_config,
+            )
         router = self._router  # bound locally so the closure below is narrowed
 
         cache = self._frozen_plans()

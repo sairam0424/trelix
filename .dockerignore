@@ -23,4 +23,11 @@ node_modules/
 packages/*
 !packages/trelix-mcp
 infra/
+# Re-include the GitHub App service directory — its own Dockerfile (built
+# with repo root as build context, to reach `src/` for the Python stage)
+# needs infra/github-app/ itself in the build context. Verified with a
+# real local `docker build` (not assumed correct from the pattern alone —
+# `dist/`/`tests/`'s own blanket excludes above could still re-strip
+# infra/github-app/dist or infra/github-app/tests even after this).
+!infra/github-app/
 helm/

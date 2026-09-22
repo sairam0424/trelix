@@ -7,9 +7,12 @@ House style mirrors ``embedder/``: an ABC, concrete impls, and a
 ``make_compressor(config, db, embedder)`` factory at the bottom.
 
 Providers:
-  extractive → ExtractiveCompressor  (no inference; scores already-stored
-               sub-chunk vectors by cosine, or falls back to a zero-inference
-               lexical splitter — works for any language / any index)
+  extractive  → ExtractiveCompressor  (no inference; scores already-stored
+                sub-chunk vectors by cosine, or falls back to a zero-inference
+                lexical splitter — works for any language / any index)
+  abstractive → AbstractiveCompressor (v3.4; one LLM call per compressed unit
+                via the already-configured ``config.llm`` provider — layers
+                on top of, not instead of, the same must-keep contract)
 
 Additive + default-OFF by contract: the retriever only ever constructs a
 compressor when compression is explicitly enabled, so today's assembled
@@ -115,18 +118,21 @@ def make_compressor(config: object, db: object, embedder: object | None = None) 
     Args:
         config:   IndexConfig-like object; ``config.compression.provider`` selects
                   the backend. Defaults to "extractive" when unset (forward-safe:
-                  no compression config surface exists yet).
+                  no compression config surface exists yet). For "abstractive",
+                  also reads ``config.llm`` (an ``LLMConfig``) — the SAME provider
+                  already configured for synthesis, not a separate credential.
         db:       Database handle (provides ``get_sub_chunks_for_symbol`` and the
                   shared SQLite connection used to read stored sub-chunk vectors).
-        embedder: The active embedder (stored for reserved future use; the
-                  extractive provider makes no embedding calls).
+                  Unused by "abstractive" — accepted for interface uniformity.
+        embedder: The active embedder (stored for reserved future use; neither
+                  shipped provider makes an embedding call from here).
 
     Returns:
         A :class:`Compressor` instance.
 
     Raises:
-        NotImplementedError: for any provider other than "extractive"
-            (abstractive / LLM-based providers are reserved for v3.4).
+        NotImplementedError: for any provider other than "extractive" or
+            "abstractive".
     """
     from trelix.compression.extractive import ExtractiveCompressor
 
@@ -144,7 +150,18 @@ def make_compressor(config: object, db: object, embedder: object | None = None) 
     if provider == "extractive":
         return ExtractiveCompressor(db=db, embedder=embedder)
 
+    if provider == "abstractive":
+        from trelix.compression.abstractive import AbstractiveCompressor
+        from trelix.core.config import LLMConfig
+        from trelix.llm.factory import build_chat_client
+
+        # Same nested-config-lookup idiom as `comp_cfg`/`retrieval_cfg` above —
+        # IndexConfig.llm already exists and is what synthesis itself uses, so
+        # this is the SAME provider/credentials, never a second one to manage.
+        llm_config = getattr(config, "llm", None) or LLMConfig()
+        return AbstractiveCompressor(chat_client=build_chat_client(llm_config))
+
     raise NotImplementedError(
         f"Compression provider {provider!r} is not implemented "
-        "(only 'extractive' is available; abstractive providers are reserved for v3.4)."
+        "(expected 'extractive' or 'abstractive')."
     )
