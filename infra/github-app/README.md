@@ -294,3 +294,5 @@ GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY=... GITHUB_WEBHOOK_SECRET=... npm run d
 
 `trelix` (the CLI) must be installed and on `PATH` wherever this service
 runs — `review-runner.ts` shells out to it directly.
+
+<!-- verify TRELIX_EMBEDDER_PROVIDER=azure fix on Railway 2026-09-22T05:18:29Z — throwaway, will be closed -->
