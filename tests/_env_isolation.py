@@ -444,6 +444,56 @@ def scrub_operator_env(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(name, raising=False)
 
 
+def neutralize_operator_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop every ``trelix.core.config`` settings class from reading ``OPERATOR_ENV_FILE``.
+
+    ``scrub_operator_env`` above denies ``os.environ`` by name, but
+    ``resolve_operator_env_file()`` (``core/config.py``) is a THIRD, independent
+    config source: pydantic-settings' dotenv-FILE reader. It is resolved ONCE at
+    ``config.py`` import and baked into every settings class's
+    ``model_config["env_file"]`` as a concrete ``Path``. No ``os.environ`` scrub
+    can reach it — pydantic never asks ``os.environ`` for this value, it reads
+    the file directly. On any machine with a real ``~/.config/trelix/env`` (or
+    ``$TRELIX_CONFIG_FILE``), that file's values silently override the
+    "unconfigured" defaults every unit test assumes — measured on this tree:
+    with a real operator file setting ``TRELIX_EMBEDDER_PROVIDER=azure``,
+    ``EmbedderConfig().provider`` is ``"azure"`` even after ``scrub_operator_env``
+    has deleted every ``TRELIX_*`` name from ``os.environ``.
+
+    ``_env_file=None`` at each ``FooConfig()`` call site would work, but that
+    design was already rejected elsewhere in this module for being invasive at
+    the scale of ~200 construction sites across the suite. Instead, patch the
+    class attribute directly: ``model_config`` is a plain dict baked in at each
+    class body (not inherited, not re-resolved per instantiation), so mutating
+    it in place with ``monkeypatch.setitem`` takes effect on every subsequent
+    construction in this test and is undone at teardown.
+
+    Scanning ``vars(config)`` rather than naming classes matches this module's
+    existing scrub-BY-SHAPE convention (see ``SCRUB_PREFIXES`` above) instead of
+    a second hand-maintained list: a new ``FooConfig`` class declaring
+    ``env_file=OPERATOR_ENV_FILE`` is covered automatically, with nothing here to
+    fall out of sync with ``config.py``.
+
+    Scoped to ``trelix.core.config`` only. ``trelix.api.app._ApiAuthSettings``
+    reads the same ``OPERATOR_ENV_FILE`` and is NOT covered here — that class
+    already has its own documented, accepted workaround (an explicit precondition
+    assertion in ``test_cli_serve_exposure_warning.py``), and importing
+    ``trelix.api.app`` from every unit test's autouse fixture would be a much
+    larger, unrelated change in scope.
+    """
+    from pydantic_settings import BaseSettings
+
+    from trelix.core import config as _config
+
+    for obj in vars(_config).values():
+        if (
+            isinstance(obj, type)
+            and issubclass(obj, BaseSettings)
+            and "env_file" in obj.model_config
+        ):
+            monkeypatch.setitem(obj.model_config, "env_file", None)
+
+
 def apply_env_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin beast-mode flags and connector settings to their code defaults.
 
