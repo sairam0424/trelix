@@ -357,14 +357,35 @@ def create_app(served_root: str | Path | None = None) -> Any:  # noqa: ANN201
     at module scope intentionally — see the module-level docstring for details.
     """
     try:
-        from fastapi import Depends, FastAPI, Header, HTTPException, Request
-        from fastapi.responses import StreamingResponse  # noqa: F401
+        from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+        from fastapi.responses import JSONResponse, StreamingResponse  # noqa: F401
     except ImportError as e:
         raise ImportError(
             "FastAPI is required for trelix serve. Install with: pip install 'trelix[serve]'"
         ) from e
 
     app = FastAPI(title="trelix API", version=__version__)
+
+    # Both exception classes already carry a clean, actionable message written
+    # for a human reading a CLI error (see DimensionMismatchError's "Fix: ..."
+    # text and every optional-dependency ImportError's "pip install ..." hint)
+    # — but neither route that can raise them (search, graph_visualize, ...)
+    # wraps the call in a try/except, so the message never reached an HTTP
+    # caller. Starlette's default handler for an unhandled exception is a
+    # PLAIN-TEXT "Internal Server Error", not JSON, so every current and
+    # future route gets a real, parseable error body for these two failure
+    # classes by registering the handlers once here instead of per-route.
+    from trelix.store.dimension_guard import DimensionMismatchError
+
+    @app.exception_handler(DimensionMismatchError)
+    async def _dimension_mismatch_handler(
+        request: Request, exc: DimensionMismatchError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    @app.exception_handler(ImportError)
+    async def _import_error_handler(request: Request, exc: ImportError) -> JSONResponse:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
 
     # Read once at app construction, not per-request — TRELIX_API_AUTH_TOKEN
     # unset means every route stays open (today's behavior, unchanged).
@@ -446,11 +467,26 @@ def create_app(served_root: str | Path | None = None) -> Any:  # noqa: ANN201
                     principal_store.jit_upsert(principal)
                 return
 
-        # 2. Static-token path — behavior unchanged from the pre-OIDC gate.
+        # 2. Static-token path — accepts either X-Trelix-Api-Key or
+        #    Authorization: Bearer <token>. openapi.json has always advertised
+        #    Authorization as an accepted header on every gated route (it's a
+        #    plain Header() parameter here, not scoped to the OIDC branch
+        #    above), but until now nothing outside an OIDC deployment ever read
+        #    it — a caller sending a correct bearer token got the same 401 as
+        #    sending nothing. Checked independently of X-Trelix-Api-Key so
+        #    either credential works on its own.
         token = auth_settings.api_auth_token
         if token is not None:
-            if x_trelix_api_key is None or not hmac.compare_digest(x_trelix_api_key, token):
-                logger.warning("Rejected request: missing or invalid X-Trelix-Api-Key")
+            bearer_token: str | None = None
+            if authorization:
+                scheme, _, raw_token = authorization.partition(" ")
+                if scheme.lower() == "bearer" and raw_token:
+                    bearer_token = raw_token
+            valid = (
+                x_trelix_api_key is not None and hmac.compare_digest(x_trelix_api_key, token)
+            ) or (bearer_token is not None and hmac.compare_digest(bearer_token, token))
+            if not valid:
+                logger.warning("Rejected request: missing or invalid API credential")
                 raise HTTPException(status_code=401, detail="Invalid or missing API key")
             return
 
@@ -577,8 +613,13 @@ def create_app(served_root: str | Path | None = None) -> Any:  # noqa: ANN201
     def search(
         query: str,
         repo: str,
-        k: int = 10,
-        cursor: int = 0,
+        # A negative k or cursor doesn't raise — Python's negative-slice
+        # semantics silently reinterpret `all_results[cursor:cursor+k]` as
+        # counting from the end, and next_cursor can go negative too,
+        # corrupting every subsequent page. ge=1/ge=0 turn that into a
+        # standard 422 instead of a page of wrong results.
+        k: int = Query(default=10, ge=1),
+        cursor: int = Query(default=0, ge=0),
         intent_hint: str | None = None,
         hyde_snippet_hint: str | None = None,
     ) -> SearchResponse:
