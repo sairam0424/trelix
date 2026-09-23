@@ -49,7 +49,9 @@ trelix migrate-vectors ./repo --reset
 trelix index ./repo
 
 # If you want to switch providers permanently, set the provider in the environment
-# (or in ./.env), then reset. There is no `trelix config` command and no config file.
+# (or in the operator-owned .env from docs/CONFIGURATION.md#configuration-methods --
+# NOT ./.env in this directory, which is never read), then reset. There is no
+# `trelix config` command and no config file.
 export TRELIX_EMBEDDER_PROVIDER=voyage
 trelix migrate-vectors ./repo --reset
 trelix index ./repo

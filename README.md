@@ -296,8 +296,9 @@ install separately: LanceDB (`lance`), the non-OpenAI LLM providers (`anthropic`
 `nomic-code`, `cohere`), Semgrep taint analysis (`taint`), the graph visualiser
 (`graph-viz`), and the packaging extras (`binary`, `dev`). (Setting
 `TRELIX_RETRIEVAL_RERANK_PROVIDER=plaid` alone is not enough for working PLAID reranking —
-it also needs `pip install ragatouille` run manually, accepting the resulting `openai<3`
-resolver conflict, since `ragatouille` is no longer installable as a trelix extra; without it,
+it also needs `pip install ragatouille` run manually, since `ragatouille` is no longer
+installable as a trelix extra (see pyproject.toml's comment on the removed `plaid` extra);
+without it,
 `PlaidReranker` degrades gracefully to a no-op. See pyproject.toml's comment on the removed
 `plaid` extra for the full reasoning.)
 
@@ -382,7 +383,7 @@ TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default
 | Variable | Default | Description |
 |---|---|---|
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | `cohere` \| `cross_encoder` \| `plaid` \| `xtr` |
-| `TRELIX_RETRIEVAL_PLAID_MODEL` | `colbert-ir/colbertv2.0` | RAGatouille PLAID model — install ragatouille manually (no dedicated extra anymore; its dependency chain caps `openai<3`, permanently incompatible with trelix's core `openai>=2.20.0,<3.0.0` floor) |
+| `TRELIX_RETRIEVAL_PLAID_MODEL` | `colbert-ir/colbertv2.0` | RAGatouille PLAID model — install ragatouille manually (no dedicated extra anymore; see pyproject.toml's comment on the removed `plaid` extra for why) |
 
 ### Retrieval Tuning
 

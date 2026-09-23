@@ -367,8 +367,8 @@ Requires `pip install trelix[otel]`. See [OBSERVABILITY.md](OBSERVABILITY.md) fo
 ## .env File Example
 
 Copy this to the operator-owned location `resolve_operator_env_file()` reads — the path in
-`TRELIX_CONFIG_FILE` if set, else `~/.config/trelix/env` — never `./.env` in the directory you
-run `trelix` **from** or the repo you are indexing (see
+`TRELIX_CONFIG_FILE` if set, else `$XDG_CONFIG_HOME/trelix/env`, else `~/.config/trelix/env`
+— never `./.env` in the directory you run `trelix` **from** or the repo you are indexing (see
 [Configuration Methods](#configuration-methods)) — and fill in the values relevant to your
 setup. Lines beginning with `#` are comments and are ignored.
 
