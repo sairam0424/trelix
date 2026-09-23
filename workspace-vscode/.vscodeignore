@@ -2,9 +2,21 @@
 src/**
 tests/**
 node_modules/**
-*.map
+**/*.map
 .gitignore
 tsconfig.json
 esbuild.config.mjs
 **/*.ts
 dist/test/**
+
+# vsce ignores this directory's own .gitignore entirely once .vscodeignore
+# exists, so anything gitignored at the repo root (agent-tooling scratch
+# data written into this directory by local MCP servers) still has to be
+# named here explicitly or it ships inside the .vsix. Confirmed live: a
+# packaged .vsix carried ruvector.db and .claude-flow/** (~1.6MB) before
+# this was added — see the root .gitignore's own "Agent tooling scratch
+# data" entries for the matching root-level exclusions.
+.claude-flow/**
+ruvector.db
+agentdb.rvf
+agentdb.rvf.lock

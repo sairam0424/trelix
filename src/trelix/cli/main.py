@@ -2398,7 +2398,11 @@ def migrate_vectors(
             qdrant_collection=collection,
         ),
     )
-    qdrant_store = QdrantVectorStore(qdrant_config, dimension)
+    try:
+        qdrant_store = QdrantVectorStore(qdrant_config, dimension)
+    except Exception as exc:
+        _print_error("Failed to connect to Qdrant", exc)
+        raise typer.Exit(1) from exc
 
     # Stream all rows from sqlite-vec in batches
     total_row = conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()
@@ -2411,27 +2415,31 @@ def migrate_vectors(
     offset = 0
     migrated = 0
 
-    with make_progress(console) as progress:
-        task = progress.add_task("Migrating…", total=total)
+    try:
+        with make_progress(console) as progress:
+            task = progress.add_task("Migrating…", total=total)
 
-        while True:
-            rows = conn.execute(
-                "SELECT chunk_id, embedding FROM chunk_embeddings LIMIT ? OFFSET ?",
-                (BATCH, offset),
-            ).fetchall()
-            if not rows:
-                break
+            while True:
+                rows = conn.execute(
+                    "SELECT chunk_id, embedding FROM chunk_embeddings LIMIT ? OFFSET ?",
+                    (BATCH, offset),
+                ).fetchall()
+                if not rows:
+                    break
 
-            pairs: list[tuple[int, list[float]]] = []
-            for chunk_id, raw in rows:
-                n = len(raw) // 4
-                emb = list(struct.unpack(f"{n}f", raw))
-                pairs.append((chunk_id, emb))
+                pairs: list[tuple[int, list[float]]] = []
+                for chunk_id, raw in rows:
+                    n = len(raw) // 4
+                    emb = list(struct.unpack(f"{n}f", raw))
+                    pairs.append((chunk_id, emb))
 
-            qdrant_store.upsert_batch(pairs)
-            migrated += len(pairs)
-            offset += BATCH
-            progress.advance(task, advance=len(pairs))
+                qdrant_store.upsert_batch(pairs)
+                migrated += len(pairs)
+                offset += BATCH
+                progress.advance(task, advance=len(pairs))
+    except Exception as exc:
+        _print_error(f"Migration failed after {migrated:,} embeddings", exc)
+        raise typer.Exit(1) from exc
 
     conn.close()
     console.print(f"[green]Migration complete:[/green] {migrated:,} embeddings written to Qdrant.")
@@ -2942,6 +2950,9 @@ def eval(
         console.print("Create a golden.jsonl with lines like:")
         console.print('  {"query": "how does auth work", "relevant_files": ["src/auth.py"]}')
         raise typer.Exit(1)
+    except Exception as exc:
+        _print_error("Evaluation failed", exc)
+        raise typer.Exit(1) from exc
 
     table = Table(title="Retrieval Evaluation Results")
     table.add_column("Metric", style="bold")
@@ -2990,6 +3001,9 @@ def eval_synthesis(
             ' "expected_answer_fragments": ["jwt"], "expected_symbols": ["AuthMiddleware.verify"]}'
         )
         raise typer.Exit(1)
+    except Exception as exc:
+        _print_error("Evaluation failed", exc)
+        raise typer.Exit(1) from exc
 
     table = Table(title="Synthesis Quality Results (GroUSE-style)")
     table.add_column("Metric", style="bold")
