@@ -187,6 +187,24 @@ class TestSynthesisEvalHarness:
         assert metrics["n_queries"] == 0.0
         assert metrics["overall"] == 0.0
 
+    def test_missing_golden_file_raises_instead_of_reporting_zeros(self, tmp_path):
+        """A missing golden file must not render as an all-zero results table —
+        indistinguishable from a genuine synthesis failure. Mirrors
+        EvalHarness.run()'s identical FileNotFoundError contract, and is what
+        lets the CLI's own `except FileNotFoundError` in eval-synthesis fire."""
+        import pytest
+
+        from trelix.core.config import IndexConfig
+        from trelix.eval.synthesis import SynthesisEvalHarness
+
+        config = IndexConfig(repo_path=str(tmp_path))
+        harness = SynthesisEvalHarness.__new__(SynthesisEvalHarness)
+        harness._config = config
+        harness._retriever = None
+
+        with pytest.raises(FileNotFoundError):
+            harness.run(str(tmp_path / "does_not_exist.jsonl"))
+
 
 class TestHarnessConstructsSynthesizerCorrectly:
     """The harness must build a Synthesizer the way every other call site does.
@@ -409,13 +427,22 @@ class TestUnscoreableEntriesAreReported:
 
         assert metrics["unscoreable"] == 0.0
 
-    def test_the_key_is_present_on_the_empty_paths_too(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        """A shifting key set is its own problem for a machine consumer."""
+    def test_the_key_is_present_on_the_empty_path_too(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A shifting key set is its own problem for a machine consumer.
+
+        Covers the "golden file exists but has zero usable entries" empty path.
+        The "golden file does not exist at all" path used to share this same
+        empty-dict shape too, but now deliberately raises FileNotFoundError
+        instead (see test_missing_golden_file_raises_instead_of_reporting_zeros)
+        — reporting 0.0 there was indistinguishable from a real failure."""
         from trelix.core.config import IndexConfig
         from trelix.eval.synthesis import SynthesisEvalHarness
+
+        golden = tmp_path / "empty.jsonl"
+        golden.write_text("")
 
         harness = SynthesisEvalHarness.__new__(SynthesisEvalHarness)
         harness._config = IndexConfig(repo_path=str(tmp_path))
 
-        metrics = harness.run(str(tmp_path / "does-not-exist.jsonl"))
+        metrics = harness.run(str(golden))
         assert "unscoreable" in metrics
