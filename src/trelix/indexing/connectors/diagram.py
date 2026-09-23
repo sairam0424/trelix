@@ -23,7 +23,9 @@ why that boundary exists.
 
 from __future__ import annotations
 
+import html
 import logging
+import re
 from pathlib import Path
 
 from trelix.core.config import IndexConfig
@@ -54,6 +56,47 @@ Diagram XML:
 # export (embedded images as base64 data URIs are a known drawio pattern)
 # should not blow the LLM's context window silently.
 _MAX_XML_CHARS = 20_000
+
+# Every mxCell shape's label lives in a value="..." attribute (see module
+# docstring). No XML parser needed for a fallback this shallow.
+_LABEL_PATTERN = re.compile(r'value="([^"]*)"')
+_HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+
+# Cap on how many labels the mechanical fallback lists -- a huge diagram
+# should not turn the fallback description into another giant blob.
+_MAX_FALLBACK_LABELS = 50
+
+
+def _mechanical_description(xml: str) -> str:
+    """The fallback for a captioning failure. Extracts every shape label via
+    a plain regex over value="..." attributes -- drawio labels are often
+    inline HTML (e.g. "<b>Auth Service</b>"), so tags are stripped and
+    entities unescaped -- and lists them, de-duplicated in first-seen order.
+    Preserves real diagram content instead of only reporting its length, so
+    the artifact stays meaningfully indexed and linkable even without an
+    LLM-synthesized summary."""
+    labels: list[str] = []
+    seen: set[str] = set()
+    for raw in _LABEL_PATTERN.findall(xml):
+        # Unescape first: drawio XML-escapes the value="..." attribute, so
+        # inline HTML tags (e.g. "&lt;b&gt;Auth Service&lt;/b&gt;") only
+        # become real "<b>...</b>" tags after unescaping -- stripping tags
+        # first would be a no-op on the still-escaped text.
+        label = _HTML_TAG_PATTERN.sub("", html.unescape(raw)).strip()
+        if label and label not in seen:
+            seen.add(label)
+            labels.append(label)
+
+    if not labels:
+        return f"[trelix: captioning unavailable] raw diagram source, {len(xml)} chars of XML."
+
+    shown = labels[:_MAX_FALLBACK_LABELS]
+    suffix = (
+        f" (+{len(labels) - _MAX_FALLBACK_LABELS} more)"
+        if len(labels) > _MAX_FALLBACK_LABELS
+        else ""
+    )
+    return "[trelix: captioning unavailable] diagram shapes: " + ", ".join(shown) + suffix
 
 
 class DiagramConnector(ArtifactSource):
@@ -121,4 +164,4 @@ class DiagramConnector(ArtifactSource):
                 return caption
         except Exception as exc:  # noqa: BLE001 — graceful degradation (compressor contract)
             logger.warning("DiagramConnector: captioning failed (%s); using raw XML fallback", exc)
-        return f"[trelix: captioning unavailable] raw diagram source, {len(xml)} chars of XML."
+        return _mechanical_description(xml)
