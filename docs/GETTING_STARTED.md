@@ -104,7 +104,7 @@ Same example repo as above:
 │ Branch                 │                    master │
 │ Worktree at index time │                     clean │
 │ Indexed at             │ 2026-08-21T20:27:02+00:00 │
-│ trelix version         │                     3.1.5 │
+│ trelix version         │                     3.3.6 │
 │ Embedder               │                     local │
 └────────────────────────┴───────────────────────────┘
 ```

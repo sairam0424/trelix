@@ -363,13 +363,15 @@ Requires `pip install trelix[otel]`. See [OBSERVABILITY.md](OBSERVABILITY.md) fo
 
 ## .env File Example
 
-Copy this to `./.env` — the directory you run `trelix` **from**, not necessarily the repo you
-are indexing (see [Configuration Methods](#configuration-methods)) — and fill in the values
-relevant to your setup. Lines beginning with `#` are comments and are ignored.
+Copy this to the operator-owned location `resolve_operator_env_file()` reads — the path in
+`TRELIX_CONFIG_FILE` if set, else `~/.config/trelix/env` — never `./.env` in the directory you
+run `trelix` **from** or the repo you are indexing (see
+[Configuration Methods](#configuration-methods)) — and fill in the values relevant to your
+setup. Lines beginning with `#` are comments and are ignored.
 
 ```dotenv
 # =============================================================================
-# Trelix v3.1.5 — complete .env example
+# Trelix v3.3.6 — complete .env example
 # Copy to .env and fill in values. Never commit this file.
 # =============================================================================
 

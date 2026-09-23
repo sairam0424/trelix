@@ -1,6 +1,6 @@
 # Trelix v3.3.6 — Installation Guide
 
-This guide covers every installation scenario for Trelix v3.1.5, from a quick
+This guide covers every installation scenario for Trelix v3.3.6, from a quick
 one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 ---
@@ -390,7 +390,7 @@ Run these commands after any installation method to confirm everything is
 working correctly.
 
 ```bash
-# Print version (must print the version you installed, e.g. 3.1.5)
+# Print version (must print the version you installed, e.g. 3.3.6)
 trelix --version
 
 # Print usage summary
@@ -410,7 +410,7 @@ Expected output for `trelix stats ./`:
 
 ```
 Trelix Index Stats
-  Version   : 3.1.2
+  Version   : 3.3.6
   Chunks    : <n>
   Embedder  : local (all-MiniLM-L6-v2)
   Backend   : sqlite

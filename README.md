@@ -294,9 +294,12 @@ optional extras — so installing it and expecting the rest will fail at import.
 install separately: LanceDB (`lance`), the non-OpenAI LLM providers (`anthropic`, `bedrock`,
 `vertex`, `litellm`, or `llm-all` for all four), the alternative embedders (`bge-code`,
 `nomic-code`, `cohere`), Semgrep taint analysis (`taint`), the graph visualiser
-(`graph-viz`), and the packaging extras (`binary`, `dev`). (PLAID reranking still works via
-`TRELIX_RETRIEVAL_RERANK_PROVIDER=plaid` — see pyproject.toml's comment on the removed
-`plaid` extra for why it was dropped entirely rather than just excluded from `all`.)
+(`graph-viz`), and the packaging extras (`binary`, `dev`). (Setting
+`TRELIX_RETRIEVAL_RERANK_PROVIDER=plaid` alone is not enough for working PLAID reranking —
+it also needs `pip install ragatouille` run manually, accepting the resulting `openai<3`
+resolver conflict, since `ragatouille` is no longer installable as a trelix extra; without it,
+`PlaidReranker` degrades gracefully to a no-op. See pyproject.toml's comment on the removed
+`plaid` extra for the full reasoning.)
 
 For every other install path — the extras above, standalone binaries, Docker, uv, or upgrading from an older version — see [docs/INSTALLATION_GUIDE.md](docs/INSTALLATION_GUIDE.md).
 
@@ -304,7 +307,9 @@ For every other install path — the extras above, standalone binaries, Docker, 
 
 ## Configuration
 
-All settings via environment variables or a `.env` file in the working directory.
+All settings via environment variables or an operator-owned `.env` file — never the
+working directory or the indexed repo. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#configuration-methods)
+for the exact resolution order.
 
 ### LLM Provider (v0.7.0)
 

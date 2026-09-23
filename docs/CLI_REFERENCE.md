@@ -75,7 +75,8 @@ trelix uses [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydant
 throughout. Every config value can be set via environment variable or an operator-owned
 `.env` file — never the current working directory or the indexed repo; see
 [docs/CONFIGURATION.md](CONFIGURATION.md#configuration-methods) for the exact resolution
-order (`TRELIX_CONFIG_FILE`, else `~/.config/trelix/env`). The most important variables are
+order (`TRELIX_CONFIG_FILE`, else `$XDG_CONFIG_HOME/trelix/env`, else `~/.config/trelix/env`).
+The most important variables are
 listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 
 ### API keys
