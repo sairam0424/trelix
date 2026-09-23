@@ -1,6 +1,6 @@
-# Trelix v3.3.6 — Installation Guide
+# Trelix v3.3.7 — Installation Guide
 
-This guide covers every installation scenario for Trelix v3.3.6, from a quick
+This guide covers every installation scenario for Trelix v3.3.7, from a quick
 one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 ---
@@ -47,7 +47,7 @@ so no API key is required.
 
 ```bash
 pip install "trelix[local]"
-trelix --version   # prints "trelix <version>", e.g. trelix 3.3.6
+trelix --version   # prints "trelix <version>", e.g. trelix 3.3.7
 ```
 
 On first use, Trelix downloads the embedder model (~420 MB) to
@@ -390,7 +390,7 @@ Run these commands after any installation method to confirm everything is
 working correctly.
 
 ```bash
-# Print version (must print the version you installed, e.g. 3.3.6)
+# Print version (must print the version you installed, e.g. 3.3.7)
 trelix --version
 
 # Print usage summary
@@ -410,7 +410,7 @@ Expected output for `trelix stats ./`:
 
 ```
 Trelix Index Stats
-  Version   : 3.3.6
+  Version   : 3.3.7
   Chunks    : <n>
   Embedder  : local (all-MiniLM-L6-v2)
   Backend   : sqlite

@@ -1,6 +1,6 @@
 # trelix CLI Reference
 
-**Version:** 3.3.6  
+**Version:** 3.3.7  
 **Last updated:** 2026-08-03
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
@@ -62,7 +62,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 3.3.6
+trelix --version        # trelix 3.3.7
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -1919,4 +1919,4 @@ trelix audit prune --retention-days 90
 
 ---
 
-*End of CLI Reference — trelix v3.3.6*
+*End of CLI Reference — trelix v3.3.7*
