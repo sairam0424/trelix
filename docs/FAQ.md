@@ -1,6 +1,6 @@
-# trelix v3.3.6 — Frequently Asked Questions
+# trelix v3.3.7 — Frequently Asked Questions
 
-> Last updated: 2026-08-17 — covers trelix 3.3.6, trelix-mcp 3.3.6, trelix-langchain 3.3.6, and trelix-llama-index 3.3.6.
+> Last updated: 2026-08-17 — covers trelix 3.3.7, trelix-mcp 3.3.7, trelix-langchain 3.3.7, and trelix-llama-index 3.3.7.
 
 ---
 
@@ -235,7 +235,7 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v3.3.6 exposes **15 tools**:
+trelix-mcp v3.3.7 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|
@@ -536,13 +536,13 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 So pin all four to the same version in your `requirements.txt`:
 
 ```
-trelix==3.3.6
-trelix-mcp==3.3.6
-trelix-langchain==3.3.6
-trelix-llama-index==3.3.6
+trelix==3.3.7
+trelix-mcp==3.3.7
+trelix-langchain==3.3.7
+trelix-llama-index==3.3.7
 ```
 
-The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.3.6 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.3.6 resolving against core 3.0.0 is supported and intended — the four-way 3.3.6 pin above is the combination CI installs and tests, not the only one that works.
+The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.3.7 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.3.7 resolving against core 3.0.0 is supported and intended — the four-way 3.3.7 pin above is the combination CI installs and tests, not the only one that works.
 
 ---
 

@@ -20,7 +20,7 @@ Verify the install:
 
 ```bash
 trelix --version
-# trelix 3.3.6
+# trelix 3.3.7
 ```
 
 ---
@@ -104,7 +104,7 @@ Same example repo as above:
 │ Branch                 │                    master │
 │ Worktree at index time │                     clean │
 │ Indexed at             │ 2026-08-21T20:27:02+00:00 │
-│ trelix version         │                     3.3.6 │
+│ trelix version         │                     3.3.7 │
 │ Embedder               │                     local │
 └────────────────────────┴───────────────────────────┘
 ```

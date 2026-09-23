@@ -2,7 +2,7 @@
 
 <!-- mcp-name: io.github.sairam0424/trelix -->
 
-MCP server for [trelix](https://github.com/sairam0424/trelix) v3.3.6 — semantic code search with streaming /ask endpoint, watch bridge notifications, and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+MCP server for [trelix](https://github.com/sairam0424/trelix) v3.3.7 — semantic code search with streaming /ask endpoint, watch bridge notifications, and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
 
 ## ⚠️ Breaking Change in v2.4.0
 

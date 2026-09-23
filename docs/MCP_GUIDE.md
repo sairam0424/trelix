@@ -28,7 +28,7 @@ version from the package instead:
 
 ```bash
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
-# 3.3.6
+# 3.3.7
 ```
 
 > **Note:** Python 3.10+ is required. Use a virtual environment if you manage multiple projects.
@@ -236,7 +236,7 @@ index_codebase(repo_path, provider="local") → stats dict
   "symbols_extracted": 1847,
   "chunks_stored": 4203,
   "elapsed_seconds": 18.4,
-  "index_version": "3.3.6"
+  "index_version": "3.3.7"
 }
 ```
 
