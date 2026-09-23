@@ -8,6 +8,46 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.3.7] — 2026-09-23
+
+### Fixed
+- **`trelix eval`/`trelix eval-synthesis`/`trelix migrate-vectors` leaked raw Python
+  tracebacks** on failures `search`/`ask`/`--reset` already handled cleanly. All three now
+  report a labeled one-line error. `SynthesisEvalHarness.run()` also silently rendered an
+  all-zero results table for a missing golden file instead of raising `FileNotFoundError`
+  like `EvalHarness.run()` already does — the CLI's own (already-written) handler for that
+  case never fired until now.
+- **REST API errors on `/search` and `/graph/visualize` returned Starlette's default
+  plain-text 500**, not JSON, for a `DimensionMismatchError` or a missing optional
+  dependency (`qdrant-client`, `pyvis`) — even though both exceptions already carry a
+  clean, actionable message. App-wide exception handlers now surface that message as
+  `{"detail": "..."}` for every current and future route.
+- **`/search`'s `k`/`cursor` had no lower-bound validation.** A negative value silently
+  reinterpreted the results slice via Python's negative-slice semantics instead of
+  raising, and could drive `next_cursor` negative too, corrupting every later page. Now a
+  standard 422 via `Query(ge=1)`/`Query(ge=0)`.
+- **`Authorization: Bearer <token>` was silently ignored in static-token auth mode.**
+  `openapi.json` has always advertised it as an accepted header on every gated route, but
+  outside an OIDC deployment a correct bearer token got the same 401 as no credential at
+  all. Now checked independently of `X-Trelix-Api-Key`, so either works on its own.
+- **`DiagramConnector`'s captioning-failure fallback discarded the diagram's actual
+  content**, reporting only its character count instead of the "mechanical description"
+  its own docstring promised — defeating `ArtifactLinker`'s ability to link a
+  failed-captioning diagram to any related symbol. The fallback now extracts and lists
+  every real `mxCell` shape label instead.
+- **The VS Code extension's packaged `.vsix` bundled ~1.6MB of local agent-tooling
+  scratch state** (`ruvector.db`, `.claude-flow/**`) that's gitignored at the repo root but
+  wasn't excluded from `vsce package`, which ignores a project's own `.gitignore` entirely
+  once a `.vscodeignore` exists. Also widened a `*.map` pattern to `**/*.map` — a 1MB
+  built sourcemap was shipping too.
+- **Multiple documentation inaccuracies**, found and closed via 3 rounds of independent
+  adversarial review: several docs claimed `.env` resolves relative to the current
+  working directory or indexed repo — the opposite of the real, deliberate,
+  security-motivated behavior (`resolve_operator_env_file()` reads an operator-owned
+  location by default, never the cwd); a stale `plaid`-extra reference and an unverified
+  `openai<3` dependency-conflict claim in README.md; and stale `3.1.x`/`3.3.6`
+  "current version" stamps across the docs tree.
+
 ## [3.3.6] — 2026-09-22
 
 ### Fixed
