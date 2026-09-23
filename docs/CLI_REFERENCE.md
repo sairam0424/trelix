@@ -73,10 +73,11 @@ trelix index --help     # help for the index command
 
 trelix uses [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)
 throughout. Every config value can be set via environment variable or an operator-owned
-`.env` file — never the current working directory or the indexed repo; see
+`.env` file — by default never the current working directory or the indexed repo; see
 [docs/CONFIGURATION.md](CONFIGURATION.md#configuration-methods) for the exact resolution
-order (`TRELIX_CONFIG_FILE`, else `$XDG_CONFIG_HOME/trelix/env`, else `~/.config/trelix/env`).
-The most important variables are
+order (`TRELIX_CONFIG_FILE`, else `$XDG_CONFIG_HOME/trelix/env`, else `~/.config/trelix/env`)
+and the one exception (a *relative* `TRELIX_CONFIG_FILE` override still resolves against
+the cwd). The most important variables are
 listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 
 ### API keys

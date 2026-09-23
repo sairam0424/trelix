@@ -438,9 +438,11 @@ caveats, and [CLI_REFERENCE.md](CLI_REFERENCE.md) for which handful of these are
 exposed as CLI flags.
 
 **`.env` is never resolved relative to your current working directory or the indexed
-repo.** It's read from `TRELIX_CONFIG_FILE` if set, else `$XDG_CONFIG_HOME/trelix/env`,
-else `~/.config/trelix/env` — a repo-local `.env` would otherwise let anyone who can commit
-a file to a repo trelix indexes repoint providers and credentials for the whole process.
+repo by default.** It's read from `TRELIX_CONFIG_FILE` if set (a *relative* value there
+still resolves against the cwd — use an absolute path to avoid that), else
+`$XDG_CONFIG_HOME/trelix/env`, else `~/.config/trelix/env` — a repo-local `.env` would
+otherwise let anyone who can commit a file to a repo trelix indexes repoint providers and
+credentials for the whole process.
 The `TRELIX_WALKER_*`, `TRELIX_PARSER_*`, `TRELIX_CHUNKER_*`, and `TRELIX_SPARSE_*` groups
 are read from the process environment only and ignore `.env` entirely.
 

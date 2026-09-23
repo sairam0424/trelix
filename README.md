@@ -307,9 +307,10 @@ For every other install path — the extras above, standalone binaries, Docker, 
 
 ## Configuration
 
-All settings via environment variables or an operator-owned `.env` file — never the
-working directory or the indexed repo. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#configuration-methods)
-for the exact resolution order.
+All settings via environment variables or an operator-owned `.env` file — by default
+never the working directory or the indexed repo. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#configuration-methods)
+for the exact resolution order and the one exception (a relative `TRELIX_CONFIG_FILE`
+override still resolves against the cwd).
 
 ### LLM Provider (v0.7.0)
 

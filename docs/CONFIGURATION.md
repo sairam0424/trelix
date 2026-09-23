@@ -15,16 +15,19 @@ resolved in priority order (highest wins):
 
 Two things about the `.env` file are worth knowing before you rely on it:
 
-- **It is never resolved relative to the current working directory or the indexed repo.**
-  A cwd-relative `.env` would let anyone who can commit a file to a repo trelix indexes
-  (a PR checkout, `trelix review` on a fork branch, a cloned dependency) repoint providers,
-  endpoints, and credential fields for the whole process — so trelix reads it from an
-  operator-owned location instead: `TRELIX_CONFIG_FILE` if set (which can still point at a
-  project `.env` deliberately), else `$XDG_CONFIG_HOME/trelix/env`, else
+- **The default lookup is never resolved relative to the current working directory or the
+  indexed repo.** A cwd-relative `.env` would let anyone who can commit a file to a repo
+  trelix indexes (a PR checkout, `trelix review` on a fork branch, a cloned dependency)
+  repoint providers, endpoints, and credential fields for the whole process — so trelix reads
+  it from an operator-owned location instead: `TRELIX_CONFIG_FILE` if set (which can still
+  point at a project `.env` deliberately), else `$XDG_CONFIG_HOME/trelix/env`, else
   `~/.config/trelix/env`. A `.env` sitting in the repo passed as the positional `REPO`
   argument (`repo_path`), or in whatever directory you launch `trelix` from, is *never* read
-  unless one of those two locations happens to point at it. See
-  `resolve_operator_env_file()` in `src/trelix/core/config.py` for the full resolution order.
+  unless one of those two locations happens to point at it. **Exception:** if you set
+  `TRELIX_CONFIG_FILE` to a *relative* path yourself (e.g. `TRELIX_CONFIG_FILE=.env`), that
+  override is resolved against the process cwd like any relative path — use an absolute path
+  when cwd-independence matters. See `resolve_operator_env_file()` in
+  `src/trelix/core/config.py` for the full resolution order.
 - **Not every setting group reads it.** The `TRELIX_WALKER_*`, `TRELIX_PARSER_*`,
   `TRELIX_CHUNKER_*`, and `TRELIX_SPARSE_*` groups are read from the process environment
   only; they ignore `.env` entirely.
@@ -581,9 +584,11 @@ file-based config source. Configuration comes from exactly two places, both of w
 process-wide rather than per-repo:
 
 1. **Environment variables** — every setting in the tables above.
-2. **A `.env` file** — loaded from an **operator-owned location**, never the current
-   working directory or the repo you pass as the positional `REPO` argument: the path in
-   `TRELIX_CONFIG_FILE` if set, else `$XDG_CONFIG_HOME/trelix/env`, else
+2. **A `.env` file** — loaded from an **operator-owned location**, by default never the
+   current working directory or the repo you pass as the positional `REPO` argument: the
+   path in `TRELIX_CONFIG_FILE` if set (a *relative* override still resolves against the
+   cwd — see [Configuration Methods](#configuration-methods) for that exception), else
+   `$XDG_CONFIG_HOME/trelix/env`, else
    `~/.config/trelix/env`.
 
 A `.trelix/` directory holds trelix's own generated data, never configuration: the index
