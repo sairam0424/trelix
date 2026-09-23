@@ -15,10 +15,16 @@ resolved in priority order (highest wins):
 
 Two things about the `.env` file are worth knowing before you rely on it:
 
-- **It is resolved relative to the current working directory, not the indexed repo.**
-  `trelix` loads `./.env` — the `.env` in whatever directory you launch the process from.
-  A `.env` sitting inside the repo passed as the positional `REPO` argument (`repo_path`)
-  is *not* read unless that directory also happens to be your cwd.
+- **It is never resolved relative to the current working directory or the indexed repo.**
+  A cwd-relative `.env` would let anyone who can commit a file to a repo trelix indexes
+  (a PR checkout, `trelix review` on a fork branch, a cloned dependency) repoint providers,
+  endpoints, and credential fields for the whole process — so trelix reads it from an
+  operator-owned location instead: `TRELIX_CONFIG_FILE` if set (which can still point at a
+  project `.env` deliberately), else `$XDG_CONFIG_HOME/trelix/env`, else
+  `~/.config/trelix/env`. A `.env` sitting in the repo passed as the positional `REPO`
+  argument (`repo_path`), or in whatever directory you launch `trelix` from, is *never* read
+  unless one of those two locations happens to point at it. See
+  `resolve_operator_env_file()` in `src/trelix/core/config.py` for the full resolution order.
 - **Not every setting group reads it.** The `TRELIX_WALKER_*`, `TRELIX_PARSER_*`,
   `TRELIX_CHUNKER_*`, and `TRELIX_SPARSE_*` groups are read from the process environment
   only; they ignore `.env` entirely.
@@ -573,9 +579,10 @@ file-based config source. Configuration comes from exactly two places, both of w
 process-wide rather than per-repo:
 
 1. **Environment variables** — every setting in the tables above.
-2. **A `.env` file** — loaded from the **current working directory** (`./.env`), which is a
-   property of where you launch the process, not of the repo you pass as the positional
-   `REPO` argument.
+2. **A `.env` file** — loaded from an **operator-owned location**, never the current
+   working directory or the repo you pass as the positional `REPO` argument: the path in
+   `TRELIX_CONFIG_FILE` if set, else `$XDG_CONFIG_HOME/trelix/env`, else
+   `~/.config/trelix/env`.
 
 A `.trelix/` directory holds trelix's own generated data, never configuration: the index
 lives at `<repo>/.trelix/index.db`, the optional audit log at `<cwd>/.trelix/audit.db`, and
@@ -600,9 +607,10 @@ actually supports:
 - **Wrap invocations in a `Makefile` target or shell script** that exports the project's
   variables before calling `trelix`, so everyone gets the same settings regardless of cwd.
 
-Remember that `.env` is resolved against the cwd: if contributors run `trelix` from
-different directories, an env var exported by a wrapper script is more reliable than a
-`.env` file.
+Remember that `.env` is resolved against an operator-owned location, not the cwd or the
+repo: if contributors expect their project's own `.env` to be picked up automatically,
+either set `TRELIX_CONFIG_FILE` to point at it explicitly or use an env var exported by a
+wrapper script instead.
 
 ---
 

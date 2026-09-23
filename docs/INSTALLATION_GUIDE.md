@@ -47,7 +47,7 @@ so no API key is required.
 
 ```bash
 pip install "trelix[local]"
-trelix --version   # prints "trelix <version>", e.g. trelix 3.1.5
+trelix --version   # prints "trelix <version>", e.g. trelix 3.3.6
 ```
 
 On first use, Trelix downloads the embedder model (~420 MB) to
@@ -432,12 +432,15 @@ Variable names follow `TRELIX_<SECTION>_<FIELD>`, where `<SECTION>` is the confi
 (`WALKER`, `PARSER`, `CHUNKER`, `EMBEDDER`, `STORE`, `RETRIEVAL`, `LLM`, `SPARSE`,
 `INDEXER`) — plus a handful of conventional third-party names (`OPENAI_API_KEY`,
 `QDRANT_URL`, …) that are read under their standard names. There is no config *file*:
-`.env` in the current working directory and the process environment are the only two
-sources. See [CONFIGURATION.md](CONFIGURATION.md) for the exhaustive list and the
-per-group `.env` caveats, and [CLI_REFERENCE.md](CLI_REFERENCE.md) for which handful of
-these are also exposed as CLI flags.
+an operator-owned `.env` and the process environment are the only two sources. See
+[CONFIGURATION.md](CONFIGURATION.md) for the exhaustive list and the per-group `.env`
+caveats, and [CLI_REFERENCE.md](CLI_REFERENCE.md) for which handful of these are also
+exposed as CLI flags.
 
-**`.env` is resolved relative to your current working directory, not the indexed repo.**
+**`.env` is never resolved relative to your current working directory or the indexed
+repo.** It's read from `TRELIX_CONFIG_FILE` if set, else `$XDG_CONFIG_HOME/trelix/env`,
+else `~/.config/trelix/env` — a repo-local `.env` would otherwise let anyone who can commit
+a file to a repo trelix indexes repoint providers and credentials for the whole process.
 The `TRELIX_WALKER_*`, `TRELIX_PARSER_*`, `TRELIX_CHUNKER_*`, and `TRELIX_SPARSE_*` groups
 are read from the process environment only and ignore `.env` entirely.
 

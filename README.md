@@ -293,8 +293,10 @@ pip install "trelix[all]"     # + local embedder, voyage, cohere rerank, sparse,
 optional extras — so installing it and expecting the rest will fail at import. The other 13
 install separately: LanceDB (`lance`), the non-OpenAI LLM providers (`anthropic`, `bedrock`,
 `vertex`, `litellm`, or `llm-all` for all four), the alternative embedders (`bge-code`,
-`nomic-code`), PLAID (`plaid`), Semgrep taint analysis (`taint`), the graph visualiser
-(`graph-viz`), and the packaging extras (`binary`, `dev`).
+`nomic-code`, `cohere`), Semgrep taint analysis (`taint`), the graph visualiser
+(`graph-viz`), and the packaging extras (`binary`, `dev`). (PLAID reranking still works via
+`TRELIX_RETRIEVAL_RERANK_PROVIDER=plaid` — see pyproject.toml's comment on the removed
+`plaid` extra for why it was dropped entirely rather than just excluded from `all`.)
 
 For every other install path — the extras above, standalone binaries, Docker, uv, or upgrading from an older version — see [docs/INSTALLATION_GUIDE.md](docs/INSTALLATION_GUIDE.md).
 

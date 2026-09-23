@@ -62,7 +62,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 3.1.5
+trelix --version        # trelix 3.3.6
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -72,9 +72,11 @@ trelix index --help     # help for the index command
 ## Environment variables
 
 trelix uses [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)
-throughout. Every config value can be set via environment variable or a `.env`
-file in the current working directory. The most important variables are listed
-below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
+throughout. Every config value can be set via environment variable or an operator-owned
+`.env` file — never the current working directory or the indexed repo; see
+[docs/CONFIGURATION.md](CONFIGURATION.md#configuration-methods) for the exact resolution
+order (`TRELIX_CONFIG_FILE`, else `~/.config/trelix/env`). The most important variables are
+listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 
 ### API keys
 

@@ -1617,7 +1617,7 @@ built-in default list rather than appending to it.
 Only two flags are processed before a subcommand:
 
 ```bash
-trelix --version        # or -V; prints e.g. "trelix 3.1.5"
+trelix --version        # or -V; prints e.g. "trelix 3.3.6"
 trelix --help           # top-level help
 trelix <command> --help  # per-command help — the ground truth for any flag question
 ```
