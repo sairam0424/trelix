@@ -226,14 +226,12 @@ class SynthesisEvalHarness:
 
         path = Path(golden_path)
         if not path.exists():
-            return {
-                "hallucination_rate": 0.0,
-                "completeness": 0.0,
-                "faithfulness": 0.0,
-                "overall": 0.0,
-                "n_queries": 0.0,
-                "unscoreable": 0.0,
-            }
+            # Refuse rather than report 0.0 — a missing file and a genuinely bad
+            # synthesis result must not render as the same table. Mirrors
+            # EvalHarness.run()'s identical FileNotFoundError contract in
+            # harness.py, which the CLI's eval-synthesis command already
+            # catches with an actionable message.
+            raise FileNotFoundError(f"Golden file not found: {golden_path}")
 
         entries = []
         with open(path) as f:

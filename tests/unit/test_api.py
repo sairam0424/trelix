@@ -596,6 +596,136 @@ class TestApiAuth:
         resp = client.get("/health")
         assert resp.status_code == 200
 
+    def test_token_configured_accepts_bearer_header(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """openapi.json has always advertised Authorization as an accepted
+        header on every gated route, but in static-token mode (no OIDC/SSO)
+        it was silently ignored — a correct bearer token got the same 401 as
+        no credential at all. It must now be accepted, same as X-Trelix-Api-Key."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(
+                f"/search?query=auth&repo={tmp_path}",
+                headers={"Authorization": "Bearer secret-token"},
+            )
+            assert resp.status_code == 200
+
+    def test_token_configured_rejects_wrong_bearer_header(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get(
+            f"/search?query=auth&repo={tmp_path}",
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        assert resp.status_code == 401
+
+
+@pytest.mark.usefixtures("allow_repo_root")
+class TestSearchQueryValidation:
+    """A negative k or cursor doesn't raise inside search() — Python's
+    negative-slice semantics silently reinterpret `all_results[cursor:cursor+k]`
+    and can drive next_cursor negative too, corrupting every later page. These
+    must be refused as a standard 422, not silently misinterpreted."""
+
+    def test_negative_k_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get(f"/search?query=x&repo={tmp_path}&k=-1")
+        assert resp.status_code == 422
+
+    def test_zero_k_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get(f"/search?query=x&repo={tmp_path}&k=0")
+        assert resp.status_code == 422
+
+    def test_negative_cursor_is_rejected(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get(f"/search?query=x&repo={tmp_path}&cursor=-1")
+        assert resp.status_code == 422
+
+
+@pytest.mark.usefixtures("allow_repo_root")
+class TestApiErrorsAreJsonNotPlainText:
+    """An unhandled DimensionMismatchError or ImportError inside a route used
+    to fall through to Starlette's default handler, which returns PLAIN TEXT
+    ("Internal Server Error") on an unhandled exception — not JSON. Both
+    classes already carry a clean, actionable message (DimensionMismatchError's
+    "Fix: ..." text; every optional-dependency ImportError's "pip install ..."
+    hint); registering handlers once in create_app is what gets that message
+    to an HTTP caller instead of a caller-unusable blank 500."""
+
+    def test_dimension_mismatch_on_search_returns_json_with_the_real_message(
+        self, tmp_path
+    ) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+        from trelix.store.dimension_guard import DimensionMismatchError
+
+        exc = DimensionMismatchError(stored=768, current=1536, provider="openai")
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.side_effect = exc
+            app = create_app()
+            client = TestClient(app)
+            resp = client.get(f"/search?query=x&repo={tmp_path}")
+
+        assert resp.status_code == 500
+        assert resp.headers["content-type"].startswith("application/json")
+        assert "768" in resp.json()["detail"]
+
+    def test_missing_pyvis_on_graph_visualize_returns_json_with_the_install_hint(
+        self, tmp_path
+    ) -> None:  # type: ignore[no-untyped-def]
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        with patch("trelix.graph.builder.GraphBuilder") as MockBuilder:
+            mock_result = MagicMock()
+            mock_result.node_count = 3
+            MockBuilder.return_value.build.return_value = mock_result
+            with patch(
+                "trelix.graph.visualizer.GraphVisualizer.export_html",
+                side_effect=ImportError(
+                    "pyvis is required for graph visualization. "
+                    "Install with: pip install 'trelix[graph-viz]'"
+                ),
+            ):
+                app = create_app()
+                client = TestClient(app)
+                resp = client.get(f"/graph/visualize?repo={tmp_path}")
+
+        assert resp.status_code == 500
+        assert resp.headers["content-type"].startswith("application/json")
+        assert "trelix[graph-viz]" in resp.json()["detail"]
+
 
 class TestOpenApiSchema:
     """Regression guard: every route must keep a real Pydantic response_model

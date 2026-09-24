@@ -1,6 +1,6 @@
-# Trelix v3.3.5 Troubleshooting Guide
+# Trelix v3.3.7 Troubleshooting Guide
 
-This guide covers every common failure mode for trelix v3.1.5. Each entry follows the pattern: **Symptom → Cause → Fix**.
+This guide covers every common failure mode for trelix v3.3.7. Each entry follows the pattern: **Symptom → Cause → Fix**.
 
 ---
 
@@ -49,7 +49,9 @@ trelix migrate-vectors ./repo --reset
 trelix index ./repo
 
 # If you want to switch providers permanently, set the provider in the environment
-# (or in ./.env), then reset. There is no `trelix config` command and no config file.
+# (or in the operator-owned .env from docs/CONFIGURATION.md#configuration-methods --
+# NOT ./.env in this directory, which is never read), then reset. There is no
+# `trelix config` command and no config file.
 export TRELIX_EMBEDDER_PROVIDER=voyage
 trelix migrate-vectors ./repo --reset
 trelix index ./repo
