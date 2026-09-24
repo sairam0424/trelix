@@ -676,6 +676,34 @@ class TestRankByPagerank:
         for _, score in pr:
             assert score >= 0.0
 
+    def test_falls_back_to_uniform_scores_when_scipy_is_missing(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """nx.pagerank needs scipy internally and only imports it lazily when
+        called, not at `import networkx` time -- so the `except ImportError`
+        guard at the top of rank_by_pagerank (which only wraps the
+        `import networkx` statement) never sees this. A scipy-less
+        environment (e.g. the PyInstaller binary, which excludes scipy for
+        size) must degrade to uniform scores instead of crashing call-graph
+        expansion entirely."""
+        import networkx as nx
+
+        fid = _insert_file(db)
+        a = _insert_symbol(db, fid, "a")
+        b = _insert_symbol(db, fid, "b")
+        _insert_chunk(db, a)
+        _insert_chunk(db, b)
+        db.insert_call_edges([CallEdge(caller_id=a, callee_name="b", callee_id=b, line=1)])
+        db._conn.commit()
+
+        def fake_pagerank(*args: object, **kwargs: object) -> None:
+            raise ImportError("simulated missing scipy")
+
+        monkeypatch.setattr(nx, "pagerank", fake_pagerank)
+
+        result = rank_by_pagerank([a, b], db)
+        assert set(result) == {(a, 1.0), (b, 1.0)}
+
     def test_generic_edges_never_leak_into_returned_ranking(self, db: Database) -> None:
         """Synthetic artifact nodes (source_ref strings) participate in the
         PageRank computation but must never appear in the caller-facing
