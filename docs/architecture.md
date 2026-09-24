@@ -1,6 +1,6 @@
 # trelix Architecture
 
-> **Version:** 3.3.5 | **Python:** 3.12+ | **140 source modules**
+> **Version:** 3.3.7 | **Python:** 3.12+ | **140 source modules**
 
 This document describes the complete architecture of trelix — every layer, every data flow, every design decision, and every class that matters. It is the definitive reference for contributors and anyone integrating trelix at a deep level.
 
@@ -234,7 +234,7 @@ class RetrievedContext:
 
 **Module:** `src/trelix/core/config.py`
 
-All configuration classes inherit `pydantic_settings.BaseSettings`. Environment variables are loaded from `.env` file in the repo root, then from shell environment (shell wins). The root object `IndexConfig` is the single configuration instance passed through the entire pipeline.
+All configuration classes inherit `pydantic_settings.BaseSettings`. Environment variables are read from the process environment, plus an operator-owned `.env` file resolved by `resolve_operator_env_file()` — by default `TRELIX_CONFIG_FILE` if set, else `$XDG_CONFIG_HOME/trelix/env`, else `~/.config/trelix/env`, never a `.env` in the repo root or cwd (see [CONFIGURATION.md](CONFIGURATION.md#configuration-methods)) — with the shell environment winning over `.env` on conflict. The root object `IndexConfig` is the single configuration instance passed through the entire pipeline.
 
 ### Configuration Hierarchy
 
@@ -2285,4 +2285,4 @@ That's it — no changes to `Retriever` needed.
 
 ---
 
-*trelix v3.3.5 — last updated 2026-08-16*
+*trelix v3.3.7 — last updated 2026-08-16*
