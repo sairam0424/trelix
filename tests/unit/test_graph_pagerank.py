@@ -162,6 +162,23 @@ class TestComputePagerank:
         with_ppr = compute_pagerank(cg, personalization_enabled=True)
         assert without == with_ppr
 
+    def test_falls_back_to_uniform_scores_when_scipy_is_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """nx.pagerank needs scipy internally and only imports it lazily
+        when called -- a scipy-less environment (e.g. the PyInstaller
+        binary, which excludes scipy for size) must degrade to uniform
+        scores instead of crashing call-graph expansion entirely."""
+        _, cg, _ = _build_star_graph(tmp_path)
+
+        def fake_pagerank(*args: object, **kwargs: object) -> None:
+            raise ImportError("simulated missing scipy")
+
+        monkeypatch.setattr(nx, "pagerank", fake_pagerank)
+
+        scores = compute_pagerank(cg)
+        assert scores == {k: 1.0 for k in cg.nx.nodes()}
+
     def test_personalization_shifts_score_toward_ticket_linked_leaf(self, tmp_path: Path) -> None:
         """Proves personalization= is genuinely wired into compute_pagerank's
         nx.pagerank call, not a no-op — a prior version of this test passed
