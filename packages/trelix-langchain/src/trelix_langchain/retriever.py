@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
+from pydantic import PrivateAttr
 
 if TYPE_CHECKING:
     from trelix.retrieval.retriever import Retriever
@@ -13,7 +14,17 @@ class TrelixRetriever(BaseRetriever):
     provider: str = "local"
     k: int = 10
 
+    # Memoized across calls on the same instance. Retriever construction is
+    # expensive -- for the `local` embedder specifically, make_embedder()
+    # loads a SentenceTransformer model from disk, several seconds every
+    # time -- and repo_path/provider are fixed for the lifetime of a given
+    # TrelixRetriever instance, so there is nothing to invalidate.
+    _cached_retriever: "Retriever | None" = PrivateAttr(default=None)
+
     def _get_trelix_retriever(self) -> "Retriever":
+        if self._cached_retriever is not None:
+            return self._cached_retriever
+
         from typing import Literal, cast
 
         from trelix.core.config import EmbedderConfig, IndexConfig
@@ -39,7 +50,8 @@ class TrelixRetriever(BaseRetriever):
                 )
             ),
         )
-        return Retriever(config)
+        self._cached_retriever = Retriever(config)
+        return self._cached_retriever
 
     def _get_relevant_documents(
         self,

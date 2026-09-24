@@ -12,9 +12,18 @@ class TrelixIndexRetriever(BaseRetriever):
         self._repo_path = repo_path
         self._provider = provider
         self._k = k
+        # Memoized across calls on this instance. Retriever construction is
+        # expensive -- for the `local` embedder specifically, make_embedder()
+        # loads a SentenceTransformer model from disk, several seconds every
+        # time -- and repo_path/provider are fixed for the lifetime of this
+        # instance, so there is nothing to invalidate.
+        self._cached_retriever: Retriever | None = None
         super().__init__()
 
     def _get_trelix_retriever(self) -> "Retriever":
+        if self._cached_retriever is not None:
+            return self._cached_retriever
+
         from typing import Literal, cast
 
         from trelix.core.config import EmbedderConfig, IndexConfig
@@ -40,7 +49,8 @@ class TrelixIndexRetriever(BaseRetriever):
                 )
             ),
         )
-        return Retriever(config)
+        self._cached_retriever = Retriever(config)
+        return self._cached_retriever
 
     def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
         ctx = self._get_trelix_retriever().retrieve(query_bundle.query_str)

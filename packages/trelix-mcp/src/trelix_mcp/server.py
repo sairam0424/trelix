@@ -11,6 +11,7 @@ logging.basicConfig(
 )
 
 import signal  # noqa: E402
+import threading  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
@@ -35,8 +36,34 @@ from trelix.store.db import Database  # noqa: E402
 from trelix_mcp import __version__  # noqa: E402
 from trelix_mcp.subscriptions import SubscriptionLimitExceeded, SubscriptionRegistry  # noqa: E402
 
-mcp = FastMCP("trelix")
+mcp = FastMCP("trelix", version=__version__)
 _log = logging.getLogger("trelix_mcp")
+
+# Retriever construction is the expensive part of every tool call that uses
+# one -- for the `local` embedder specifically, make_embedder() loads a
+# SentenceTransformer model from disk, several seconds every time. An MCP
+# server is a long-lived process serving many tool calls, unlike a CLI
+# command's one-shot invocation, so it's worth reusing the same Retriever
+# across calls against the same repo instead of rebuilding it from scratch
+# on every search_code/graph_search_mcp call. Keyed on the resolved absolute
+# path so relative/absolute spellings of the same repo share one entry.
+# Invalidated by index_codebase (see there) -- a re-index can switch
+# embedder providers, which changes what Retriever.__init__ needs to build.
+_retriever_cache: dict[str, Retriever] = {}
+_retriever_cache_lock = threading.Lock()
+
+
+def _get_retriever(repo_path: str) -> Retriever:
+    """Return a cached Retriever for repo_path, constructing one if needed."""
+    key = str(Path(repo_path).resolve())
+    with _retriever_cache_lock:
+        cached = _retriever_cache.get(key)
+        if cached is not None:
+            return cached
+        retriever = Retriever(IndexConfig(repo_path=repo_path))
+        _retriever_cache[key] = retriever
+        return retriever
+
 
 # Global subscription registry — tracks which MCP clients are watching which
 # trelix:// resource URIs.  notify_file_changed() fires notifications to all
@@ -338,13 +365,12 @@ def search_code(
     _log.info("search_code query=%r repo=%s k=%d cursor=%d", query, repo_path, k, cursor)
     from trelix.retrieval.planner.models import plan_from_intent_hint
 
-    config = IndexConfig(repo_path=repo_path)
     plan = (
         plan_from_intent_hint(query, intent_hint, hyde_snippet_hint)
         if intent_hint is not None
         else None
     )
-    ctx = Retriever(config).retrieve(query, plan=plan)
+    ctx = _get_retriever(repo_path).retrieve(query, plan=plan)
     all_results = ctx.results
 
     page = all_results[cursor : cursor + k]
@@ -418,6 +444,13 @@ def index_codebase(
     _send_progress(0, 3)
     stats = Indexer(config, quiet=True).index()
     _send_progress(3, 3)
+
+    # Drop any cached Retriever for this repo -- a re-index can switch
+    # embedder providers (the `provider` argument above), which changes what
+    # the next search_code/graph_search_mcp call needs to construct. The next
+    # call rebuilds fresh and gets cached again from there.
+    with _retriever_cache_lock:
+        _retriever_cache.pop(str(Path(repo_path).resolve()), None)
 
     return stats
 
@@ -670,13 +703,12 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict[str, 
     from trelix.core.config import IndexConfig
     from trelix.graph.builder import GraphBuilder
     from trelix.graph.search import graph_search
-    from trelix.retrieval.retriever import Retriever
 
     _log.info("graph_search_mcp query=%r repo=%s k=%d", query, repo_path, k)
     config = IndexConfig(repo_path=repo_path)
 
     # First find seed symbols via standard retrieval
-    ctx = Retriever(config).retrieve(query)
+    ctx = _get_retriever(repo_path).retrieve(query)
     seed_ids = [r.chunk.symbol_id for r in ctx.results[:5]]
 
     if not seed_ids:
