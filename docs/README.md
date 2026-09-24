@@ -165,3 +165,4 @@ per-file — see the note at the top.
 ---
 
 *Last updated: 2026-08-17 — trelix v3.3.7*
+# verifying trelix-review App private key rotation on 2026-09-24
