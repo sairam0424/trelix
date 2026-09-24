@@ -304,6 +304,37 @@ def test_eval_synthesis_help():
     assert "--golden" in result.output or "golden" in result.output.lower()
 
 
+def test_eval_failure_prints_a_clean_error_not_a_traceback(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A DimensionMismatchError (or any other retrieval failure) during `trelix eval`
+    must be reported the same way `search`/`ask` already report one — a labeled,
+    one-line error — not a raw Python traceback."""
+    from unittest.mock import patch
+
+    from trelix.store.dimension_guard import DimensionMismatchError
+
+    exc = DimensionMismatchError(stored=768, current=1536, provider="openai")
+    with patch("trelix.eval.harness.EvalHarness.run", side_effect=exc):
+        result = runner.invoke(app, ["eval", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "Evaluation failed" in result.output
+
+
+def test_eval_synthesis_failure_prints_a_clean_error_not_a_traceback(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from unittest.mock import patch
+
+    from trelix.store.dimension_guard import DimensionMismatchError
+
+    exc = DimensionMismatchError(stored=768, current=1536, provider="openai")
+    with patch("trelix.eval.synthesis.SynthesisEvalHarness.run", side_effect=exc):
+        result = runner.invoke(app, ["eval-synthesis", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "Evaluation failed" in result.output
+
+
 def test_watch_all_no_repos_exits_gracefully() -> None:
     """trelix watch-all with empty registry shows helpful message."""
     from unittest.mock import patch
