@@ -190,6 +190,11 @@ def test_fetch_degrades_gracefully_when_captioning_raises(tmp_path: Path) -> Non
 
     assert len(artifacts) == 1  # still produced -- never dropped
     assert "captioning unavailable" in artifacts[0].body
+    # The docstring's "still indexed and linkable" promise requires the
+    # fallback to carry real content, not just a length -- ArtifactLinker's
+    # regex name-matching has nothing to match against otherwise.
+    assert "API Gateway" in artifacts[0].body
+    assert "Postgres Database" in artifacts[0].body
     assert artifacts[0].source_ref == "diagram:docs/architecture.drawio"
 
 
@@ -202,6 +207,45 @@ def test_fetch_degrades_gracefully_on_empty_llm_response(tmp_path: Path) -> None
         artifacts = connector.fetch()
 
     assert "captioning unavailable" in artifacts[0].body
+    assert "API Gateway" in artifacts[0].body
+    assert "Postgres Database" in artifacts[0].body
+
+
+def test_mechanical_fallback_strips_inline_html_and_entities_from_labels() -> None:
+    """drawio commonly stores rich-text labels as inline HTML with escaped
+    entities (e.g. value="&lt;b&gt;Auth Service&lt;/b&gt;"). The fallback
+    must surface the readable text, not the markup."""
+    from trelix.indexing.connectors.diagram import _mechanical_description
+
+    xml = '<mxCell value="&lt;b&gt;Auth Service&lt;/b&gt; &amp; friends" />'
+
+    description = _mechanical_description(xml)
+
+    assert "Auth Service & friends" in description
+    assert "<b>" not in description
+    assert "&lt;" not in description
+
+
+def test_mechanical_fallback_deduplicates_labels_in_first_seen_order() -> None:
+    from trelix.indexing.connectors.diagram import _mechanical_description
+
+    xml = '<mxCell value="API Gateway" /><mxCell value="Database" /><mxCell value="API Gateway" />'
+
+    description = _mechanical_description(xml)
+
+    assert description.count("API Gateway") == 1
+    assert description.index("API Gateway") < description.index("Database")
+
+
+def test_mechanical_fallback_reports_length_when_no_labels_found() -> None:
+    from trelix.indexing.connectors.diagram import _mechanical_description
+
+    xml = "<mxfile><diagram></diagram></mxfile>"
+
+    description = _mechanical_description(xml)
+
+    assert "captioning unavailable" in description
+    assert str(len(xml)) in description
 
 
 def test_fetch_handles_multiple_diagrams_independently(tmp_path: Path) -> None:

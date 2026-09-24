@@ -31,7 +31,7 @@ import sys
 import types
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Fake qdrant_client module — mirrors the helper in tests/unit/test_store_qdrant.py
@@ -345,3 +345,76 @@ class TestResetActuallyResets:
 
         assert res.exit_code == 1, res.output
         assert "does not support" in res.output and "qdrant" in res.output
+
+
+class TestMigrateVectorsFailureModesAreReportedCleanly:
+    """The two most common ways migrate-vectors fails in practice — the
+    qdrant-client extra isn't installed, or nothing is listening at --url —
+    must produce a labeled, one-line error like every other CLI failure
+    path (search, ask, --reset), not a raw Python traceback."""
+
+    def _seed_index(self, repo: Path) -> None:
+        from trelix.core.config import IndexConfig
+        from trelix.store.vector import SQLiteVectorStore
+
+        config = IndexConfig(repo_path=str(repo))
+        store = SQLiteVectorStore(db_path=config.db_path_absolute, dimension=4)
+        store.upsert_batch([(1, [0.1, 0.2, 0.3, 0.4])])
+        store.close()
+
+    def test_missing_qdrant_client_extra_is_reported_cleanly(self, tmp_path: Path) -> None:
+        """QdrantVectorStore.__init__ already raises a clean, actionable ImportError
+        naming `pip install 'trelix[qdrant]'` when qdrant-client isn't installed —
+        but migrate-vectors constructed it outside any try/except, so that message
+        never reached the user; only a raw traceback did. qdrant-client IS installed
+        in this dev venv, so the absence is forced via sys.modules rather than relying
+        on the environment not having the extra."""
+        import builtins
+
+        from typer.testing import CliRunner
+
+        from trelix.cli.main import app
+
+        _remove_fake_qdrant()
+        real_import = builtins.__import__
+
+        def _blocked_import(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if name == "qdrant_client" or name.startswith("qdrant_client."):
+                raise ModuleNotFoundError(f"No module named {name!r}")
+            return real_import(name, *args, **kwargs)
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._seed_index(repo)
+
+        with patch("builtins.__import__", side_effect=_blocked_import):
+            result = CliRunner().invoke(app, ["migrate-vectors", str(repo)])
+
+        assert result.exit_code == 1, result.output
+        assert "Traceback" not in result.output
+        assert "Failed to connect to Qdrant" in result.output
+        assert "trelix[qdrant]" in result.output
+
+    def test_unreachable_qdrant_server_is_reported_cleanly(self, tmp_path: Path) -> None:
+        """No server listening at --url must fail with a labeled error, not a raw
+        traceback from deep inside qdrant_client's connection handling."""
+        from typer.testing import CliRunner
+
+        from trelix.cli.main import app
+
+        mock_instance = _inject_fake_qdrant()
+        try:
+            mock_instance.get_collections.side_effect = ConnectionError("Connection refused")
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            self._seed_index(repo)
+
+            result = CliRunner().invoke(
+                app, ["migrate-vectors", str(repo), "--url", "http://localhost:6333"]
+            )
+        finally:
+            _remove_fake_qdrant()
+
+        assert result.exit_code == 1, result.output
+        assert "Traceback" not in result.output
+        assert "Failed to connect to Qdrant" in result.output

@@ -8,6 +8,93 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.3.7] — 2026-09-23
+
+### Fixed
+- **`trelix eval`/`trelix eval-synthesis`/`trelix migrate-vectors` leaked raw Python
+  tracebacks** on failures `search`/`ask`/`--reset` already handled cleanly. All three now
+  report a labeled one-line error. `SynthesisEvalHarness.run()` also silently rendered an
+  all-zero results table for a missing golden file instead of raising `FileNotFoundError`
+  like `EvalHarness.run()` already does — the CLI's own (already-written) handler for that
+  case never fired until now.
+- **REST API errors on `/search` and `/graph/visualize` returned Starlette's default
+  plain-text 500**, not JSON, for a `DimensionMismatchError` or a missing optional
+  dependency (`qdrant-client`, `pyvis`) — even though both exceptions already carry a
+  clean, actionable message. App-wide exception handlers now surface that message as
+  `{"detail": "..."}` for every current and future route.
+- **`/search`'s `k`/`cursor` had no lower-bound validation.** A negative value silently
+  reinterpreted the results slice via Python's negative-slice semantics instead of
+  raising, and could drive `next_cursor` negative too, corrupting every later page. Now a
+  standard 422 via `Query(ge=1)`/`Query(ge=0)`.
+- **`Authorization: Bearer <token>` was silently ignored in static-token auth mode.**
+  `openapi.json` has always advertised it as an accepted header on every gated route, but
+  outside an OIDC deployment a correct bearer token got the same 401 as no credential at
+  all. Now checked independently of `X-Trelix-Api-Key`, so either works on its own.
+- **`DiagramConnector`'s captioning-failure fallback discarded the diagram's actual
+  content**, reporting only its character count instead of the "mechanical description"
+  its own docstring promised — defeating `ArtifactLinker`'s ability to link a
+  failed-captioning diagram to any related symbol. The fallback now extracts and lists
+  every real `mxCell` shape label instead.
+- **The VS Code extension's packaged `.vsix` bundled ~1.6MB of local agent-tooling
+  scratch state** (`ruvector.db`, `.claude-flow/**`) that's gitignored at the repo root but
+  wasn't excluded from `vsce package`, which ignores a project's own `.gitignore` entirely
+  once a `.vscodeignore` exists. Also widened a `*.map` pattern to `**/*.map` — a 1MB
+  built sourcemap was shipping too.
+- **Multiple documentation inaccuracies**, found and closed via 3 rounds of independent
+  adversarial review: several docs claimed `.env` resolves relative to the current
+  working directory or indexed repo — the opposite of the real, deliberate,
+  security-motivated behavior (`resolve_operator_env_file()` reads an operator-owned
+  location by default, never the cwd); a stale `plaid`-extra reference and an unverified
+  `openai<3` dependency-conflict claim in README.md; and stale `3.1.x`/`3.3.6`
+  "current version" stamps across the docs tree.
+
+## [3.3.6] — 2026-09-22
+
+### Fixed
+- **`litellm` security floor bumped past 3 real CVEs** (2 CRITICAL, CVSS 9.8: an
+  unauthenticated Host-header auth-bypass and an unauthenticated SSTI-to-RCE; 1 Medium
+  SSRF). `pyproject.toml`'s floor was `litellm>=1.50.0` — dangerously low even though the
+  locked version was already safe, because a fresh resolve could still land on a
+  vulnerable one. Bumping it surfaced two pre-existing, unrelated resolver conflicts: the
+  `plaid` extra was permanently unresolvable against a real `openai>=3.0.0` (removed
+  outright; `PlaidReranker` itself is untouched and still works if `ragatouille` is
+  installed manually), and the core `openai` floor was lowered to `>=2.20.0,<3.0.0` to
+  keep `trelix[litellm]` installable while still fencing off `openai-python` v3's breaking
+  transport switch.
+- **`QueryPlanner`'s LLM provider was coupled to the embedder's provider, not
+  `TRELIX_LLM_PROVIDER`.** A `local`/`voyage`/etc. embedder always forced an
+  unauthenticated `openai` client onto the query planner, silently collapsing every
+  `plan()` call to `default_plan()` even when a real, credentialed LLM provider
+  (Anthropic, Bedrock, Vertex) was configured — there was no way to combine a free/local
+  embedder with a working LLM-backed planner. `QueryPlanner`/`AdaptiveRouter` gained an
+  `llm_config` parameter (mirroring `Synthesizer`'s existing, identical shape) that's used
+  directly when supplied, and `Retriever` now passes `IndexConfig.llm` through. Existing
+  callers that don't pass `llm_config` keep the exact prior behavior.
+- **`trelix audit prune` actually removes rows now.** `TRELIX_AUDIT_RETENTION_DAYS` had
+  been accepted-but-unimplemented since it was added — nothing pruned `audit_log`. Pruning
+  is now real, batched, and hash-chain-aware: `verify()` resolves its walk from a written
+  prune watermark instead of assuming the chain always starts at row 1, so a legitimately
+  pruned log verifies clean instead of false-positiving as tampered (`log_emptied`).
+  `PRAGMA auto_vacuum=INCREMENTAL` is retrofitted on open so pruning actually reclaims
+  disk. New `trelix audit prune` CLI command (`--dry-run`, `--retention-days`,
+  `--batch-size`) — not wired into any scheduler; run it externally via cron.
+
+### Added
+- **Abstractive compression provider** (`TRELIX_RETRIEVAL_COMPRESSION_PROVIDER=abstractive`).
+  Layers an LLM-synthesized summary on top of extractive compression's existing
+  verbatim-declaration-line guarantee — the signature/docstring line is always kept
+  byte-for-byte; only the remaining body is replaced with a summary, rendered under an
+  explicit "not verbatim source" header so `kept_spans` never claims the summary as a
+  citable span. Same graceful-degradation contract as the extractive provider: any LLM
+  failure degrades to passthrough rather than propagating into retrieval.
+- **`.drawio` diagram connector** (`trelix connector sync <repo> diagram`) — a scoped
+  multi-modal pilot. Captions local `.drawio` (diagrams.net) files via the existing
+  text-only `TrelixChatClient` (the format is plain XML, fully describable as text — no
+  new vision/provider code needed) and links them as `Artifact`s via the existing
+  `ArtifactLinker`, exactly like a Jira ticket. Raster images (`.png`/`.jpg`) are
+  deliberately out of scope — that needs genuinely new vision-provider code, tracked
+  separately.
+
 ## [3.3.5] — 2026-09-19
 
 ### Fixed
