@@ -483,7 +483,9 @@ def rank_by_pagerank(
     Run PageRank on the call subgraph of the given symbols.
     Returns (symbol_id, pagerank_score) sorted descending.
 
-    Falls back to uniform scores if networkx is not installed.
+    Falls back to uniform scores if networkx, or scipy (which networkx's
+    pagerank needs internally and only imports lazily when called), is not
+    installed — e.g. the PyInstaller binary, which excludes scipy for size.
     Stolen from Aider's approach of using graph centrality to prioritize
     which symbols are most important for a limited context window.
 
@@ -533,7 +535,14 @@ def rank_by_pagerank(
         mass = 1.0 / len(cross_source_nodes)
         personalization = {node: mass for node in cross_source_nodes}
 
-    scores = nx.pagerank(G, alpha=0.85, personalization=personalization)
+    try:
+        scores = nx.pagerank(G, alpha=0.85, personalization=personalization)
+    except ImportError:
+        # nx.pagerank only imports scipy once actually called, not at
+        # `import networkx` time above — so a scipy-less environment
+        # reaches here, not the ImportError guard at the top of this
+        # function.
+        return [(sid, 1.0) for sid in symbol_ids]
     # Drop synthetic artifact nodes (source_ref strings) from the returned
     # ranking — callers expect (symbol_id: int, score) pairs only.
     symbol_scores = {sid: score for sid, score in scores.items() if isinstance(sid, int)}
