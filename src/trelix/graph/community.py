@@ -407,6 +407,10 @@ def compute_pagerank(
     High-PageRank nodes are called/imported by many others — architecturally central.
     Scores are normalized to [0, 1] by dividing by the max score.
 
+    Falls back to uniform scores if scipy (which networkx's pagerank needs
+    internally and only imports lazily when called) is not installed — e.g.
+    the PyInstaller binary, which excludes scipy for size.
+
     Args:
         cg: CodeGraph instance (networkx MultiDiGraph under the hood)
         alpha: damping factor (default 0.85, standard PageRank value)
@@ -449,6 +453,13 @@ def compute_pagerank(
         )
     except nx.PowerIterationFailedConvergence:
         raw = nx.pagerank(g, alpha=alpha, max_iter=500, tol=1e-4, personalization=personalization)
+    except ImportError:
+        # nx.pagerank needs scipy internally and only imports it lazily when
+        # called, not at `import networkx` time — a scipy-less environment
+        # (e.g. the PyInstaller binary, which excludes scipy for size) raises
+        # here. Degrade to uniform scores rather than crashing call-graph
+        # expansion entirely.
+        return {n: 1.0 for n in g.nodes()}
 
     # Normalize to [0, 1]
     max_score = max(raw.values()) if raw else 1.0
