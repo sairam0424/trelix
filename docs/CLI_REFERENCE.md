@@ -1,6 +1,6 @@
 # trelix CLI Reference
 
-**Version:** 3.3.5  
+**Version:** 3.3.7  
 **Last updated:** 2026-08-03
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
@@ -62,7 +62,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 3.1.5
+trelix --version        # trelix 3.3.7
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -72,9 +72,15 @@ trelix index --help     # help for the index command
 ## Environment variables
 
 trelix uses [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)
-throughout. Every config value can be set via environment variable or a `.env`
-file in the current working directory. The most important variables are listed
-below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
+throughout. Every config value can be set via environment variable; most (but not all — the
+`TRELIX_WALKER_*`/`TRELIX_PARSER_*`/`TRELIX_CHUNKER_*`/`TRELIX_SPARSE_*` groups are
+process-environment-only) can also be set via an operator-owned `.env` file — by default
+never the current working directory or the indexed repo; see
+[docs/CONFIGURATION.md](CONFIGURATION.md#configuration-methods) for the exact resolution
+order (`TRELIX_CONFIG_FILE`, else `$XDG_CONFIG_HOME/trelix/env`, else `~/.config/trelix/env`),
+the one exception (a *relative* `TRELIX_CONFIG_FILE` override still resolves against the
+cwd), and the full per-group `.env` caveats. The most important variables are
+listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` pattern.
 
 ### API keys
 
@@ -1913,4 +1919,4 @@ trelix audit prune --retention-days 90
 
 ---
 
-*End of CLI Reference — trelix v3.3.5*
+*End of CLI Reference — trelix v3.3.7*
