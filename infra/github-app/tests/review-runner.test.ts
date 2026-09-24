@@ -8,6 +8,7 @@ import {
     toAnnotations,
     runReviewCli,
     runReview,
+    postReviewFailureCheckRun,
     ReviewFinding,
     RunReviewOptions,
 } from "../src/review-runner.js";
@@ -74,6 +75,76 @@ describe("toAnnotations", () => {
 
     it("returns an empty list for an empty findings array", () => {
         expect(toAnnotations([])).toEqual([]);
+    });
+});
+
+describe("postReviewFailureCheckRun", () => {
+    /** Same octokit.hook.wrap request-interceptor pattern used throughout this file. */
+    function fakeOctokitCapturingChecksCreate() {
+        const calls: Array<Record<string, unknown>> = [];
+        const octokit = new Octokit({});
+        octokit.hook.wrap("request", async (_request, options) => {
+            if (
+                options.method === "POST" &&
+                options.url === "/repos/{owner}/{repo}/check-runs"
+            ) {
+                calls.push(options);
+                return { status: 201, url: "", headers: {}, data: {} };
+            }
+            throw new Error(
+                `unexpected octokit request in test: ${options.method} ${options.url}`,
+            );
+        });
+        return { octokit, calls };
+    }
+
+    it("posts conclusion 'timed_out' for a Node timeout-kill error (killed + SIGTERM)", async () => {
+        const { octokit, calls } = fakeOctokitCapturingChecksCreate();
+        const timeoutErr = Object.assign(new Error("command timed out"), {
+            killed: true,
+            signal: "SIGTERM",
+        });
+
+        await postReviewFailureCheckRun(
+            octokit,
+            "o",
+            "r",
+            "deadbeef",
+            timeoutErr,
+        );
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({ conclusion: "timed_out" });
+    });
+
+    it("posts conclusion 'neutral' for a non-timeout error (CLI crash, bad JSON, etc.)", async () => {
+        const { octokit, calls } = fakeOctokitCapturingChecksCreate();
+
+        await postReviewFailureCheckRun(
+            octokit,
+            "o",
+            "r",
+            "deadbeef",
+            new Error("exit code 1"),
+        );
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({ conclusion: "neutral" });
+    });
+
+    it("still posts conclusion 'neutral' for a non-Error thrown value", async () => {
+        const { octokit, calls } = fakeOctokitCapturingChecksCreate();
+
+        await postReviewFailureCheckRun(
+            octokit,
+            "o",
+            "r",
+            "deadbeef",
+            "a string, not an Error",
+        );
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({ conclusion: "neutral" });
     });
 });
 
@@ -208,7 +279,10 @@ describe("runReview orchestration", () => {
     /** Fakes @octokit/rest's own HTTP transport via its documented `hook.wrap("request", ...)` extension point. */
     function fakeOctokit(
         headSha: string,
-        opts: { checksCreateShouldThrow?: boolean } = {},
+        opts: {
+            checksCreateShouldThrow?: boolean;
+            checksCreateCalls?: Array<Record<string, unknown>>;
+        } = {},
     ) {
         const octokit = new Octokit({});
         octokit.hook.wrap("request", async (_request, options) => {
@@ -227,6 +301,7 @@ describe("runReview orchestration", () => {
                 options.method === "POST" &&
                 options.url === "/repos/{owner}/{repo}/check-runs"
             ) {
+                opts.checksCreateCalls?.push(options);
                 if (opts.checksCreateShouldThrow) {
                     throw new Error("checks.create failed (simulated)");
                 }
@@ -291,6 +366,56 @@ describe("runReview orchestration", () => {
             ),
         ).rejects.toThrow("checks.create failed (simulated)");
 
+        expect(cleanup).toHaveBeenCalledTimes(1);
+    });
+
+    // Regression test — found live by the E2E production-dry-run workflow:
+    // when `trelix review --pr` itself fails (timeout, crash, bad JSON),
+    // the exception used to propagate straight past postCheckRun, so
+    // webhook.ts's caller only console.error'd it -- the PR was left with
+    // NO Check run at all, not even a failure one.
+    it("posts a failure Check run (not silence) when the trelix review subprocess itself fails", async () => {
+        const config = makeConfig();
+        const { workspace, cleanup } = fakeWorkspace();
+        const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
+            vi.fn(async () => workspace);
+        const checksCreateCalls: Array<Record<string, unknown>> = [];
+        const octokit = fakeOctokit("deadbeef", { checksCreateCalls });
+
+        const shim = join(binDir, "trelix");
+        writeFileSync(
+            shim,
+            [
+                "#!/bin/sh",
+                'if [ "$1" = "index" ]; then',
+                '  echo "simulated index failure" >&2',
+                "  exit 1",
+                "fi",
+                'echo "simulated trelix review crash" >&2',
+                "exit 1",
+                "",
+            ].join("\n"),
+        );
+        chmodSync(shim, 0o755);
+
+        await expect(
+            runReview(
+                config,
+                { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+                {
+                    checkoutPullRequest,
+                    request: fakeAuthRequest("ghs_faketoken"),
+                    octokit,
+                },
+            ),
+        ).rejects.toThrow();
+
+        expect(checksCreateCalls).toHaveLength(1);
+        expect(checksCreateCalls[0]).toMatchObject({
+            name: "trelix Code Review",
+            status: "completed",
+            conclusion: "neutral",
+        });
         expect(cleanup).toHaveBeenCalledTimes(1);
     });
 
