@@ -155,7 +155,7 @@ jobs:
       # by the gate step below is the fallback there, and the gate still blocks.
       - name: Upload SARIF
         if: always() && hashFiles('taint.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd  # v4.38.1
         with:
           sarif_file: taint.sarif
           category: semgrep-taint
@@ -445,7 +445,7 @@ jobs:
 
       - name: Upload SARIF
         if: always() && hashFiles('trivy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd  # v4.38.1
         with:
           sarif_file: trivy.sarif
           category: trivy-image
