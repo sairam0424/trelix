@@ -36,7 +36,7 @@ exclude = [
 
 [project]
 name = "trelix"
-version = "3.3.7"
+version = "3.3.8"
 description = "Fast, reliable code indexing and retrieval — contextual hybrid search, adaptive planning, call-graph expansion, LLM synthesis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -372,7 +372,7 @@ ignore = [
              # lists, never a shell string, so this is annotation work.
     "S324",  # 2 hashlib.md5 — indexing/multi_watcher.py uses it as a change-detection
              # hash, not a security primitive; needs usedforsecurity=False.
-    "S112",  # 2 try/except/continue — federation/retriever.py, review/diff_embedder.py.
+    "S112",  # 1 try/except/continue — federation/retriever.py.
     "S310",  # 1 urlopen in auth/oidc.py (OIDC JWKS fetch); needs a scheme check.
     "B007",  # 1 unused loop variable in parser/extractors/css.py.
 ]
