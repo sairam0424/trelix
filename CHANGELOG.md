@@ -8,6 +8,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.3.8] — 2026-09-25
+
+### Fixed
+- **`trelix-mcp`'s `search_code`/`graph_search_mcp` and both `trelix-langchain`'s
+  `TrelixRetriever` and `trelix-llama-index`'s `TrelixIndexRetriever` rebuilt a brand-new
+  `Retriever` on every single call**, reloading the local embedder's SentenceTransformer
+  model from disk each time — live-measured 24.5x-52.7x slower than necessary across a
+  real MCP session. All three now cache the underlying `Retriever` (per repo path for
+  `trelix-mcp`, per instance for the two adapters); `index_codebase` invalidates the
+  cached entry it just re-indexed.
+- **Call-graph expansion (`trelix review`'s `rank_by_pagerank`/`compute_pagerank`) crashed
+  on any environment without `scipy` installed** — most notably the PyInstaller binary,
+  which deliberately excludes `scipy` to keep the download small. `networkx`'s `pagerank`
+  only imports `scipy` lazily when actually called, not at `import networkx` time, so the
+  existing "falls back to uniform scores if networkx is missing" guard never saw the real
+  failure. Both functions now catch this and degrade to uniform scores instead of crashing.
+- **The GitHub App silently posted no Check run at all when `trelix review --pr` itself
+  failed** (timeout, crash, or invalid JSON) — the exception propagated past the code that
+  posts the Check run, leaving PRs with no visible signal that a review ever ran. A failed
+  review now posts a completed Check run (`timed_out` or `neutral`) instead of nothing.
+
+### Removed
+- **`src/trelix/review/diff_embedder.py`** (`DiffEmbedder`, CCRep-style diff embeddings for
+  "historically similar diffs" retrieval) and its `diff_chunks` schema — built and tested
+  in an earlier release but never called from `trelix review`'s actual retrieval path.
+  Removed as dead code rather than integrated.
+
 ## [3.3.7] — 2026-09-23
 
 ### Fixed
