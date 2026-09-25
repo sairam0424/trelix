@@ -127,6 +127,48 @@ export async function postCheckRun(
 }
 
 /**
+ * Posts a completed Check run recording that the review itself never ran
+ * to completion — distinct from postCheckRun, which posts real findings.
+ * Without this, a `runReviewCli` failure (timeout, CLI crash, bad JSON)
+ * left the PR with NO Check run at all: the caller only saw a server-side
+ * console.error, invisible to anyone looking at the PR. `conclusion` is
+ * "timed_out" for Node's timeout-triggered kill (matches
+ * runReviewCli timeout's `{ killed: true, signal: 'SIGTERM' }` shape) and
+ * "neutral" otherwise — a broken reviewer isn't the same claim as "this
+ * code has failures".
+ */
+export async function postReviewFailureCheckRun(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    headSha: string,
+    err: unknown,
+): Promise<void> {
+    const timedOut =
+        typeof err === "object" &&
+        err !== null &&
+        (err as { killed?: boolean }).killed === true &&
+        (err as { signal?: string }).signal === "SIGTERM";
+
+    await octokit.rest.checks.create({
+        owner,
+        repo,
+        name: "trelix Code Review",
+        head_sha: headSha,
+        status: "completed",
+        conclusion: timedOut ? "timed_out" : "neutral",
+        output: {
+            title: timedOut
+                ? "trelix review timed out"
+                : "trelix review did not complete",
+            summary: timedOut
+                ? "trelix review did not finish within the time limit and was stopped. No findings were produced for this PR."
+                : "trelix review failed to run to completion. No findings were produced for this PR.",
+        },
+    });
+}
+
+/**
  * Runs `trelix index <repoPath>`, mirroring trelix-review.yml's own
  * tolerant `if ! trelix index .; then ::warning ...; fi` pattern: an
  * indexing failure (network-restricted host, OOM) degrades findings to
@@ -206,7 +248,23 @@ export async function runReview(
     const workspace = await checkoutPullRequest(token, request);
     try {
         await indexRepository(workspace.path);
-        const findings = await runReviewCli(request, workspace.path, token);
+        let findings: ReviewFinding[];
+        try {
+            findings = await runReviewCli(request, workspace.path, token);
+        } catch (err) {
+            // A timed-out or crashed CLI must still leave a visible signal
+            // on the PR -- without this, the exception below propagated
+            // straight past postCheckRun, and webhook.ts's caller only
+            // console.error'd it, leaving the PR with no Check run at all.
+            await postReviewFailureCheckRun(
+                octokit,
+                request.owner,
+                request.repo,
+                pull.head.sha,
+                err,
+            );
+            throw err;
+        }
         await postCheckRun(
             octokit,
             request.owner,

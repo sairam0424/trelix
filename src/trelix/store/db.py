@@ -21,9 +21,9 @@ effect (tests/unit/test_db_structural.py), so every ON DELETE CASCADE here is re
 tables predate that discipline and hold symbol-derived rows with no foreign key —
 sub_chunks, def_use_edges, sparse_embeddings — so no cascade reaches them. All three
 are cleaned by _purge_fkless_symbol_rows(), which every symbol-removal path calls;
-add any new FK-less table there. taint_flows / artifacts / diff_chunks are also
-FK-less but are keyed by file path, source_ref and pr_ref rather than by a row id,
-so they hold no id-shaped orphans and are not this method's business.
+add any new FK-less table there. taint_flows / artifacts are also FK-less but
+are keyed by file path and source_ref rather than by a row id, so they hold no
+id-shaped orphans and are not this method's business.
 """
 
 from __future__ import annotations
@@ -230,18 +230,6 @@ CREATE TABLE IF NOT EXISTS file_summaries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_file_summaries_file_id ON file_summaries(file_id);
-
-CREATE TABLE IF NOT EXISTS diff_chunks (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    pr_ref           TEXT    NOT NULL,
-    hunk_header      TEXT    NOT NULL DEFAULT '',
-    before_code      TEXT    NOT NULL DEFAULT '',
-    after_code       TEXT    NOT NULL DEFAULT '',
-    embedding        BLOB,
-    chunk_char_count INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_diff_chunks_pr_ref ON diff_chunks(pr_ref);
 
 -- OpenAI Batch API job tracking. This is the first long-running external job
 -- pattern in trelix: submit a batch of embedding requests, poll/wait up to the
@@ -640,23 +628,6 @@ class Database:
         """)
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sparse_token ON sparse_embeddings(token_id)"
-        )
-        self._conn.commit()
-
-        # Phase 2 Plan B migration: diff_chunks table for semantic diff embeddings
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS diff_chunks ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "pr_ref TEXT NOT NULL, "
-            "hunk_header TEXT NOT NULL DEFAULT '', "
-            "before_code TEXT NOT NULL DEFAULT '', "
-            "after_code TEXT NOT NULL DEFAULT '', "
-            "embedding BLOB, "
-            "chunk_char_count INTEGER NOT NULL DEFAULT 0"
-            ")"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_diff_chunks_pr_ref ON diff_chunks(pr_ref)"
         )
         self._conn.commit()
 

@@ -263,3 +263,44 @@ def test_provider_cast_covers_every_value_core_actually_accepts():
         f"adapter cast() Literal is stale: missing {core_values - adapter_values}, "
         f"has-extra {adapter_values - core_values}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. _get_trelix_retriever caches the underlying Retriever on the instance
+# ---------------------------------------------------------------------------
+
+
+def test_get_trelix_retriever_constructs_the_underlying_retriever_only_once(tmp_path):
+    """Retriever construction is expensive (loads the embedding model from
+    disk for the local provider) -- repeated calls on the same
+    TrelixRetriever instance must reuse it, not rebuild every time."""
+    from unittest.mock import patch
+
+    tr = TrelixRetriever(repo_path=str(tmp_path))
+
+    with patch("trelix.retrieval.retriever.Retriever") as MockRetriever:
+        first = tr._get_trelix_retriever()
+        second = tr._get_trelix_retriever()
+        third = tr._get_trelix_retriever()
+
+    assert first is second is third
+    assert MockRetriever.call_count == 1
+
+
+def test_different_trelix_retriever_instances_do_not_share_a_cached_retriever(tmp_path):
+    """Caching is per-instance (a pydantic PrivateAttr), not global -- two
+    separate TrelixRetriever objects must each build their own."""
+    from unittest.mock import patch
+
+    repo_a = tmp_path / "a"
+    repo_b = tmp_path / "b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    tr_a = TrelixRetriever(repo_path=str(repo_a))
+    tr_b = TrelixRetriever(repo_path=str(repo_b))
+
+    with patch("trelix.retrieval.retriever.Retriever") as MockRetriever:
+        tr_a._get_trelix_retriever()
+        tr_b._get_trelix_retriever()
+
+    assert MockRetriever.call_count == 2

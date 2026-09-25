@@ -154,6 +154,100 @@ def test_search_code_respects_k_limit() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Retriever caching (server.py's _get_retriever)
+# ---------------------------------------------------------------------------
+
+
+def test_repeated_search_code_calls_reuse_the_same_retriever_instance() -> None:
+    """The whole point of caching: Retriever() must be constructed once per
+    repo_path, not once per call — real-world cost is the embedder load."""
+    import trelix_mcp.server as srv
+
+    mock_ctx = _make_mock_context([_make_mock_result()])
+
+    with (
+        patch("trelix_mcp.server.IndexConfig"),
+        patch("trelix_mcp.server.Retriever") as MockRetriever,
+    ):
+        MockRetriever.return_value.retrieve.return_value = mock_ctx
+        srv.search_code("first query", "/fake/repo", k=5)
+        srv.search_code("second query", "/fake/repo", k=5)
+        srv.search_code("third query", "/fake/repo", k=5)
+
+    assert MockRetriever.call_count == 1, (
+        "Retriever() should be constructed exactly once across 3 calls to the same repo_path"
+    )
+    assert MockRetriever.return_value.retrieve.call_count == 3, (
+        "retrieve() must still be called once per query on the cached instance"
+    )
+
+
+def test_different_repo_paths_get_independent_retriever_instances() -> None:
+    """Caching is keyed per-repo -- a different repo_path must not share a
+    Retriever with an unrelated one (wrong embedder/DB entirely)."""
+    import trelix_mcp.server as srv
+
+    mock_ctx = _make_mock_context([_make_mock_result()])
+
+    with (
+        patch("trelix_mcp.server.IndexConfig"),
+        patch("trelix_mcp.server.Retriever") as MockRetriever,
+    ):
+        MockRetriever.return_value.retrieve.return_value = mock_ctx
+        srv.search_code("q", "/fake/repo-a", k=5)
+        srv.search_code("q", "/fake/repo-b", k=5)
+
+    assert MockRetriever.call_count == 2
+
+
+def test_relative_and_resolved_spellings_of_the_same_path_share_one_cache_entry() -> None:
+    """_get_retriever keys on the resolved absolute path, so two different
+    spellings of the same repo must hit the same cache entry, not
+    construct twice."""
+    import trelix_mcp.server as srv
+
+    mock_ctx = _make_mock_context([_make_mock_result()])
+    with (
+        patch("trelix_mcp.server.IndexConfig"),
+        patch("trelix_mcp.server.Retriever") as MockRetriever,
+        patch("trelix_mcp.server.Path") as MockPath,
+    ):
+        MockPath.return_value.resolve.return_value = "/fake/repo"
+        MockRetriever.return_value.retrieve.return_value = mock_ctx
+        srv.search_code("q", "relative-spelling", k=5)
+        srv.search_code("q", "/fake/repo", k=5)
+
+    assert MockRetriever.call_count == 1
+
+
+def test_index_codebase_invalidates_the_cached_retriever_for_that_repo() -> None:
+    """A re-index can switch embedder providers -- the next search_code call
+    after index_codebase must rebuild, not keep serving the stale instance."""
+    import trelix_mcp.server as srv
+
+    mock_ctx = _make_mock_context([_make_mock_result()])
+
+    with (
+        patch("trelix_mcp.server.IndexConfig"),
+        patch("trelix_mcp.server.Retriever") as MockRetriever,
+        patch("trelix_mcp.server.EmbedderConfig"),
+        patch("trelix_mcp.server.Indexer") as MockIndexer,
+    ):
+        MockRetriever.return_value.retrieve.return_value = mock_ctx
+        MockIndexer.return_value.index.return_value = {"files_indexed": 1}
+
+        srv.search_code("q", "/fake/repo", k=5)
+        assert MockRetriever.call_count == 1
+
+        srv.index_codebase("/fake/repo", provider="local")
+
+        srv.search_code("q", "/fake/repo", k=5)
+        assert MockRetriever.call_count == 2, (
+            "index_codebase must clear the cache so the next search_code rebuilds"
+        )
+
+
+# ---------------------------------------------------------------------------
 # index_codebase
 # ---------------------------------------------------------------------------
 
