@@ -22,11 +22,18 @@
 # The advisory sweep over the whole installed closure — including the transitive packages
 # no manifest here names — is the `deps` job in security-scan.yml, and the published
 # image's OS layer is the `image` job there. The three are complementary, not redundant.
+#
+# Every entry below sets target-branch: develop. Without it, Dependabot defaults to this
+# repo's default branch (main) — which happened silently until 2026-09-25, landing 9 PRs
+# on main while develop moved on independently, and needed a manual two-PR reconciliation
+# (#378, #379) to fix. All non-Dependabot work already goes through develop first; this
+# just makes Dependabot follow the same path.
 version: 2
 updates:
   # Python dependencies
   - package-ecosystem: "pip"
     directory: "/"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -52,6 +59,7 @@ updates:
   # trelix-mcp dependencies
   - package-ecosystem: "pip"
     directory: "/packages/trelix-mcp"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -61,6 +69,7 @@ updates:
   # (trelix, langchain-core), hence the low limit.
   - package-ecosystem: "pip"
     directory: "/packages/trelix-langchain"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -76,6 +85,7 @@ updates:
   # trelix-llama-index — published to PyPI by release.yml.
   - package-ecosystem: "pip"
     directory: "/packages/trelix-llama-index"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -90,6 +100,7 @@ updates:
   # build/test tooling, grouped so nine dev bumps arrive as one PR.
   - package-ecosystem: "npm"
     directory: "/workspace-vscode"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -113,6 +124,7 @@ updates:
   # update here is build/test tooling.
   - package-ecosystem: "npm"
     directory: "/packages/trelix-typescript"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -129,6 +141,7 @@ updates:
   # NOT grouped — an express advisory should arrive as its own reviewable PR.
   - package-ecosystem: "npm"
     directory: "/infra/github-app"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -156,6 +169,7 @@ updates:
   # signal comes from the `image` job in security-scan.yml, which scans the built image.
   - package-ecosystem: "docker"
     directory: "/"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -164,6 +178,7 @@ updates:
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
