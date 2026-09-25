@@ -114,13 +114,27 @@ class TestJSONLogging:
 
     def test_trace_context_present_when_span_active(self) -> None:
         """With a real OTel span active, trace_id/span_id must appear and be
-        valid hex — mirrors otel_tracing.py's existing pattern."""
+        valid hex — mirrors otel_tracing.py's existing pattern.
+
+        Gets the tracer directly from a local TracerProvider instance rather
+        than trace.set_tracer_provider()/trace.get_tracer() -- the global
+        provider slot is a process-wide, one-shot resource (guarded by a
+        Once; see otel_tracing.py's own docstring), so whichever test in the
+        suite claims it first wins for the rest of the process. A second
+        set_tracer_provider() call here is a silent no-op, silently binding
+        this test's tracer to whatever real provider (with real exporters)
+        an earlier test installed -- and ending a span on THAT provider can
+        log something into this test's own capture buffer, intermittently
+        breaking the json.loads below depending on suite run order. Getting
+        the tracer from a local instance sidesteps the shared slot entirely;
+        _inject_trace_context reads trace.get_current_span() from context,
+        which start_as_current_span sets regardless of which provider
+        created the span.
+        """
         pytest.importorskip("opentelemetry")
-        from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
 
-        trace.set_tracer_provider(TracerProvider())
-        tracer = trace.get_tracer("test")
+        tracer = TracerProvider().get_tracer("test")
 
         setup_json_logging()
         buf = io.StringIO()
