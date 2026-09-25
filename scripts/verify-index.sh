@@ -230,8 +230,6 @@ EXPECTED_EMPTY = (
      "needs a live Jira/Linear connector sync; no offline route exists"),
     ("generic_edges", "SELECT COUNT(*) FROM generic_edges",
      "`trelix index` never runs GitLinker; only `trelix link-tickets` writes this"),
-    ("diff_chunks", "SELECT COUNT(*) FROM diff_chunks",
-     "DiffEmbedder.store_pr_diff is the only writer and nothing in src/ constructs it"),
     ("taint_flows", "SELECT COUNT(*) FROM taint_flows",
      "`trelix index` never writes it; `trelix taint` is a separate command"),
 )
