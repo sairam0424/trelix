@@ -245,7 +245,18 @@ skip it entirely:
   Dockerfile-path field) — this also switches the effective builder to
   `DOCKERFILE` automatically; there's no separate "Docker" builder enum
   value to pick.
-- **Branch:** `develop`, matching this repo's deploy branch elsewhere.
+- **Branch:** `main` — despite this repo's convention of deploying `develop`
+  everywhere else, Railway's auto-deploy trigger for this service is
+  actually configured against `main` (confirmed live via `railway status
+  --json`'s `meta.branch` field, 2026-09-25 — this doc previously said
+  `develop`, which was stale).
+- **If deploys stop firing on real merges:** confirmed live on 2026-09-25 —
+  the GitHub↔Railway connection can silently disconnect (deploy history
+  showed a multi-day gap with zero attempts, not failures, despite many
+  qualifying pushes). Reconnect it with
+  `railway service source connect --repo sairam0424/trelix --branch main --service trelix-github-app`
+  — this recreates the deployment trigger and immediately kicks off a
+  fresh build from the current branch tip.
 - **Health check:** path `/health`, generous timeout (300s) to cover a
   cold start plus a real `git clone` + `trelix index`/`review` burst.
 - **Sleep (Serverless):** the Free plan *requires* `sleepApplication: true`
