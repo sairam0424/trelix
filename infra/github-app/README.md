@@ -253,10 +253,20 @@ skip it entirely:
 - **If deploys stop firing on real merges:** confirmed live on 2026-09-25 —
   the GitHub↔Railway connection can silently disconnect (deploy history
   showed a multi-day gap with zero attempts, not failures, despite many
-  qualifying pushes). Reconnect it with
-  `railway service source connect --repo sairam0424/trelix --branch main --service trelix-github-app`
-  — this recreates the deployment trigger and immediately kicks off a
-  fresh build from the current branch tip.
+  qualifying pushes). `railway service source connect --repo
+  sairam0424/trelix --branch main --service trelix-github-app` recreates
+  the deployment trigger and immediately kicks off a fresh build — but this
+  is a one-shot fix, not a persistent one: it only reuses the plain "login
+  with GitHub" OAuth connection, which is enough to trigger a single deploy
+  but not enough to sustain auto-deploy-on-push. That needs Railway's own
+  GitHub App to actually be *installed* on the account (not just the OAuth
+  login) — check `github.com/settings/installations` for a **Railway**
+  entry; if it's missing entirely (found live on 2026-09-26 — it wasn't
+  there at all, despite the OAuth login working fine), install it from
+  `github.com/apps/railway-app`, grant it access to this repo, then in
+  Railway's Source settings reconnect the branch — "Branch connected to
+  production" and "Auto deploys when pushed to GitHub" only appear once the
+  App install actually exists.
 - **Health check:** path `/health`, generous timeout (300s) to cover a
   cold start plus a real `git clone` + `trelix index`/`review` burst.
 - **Sleep (Serverless):** the Free plan *requires* `sleepApplication: true`
