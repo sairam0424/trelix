@@ -101,8 +101,15 @@ class TestVertexBackend:
                 images=[ImageContent(data=b"fake-bytes", media_type="image/png")],
             )
         ]
+        # complete() does `from google.genai import types` before ever
+        # reaching the vision guard inside _build_contents() -- patching
+        # only "google.genai.types" (not "google.genai"/"google" too) means
+        # that import falls through to a REAL import attempt in an
+        # environment without the real package installed, raising
+        # ModuleNotFoundError before the guard ever runs. Re-patch the full
+        # mods dict, matching every other test in this file.
         with (
-            patch.dict("sys.modules", {"google.genai.types": mods["google.genai.types"]}),
+            patch.dict("sys.modules", mods),
             pytest.raises(NotImplementedError, match="vision not yet supported"),
         ):
             backend.complete(messages)
