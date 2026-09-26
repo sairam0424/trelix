@@ -9,7 +9,7 @@ import openai
 import pytest
 
 from trelix.core.config import LLMConfig
-from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ImageContent, ToolCallResponse
 from trelix.llm.providers.openai_backend import OpenAIBackend, _token_limit_param
 
 _FAKE_KEY = "test-k"  # short enough not to trigger secret scanner; never sent to any service
@@ -169,6 +169,22 @@ class TestOpenAIBackendComplete:
         assert isinstance(result, ToolCallResponse)
         assert result.tool_name == "search_code"
         assert result.tool_arguments == {"query": "auth", "repo_path": "/repo"}
+
+    def test_complete_raises_not_implemented_for_images(self) -> None:
+        """Phase 1 of raster-image support only shipped for Anthropic —
+        every other backend must raise NotImplementedError rather than
+        silently ignore images or send a malformed request."""
+        backend = self._make_backend()
+        backend._client = MagicMock()
+        messages = [
+            ChatMessage(
+                role="user",
+                content="describe this",
+                images=[ImageContent(data=b"fake-bytes", media_type="image/png")],
+            )
+        ]
+        with pytest.raises(NotImplementedError, match="vision not yet supported"):
+            backend.complete(messages)
 
     def test_client_is_none_when_no_key(self) -> None:
         cfg = LLMConfig(provider="openai", _env_file=None)  # type: ignore[call-arg]

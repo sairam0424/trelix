@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import sys
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -10,7 +11,7 @@ import httpx
 import pytest
 
 from trelix.core.config import LLMConfig
-from trelix.llm.client import ChatMessage, ChatResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ImageContent
 
 
 def _retryable_error(status_code: int = 503) -> httpx.HTTPStatusError:
@@ -96,6 +97,78 @@ class TestAnthropicBackend:
         assert isinstance(result, ChatResponse)
         assert result.content == "hello"
         assert result.finish_reason == "stop"  # normalized from "end_turn"
+
+    def test_complete_with_images_builds_correct_content_blocks(
+        self, mock_anthropic: MagicMock
+    ) -> None:
+        """images=[ImageContent(...)] must produce the Anthropic Messages API
+        content-block shape: one base64 `{"type": "image", ...}` block per
+        ImageContent, followed by a trailing `{"type": "text", ...}` block
+        carrying message.content."""
+        backend = self._make_backend(mock_anthropic)
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_content_block = MagicMock()
+        mock_content_block.type = "text"
+        mock_content_block.text = "a cat"
+        mock_response.content = [mock_content_block]
+        mock_response.model = "claude-3-5-sonnet-20241022"
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage.input_tokens = 1
+        mock_response.usage.output_tokens = 1
+        mock_client.messages.create.return_value = mock_response
+        backend._client = mock_client
+
+        image_bytes = b"\x89PNG\r\n\x1a\nfake-png-bytes"
+        result = backend.complete(
+            [
+                ChatMessage(
+                    role="user",
+                    content="what is in this image?",
+                    images=[ImageContent(data=image_bytes, media_type="image/png")],
+                )
+            ]
+        )
+
+        assert result.content == "a cat"
+        call_kwargs = mock_client.messages.create.call_args[1]
+        sent_content = call_kwargs["messages"][0]["content"]
+        assert sent_content == [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.b64encode(image_bytes).decode(),
+                },
+            },
+            {"type": "text", "text": "what is in this image?"},
+        ]
+
+    def test_complete_text_only_message_content_is_plain_string(
+        self, mock_anthropic: MagicMock
+    ) -> None:
+        """Regression: images=None (the default) must still send a bare
+        string for `content`, byte-identical to the pre-vision request shape
+        — not wrapped in a content-block list."""
+        backend = self._make_backend(mock_anthropic)
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_content_block = MagicMock()
+        mock_content_block.type = "text"
+        mock_content_block.text = "ok"
+        mock_response.content = [mock_content_block]
+        mock_response.model = "claude-3-5-sonnet-20241022"
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage.input_tokens = 1
+        mock_response.usage.output_tokens = 1
+        mock_client.messages.create.return_value = mock_response
+        backend._client = mock_client
+
+        backend.complete([ChatMessage(role="user", content="hi")])
+
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert call_kwargs["messages"] == [{"role": "user", "content": "hi"}]
 
     def test_uses_max_tokens_not_max_completion_tokens(self, mock_anthropic: MagicMock) -> None:
         backend = self._make_backend(mock_anthropic)

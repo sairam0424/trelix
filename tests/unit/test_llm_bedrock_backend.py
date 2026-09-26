@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from trelix.core.config import LLMConfig
-from trelix.llm.client import ChatMessage, ChatResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ImageContent
 
 
 class _ValidationException(Exception):
@@ -72,6 +72,21 @@ class TestBedrockBackend:
         assert isinstance(result, ChatResponse)
         assert result.content == "hello"
         assert result.finish_reason == "stop"
+
+    def test_complete_raises_not_implemented_for_images(self) -> None:
+        """Phase 1 of raster-image support only shipped for Anthropic —
+        every other backend must raise NotImplementedError rather than
+        silently ignore images or send a malformed request."""
+        backend = self._make_backend()
+        messages = [
+            ChatMessage(
+                role="user",
+                content="describe this",
+                images=[ImageContent(data=b"fake-bytes", media_type="image/png")],
+            )
+        ]
+        with pytest.raises(NotImplementedError, match="vision not yet supported"):
+            backend.complete(messages)
 
     def test_uses_inference_config_max_tokens(self) -> None:
         backend = self._make_backend()

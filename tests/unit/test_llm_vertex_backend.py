@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from trelix.core.config import LLMConfig
-from trelix.llm.client import ChatMessage, ChatResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ImageContent
 
 _FAKE_GKEY = "test-google-api-key-placeholder"
 
@@ -76,6 +76,36 @@ class TestVertexBackend:
         assert isinstance(result, ChatResponse)
         assert result.content == "hello from gemini"
         assert result.finish_reason == "stop"
+
+    def test_complete_raises_not_implemented_for_images(self) -> None:
+        """Phase 1 of raster-image support only shipped for Anthropic —
+        every other backend must raise NotImplementedError rather than
+        silently ignore images or send a malformed request."""
+        mods = _google_genai_modules()
+        with patch.dict("sys.modules", mods):
+            from trelix.llm.providers.vertex_backend import VertexBackend
+
+            cfg = LLMConfig(
+                provider="vertex",
+                model="gemini-2.0-flash",
+                google_api_key=_FAKE_GKEY,
+                _env_file=None,  # type: ignore[call-arg]
+            )
+            backend = VertexBackend(cfg)
+
+        backend._client = MagicMock()
+        messages = [
+            ChatMessage(
+                role="user",
+                content="describe this",
+                images=[ImageContent(data=b"fake-bytes", media_type="image/png")],
+            )
+        ]
+        with (
+            patch.dict("sys.modules", {"google.genai.types": mods["google.genai.types"]}),
+            pytest.raises(NotImplementedError, match="vision not yet supported"),
+        ):
+            backend.complete(messages)
 
     def test_import_error_when_google_genai_not_installed(self) -> None:
         # Remove any cached vertex_backend module to force fresh import

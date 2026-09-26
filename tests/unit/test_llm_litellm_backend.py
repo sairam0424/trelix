@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from trelix.core.config import LLMConfig
-from trelix.llm.client import ChatMessage, ChatResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ImageContent
 
 
 def _litellm_module():
@@ -55,6 +55,21 @@ class TestLiteLLMBackend:
 
         assert isinstance(result, ChatResponse)
         assert result.content == "hello"
+
+    def test_complete_raises_not_implemented_for_images(self) -> None:
+        """Phase 1 of raster-image support only shipped for Anthropic —
+        every other backend must raise NotImplementedError rather than
+        silently ignore images or send a malformed request."""
+        backend, _mock_litellm = self._make_backend()
+        messages = [
+            ChatMessage(
+                role="user",
+                content="describe this",
+                images=[ImageContent(data=b"fake-bytes", media_type="image/png")],
+            )
+        ]
+        with pytest.raises(NotImplementedError, match="vision not yet supported"):
+            backend.complete(messages)
 
     def test_uses_litellm_model_string(self) -> None:
         backend, mock_litellm = self._make_backend()

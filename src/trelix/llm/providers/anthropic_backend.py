@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
@@ -66,11 +67,40 @@ class AnthropicBackend(TrelixChatClient):
         # on a persistent outage far beyond what max_attempts=5 implies.
         return anthropic.Anthropic(api_key=config.anthropic_api_key, max_retries=0)
 
+    def _build_message_content(self, message: ChatMessage) -> str | list[dict[str, Any]]:
+        """Build the Anthropic `content` value for a single message.
+
+        Returns `message.content` unchanged (a plain string) when `images` is
+        None — the common case, preserved byte-for-byte. When `images` is set,
+        returns a list of content blocks: one `{"type": "image", ...}` block
+        per ImageContent, followed by a trailing `{"type": "text", ...}` block
+        carrying `message.content`.
+        """
+        if message.images is None:
+            return message.content
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image.media_type,
+                    "data": base64.b64encode(image.data).decode(),
+                },
+            }
+            for image in message.images
+        ]
+        blocks.append({"type": "text", "text": message.content})
+        return blocks
+
     def _extract_system(
         self, messages: list[ChatMessage], system: str | None
-    ) -> tuple[str | None, list[dict[str, str]]]:
+    ) -> tuple[str | None, list[dict[str, Any]]]:
         effective = system or next((m.content for m in messages if m.role == "system"), None)
-        user_msgs = [{"role": m.role, "content": m.content} for m in messages if m.role != "system"]
+        user_msgs = [
+            {"role": m.role, "content": self._build_message_content(m)}
+            for m in messages
+            if m.role != "system"
+        ]
         return effective, user_msgs
 
     def _normalize_finish_reason(self, stop_reason: str) -> str:
