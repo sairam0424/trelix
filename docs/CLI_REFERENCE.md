@@ -36,6 +36,7 @@ on most commands.
    - [review](#trelix-review)
    - [link-tickets](#trelix-link-tickets)
    - [connector sync](#trelix-connector-sync)
+   - [connector list](#trelix-connector-list)
    - [link-artifacts](#trelix-link-artifacts)
    - [search-all](#trelix-search-all)
    - [federation add](#trelix-federation-add)
@@ -1250,23 +1251,33 @@ the ticket pattern, or no touched files are indexed yet.
 #### Synopsis
 
 ```
-trelix connector sync <repo> <jira|testrail|xray|linear|diagram> [--link/--no-link]
+trelix connector sync <repo> <jira|testrail|xray|linear|diagram|image> [--link/--no-link]
 ```
 
 #### Description
 
 Fetches artifacts (Jira tickets, TestRail test cases, Xray Cloud tests,
-Linear issues, or local `.drawio` diagrams) and writes them to the
-`artifacts` table via `upsert_artifact()`, keyed by source reference so
-re-syncing updates existing rows rather than duplicating them.
+Linear issues, local `.drawio` diagrams, or local raster images) and writes
+them to the `artifacts` table via `upsert_artifact()`, keyed by source
+reference so re-syncing updates existing rows rather than duplicating them.
 
 `jira`/`testrail`/`xray`/`linear` fetch via `ArtifactSource.fetch()` from an
-external HTTP API. `diagram` is different: it makes no HTTP call at all — it
-walks `<repo>` for local `.drawio` (diagrams.net/draw.io) files and captions
-each one's XML source via the already-configured LLM provider
-(`TRELIX_LLM_*`, same as everywhere else in trelix — no separate credential).
-Raster images (`.png`/`.jpg`) are not indexed by this connector; `.drawio`'s
-XML structure is fully describable as text, which raster images are not.
+external HTTP API. `diagram` and `image` are different: neither makes an HTTP
+call — `diagram` walks `<repo>` for local `.drawio` (diagrams.net/draw.io)
+files and captions each one's XML source via the already-configured LLM
+provider (`TRELIX_LLM_*`, same as everywhere else in trelix — no separate
+credential), since XML is fully describable as text. `image` walks `<repo>`
+for local `.png`/`.jpg`/`.jpeg` files (respecting nested `.gitignore` files,
+same as the main indexer) and captions each one via a vision-capable LLM call
+— Anthropic only today; the other 4 backends raise `NotImplementedError`
+rather than silently mishandling images. Oversized images are downscaled via
+Pillow before captioning rather than skipped; a captioning failure (or an
+unconfigured vision provider) falls back to a mechanical filename+dimensions+
+size description rather than dropping the image. See
+[CONFIGURATION.md](CONFIGURATION.md) for the full `TRELIX_IMAGE_*` variable
+list (`TRELIX_IMAGE_VISION_MODEL`, `TRELIX_IMAGE_MAX_IMAGES_PER_SYNC`,
+`TRELIX_IMAGE_MAX_IMAGE_DIMENSION_PX`, `TRELIX_IMAGE_MAX_IMAGE_BYTES`) — all
+optional, with defaults matching Anthropic's own documented image limits.
 
 Requires `<repo>` to already be indexed (checks that `.trelix/index.db`
 exists before doing anything). Required environment variables differ per
@@ -1288,7 +1299,7 @@ afterward).
 | Argument | Description |
 |----------|-------------|
 | `repo` | Path to the indexed repository. |
-| `name` | Connector to sync: `jira`, `testrail`, `xray`, `linear`, or `diagram`. |
+| `name` | Connector to sync: `jira`, `testrail`, `xray`, `linear`, `diagram`, or `image`. Run [`trelix connector list`](#trelix-connector-list) to see this list read live from the code rather than copied here by hand. |
 
 #### Options
 
@@ -1328,6 +1339,10 @@ trelix connector sync ./my-repo linear
 # Sync local .drawio diagrams (no connector-specific env vars — uses
 # whichever TRELIX_LLM_* provider is already configured for synthesis)
 trelix connector sync ./my-repo diagram
+
+# Sync local raster images (.png/.jpg/.jpeg) — Anthropic-only captioning;
+# set TRELIX_IMAGE_VISION_MODEL if TRELIX_LLM_PROVIDER isn't already anthropic
+trelix connector sync ./my-repo image
 ```
 
 #### Output
@@ -1349,6 +1364,37 @@ Synced jira: fetched 84, wrote 84, errors 0, linked 79 edge(s)
   `TRELIX_LINEAR_PAGE_SIZE` (`100`, max `100` — not a confirmed Linear
   platform ceiling, chosen to stay well under its GraphQL query-complexity
   cap).
+
+---
+
+### `trelix connector list`
+
+#### Synopsis
+
+```
+trelix connector list
+```
+
+#### Description
+
+Prints the connector names accepted by [`trelix connector sync`](#trelix-connector-sync), read live from `ConnectorName` (`registry.py`) rather than a hand-copied string — this can never drift from the one place that actually enforces which names are valid, unlike the Typer help text and the `name` argument's own help string, which are separate literals maintained by hand.
+
+#### Output
+
+```
+ Available
+ Connectors
+┏━━━━━━━━━━┓
+┃ Name     ┃
+┡━━━━━━━━━━┩
+│ jira     │
+│ testrail │
+│ xray     │
+│ linear   │
+│ diagram  │
+│ image    │
+└──────────┘
+```
 
 ---
 

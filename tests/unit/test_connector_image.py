@@ -495,3 +495,56 @@ def test_mechanical_description_handles_undecodable_bytes(tmp_path: Path) -> Non
 
     assert "broken.png" in description
     assert "unknown dimensions" in description
+
+
+# ---------------------------------------------------------------------------
+# real-world fixture — SADU sample diagrams (see tests/fixtures/sadu_sample/README.md)
+# ---------------------------------------------------------------------------
+
+_SADU_SAMPLE_DIR = Path(__file__).parent.parent / "fixtures" / "sadu_sample"
+
+
+def test_fetch_on_a_real_world_diagram_produces_a_correctly_shaped_artifact(
+    tmp_path: Path,
+) -> None:
+    """Synthetic Image.new() PNGs elsewhere in this file exercise the code
+    paths, but a real downloaded PNG (real PIL metadata, real color/palette
+    encoding, a real file size) is the closer analogue to what ImageConnector
+    actually indexes in production. Uses the fake chat client, not a live
+    API call — this is a hermeticity/shape check, not a caption-quality
+    check (see the Phase 5 spike notes in docs/ROADMAP.md for that)."""
+    real_diagram = _SADU_SAMPLE_DIR / "ER_diagram_1.png"
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "ER_diagram_1.png").write_bytes(real_diagram.read_bytes())
+    connector = _connector(tmp_path)
+    client = _StubChatClient("An entity-relationship diagram with two tables.")
+
+    with patch("trelix.indexing.connectors.image.build_chat_client", return_value=client):
+        artifacts = connector.fetch()
+
+    assert len(artifacts) == 1
+    a = artifacts[0]
+    assert a.source_ref == "image:docs/ER_diagram_1.png"
+    assert a.artifact_kind == "image"
+    assert a.body == "An entity-relationship diagram with two tables."
+    sent = client.calls[0]["messages"][0]
+    assert sent.images is not None
+    assert len(sent.images[0].data) == real_diagram.stat().st_size
+
+
+def test_prepare_image_bytes_downscales_a_real_oversized_diagram(tmp_path: Path) -> None:
+    """Same real-fixture rationale as above, applied to the downscaling
+    path specifically -- a real PNG's actual encoding (not a flat-color
+    Image.new() test swatch) is what exercises Pillow's resize/re-encode
+    machinery the way production traffic would."""
+    real_diagram = _SADU_SAMPLE_DIR / "automate-document-classification-durable-functions.png"
+    raw_bytes = real_diagram.read_bytes()
+    connector = _connector(tmp_path, max_image_dimension_px=200)
+
+    result = connector._prepare_image_bytes(real_diagram, raw_bytes)
+
+    assert result is not None
+    media_type, out_bytes = result
+    assert media_type in ("image/png", "image/jpeg")
+    with Image.open(io.BytesIO(out_bytes)) as img:
+        assert max(img.size) <= 200

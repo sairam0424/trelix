@@ -316,7 +316,7 @@ Configuration for [`trelix link-tickets`](CLI_REFERENCE.md#trelix-link-tickets),
 
 Configuration for [`trelix connector sync`](CLI_REFERENCE.md#trelix-connector-sync), which fetches artifacts from an external system and writes them to trelix's `artifacts` table. Jira and TestRail use HTTP Basic auth; Xray Cloud exchanges a client_id/client_secret for a short-lived bearer JWT; Linear uses a personal API key sent directly in the `Authorization` header with no `Bearer` prefix. All required variables per connector must be set — missing any of them fails config validation before any HTTP call is made.
 
-The fifth connector, `diagram` (indexes local `.drawio` files — see [ROADMAP.md](ROADMAP.md)'s Multi-modal entry), has **no connector-specific variables of its own** — it needs none of the tables below, and reads `repo_path` from the same `<repo>` argument as every other command plus whichever `TRELIX_LLM_*` provider synthesis already uses.
+The fifth connector, `diagram` (indexes local `.drawio` files — see [ROADMAP.md](ROADMAP.md)'s Multi-modal entry), has **no connector-specific variables of its own** — it needs none of the tables below, and reads `repo_path` from the same `<repo>` argument as every other command plus whichever `TRELIX_LLM_*` provider synthesis already uses. The sixth connector, `image` (indexes local `.png`/`.jpg`/`.jpeg` files, same ROADMAP.md entry), similarly reads no credentials — but it does have its own tunables, listed separately below, since captioning is a real (metered) vision-model call per image rather than a free text-only one.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -338,6 +338,17 @@ The fifth connector, `diagram` (indexes local `.drawio` files — see [ROADMAP.m
 | `TRELIX_LINEAR_API_KEY` | _(none, required)_ | Linear personal API key — sent verbatim as `Authorization: <key>` (no `Bearer` prefix) |
 | `TRELIX_LINEAR_TEAM_KEY` | _(none, required)_ | Linear team key to scope issue sync to, e.g. `ENG` |
 | `TRELIX_LINEAR_PAGE_SIZE` | `100` (max `100`) | Page size for Linear's cursor-paginated `issues` query — not a confirmed Linear platform ceiling, chosen to stay well under its GraphQL query-complexity cap |
+
+### Image connector (`trelix connector sync <repo> image`)
+
+Captioning is Anthropic-only today (every other `TRELIX_LLM_PROVIDER` raises `NotImplementedError` if an image reaches it) — `ImageConnector` always builds its own Anthropic-provider `LLMConfig` for captioning, independent of whichever provider the rest of the pipeline's text synthesis uses. If `TRELIX_LLM_PROVIDER` isn't already `anthropic`, set `TRELIX_IMAGE_VISION_MODEL` explicitly; otherwise config validation fails fast with an actionable error rather than silently sending a non-Anthropic model name to Anthropic's API.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_IMAGE_VISION_MODEL` | _(none — falls back to `TRELIX_LLM_MODEL` when `TRELIX_LLM_PROVIDER=anthropic`)_ | Anthropic model name used for image captioning. Required if the main pipeline's LLM provider isn't already `anthropic`. |
+| `TRELIX_IMAGE_MAX_IMAGES_PER_SYNC` | `500` | Caps how many images one `sync` call captions — each one is a real, metered vision-model call. |
+| `TRELIX_IMAGE_MAX_IMAGE_DIMENSION_PX` | `1568` | Longest edge, in pixels, before an image is downscaled via Pillow prior to captioning. Matches Anthropic's own documented server-side resize threshold — trelix doing the resize means the actual bytes sent are known and capped, instead of an oversized upload that succeeds anyway. |
+| `TRELIX_IMAGE_MAX_IMAGE_BYTES` | `5000000` | Request payload ceiling, in bytes, before an image is downscaled (never skipped) — mirrors Anthropic's own ~5MB per-image Messages API limit. |
 
 ### REST API
 
