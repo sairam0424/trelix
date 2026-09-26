@@ -30,6 +30,7 @@ import pathspec
 
 from trelix.core.config import IndexConfig
 from trelix.core.models import IndexedFile, Language
+from trelix.indexing import gitignore as _gitignore
 
 logger = logging.getLogger("trelix.indexing.walker")
 
@@ -316,77 +317,35 @@ class FileWalker:
         )
 
     def _spec_for_dir(self, directory: Path) -> pathspec.PathSpec | None:  # type: ignore[type-arg]
-        """Parse and cache the `.gitignore` sitting directly inside `directory`."""
-        if directory in self._spec_cache:
-            return self._spec_cache[directory]
+        """Parse and cache the `.gitignore` sitting directly inside `directory`.
 
-        spec: pathspec.PathSpec | None = None  # type: ignore[type-arg]
-        gitignore_path = directory / ".gitignore"
-        try:
-            if gitignore_path.is_file():
-                patterns = gitignore_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-                spec = pathspec.PathSpec.from_lines("gitignore", patterns)
-        except OSError:
-            # Unreadable .gitignore (permissions, races during a watch). Treating it as
-            # absent keeps the walk going; the alternative is aborting an entire index
-            # over one file we were not able to read.
-            spec = None
-
-        self._spec_cache[directory] = spec
-        return spec
+        Thin wrapper around `indexing.gitignore.spec_for_dir` — see that
+        module for the extracted, connector-shareable implementation this
+        delegates to (and why it was extracted).
+        """
+        return _gitignore.spec_for_dir(directory, self._spec_cache)
 
     def _gitignore_chain(self, path: Path) -> list[tuple[Path, pathspec.PathSpec]]:  # type: ignore[type-arg]
         """`(anchor_dir, spec)` pairs governing `path`, ordered shallowest → deepest.
 
-        Every `.gitignore` from the repo root down to `path`'s own directory, skipping
-        directories that do not contain one.
+        Thin wrapper around `indexing.gitignore.gitignore_chain`.
         """
-        try:
-            rel = path.relative_to(self.repo_root)
-        except ValueError:
-            # Outside the repo entirely — no .gitignore of ours has authority over it.
-            return []
-
-        # repo_root first, then each intermediate directory down to path's parent.
-        directories = [self.repo_root]
-        current = self.repo_root
-        for part in rel.parts[:-1]:
-            current = current / part
-            directories.append(current)
-
-        chain: list[tuple[Path, pathspec.PathSpec]] = []  # type: ignore[type-arg]
-        for directory in directories:
-            spec = self._spec_for_dir(directory)
-            if spec is not None:
-                chain.append((directory, spec))
-        return chain
+        return _gitignore.gitignore_chain(self.repo_root, path, self._spec_cache)
 
     def _is_gitignored(self, path: Path, *, is_dir: bool) -> bool:
         """Apply the full nested-`.gitignore` chain to `path`.
 
-        Two details make this match git rather than merely approximate it:
-
-        1. Each `.gitignore`'s patterns are matched against the path *relative to that
-           file's own directory*. Anchored patterns (`/rooted.py`) and directory patterns
-           (`harness/`) are meaningless otherwise — a repo-root-relative path would make
-           `/rooted.py` in `sub/.gitignore` silently match nothing.
-        2. Proximity wins. Walking shallowest → deepest and letting each *explicit*
-           verdict overwrite the previous one means a deeper `!keep.log` re-includes a
-           file its parent excluded, while an unmentioned path (`include is None`) leaves
-           the inherited verdict untouched.
+        Thin wrapper around `indexing.gitignore.is_path_gitignored` — see
+        that module's docstring for the two behaviors this preserves
+        byte-for-byte (per-anchor-relative matching, proximity-wins).
         """
-        if not self.config.walker.respect_gitignore:
-            return False
-
-        ignored = False
-        for anchor, spec in self._gitignore_chain(path):
-            rel = path.relative_to(anchor).as_posix()
-            if is_dir:
-                rel += "/"
-            verdict = spec.check_file(rel).include
-            if verdict is not None:
-                ignored = verdict
-        return ignored
+        return _gitignore.is_path_gitignored(
+            self.repo_root,
+            path,
+            is_dir=is_dir,
+            respect_gitignore=self.config.walker.respect_gitignore,
+            cache=self._spec_cache,
+        )
 
     # ------------------------------------------------------------------
     # Conditional ignore tier (`packages`, `bin`)

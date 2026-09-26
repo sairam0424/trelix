@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from trelix.core.config import (
     EmbedderConfig,
+    ImageConnectorConfig,
     IndexConfig,
     RetrievalConfig,
     StoreConfig,
@@ -359,6 +360,61 @@ class TestIndexConfig:
         monkeypatch.delenv("TRELIX_TELEMETRY_ENABLED", raising=False)
         cfg = IndexConfig(repo_path=str(tmp_path), telemetry_enabled=True, _env_file=None)
         assert cfg.telemetry_enabled is True
+
+
+class TestImageConnectorConfig:
+    """ImageConnectorConfig — see tests/unit/test_connector_image.py for
+    ImageConnector's own behavioral coverage; this class only covers the
+    config object's defaults, env-var wiring, and validation."""
+
+    def test_defaults(self) -> None:
+        cfg = ImageConnectorConfig(_env_file=None)  # type: ignore[call-arg]
+        assert cfg.vision_provider == "anthropic"
+        assert cfg.vision_model is None
+        assert cfg.max_images_per_sync == 500
+        assert cfg.max_image_dimension_px == 1568
+        assert cfg.max_image_bytes == 5_000_000
+        assert cfg.extensions == [".png", ".jpg", ".jpeg"]
+
+    def test_vision_model_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_IMAGE_VISION_MODEL", "claude-opus-4")
+        cfg = ImageConnectorConfig()
+        assert cfg.vision_model == "claude-opus-4"
+
+    def test_max_images_per_sync_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRELIX_IMAGE_MAX_IMAGES_PER_SYNC", "10")
+        cfg = ImageConnectorConfig()
+        assert cfg.max_images_per_sync == 10
+
+    def test_max_images_per_sync_rejects_zero(self) -> None:
+        """`ge=1` — GitLinkerConfig.max_commits' own rationale applies here
+        too: a sync of zero images is a misconfiguration, not a valid cap."""
+        with pytest.raises(ValidationError):
+            ImageConnectorConfig(max_images_per_sync=0)
+
+    def test_max_image_dimension_px_rejects_zero(self) -> None:
+        with pytest.raises(ValidationError):
+            ImageConnectorConfig(max_image_dimension_px=0)
+
+    def test_max_image_bytes_rejects_zero(self) -> None:
+        with pytest.raises(ValidationError):
+            ImageConnectorConfig(max_image_bytes=0)
+
+    def test_vision_provider_rejects_unknown_value(self) -> None:
+        """Deliberately a Literal["anthropic"], not a bare str — see the
+        class docstring's rationale (only one backend supports vision
+        today)."""
+        with pytest.raises(ValidationError):
+            ImageConnectorConfig(vision_provider="openai")  # type: ignore[arg-type]
+
+    def test_index_config_wires_image_field_by_default(self, tmp_path: Path) -> None:
+        """IndexConfig.image defaults via default_factory -- constructing an
+        IndexConfig without passing `image=` must not raise and must yield
+        the same defaults as a bare ImageConnectorConfig()."""
+        cfg = IndexConfig(repo_path=str(tmp_path), _env_file=None)
+        assert isinstance(cfg.image, ImageConnectorConfig)
+        assert cfg.image.vision_provider == "anthropic"
+        assert cfg.image.max_images_per_sync == 500
 
 
 class TestRetrievalConfigQueryCache:

@@ -1129,6 +1129,20 @@ class TestConnectorRegistry:
         with pytest.raises(ValueError, match="index_config"):
             get_artifact_source("diagram")
 
+    def test_image_resolves_to_image_connector_given_an_index_config(self, tmp_path: Path) -> None:
+        """ "image" is the other connector that needs index_config (repo_path
+        + llm + image) -- see tests/unit/test_connector_image.py for the rest
+        of ImageConnector's own coverage."""
+        from trelix.core.config import IndexConfig
+        from trelix.indexing.connectors.image import ImageConnector
+
+        config = IndexConfig(repo_path=str(tmp_path))
+        assert isinstance(get_artifact_source("image", index_config=config), ImageConnector)
+
+    def test_image_without_index_config_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="index_config"):
+            get_artifact_source("image")
+
 
 # ---------------------------------------------------------------------------
 # ArtifactSource.sync() — shared base-class behavior
