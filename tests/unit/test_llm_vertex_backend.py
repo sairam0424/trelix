@@ -107,6 +107,37 @@ class TestVertexBackend:
         ):
             backend.complete(messages)
 
+    def test_complete_with_empty_images_list_does_not_raise(self) -> None:
+        """Regression: images=[] (empty list, distinct from the documented
+        None default) must NOT trip the vision-unsupported guard — a message
+        with zero actual images is not a vision request."""
+        mods = _google_genai_modules()
+        with patch.dict("sys.modules", mods):
+            from trelix.llm.providers.vertex_backend import VertexBackend
+
+            cfg = LLMConfig(
+                provider="vertex",
+                model="gemini-2.0-flash",
+                google_api_key=_FAKE_GKEY,
+                _env_file=None,  # type: ignore[call-arg]
+            )
+            backend = VertexBackend(cfg)
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "hello from gemini"
+        mock_response.candidates[0].finish_reason.name = "STOP"
+        mock_response.usage_metadata.prompt_token_count = 10
+        mock_response.usage_metadata.candidates_token_count = 5
+        mock_client.models.generate_content.return_value = mock_response
+        backend._client = mock_client
+
+        with patch.dict("sys.modules", mods):
+            result = backend.complete([ChatMessage(role="user", content="hi", images=[])])
+
+        assert isinstance(result, ChatResponse)
+        assert result.content == "hello from gemini"
+
     def test_import_error_when_google_genai_not_installed(self) -> None:
         # Remove any cached vertex_backend module to force fresh import
         for key in list(sys.modules.keys()):

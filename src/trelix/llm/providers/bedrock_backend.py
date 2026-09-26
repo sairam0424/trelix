@@ -138,7 +138,7 @@ class BedrockBackend(TrelixChatClient):
         force_tool: str | None = None,
         thinking: bool = False,
     ) -> dict[str, Any]:
-        if any(m.images is not None for m in messages):
+        if any(m.images for m in messages):
             raise NotImplementedError(
                 f"vision not yet supported for provider {self._config.provider}"
             )

@@ -88,6 +88,25 @@ class TestBedrockBackend:
         with pytest.raises(NotImplementedError, match="vision not yet supported"):
             backend.complete(messages)
 
+    def test_complete_with_empty_images_list_does_not_raise(self) -> None:
+        """Regression: images=[] (empty list, distinct from the documented
+        None default) must NOT trip the vision-unsupported guard — a message
+        with zero actual images is not a vision request."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_response = {
+            "output": {"message": {"content": [{"text": "hello"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 10, "outputTokens": 5},
+        }
+        mock_client.converse.return_value = mock_response
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi", images=[])])
+
+        assert isinstance(result, ChatResponse)
+        assert result.content == "hello"
+
     def test_uses_inference_config_max_tokens(self) -> None:
         backend = self._make_backend()
         mock_client = MagicMock()

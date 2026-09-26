@@ -71,12 +71,14 @@ class AnthropicBackend(TrelixChatClient):
         """Build the Anthropic `content` value for a single message.
 
         Returns `message.content` unchanged (a plain string) when `images` is
-        None — the common case, preserved byte-for-byte. When `images` is set,
-        returns a list of content blocks: one `{"type": "image", ...}` block
-        per ImageContent, followed by a trailing `{"type": "text", ...}` block
-        carrying `message.content`.
+        None or empty — the common case, preserved byte-for-byte. When
+        `images` has at least one entry, returns a list of content blocks:
+        one `{"type": "image", ...}` block per ImageContent, followed by a
+        trailing `{"type": "text", ...}` block carrying `message.content` —
+        but only when `message.content` is non-empty, since Anthropic's
+        Messages API rejects a text block with an empty string.
         """
-        if message.images is None:
+        if not message.images:
             return message.content
         blocks: list[dict[str, Any]] = [
             {
@@ -89,7 +91,8 @@ class AnthropicBackend(TrelixChatClient):
             }
             for image in message.images
         ]
-        blocks.append({"type": "text", "text": message.content})
+        if message.content:
+            blocks.append({"type": "text", "text": message.content})
         return blocks
 
     def _extract_system(

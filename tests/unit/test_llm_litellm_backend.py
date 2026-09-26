@@ -71,6 +71,24 @@ class TestLiteLLMBackend:
         with pytest.raises(NotImplementedError, match="vision not yet supported"):
             backend.complete(messages)
 
+    def test_complete_with_empty_images_list_does_not_raise(self) -> None:
+        """Regression: images=[] (empty list, distinct from the documented
+        None default) must NOT trip the vision-unsupported guard — a message
+        with zero actual images is not a vision request."""
+        backend, mock_litellm = self._make_backend()
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = "hello"
+        mock_response.choices[0].finish_reason = "stop"
+        mock_response.model = "bedrock/claude-3-5-sonnet"
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        mock_litellm.completion.return_value = mock_response
+
+        result = backend.complete([ChatMessage(role="user", content="hi", images=[])])
+
+        assert isinstance(result, ChatResponse)
+        assert result.content == "hello"
+
     def test_uses_litellm_model_string(self) -> None:
         backend, mock_litellm = self._make_backend()
         mock_response = MagicMock()
