@@ -193,6 +193,52 @@ class TestIgnoredDirectories:
         assert ".trelix" in walker_cfg.extra_ignore_dirs
 
 
+class TestRasterImagesAreExcludedFromTheMainWalk:
+    """ImageConnector (indexing/connectors/image.py) does its own independent
+    directory walk to caption raster images as Artifacts -- it must have zero
+    effect on FileWalker's own walk, which never puts images into chunks
+    (chunks.symbol_id is a hard NOT NULL FK; images are Artifacts, never
+    Chunks). Regression guard for the "zero changes to EXTENSION_MAP or
+    WalkerConfig.extra_ignore_extensions" claim raster-image indexing was
+    built on."""
+
+    def test_png_and_jpg_are_not_in_extension_map(self) -> None:
+        """No Language mapping exists for raster images -- confirms
+        FileWalker has no code path that could ever chunk/embed one."""
+        assert ".png" not in EXTENSION_MAP
+        assert ".jpg" not in EXTENSION_MAP
+        assert ".jpeg" not in EXTENSION_MAP
+
+    def test_png_and_jpg_are_in_the_default_ignore_extensions(self) -> None:
+        walker_cfg = WalkerConfig()
+        assert ".png" in walker_cfg.extra_ignore_extensions
+        assert ".jpg" in walker_cfg.extra_ignore_extensions
+        assert ".jpeg" in walker_cfg.extra_ignore_extensions
+
+    def test_adding_raster_images_to_a_repo_does_not_change_the_walk_result(
+        self, tmp_path: Path
+    ) -> None:
+        """The actual regression guard: walk the same repo before and after
+        adding .png/.jpg files, and assert the set of returned rel_paths is
+        byte-for-byte identical -- raster images must never appear in
+        FileWalker's output, whether or not ImageConnector has ever run."""
+        _build_synthetic_repo(tmp_path)
+        config = make_config(tmp_path)
+        before = {f.rel_path for f in FileWalker(config).walk()}
+
+        (tmp_path / "diagram.png").write_bytes(b"\x89PNG\r\n\x1a\nfake-png-bytes")
+        (tmp_path / "screenshot.jpg").write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-bytes")
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "nested.jpeg").write_bytes(b"more-fake-bytes")
+
+        after = {f.rel_path for f in FileWalker(config).walk()}
+
+        assert after == before, (
+            f"Adding raster images changed the walk result: "
+            f"new entries {after - before}, missing entries {before - after}"
+        )
+
+
 class TestExtensionMap:
     def test_py_maps_to_python(self) -> None:
         assert EXTENSION_MAP[".py"] == Language.PYTHON
