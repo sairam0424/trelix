@@ -1628,6 +1628,61 @@ class LinearConnectorConfig(BaseSettings):
     page_size: int = Field(default=100, ge=1, le=100)
 
 
+class ImageConnectorConfig(BaseSettings):
+    """
+    Local raster-image (`.png`/`.jpg`/`.jpeg`) connector. Unlike the four
+    remote-API connectors above, and like DiagramConnector, ImageConnector
+    reads files under `IndexConfig.repo_path` rather than calling an
+    external API — no base_url/credentials fields here. This class exists
+    only for the image-specific tunables that don't belong on IndexConfig
+    itself: which vision model captions each image, and the safety caps
+    applied before any image bytes are sent to that model.
+
+    Captioning is Anthropic-only today (see llm/providers/*_backend.py's
+    `NotImplementedError` guards on every other backend) — `vision_provider`
+    is deliberately a `Literal` of one value rather than a bare `str`, so a
+    future second vision-capable backend is a one-line Literal widening
+    here, not a silent typo. ImageConnector always builds its own
+    Anthropic-provider `LLMConfig` for captioning (see `_vision_llm_config`
+    in image.py), independent of whatever provider `IndexConfig.llm` uses
+    for the rest of the pipeline's text synthesis.
+
+    Dimension/byte caps default to Anthropic's own documented image limits
+    (long edge resized above ~1568px server-side; ~5MB request payload
+    ceiling) so the common case never triggers ImageConnector's own
+    downscaling at all — it exists for the images that would otherwise be
+    rejected or silently server-resized without trelix knowing.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_IMAGE_",
+        env_file=OPERATOR_ENV_FILE,
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    vision_provider: Literal["anthropic"] = "anthropic"
+    # None defers to IndexConfig.llm.model — set only when the desired vision
+    # model differs from the model already configured for text synthesis.
+    vision_model: str | None = Field(default=None, alias="TRELIX_IMAGE_VISION_MODEL")
+    # Bounds how many images one `trelix connector sync <repo> image` call
+    # captions — required from day one, matching GitLinkerConfig.max_commits'
+    # own rationale: a large repo's image count is unbounded, and each one is
+    # a real (metered) vision-model call.
+    max_images_per_sync: int = Field(default=500, ge=1)
+    # Longest edge, in pixels. Anthropic resizes above ~1568px server-side
+    # regardless, so this only changes whether trelix or Anthropic does the
+    # resizing — trelix doing it means the actual bytes sent are known and
+    # capped, instead of an oversized upload that succeeds anyway.
+    max_image_dimension_px: int = Field(default=1568, ge=1)
+    # Request payload ceiling, in bytes, before ImageConnector downscales
+    # (never skips) an oversized image. 5_000_000 mirrors Anthropic's own
+    # ~5MB per-image limit for the Messages API.
+    max_image_bytes: int = Field(default=5_000_000, ge=1)
+    extensions: list[str] = [".png", ".jpg", ".jpeg"]
+
+
 # ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------
@@ -1663,6 +1718,7 @@ class IndexConfig(BaseSettings):
     sparse: SparseConfig = Field(default_factory=SparseConfig)
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     git_linker: GitLinkerConfig = Field(default_factory=GitLinkerConfig)
+    image: ImageConnectorConfig = Field(default_factory=ImageConnectorConfig)
 
     # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
     # Requires LLM API access. Off by default — zero cost when disabled.

@@ -405,6 +405,28 @@ def test_agent_sessions_clear_help() -> None:
     assert result.exit_code == 0
 
 
+def test_connector_list_help():
+    result = runner.invoke(app, ["connector", "list", "--help"])
+    assert result.exit_code == 0
+
+
+def test_connector_list_shows_all_registered_connector_names():
+    """Regression guard for connector_list() reading `ConnectorName` via
+    get_args() (registry.py) rather than a hand-copied string -- every name
+    ConnectorName lists must show up here, including the newly-added
+    "image" one, or the two have silently drifted apart again."""
+    import re
+    from typing import get_args
+
+    from trelix.indexing.connectors.registry import ConnectorName
+
+    result = runner.invoke(app, ["connector", "list"])
+    assert result.exit_code == 0
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    for name in get_args(ConnectorName):
+        assert name in plain
+
+
 def test_connector_sync_help():
     result = runner.invoke(app, ["connector", "sync", "--help"])
     assert result.exit_code == 0
