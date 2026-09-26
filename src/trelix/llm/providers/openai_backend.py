@@ -89,6 +89,10 @@ class OpenAIBackend(TrelixChatClient):
     def _build_messages(
         self, messages: list[ChatMessage], system: str | None
     ) -> list[dict[str, str]]:
+        if any(m.images for m in messages):
+            raise NotImplementedError(
+                f"vision not yet supported for provider {self._config.provider}"
+            )
         result: list[dict[str, str]] = []
         # Inject system prompt first
         effective_system = system or next((m.content for m in messages if m.role == "system"), None)

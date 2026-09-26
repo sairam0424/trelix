@@ -138,6 +138,10 @@ class BedrockBackend(TrelixChatClient):
         force_tool: str | None = None,
         thinking: bool = False,
     ) -> dict[str, Any]:
+        if any(m.images for m in messages):
+            raise NotImplementedError(
+                f"vision not yet supported for provider {self._config.provider}"
+            )
         effective_system = system or next((m.content for m in messages if m.role == "system"), None)
         request: dict[str, Any] = {
             "modelId": self._model,

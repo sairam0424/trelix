@@ -9,7 +9,7 @@ import openai
 import pytest
 
 from trelix.core.config import LLMConfig
-from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ImageContent, ToolCallResponse
 from trelix.llm.providers.openai_backend import OpenAIBackend, _token_limit_param
 
 _FAKE_KEY = "test-k"  # short enough not to trigger secret scanner; never sent to any service
@@ -169,6 +169,46 @@ class TestOpenAIBackendComplete:
         assert isinstance(result, ToolCallResponse)
         assert result.tool_name == "search_code"
         assert result.tool_arguments == {"query": "auth", "repo_path": "/repo"}
+
+    def test_complete_raises_not_implemented_for_images(self) -> None:
+        """Phase 1 of raster-image support only shipped for Anthropic —
+        every other backend must raise NotImplementedError rather than
+        silently ignore images or send a malformed request."""
+        backend = self._make_backend()
+        backend._client = MagicMock()
+        messages = [
+            ChatMessage(
+                role="user",
+                content="describe this",
+                images=[ImageContent(data=b"fake-bytes", media_type="image/png")],
+            )
+        ]
+        with pytest.raises(NotImplementedError, match="vision not yet supported"):
+            backend.complete(messages)
+
+    def test_complete_with_empty_images_list_does_not_raise(self) -> None:
+        """Regression: images=[] (empty list, distinct from the documented
+        None default) must NOT trip the vision-unsupported guard — a message
+        with zero actual images is not a vision request."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.content = "hello"
+        mock_choice = MagicMock()
+        mock_choice.message = mock_msg
+        mock_choice.finish_reason = "stop"
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_response.model = "gpt-4o"
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        mock_client.chat.completions.create.return_value = mock_response
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi", images=[])])
+
+        assert isinstance(result, ChatResponse)
+        assert result.content == "hello"
 
     def test_client_is_none_when_no_key(self) -> None:
         cfg = LLMConfig(provider="openai", _env_file=None)  # type: ignore[call-arg]

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from trelix.core.config import LLMConfig
-from trelix.llm.client import ChatMessage, ChatResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ImageContent
 
 
 class _ValidationException(Exception):
@@ -72,6 +72,40 @@ class TestBedrockBackend:
         assert isinstance(result, ChatResponse)
         assert result.content == "hello"
         assert result.finish_reason == "stop"
+
+    def test_complete_raises_not_implemented_for_images(self) -> None:
+        """Phase 1 of raster-image support only shipped for Anthropic —
+        every other backend must raise NotImplementedError rather than
+        silently ignore images or send a malformed request."""
+        backend = self._make_backend()
+        messages = [
+            ChatMessage(
+                role="user",
+                content="describe this",
+                images=[ImageContent(data=b"fake-bytes", media_type="image/png")],
+            )
+        ]
+        with pytest.raises(NotImplementedError, match="vision not yet supported"):
+            backend.complete(messages)
+
+    def test_complete_with_empty_images_list_does_not_raise(self) -> None:
+        """Regression: images=[] (empty list, distinct from the documented
+        None default) must NOT trip the vision-unsupported guard — a message
+        with zero actual images is not a vision request."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_response = {
+            "output": {"message": {"content": [{"text": "hello"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 10, "outputTokens": 5},
+        }
+        mock_client.converse.return_value = mock_response
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi", images=[])])
+
+        assert isinstance(result, ChatResponse)
+        assert result.content == "hello"
 
     def test_uses_inference_config_max_tokens(self) -> None:
         backend = self._make_backend()

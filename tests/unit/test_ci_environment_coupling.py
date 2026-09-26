@@ -228,6 +228,7 @@ DECLARED_DIST_TO_IMPORTS: dict[str, tuple[str, ...]] = {
     "opentelemetry-exporter-otlp-proto-http": ("opentelemetry",),
     "opentelemetry-sdk": ("opentelemetry",),
     "opentelemetry-util-genai": ("opentelemetry",),
+    "pillow": ("PIL",),
     "pyarrow": ("pyarrow",),
     "pyinstaller": ("PyInstaller",),
     "pyjwt": ("jwt",),
@@ -275,6 +276,11 @@ PRESENT_ANYWAY: dict[str, str] = {
     "sentence_transformers": "declared directly by [local]",
     # [knowledge-graph] declares networkx, which is a base dependency.
     "networkx": "base dependency of the project",
+    # [vision] declares pillow; packages/trelix-llama-index's runtime dependency
+    # llama-index-core declares "pillow>=9.0.0" with no extra marker at all, and
+    # that package is installed directly by the unit job's own
+    # `pip install -e packages/trelix-llama-index` step.
+    "PIL": "trelix-llama-index -> llama-index-core -> pillow>=9.0.0 (unconditional)",
 }
 
 # Absent, but declared by no extra at all -- so the derivation below cannot reach

@@ -51,6 +51,10 @@ class VertexBackend(TrelixChatClient):
         return None
 
     def _build_contents(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
+        if any(m.images for m in messages):
+            raise NotImplementedError(
+                f"vision not yet supported for provider {self._config.provider}"
+            )
         return [
             {"role": "user" if m.role == "user" else "model", "parts": [{"text": m.content}]}
             for m in messages
