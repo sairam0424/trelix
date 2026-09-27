@@ -1,6 +1,7 @@
 """
 ImageConnector — indexes local raster images (`.png`/`.jpg`/`.jpeg`) as
-Artifacts, captioned via the Anthropic vision backend added in Phase 1
+Artifacts, captioned via a vision-capable backend (Anthropic or Bedrock,
+see ImageConnectorConfig.vision_provider) added in Phase 1
 (trelix.llm.client.ChatMessage.images / ImageContent).
 
 Phase 2 of docs/ROADMAP.md's "Multi-modal" entry: DiagramConnector's module
@@ -81,14 +82,13 @@ class ImageConnector(ArtifactSource):
         ):
             raise ValueError(
                 "ImageConnector: config.llm.provider is "
-                f"{self._config.llm.provider!r}, not {image_cfg.vision_provider!r} "
-                "(the only vision-capable backend today), and no "
+                f"{self._config.llm.provider!r}, not {image_cfg.vision_provider!r}, and no "
                 "TRELIX_IMAGE_VISION_MODEL override is set -- there is no known-valid "
                 "model name to send. Set TRELIX_IMAGE_VISION_MODEL to a real "
                 f"{image_cfg.vision_provider} model name, or configure "
                 f"TRELIX_LLM_PROVIDER={image_cfg.vision_provider} with a matching model."
             )
-        if not self._config.llm.anthropic_api_key:
+        if image_cfg.vision_provider == "anthropic" and not self._config.llm.anthropic_api_key:
             # AnthropicBackend.complete() does not raise when unconfigured -- it
             # returns a fake-successful ChatResponse containing a placeholder
             # string ("Anthropic not configured..."). _caption() has no way to
@@ -103,6 +103,25 @@ class ImageConnector(ArtifactSource):
                 "would silently produce a placeholder description for every "
                 "image instead of failing loudly -- set ANTHROPIC_API_KEY before "
                 "running `trelix connector sync <repo> image`."
+            )
+        if image_cfg.vision_provider == "bedrock" and not self._config.llm.aws_region:
+            # BedrockBackend._build_client() already raises a clear ValueError
+            # for a missing region -- this duplicates that check here so the
+            # failure surfaces through validate_config()'s polished, image-
+            # specific message (matching the anthropic branch above) instead
+            # of the generic "Failed to sync image: ..." wrapper the CLI
+            # falls back to for exceptions raised deeper in fetch(). Unlike
+            # the Anthropic branch, this deliberately does NOT require
+            # aws_access_key_id/aws_secret_access_key: AWS's own best
+            # practice (and this backend's ambient boto3 credential chain)
+            # is IAM-role-based auth with no static keys at all, so requiring
+            # an explicit key here would reject a correctly-configured,
+            # more-secure production deployment.
+            raise ValueError(
+                "ImageConnector: AWS_REGION is not set. Vision captioning via "
+                "Bedrock requires an explicit region -- set the AWS_REGION "
+                "environment variable before running "
+                "`trelix connector sync <repo> image`."
             )
 
     def fetch(self) -> list[Artifact]:
@@ -134,8 +153,9 @@ class ImageConnector(ArtifactSource):
         """Build the LLMConfig used for captioning: a copy of `config.llm`
         (api keys, timeouts, etc. all preserved) with provider/model
         overridden to `config.image`'s vision choice -- captioning may use a
-        different provider/model than the pipeline's main text LLM, since
-        only Anthropic supports vision today.
+        different provider/model than the pipeline's main text LLM, e.g. a
+        text pipeline on OpenAI with vision captioning on Anthropic or
+        Bedrock.
 
         `validate_config()` has already confirmed a known-valid model
         exists: either `vision_model` was explicitly set, or `config.llm`

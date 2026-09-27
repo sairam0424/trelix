@@ -341,11 +341,12 @@ The fifth connector, `diagram` (indexes local `.drawio` files — see [ROADMAP.m
 
 ### Image connector (`trelix connector sync <repo> image`)
 
-Captioning is Anthropic-only today (every other `TRELIX_LLM_PROVIDER` raises `NotImplementedError` if an image reaches it) — `ImageConnector` always builds its own Anthropic-provider `LLMConfig` for captioning, independent of whichever provider the rest of the pipeline's text synthesis uses. If `TRELIX_LLM_PROVIDER` isn't already `anthropic`, set `TRELIX_IMAGE_VISION_MODEL` explicitly; otherwise config validation fails fast with an actionable error rather than silently sending a non-Anthropic model name to Anthropic's API.
+Captioning supports Anthropic and Bedrock (every other `TRELIX_LLM_PROVIDER` raises `NotImplementedError` if an image reaches it) — `ImageConnector` always builds its own `LLMConfig` targeting `TRELIX_IMAGE_VISION_PROVIDER` for captioning, independent of whichever provider the rest of the pipeline's text synthesis uses. If `TRELIX_LLM_PROVIDER` doesn't already match `TRELIX_IMAGE_VISION_PROVIDER`, set `TRELIX_IMAGE_VISION_MODEL` explicitly; otherwise config validation fails fast with an actionable error rather than silently sending a mismatched model name to the wrong provider's API. Anthropic requires `ANTHROPIC_API_KEY`; Bedrock requires `AWS_REGION` (access keys are optional — the ambient boto3 credential chain, e.g. an IAM role, is the AWS-recommended default and works with no static keys at all). Both are checked up front by `validate_config()`, not discovered mid-sync.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_IMAGE_VISION_MODEL` | _(none — falls back to `TRELIX_LLM_MODEL` when `TRELIX_LLM_PROVIDER=anthropic`)_ | Anthropic model name used for image captioning. Required if the main pipeline's LLM provider isn't already `anthropic`. |
+| `TRELIX_IMAGE_VISION_PROVIDER` | `anthropic` | Which backend captions images: `anthropic` or `bedrock`. |
+| `TRELIX_IMAGE_VISION_MODEL` | _(none — falls back to `TRELIX_LLM_MODEL` when `TRELIX_LLM_PROVIDER` already matches `TRELIX_IMAGE_VISION_PROVIDER`)_ | Model name used for image captioning. Required if the main pipeline's LLM provider doesn't already match `TRELIX_IMAGE_VISION_PROVIDER`. |
 | `TRELIX_IMAGE_MAX_IMAGES_PER_SYNC` | `500` | Caps how many images one `sync` call captions — each one is a real, metered vision-model call. |
 | `TRELIX_IMAGE_MAX_IMAGE_DIMENSION_PX` | `1568` | Longest edge, in pixels, before an image is downscaled via Pillow prior to captioning. Matches Anthropic's own documented server-side resize threshold — trelix doing the resize means the actual bytes sent are known and capped, instead of an oversized upload that succeeds anyway. |
 | `TRELIX_IMAGE_MAX_IMAGE_BYTES` | `5000000` | Request payload ceiling, in bytes, before an image is downscaled (never skipped) — mirrors Anthropic's own ~5MB per-image Messages API limit. |

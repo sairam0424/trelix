@@ -73,20 +73,100 @@ class TestBedrockBackend:
         assert result.content == "hello"
         assert result.finish_reason == "stop"
 
-    def test_complete_raises_not_implemented_for_images(self) -> None:
-        """Phase 1 of raster-image support only shipped for Anthropic —
-        every other backend must raise NotImplementedError rather than
-        silently ignore images or send a malformed request."""
+    def test_complete_with_images_builds_correct_content_blocks(self) -> None:
+        """images=[ImageContent(...)] must produce the Converse API content-
+        block shape: one `{"image": {"format", "source": {"bytes"}}}` block
+        per ImageContent, followed by a trailing `{"text": ...}` block
+        carrying message.content. Unlike Anthropic's Messages API, `bytes`
+        takes raw bytes -- no base64 encoding on the caller's side."""
         backend = self._make_backend()
-        messages = [
-            ChatMessage(
-                role="user",
-                content="describe this",
-                images=[ImageContent(data=b"fake-bytes", media_type="image/png")],
-            )
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "a cat"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        image_bytes = b"\x89PNG\r\n\x1a\nfake-png-bytes"
+        result = backend.complete(
+            [
+                ChatMessage(
+                    role="user",
+                    content="what is in this image?",
+                    images=[ImageContent(data=image_bytes, media_type="image/png")],
+                )
+            ]
+        )
+
+        assert result.content == "a cat"
+        sent_content = mock_client.converse.call_args[1]["messages"][0]["content"]
+        assert sent_content == [
+            {"image": {"format": "png", "source": {"bytes": image_bytes}}},
+            {"text": "what is in this image?"},
         ]
-        with pytest.raises(NotImplementedError, match="vision not yet supported"):
-            backend.complete(messages)
+
+    def test_complete_with_image_and_no_caption_omits_text_block(self) -> None:
+        """A caption-less image message (content="") sends only the image
+        block -- Bedrock's own docs confirm an image-only content array is
+        valid ("if you exclude the text field, the model describes the
+        image"), but there is no reason to send a pointless empty one."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "a cat"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        image_bytes = b"\x89PNG\r\n\x1a\nfake-png-bytes"
+        backend.complete(
+            [
+                ChatMessage(
+                    role="user",
+                    content="",
+                    images=[ImageContent(data=image_bytes, media_type="image/png")],
+                )
+            ]
+        )
+
+        sent_content = mock_client.converse.call_args[1]["messages"][0]["content"]
+        assert sent_content == [{"image": {"format": "png", "source": {"bytes": image_bytes}}}]
+
+    def test_complete_with_multiple_images_produces_ordered_blocks(self) -> None:
+        """N ImageContent entries must produce N image blocks, in input
+        order, followed by exactly one trailing text block."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "two cats"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        first_bytes = b"\x89PNG\r\n\x1a\nfirst-png-bytes"
+        second_bytes = b"\xff\xd8\xff\xe0second-jpeg-bytes"
+        backend.complete(
+            [
+                ChatMessage(
+                    role="user",
+                    content="compare these",
+                    images=[
+                        ImageContent(data=first_bytes, media_type="image/png"),
+                        ImageContent(data=second_bytes, media_type="image/jpeg"),
+                    ],
+                )
+            ]
+        )
+
+        sent_content = mock_client.converse.call_args[1]["messages"][0]["content"]
+        assert sent_content == [
+            {"image": {"format": "png", "source": {"bytes": first_bytes}}},
+            {"image": {"format": "jpeg", "source": {"bytes": second_bytes}}},
+            {"text": "compare these"},
+        ]
 
     def test_complete_with_empty_images_list_does_not_raise(self) -> None:
         """Regression: images=[] (empty list, distinct from the documented
@@ -534,6 +614,93 @@ class TestBedrockDefaultModels:
         with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
             backend = BedrockBackend(cfg)
         assert backend._primary_model == "us.anthropic.claude-opus-4-8"
+
+
+class TestBedrockTemperatureRejection:
+    """Regression for a real, live-discovered bug: Bedrock's Converse API
+    rejects `temperature` entirely for some newer Claude generations
+    (confirmed live: claude-sonnet-5, "`temperature` is deprecated for this
+    model") while still accepting it for others (confirmed live:
+    claude-sonnet-4-6). Unlike the model-unavailable fallback above, this
+    isn't a model swap -- the same model, same request, just without the
+    temperature field."""
+
+    def _make_backend(self, model: str = "us.anthropic.claude-sonnet-5"):
+        from trelix.llm.providers.bedrock_backend import BedrockBackend
+
+        cfg = LLMConfig(provider="bedrock", model=model, aws_region="us-east-1", _env_file=None)  # type: ignore[call-arg]
+        boto3_mock = _make_boto3_mock()
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
+            backend = BedrockBackend(cfg)
+        return backend
+
+    def test_complete_retries_without_temperature_and_remembers_the_rejection(self) -> None:
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        ok_resp = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        seen_requests = []
+
+        def converse_side_effect(**kwargs):
+            seen_requests.append(dict(kwargs["inferenceConfig"]))  # snapshot -- the real
+            # dict is reused and mutated in place by the retry below
+            if "temperature" in kwargs["inferenceConfig"]:
+                raise _ValidationException(
+                    "ValidationException: The model returned the following "
+                    "errors: `temperature` is deprecated for this model."
+                )
+            return ok_resp
+
+        mock_client.converse.side_effect = converse_side_effect
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi")])
+        assert result.content == "ok"
+        assert backend._temperature_rejected is True
+        # First call: with temperature, rejected; retried without it, succeeded.
+        assert "temperature" in seen_requests[0]
+        assert "temperature" not in seen_requests[1]
+
+        # Second call on the same instance skips straight to no-temperature —
+        # no wasted round trip through the rejection again.
+        seen_requests.clear()
+        backend.complete([ChatMessage(role="user", content="again")])
+        assert len(seen_requests) == 1
+        assert "temperature" not in seen_requests[0]
+
+    def test_explicit_temperature_argument_is_dropped_after_rejection(self) -> None:
+        """An explicit temperature= argument to complete() must not
+        resurrect the field once this instance has learned it's rejected."""
+        backend = self._make_backend()
+        backend._temperature_rejected = True
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        backend.complete([ChatMessage(role="user", content="hi")], temperature=0.7)
+
+        assert "temperature" not in mock_client.converse.call_args[1]["inferenceConfig"]
+
+    def test_unrelated_validation_exception_is_not_treated_as_temperature_rejection(self) -> None:
+        """A ValidationException for a different reason must propagate, not
+        be swallowed into a pointless no-temperature retry."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.side_effect = _ValidationException(
+            "ValidationException: some unrelated schema error"
+        )
+        backend._client = mock_client
+
+        with pytest.raises(_ValidationException):
+            backend.complete([ChatMessage(role="user", content="hi")])
+        assert backend._temperature_rejected is False
 
 
 class TestBedrockClientRetryConfiguration:

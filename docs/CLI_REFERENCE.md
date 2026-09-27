@@ -1340,8 +1340,9 @@ trelix connector sync ./my-repo linear
 # whichever TRELIX_LLM_* provider is already configured for synthesis)
 trelix connector sync ./my-repo diagram
 
-# Sync local raster images (.png/.jpg/.jpeg) — Anthropic-only captioning;
-# set TRELIX_IMAGE_VISION_MODEL if TRELIX_LLM_PROVIDER isn't already anthropic
+# Sync local raster images (.png/.jpg/.jpeg) — captioning via Anthropic or
+# Bedrock (TRELIX_IMAGE_VISION_PROVIDER, default anthropic); set
+# TRELIX_IMAGE_VISION_MODEL if TRELIX_LLM_PROVIDER doesn't already match
 trelix connector sync ./my-repo image
 ```
 

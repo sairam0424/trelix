@@ -31,7 +31,7 @@ class ChatMessage:
 
     role: str  # "system" | "user" | "assistant"
     content: str  # plain text — backends convert to provider format
-    images: list[ImageContent] | None = None  # optional raster images (Anthropic-only for now)
+    images: list[ImageContent] | None = None  # optional raster images (Anthropic/Bedrock only)
 
 
 @dataclass

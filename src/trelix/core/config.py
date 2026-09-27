@@ -1638,14 +1638,14 @@ class ImageConnectorConfig(BaseSettings):
     itself: which vision model captions each image, and the safety caps
     applied before any image bytes are sent to that model.
 
-    Captioning is Anthropic-only today (see llm/providers/*_backend.py's
-    `NotImplementedError` guards on every other backend) — `vision_provider`
-    is deliberately a `Literal` of one value rather than a bare `str`, so a
-    future second vision-capable backend is a one-line Literal widening
-    here, not a silent typo. ImageConnector always builds its own
-    Anthropic-provider `LLMConfig` for captioning (see `_vision_llm_config`
-    in image.py), independent of whatever provider `IndexConfig.llm` uses
-    for the rest of the pipeline's text synthesis.
+    Captioning supports Anthropic and Bedrock (see llm/providers/*_backend.py's
+    `NotImplementedError` guards on the remaining backends) — `vision_provider`
+    is deliberately a `Literal` of the supported values rather than a bare
+    `str`, so a future third vision-capable backend is a one-line Literal
+    widening here, not a silent typo. ImageConnector always builds its own
+    `LLMConfig` for captioning targeting `vision_provider` (see
+    `_vision_llm_config` in image.py), independent of whatever provider
+    `IndexConfig.llm` uses for the rest of the pipeline's text synthesis.
 
     Dimension/byte caps default to Anthropic's own documented image limits
     (long edge resized above ~1568px server-side; ~5MB request payload
@@ -1662,7 +1662,7 @@ class ImageConnectorConfig(BaseSettings):
         populate_by_name=True,
     )
 
-    vision_provider: Literal["anthropic"] = "anthropic"
+    vision_provider: Literal["anthropic", "bedrock"] = "anthropic"
     # None defers to IndexConfig.llm.model — set only when the desired vision
     # model differs from the model already configured for text synthesis.
     vision_model: str | None = Field(default=None, alias="TRELIX_IMAGE_VISION_MODEL")
