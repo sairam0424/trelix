@@ -22,7 +22,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, cast, get_args
 
 import typer
 from rich.console import Console
@@ -3732,16 +3732,35 @@ def agent_sessions_clear(
 
 
 # ---------------------------------------------------------------------------
-# connector sub-app (Jira/TestRail/Xray/Linear/diagram source-connector sync)
+# connector sub-app (Jira/TestRail/Xray/Linear/diagram/image source-connector sync)
 # ---------------------------------------------------------------------------
 
 connector_app = typer.Typer(
     help=(
         "Sync external artefacts (Jira tickets, TestRail cases, Xray tests, "
-        "Linear issues, local .drawio diagrams)."
+        "Linear issues, local .drawio diagrams, local raster images)."
     )
 )
 app.add_typer(connector_app, name="connector")
+
+
+@connector_app.command("list")
+def connector_list() -> None:
+    """List the connector names accepted by `trelix connector sync`.
+
+    Reads straight from `ConnectorName` (registry.py) rather than a
+    hand-copied string, so this can never drift from the one place that
+    actually enforces which names are valid — unlike the help strings on
+    this Typer app and on `connector_sync`'s `name` argument below, which
+    are separate literals maintained by hand.
+    """
+    from trelix.indexing.connectors.registry import ConnectorName
+
+    table = Table(title="Available Connectors", show_header=True, header_style="bold cyan")
+    table.add_column("Name")
+    for connector_name in get_args(ConnectorName):
+        table.add_row(connector_name)
+    console.print(table)
 
 
 @connector_app.command("sync")
@@ -3750,7 +3769,10 @@ def connector_sync(
     name: Annotated[
         str,
         typer.Argument(
-            help="Connector to sync: 'jira', 'testrail', 'xray', 'linear', or 'diagram'."
+            help=(
+                "Connector to sync: 'jira', 'testrail', 'xray', 'linear', "
+                "'diagram', or 'image'. See `trelix connector list`."
+            )
         ),
     ],
     link: Annotated[

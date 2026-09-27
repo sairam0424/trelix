@@ -19,7 +19,7 @@ from trelix.indexing.connectors.base import ArtifactSource
 if TYPE_CHECKING:
     from trelix.core.config import IndexConfig
 
-ConnectorName = Literal["jira", "testrail", "xray", "linear", "diagram"]
+ConnectorName = Literal["jira", "testrail", "xray", "linear", "diagram", "image"]
 
 
 def get_artifact_source(
@@ -30,11 +30,12 @@ def get_artifact_source(
     core/config.py's JiraConnectorConfig/TestRailConnectorConfig/
     XrayConnectorConfig/LinearConnectorConfig).
 
-    ``index_config`` is only consulted by "diagram" — the other four are
-    remote-API connectors fully configured by their own env vars and never
-    need the indexed repo's path or LLM provider; "diagram" reads local
-    files under ``index_config.repo_path`` and captions them via
-    ``index_config.llm``, so it is required for that one case."""
+    ``index_config`` is only consulted by "diagram" and "image" — the other
+    four are remote-API connectors fully configured by their own env vars
+    and never need the indexed repo's path or LLM provider; "diagram" and
+    "image" read local files under ``index_config.repo_path`` and caption
+    them via ``index_config.llm``/``index_config.image``, so it is required
+    for those two cases."""
     match name:
         case "jira":
             from trelix.indexing.connectors.jira import JiraConnector
@@ -58,8 +59,14 @@ def get_artifact_source(
             if index_config is None:
                 raise ValueError("get_artifact_source('diagram') requires index_config")
             return DiagramConnector(index_config)
+        case "image":
+            from trelix.indexing.connectors.image import ImageConnector
+
+            if index_config is None:
+                raise ValueError("get_artifact_source('image') requires index_config")
+            return ImageConnector(index_config)
         case _:
             raise ValueError(
                 f"Unknown connector: {name!r}. Expected 'jira', 'testrail', 'xray', "
-                "'linear', or 'diagram'."
+                "'linear', 'diagram', or 'image'."
             )
