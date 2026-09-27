@@ -280,6 +280,13 @@ vertex    = ["google-genai>=1.0.0"]
 # nested user_config, fixed 1.83.9). The prior >=1.50.0 floor let a fresh resolve land
 # on any of these; the lock was already safe, the floor was not.
 litellm   = ["litellm>=1.90.2"]
+# Raster-image indexing dependency. Not yet imported anywhere in this initial
+# (Phase 1: multimodal chat plumbing) addition — reserved for the upcoming
+# image connector (Phase 2), which needs Pillow to cap image dimensions/size
+# before sending bytes to a vision API. Floor matches the version already
+# resolved elsewhere in this project's dependency graph; no CVE-driven bump
+# needed.
+vision    = ["pillow>=10.0.0"]
 llm-all   = ["trelix[anthropic,bedrock,vertex,litellm]"]
 graph-viz = ["pyvis>=0.3.2"]
 knowledge-graph = ["networkx>=3.3.0", "pyvis>=0.3.2"]

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from trelix.core.config import LLMConfig
-from trelix.llm.client import ChatMessage, ChatResponse
+from trelix.llm.client import ChatMessage, ChatResponse, ImageContent
 
 _FAKE_GKEY = "test-google-api-key-placeholder"
 
@@ -76,6 +76,74 @@ class TestVertexBackend:
         assert isinstance(result, ChatResponse)
         assert result.content == "hello from gemini"
         assert result.finish_reason == "stop"
+
+    def test_complete_raises_not_implemented_for_images(self) -> None:
+        """Phase 1 of raster-image support only shipped for Anthropic —
+        every other backend must raise NotImplementedError rather than
+        silently ignore images or send a malformed request."""
+        mods = _google_genai_modules()
+        with patch.dict("sys.modules", mods):
+            from trelix.llm.providers.vertex_backend import VertexBackend
+
+            cfg = LLMConfig(
+                provider="vertex",
+                model="gemini-2.0-flash",
+                google_api_key=_FAKE_GKEY,
+                _env_file=None,  # type: ignore[call-arg]
+            )
+            backend = VertexBackend(cfg)
+
+        backend._client = MagicMock()
+        messages = [
+            ChatMessage(
+                role="user",
+                content="describe this",
+                images=[ImageContent(data=b"fake-bytes", media_type="image/png")],
+            )
+        ]
+        # complete() does `from google.genai import types` before ever
+        # reaching the vision guard inside _build_contents() -- patching
+        # only "google.genai.types" (not "google.genai"/"google" too) means
+        # that import falls through to a REAL import attempt in an
+        # environment without the real package installed, raising
+        # ModuleNotFoundError before the guard ever runs. Re-patch the full
+        # mods dict, matching every other test in this file.
+        with (
+            patch.dict("sys.modules", mods),
+            pytest.raises(NotImplementedError, match="vision not yet supported"),
+        ):
+            backend.complete(messages)
+
+    def test_complete_with_empty_images_list_does_not_raise(self) -> None:
+        """Regression: images=[] (empty list, distinct from the documented
+        None default) must NOT trip the vision-unsupported guard — a message
+        with zero actual images is not a vision request."""
+        mods = _google_genai_modules()
+        with patch.dict("sys.modules", mods):
+            from trelix.llm.providers.vertex_backend import VertexBackend
+
+            cfg = LLMConfig(
+                provider="vertex",
+                model="gemini-2.0-flash",
+                google_api_key=_FAKE_GKEY,
+                _env_file=None,  # type: ignore[call-arg]
+            )
+            backend = VertexBackend(cfg)
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "hello from gemini"
+        mock_response.candidates[0].finish_reason.name = "STOP"
+        mock_response.usage_metadata.prompt_token_count = 10
+        mock_response.usage_metadata.candidates_token_count = 5
+        mock_client.models.generate_content.return_value = mock_response
+        backend._client = mock_client
+
+        with patch.dict("sys.modules", mods):
+            result = backend.complete([ChatMessage(role="user", content="hi", images=[])])
+
+        assert isinstance(result, ChatResponse)
+        assert result.content == "hello from gemini"
 
     def test_import_error_when_google_genai_not_installed(self) -> None:
         # Remove any cached vertex_backend module to force fresh import

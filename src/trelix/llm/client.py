@@ -18,11 +18,20 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ImageContent:
+    """A single raster image attached to a ChatMessage."""
+
+    data: bytes
+    media_type: str  # e.g. "image/png", "image/jpeg"
+
+
+@dataclass
 class ChatMessage:
     """A single message in a conversation."""
 
     role: str  # "system" | "user" | "assistant"
-    content: str  # always plain text — backends convert to provider format
+    content: str  # plain text — backends convert to provider format
+    images: list[ImageContent] | None = None  # optional raster images (Anthropic-only for now)
 
 
 @dataclass
