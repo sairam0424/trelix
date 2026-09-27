@@ -88,6 +88,22 @@ class ImageConnector(ArtifactSource):
                 f"{image_cfg.vision_provider} model name, or configure "
                 f"TRELIX_LLM_PROVIDER={image_cfg.vision_provider} with a matching model."
             )
+        if not self._config.llm.anthropic_api_key:
+            # AnthropicBackend.complete() does not raise when unconfigured -- it
+            # returns a fake-successful ChatResponse containing a placeholder
+            # string ("Anthropic not configured..."). _caption() has no way to
+            # tell that apart from a real caption, so every image would silently
+            # get that placeholder written as its body, with sync reporting
+            # errors=0 either way. Catching the missing key here, rather than
+            # relying on _caption()'s exception handling, is the only point in
+            # this connector where "no captions will ever succeed this run" is
+            # actually knowable in advance.
+            raise ValueError(
+                "ImageConnector: ANTHROPIC_API_KEY is not set. Vision captioning "
+                "would silently produce a placeholder description for every "
+                "image instead of failing loudly -- set ANTHROPIC_API_KEY before "
+                "running `trelix connector sync <repo> image`."
+            )
 
     def fetch(self) -> list[Artifact]:
         self.validate_config()

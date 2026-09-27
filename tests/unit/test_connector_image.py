@@ -27,6 +27,8 @@ from trelix.core.config import ImageConnectorConfig, IndexConfig, LLMConfig, Wal
 from trelix.indexing.connectors.image import ImageConnector
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
 
+_FAKE_ANT_KEY = "test-anthropic-api-key-fake"
+
 
 class _StubChatClient(TrelixChatClient):
     """Hand-written fake, matching the established convention (never
@@ -80,10 +82,19 @@ def _connector(repo: Path, **image_kwargs: object) -> ImageConnector:
     configure this to actually caption anything (validate_config() fails
     fast otherwise, see the validate_config/_vision_llm_config tests
     below), so these tests represent that correctly-configured case rather
-    than the mismatched default that motivated the fail-fast check."""
+    than the mismatched default that motivated the fail-fast check.
+    `anthropic_api_key` is a fake placeholder, never sent anywhere -- every
+    test here patches `build_chat_client` itself (see _StubChatClient
+    usages below), so no real AnthropicBackend is ever constructed. It only
+    exists to satisfy validate_config()'s missing-key check."""
     config = IndexConfig(
         repo_path=str(repo),
-        llm=LLMConfig(provider="anthropic", model="claude-sonnet-4-6", _env_file=None),  # type: ignore[call-arg]
+        llm=LLMConfig(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            anthropic_api_key=_FAKE_ANT_KEY,
+            _env_file=None,  # type: ignore[call-arg]
+        ),
         image=ImageConnectorConfig(**image_kwargs),  # type: ignore[arg-type]
     )
     return ImageConnector(config)
@@ -384,15 +395,41 @@ def test_validate_config_passes_when_provider_mismatched_but_vision_model_is_set
     tmp_path: Path,
 ) -> None:
     """An explicit vision_model override is enough to proceed even when the
-    main pipeline's LLM provider is something else entirely."""
+    main pipeline's LLM provider is something else entirely -- as long as
+    ANTHROPIC_API_KEY is still set, since vision captioning always goes
+    through Anthropic regardless of which provider config.llm.provider
+    names."""
     config = IndexConfig(
         repo_path=str(tmp_path),
-        llm=LLMConfig(provider="openai", model="gpt-4o"),
+        llm=LLMConfig(
+            provider="openai",
+            model="gpt-4o",
+            anthropic_api_key=_FAKE_ANT_KEY,
+            _env_file=None,  # type: ignore[call-arg]
+        ),
         image=ImageConnectorConfig(vision_model="claude-opus-4"),
     )
     connector = ImageConnector(config)
 
     connector.validate_config()  # must not raise
+
+
+def test_validate_config_raises_when_anthropic_api_key_is_not_set(tmp_path: Path) -> None:
+    """Regression for the gap this check closes: AnthropicBackend.complete()
+    does not raise when unconfigured -- it returns a fake-successful
+    ChatResponse containing a placeholder string. Without this check,
+    every image in the sync would silently get that placeholder written as
+    its caption, with the CLI reporting errors=0 either way. Catching the
+    missing key here is the only point where "no captions will ever
+    succeed this run" is knowable in advance."""
+    config = IndexConfig(
+        repo_path=str(tmp_path),
+        llm=LLMConfig(provider="anthropic", model="claude-sonnet-4-6", _env_file=None),  # type: ignore[call-arg]
+    )
+    connector = ImageConnector(config)
+
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY is not set"):
+        connector.validate_config()
 
 
 # ---------------------------------------------------------------------------
