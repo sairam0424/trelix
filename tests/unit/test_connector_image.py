@@ -16,6 +16,7 @@ ArtifactLinker and generic_edges expect.
 from __future__ import annotations
 
 import io
+import warnings
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -185,6 +186,64 @@ def test_discover_returns_a_deterministic_sorted_order(tmp_path: Path) -> None:
     found = connector._discover()
 
     assert [p.name for p in found] == ["a.png", "z.png"]
+
+
+def test_discover_skips_a_symlink_that_escapes_the_repo(tmp_path: Path) -> None:
+    """CRITICAL regression: fetch()'s path.read_bytes() transparently
+    follows a symlink to whatever it points at. Without this containment
+    check, a symlink like logo.png -> ~/.ssh/id_rsa would have the target's
+    raw bytes read and forwarded to the configured vision API the moment
+    Pillow fails to parse them as an image -- an information-disclosure
+    bug, not just a correctness one."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside_secret = tmp_path / "outside_the_repo.png"
+    outside_secret.write_bytes(b"not a real image -- stands in for a secret file")
+    (repo / "logo.png").symlink_to(outside_secret)
+    connector = _connector(repo)
+
+    found = connector._discover()
+
+    assert found == []
+
+
+def test_discover_still_finds_a_symlink_that_resolves_inside_the_repo(tmp_path: Path) -> None:
+    """Containment, not a blanket symlink ban -- a symlink whose target
+    resolves inside repo_path is an ordinary, safe case and must still be
+    discovered."""
+    repo = tmp_path / "repo"
+    _write_image(repo, "real/diagram.png")
+    (repo / "alias.png").symlink_to(repo / "real" / "diagram.png")
+    connector = _connector(repo)
+
+    found = connector._discover()
+
+    assert repo / "alias.png" in found
+
+
+def test_discover_does_not_crash_on_a_symlink_loop(tmp_path: Path) -> None:
+    """Regression found by adversarial re-verification of the symlink-
+    containment fix: on at least one platform, a genuine symlink LOOP
+    (even a trivial 2-node cycle) makes CPython's own Path.resolve() raise
+    RuntimeError, not OSError -- an unguarded RuntimeError here would abort
+    _discover() entirely, discarding every other already-found image, not
+    just the one offending symlink. Whether resolve() raises for a given
+    loop topology is itself platform-dependent (confirmed: this exact
+    2-node cycle raises on macOS but not on Linux, where resolve()
+    apparently returns a path inside the repo instead) -- so this only
+    asserts the actual regression being guarded against (no crash, other
+    real files still found), not the loop path's own fate, which isn't
+    the property this fix defends."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_image(repo, "real.png")
+    (repo / "loop_a.png").symlink_to(repo / "loop_b.png")
+    (repo / "loop_b.png").symlink_to(repo / "loop_a.png")
+    connector = _connector(repo)
+
+    found = connector._discover()  # must not raise
+
+    assert repo / "real.png" in found
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +549,62 @@ def test_validate_config_provider_mismatch_message_names_bedrock_not_anthropic(
         connector.validate_config()
 
 
+def test_validate_config_raises_when_vision_model_is_an_empty_string(tmp_path: Path) -> None:
+    """MEDIUM regression: pydantic-settings reads an empty env var (e.g.
+    TRELIX_IMAGE_VISION_MODEL='' from an unset shell variable interpolated
+    into an env file) as the literal value '', not None -- an `is None`
+    check alone misses this, sending an empty modelId to the vision
+    provider and silently degrading every caption in the run to the
+    mechanical fallback while still reporting errors=0."""
+    config = IndexConfig(
+        repo_path=str(tmp_path),
+        llm=LLMConfig(provider="openai", model="gpt-4o"),
+        image=ImageConnectorConfig(vision_model=""),
+    )
+    connector = ImageConnector(config)
+
+    with pytest.raises(ValueError, match="TRELIX_IMAGE_VISION_MODEL"):
+        connector.validate_config()
+
+
+def test_validate_config_raises_when_vision_model_is_whitespace_only(tmp_path: Path) -> None:
+    """Regression found by adversarial re-verification of the empty-
+    string fix: a whitespace-only value ("   ", e.g. from a stray space in
+    an env var or template) is truthy in Python, so a bare falsy check
+    alone still misses it -- it would silently pass, get sent as the real
+    (blank) modelId on every vision API call, and reach the identical
+    silent-full-degradation failure mode the empty-string fix exists to
+    prevent."""
+    config = IndexConfig(
+        repo_path=str(tmp_path),
+        llm=LLMConfig(provider="openai", model="gpt-4o"),
+        image=ImageConnectorConfig(vision_model="   "),
+    )
+    connector = ImageConnector(config)
+
+    with pytest.raises(ValueError, match="TRELIX_IMAGE_VISION_MODEL"):
+        connector.validate_config()
+
+
+def test_vision_llm_config_strips_a_vision_model_with_incidental_whitespace(
+    tmp_path: Path,
+) -> None:
+    """A model name with legitimate but incidental surrounding whitespace
+    (a copy-paste artifact) should be recovered, not just rejected -- the
+    effective value is the stripped string, not None, when there's real
+    content inside."""
+    config = IndexConfig(
+        repo_path=str(tmp_path),
+        llm=LLMConfig(provider="openai", model="gpt-4o"),
+        image=ImageConnectorConfig(vision_model="  claude-opus-4  "),
+    )
+    connector = ImageConnector(config)
+
+    vision_config = connector._vision_llm_config()
+
+    assert vision_config.model == "claude-opus-4"
+
+
 # ---------------------------------------------------------------------------
 # _prepare_image_bytes — safety caps
 # ---------------------------------------------------------------------------
@@ -562,6 +677,77 @@ def test_prepare_image_bytes_returns_none_when_corrupt_and_over_byte_cap(
     connector = _connector(tmp_path, max_image_bytes=10)
 
     result = connector._prepare_image_bytes(path, garbage)
+
+    assert result is None
+
+
+def test_prepare_image_bytes_skips_a_decompression_bomb_regardless_of_on_disk_size(
+    tmp_path: Path,
+) -> None:
+    """HIGH regression: a file whose decoded pixel count exceeds 2x
+    Pillow's MAX_IMAGE_PIXELS makes Image.open() itself raise
+    DecompressionBombError. A decompression bomb is tiny on disk by
+    construction, so the existing "corrupt AND over max_image_bytes" gate
+    would never catch it -- without a dedicated check, the generic
+    exception handler would forward the bomb's raw bytes unchanged,
+    directly contradicting the "oversized images are downscaled, never
+    silently skipped" contract."""
+    path = tmp_path / "bomb.png"
+    # 20000x10000 = 200M px, comfortably past the 2x (~179M) raise threshold.
+    # Mode "1" (1-bit) keeps a solid-color image tiny on disk.
+    Image.new("1", (20000, 10000)).save(path, format="PNG")
+    raw_bytes = path.read_bytes()
+    connector = _connector(tmp_path)
+    # sanity: genuinely under the byte-size gate this bomb must bypass
+    assert len(raw_bytes) < connector._config.image.max_image_bytes
+
+    result = connector._prepare_image_bytes(path, raw_bytes)
+
+    assert result is None
+
+
+def test_prepare_image_bytes_skips_the_pillow_warn_only_range_before_resizing(
+    tmp_path: Path,
+) -> None:
+    """HIGH regression: between 1x-2x MAX_IMAGE_PIXELS, Pillow only WARNS
+    (does not raise) -- Image.open() succeeds normally. Without an explicit
+    pixel-count check before any resize/convert call, the code would
+    proceed to img.resize(), which forces a full in-memory decode of the
+    entire original resolution (hundreds of MB) just to shrink it back
+    down, purely from a tiny, highly-compressible crafted file."""
+    path = tmp_path / "warn_range.png"
+    # 12000x9000 = 108M px: strictly between 1x (~89.9M) and 2x (~179.8M)
+    # MAX_IMAGE_PIXELS, so Image.open() warns but does not raise.
+    Image.new("1", (12000, 9000)).save(path, format="PNG")
+    raw_bytes = path.read_bytes()
+    connector = _connector(tmp_path)
+
+    result = connector._prepare_image_bytes(path, raw_bytes)
+
+    assert result is None
+
+
+def test_prepare_image_bytes_skips_a_bomb_even_under_a_warnings_as_error_policy(
+    tmp_path: Path,
+) -> None:
+    """Regression found by adversarial re-verification of the
+    decompression-bomb fix: under a process-wide warnings-as-error policy
+    (e.g. PYTHONWARNINGS=error, set by an operator or embedding app, not
+    by trelix itself), Pillow's DecompressionBombWarning in the 1x-2x
+    MAX_IMAGE_PIXELS range is raised as an exception directly from
+    Image.open() -- before img.size, and therefore this method's own
+    explicit width*height check, is ever reached. Without also catching
+    the warning class, that would fall through to the generic exception
+    handler and forward the bomb's raw bytes unchanged, exactly
+    reproducing the original vulnerability in that specific environment."""
+    path = tmp_path / "warn_range_escalated.png"
+    Image.new("1", (12000, 9000)).save(path, format="PNG")
+    raw_bytes = path.read_bytes()
+    connector = _connector(tmp_path)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = connector._prepare_image_bytes(path, raw_bytes)
 
     assert result is None
 
