@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v3.3.8
+# Trelix Configuration Reference — v3.4.0
 
 Complete reference for all configuration options available in trelix.
 

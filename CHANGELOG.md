@@ -8,6 +8,45 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.4.0] — 2026-09-27
+
+### Added
+- **Raster-image (`.png`/`.jpg`/`.jpeg`) indexing** — `trelix connector sync <repo> image`
+  discovers local raster images (same nested-`.gitignore` matching `FileWalker` uses, not a
+  hand-maintained skip-list), captions them via a vision-capable LLM backend, and links them
+  as Artifacts via `ArtifactLinker`, mirroring the existing `.drawio` diagram pilot. Images
+  never enter the code chunk/symbol pipeline — same connector-not-Chunk boundary as diagrams.
+  `ChatMessage` gained an additive `images: list[ImageContent] | None` field
+  (`src/trelix/llm/client.py`); the Anthropic backend builds real Messages API image content
+  blocks, and the remaining backends raise `NotImplementedError` rather than silently
+  mishandling images. New `ImageConnectorConfig` (`TRELIX_IMAGE_*`) controls the vision
+  provider/model and safety caps (max images per sync, max dimension, max bytes — oversized
+  images are downscaled via Pillow, never silently skipped). Also adds the previously-missing
+  `trelix connector list` command.
+- **Bedrock as a second, explicit vision provider** (`TRELIX_IMAGE_VISION_PROVIDER=bedrock`,
+  default remains `anthropic`) — `BedrockBackend` now builds real Converse API image content
+  blocks instead of raising `NotImplementedError`. Deliberately an explicit operator choice,
+  not an automatic fallback between providers: silently redirecting a misconfigured Anthropic
+  setup to Bedrock would undo `ImageConnector.validate_config()`'s own fail-fast contract and
+  surprise anyone who deliberately picked one provider for cost, model-version, or
+  data-residency reasons. The Bedrock branch requires `AWS_REGION` but deliberately does not
+  require static access keys, matching AWS's own IAM-role-based best practice.
+
+### Fixed
+- **`ImageConnector` silently wrote a placeholder caption for every image when
+  `ANTHROPIC_API_KEY` was unset** — `AnthropicBackend.complete()` doesn't raise when
+  unconfigured, it returns a fake-successful response containing a placeholder string, which
+  the connector had no way to distinguish from a real caption. A sync would report
+  `errors: 0` while every artifact silently got garbage. `validate_config()` now catches the
+  missing key up front instead of relying on the backend's own soft-fail.
+- **Bedrock's Converse API rejects `temperature` entirely for `claude-sonnet-5`**
+  (`` `temperature` is deprecated for this model ``), while `claude-sonnet-4-6` still accepts
+  it — `BedrockBackend` previously sent `temperature` unconditionally on every call (text or
+  vision), which would have made Bedrock vision captioning silently degrade to the mechanical
+  fallback for `claude-sonnet-5` every time. Fixed with a retry-once-without-it pattern
+  mirroring the file's own existing model-unavailable fallback: on rejection, drop the field
+  and remember it for the rest of that backend instance's calls.
+
 ## [3.3.8] — 2026-09-25
 
 ### Fixed

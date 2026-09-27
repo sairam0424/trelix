@@ -1,7 +1,7 @@
 # trelix CLI Reference
 
-**Version:** 3.3.8  
-**Last updated:** 2026-08-03
+**Version:** 3.4.0  
+**Last updated:** 2026-09-27
 
 trelix is a fast, hybrid code-search and synthesis tool. The CLI wraps every
 capability of the library — indexing, retrieval, analysis, federation, watching
@@ -1966,4 +1966,4 @@ trelix audit prune --retention-days 90
 
 ---
 
-*End of CLI Reference — trelix v3.3.8*
+*End of CLI Reference — trelix v3.4.0*
