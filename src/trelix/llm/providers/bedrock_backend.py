@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import threading
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
@@ -91,6 +92,25 @@ class BedrockBackend(TrelixChatClient):
         # the no-temperature request instead of re-triggering the same
         # ValidationException every time.
         self._temperature_rejected = False
+        # Guards writes to _model/_temperature_rejected in _try_with_fallback()
+        # -- Indexer's file-summarization pipeline hands a single chat-client
+        # instance to a ThreadPoolExecutor (see indexer.py's own "all five
+        # chat backends are sync complete() + @with_retry, so threads, not
+        # asyncio" comment), so concurrent calls onto this instance are real,
+        # not hypothetical. The GIL already prevents a torn write, so this
+        # lock is not load-bearing for correctness -- it does NOT close the
+        # "redundant rediscovery" window (multiple threads independently
+        # hitting the same recoverable ValidationException before the flag
+        # propagates): the reads that decide whether a request carries
+        # `temperature` at all live in _build_request()/complete()/stream(),
+        # which run before _try_with_fallback() and are unlocked, so a
+        # thread can still race ahead of the flag and pay for one wasted
+        # round-trip + a duplicate warning log. That's cosmetic (confirmed
+        # empirically: every thread still converges to a correct final
+        # state, and none of them ever raises), so it's left as a narrower,
+        # documentation-only lock around the bookkeeping writes rather than
+        # restructured to also cover the read side.
+        self._state_lock = threading.Lock()
         self._client = self._build_client(config)
 
     @staticmethod
@@ -207,13 +227,18 @@ class BedrockBackend(TrelixChatClient):
                 "tools": [self._convert_tool(t) for t in tools],
                 "toolChoice": ({"tool": {"name": force_tool}} if force_tool else {"auto": {}}),
             }
-        if thinking:
+        if not self._temperature_rejected:
             # Anthropic-on-Bedrock rejects a reasoning request unless
             # temperature=1.0 -- forced regardless of an explicit
             # temperature= argument, same as complete()/stream() do below.
-            request["inferenceConfig"]["temperature"] = 1.0
-        elif not self._temperature_rejected:
-            request["inferenceConfig"]["temperature"] = self._config.temperature
+            # Both branches are gated on _temperature_rejected: once a model
+            # is known to reject the field outright, a thinking=True call
+            # must not re-add it and re-trigger the same ValidationException
+            # on every single reasoning call for the rest of this instance's
+            # life -- see _try_with_fallback()'s retry-and-remember contract.
+            request["inferenceConfig"]["temperature"] = (
+                1.0 if thinking else self._config.temperature
+            )
         if thinking:
             request["additionalModelRequestFields"] = {
                 "reasoning_config": {
@@ -294,36 +319,60 @@ class BedrockBackend(TrelixChatClient):
     def _try_with_fallback(self, fn: Any, request: dict[str, Any]) -> Any:
         """
         Call fn(request). On a recoverable ValidationException, apply the
-        matching single-shot adjustment and retry once:
+        matching adjustment and retry:
           - model unavailable on-demand -> swap to the fallback model
           - temperature no longer accepted by this model generation -> drop
             it and remember, so every later call on this instance skips
             straight to the no-temperature request
-        Neither condition applying, or a retry that still fails, re-raises.
+        Looped rather than a single retry: if swapping to the fallback model
+        lands on a model that *also* rejects temperature (a real possibility
+        -- the two conditions are independent per-model facts, and
+        TRELIX_LLM_BEDROCK_FALLBACK_MODEL is operator-configurable), the
+        second adjustment still gets a chance instead of propagating
+        uncaught. Each condition can only fire once per call: the model-swap
+        guard (`self._model != self._fallback_model`) and the fact that
+        `temperature` is removed from `request` the first time it's dropped
+        both make a repeat match on the same condition impossible, so this
+        cannot loop more than twice. Neither condition applying, or a retry
+        that still fails for an unrelated reason, re-raises immediately.
+
+        Checked in this specific order -- _rejects_temperature() before
+        _is_model_unavailable() -- because the two predicates are not
+        mutually exclusive string-matchers, and temperature-rejection is
+        the narrower, more specific one. _is_model_unavailable() matches on
+        the generic substring "not supported" among others; if AWS ever
+        phrases a temperature-rejection message containing that phrase
+        (plausible AWS-style wording, though not the current live-confirmed
+        text), checking model-availability first would misclassify it,
+        permanently and incorrectly abandoning a perfectly usable primary
+        model instead of just dropping temperature and staying on it.
         """
-        try:
-            return self._call_with_retry(fn, request)
-        except Exception as exc:  # noqa: BLE001
-            if self._is_model_unavailable(exc) and self._model != self._fallback_model:
-                logger.warning(
-                    "Bedrock model %r unavailable (%s). Falling back to %r.",
-                    self._model,
-                    exc,
-                    self._fallback_model,
-                )
-                self._model = self._fallback_model
-                request["modelId"] = self._fallback_model
+        while True:
+            try:
                 return self._call_with_retry(fn, request)
-            if self._rejects_temperature(exc) and "temperature" in request["inferenceConfig"]:
-                logger.warning(
-                    "Bedrock model %r rejected temperature (%s). Retrying without it.",
-                    self._model,
-                    exc,
-                )
-                self._temperature_rejected = True
-                request["inferenceConfig"].pop("temperature")
-                return self._call_with_retry(fn, request)
-            raise
+            except Exception as exc:  # noqa: BLE001
+                if self._rejects_temperature(exc) and "temperature" in request["inferenceConfig"]:
+                    logger.warning(
+                        "Bedrock model %r rejected temperature (%s). Retrying without it.",
+                        self._model,
+                        exc,
+                    )
+                    with self._state_lock:
+                        self._temperature_rejected = True
+                    request["inferenceConfig"].pop("temperature")
+                    continue
+                if self._is_model_unavailable(exc) and self._model != self._fallback_model:
+                    logger.warning(
+                        "Bedrock model %r unavailable (%s). Falling back to %r.",
+                        self._model,
+                        exc,
+                        self._fallback_model,
+                    )
+                    with self._state_lock:
+                        self._model = self._fallback_model
+                    request["modelId"] = self._fallback_model
+                    continue
+                raise
 
     def complete(
         self,
@@ -349,7 +398,14 @@ class BedrockBackend(TrelixChatClient):
         usage = response.get("usage", {})
         return ChatResponse(
             content=content,
-            model=self._model,
+            # request["modelId"], not self._model: _try_with_fallback() may
+            # have swapped request["modelId"] to the fallback for THIS call
+            # while another thread concurrently swaps self._model back or
+            # further -- reading the per-call-local request dict instead of
+            # the shared instance attribute reports the model that actually
+            # served this specific response, not whatever self._model
+            # happens to hold by the time this line runs.
+            model=request["modelId"],
             finish_reason=self._normalize_finish_reason(response.get("stopReason", "end_turn")),
             input_tokens=usage.get("inputTokens", 0),
             output_tokens=usage.get("outputTokens", 0),

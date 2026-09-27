@@ -72,13 +72,27 @@ class ImageConnector(ArtifactSource):
         self._config = config
         self._repo_path = Path(config.repo_path).resolve()
 
+    def _effective_vision_model(self) -> str | None:
+        """`image_cfg.vision_model`, stripped, or None if unset/blank.
+
+        A bare `is None`/falsy check misses a whitespace-only override
+        (e.g. TRELIX_IMAGE_VISION_MODEL="   " from a stray space in an env
+        var or template) -- that value is truthy in Python, so it would
+        silently pass both `validate_config()`'s check and
+        `_vision_llm_config()`'s fallback, get sent as the real (blank)
+        modelId on every vision API call, and reach the identical silent-
+        full-degradation failure mode `validate_config()` exists to
+        prevent, just via whitespace instead of an empty string."""
+        model = self._config.image.vision_model
+        return model.strip() or None if model else None
+
     def validate_config(self) -> None:
         if not self._repo_path.is_dir():
             raise ValueError(f"ImageConnector: repo_path is not a directory: {self._repo_path}")
         image_cfg = self._config.image
         if (
             self._config.llm.provider != image_cfg.vision_provider
-            and image_cfg.vision_model is None
+            and not self._effective_vision_model()
         ):
             raise ValueError(
                 "ImageConnector: config.llm.provider is "
@@ -164,7 +178,7 @@ class ImageConnector(ArtifactSource):
         provider mismatch -- see the bug this guards against in
         validate_config()'s docstring/comment above)."""
         image_cfg = self._config.image
-        model = image_cfg.vision_model
+        model = self._effective_vision_model()
         if model is None:
             if self._config.llm.provider != image_cfg.vision_provider:
                 raise ValueError(
@@ -218,8 +232,47 @@ class ImageConnector(ArtifactSource):
                     cache=cache,
                 ):
                     continue
+                if path.is_symlink() and not self._is_within_repo(path):
+                    continue
                 found.append(path)
         return sorted(found)
+
+    def _is_within_repo(self, path: Path) -> bool:
+        """True when `path` resolves (following any symlinks) to a location
+        inside `self._repo_path`. `os.walk`'s default `followlinks=False`
+        already keeps it from recursing into a symlinked directory, but it
+        still lists a symlinked *file* like any other -- unguarded, that file
+        would have its target's raw bytes read (`fetch()`'s `path.read_bytes()`
+        always follows a symlink) and forwarded unchanged to the configured
+        vision API on any Pillow-decode failure (`_prepare_image_bytes()`'s
+        fallback). Unlike a plain wrong-file-type input, a symlink escaping
+        the repo (e.g. into `~/.ssh` or a `.env`) is an information-disclosure
+        risk, not just a correctness one, so containment is enforced
+        unconditionally here -- not behind an opt-in flag the way
+        `FileWalker.WalkerConfig.follow_symlinks` gates it for plain indexing."""
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):
+            # A dangling symlink raises OSError; a genuine symlink LOOP
+            # (even a trivial self-reference) makes CPython's own
+            # Path.resolve() re-raise the underlying OSError(ELOOP) as a
+            # RuntimeError("Symlink loop from ...") instead -- confirmed in
+            # cpython's pathlib.py. Both must degrade the same way a
+            # skipped file already does elsewhere in this connector, not
+            # crash the whole sync (an uncaught RuntimeError here would
+            # abort _discover() entirely, discarding every other already-
+            # found image, not just the one offending symlink).
+            logger.warning("ImageConnector: could not resolve symlink %s; skipping", path)
+            return False
+        within = resolved.is_relative_to(self._repo_path)
+        if not within:
+            logger.warning(
+                "ImageConnector: %s is a symlink escaping the repo (resolves to %s); "
+                "skipping to avoid forwarding its target's bytes to the vision API",
+                path,
+                resolved,
+            )
+        return within
 
     def _file_to_artifact(self, path: Path, raw_bytes: bytes, chat_client: object) -> Artifact:
         rel_path = path.relative_to(self._repo_path).as_posix()
@@ -266,23 +319,34 @@ class ImageConnector(ArtifactSource):
 
     def _prepare_image_bytes(self, path: Path, raw_bytes: bytes) -> tuple[str, bytes] | None:
         """Cap dimensions/byte-size before sending to the vision API --
-        downscale via Pillow rather than skip, so an oversized image still
-        gets captioned and indexed, just from a smaller copy.
+        downscale via Pillow rather than skip, so an oversized-but-legitimate
+        image still gets captioned and indexed, just from a smaller copy.
 
-        Returns None when Pillow cannot even open the image (corrupt file,
-        unsupported variant) AND the raw bytes exceed `max_image_bytes` --
-        there is no safe, bounded payload to send in that case, so the
-        caller must skip the vision call entirely rather than transmit
-        arbitrarily large, unverified bytes. When Pillow can't open the
-        image but it's already under the byte cap, the original bytes are
-        returned unchanged (bounded size; if they're not actually a valid
-        image, `_caption`'s own exception handling around the API call is
-        the real safety net for that)."""
+        Returns None (no safe payload to send) in two cases: (1) the image
+        decodes beyond Pillow's own MAX_IMAGE_PIXELS ceiling -- whether
+        Pillow raises DecompressionBombError outright or only warns (the
+        1x-2x range), since resizing still requires decoding the full
+        original resolution first, and a decompression bomb is by
+        construction tiny on disk, so the byte-size gate below would never
+        catch it; (2) Pillow cannot open the image at all (corrupt file,
+        unsupported variant) AND the raw bytes exceed `max_image_bytes`.
+        When Pillow can't open the image but it's already under the byte
+        cap, the original bytes are returned unchanged (bounded size; if
+        they're not actually a valid image, `_caption`'s own exception
+        handling around the API call is the real safety net for that)."""
         image_cfg = self._config.image
         media_type = _MEDIA_TYPES.get(path.suffix.lower(), "image/png")
         try:
             from PIL import Image
+        except ImportError as exc:
+            logger.warning(
+                "ImageConnector: Pillow not installed (%s); sending original bytes for %s",
+                exc,
+                path,
+            )
+            return media_type, raw_bytes
 
+        try:
             with Image.open(io.BytesIO(raw_bytes)) as img:
                 # Trust the decoded format over the file extension -- a
                 # mismatched extension (e.g. a PNG saved as .jpg) would
@@ -293,6 +357,32 @@ class ImageConnector(ArtifactSource):
                     media_type = sniffed
 
                 width, height = img.size
+                # Image.MAX_IMAGE_PIXELS is `int | None` in Pillow's own
+                # stubs (an operator can set it to None to disable the
+                # check entirely) -- this connector never does, but the
+                # comparison below must stay well-typed regardless.
+                max_pixels = Image.MAX_IMAGE_PIXELS
+                if max_pixels is not None and width * height > max_pixels:
+                    # Pillow only WARNS (does not raise) between 1x-2x
+                    # MAX_IMAGE_PIXELS, so this check must happen before any
+                    # pixel-touching operation -- .resize()/.convert() below
+                    # would otherwise force a full in-memory decode of the
+                    # entire original resolution (hundreds of MB from a
+                    # tiny, highly-compressible file) just to shrink it back
+                    # down. Skip rather than resize once we're already past
+                    # Pillow's own "this is unreasonably large" threshold.
+                    logger.warning(
+                        "ImageConnector: %s is %dx%d (%d px), beyond Pillow's own "
+                        "MAX_IMAGE_PIXELS=%d -- skipping rather than resizing, since "
+                        "resizing still requires decoding the full original resolution first",
+                        path,
+                        width,
+                        height,
+                        width * height,
+                        max_pixels,
+                    )
+                    return None
+
                 over_dimension = max(width, height) > image_cfg.max_image_dimension_px
                 over_bytes = len(raw_bytes) > image_cfg.max_image_bytes
                 if not over_dimension and not over_bytes:
@@ -322,6 +412,34 @@ class ImageConnector(ArtifactSource):
                     media_type = "image/jpeg"
 
                 return media_type, out_bytes
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+            # Distinct from the generic handler below: Pillow itself has
+            # already confirmed this file decodes to more than 2x
+            # MAX_IMAGE_PIXELS (raised from Image.open() itself, before
+            # img.size is even reachable). A decompression bomb is by
+            # construction tiny on disk, so the generic handler's
+            # under-max_image_bytes gate would never catch it -- forwarding
+            # it unchanged would defeat the whole point of this check.
+            # Always skip, regardless of on-disk size.
+            #
+            # DecompressionBombWarning is included too: normally Pillow only
+            # *warns* (doesn't raise) in the 1x-2x MAX_IMAGE_PIXELS range,
+            # which the explicit width*height check above already catches
+            # before this try block's pixel-touching code ever runs -- but
+            # under a process-wide warnings-as-error policy (e.g.
+            # PYTHONWARNINGS=error, set by the operator or an embedding
+            # application, not by trelix itself), that warning is raised as
+            # an exception from Image.open() itself, before img.size is
+            # even reachable, same as DecompressionBombError. Without this,
+            # that specific environment would fall through to the generic
+            # handler below and forward the bomb's bytes unchanged --
+            # exactly the vulnerability this whole method exists to close.
+            logger.warning(
+                "ImageConnector: %s rejected by Pillow as a decompression bomb (%s); skipping",
+                path,
+                exc,
+            )
+            return None
         except Exception as exc:  # noqa: BLE001 — never block captioning on a resize failure
             if len(raw_bytes) > image_cfg.max_image_bytes:
                 logger.warning(

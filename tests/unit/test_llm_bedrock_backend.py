@@ -702,6 +702,151 @@ class TestBedrockTemperatureRejection:
             backend.complete([ChatMessage(role="user", content="hi")])
         assert backend._temperature_rejected is False
 
+    def test_thinking_true_does_not_reintroduce_temperature_after_rejection(self) -> None:
+        """HIGH regression: `thinking=True` used to unconditionally force
+        temperature=1.0 regardless of an already-learned rejection,
+        re-triggering the exact ValidationException on every single
+        reasoning call for the rest of this instance's life instead of
+        exactly once."""
+        backend = self._make_backend()
+        backend._temperature_rejected = True
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "reasoned answer"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        backend._client = mock_client
+
+        result = backend.complete(
+            [ChatMessage(role="user", content="think about this")], thinking=True
+        )
+
+        assert result.content == "reasoned answer"
+        assert mock_client.converse.call_count == 1
+        assert "temperature" not in mock_client.converse.call_args[1]["inferenceConfig"]
+
+
+class TestBedrockRecoveryComposability:
+    """MEDIUM regression: _try_with_fallback() used to apply at most one
+    adjustment per call. If swapping to the fallback model landed on a
+    model that *also* rejects temperature (a real possibility --
+    TRELIX_LLM_BEDROCK_FALLBACK_MODEL is operator-configurable and the two
+    conditions are independent per-model facts), the second adjustment's
+    retry had no handler left and the exception propagated uncaught."""
+
+    def _make_backend(self):
+        from trelix.llm.providers.bedrock_backend import BedrockBackend
+
+        cfg = LLMConfig(provider="bedrock", aws_region="us-east-1", _env_file=None)  # type: ignore[call-arg]
+        boto3_mock = _make_boto3_mock()
+        with patch.dict("sys.modules", _mock_boto3_modules(boto3_mock)):
+            backend = BedrockBackend(cfg)
+        return backend
+
+    def test_fallback_model_that_also_rejects_temperature_still_recovers(self) -> None:
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        call_models: list[str | None] = []
+
+        def converse_side_effect(**kwargs):
+            call_models.append(kwargs.get("modelId"))
+            if kwargs.get("modelId") == backend._primary_model:
+                raise _ValidationException(
+                    "ValidationException: on-demand throughput not supported"
+                )
+            if "temperature" in kwargs["inferenceConfig"]:
+                raise _ValidationException(
+                    "ValidationException: `temperature` is deprecated for this model."
+                )
+            return {
+                "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 1, "outputTokens": 1},
+            }
+
+        mock_client.converse.side_effect = converse_side_effect
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "ok"
+        # primary (unavailable) -> fallback+temperature (rejected) -> fallback, no temperature (ok)
+        assert call_models == [
+            backend._primary_model,
+            backend._fallback_model,
+            backend._fallback_model,
+        ]
+        assert backend._model == backend._fallback_model
+        assert backend._temperature_rejected is True
+
+    def test_response_model_is_not_corrupted_by_a_concurrent_model_swap_from_another_thread(
+        self,
+    ) -> None:
+        """MEDIUM regression: reading self._model to populate
+        ChatResponse.model (instead of the per-call-local request dict) is
+        a TOCTOU under BedrockBackend's real concurrent use from
+        Indexer's ThreadPoolExecutor-based file summarization -- another
+        thread could swap self._model between this call succeeding and
+        complete() building its response. Simulated deterministically here
+        by mutating self._model as a side effect of the mocked call
+        itself, standing in for a race that a real concurrent thread would
+        cause non-deterministically."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+
+        def converse_side_effect(**kwargs):
+            backend._model = "some-other-thread-touched-this"
+            return {
+                "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 1, "outputTokens": 1},
+            }
+
+        mock_client.converse.side_effect = converse_side_effect
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.model == backend._primary_model
+        assert result.model != "some-other-thread-touched-this"
+
+    def test_an_ambiguous_message_matching_both_predicates_is_treated_as_temperature_rejection(
+        self,
+    ) -> None:
+        """Regression found by adversarial re-verification: _is_model_unavailable()
+        and _rejects_temperature() are independent string-matchers, not
+        mutually exclusive. If a ValidationException message happens to
+        satisfy both (e.g. AWS phrasing a temperature rejection using the
+        word "not supported"), checking model-availability first would
+        permanently and incorrectly abandon a perfectly usable primary
+        model instead of the cheaper, correct fix of just dropping
+        temperature and staying on it. _rejects_temperature() is now
+        checked first specifically because it's the narrower condition."""
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "ok"}], "role": "assistant"}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1},
+        }
+        # Deliberately satisfies BOTH _is_model_unavailable ("not supported")
+        # and _rejects_temperature ("temperature" + "deprecated").
+        mock_client.converse.side_effect = [
+            _ValidationException(
+                "ValidationException: `temperature` is deprecated for this model "
+                "and is not supported."
+            ),
+            mock_client.converse.return_value,
+        ]
+        backend._client = mock_client
+
+        result = backend.complete([ChatMessage(role="user", content="hi")])
+
+        assert result.content == "ok"
+        assert backend._temperature_rejected is True
+        assert backend._model == backend._primary_model  # NOT abandoned for the fallback
+
 
 class TestBedrockClientRetryConfiguration:
     """botocore's own default retry mode (legacy, up to 5 attempts per

@@ -8,6 +8,57 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.4.1] — 2026-09-27
+
+### Security
+- **CRITICAL: `ImageConnector` followed filesystem symlinks with no containment check.**
+  A symlink under an indexed repo (e.g. `logo.png -> ~/.ssh/id_rsa`, or a `../../` relative
+  escape) had its target's raw bytes read and forwarded, unchanged, to the configured vision
+  API (Anthropic or Bedrock) the moment Pillow failed to parse them as an image — an
+  information-disclosure bug, not just a correctness one. Found by a dynamic-workflow
+  security audit and confirmed with a live reproduction (a real symlink to a fake-SSH-key
+  file, unmodified `ImageConnector`, secret bytes traced all the way into the outbound
+  `ImageContent`). Fixed with a mandatory (not opt-in) containment check on every discovered
+  symlink, unlike `FileWalker`'s existing opt-in `follow_symlinks` flag — sending file
+  contents to a third-party API is a higher-consequence action than local indexing.
+- **HIGH: a decompression-bomb bypass forwarded oversized images to the vision API
+  unchanged instead of downscaling or skipping them.** Pillow only warns (doesn't raise)
+  between 1x-2x its own `MAX_IMAGE_PIXELS`, and above that raises `DecompressionBombError` —
+  caught by the existing generic exception handler, whose only gate was on-disk byte size,
+  which a decompression bomb is tiny by construction. `ImageConnector` now checks pixel
+  count before any resize/convert call and treats both the raise and the warn-only range as
+  "no safe payload," directly closing the gap between actual behavior and the "oversized
+  images are downscaled, never silently skipped" contract.
+
+### Fixed
+- **`BedrockBackend`'s `thinking=True` unconditionally re-added `temperature=1.0` even
+  after a model was already known to reject it**, re-triggering the same failing round-trip
+  on every single reasoning call for the rest of the instance's life instead of remembering
+  the rejection once, as documented.
+- **The model-fallback and temperature-rejection recovery paths in `BedrockBackend`
+  didn't compose** — if the fallback model also rejected `temperature` (a real possibility;
+  `TRELIX_LLM_BEDROCK_FALLBACK_MODEL` is operator-configurable and the two conditions are
+  independent per-model facts), the exception propagated uncaught instead of retrying.
+  `_try_with_fallback()` is now a bounded loop so either adjustment can apply, in either
+  order, up to once each.
+- **An empty or whitespace-only `TRELIX_IMAGE_VISION_MODEL` silently bypassed
+  `validate_config()`'s fail-fast check**, sending a blank model name on every vision call
+  and degrading every caption in the run to the mechanical fallback while still reporting
+  `errors: 0` — the same failure class the missing-API-key fix in 3.4.0 closed, reached via a
+  different falsy-but-truthy input.
+
+A second adversarial-verification pass on these fixes themselves (dynamic workflow, fresh
+agents specifically trying to break each fix) found and closed five more follow-on gaps
+before this release: a genuine symlink *loop* raised an uncaught `RuntimeError` (not
+`OSError`) from `Path.resolve()`, crashing the whole sync instead of just skipping the
+offending file; the decompression-bomb check depended on Pillow's default warn-vs-raise
+split and was bypassable under a process-wide `PYTHONWARNINGS=error` policy; a latent
+branch-order ambiguity in the fallback/temperature recovery logic could misclassify a
+plausible future AWS error phrasing; an inline code comment overclaimed what a
+thread-safety lock actually protects (corrected to accurately describe its real,
+narrower scope); and a whitespace-only (not just empty-string) `vision_model` value still
+slipped past the same guard the empty-string fix added.
+
 ## [3.4.0] — 2026-09-27
 
 ### Added
