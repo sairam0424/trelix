@@ -401,11 +401,14 @@ class TestImageConnectorConfig:
             ImageConnectorConfig(max_image_bytes=0)
 
     def test_vision_provider_rejects_unknown_value(self) -> None:
-        """Deliberately a Literal["anthropic"], not a bare str — see the
-        class docstring's rationale (only one backend supports vision
-        today)."""
+        """Deliberately a Literal[...] of the supported values, not a bare
+        str — see the class docstring's rationale."""
         with pytest.raises(ValidationError):
             ImageConnectorConfig(vision_provider="openai")  # type: ignore[arg-type]
+
+    def test_vision_provider_accepts_bedrock(self) -> None:
+        cfg = ImageConnectorConfig(vision_provider="bedrock")
+        assert cfg.vision_provider == "bedrock"
 
     def test_index_config_wires_image_field_by_default(self, tmp_path: Path) -> None:
         """IndexConfig.image defaults via default_factory -- constructing an

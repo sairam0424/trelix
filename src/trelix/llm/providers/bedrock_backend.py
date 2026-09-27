@@ -28,6 +28,13 @@ _STOP_REASON_MAP = {
     "tool_use": "tool_calls",
 }
 
+_IMAGE_FORMATS = {
+    "image/png": "png",
+    "image/jpeg": "jpeg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+}
+
 
 def _resolve_bedrock_model(config: LLMConfig) -> tuple[str, str]:
     """
@@ -75,6 +82,15 @@ class BedrockBackend(TrelixChatClient):
         self._config = config
         self._primary_model, self._fallback_model = _resolve_bedrock_model(config)
         self._model = self._primary_model  # active model — may switch on fallback
+        # Some newer Claude generations (confirmed live: claude-sonnet-5)
+        # reject `temperature` entirely on Bedrock's Converse API ("`temperature`
+        # is deprecated for this model") -- others (confirmed live:
+        # claude-sonnet-4-6) still accept it. This is discovered per-instance
+        # on the first real call that hits it (see _try_with_fallback), then
+        # remembered so every later call on this instance skips straight to
+        # the no-temperature request instead of re-triggering the same
+        # ValidationException every time.
+        self._temperature_rejected = False
         self._client = self._build_client(config)
 
     @staticmethod
@@ -129,6 +145,37 @@ class BedrockBackend(TrelixChatClient):
             )
         return session.client("bedrock-runtime", **client_kwargs)
 
+    def _build_message_content(self, message: ChatMessage) -> list[dict[str, Any]]:
+        """Build the Converse `content` block list for a single message.
+
+        Message content on Bedrock is always list-of-dicts, unlike
+        Anthropic's plain-string-or-blocks contract -- so the no-images case
+        is already `[{"text": message.content}]`, and images just prepend
+        `{"image": {"format", "source": {"bytes"}}}` blocks ahead of it.
+        `source.bytes` takes raw bytes for the boto3 SDK (base64 encoding is
+        handled transport-side, unlike Anthropic's Messages API which needs
+        an explicit base64 string) -- see docs.aws.amazon.com/bedrock's
+        Converse API image guide. A missing/empty `message.content` omits
+        the trailing text block entirely, since Bedrock's own docs confirm
+        an image-only content array is valid ("If you exclude the text
+        field, the model describes the image") -- no empty-string-rejection
+        quirk to work around here, unlike Anthropic's Messages API.
+        """
+        if not message.images:
+            return [{"text": message.content}]
+        blocks: list[dict[str, Any]] = [
+            {
+                "image": {
+                    "format": _IMAGE_FORMATS.get(image.media_type, "png"),
+                    "source": {"bytes": image.data},
+                }
+            }
+            for image in message.images
+        ]
+        if message.content:
+            blocks.append({"text": message.content})
+        return blocks
+
     def _build_request(
         self,
         messages: list[ChatMessage],
@@ -138,25 +185,16 @@ class BedrockBackend(TrelixChatClient):
         force_tool: str | None = None,
         thinking: bool = False,
     ) -> dict[str, Any]:
-        if any(m.images for m in messages):
-            raise NotImplementedError(
-                f"vision not yet supported for provider {self._config.provider}"
-            )
         effective_system = system or next((m.content for m in messages if m.role == "system"), None)
         request: dict[str, Any] = {
             "modelId": self._model,
             "inferenceConfig": {
                 "maxTokens": max_tokens or self._config.max_tokens,
-                # Anthropic-on-Bedrock rejects a reasoning request unless
-                # temperature=1.0 -- overridden below when thinking is enabled,
-                # same as complete()/stream() force it regardless of an
-                # explicit temperature= argument.
-                "temperature": 1.0 if thinking else self._config.temperature,
             },
             "messages": [
                 {
                     "role": m.role,
-                    "content": [{"text": m.content}],  # always list-of-dicts
+                    "content": self._build_message_content(m),
                 }
                 for m in messages
                 if m.role != "system"
@@ -169,6 +207,13 @@ class BedrockBackend(TrelixChatClient):
                 "tools": [self._convert_tool(t) for t in tools],
                 "toolChoice": ({"tool": {"name": force_tool}} if force_tool else {"auto": {}}),
             }
+        if thinking:
+            # Anthropic-on-Bedrock rejects a reasoning request unless
+            # temperature=1.0 -- forced regardless of an explicit
+            # temperature= argument, same as complete()/stream() do below.
+            request["inferenceConfig"]["temperature"] = 1.0
+        elif not self._temperature_rejected:
+            request["inferenceConfig"]["temperature"] = self._config.temperature
         if thinking:
             request["additionalModelRequestFields"] = {
                 "reasoning_config": {
@@ -225,6 +270,17 @@ class BedrockBackend(TrelixChatClient):
             "on-demand throughput" in msg or "inference profile" in msg or "not supported" in msg
         )
 
+    def _rejects_temperature(self, exc: Exception) -> bool:
+        """True when Bedrock signals this model generation no longer accepts
+        `temperature` at all -- confirmed live on claude-sonnet-5 ("`temperature`
+        is deprecated for this model"), unlike claude-sonnet-4-6, which still
+        accepts it. Model-specific and only discoverable via a live rejection,
+        unlike AnthropicBackend's SDK-version-wide removal."""
+        msg = str(exc)
+        return ("ValidationException" in type(exc).__name__ or "ValidationException" in msg) and (
+            "temperature" in msg and "deprecated" in msg
+        )
+
     @with_retry(max_attempts=5)
     def _call_with_retry(self, fn: Any, request: dict[str, Any]) -> Any:
         # Retries transient failures (ThrottlingException / 5xx, surfaced as
@@ -237,23 +293,37 @@ class BedrockBackend(TrelixChatClient):
 
     def _try_with_fallback(self, fn: Any, request: dict[str, Any]) -> Any:
         """
-        Call fn(request). On ValidationException for the primary model, swap
-        to the fallback, update the active model, and retry once.
+        Call fn(request). On a recoverable ValidationException, apply the
+        matching single-shot adjustment and retry once:
+          - model unavailable on-demand -> swap to the fallback model
+          - temperature no longer accepted by this model generation -> drop
+            it and remember, so every later call on this instance skips
+            straight to the no-temperature request
+        Neither condition applying, or a retry that still fails, re-raises.
         """
         try:
             return self._call_with_retry(fn, request)
         except Exception as exc:  # noqa: BLE001
-            if not self._is_model_unavailable(exc) or self._model == self._fallback_model:
-                raise
-            logger.warning(
-                "Bedrock model %r unavailable (%s). Falling back to %r.",
-                self._model,
-                exc,
-                self._fallback_model,
-            )
-            self._model = self._fallback_model
-            request["modelId"] = self._fallback_model
-            return self._call_with_retry(fn, request)
+            if self._is_model_unavailable(exc) and self._model != self._fallback_model:
+                logger.warning(
+                    "Bedrock model %r unavailable (%s). Falling back to %r.",
+                    self._model,
+                    exc,
+                    self._fallback_model,
+                )
+                self._model = self._fallback_model
+                request["modelId"] = self._fallback_model
+                return self._call_with_retry(fn, request)
+            if self._rejects_temperature(exc) and "temperature" in request["inferenceConfig"]:
+                logger.warning(
+                    "Bedrock model %r rejected temperature (%s). Retrying without it.",
+                    self._model,
+                    exc,
+                )
+                self._temperature_rejected = True
+                request["inferenceConfig"].pop("temperature")
+                return self._call_with_retry(fn, request)
+            raise
 
     def complete(
         self,
@@ -264,7 +334,7 @@ class BedrockBackend(TrelixChatClient):
         thinking: bool = False,
     ) -> ChatResponse:
         request = self._build_request(messages, max_tokens, system, thinking=thinking)
-        if temperature is not None and not thinking:
+        if temperature is not None and not thinking and not self._temperature_rejected:
             request["inferenceConfig"]["temperature"] = temperature
         response = self._try_with_fallback(self._client.converse, request)
         output_msg = response["output"]["message"]
@@ -296,7 +366,7 @@ class BedrockBackend(TrelixChatClient):
         thinking: bool = False,
     ) -> Iterator[str]:
         request = self._build_request(messages, max_tokens, system, thinking=thinking)
-        if temperature is not None and not thinking:
+        if temperature is not None and not thinking and not self._temperature_rejected:
             request["inferenceConfig"]["temperature"] = temperature
         response = self._try_with_fallback(self._client.converse_stream, request)
         stream = response.get("stream")

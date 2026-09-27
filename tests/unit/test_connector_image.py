@@ -432,6 +432,64 @@ def test_validate_config_raises_when_anthropic_api_key_is_not_set(tmp_path: Path
         connector.validate_config()
 
 
+def test_validate_config_raises_when_aws_region_is_not_set_for_bedrock_provider(
+    tmp_path: Path,
+) -> None:
+    """Same class of gap as the Anthropic key check above, but for Bedrock:
+    BedrockBackend._build_client() raises its own ValueError for a missing
+    region, but only once fetch() actually gets there -- this check surfaces
+    it through validate_config()'s polished, image-specific message instead
+    of the CLI's generic "Failed to sync image: ..." wrapper."""
+    config = IndexConfig(
+        repo_path=str(tmp_path),
+        llm=LLMConfig(provider="bedrock", model="us.anthropic.claude-sonnet-4-6", aws_region=None),
+        image=ImageConnectorConfig(vision_provider="bedrock"),
+    )
+    connector = ImageConnector(config)
+
+    with pytest.raises(ValueError, match="AWS_REGION is not set"):
+        connector.validate_config()
+
+
+def test_validate_config_passes_for_bedrock_provider_with_region_and_no_access_keys(
+    tmp_path: Path,
+) -> None:
+    """Deliberately does NOT require aws_access_key_id/aws_secret_access_key
+    -- AWS's own best practice (and BedrockBackend's ambient boto3
+    credential chain) is IAM-role-based auth with no static keys at all.
+    Requiring one here would reject a correctly-configured, more-secure
+    production deployment."""
+    config = IndexConfig(
+        repo_path=str(tmp_path),
+        llm=LLMConfig(
+            provider="bedrock",
+            model="us.anthropic.claude-sonnet-4-6",
+            aws_region="us-east-1",
+        ),
+        image=ImageConnectorConfig(vision_provider="bedrock"),
+    )
+    connector = ImageConnector(config)
+
+    connector.validate_config()  # must not raise
+
+
+def test_validate_config_provider_mismatch_message_names_bedrock_not_anthropic(
+    tmp_path: Path,
+) -> None:
+    """The provider-mismatch error is generic across vision providers --
+    confirms it names whichever provider is actually misconfigured, not a
+    hardcoded 'anthropic'."""
+    config = IndexConfig(
+        repo_path=str(tmp_path),
+        llm=LLMConfig(provider="openai", model="gpt-4o"),
+        image=ImageConnectorConfig(vision_provider="bedrock"),
+    )
+    connector = ImageConnector(config)
+
+    with pytest.raises(ValueError, match="bedrock model name"):
+        connector.validate_config()
+
+
 # ---------------------------------------------------------------------------
 # _prepare_image_bytes — safety caps
 # ---------------------------------------------------------------------------
