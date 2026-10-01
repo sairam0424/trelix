@@ -53,8 +53,10 @@ secrets**, then update the workflow's `env:` block to pass the key.
   check rather than blocking the PR
 - Review findings are capped at 50 annotations per PR (GitHub API limit)
 - Works on private repos — `GITHUB_TOKEN` scopes are sufficient
-- `trelix review` works without an LLM key (structural analysis only);
-  synthesis requires a provider
+- `trelix review` needs a working LLM provider: it has no structural-only
+  fallback. Without one (or if every LLM call fails) it exits with code 3 and
+  the Check run is posted as **neutral** ("trelix review did not run"), never
+  as "found 0 issue(s)"
 
 ### Permissions required
 
