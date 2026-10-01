@@ -70,6 +70,14 @@ _FORBIDDEN_HOST_CHARS = frozenset("@/\\?#%")
 _HOST_LABEL = re.compile(r"[a-z0-9_-]+")
 _MAX_PORT_DIGITS = 5
 _MAX_LOGGED_CHARS = 100
+_MAX_LOGGED_VALUES = 5
+# Longest legal header values. A Host is a DNS name of at most 253 characters plus ":" and a
+# 5-digit port (259); a bracketed IPv6 literal with a port is shorter. An Origin adds
+# "https://". Anything longer is refused BEFORE it is scanned: the checks below are pure
+# Python (about 0.1 microsecond per character) and this guard runs ahead of authentication,
+# so a 1 MB header would otherwise hold the event loop for ~100 ms per request.
+_MAX_HOST_CHARS = 300
+_MAX_ORIGIN_CHARS = 320
 _WS_POLICY_VIOLATION = 1008
 
 _Scope = MutableMapping[str, Any]
@@ -140,9 +148,11 @@ def normalise_host(value: str | None) -> str | None:
     Ports are dropped, IPv6 brackets removed (``[::1]:8765`` -> ``::1``), case folded and
     one trailing dot ignored. Anything that is not a plain ``host[:port]`` returns
     ``None``: whitespace, control characters, NUL, userinfo (``@``), a path, query or
-    fragment, a malformed bracket, an empty label.
+    fragment, a malformed bracket, an empty label, or a value longer than any legal Host.
     """
-    if not value or not _is_plain_ascii(value) or _FORBIDDEN_HOST_CHARS & set(value):
+    if not value or len(value) > _MAX_HOST_CHARS:
+        return None
+    if not _is_plain_ascii(value) or _FORBIDDEN_HOST_CHARS & set(value):
         return None
     if value.startswith("["):
         return _normalise_bracketed(value)
@@ -165,9 +175,10 @@ def is_allowed_origin(origin: str | None, allowed: Collection[str]) -> bool:
     """True for an ``http``/``https`` origin whose hostname (any port) is allowed.
 
     ``null`` (sandboxed iframes, ``file://``, redirects), other schemes, and anything with
-    a path, query, fragment or userinfo are refused.
+    a path, query, fragment or userinfo are refused, as is a value longer than any legal
+    Origin.
     """
-    if not origin:
+    if not origin or len(origin) > _MAX_ORIGIN_CHARS:
         return False
     scheme, separator, authority = origin.partition("://")
     if not separator or scheme.lower() not in _ORIGIN_SCHEMES:
@@ -176,8 +187,17 @@ def is_allowed_origin(origin: str | None, allowed: Collection[str]) -> bool:
 
 
 def _bounded_repr(value: object) -> str:
-    """``repr()`` cut to a fixed length: hostile header bytes can neither span lines nor flood."""
-    return repr(value)[:_MAX_LOGGED_CHARS]
+    """``repr()`` cut to a fixed length: hostile header bytes can neither span lines nor flood.
+
+    A string is cut BEFORE ``repr`` so a huge value costs the same as a short one.
+    """
+    head = value[:_MAX_LOGGED_CHARS] if isinstance(value, str | bytes) else value
+    return repr(head)[:_MAX_LOGGED_CHARS]
+
+
+def _clipped(values: list[str]) -> list[str]:
+    """A few header values, each cut to the logged length, for the repeated-header messages."""
+    return [value[:_MAX_LOGGED_CHARS] for value in values[:_MAX_LOGGED_VALUES]]
 
 
 def _normalise_entries(entries: Iterable[str]) -> frozenset[str]:
@@ -310,13 +330,13 @@ class RequestGuardMiddleware:
     def _violation(self, scope: _Scope) -> _Violation | None:
         hosts = _header_values(scope, b"host")
         if len(hosts) != 1:
-            return _Violation("Host header missing or repeated", hosts, REJECTION_DETAIL)
+            return _Violation("Host header missing or repeated", _clipped(hosts), REJECTION_DETAIL)
         if not is_allowed_host(hosts[0], self._allowed_hosts):
             return _Violation("Host header not allowed", hosts[0], REJECTION_DETAIL)
 
         origins = _header_values(scope, b"origin")
         if len(origins) > 1:
-            return _Violation("Origin header repeated", origins, REJECTION_DETAIL)
+            return _Violation("Origin header repeated", _clipped(origins), REJECTION_DETAIL)
         if origins and not is_allowed_origin(origins[0], self._allowed_hosts):
             return _Violation("Origin header not allowed", origins[0], REJECTION_DETAIL)
 
