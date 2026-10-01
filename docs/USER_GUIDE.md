@@ -1727,8 +1727,9 @@ An open server on `127.0.0.1` can still be reached by a web page in your browser
 rebinding, or a plain cross-site request). While the API is open (no token, no OIDC) and bound to
 loopback, `trelix serve` therefore answers `403` to any request whose `Host` header is not
 `localhost`, `127.0.0.1`, `::1` or the bind address, whose `Origin` is a foreign site, or
-that is marked `Sec-Fetch-Site: cross-site`. `curl` and scripts are unaffected, and `/health`
-is exempt. To reach the server under another name, list it:
+that is marked `Sec-Fetch-Site: cross-site`. `curl` and scripts that call `localhost` or
+`127.0.0.1` are unaffected (they send no `Origin`), and `/health` is exempt. To reach the
+server under another name, list it:
 `TRELIX_API_ALLOWED_HOSTS=dev.example trelix serve ./my-repo`; to turn the check off, set
 `TRELIX_API_ALLOWED_HOSTS=*`. It is not a substitute for `TRELIX_API_AUTH_TOKEN`.
 

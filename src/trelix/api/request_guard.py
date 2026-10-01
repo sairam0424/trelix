@@ -16,8 +16,9 @@ What this module checks, when it is switched on:
 * ``Sec-Fetch-Site: cross-site`` is refused.
 
 A request with neither ``Origin`` nor ``Sec-Fetch-Site`` (curl, Python clients, the trelix
-clients) is unaffected. There is deliberately NO CORS support here. ``GET``/``HEAD``
-``/health`` is exempt from every check: kubelet probes send ``Host: <pod-ip>:<port>``.
+clients) skips those two checks but still needs an allowed ``Host``. There is deliberately
+NO CORS support here. ``GET``/``HEAD`` ``/health`` is exempt from every check: kubelet
+probes send ``Host: <pod-ip>:<port>``.
 
 When it is switched on is decided elsewhere (``create_app`` / ``trelix serve``); this
 module holds the pure matching helpers, the settings class for
