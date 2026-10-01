@@ -38,6 +38,9 @@ def _context() -> RetrievedContext:
 
 
 def test_ask_flare_branch_prints_the_answer_exactly_once(tmp_path: Path) -> None:
+    # `ask` refuses a repo with no index; Retriever is mocked, the index file is not.
+    (tmp_path / ".trelix").mkdir()
+    (tmp_path / ".trelix" / "index.db").touch()
     answer = "`add` returns the sum of its two arguments."
 
     def _fake_run(query: str) -> str:
