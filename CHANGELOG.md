@@ -8,6 +8,99 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
+## [3.4.2] — 2026-10-01
+
+### Security
+- **The public GitHub App let a pull request make `trelix index` read files from the host,
+  and its child processes inherited the App's own secrets.** `trelix index` follows symlinks
+  out of the repository by default, the App runs it (and `trelix review`) over pull requests
+  written by outsiders, and both children inherited the whole environment, including
+  `GITHUB_APP_PRIVATE_KEY` and `GITHUB_WEBHOOK_SECRET`. The App image, `render.yaml` and both
+  children now run with `TRELIX_WALKER_FOLLOW_SYMLINKS=false`; the checkout uses
+  `core.symlinks=false` (a committed symlink becomes a plain file) and deletes any committed
+  `.trelix` so a PR cannot supply its own index; and the children no longer receive the App
+  private key or webhook secret. This repository's own `trelix-review.yml` gets the same
+  walker flag and the same `.trelix` removal.
+- **`DiagramConnector` followed symlinks out of the repository.** `trelix connector sync
+  <repo> diagram` read a `.drawio` symlink whose target was outside the repo and sent the
+  first 20000 characters to the configured LLM. It now skips a symlink that resolves outside
+  the repo or cannot be resolved, and anything else that is not a regular file, and logs one
+  warning with the number of symlinks it skipped; links that stay inside the repo still work.
+  The image and diagram connectors ignore `walker.follow_symlinks`, which `SECURITY.md` now
+  says.
+- **A blank `TRELIX_API_AUTH_TOKEN` authenticated an empty `X-Trelix-Api-Key`.**
+  `docker-compose.yml` exports the variable as an empty string when the operator sets
+  nothing; the API then treated `""` as a real token, and `trelix serve --host 0.0.0.0` stayed
+  silent about having no authentication. A blank or whitespace-only value is now read as
+  unset, with a warning.
+- **An open `trelix serve` on loopback accepted any `Host` and `Origin` (DNS rebinding and
+  drive-by requests from web pages).** When no `TRELIX_API_AUTH_TOKEN` and no OIDC is
+  configured and the server is bound to loopback, it now answers 403 to a foreign `Host`, a
+  foreign or `null` `Origin`, and `Sec-Fetch-Site: cross-site`, with a fixed message that never
+  echoes the value. `GET`/`HEAD /health` stays exempt so container and Kubernetes probes keep
+  working. See `SECURITY.md` for the known limits.
+- **The release workflow took its token scope from a repository setting and had no job
+  timeouts.** `release.yml` had no `permissions:` block, so the token it ran with (read-only
+  on this repository today) depended on a setting outside the file while the workflow
+  installs third-party packages on a tag. It now declares `contents: read` itself (only the
+  publish job holds `id-token: write` and `contents: write`), every release and image-publish
+  job has a timeout, and a failing image variant no longer cancels its sibling mid-push. The
+  Docker image publish is still not gated on the release tests; `docker-publish.yml` records
+  the options.
+
+### Fixed
+- **Deleting or renaming a file that other files import failed with a foreign key error and
+  left a half-deleted index.** The vectors had already been removed when the SQL delete
+  failed, and `trelix index --prune` crashed with a raw traceback. Inbound import references
+  are now cleared in the same transaction, a failed delete rolls back as a whole, vectors are
+  removed only after the commit, `--prune` reports a candidate whose delete fails in the
+  database and carries on with the rest (a failure in an external vector store such as
+  Qdrant still aborts the run), and the multi-repo watcher logs a failed delete at warning
+  level.
+- **`trelix review` printed "No issues found." and exited 0 when it could not review, and
+  `trelix ask` exited 0 when synthesis failed.** The repository's own PR workflow and the
+  GitHub App then published a green "found 0 issue(s)" check that could never find anything.
+  See Changed for the new exit codes; the workflow and the App now publish a neutral "trelix
+  review did not run" check instead.
+- **`trelix index` ignored `TRELIX_USE_BATCH_API`**: the `--use-batch-api` flag's `False`
+  default overwrote the value the environment variable had set. The flag now overrides only
+  when it is passed.
+- **`trelix search`, `ask`, `query`, `call-graph` and `graph` created an empty
+  `.trelix/index.db` in a repository that was never indexed**, printed "No results" (or
+  "Knowledge Graph built" with zero nodes) and exited 0, and the stray file defeated the
+  "is there an index?" guards in `stats`, `link-tickets`, `link-artifacts` and
+  `migrate-vectors` on the next run. `stats` also no longer leaves `.trelix/` behind.
+- **The Qdrant vector store returned cosine similarity where every caller expects a
+  distance**, inverting the per-hit score and the opt-in artifact-linker embedding fallback.
+  `search()` now returns distance like the sqlite-vec store.
+
+### Added
+- `TRELIX_API_ALLOWED_HOSTS`: comma-separated bare hostnames accepted in the `Host` header
+  (and in an `Origin` header, any port) of the REST API; the value `*` on its own disables
+  the check. Setting it
+  turns the check on for any bind address. `create_app(allowed_hosts=...)` opts in
+  programmatically. `docker-compose.yml` and the documented `docker run` examples set it for
+  their loopback-published port.
+
+### Changed
+- `trelix review` now exits 3 (reason on stderr; `--json` still prints `[]`) when it could
+  not review, and `trelix ask` exits 1 when synthesis fails or no LLM is configured, instead
+  of exiting 0. For `ask` this applies when the embedder provider is not `local` and
+  `--agentic` is not used: with the default `local` embedder it still prints the retrieved
+  context and exits 0, and `--agentic` is unchanged.
+- `trelix search`, `ask`, `query`, `call-graph` and `graph` exit 1 with "No index found ...
+  Run trelix index <repo> first." on a repository that has not been indexed.
+- A loopback `trelix serve` that runs open now answers 403 to a request whose `Host` is not
+  `localhost`, `127.0.0.1`, `::1` or the bind address. If you reach it through a reverse proxy
+  that forwards the public hostname
+  (for example nginx with `proxy_set_header Host $host`), Codespaces, ngrok or
+  `host.docker.internal`, add that hostname to `TRELIX_API_ALLOWED_HOSTS`. A `docker compose`
+  user who widens the port mapping must add the hostname too, even with a token set.
+- Until the workflow is edited to pass an LLM key to its "Run trelix review" step (it passes
+  none today, so a repository secret alone is not enough), this repository's PR review
+  workflow shows a neutral "trelix review did not run" check on every pull request instead of
+  a green "0 issues".
+
 ## [3.4.1] — 2026-09-27
 
 ### Security

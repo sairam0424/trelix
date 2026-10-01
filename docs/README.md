@@ -1,4 +1,4 @@
-# trelix v3.4.1 Documentation
+# trelix v3.4.2 Documentation
 
 Welcome to the trelix documentation hub. This page indexes every file under `docs/` and all five
 top-level Markdown docs, with one deliberate exception: the 35 implementation plans in
@@ -164,4 +164,4 @@ per-file — see the note at the top.
 
 ---
 
-*Last updated: 2026-09-27 — trelix v3.4.1*
+*Last updated: 2026-10-01 — trelix v3.4.2*

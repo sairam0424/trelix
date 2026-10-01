@@ -1,6 +1,6 @@
-# Trelix v3.4.1 Troubleshooting Guide
+# Trelix v3.4.2 Troubleshooting Guide
 
-This guide covers every common failure mode for trelix v3.4.1. Each entry follows the pattern: **Symptom → Cause → Fix**.
+This guide covers every common failure mode for trelix v3.4.2. Each entry follows the pattern: **Symptom → Cause → Fix**.
 
 ---
 
