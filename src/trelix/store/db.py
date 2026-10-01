@@ -1059,16 +1059,23 @@ class Database:
         Cascades:
           - symbols ON DELETE CASCADE removes chunks, calls, type_edges
           - imports ON DELETE CASCADE removed via file_id FK
+          - imports.imported_file_id in OTHER files' rows is set to NULL (no cascade)
           - vector_store.delete_batch() cleans up embeddings if provided
+
+        Atomic on the SQL side: the row deletes run in one transaction that is rolled
+        back (and the error re-raised) if any step fails.
 
         Args:
             abs_path:     Absolute filesystem path (used as primary lookup key).
             rel_path:     Repo-relative path (used as fallback lookup key).
-            vector_store: Optional VectorStore — if provided, chunk vectors are
-                          deleted before the DB rows are removed.
+            vector_store: Optional VectorStore — if provided, the file's vectors are
+                          deleted after the DB rows have been committed.
 
         Returns:
             True if a matching file row was found and deleted, False otherwise.
+
+        Raises:
+            sqlite3.Error: a SQL step failed; nothing was deleted.
         """
         row = self._conn.execute(
             "SELECT id FROM files WHERE path = ? OR rel_path = ? LIMIT 1",
@@ -1080,7 +1087,10 @@ class Database:
 
         file_id: int = row[0]
 
-        # Delete vectors before DB rows so we never have orphaned vectors.
+        # Every id the vector store needs is read BEFORE the rows go: the row id is the only
+        # handle on its vector. The vectors themselves are deleted AFTER the SQL commit
+        # (below), so a failing SQL step leaves the file whole instead of half-deleted.
+        vector_ids: list[int] = []
         if vector_store is not None:
             # The file-summary vector is included, and it is NOT in
             # `get_chunk_ids_for_file()`. Summaries live in the same `chunk_embeddings`
@@ -1099,9 +1109,7 @@ class Database:
             # non-empty: a file can have a summary and no chunks (every zero-symbol file
             # does, and there were 11 of those before the line-window fallback), so a guard
             # on chunk ids would skip precisely the files whose only vector is the sentinel.
-            vector_store.delete_batch(  # type: ignore[attr-defined]
-                [*self.get_chunk_ids_for_file(file_id), -file_id]
-            )
+            vector_ids = [*self.get_chunk_ids_for_file(file_id), -file_id]
 
         # The FK-less symbol-derived tables too. `symbols` cascades from `files`, but
         # sub_chunks / def_use_edges / sparse_embeddings have no foreign key to
@@ -1116,13 +1124,37 @@ class Database:
                 "SELECT id FROM symbols WHERE file_id = ?", (file_id,)
             ).fetchall()
         ]
-        self._purge_fkless_symbol_rows(symbol_ids, vector_store)
+        sub_chunk_ids = self._sub_chunk_ids_for_symbols(symbol_ids)
 
-        # ON DELETE CASCADE on symbols handles chunks / calls / type_edges
-        # Explicit import delete handles the file_id FK
-        self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
-        self._conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
-        self._conn.commit()
+        # One transaction: any SQL failure rolls all of it back and leaves no open
+        # transaction on the shared connection (`transaction()` commits on success).
+        with self.transaction():
+            # sub_chunk vectors are handled after the commit, with the rest, hence None.
+            self._purge_fkless_symbol_rows(symbol_ids, None)
+            # ON DELETE CASCADE on symbols handles chunks / calls / type_edges.
+            # `imports.imported_file_id` was added by ALTER with a bare REFERENCES (no ON
+            # DELETE action), so other files' resolved imports of this file would make the
+            # DELETE below fail. Unresolve them; the importer's row itself is kept and is
+            # re-resolved on the next resolve_import_file_ids().
+            self._conn.execute(
+                "UPDATE imports SET imported_file_id = NULL WHERE imported_file_id = ?",
+                (file_id,),
+            )
+            # Explicit import delete handles the file_id FK
+            self._conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
+            self._conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+
+        # Residual window: the vector store is a separate store, so it cannot join the
+        # SQLite transaction. A crash (or a vector-store error) between the commit above
+        # and here leaves vectors whose rows are gone (orphans the ids of which are no longer
+        # recoverable from the index). The opposite order (the old one) left rows without
+        # vectors on any SQL failure, which is the worse state: search still returned them.
+        # The two calls below are independent and unwrapped: if the first raises, the
+        # sub-chunk vectors are left behind too (orphans either way).
+        if vector_store is not None:
+            vector_store.delete_batch(vector_ids)  # type: ignore[attr-defined]
+            if sub_chunk_ids:
+                vector_store.delete_sub_chunk_embeddings(sub_chunk_ids)  # type: ignore[attr-defined]
         return True
 
     # ------------------------------------------------------------------
