@@ -162,6 +162,23 @@ GitHub -- pull_request webhook -->  this service (Express)
 - `trelix` (the CLI) and a Python 3.12+ runtime must be present in the
   deployment image/environment — `review-runner.ts` shells out to it by
   name via `PATH`. `Dockerfile` (below) builds exactly this.
+- **Untrusted PR content.** Every PR is checked out from an outside author,
+  so the service hardens that checkout:
+  - `TRELIX_WALKER_FOLLOW_SYMLINKS=false` is set in the `Dockerfile` (and
+    `render.yaml`). trelix follows symlinks out of the repo by default, so
+    without it a symlink committed in a PR would make `trelix index` read
+    files from the host. If you deploy without this image (or override the
+    variable on your platform), set it yourself. `review-runner.ts` also
+    forces it to `false` for both `trelix` children, whatever the host
+    passes in.
+  - `repo-checkout.ts` checks out with `core.symlinks=false` (committed
+    symlinks become plain files holding the link text) and deletes any
+    `.trelix` entry from the fresh workspace, so a PR cannot supply its
+    own index database.
+  - `trelix index` and `trelix review` run without `GITHUB_APP_PRIVATE_KEY`
+    and `GITHUB_WEBHOOK_SECRET` in their environment. Only `trelix review`
+    receives the installation token (as `GITHUB_TOKEN`); LLM/embedder
+    provider variables are still passed through.
 - Logs (`console.error`/`console.warn` on review/indexing failures)
   currently go to stdout/stderr only; wire your platform's log
   aggregation on top rather than expecting structured logging from this

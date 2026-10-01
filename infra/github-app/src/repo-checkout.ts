@@ -124,10 +124,22 @@ export async function checkoutPullRequest(
             },
         );
 
-        await execFileAsync("git", ["checkout", "--quiet", "FETCH_HEAD"], {
-            cwd: dir,
-            timeout: timeoutMs,
-        });
+        // core.symlinks=false materialises every symlink the PR committed as a
+        // plain file holding the link text, so nothing in the workspace can
+        // point outside it (`trelix index` would otherwise read the target).
+        await execFileAsync(
+            "git",
+            ["-c", "core.symlinks=false", "checkout", "--quiet", "FETCH_HEAD"],
+            {
+                cwd: dir,
+                timeout: timeoutMs,
+            },
+        );
+
+        // A PR must not supply its own trelix data directory: `trelix index`
+        // would adopt a committed `.trelix/index.db` (or a `.trelix` link) as the
+        // index. `rm` with `recursive`/`force` removes a link without following it.
+        await rm(join(dir, ".trelix"), { recursive: true, force: true });
 
         return {
             path: dir,

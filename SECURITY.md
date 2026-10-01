@@ -30,7 +30,10 @@ trelix processes local repository contents and makes network calls to configured
   walk to `repo_path` by resolved path. It is opt-in because enabling it by default
   would silently drop files from any repository that symlinks to shared or vendored
   directories. Symlinks whose targets are *inside* the repo are still indexed either
-  way — the setting is a boundary, not a blanket symlink filter.
+  way — the setting is a boundary, not a blanket symlink filter. The GitHub App
+  (`infra/github-app`) and this repository's `trelix-review.yml` workflow both set
+  `TRELIX_WALKER_FOLLOW_SYMLINKS=false`, because they index pull requests written
+  by outsiders; operators who index untrusted repositories should set it too.
 - **Tree-sitter parsing** — parses user code with C-extension parsers; malformed inputs are caught and logged
 
 ### REST API — /graph/visualize output path constraint
