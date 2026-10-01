@@ -17,6 +17,7 @@ import errno
 import json
 import logging
 import os
+import sqlite3
 import sys
 import time
 import warnings
@@ -707,14 +708,22 @@ def _run_prune(
     repo_root = Path(config.repo_path)
     deleted = 0
     unmatched: list[str] = []
+    failed: list[tuple[str, str]] = []
     for rel_path in plan.candidates:
         # The absolute path is reconstructed rather than read back out of `files.path`
         # because delete_file_by_path matches `path = ? OR rel_path = ?` — so a checkout
         # that has moved since it was indexed still deletes on the rel_path arm.
-        if db.delete_file_by_path(str(repo_root / rel_path), rel_path, vector_store):
-            deleted += 1
-        else:
-            unmatched.append(rel_path)
+        try:
+            if db.delete_file_by_path(str(repo_root / rel_path), rel_path, vector_store):
+                deleted += 1
+            else:
+                unmatched.append(rel_path)
+        except sqlite3.Error as exc:
+            # delete_file_by_path rolls its own transaction back; this is a second line of
+            # defence so one bad candidate can never leave the connection mid-transaction
+            # for the next. Keep going: the remaining candidates are independent.
+            db._conn.rollback()
+            failed.append((rel_path, str(exc)))
 
     console.print(
         f"[green]Pruned {deleted} file(s)[/green] — rows, symbols, chunks and embeddings."
@@ -729,6 +738,19 @@ def _run_prune(
             f"{' …' if len(unmatched) > 5 else ''}) — the plan and the index disagree. "
             "Run `trelix stats --drift` before trusting this index."
         )
+    if failed:
+        # Not "rolled back": a SQL failure is, but a vector-store failure after the commit is
+        # not (the rows are gone and only vectors are left over), so point at the drift check.
+        err_console.print(
+            f"[red]{len(failed)} planned deletion(s) failed[/red] "
+            "— re-run --prune to retry any that are still listed, and run "
+            "`trelix stats --drift` to check the index:"
+        )
+        for rel_path, message in failed[:_PRUNE_PREVIEW_LIMIT]:
+            err_console.print(f"  {_safe_text(rel_path)}: {_safe_text(message)}")
+        if len(failed) > _PRUNE_PREVIEW_LIMIT:
+            err_console.print(f"  … and {len(failed) - _PRUNE_PREVIEW_LIMIT} more")
+    if unmatched or failed:
         raise typer.Exit(1)
 
 
