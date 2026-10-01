@@ -25,3 +25,7 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      # Not a secret, so it is committed. Confines the walker to each PR
+      # checkout (also set in the Dockerfile); see the README production notes.
+      - key: TRELIX_WALKER_FOLLOW_SYMLINKS
+        value: "false"

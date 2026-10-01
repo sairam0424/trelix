@@ -263,6 +263,18 @@ class TestReviewWorkflowDoesNotTrustItsOwnCheckout:
         assert invocations, "premise changed: no trelix invocation in the workflow"
         assert min(strips) < min(invocations)
 
+    def test_pr_supplied_index_is_removed_before_trelix_runs(self) -> None:
+        """A `.trelix/` force-added by the PR author must not become this run's index."""
+        runs = [str(step.get("run", "")) for step in self._steps()]
+        strips = [i for i, run in enumerate(runs) if "rm -r -f .trelix" in run]
+        invocations = [
+            i for i, run in enumerate(runs) if "trelix index" in run or "trelix review" in run
+        ]
+
+        assert strips, "no step removes the PR checkout's .trelix directory"
+        assert invocations, "premise changed: no trelix invocation in the workflow"
+        assert min(strips) < min(invocations)
+
     def test_no_trelix_step_hides_its_own_failure(self) -> None:
         """`continue-on-error: true` on a step that executes repo content is silent."""
         offenders = [

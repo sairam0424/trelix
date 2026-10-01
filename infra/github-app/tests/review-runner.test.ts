@@ -1,11 +1,19 @@
 import { generateKeyPairSync } from "node:crypto";
-import { writeFileSync, mkdtempSync, chmodSync, rmSync } from "node:fs";
+import {
+    writeFileSync,
+    mkdtempSync,
+    chmodSync,
+    readFileSync,
+    rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Octokit } from "@octokit/rest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     toAnnotations,
+    buildTrelixChildEnv,
+    indexRepository,
     runReviewCli,
     runReview,
     postReviewFailureCheckRun,
@@ -489,5 +497,159 @@ describe("runReview orchestration", () => {
 
         expect(findings).toEqual([]);
         expect(cleanup).toHaveBeenCalledTimes(1);
+    });
+});
+
+// The two credentials that identify the App itself. Neither `trelix index`
+// nor `trelix review` has any use for them, and both children run over
+// content an outside PR author controls.
+const APP_CREDENTIAL_NAMES = [
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_WEBHOOK_SECRET",
+] as const;
+
+function fakeAppCredentials(): Record<string, string> {
+    return Object.fromEntries(
+        APP_CREDENTIAL_NAMES.map((name) => [name, `fake-${name}-for-tests`]),
+    );
+}
+
+describe("buildTrelixChildEnv", () => {
+    it("drops the App's own credentials and forces the walker symlink flag off", () => {
+        const base = {
+            ...fakeAppCredentials(),
+            PATH: "/usr/bin",
+            TRELIX_WALKER_FOLLOW_SYMLINKS: "true",
+            TRELIX_LLM_PROVIDER: "azure",
+        };
+
+        const env = buildTrelixChildEnv(base);
+
+        for (const name of APP_CREDENTIAL_NAMES) {
+            expect(env).not.toHaveProperty(name);
+        }
+        expect(env.TRELIX_WALKER_FOLLOW_SYMLINKS).toBe("false");
+        // Everything else the child needs (PATH, provider settings) survives.
+        expect(env.PATH).toBe("/usr/bin");
+        expect(env.TRELIX_LLM_PROVIDER).toBe("azure");
+    });
+
+    it("returns a new object and leaves its input untouched", () => {
+        const base = {
+            ...fakeAppCredentials(),
+            TRELIX_WALKER_FOLLOW_SYMLINKS: "true",
+        };
+        const snapshot = { ...base };
+
+        const env = buildTrelixChildEnv(base);
+
+        expect(env).not.toBe(base);
+        expect(base).toEqual(snapshot);
+    });
+});
+
+describe("trelix child process environment", () => {
+    const MANAGED_KEYS = [
+        ...APP_CREDENTIAL_NAMES,
+        "GITHUB_TOKEN",
+        "TRELIX_WALKER_FOLLOW_SYMLINKS",
+        "TRELIX_TEST_ENV_DUMP_DIR",
+        "PATH",
+    ];
+    let binDir: string;
+    let dumpDir: string;
+    let savedEnv: Record<string, string | undefined>;
+
+    beforeEach(() => {
+        savedEnv = Object.fromEntries(
+            MANAGED_KEYS.map((key) => [key, process.env[key]]),
+        );
+        binDir = mkdtempSync(join(tmpdir(), "trelix-env-bin-"));
+        dumpDir = mkdtempSync(join(tmpdir(), "trelix-env-dump-"));
+        // A real `trelix` stand-in that records the environment it was
+        // actually spawned with, keyed by subcommand ($1).
+        const shim = join(binDir, "trelix");
+        writeFileSync(
+            shim,
+            "#!/bin/sh\nenv > \"$TRELIX_TEST_ENV_DUMP_DIR/$1.env\"\necho '[]'\n",
+        );
+        chmodSync(shim, 0o755);
+
+        Object.assign(process.env, fakeAppCredentials());
+        process.env.PATH = `${binDir}:${savedEnv.PATH}`;
+        process.env.TRELIX_TEST_ENV_DUMP_DIR = dumpDir;
+        process.env.TRELIX_WALKER_FOLLOW_SYMLINKS = "true";
+        delete process.env.GITHUB_TOKEN;
+    });
+
+    afterEach(() => {
+        for (const key of MANAGED_KEYS) {
+            if (savedEnv[key] === undefined) {
+                delete process.env[key];
+            } else {
+                process.env[key] = savedEnv[key];
+            }
+        }
+        rmSync(binDir, { recursive: true, force: true });
+        rmSync(dumpDir, { recursive: true, force: true });
+    });
+
+    /** Parses the `env` dump a child wrote into a key -> value map. */
+    function readChildEnv(subcommand: string): Record<string, string> {
+        const lines = readFileSync(
+            join(dumpDir, `${subcommand}.env`),
+            "utf8",
+        ).split("\n");
+        const entries: Array<[string, string]> = [];
+        for (const line of lines) {
+            const at = line.indexOf("=");
+            if (at > 0) entries.push([line.slice(0, at), line.slice(at + 1)]);
+        }
+        return Object.fromEntries(entries);
+    }
+
+    const request = { owner: "o", repo: "r", prNumber: 1 };
+
+    it("hides the App credentials from `trelix index` and forces the symlink flag off", async () => {
+        await indexRepository(".", 5000);
+
+        const env = readChildEnv("index");
+        for (const name of APP_CREDENTIAL_NAMES) {
+            expect(env).not.toHaveProperty(name);
+        }
+        expect(env.TRELIX_WALKER_FOLLOW_SYMLINKS).toBe("false");
+    });
+
+    it("hides the App credentials from `trelix review` and forces the symlink flag off", async () => {
+        await runReviewCli(request, ".", "fake-installation-token", 5000);
+
+        const env = readChildEnv("review");
+        for (const name of APP_CREDENTIAL_NAMES) {
+            expect(env).not.toHaveProperty(name);
+        }
+        expect(env.TRELIX_WALKER_FOLLOW_SYMLINKS).toBe("false");
+    });
+
+    it("gives the installation token to `trelix review` only, never to `trelix index`", async () => {
+        await indexRepository(".", 5000);
+        await runReviewCli(request, ".", "fake-installation-token", 5000);
+
+        expect(readChildEnv("index")).not.toHaveProperty("GITHUB_TOKEN");
+        expect(readChildEnv("review").GITHUB_TOKEN).toBe(
+            "fake-installation-token",
+        );
+    });
+
+    it("leaves the server's own process.env unchanged", async () => {
+        const before = { ...process.env };
+
+        await indexRepository(".", 5000);
+        await runReviewCli(request, ".", "fake-installation-token", 5000);
+
+        expect({ ...process.env }).toEqual(before);
+        expect(process.env.TRELIX_WALKER_FOLLOW_SYMLINKS).toBe("true");
+        for (const name of APP_CREDENTIAL_NAMES) {
+            expect(process.env[name]).toBe(`fake-${name}-for-tests`);
+        }
     });
 });
