@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from trelix import __version__
@@ -583,6 +585,12 @@ class TestGraphVisualizeWithJson:
     and the new one appears only when the flag is passed.
     """
 
+    @pytest.fixture(autouse=True)
+    def _indexed_repo(self, tmp_path: Path) -> None:
+        """`graph` refuses a repo with no index; the builder is mocked, the file is not."""
+        (tmp_path / ".trelix").mkdir()
+        (tmp_path / ".trelix" / "index.db").touch()
+
     @staticmethod
     def _patched_builder():  # type: ignore[no-untyped-def]
         from unittest.mock import MagicMock, patch
@@ -841,6 +849,12 @@ class TestGraphVisualizationFailureIsContained:
     payload, so an unguarded failure there would take down the command's primary
     result — statistics that had already been computed successfully.
     """
+
+    @pytest.fixture(autouse=True)
+    def _indexed_repo(self, tmp_path: Path) -> None:
+        """`graph` refuses a repo with no index; the builder is mocked, the file is not."""
+        (tmp_path / ".trelix").mkdir()
+        (tmp_path / ".trelix" / "index.db").touch()
 
     @staticmethod
     def _run(json_mode: bool, tmp_path):  # type: ignore[no-untyped-def]

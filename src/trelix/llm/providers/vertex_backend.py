@@ -8,7 +8,13 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from trelix.core.retry import with_retry
-from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
+from trelix.llm.client import (
+    UNCONFIGURED_MODEL,
+    ChatMessage,
+    ChatResponse,
+    ToolCallResponse,
+    TrelixChatClient,
+)
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -88,7 +94,7 @@ class VertexBackend(TrelixChatClient):
         if self._client is None:
             return ChatResponse(
                 content="[trelix] Vertex AI not configured.",
-                model="none",
+                model=UNCONFIGURED_MODEL,
                 finish_reason="stop",
             )
         from google.genai import types

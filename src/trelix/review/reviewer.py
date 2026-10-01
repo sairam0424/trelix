@@ -59,6 +59,30 @@ class ReviewComment:
     comment: str
 
 
+@dataclass(frozen=True)
+class ReviewOutcome:
+    """What happened during a review, separate from what it found.
+
+    `review()` returns `[]` both when the model looked and found nothing and when
+    nothing was looked at; this record is how a caller tells the two apart.
+    """
+
+    llm_available: bool = True
+    hunks_total: int = 0
+    hunks_failed: int = 0
+
+    @property
+    def could_not_review(self) -> bool:
+        """True when no hunk got a real review (no usable LLM, or every hunk failed)."""
+        return not self.llm_available or (
+            self.hunks_total > 0 and self.hunks_failed >= self.hunks_total
+        )
+
+
+class LLMNotConfiguredError(RuntimeError):
+    """A backend answered with its "no credentials" placeholder instead of a review."""
+
+
 class DiffReviewer:
     """
     Retrieve-augmented code reviewer for git diffs.
@@ -73,6 +97,7 @@ class DiffReviewer:
         self._config = config
         self._retriever: Any = None
         self._llm_client: Any = None
+        self.last_outcome = ReviewOutcome()
 
     def _get_retriever(self) -> Any:
         if self._retriever is None:
@@ -100,6 +125,9 @@ class DiffReviewer:
         """
         Review a list of diff hunks (or a raw diff string). Returns [] on any failure.
 
+        `[]` does not say whether the model looked and found nothing or nothing was
+        looked at: read `last_outcome` after the call to tell the two apart.
+
         Args:
             hunks:     DiffHunk objects from DiffParser. If omitted, diff_text is parsed.
             diff_text: Raw unified diff string. Parsed into hunks when hunks is None/empty.
@@ -116,26 +144,42 @@ class DiffReviewer:
             hunks = DiffParser().parse(diff_text)
 
         if not hunks:
+            self.last_outcome = ReviewOutcome()
             return []
 
         comments: list[ReviewComment] = []
         client = self._get_client()
         if client is None:
             logger.warning("DiffReviewer: no LLM client available")
+            self.last_outcome = ReviewOutcome(
+                llm_available=False, hunks_total=len(hunks), hunks_failed=len(hunks)
+            )
             return []
 
+        hunks_failed = 0
+        llm_available = True
         for hunk in hunks:
             try:
                 hunk_comments = self._review_hunk(hunk, client)
                 comments.extend(hunk_comments)
+            except LLMNotConfiguredError as exc:
+                # Every remaining hunk would get the same placeholder answer.
+                logger.warning("DiffReviewer: %s", exc)
+                llm_available = False
+                hunks_failed = len(hunks)
+                break
             except Exception as exc:
+                hunks_failed += 1
                 logger.warning("DiffReviewer: hunk review failed (non-fatal): %s", exc)
 
+        self.last_outcome = ReviewOutcome(
+            llm_available=llm_available, hunks_total=len(hunks), hunks_failed=hunks_failed
+        )
         return comments
 
     def _review_hunk(self, hunk: DiffHunk, client: Any) -> list[ReviewComment]:
         """Review a single hunk with retrieved context."""
-        from trelix.llm.client import ChatMessage
+        from trelix.llm.client import UNCONFIGURED_MODEL, ChatMessage
 
         # Retrieve context for this hunk
         query = hunk.to_search_query()
@@ -185,6 +229,9 @@ class DiffReviewer:
             temperature=0.0,
             system=_REVIEW_SYSTEM,
         )
+
+        if response.model == UNCONFIGURED_MODEL:
+            raise LLMNotConfiguredError(response.content)
 
         return self._parse_response(response.content, hunk, context_failed=retrieval_failed)
 
