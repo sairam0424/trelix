@@ -32,6 +32,9 @@ trelix processes local repository contents and makes network calls to configured
   directories. Symlinks whose targets are *inside* the repo are still indexed either
   way — the setting is a boundary, not a blanket symlink filter.
 - **Tree-sitter parsing** — parses user code with C-extension parsers; malformed inputs are caught and logged
+- **Image and diagram connectors** (`trelix connector sync`) — do not use the symlink
+  setting above: they always skip a symlink whose resolved target is outside the repo,
+  so its contents are never sent to the configured LLM.
 
 ### REST API — /graph/visualize output path constraint
 

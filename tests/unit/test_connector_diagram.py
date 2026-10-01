@@ -11,6 +11,8 @@ generic_edges expect.
 
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -307,3 +309,207 @@ def test_unreadable_file_is_skipped_not_fatal(tmp_path: Path) -> None:
         artifacts = connector.fetch()
 
     assert {a.source_ref for a in artifacts} == {f"diagram:{good.name}"}
+
+
+# ---------------------------------------------------------------------------
+# symlink containment -- mirrors ImageConnector (image.py `_is_within_repo`)
+# ---------------------------------------------------------------------------
+
+_SECRET_MARKER = "FAKE-SECRET-MARKER-for-tests"
+
+
+def test_symlink_escaping_the_repo_is_not_synced_and_never_reaches_the_llm(
+    tmp_path: Path,
+) -> None:
+    """CRITICAL regression: read_text() follows a symlink, so an arch.drawio
+    -> /some/outside/file link used to have its target's first 20000 chars
+    sent to the configured chat client inside the caption prompt."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside_secret.txt"
+    outside.write_text(_SECRET_MARKER, encoding="utf-8")
+    (repo / "arch.drawio").symlink_to(outside)
+    _write_drawio(repo, "real.drawio")
+    client = _StubChatClient("caption")
+
+    with patch("trelix.indexing.connectors.diagram.build_chat_client", return_value=client):
+        artifacts = _connector(repo).fetch()
+
+    assert [a.source_ref for a in artifacts] == ["diagram:real.drawio"]
+    assert len(client.calls) == 1
+    assert all(_SECRET_MARKER not in call["messages"][0].content for call in client.calls)
+
+
+def test_discover_skips_a_symlink_that_escapes_the_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside_secret.txt"
+    outside.write_text(_SECRET_MARKER, encoding="utf-8")
+    (repo / "arch.drawio").symlink_to(outside)
+
+    assert _connector(repo)._discover() == []
+
+
+def test_discover_still_finds_a_symlink_that_resolves_inside_the_repo(tmp_path: Path) -> None:
+    """Containment, not a blanket symlink ban."""
+    repo = tmp_path / "repo"
+    _write_drawio(repo, "real/diagram.drawio")
+    (repo / "alias.drawio").symlink_to(repo / "real" / "diagram.drawio")
+
+    found = _connector(repo)._discover()
+
+    assert repo / "alias.drawio" in found
+    assert repo / "real" / "diagram.drawio" in found
+
+
+def test_in_repo_symlink_is_synced_with_its_content(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_drawio(repo, "real/diagram.drawio")
+    (repo / "alias.drawio").symlink_to(repo / "real" / "diagram.drawio")
+    client = _StubChatClient("caption")
+
+    with patch("trelix.indexing.connectors.diagram.build_chat_client", return_value=client):
+        artifacts = _connector(repo).fetch()
+
+    assert {a.source_ref for a in artifacts} == {
+        "diagram:alias.drawio",
+        "diagram:real/diagram.drawio",
+    }
+    assert all("API Gateway" in call["messages"][0].content for call in client.calls)
+
+
+def test_discover_does_not_crash_on_a_symlink_loop(tmp_path: Path) -> None:
+    """resolve() on a loop raises RuntimeError on some platforms/Pythons and
+    returns a path on others, so only the no-crash property is asserted."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_drawio(repo, "real.drawio")
+    (repo / "loop_a.drawio").symlink_to(repo / "loop_b.drawio")
+    (repo / "loop_b.drawio").symlink_to(repo / "loop_a.drawio")
+
+    found = _connector(repo)._discover()  # must not raise
+
+    assert repo / "real.drawio" in found
+
+
+def test_discover_skips_a_dangling_symlink(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_drawio(repo, "real.drawio")
+    (repo / "dangling.drawio").symlink_to(tmp_path / "does-not-exist")
+
+    assert _connector(repo)._discover() == [repo / "real.drawio"]
+
+
+def test_discover_skips_a_directory_named_like_a_drawio_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "folder.drawio").mkdir(parents=True)
+    _write_drawio(repo, "real.drawio")
+
+    assert _connector(repo)._discover() == [repo / "real.drawio"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX named pipes required")
+def test_discover_skips_a_non_regular_file(tmp_path: Path) -> None:
+    """A FIFO named *.drawio would block read_text() forever; discovery only
+    (never fetch) is exercised so a regression fails instead of hanging."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    os.mkfifo(repo / "pipe.drawio")  # type: ignore[attr-defined]
+    _write_drawio(repo, "real.drawio")
+
+    assert _connector(repo)._discover() == [repo / "real.drawio"]
+
+
+def test_discover_logs_one_warning_with_the_skipped_symlink_count(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside_secret.txt"
+    outside.write_text(_SECRET_MARKER, encoding="utf-8")
+    (repo / "a.drawio").symlink_to(outside)
+    (repo / "b.drawio").symlink_to(outside)
+    (repo / "dangling.drawio").symlink_to(tmp_path / "does-not-exist")
+    _write_drawio(repo, "real.drawio")
+
+    with caplog.at_level(logging.WARNING, logger="trelix.indexing.connectors.diagram"):
+        _connector(repo)._discover()
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "3" in warnings[0].getMessage()
+    assert _SECRET_MARKER not in caplog.text
+
+
+def test_discover_logs_no_warning_when_nothing_is_skipped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _write_drawio(tmp_path, "real.drawio")
+
+    with caplog.at_level(logging.WARNING, logger="trelix.indexing.connectors.diagram"):
+        _connector(tmp_path)._discover()
+
+    assert caplog.records == []
+
+
+def test_containment_does_not_depend_on_walker_follow_symlinks(tmp_path: Path) -> None:
+    """Containment is unconditional (unlike WalkerConfig.follow_symlinks)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside_secret.txt"
+    outside.write_text(_SECRET_MARKER, encoding="utf-8")
+    (repo / "arch.drawio").symlink_to(outside)
+    config = IndexConfig(repo_path=str(repo))
+    config.walker.follow_symlinks = True
+
+    assert DiagramConnector(config)._discover() == []
+
+
+def test_discover_skips_a_relative_symlink_that_escapes_with_dotdot(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (tmp_path / "outside_secret.txt").write_text(_SECRET_MARKER, encoding="utf-8")
+    (repo / "arch.drawio").symlink_to("../outside_secret.txt")
+
+    assert _connector(repo)._discover() == []
+
+
+def test_discover_skips_a_symlink_chain_that_ends_outside_the_repo(tmp_path: Path) -> None:
+    """Only the fully resolved target counts: hop1 sits and points inside the
+    repo, so it must not pass on the strength of its own location."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside_secret.txt"
+    outside.write_text(_SECRET_MARKER, encoding="utf-8")
+    (repo / "hop2.drawio").symlink_to(outside)
+    (repo / "hop1.drawio").symlink_to(repo / "hop2.drawio")
+    _write_drawio(repo, "real.drawio")
+
+    assert _connector(repo)._discover() == [repo / "real.drawio"]
+
+
+def test_discover_skips_a_symlink_into_a_sibling_sharing_the_repo_name_prefix(
+    tmp_path: Path,
+) -> None:
+    """`repo-evil` starts with the string `repo`; containment must compare path
+    components, not string prefixes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secret = _write_drawio(tmp_path / "repo-evil", "secret.drawio")
+    (repo / "arch.drawio").symlink_to(secret)
+
+    assert _connector(repo)._discover() == []
+
+
+def test_discover_does_not_descend_into_a_symlinked_directory(tmp_path: Path) -> None:
+    """A .drawio reached through a symlinked parent directory is not itself a
+    symlink, so the per-file containment check would not catch it; this pins
+    the assumption that rglob() does not descend into symlinked directories."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_drawio(tmp_path / "outside_dir", "secret.drawio")
+    (repo / "linked_dir").symlink_to(tmp_path / "outside_dir", target_is_directory=True)
+    _write_drawio(repo, "real.drawio")
+
+    assert _connector(repo)._discover() == [repo / "real.drawio"]
