@@ -585,6 +585,7 @@ gunicorn -w 4 -k uvicorn.workers.UvicornWorker "trelix.server:create_app(repo_pa
 
 # With Docker
 docker run -v $(pwd)/my-repo:/repo -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  -e 'TRELIX_API_ALLOWED_HOSTS=localhost,127.0.0.1,[::1]' \
   -p 127.0.0.1:8765:8765 trelix serve /repo --host 0.0.0.0 --port 8765
 ```
 
@@ -598,6 +599,13 @@ together with `TRELIX_API_AUTH_TOKEN`, which makes every route require an
 *container's* bind, which a published port needs in order to reach the process;
 the `-p` mapping is the exposure decision, and `docker-compose.yml` at the repo
 root carries the same split.)
+
+`TRELIX_API_ALLOWED_HOSTS` turns on the Host/Origin check that stops a web page from
+reaching a loopback port through DNS rebinding. `trelix serve` enables it by itself for an
+open API bound to loopback; a container (which binds `0.0.0.0`) or a factory deployment such
+as gunicorn gets it only through this variable, which is why the Docker command above sets
+it. Add any other hostname you reach the API by; `*` turns the check off. See
+[SECURITY.md](../SECURITY.md#rest-api--host-and-origin-check-dns-rebinding-drive-by-requests).
 
 Available endpoints:
 

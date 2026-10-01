@@ -96,7 +96,7 @@ ENV_PREFIXES_TO_SCRUB: tuple[str, ...] = ("TRELIX_RETRIEVAL_COMPRESSION_RATIO_",
 # anyway. Overriding to "" (falsy, same as unset for every `if not val`
 # validate_config() check in this codebase) is what actually neutralizes
 # the .env value for the test process.
-UNSET_BY_DEFAULT: tuple[str, ...] = ("TRELIX_API_AUTH_TOKEN",)
+UNSET_BY_DEFAULT: tuple[str, ...] = ("TRELIX_API_AUTH_TOKEN", "TRELIX_API_ALLOWED_HOSTS")
 EMPTY_STRING_BY_DEFAULT: tuple[str, ...] = (
     "TRELIX_LINEAR_API_KEY",
     "TRELIX_LINEAR_TEAM_KEY",

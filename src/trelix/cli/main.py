@@ -2757,7 +2757,7 @@ def serve(
     # below, so `serve /one/repo` left every route willing to read any absolute
     # path the caller named; passing it here makes it the containment allow-list
     # root (see api/app.py's "Containment" section).
-    api_app = create_app(served_root=repo_path)
+    api_app = create_app(served_root=repo_path, allowed_hosts=_loopback_guard_hosts(host))
 
     _warn_if_exposed_without_auth(host)
 
@@ -2767,6 +2767,58 @@ def serve(
 
 # Loopback forms. Anything else is reachable from another machine.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+def _api_auth_is_open() -> bool:
+    """True when neither a static token nor an OIDC verifier is configured (open mode).
+
+    Reuses the exact objects `create_app()` gates on, so this cannot drift from the
+    real decision. `_ApiAuthSettings` lives in api/app.py rather than core/config
+    because auth is process-wide while IndexConfig is per-repo.
+
+    OIDC alone is sufficient protection: once a verifier exists, `authenticate()`
+    raises 401 for a missing credential, so an SSO-only deployment is not open. Asking
+    `_build_oidc_verifier` rather than reading an env var means an SSO config that is
+    enabled but unusable (bad issuer, unreachable JWKS) still counts as open — which is
+    the case where a reader would most wrongly assume they were covered.
+
+    Shared by the exposure warning below and the Host/Origin guard decision in `serve`.
+    Unreadable settings count as "not open": both callers then stay quiet, and
+    `create_app()` raises on the same error anyway.
+    """
+    from trelix.api.app import _ApiAuthSettings, _build_oidc_verifier
+    from trelix.core.config import SSOConfig
+
+    try:
+        if _ApiAuthSettings().api_auth_token is not None:
+            return False
+        if _build_oidc_verifier(SSOConfig()) is not None:
+            return False
+    except Exception as exc:  # pragma: no cover - config shape is validated elsewhere
+        logger.debug("Could not read auth settings for the exposure check: %s", exc)
+        return False
+    return True
+
+
+def _loopback_guard_hosts(host: str) -> tuple[str, ...] | None:
+    """Hostnames for the Host/Origin guard when `serve` should switch it on, else None.
+
+    ON only for an open API (no token, no OIDC) on a loopback bind: that is the DNS
+    rebinding / drive-by-GET exposure, where the browser is the attacker's way in.
+    None leaves the decision to `create_app`, i.e. to TRELIX_API_ALLOWED_HOSTS.
+
+    Deliberately NOT on for a configured credential (a hostile page has no key, so it is
+    already stopped, and a reverse proxy in front of a token-protected server must not
+    start answering 403) nor for a non-loopback bind (failing closed on a bind that
+    legitimately serves other hostnames is a bigger decision than this fix; an operator
+    opts in with TRELIX_API_ALLOWED_HOSTS).
+    """
+    from trelix.api.request_guard import loopback_bind_allowed_hosts
+
+    hosts = loopback_bind_allowed_hosts(host)
+    if hosts is None or not _api_auth_is_open():
+        return None
+    return hosts
 
 
 def _warn_if_exposed_without_auth(host: str) -> None:
@@ -2792,25 +2844,7 @@ def _warn_if_exposed_without_auth(host: str) -> None:
     if host in _LOOPBACK_HOSTS:
         return
 
-    # Reuses the exact objects `create_app()` gates on, so this cannot drift from the
-    # real decision. `_ApiAuthSettings` lives in api/app.py rather than core/config
-    # because auth is process-wide while IndexConfig is per-repo.
-    #
-    # OIDC alone is sufficient protection: once a verifier exists, `authenticate()`
-    # raises 401 for a missing credential, so an SSO-only deployment is not open. Asking
-    # `_build_oidc_verifier` rather than reading an env var means an SSO config that is
-    # enabled but unusable (bad issuer, unreachable JWKS) still triggers the warning —
-    # which is the case where a reader would most wrongly assume they were covered.
-    from trelix.api.app import _ApiAuthSettings, _build_oidc_verifier
-    from trelix.core.config import SSOConfig
-
-    try:
-        if _ApiAuthSettings().api_auth_token is not None:
-            return
-        if _build_oidc_verifier(SSOConfig()) is not None:
-            return
-    except Exception as exc:  # pragma: no cover - config shape is validated elsewhere
-        logger.debug("Could not read auth settings for the exposure check: %s", exc)
+    if not _api_auth_is_open():
         return
 
     err_console.print(
