@@ -80,6 +80,13 @@ _Nothing yet._
 - **The Qdrant vector store returned cosine similarity where every caller expects a
   distance**, inverting the per-hit score and the opt-in artifact-linker embedding fallback.
   `search()` now returns distance like the sqlite-vec store.
+- **Deleting a file on a Qdrant server left all of its vectors behind.** The delete request
+  carried the file-summary sentinel id (`-file_id`) together with the chunk ids, and a Qdrant
+  server rejects a whole request that contains a negative point id (HTTP 400), so none of the
+  ids were deleted. Since vectors are removed after the SQL commit, that left the rows gone,
+  every vector of the file orphaned, `--prune` aborted after one file, and the next run said
+  there was nothing to prune. The sentinel now goes in a request of its own and a refusal of
+  it is ignored, because a server can never hold one.
 
 ### Added
 - `TRELIX_API_ALLOWED_HOSTS`: comma-separated bare hostnames accepted in the `Host` header
