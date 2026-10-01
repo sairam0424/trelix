@@ -127,6 +127,13 @@ export async function postCheckRun(
 }
 
 /**
+ * Exit status of `trelix review` when it could not review at all (no usable
+ * LLM, or every hunk's LLM call failed) — REVIEW_NOT_RUN_EXIT_CODE in
+ * src/trelix/cli/main.py. Keep the two in step.
+ */
+const REVIEW_NOT_RUN_EXIT_CODE = 3;
+
+/**
  * Posts a completed Check run recording that the review itself never ran
  * to completion — distinct from postCheckRun, which posts real findings.
  * Without this, a `runReviewCli` failure (timeout, CLI crash, bad JSON)
@@ -150,6 +157,25 @@ export async function postReviewFailureCheckRun(
         (err as { killed?: boolean }).killed === true &&
         (err as { signal?: string }).signal === "SIGTERM";
 
+    // execFile rejects with the child's numeric exit status in `code`.
+    const notRun =
+        typeof err === "object" &&
+        err !== null &&
+        (err as { code?: unknown }).code === REVIEW_NOT_RUN_EXIT_CODE;
+
+    let title = "trelix review did not complete";
+    let summary =
+        "trelix review failed to run to completion. No findings were produced for this PR.";
+    if (timedOut) {
+        title = "trelix review timed out";
+        summary =
+            "trelix review did not finish within the time limit and was stopped. No findings were produced for this PR.";
+    } else if (notRun) {
+        title = "trelix review did not run";
+        summary =
+            "trelix could not review this PR: no usable LLM is configured for this trelix instance, or every LLM call failed. No code was reviewed, so this is not a clean result.";
+    }
+
     await octokit.rest.checks.create({
         owner,
         repo,
@@ -157,14 +183,7 @@ export async function postReviewFailureCheckRun(
         head_sha: headSha,
         status: "completed",
         conclusion: timedOut ? "timed_out" : "neutral",
-        output: {
-            title: timedOut
-                ? "trelix review timed out"
-                : "trelix review did not complete",
-            summary: timedOut
-                ? "trelix review did not finish within the time limit and was stopped. No findings were produced for this PR."
-                : "trelix review failed to run to completion. No findings were produced for this PR.",
-        },
+        output: { title, summary },
     });
 }
 

@@ -51,9 +51,12 @@ def test_ask_flare_branch_prints_the_answer_exactly_once(tmp_path: Path) -> None
 
     with (
         patch("trelix.retrieval.retriever.Retriever") as MockRetriever,
-        patch("trelix.retrieval.synthesizer.Synthesizer"),
+        patch("trelix.retrieval.synthesizer.Synthesizer") as MockSynthesizer,
         patch("trelix.retrieval.flare.FLARELoop", return_value=fake_loop),
     ):
+        # `ask` exits 1 when the synthesizer reports a failure; a bare MagicMock
+        # attribute would read as one.
+        MockSynthesizer.return_value.last_error = None
         MockRetriever.return_value.retrieve.return_value = _context()
         result = runner.invoke(
             app,

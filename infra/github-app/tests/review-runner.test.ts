@@ -132,6 +132,45 @@ describe("postReviewFailureCheckRun", () => {
         expect(calls[0]).toMatchObject({ conclusion: "neutral" });
     });
 
+    // `trelix review` exits 3 (REVIEW_NOT_RUN_EXIT_CODE in src/trelix/cli/main.py)
+    // when no LLM is usable or every hunk failed. The check must say so instead of
+    // the generic "failed to run to completion", and must never read as a pass.
+    it("explains the 'review did not run' exit code (3) instead of a generic failure", async () => {
+        const { octokit, calls } = fakeOctokitCapturingChecksCreate();
+        const notRunErr = Object.assign(new Error("Command failed"), { code: 3 });
+
+        await postReviewFailureCheckRun(
+            octokit,
+            "o",
+            "r",
+            "deadbeef",
+            notRunErr,
+        );
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({ conclusion: "neutral" });
+        const output = calls[0].output as { title: string; summary: string };
+        expect(output.title).toMatch(/did not run/i);
+        expect(output.summary).toMatch(/LLM/);
+        expect(output.title).not.toMatch(/0 issue/);
+    });
+
+    it("keeps the generic wording for other non-zero exit codes", async () => {
+        const { octokit, calls } = fakeOctokitCapturingChecksCreate();
+        const crashErr = Object.assign(new Error("Command failed"), { code: 1 });
+
+        await postReviewFailureCheckRun(
+            octokit,
+            "o",
+            "r",
+            "deadbeef",
+            crashErr,
+        );
+
+        const output = calls[0].output as { title: string; summary: string };
+        expect(output.title).toBe("trelix review did not complete");
+    });
+
     it("still posts conclusion 'neutral' for a non-Error thrown value", async () => {
         const { octokit, calls } = fakeOctokitCapturingChecksCreate();
 
@@ -416,6 +455,51 @@ describe("runReview orchestration", () => {
             status: "completed",
             conclusion: "neutral",
         });
+        expect(cleanup).toHaveBeenCalledTimes(1);
+    });
+
+    it("posts a neutral 'did not run' Check run (never success) when the CLI exits 3", async () => {
+        const config = makeConfig();
+        const { workspace, cleanup } = fakeWorkspace();
+        const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
+            vi.fn(async () => workspace);
+        const checksCreateCalls: Array<Record<string, unknown>> = [];
+        const octokit = fakeOctokit("deadbeef", { checksCreateCalls });
+
+        const shim = join(binDir, "trelix");
+        writeFileSync(
+            shim,
+            [
+                "#!/bin/sh",
+                'if [ "$1" = "index" ]; then',
+                "  exit 0",
+                "fi",
+                'echo "[]"',
+                'echo "LLM is not configured" >&2',
+                "exit 3",
+                "",
+            ].join("\n"),
+        );
+        chmodSync(shim, 0o755);
+
+        await expect(
+            runReview(
+                config,
+                { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+                {
+                    checkoutPullRequest,
+                    request: fakeAuthRequest("ghs_faketoken"),
+                    octokit,
+                },
+            ),
+        ).rejects.toThrow();
+
+        expect(checksCreateCalls).toHaveLength(1);
+        expect(checksCreateCalls[0]).toMatchObject({
+            conclusion: "neutral",
+        });
+        const output = checksCreateCalls[0].output as { title: string };
+        expect(output.title).toMatch(/did not run/i);
         expect(cleanup).toHaveBeenCalledTimes(1);
     });
 
