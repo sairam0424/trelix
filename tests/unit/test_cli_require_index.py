@@ -38,9 +38,15 @@ _READ_COMMANDS = [
 ]
 
 
-def _flat(text: str) -> str:
-    """Rich hard-wraps at the console width; collapse whitespace before matching."""
-    return re.sub(r"\s+", " ", text)
+def _squash(text: str) -> str:
+    """Drop ALL whitespace before matching.
+
+    Rich folds a path longer than the console width in the middle of a word, so
+    `.trelix/index.db` can come out as `.trelix/inde`, a newline, then `x.db` (it did on a
+    CI runner whose tmp path was 84 characters). Collapsing whitespace to one space is not
+    enough; removing it makes the match independent of where the fold lands.
+    """
+    return re.sub(r"\s+", "", text)
 
 
 def _argv(template: list[str], repo: Path) -> list[str]:
@@ -73,10 +79,10 @@ def test_read_command_on_unindexed_repo_exits_1_and_creates_nothing(
     result = runner.invoke(app, _argv(template, unindexed_repo))
 
     assert result.exit_code == 1, result.output
-    combined = _flat(result.output)
-    assert "No index found at" in combined
-    assert "index.db" in combined
-    assert "Run trelix index" in combined
+    combined = _squash(result.output)
+    assert _squash("No index found at") in combined
+    assert _squash("index.db") in combined
+    assert _squash("Run trelix index") in combined
     assert not (unindexed_repo / ".trelix").exists(), (
         "a read command must not create .trelix/ (or index.db) in an unindexed repo"
     )
@@ -106,7 +112,7 @@ def test_stats_on_unindexed_repo_leaves_no_trelix_directory(unindexed_repo: Path
     result = runner.invoke(app, ["stats", str(unindexed_repo)])
 
     assert result.exit_code == 1, result.output
-    assert "No index found" in _flat(result.output)
+    assert _squash("No index found") in _squash(result.output)
     assert not (unindexed_repo / ".trelix").exists()
 
 
