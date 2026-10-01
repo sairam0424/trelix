@@ -35,6 +35,9 @@ trelix processes local repository contents and makes network calls to configured
   `TRELIX_WALKER_FOLLOW_SYMLINKS=false`, because they index pull requests written
   by outsiders; operators who index untrusted repositories should set it too.
 - **Tree-sitter parsing** — parses user code with C-extension parsers; malformed inputs are caught and logged
+- **Image and diagram connectors** (`trelix connector sync`) — do not use the symlink
+  setting above: they always skip a symlink whose resolved target is outside the repo,
+  so its contents are never sent to the configured LLM.
 
 ### REST API — /graph/visualize output path constraint
 
