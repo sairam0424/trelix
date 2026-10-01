@@ -16,6 +16,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from trelix.core.models import Artifact
@@ -33,6 +34,22 @@ logger = logging.getLogger("trelix.indexing.connectors.base")
 # lines. The first few carry all the diagnostic signal — after that the
 # per-type summary is what tells you whether it's one fault or several.
 _MAX_FAILURE_DETAIL_LOGS = 5
+
+
+def safe_resolve(path: Path) -> Path | None:
+    """`path.resolve()`, or None when the path cannot be resolved.
+
+    Shared by the file-scanning connectors (image.py, diagram.py) so both apply
+    one symlink-containment policy: skip a link whose resolved target is not
+    inside the repo. A dangling symlink raises OSError; a genuine symlink LOOP
+    (even a trivial self-reference) makes CPython's Path.resolve() re-raise the
+    underlying OSError(ELOOP) as a RuntimeError("Symlink loop from ...")
+    instead. Both must degrade to "skip this one file", not abort the whole
+    discovery pass and discard every other already-found file."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
 
 
 @dataclass

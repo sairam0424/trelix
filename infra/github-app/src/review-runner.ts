@@ -18,6 +18,35 @@ const REVIEW_TIMEOUT_MS = 5 * 60 * 1000;
 // — same ceiling as the review step itself.
 const INDEX_TIMEOUT_MS = 5 * 60 * 1000;
 
+// The two credentials that identify this App itself. Neither `trelix index` nor
+// `trelix review` has any use for them, and both run over content that an outside
+// PR author controls.
+const APP_CREDENTIAL_ENV: readonly string[] = [
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_WEBHOOK_SECRET",
+];
+
+/**
+ * Environment for a `trelix` child process: `base` without the App's own
+ * credentials, and with the walker confined to the checkout.
+ *
+ * trelix follows symlinks out of the repo by default, and a PR can commit any
+ * symlink it likes. Forcing TRELIX_WALKER_FOLLOW_SYMLINKS=false here (whatever the
+ * host passed in) keeps that true even if the image or platform config drops the
+ * Dockerfile's own setting. Provider variables (LLM, embedder) pass through
+ * because trelix needs them. Returns a new object; `base` is never mutated.
+ */
+export function buildTrelixChildEnv(
+    base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+    const inherited = Object.fromEntries(
+        Object.entries(base).filter(
+            ([name]) => !APP_CREDENTIAL_ENV.includes(name),
+        ),
+    );
+    return { ...inherited, TRELIX_WALKER_FOLLOW_SYMLINKS: "false" };
+}
+
 export interface ReviewRequest {
     owner: string;
     repo: string;
@@ -90,7 +119,10 @@ export async function runReviewCli(
     const { stdout } = await execFileAsync(
         "trelix",
         ["review", repoPath, "--pr", prRef, "--json"],
-        { timeout: timeoutMs, env: { ...process.env, GITHUB_TOKEN: token } },
+        {
+            timeout: timeoutMs,
+            env: { ...buildTrelixChildEnv(), GITHUB_TOKEN: token },
+        },
     );
     return JSON.parse(stdout) as ReviewFinding[];
 }
@@ -201,6 +233,7 @@ export async function indexRepository(
     try {
         await execFileAsync("trelix", ["index", repoPath], {
             timeout: timeoutMs,
+            env: buildTrelixChildEnv(),
         });
     } catch (err) {
         console.warn(
