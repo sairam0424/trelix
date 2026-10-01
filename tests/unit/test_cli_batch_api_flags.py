@@ -86,6 +86,53 @@ def test_without_use_batch_api_flag_defaults_false(
     assert captured_configs[0].use_batch_api is False
 
 
+def test_env_var_enables_batch_api_when_flag_is_omitted(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    """TRELIX_USE_BATCH_API is the field's own alias. Omitting the flag must not
+    overwrite it with the flag's False default."""
+    from trelix.cli import main as cli_main
+
+    captured_configs = []
+
+    def _fake_init(self, config, *args, **kwargs):
+        captured_configs.append(config)
+        self.db = MagicMock()
+
+    monkeypatch.setattr(Indexer, "__init__", _fake_init)
+    monkeypatch.setattr(Indexer, "index", lambda self: {"files_found": 0, "files_indexed": 0})
+
+    result = runner.invoke(cli_main.app, ["index", str(repo)], env={"TRELIX_USE_BATCH_API": "true"})
+
+    assert result.exit_code == 0, result.output
+    assert captured_configs[0].use_batch_api is True
+
+
+def test_flag_still_enables_batch_api_when_env_var_is_false(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    """The flag is an explicit opt-in for this run, so it wins over an env var of false."""
+    from trelix.cli import main as cli_main
+
+    captured_configs = []
+
+    def _fake_init(self, config, *args, **kwargs):
+        captured_configs.append(config)
+        self.db = MagicMock()
+
+    monkeypatch.setattr(Indexer, "__init__", _fake_init)
+    monkeypatch.setattr(Indexer, "index", lambda self: {"files_found": 0, "files_indexed": 0})
+
+    result = runner.invoke(
+        cli_main.app,
+        ["index", str(repo), "--use-batch-api"],
+        env={"TRELIX_USE_BATCH_API": "false"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured_configs[0].use_batch_api is True
+
+
 def test_resume_batch_skips_the_walk_and_resolves_the_pending_job(
     monkeypatch: pytest.MonkeyPatch, repo: Path
 ) -> None:

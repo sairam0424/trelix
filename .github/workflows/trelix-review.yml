@@ -8,6 +8,11 @@ jobs:
   trelix-review:
     name: trelix Code Intelligence Review
     runs-on: ubuntu-latest
+    # The checkout below is PR-author content. Keep the walker inside it so a
+    # symlink committed in the PR cannot pull files from the runner into the
+    # index (or, once an LLM key is configured, into a prompt).
+    env:
+      TRELIX_WALKER_FOLLOW_SYMLINKS: "false"
     permissions:
       pull-requests: write
       checks: write
@@ -46,6 +51,13 @@ jobs:
       - name: Remove untrusted dotenv from the PR checkout
         run: rm -f .env
 
+      # Same reasoning for a `.trelix/` directory: it is where `trelix index .`
+      # keeps (and later reads back) its index, and `.gitignore` does not stop a
+      # PR author from force-adding one. The GitHub App drops it the same way
+      # right after its own checkout (infra/github-app/src/repo-checkout.ts).
+      - name: Remove untrusted trelix state from the PR checkout
+        run: rm -r -f .trelix
+
       - name: Index repository
         # No `continue-on-error` here: this step executes repository content, and
         # `continue-on-error: true` reported success no matter what happened
@@ -64,9 +76,16 @@ jobs:
           # progress messages to stderr and ONLY the JSON array to stdout
           # (see src/trelix/cli/main.py), so merging stderr in here would
           # corrupt the file again.
-          trelix review --pr "${TRELIX_REPO}#${TRELIX_PR_NUMBER}" --json > /tmp/trelix-review.json 2>/tmp/trelix-review.stderr.log || true
+          #
+          # The exit code is captured, not discarded: swallowing it here used to turn a
+          # review that never ran (exit 3: no usable LLM, or every hunk failed) into
+          # an empty array and a green "found 0 issue(s)" check. The step itself
+          # still succeeds; the publishing step decides what the check says.
+          review_exit_code=0
+          trelix review --pr "${TRELIX_REPO}#${TRELIX_PR_NUMBER}" --json > /tmp/trelix-review.json 2>/tmp/trelix-review.stderr.log || review_exit_code=$?
           cat /tmp/trelix-review.stderr.log
           echo "review_file=/tmp/trelix-review.json" >> "$GITHUB_OUTPUT"
+          echo "review_exit_code=${review_exit_code}" >> "$GITHUB_OUTPUT"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRELIX_PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -76,6 +95,7 @@ jobs:
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
           TRELIX_PR_NUMBER: ${{ github.event.pull_request.number }}
+          TRELIX_REVIEW_EXIT_CODE: ${{ steps.review.outputs.review_exit_code }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -88,6 +108,31 @@ jobs:
             // trelix review --json emits a bare array of
             // {file, lines: "start-end", severity: "ERROR"|"WARN"|"INFO", comment}
             // — see src/trelix/cli/main.py's review() --pr --json path.
+            // Exit code of the review step. 0 = a real review ran; 3 =
+            // REVIEW_NOT_RUN_EXIT_CODE in src/trelix/cli/main.py (no usable LLM, or
+            // every hunk failed); anything else, or nothing, = it did not complete.
+            // None of those may be published as "found 0 issue(s)".
+            const reviewNotRunExitCode = '3';
+            const reviewExitCode = process.env.TRELIX_REVIEW_EXIT_CODE || '';
+            if (reviewExitCode !== '0') {
+              const notRun = reviewExitCode === reviewNotRunExitCode;
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'trelix Code Review',
+                head_sha: context.sha,
+                status: 'completed',
+                conclusion: 'neutral',
+                output: {
+                  title: notRun ? 'trelix review did not run' : 'trelix review did not complete',
+                  summary: notRun
+                    ? `trelix could not review PR #${prNumber}: no usable LLM is configured for this workflow, or every LLM call failed. No code was reviewed, so this is not a clean result. See the "Run trelix review" step log for the reason.`
+                    : `trelix review exited with exit code ${reviewExitCode || 'unknown'} on PR #${prNumber}, so no review result is available. See the "Run trelix review" step log.`,
+                },
+              });
+              return;
+            }
+
             let findings = [];
             try {
               const raw = fs.readFileSync(reviewFile, 'utf8');

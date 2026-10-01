@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from trelix.core.retry import with_retry
 from trelix.llm.client import (
+    UNCONFIGURED_MODEL,
     ChatMessage,
     ChatResponse,
     ThinkingBlock,
@@ -197,7 +198,7 @@ class AnthropicBackend(TrelixChatClient):
         if self._client is None:
             return ChatResponse(
                 content="[trelix] Anthropic not configured — set ANTHROPIC_API_KEY.",
-                model="none",
+                model=UNCONFIGURED_MODEL,
                 finish_reason="stop",
             )
         self._warn_if_temperature_given(temperature)
