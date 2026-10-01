@@ -232,6 +232,25 @@ def _print_error(label: str, detail: object) -> None:
     err_console.print(f"[red]{label}:[/red] {_safe_text(str(detail))}")
 
 
+def _require_index(config: IndexConfig, repo: str) -> None:
+    """Exit 1 unless `config`'s index database already exists.
+
+    Read commands call this BEFORE building a Retriever, GraphBuilder or AgentLoop:
+    constructing any of them opens the database, and opening a missing one creates it
+    (schema and an empty vec0 table), which then defeats every later "No index found"
+    check. Uses `db_path_resolved`, not `db_path_absolute`, because the latter creates
+    `.trelix/` and its `.gitignore` as a side effect of being read.
+    """
+    db_path = config.db_path_resolved
+    if db_path.exists():
+        return
+    err_console.print(
+        f"[red]No index found at {_safe_text(str(db_path))}.[/red]"
+        f" Run trelix index {_safe_text(repo)} first."
+    )
+    raise typer.Exit(1)
+
+
 def _print_json(payload: object, *, indent: int | None = 2) -> None:
     """Emit `payload` on stdout as JSON a consumer can parse.
 
@@ -511,7 +530,10 @@ def index(
         # at runtime -- passing it as a kwarg type-checks against the wrong name
         # and fails CI's `mypy src/trelix/` gate. Attribute assignment checks
         # against the field's own declared type instead, and has no such gap.
-        config.use_batch_api = use_batch_api
+        # Only the flag being set overrides: leaving it unset must not clobber a value
+        # the environment (TRELIX_USE_BATCH_API) already put on the config.
+        if use_batch_api:
+            config.use_batch_api = True
     except _PydanticValidationError as exc:
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
@@ -1241,6 +1263,8 @@ def search(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
+    _require_index(config, repo)
+
     try:
         retriever = Retriever(config)
         context = retriever.retrieve(query)
@@ -1336,6 +1360,8 @@ def ask(
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
+
+    _require_index(config, repo)
 
     # --agentic flag overrides the config field; --session implies --agentic
     if session is not None or agentic:
@@ -1437,6 +1463,8 @@ def query(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
+    _require_index(config, repo)
+
     console.print(Panel(f"[bold cyan]Query:[/bold cyan] {_safe_text(query_str)}", expand=False))
 
     try:
@@ -1514,6 +1542,8 @@ def call_graph(
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
+
+    _require_index(config, repo)
 
     try:
         retriever = Retriever(config)
@@ -1603,7 +1633,7 @@ def stats(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
-    db_path = config.db_path_absolute
+    db_path = config.db_path_resolved
     if not db_path.exists():
         err_console.print(
             f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
@@ -2766,6 +2796,7 @@ def graph(
     from trelix.graph.builder import GraphBuilder
 
     config = IndexConfig(repo_path=str(_Path(repo_path).resolve()))
+    _require_index(config, repo_path)
     builder = GraphBuilder(config)
 
     with _status_console(json_output).status("Building knowledge graph..."):
