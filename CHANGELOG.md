@@ -25,7 +25,8 @@ _Nothing yet._
   <repo> diagram` read a `.drawio` symlink whose target was outside the repo and sent the
   first 20000 characters to the configured LLM. It now skips a symlink that resolves outside
   the repo or cannot be resolved, and anything else that is not a regular file, and logs one
-  warning with the number of symlinks it skipped; links that stay inside the repo still work.
+  warning counting the symlinks it skipped because they point outside the repo or do not
+  resolve; links that stay inside the repo still work.
   The image and diagram connectors ignore `walker.follow_symlinks`, which `SECURITY.md` now
   says.
 - **A blank `TRELIX_API_AUTH_TOKEN` authenticated an empty `X-Trelix-Api-Key`.**
@@ -56,7 +57,9 @@ _Nothing yet._
   removed only after the commit, `--prune` reports a candidate whose delete fails in the
   database and carries on with the rest (a failure in an external vector store such as
   Qdrant still aborts the run), and the multi-repo watcher logs a failed delete at warning
-  level.
+  level. After upgrading from an older version the first `--prune` is refused until this
+  version has rewritten the index once (`TRELIX_INCREMENTAL=false trelix index <repo>`, then
+  prune); that refusal is older than this release.
 - **`trelix review` printed "No issues found." and exited 0 when it could not review, and
   `trelix ask` exited 0 when synthesis failed.** The repository's own PR workflow and the
   GitHub App then published a green "found 0 issue(s)" check that could never find anything.
@@ -88,7 +91,9 @@ _Nothing yet._
 
 ### Changed
 - `trelix review` now exits 3 (reason on stderr; `--json` still prints `[]`) when it could
-  not review, and `trelix ask` exits 1 when synthesis fails or no LLM is configured, instead
+  not review (no usable LLM, or the LLM call failed for every hunk; a partial failure, or a
+  reply the model truncated or wrote as prose, still counts as a review and exits 0), and
+  `trelix ask` exits 1 when synthesis fails or no LLM is configured, instead
   of exiting 0. For `ask` this applies when the embedder provider is not `local` and
   `--agentic` is not used: with the default `local` embedder it still prints the retrieved
   context and exits 0, and `--agentic` is unchanged.
