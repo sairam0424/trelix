@@ -158,6 +158,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 |------|---------|
 | `0` | Success |
 | `1` | Error — configuration invalid, index not found, I/O failure, API error, or user cancelled with Ctrl+C |
+| `3` | `trelix review` only — the review did not run: no usable LLM is configured, or every hunk's LLM call failed (see [`trelix review`](#trelix-review)) |
 
 `trelix search`, `ask`, `query`, `call-graph`, `graph` and `stats` exit `1` when `<repo_path>` has
 no index, printing `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.`
@@ -361,6 +362,9 @@ OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to data
   context text, which is useful for debugging retrieval quality.
 - FLARE iterative retrieval can be enabled globally with
   `TRELIX_RETRIEVAL_FLARE=true`.
+- If synthesis cannot produce an answer (no LLM configured, bad API key, network or
+  quota error), the reason is printed to stderr, nothing but the answer goes to stdout,
+  and the command exits `1`. This covers the streaming and the FLARE paths.
 - Reranking is off for this command and cannot be enabled by environment: `ask` builds
   `RetrievalConfig(rerank=False)` (`src/trelix/cli/main.py:1269`), which outranks
   `TRELIX_RETRIEVAL_RERANK`. Applies to the plain, `--agentic` and FLARE paths alike —
@@ -1156,6 +1160,18 @@ With `--pr`, fetches the diff directly from the GitHub API.
 | `--max-files` | | integer | `10` | Maximum number of files to review from the diff. |
 | `--pr` | | string | — | GitHub PR reference in the form `owner/repo#number`. Fetches the diff from the GitHub API. Requires `GITHUB_TOKEN`. **New in v2.4.0** |
 | `--post-comments` | | flag | `false` | Post findings back to GitHub as a batched PR review. Requires `GITHUB_TOKEN` with `pull_requests:write`. **New in v2.4.0** |
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | A review ran. This includes "no issues found" and a partial failure, where some hunks could not be reviewed (a warning with the counts goes to stderr). |
+| `1` | Error: invalid configuration, GitHub API failure, unreadable diff. |
+| `3` | The review did not run: no usable LLM is configured, or every hunk's LLM call failed. The reason is printed to stderr. With `--json`, stdout still carries a parseable, empty array (`[]`), so an empty array alone does not mean "clean": check the exit code. |
+
+Exit code `2` is not used by `review` itself (it is the usage-error code), so
+`3` is unambiguous for CI wrappers. With `--post-comments`, nothing is posted
+when the exit code is `3`.
 
 #### Examples
 

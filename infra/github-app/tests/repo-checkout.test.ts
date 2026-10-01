@@ -1,11 +1,14 @@
 import { execFile } from "node:child_process";
 import {
     existsSync,
+    lstatSync,
+    mkdirSync,
     mkdtempSync,
     readFileSync,
     readdirSync,
     rmSync,
     statSync,
+    symlinkSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -177,6 +180,96 @@ describe("checkoutPullRequest", () => {
         const after = listTrelixReviewDirs();
         expect(after).toEqual(before);
     }, 20_000);
+});
+
+describe("checkoutPullRequest with a hostile PR head", () => {
+    let sourceDir: string;
+    let originDir: string;
+    let outsideDir: string;
+    const outsideContent = "outside-content-that-must-not-be-indexed\n";
+
+    beforeEach(async () => {
+        outsideDir = mkdtempSync(join(tmpdir(), "trelix-checkout-outside-"));
+        writeFileSync(join(outsideDir, "target.txt"), outsideContent);
+
+        sourceDir = mkdtempSync(join(tmpdir(), "trelix-checkout-hostile-src-"));
+        const git = (...args: string[]) =>
+            execFileAsync("git", args, { cwd: sourceDir });
+        await git("init", "--quiet");
+        await git("config", "user.email", "test@example.com");
+        await git("config", "user.name", "Test");
+        // Committed as a mode 120000 entry: a symlink to a file outside the
+        // repo, plus a `.trelix` directory that would otherwise hand
+        // `trelix index` an attacker-supplied data directory.
+        symlinkSync(join(outsideDir, "target.txt"), join(sourceDir, "leak.md"));
+        mkdirSync(join(sourceDir, ".trelix"));
+        writeFileSync(join(sourceDir, ".trelix", "index.db"), "not a database");
+        writeFileSync(join(sourceDir, "README.md"), "hello\n");
+        await git("add", "-f", ".");
+        await git("commit", "--quiet", "-m", "hostile");
+        const { stdout } = await git("rev-parse", "HEAD");
+
+        originDir = mkdtempSync(
+            join(tmpdir(), "trelix-checkout-hostile-origin-"),
+        );
+        await execFileAsync("git", [
+            "clone",
+            "--quiet",
+            "--bare",
+            sourceDir,
+            originDir,
+        ]);
+        await execFileAsync(
+            "git",
+            ["update-ref", "refs/pull/9/head", stdout.trim()],
+            { cwd: originDir },
+        );
+    });
+
+    afterEach(() => {
+        rmSync(sourceDir, { recursive: true, force: true });
+        rmSync(originDir, { recursive: true, force: true });
+        rmSync(outsideDir, { recursive: true, force: true });
+    });
+
+    it("materialises a committed out-of-repo symlink as a plain file holding the link text", async () => {
+        const workspace = await checkoutPullRequest(
+            CANARY_CREDENTIAL,
+            { owner: "o", repo: "r", prNumber: 9 },
+            { remoteUrl: originDir },
+        );
+
+        try {
+            const leak = join(workspace.path, "leak.md");
+            expect(lstatSync(leak).isSymbolicLink()).toBe(false);
+            expect(lstatSync(leak).isFile()).toBe(true);
+            // The file holds the link TARGET text, not the target's bytes.
+            expect(readFileSync(leak, "utf8")).toBe(
+                join(outsideDir, "target.txt"),
+            );
+            expect(readFileSync(leak, "utf8")).not.toContain(outsideContent);
+        } finally {
+            await workspace.cleanup();
+        }
+    });
+
+    it("removes a committed .trelix entry so `trelix index` starts from a clean data dir", async () => {
+        const workspace = await checkoutPullRequest(
+            CANARY_CREDENTIAL,
+            { owner: "o", repo: "r", prNumber: 9 },
+            { remoteUrl: originDir },
+        );
+
+        try {
+            expect(existsSync(join(workspace.path, ".trelix"))).toBe(false);
+            // The rest of the tree is still checked out.
+            expect(
+                readFileSync(join(workspace.path, "README.md"), "utf8"),
+            ).toBe("hello\n");
+        } finally {
+            await workspace.cleanup();
+        }
+    });
 });
 
 describe("sweepStaleWorkspaces", () => {

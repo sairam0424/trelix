@@ -8,7 +8,13 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from trelix.core.retry import with_retry
-from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
+from trelix.llm.client import (
+    UNCONFIGURED_MODEL,
+    ChatMessage,
+    ChatResponse,
+    ToolCallResponse,
+    TrelixChatClient,
+)
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -120,7 +126,7 @@ class OpenAIBackend(TrelixChatClient):
         if self._client is None:
             return ChatResponse(
                 content="[trelix] LLM not configured — set OPENAI_API_KEY or AZURE_API_KEY.",
-                model="none",
+                model=UNCONFIGURED_MODEL,
                 finish_reason="stop",
             )
         token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)

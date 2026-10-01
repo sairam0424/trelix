@@ -14,7 +14,9 @@ Design principles:
 - Adapts to provider: openai, azure, or local (no-op with a clear message).
 - Falls back gracefully when no API key is present.
 - Uses per-intent system prompts to guide the response shape.
-- Never raises — all errors are caught and printed as messages.
+- Never raises — all errors are caught and printed as messages. The failure is also
+  recorded in ``last_error`` so a caller (``trelix ask``) can exit non-zero without
+  parsing the message text; the token stream itself is unchanged.
 """
 
 from __future__ import annotations
@@ -93,6 +95,15 @@ _USER_TEMPLATE = """\
 Answer based solely on the code shown above."""
 
 
+NOT_CONFIGURED_MESSAGE = (
+    "LLM not configured — set OPENAI_API_KEY (or AZURE_API_KEY + AZURE_ENDPOINT), "
+    "or choose another provider with TRELIX_LLM_PROVIDER."
+)
+GRAPH_RAG_EMPTY_MESSAGE = (
+    "GraphRAG synthesis produced no answer (every LLM call failed; check the API key "
+    "and connectivity)."
+)
+
 # ---------------------------------------------------------------------------
 # Synthesizer
 # ---------------------------------------------------------------------------
@@ -159,6 +170,13 @@ class Synthesizer:
 
             retrieval_config = _RC()
         self._retrieval_config = retrieval_config
+        # Why the last synthesize()/stream() call produced no answer; None when it did.
+        self.last_error: str | None = None
+
+    @property
+    def is_configured(self) -> bool:
+        """False when the backend has no credentials and only returns a placeholder."""
+        return self._client is not None
 
     # ------------------------------------------------------------------
     # Public API
@@ -179,8 +197,10 @@ class Synthesizer:
             Returns an empty string when no client is available.
         """
         cfg = config or self._config
+        self.last_error = None
 
         if self._client is None:
+            self.last_error = NOT_CONFIGURED_MESSAGE
             msg = (
                 "[trelix] No LLM API key configured — skipping synthesis. "
                 "Set OPENAI_API_KEY (or AZURE_API_KEY + AZURE_ENDPOINT) to enable answers."
@@ -204,13 +224,19 @@ class Synthesizer:
                     len(context.results),
                     context.total_tokens,
                 )
-                return graph_rag.synthesize(context.query, context, context.intent)
+                answer = graph_rag.synthesize(context.query, context, context.intent)
+                if not answer.strip():
+                    # Map-reduce swallows every LLM error and returns "", so an empty
+                    # result is the only failure signal it gives.
+                    self.last_error = GRAPH_RAG_EMPTY_MESSAGE
+                return answer
         except Exception as exc:  # noqa: BLE001
             logger.warning("GraphRAG check/dispatch failed, falling back to standard: %s", exc)
 
         try:
             return self._stream_response(context, cfg)
         except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
             msg = f"[trelix] Synthesis failed: {exc}"
             logger.warning(msg)
             print(f"\n{msg}", flush=True)
@@ -225,7 +251,8 @@ class Synthesizer:
         Stream synthesis tokens to the caller.
 
         Yields str tokens as they arrive from the LLM.
-        Yields a single error message string on failure (never raises).
+        Yields a single error message string on failure (never raises); the same
+        failure is recorded in ``last_error`` *before* that token is yielded.
 
         Usage::
             for token in synth.stream(context, config):
@@ -240,6 +267,7 @@ class Synthesizer:
         )
         max_tokens: int = getattr(config, "synthesis_max_tokens", 2048)
 
+        self.last_error = None if self.is_configured else NOT_CONFIGURED_MESSAGE
         try:
             from trelix.llm.client import ChatMessage
 
@@ -252,6 +280,7 @@ class Synthesizer:
             )
         except Exception as exc:
             logger.warning("Streaming synthesis failed: %s", exc)
+            self.last_error = str(exc)
             yield f"\n[trelix: synthesis unavailable — {exc}]"
 
     # ------------------------------------------------------------------

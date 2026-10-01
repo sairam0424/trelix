@@ -225,7 +225,7 @@ class MultiRepoWatcher:
                             )
                             logger.info("MultiRepoWatcher: deleted %s from index", rel)
                         except Exception as exc:
-                            logger.debug(
+                            logger.warning(
                                 "MultiRepoWatcher: delete failed for %s: %s", file_path, exc
                             )
                     continue

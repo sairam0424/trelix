@@ -30,7 +30,7 @@ from pathlib import Path
 
 from trelix.core.config import IndexConfig
 from trelix.core.models import Artifact
-from trelix.indexing.connectors.base import ArtifactSource
+from trelix.indexing.connectors.base import ArtifactSource, safe_resolve
 from trelix.llm.client import ChatMessage
 from trelix.llm.factory import build_chat_client
 
@@ -128,11 +128,35 @@ class DiagramConnector(ArtifactSource):
 
     def _discover(self) -> list[Path]:
         found: list[Path] = []
+        skipped_links = 0
         for path in self._repo_path.rglob("*.drawio"):
             if any(part in _SKIP_DIRS for part in path.relative_to(self._repo_path).parts):
                 continue
+            if path.is_symlink() and not self._is_within_repo(path):
+                skipped_links += 1
+                continue
+            # A directory, FIFO or device named *.drawio is not a diagram; a
+            # FIFO or /dev/zero would also block or exhaust memory in read_text().
+            if not path.is_file():
+                continue
             found.append(path)
+        if skipped_links:
+            logger.warning(
+                "DiagramConnector: skipped %d symlinked .drawio file(s) that resolve "
+                "outside the repo or cannot be resolved",
+                skipped_links,
+            )
         return sorted(found)
+
+    def _is_within_repo(self, path: Path) -> bool:
+        """True when `path` resolves (following any symlinks) to a location
+        inside `self._repo_path`. `read_text()` always follows a symlink, so an
+        unguarded `arch.drawio -> ~/.ssh/id_rsa` would have its target's first
+        `_MAX_XML_CHARS` characters sent to the configured LLM. Containment is
+        enforced unconditionally, same policy as ImageConnector._is_within_repo
+        (image.py); an unresolvable link (dangling, loop) counts as outside."""
+        resolved = safe_resolve(path)
+        return resolved is not None and resolved.is_relative_to(self._repo_path)
 
     def _file_to_artifact(self, path: Path, xml: str, chat_client: object) -> Artifact:
         rel_path = path.relative_to(self._repo_path).as_posix()

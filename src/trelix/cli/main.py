@@ -17,6 +17,7 @@ import errno
 import json
 import logging
 import os
+import sqlite3
 import sys
 import time
 import warnings
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig, IndexConfig
     from trelix.core.models import IndexedFile
     from trelix.indexing.indexer import Indexer
+    from trelix.review.reviewer import ReviewOutcome
     from trelix.store.db import Database
     from trelix.store.provenance import DriftReport, IndexProvenance, PrunePlan
 
@@ -281,6 +283,38 @@ def _print_json(payload: object, *, indent: int | None = 2) -> None:
     )
 
 
+def _exit_if_review_not_run(outcome: ReviewOutcome, *, json_output: bool) -> None:
+    """Exit REVIEW_NOT_RUN_EXIT_CODE when nothing was reviewed; warn on a partial review.
+
+    An empty comment list from a review that never ran must not read as a clean
+    review, so the reason goes to stderr and (in --json mode) stdout still carries
+    a parseable, empty array. A partial failure keeps exit 0 and only warns.
+    """
+    if outcome.could_not_review:
+        if json_output:
+            _print_json([])
+        if outcome.llm_available:
+            reason = (
+                f"the LLM call failed for {outcome.hunks_failed} of {outcome.hunks_total} "
+                "hunks (see the warnings above)"
+            )
+        else:
+            reason = (
+                "the LLM is not configured (set OPENAI_API_KEY or AZURE_API_KEY, "
+                "or choose another provider with TRELIX_LLM_PROVIDER)"
+            )
+        err_console.print(
+            f"[red]trelix review did not run:[/red] {_safe_text(reason)}. "
+            "No code was reviewed, so this is not a clean result."
+        )
+        raise typer.Exit(REVIEW_NOT_RUN_EXIT_CODE)
+    if outcome.hunks_failed:
+        err_console.print(
+            f"[yellow]Warning: {outcome.hunks_failed} of {outcome.hunks_total} hunks could "
+            "not be reviewed; the results below cover only the rest.[/yellow]"
+        )
+
+
 # Relocated to trelix.core.console_safety so indexing/indexer.py can share it — it is
 # the only other module in src/ that builds a markup Console, and it cannot import from
 # the CLI without a cycle. Aliased to the private name so the ~86 call sites below are
@@ -390,6 +424,11 @@ _EmbedderProvider = Literal[
     "bedrock-cohere",
     "cohere",
 ]
+
+# Exit code of `trelix review` when it could not review at all (no usable LLM, or every
+# hunk's LLM call failed). Not 1 (generic error), not 2 (click usage error, and the
+# audit commands' "could not check"), so a CI wrapper can tell "not reviewed" from both.
+REVIEW_NOT_RUN_EXIT_CODE = 3
 
 _PROVIDER_HELP = (
     "Embedding provider: local | openai | azure | voyage"
@@ -729,14 +768,22 @@ def _run_prune(
     repo_root = Path(config.repo_path)
     deleted = 0
     unmatched: list[str] = []
+    failed: list[tuple[str, str]] = []
     for rel_path in plan.candidates:
         # The absolute path is reconstructed rather than read back out of `files.path`
         # because delete_file_by_path matches `path = ? OR rel_path = ?` — so a checkout
         # that has moved since it was indexed still deletes on the rel_path arm.
-        if db.delete_file_by_path(str(repo_root / rel_path), rel_path, vector_store):
-            deleted += 1
-        else:
-            unmatched.append(rel_path)
+        try:
+            if db.delete_file_by_path(str(repo_root / rel_path), rel_path, vector_store):
+                deleted += 1
+            else:
+                unmatched.append(rel_path)
+        except sqlite3.Error as exc:
+            # delete_file_by_path rolls its own transaction back; this is a second line of
+            # defence so one bad candidate can never leave the connection mid-transaction
+            # for the next. Keep going: the remaining candidates are independent.
+            db._conn.rollback()
+            failed.append((rel_path, str(exc)))
 
     console.print(
         f"[green]Pruned {deleted} file(s)[/green] — rows, symbols, chunks and embeddings."
@@ -751,6 +798,19 @@ def _run_prune(
             f"{' …' if len(unmatched) > 5 else ''}) — the plan and the index disagree. "
             "Run `trelix stats --drift` before trusting this index."
         )
+    if failed:
+        # Not "rolled back": a SQL failure is, but a vector-store failure after the commit is
+        # not (the rows are gone and only vectors are left over), so point at the drift check.
+        err_console.print(
+            f"[red]{len(failed)} planned deletion(s) failed[/red] "
+            "— re-run --prune to retry any that are still listed, and run "
+            "`trelix stats --drift` to check the index:"
+        )
+        for rel_path, message in failed[:_PRUNE_PREVIEW_LIMIT]:
+            err_console.print(f"  {_safe_text(rel_path)}: {_safe_text(message)}")
+        if len(failed) > _PRUNE_PREVIEW_LIMIT:
+            err_console.print(f"  … and {len(failed) - _PRUNE_PREVIEW_LIMIT} more")
+    if unmatched or failed:
         raise typer.Exit(1)
 
 
@@ -1420,11 +1480,21 @@ def ask(
             # form a tag, and a complete "[/!]" inside one token can no longer
             # abort the stream mid-answer.
             for token in synth.stream(context, config.retrieval):
+                # stream() never raises: it records the failure in last_error before
+                # yielding its banner / "not configured" placeholder. Neither is an
+                # answer, so neither goes to stdout.
+                if synth.last_error is not None:
+                    break
                 console.print(_safe_text(token), end="", highlight=False)
             console.print()  # final newline
     except Exception as exc:
         _print_error("Synthesis failed", exc)
         raise typer.Exit(1) from exc
+
+    # Outside the try: typer.Exit is a RuntimeError, which the handler above would catch.
+    if synth.last_error is not None:
+        _print_error("Synthesis failed", synth.last_error)
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -3333,6 +3403,8 @@ def review(
         with status_console.status("Retrieving context and generating review..."):
             comments = reviewer.review(diff_text=pr_diff_str)
 
+        _exit_if_review_not_run(reviewer.last_outcome, json_output=json_output)
+
         if not comments:
             if json_output:
                 _print_json([])
@@ -3440,6 +3512,8 @@ def review(
     reviewer = DiffReviewer(config)
     with _status_console(json_output).status("Retrieving context and generating review..."):
         comments = reviewer.review(filtered)
+
+    _exit_if_review_not_run(reviewer.last_outcome, json_output=json_output)
 
     if not comments:
         console.print("[green]No issues found.[/green]")
