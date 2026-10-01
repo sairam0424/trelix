@@ -1717,7 +1717,7 @@ curl -s "http://localhost:8765/search?query=JWT+validation&repo=./my-repo" \
   -H "X-Trelix-Api-Key: my-secret-token" | jq .
 ```
 
-A missing or mismatched header returns `401 Invalid or missing API key` (checked with a constant-time `hmac.compare_digest`, and logged server-side as a warning). If `TRELIX_API_AUTH_TOKEN` is left unset, the server behaves exactly as before — every route is open, no header required.
+A missing or mismatched header returns `401 Invalid or missing API key` (checked with a constant-time `hmac.compare_digest`, and logged server-side as a warning). If `TRELIX_API_AUTH_TOKEN` is left unset (or blank), no API key is required and every route is open to a client that is allowed to reach the server; see the host check below for what a loopback server still refuses.
 
 **`/health` is always exempt** — it has no auth dependency at all, so liveness probes (Kubernetes, load balancers) can reach it without a token even when auth is enabled. Every other route (`/search`, `/ask`, `/index`, `/parse`, `/stats`, `/graph`, `/graph/communities`, `/graph/visualize`, `/graph/search`) is protected once the token is set.
 

@@ -63,7 +63,7 @@ These flags are processed before any subcommand.
 **Examples**
 
 ```bash
-trelix --version        # trelix 3.3.7
+trelix --version        # trelix 3.4.2
 trelix --help           # top-level help
 trelix index --help     # help for the index command
 ```
@@ -1172,7 +1172,7 @@ With `--pr`, fetches the diff directly from the GitHub API.
 |------|---------|
 | `0` | A review ran. This includes "no issues found" and a partial failure, where some hunks could not be reviewed (a warning with the counts goes to stderr). |
 | `1` | Error: invalid configuration, GitHub API failure, unreadable diff. |
-| `3` | The review did not run: no usable LLM is configured, or every hunk's LLM call failed. The reason is printed to stderr. With `--json`, stdout still carries a parseable, empty array (`[]`), so an empty array alone does not mean "clean": check the exit code. |
+| `3` | The review did not run: no usable LLM is configured, or every hunk's LLM call failed. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) (with `--pr` it is the only thing on stdout; in local-diff mode a `Reviewing N hunks across M files...` line is printed to stdout before it), so an empty array alone does not mean "clean": check the exit code. |
 
 Exit code `2` is not used by `review` itself (it is the usage-error code), so
 `3` is unambiguous for CI wrappers. With `--post-comments`, nothing is posted

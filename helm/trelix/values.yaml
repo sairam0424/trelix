@@ -134,9 +134,9 @@ apiAuth:
   existingSecretName: ""
   existingSecretKey: "TRELIX_API_AUTH_TOKEN"
 
-# Plain (non-secret) extra environment variables, e.g. TRELIX_EMBEDDER=openai.
+# Plain (non-secret) extra environment variables, e.g. TRELIX_EMBEDDER_PROVIDER=openai.
 extraEnv: []
-# - name: TRELIX_EMBEDDER
+# - name: TRELIX_EMBEDDER_PROVIDER
 #   value: openai
 
 # Extra env vars sourced from an existing Secret, for credentials this chart

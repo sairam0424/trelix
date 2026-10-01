@@ -69,7 +69,11 @@ _Nothing yet._
   `.trelix/index.db` in a repository that was never indexed**, printed "No results" (or
   "Knowledge Graph built" with zero nodes) and exited 0, and the stray file defeated the
   "is there an index?" guards in `stats`, `link-tickets`, `link-artifacts` and
-  `migrate-vectors` on the next run. `stats` also no longer leaves `.trelix/` behind.
+  `migrate-vectors` on the next run. `stats` also no longer leaves `.trelix/` behind. Not
+  covered yet: the MCP server, the REST API, the LangChain and LlamaIndex retrievers and
+  `trelix eval` and `trelix review` still create an empty index for a repository that was
+  never indexed, and a stray empty `.trelix/index.db` left behind by an older version is
+  treated as a real index (delete `.trelix` or run `trelix index`).
 - **The Qdrant vector store returned cosine similarity where every caller expects a
   distance**, inverting the per-hit score and the opt-in artifact-linker embedding fallback.
   `search()` now returns distance like the sqlite-vec store.
@@ -92,10 +96,13 @@ _Nothing yet._
   Run trelix index <repo> first." on a repository that has not been indexed.
 - A loopback `trelix serve` that runs open now answers 403 to a request whose `Host` is not
   `localhost`, `127.0.0.1`, `::1` or the bind address. If you reach it through a reverse proxy
-  that forwards the public hostname
-  (for example nginx with `proxy_set_header Host $host`), Codespaces, ngrok or
-  `host.docker.internal`, add that hostname to `TRELIX_API_ALLOWED_HOSTS`. A `docker compose`
-  user who widens the port mapping must add the hostname too, even with a token set.
+  that forwards the public hostname (for example nginx with `proxy_set_header Host $host`),
+  Codespaces, ngrok, `host.docker.internal`, or from another container by its compose service
+  name (`http://trelix:8765`), add that hostname to `TRELIX_API_ALLOWED_HOSTS`. A `docker
+  compose` user who widens the port mapping must add the hostname too, even with a token set.
+- `trelix index` now honors `TRELIX_USE_BATCH_API=true`, which it used to ignore. If you
+  already export it, indexing submits an asynchronous embedding batch job instead of
+  embedding inline; run `trelix index --resume-batch` later to collect the result.
 - Until the workflow is edited to pass an LLM key to its "Run trelix review" step (it passes
   none today, so a repository secret alone is not enough), this repository's PR review
   workflow shows a neutral "trelix review did not run" check on every pull request instead of

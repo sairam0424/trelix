@@ -28,7 +28,9 @@ tracked follow-up, not something to route around at the Helm layer.
 
 ## Security — no auth on the REST API
 
-`trelix serve` has zero auth middleware. This chart defaults
+`trelix serve` runs with no authentication unless you set `apiAuth.token`
+(or `apiAuth.existingSecretName`), which then requires an `X-Trelix-Api-Key`
+header on every route except `/health`. This chart defaults
 `ingress.enabled: false` for exactly that reason — a public Ingress with no
 fronting auth exposes:
 

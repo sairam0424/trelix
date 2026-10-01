@@ -33,9 +33,10 @@ registration required.
 2. On the next pull request, the `trelix Code Review` check runs
    automatically
 
-### Optional: richer reviews with an LLM provider
+### Required: an LLM provider
 
-Set one of these repository secrets for LLM-powered synthesis:
+`trelix review` needs an LLM provider to produce anything (see the behavior
+notes below). Set one of these repository secrets:
 
 | Secret | Provider |
 |--------|---------|
@@ -48,9 +49,9 @@ secrets**, then update the workflow's `env:` block to pass the key.
 
 ### Behavior notes
 
-- The index step has `continue-on-error: true` — if indexing fails
-  (network-restricted CI, OOM), the workflow continues and posts an empty
-  check rather than blocking the PR
+- The index step is tolerant — if indexing fails (network-restricted CI,
+  OOM), the workflow prints a warning and still runs the review against a
+  partial or empty index rather than blocking the PR
 - Review findings are capped at 50 annotations per PR (GitHub API limit)
 - Works on private repos — `GITHUB_TOKEN` scopes are sufficient
 - `trelix review` needs a working LLM provider: it has no structural-only
