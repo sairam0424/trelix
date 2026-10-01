@@ -633,6 +633,101 @@ class TestApiAuth:
         assert resp.status_code == 401
 
 
+class TestBlankApiAuthToken:
+    """A blank TRELIX_API_AUTH_TOKEN means "unset", never "the token is the empty string".
+
+    docker-compose.yml passes ``${TRELIX_API_AUTH_TOKEN:-}``, which exports an EMPTY
+    string when the operator sets nothing. Read as a real token, ``hmac.compare_digest``
+    of an empty ``X-Trelix-Api-Key`` against it is True, so a header a client can send
+    for free would authenticate.
+    """
+
+    @pytest.mark.parametrize("blank", ["", " ", "   ", "\t", " \n "])
+    def test_blank_token_resolves_to_none(
+        self, blank: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from trelix.api.app import _ApiAuthSettings
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", blank)
+        assert _ApiAuthSettings().api_auth_token is None
+
+    def test_real_token_is_returned_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from trelix.api.app import _ApiAuthSettings
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", " secret-token ")
+        assert _ApiAuthSettings().api_auth_token == " secret-token "
+
+    def test_blank_token_logs_one_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from trelix.api.app import _ApiAuthSettings
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "  ")
+        with caplog.at_level("WARNING", logger="trelix.api"):
+            _ApiAuthSettings()
+        blank_warnings = [r for r in caplog.records if "TRELIX_API_AUTH_TOKEN" in r.getMessage()]
+        assert len(blank_warnings) == 1
+        assert "unset" in blank_warnings[0].getMessage()
+
+    def test_unset_token_logs_no_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from trelix.api.app import _ApiAuthSettings
+
+        monkeypatch.delenv("TRELIX_API_AUTH_TOKEN", raising=False)
+        with caplog.at_level("WARNING", logger="trelix.api"):
+            _ApiAuthSettings()
+        assert not [r for r in caplog.records if "TRELIX_API_AUTH_TOKEN" in r.getMessage()]
+
+    def test_empty_header_does_not_authenticate_with_real_token(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        client = TestClient(create_app())
+        resp = client.get(f"/search?query=auth&repo={tmp_path}", headers={"X-Trelix-Api-Key": ""})
+        assert resp.status_code == 401
+
+    def test_empty_header_does_not_authenticate_with_empty_bearer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "secret-token")
+        client = TestClient(create_app())
+        resp = client.get(
+            f"/search?query=auth&repo={tmp_path}", headers={"Authorization": "Bearer "}
+        )
+        assert resp.status_code == 401
+
+    @pytest.mark.usefixtures("allow_repo_root")
+    def test_blank_token_leaves_the_api_in_open_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same as unset: no header needed, and an empty header is not special."""
+        from fastapi.testclient import TestClient
+
+        from trelix.api.app import create_app
+
+        monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", "")
+        mock_ctx = MagicMock()
+        mock_ctx.results = []
+        with patch("trelix.api.app.Retriever") as MockRetriever:
+            MockRetriever.return_value.retrieve.return_value = mock_ctx
+            client = TestClient(create_app())
+            no_header = client.get(f"/search?query=auth&repo={tmp_path}")
+            empty_header = client.get(
+                f"/search?query=auth&repo={tmp_path}", headers={"X-Trelix-Api-Key": ""}
+            )
+        assert no_header.status_code == 200
+        assert empty_header.status_code == 200
+
+
 @pytest.mark.usefixtures("allow_repo_root")
 class TestSearchQueryValidation:
     """A negative k or cursor doesn't raise inside search() — Python's

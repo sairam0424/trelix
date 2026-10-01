@@ -91,6 +91,17 @@ def _wide_console(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _indexed_repo(tmp_path: Path) -> None:
+    """Read commands refuse a repo with no index (`_require_index`).
+
+    These tests patch `Retriever` so no store is ever opened; an empty placeholder is
+    enough to get past the existence check without indexing anything.
+    """
+    (tmp_path / ".trelix").mkdir()
+    (tmp_path / ".trelix" / "index.db").touch()
+
+
+@pytest.fixture(autouse=True)
 def _no_leaked_log_handler() -> Iterator[None]:
     """Undo the root-logger handler each invoked command installs.
 

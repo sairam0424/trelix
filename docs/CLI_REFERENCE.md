@@ -133,6 +133,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel parse workers during `trelix index` |
+| `TRELIX_USE_BATCH_API` | `false` | Submit new embeddings through OpenAI's Batch API (50% cheaper, up to 24h) instead of embedding synchronously. Honoured by `trelix index`; the `--use-batch-api` flag turns it on for one run regardless. Takes effect only with the `openai` provider |
 | `TRELIX_CHUNKER_MULTI_GRANULARITY` | `false` | Index sub-symbol blocks and statements (MGS3) |
 | `TRELIX_PARSER_DATAFLOW` | `false` | Extract def-use chains during parsing. Python-only in practice — the extractor requests the Python grammar unconditionally |
 | `TRELIX_PARSER_TAINT` | `false` | **Inert.** `ParserConfig.taint_enabled` is declared but read nowhere in `src/`, so setting this has no effect. Taint analysis happens only when you run `trelix taint`, which does not consult it |
@@ -157,6 +158,13 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 |------|---------|
 | `0` | Success |
 | `1` | Error — configuration invalid, index not found, I/O failure, API error, or user cancelled with Ctrl+C |
+| `3` | `trelix review` only — the review did not run: no usable LLM is configured, or every hunk's LLM call failed (see [`trelix review`](#trelix-review)) |
+
+`trelix search`, `ask`, `query`, `call-graph`, `graph` and `stats` exit `1` when `<repo_path>` has
+no index, printing `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.`
+to stderr (`stats` words it slightly differently). They check before opening anything, so they leave
+no `.trelix/` directory behind. The commands that write an index (`index`, `update-index`,
+`watch`) still create it on first use.
 
 ---
 
@@ -286,6 +294,9 @@ trelix search /my/repo "database connection pool" --provider openai
 
 #### Notes
 
+- Requires an existing index. On a repository that has not been indexed it prints
+  `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.` to
+  stderr and exits `1`, without creating `.trelix/`.
 - `trelix search` disables the reranker for its own invocation (it constructs
   `RetrievalConfig(rerank=False)` — `src/trelix/cli/main.py:1173`), and so do three more
   commands: `ask` (`:1269`), `query` (`:1365`) and `call-graph` (`:1443`). An init keyword
@@ -343,11 +354,17 @@ OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to data
 
 #### Notes
 
+- Requires an existing index. On a repository that has not been indexed it prints
+  `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.` to
+  stderr and exits `1`, without creating `.trelix/`.
 - `--agentic` sets `TRELIX_RETRIEVAL_AGENTIC=true` for this invocation only.
 - With `--provider local` and no LLM key, the command prints the assembled
   context text, which is useful for debugging retrieval quality.
 - FLARE iterative retrieval can be enabled globally with
   `TRELIX_RETRIEVAL_FLARE=true`.
+- If synthesis cannot produce an answer (no LLM configured, bad API key, network or
+  quota error), the reason is printed to stderr, nothing but the answer goes to stdout,
+  and the command exits `1`. This covers the streaming and the FLARE paths.
 - Reranking is off for this command and cannot be enabled by environment: `ask` builds
   `RetrievalConfig(rerank=False)` (`src/trelix/cli/main.py:1269`), which outranks
   `TRELIX_RETRIEVAL_RERANK`. Applies to the plain, `--agentic` and FLARE paths alike —
@@ -389,6 +406,9 @@ trelix query /my/repo "error handling patterns" --provider voyage
 
 #### Notes
 
+- Requires an existing index. On a repository that has not been indexed it prints
+  `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.` to
+  stderr and exits `1`, without creating `.trelix/`.
 - For machine-readable output use `trelix search ... --json` instead.
 - The header line shows the number of results, total tokens, and elapsed time.
 
@@ -433,6 +453,9 @@ trelix call-graph . "trelix.retrieval.retriever" --direction importers
 
 #### Notes
 
+- Requires an existing index. On a repository that has not been indexed it prints
+  `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.` to
+  stderr and exits `1`, without creating `.trelix/`.
 - The `symbol` argument can be a simple function name or a qualified module
   path (e.g., `pkg.module.ClassName`).
 - Graph edges are built during indexing. Re-index if the graph looks stale.
@@ -824,6 +847,9 @@ branch returned before the export ran.
 
 #### Notes
 
+- Requires an existing index. On a repository that has not been indexed it prints
+  `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.` to
+  stderr and exits `1`, without creating `.trelix/`.
 - `trelix graph` builds the knowledge graph. The old command for displaying
   call/import edges for a single symbol has been renamed to
   `trelix call-graph`.
@@ -1139,6 +1165,18 @@ With `--pr`, fetches the diff directly from the GitHub API.
 | `--max-files` | | integer | `10` | Maximum number of files to review from the diff. |
 | `--pr` | | string | — | GitHub PR reference in the form `owner/repo#number`. Fetches the diff from the GitHub API. Requires `GITHUB_TOKEN`. **New in v2.4.0** |
 | `--post-comments` | | flag | `false` | Post findings back to GitHub as a batched PR review. Requires `GITHUB_TOKEN` with `pull_requests:write`. **New in v2.4.0** |
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | A review ran. This includes "no issues found" and a partial failure, where some hunks could not be reviewed (a warning with the counts goes to stderr). |
+| `1` | Error: invalid configuration, GitHub API failure, unreadable diff. |
+| `3` | The review did not run: no usable LLM is configured, or every hunk's LLM call failed. The reason is printed to stderr. With `--json`, stdout still carries a parseable, empty array (`[]`), so an empty array alone does not mean "clean": check the exit code. |
+
+Exit code `2` is not used by `review` itself (it is the usage-error code), so
+`3` is unambiguous for CI wrappers. With `--post-comments`, nothing is posted
+when the exit code is `3`.
 
 #### Examples
 

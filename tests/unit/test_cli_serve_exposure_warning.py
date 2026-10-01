@@ -116,6 +116,25 @@ def test_a_configured_token_suppresses_the_warning(
     assert _stderr(capsys) == "", "a configured API token must silence the warning"
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_token_does_not_suppress_the_warning(
+    blank: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """MUTATION: dropping the blank -> None normalisation on `_ApiAuthSettings`.
+
+    `docker-compose.yml` exports `TRELIX_API_AUTH_TOKEN=` (empty) when the operator
+    sets nothing. Read as "a token is configured", the `is not None` guard returned
+    early and `serve --host 0.0.0.0` said nothing while every route was open.
+    """
+    monkeypatch.setenv("TRELIX_API_AUTH_TOKEN", blank)
+
+    _warn_if_exposed_without_auth("0.0.0.0")  # noqa: S104 - deliberate: this exposed host must warn
+
+    err = _stderr(capsys)
+    assert "WARNING" in err, f"a blank token must not count as auth: {err!r}"
+    assert "no authentication configured" in err, err
+
+
 def test_the_loopback_host_table_is_exactly_these_four() -> None:
     """MUTATION: adding "0.0.0.0" (or any routable form) to `_LOOPBACK_HOSTS`.
 

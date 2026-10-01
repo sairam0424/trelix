@@ -81,7 +81,7 @@ from collections.abc import Generator, Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Intentionally at module scope — see "Import contract" in the module docstring.
@@ -186,6 +186,23 @@ class _ApiAuthSettings(BaseSettings):
     )
 
     api_auth_token: str | None = Field(default=None, alias="TRELIX_API_AUTH_TOKEN")
+
+    @field_validator("api_auth_token")
+    @classmethod
+    def _blank_token_is_unset(cls, value: str | None) -> str | None:
+        """Treat a blank token as unset.
+
+        ``docker-compose.yml`` passes ``${TRELIX_API_AUTH_TOKEN:-}``, which exports an
+        empty string when the operator sets nothing, and a missing CI secret does the
+        same. Read literally, ``hmac.compare_digest("", "")`` is True, so an empty
+        ``X-Trelix-Api-Key`` header would authenticate, and the exposure warning in
+        ``trelix serve`` would see "a token is configured". Normalising here means
+        every consumer sees ``None``. A real token is returned untouched.
+        """
+        if value is None or value.strip():
+            return value
+        logger.warning("TRELIX_API_AUTH_TOKEN is set but blank; treating it as unset")
+        return None
 
 
 # ---------------------------------------------------------------------------

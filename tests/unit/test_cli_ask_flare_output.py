@@ -38,6 +38,9 @@ def _context() -> RetrievedContext:
 
 
 def test_ask_flare_branch_prints_the_answer_exactly_once(tmp_path: Path) -> None:
+    # `ask` refuses a repo with no index; Retriever is mocked, the index file is not.
+    (tmp_path / ".trelix").mkdir()
+    (tmp_path / ".trelix" / "index.db").touch()
     answer = "`add` returns the sum of its two arguments."
 
     def _fake_run(query: str) -> str:
@@ -51,9 +54,12 @@ def test_ask_flare_branch_prints_the_answer_exactly_once(tmp_path: Path) -> None
 
     with (
         patch("trelix.retrieval.retriever.Retriever") as MockRetriever,
-        patch("trelix.retrieval.synthesizer.Synthesizer"),
+        patch("trelix.retrieval.synthesizer.Synthesizer") as MockSynthesizer,
         patch("trelix.retrieval.flare.FLARELoop", return_value=fake_loop),
     ):
+        # `ask` exits 1 when the synthesizer reports a failure; a bare MagicMock
+        # attribute would read as one.
+        MockSynthesizer.return_value.last_error = None
         MockRetriever.return_value.retrieve.return_value = _context()
         result = runner.invoke(
             app,

@@ -326,3 +326,135 @@ class TestFileSummaryVectorIsDeletedWithTheFile:
             assert db.delete_file_by_path("/repo/absent.py", "absent.py", store) is False
 
         assert store.deleted == [], store.deleted
+
+
+class TestDeletingAFileThatOtherFilesImport:
+    """`imports.imported_file_id` is `REFERENCES files(id)` with no ON DELETE action.
+
+    With `PRAGMA foreign_keys = ON`, `DELETE FROM files` therefore raised
+    `sqlite3.IntegrityError` whenever a surviving file had an import resolved to the
+    deleted one — the ordinary rename/delete case. By then the vectors were already gone,
+    so the failure left a half-deleted file and an open transaction on the shared
+    connection. The schema is not changed (that needs a table rebuild); the deleter
+    clears the inbound references itself, inside one transaction.
+    """
+
+    class _RecordingStore:
+        def __init__(self) -> None:
+            self.deleted: list[int] = []
+
+        def delete_batch(self, chunk_ids: list[int]) -> None:
+            self.deleted.extend(chunk_ids)
+
+    @staticmethod
+    def _importer_and_target(db: Database) -> tuple[int, int]:
+        """File A with one import row resolved to file B; returns (a_id, b_id)."""
+        a_id = _make_file(db, "a.py")
+        b_id = _make_file(db, "b.py")
+        db._conn.execute(
+            "INSERT INTO imports (file_id, imported_from, imported_names, imported_file_id) "
+            "VALUES (?, 'b', '[]', ?)",
+            (a_id, b_id),
+        )
+        db._conn.commit()
+        return a_id, b_id
+
+    def test_deleting_an_imported_file_succeeds_and_keeps_the_importer_row(
+        self, tmp_path: Path
+    ) -> None:
+        db = Database(tmp_path / "index.db")
+        a_id, b_id = self._importer_and_target(db)
+        _add_edges(db, _make_symbol(db, b_id, "fn_b"), count=2)
+
+        assert db.delete_file_by_path("/r/b.py", "b.py") is True
+
+        assert db._conn.execute("SELECT 1 FROM files WHERE id = ?", (b_id,)).fetchone() is None
+        assert (
+            db._conn.execute("SELECT 1 FROM symbols WHERE file_id = ?", (b_id,)).fetchone() is None
+        )
+        assert _edge_count(db) == 0
+        # The importer survives, and so does its import row — only the resolved edge goes.
+        assert db._conn.execute("SELECT 1 FROM files WHERE id = ?", (a_id,)).fetchone() is not None
+        rows = db._conn.execute(
+            "SELECT imported_from, imported_file_id FROM imports WHERE file_id = ?", (a_id,)
+        ).fetchall()
+        assert [tuple(r) for r in rows] == [("b", None)]
+        assert db._conn.in_transaction is False
+        db.close()
+
+    def test_a_self_import_and_a_mutual_import_do_not_block_the_delete(
+        self, tmp_path: Path
+    ) -> None:
+        db = Database(tmp_path / "index.db")
+        a_id, b_id = self._importer_and_target(db)
+        db._conn.execute(
+            "INSERT INTO imports (file_id, imported_from, imported_names, imported_file_id) "
+            "VALUES (?, 'a', '[]', ?), (?, 'b', '[]', ?)",
+            (b_id, a_id, b_id, b_id),
+        )
+        db._conn.commit()
+
+        assert db.delete_file_by_path("/r/b.py", "b.py") is True
+
+        remaining = db._conn.execute("SELECT imported_file_id FROM imports").fetchall()
+        assert [r[0] for r in remaining] == [None]  # only A's import of B is left, unresolved
+        db.close()
+
+    def test_importer_first_and_target_first_orders_both_work(self, tmp_path: Path) -> None:
+        for first, second in (("a.py", "b.py"), ("b.py", "a.py")):
+            db = Database(tmp_path / f"{first}.db")
+            self._importer_and_target(db)
+            assert db.delete_file_by_path(f"/r/{first}", first) is True
+            assert db.delete_file_by_path(f"/r/{second}", second) is True
+            assert db._conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
+            db.close()
+
+    def test_a_failure_mid_delete_rolls_everything_back(self, tmp_path: Path) -> None:
+        """A trigger aborts `DELETE FROM files` AFTER the earlier statements ran, so the
+        rows those statements touched must come back, and no transaction may stay open."""
+        db = Database(tmp_path / "index.db")
+        a_id, b_id = self._importer_and_target(db)
+        _add_edges(db, _make_symbol(db, b_id, "fn_b"), count=2)
+        db._conn.execute(
+            "CREATE TRIGGER boom BEFORE DELETE ON files "
+            "BEGIN SELECT RAISE(ABORT, 'forced failure'); END"
+        )
+        db._conn.commit()
+        store = self._RecordingStore()
+
+        with pytest.raises(sqlite3.Error, match="forced failure"):
+            db.delete_file_by_path("/r/b.py", "b.py", store)
+
+        assert db._conn.in_transaction is False
+        assert db._conn.execute("SELECT 1 FROM files WHERE id = ?", (b_id,)).fetchone() is not None
+        assert db._conn.execute("SELECT 1 FROM symbols WHERE file_id = ?", (b_id,)).fetchone()
+        assert _edge_count(db) == 2
+        assert (
+            db._conn.execute(
+                "SELECT imported_file_id FROM imports WHERE file_id = ?", (a_id,)
+            ).fetchone()[0]
+            == b_id
+        )
+        # Vectors are only removed once the SQL side has committed.
+        assert store.deleted == []
+        db.close()
+
+    def test_vectors_are_deleted_after_the_sql_commit(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "index.db")
+        _a_id, b_id = self._importer_and_target(db)
+        seen: list[tuple[bool, bool]] = []
+
+        class _Store:
+            def delete_batch(self, chunk_ids: list[int]) -> None:
+                seen.append(
+                    (
+                        db._conn.in_transaction,
+                        db._conn.execute("SELECT 1 FROM files WHERE id = ?", (b_id,)).fetchone()
+                        is not None,
+                    )
+                )
+
+        assert db.delete_file_by_path("/r/b.py", "b.py", _Store()) is True
+
+        assert seen == [(False, False)], "vectors were deleted before the file row was gone"
+        db.close()

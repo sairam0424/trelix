@@ -355,7 +355,7 @@ Captioning supports Anthropic and Bedrock (every other `TRELIX_LLM_PROVIDER` rai
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_API_AUTH_TOKEN` | _(none)_ | Shared secret for `trelix serve`'s REST API. Opt-in: unset (the default) leaves every route open, matching the same "off by default" pattern as `TRELIX_OTEL_ENABLED` and `TRELIX_TELEMETRY_ENABLED`. When set, every route except `GET /health` requires a matching `X-Trelix-Api-Key` header (checked with a constant-time comparison) — see [USER_GUIDE.md § API Quick Reference](USER_GUIDE.md#14-api-quick-reference). |
+| `TRELIX_API_AUTH_TOKEN` | _(none)_ | Shared secret for `trelix serve`'s REST API. Opt-in: unset (the default) leaves every route open, and a blank or whitespace-only value counts as unset (a warning is logged), matching the same "off by default" pattern as `TRELIX_OTEL_ENABLED` and `TRELIX_TELEMETRY_ENABLED`. When set, every route except `GET /health` requires a matching `X-Trelix-Api-Key` header (checked with a constant-time comparison) — see [USER_GUIDE.md § API Quick Reference](USER_GUIDE.md#14-api-quick-reference). |
 
 `TRELIX_API_ALLOWED_HOSTS` is a separate control: a comma-separated list of hostnames that
 the REST API accepts in the `Host` header (and in an `Origin` header, any port), used to

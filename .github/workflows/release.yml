@@ -5,6 +5,14 @@ on:
     tags:
       - "v*"
 
+# Default every job to a read-only token. Third-party code runs on a tag (pip installs in
+# test / build-binaries / build-distributions / smoke-test-built-artifacts), so those jobs
+# must not inherit the repository's default GITHUB_TOKEN scope, which is a repo setting this
+# file cannot see. `publish` is the only job that needs more and declares it explicitly;
+# build-distributions narrows further to `permissions: {}`.
+permissions:
+  contents: read
+
 jobs:
   # Gate everything on the tag matching what the tree is actually stamped as.
   #
@@ -26,6 +34,7 @@ jobs:
   verify-version:
     name: Verify tag matches the tree
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       # fetch-tags is load-bearing here for the same reason ci.yml documents it: a bare
       # checkout is a shallow, tag-less fetch, and the CHANGELOG-date step below reads the
@@ -178,6 +187,7 @@ jobs:
   test:
     name: Test before publishing
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     needs: [verify-version]
     # Mirrors ci.yml's unit-job env for the same reason: pyproject.toml's addopts bans
     # outbound sockets repo-wide, and without a warm Hugging Face cache the 51 tests that
@@ -245,6 +255,7 @@ jobs:
     name: Build trelix (${{ matrix.os }})
     needs: [verify-version, test]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -363,6 +374,7 @@ jobs:
   build-distributions:
     name: Build Python distributions
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [verify-version, test]
     permissions: {}
 
@@ -432,6 +444,7 @@ jobs:
     name: Smoke-test the built wheels before publishing
     needs: [build-distributions]
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     env:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
@@ -482,6 +495,7 @@ jobs:
   publish:
     name: Publish to PyPI & GitHub Release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [build-binaries, build-distributions, smoke-test-built-artifacts]
     environment: pypi
     permissions:

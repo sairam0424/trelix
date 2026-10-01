@@ -319,14 +319,22 @@ class QdrantVectorStore(BaseVectorStore):
 
     def search(self, query: list[float], k: int) -> list[tuple[int, float]]:
         """
-        Return top-k (chunk_id, score) pairs using cosine similarity.
+        Return top-k (chunk_id, distance) pairs; lower distance = more similar.
 
-        Note: Qdrant cosine search returns higher scores for more similar
-        vectors (unlike sqlite-vec which returns L2 distance — lower is closer).
-        Callers in retriever.py compute `max(0.0, 1.0 - distance)` on the
-        result; since Qdrant already returns similarity scores in [0, 1],
-        results pass through correctly.
+        Qdrant's cosine search natively returns a similarity (higher = closer), but
+        every caller (retriever.py, artifact_linker.py) converts store values with
+        `max(0.0, 1.0 - distance)`, the contract set by the sqlite-vec store. The
+        similarity is therefore converted here as `distance = 1.0 - similarity`
+        (floored at 0.0 against float overshoot above 1.0), so an identical vector
+        yields distance 0.0 and hydrates to score 1.0. Order is unchanged: Qdrant
+        returns the best hit first, which is also the smallest distance first.
         """
+        return [
+            (chunk_id, max(0.0, 1.0 - sim)) for chunk_id, sim in self._search_similarity(query, k)
+        ]
+
+    def _search_similarity(self, query: list[float], k: int) -> list[tuple[int, float]]:
+        """Return top-k (chunk_id, cosine similarity) pairs, best (highest) first."""
         search_params = self._build_search_params()
         # `search_params` kwarg omitted entirely (rather than passed as
         # `search_params=None`) when quantization is off, so this call stays
@@ -441,7 +449,7 @@ class QdrantVectorStore(BaseVectorStore):
         self, query_embedding: list[float], k: int
     ) -> list[tuple[int, float]]:
         """Search file-summary rows (negative point IDs). Returns (file_id, score) pairs."""
-        results = self.search(query_embedding, k=k * 5)
+        results = self._search_similarity(query_embedding, k=k * 5)
         return [(-cid, score) for cid, score in results if cid < 0][:k]
 
     def upsert_sub_chunk_embedding(self, sub_chunk_id: int, embedding: list[float]) -> None:
@@ -454,7 +462,7 @@ class QdrantVectorStore(BaseVectorStore):
 
     def search_sub_chunks(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:
         """Search sub-chunk embeddings only. Returns (sub_chunk_id, score) pairs."""
-        results = self.search(query_embedding, k=k * 5)
+        results = self._search_similarity(query_embedding, k=k * 5)
         return [
             (cid - self._SUB_CHUNK_OFFSET, score)
             for cid, score in results

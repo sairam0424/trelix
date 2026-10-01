@@ -42,7 +42,7 @@ import pathspec
 
 from trelix.core.config import IndexConfig, LLMConfig
 from trelix.core.models import Artifact
-from trelix.indexing.connectors.base import ArtifactSource
+from trelix.indexing.connectors.base import ArtifactSource, safe_resolve
 from trelix.indexing.gitignore import is_path_gitignored
 from trelix.llm.client import ChatMessage, ImageContent
 from trelix.llm.factory import build_chat_client
@@ -250,18 +250,8 @@ class ImageConnector(ArtifactSource):
         risk, not just a correctness one, so containment is enforced
         unconditionally here -- not behind an opt-in flag the way
         `FileWalker.WalkerConfig.follow_symlinks` gates it for plain indexing."""
-        try:
-            resolved = path.resolve()
-        except (OSError, RuntimeError):
-            # A dangling symlink raises OSError; a genuine symlink LOOP
-            # (even a trivial self-reference) makes CPython's own
-            # Path.resolve() re-raise the underlying OSError(ELOOP) as a
-            # RuntimeError("Symlink loop from ...") instead -- confirmed in
-            # cpython's pathlib.py. Both must degrade the same way a
-            # skipped file already does elsewhere in this connector, not
-            # crash the whole sync (an uncaught RuntimeError here would
-            # abort _discover() entirely, discarding every other already-
-            # found image, not just the one offending symlink).
+        resolved = safe_resolve(path)
+        if resolved is None:
             logger.warning("ImageConnector: could not resolve symlink %s; skipping", path)
             return False
         within = resolved.is_relative_to(self._repo_path)
