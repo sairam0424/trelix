@@ -328,12 +328,20 @@ The index is written to `/repo/.trelix/` inside the container (which maps to
 
 ```bash
 docker run --rm -p 127.0.0.1:8765:8765 \
+  -e 'TRELIX_API_ALLOWED_HOSTS=localhost,127.0.0.1,[::1]' \
   -v "$(pwd):/repo" \
   ghcr.io/sairam0424/trelix:latest \
   serve /repo --host 0.0.0.0 --port 8765
 ```
 
 Then open `http://localhost:8765/docs` for the interactive API reference.
+
+`TRELIX_API_ALLOWED_HOSTS` turns on the Host/Origin check. Inside the container the server
+binds `0.0.0.0`, where the check is off unless this variable is set, and without it a web
+page could reach the published loopback port through DNS rebinding. If you publish on
+another interface, or reach the API through a proxy or a LAN address, add that hostname to
+the list; `TRELIX_API_ALLOWED_HOSTS=*` turns the check off. See
+[SECURITY.md](../SECURITY.md#rest-api--host-and-origin-check-dns-rebinding-drive-by-requests).
 
 `--host 0.0.0.0` is required *inside* the container for a published port to
 reach the process; it is not the exposure decision. The `-p` mapping is, and it
@@ -343,7 +351,9 @@ is set** — so the unprefixed mapping serves unauthenticated code search over t
 repository you just bind-mounted to anything that can reach the host. Widen the
 mapping only together with `-e TRELIX_API_AUTH_TOKEN=<secret>`, which makes every
 route require an `X-Trelix-Api-Key` header. The `docker-compose.yml` at the repo
-root carries the same loopback binding for the same reason.
+root carries the same loopback binding for the same reason, and sets
+`TRELIX_API_ALLOWED_HOSTS` for it; that check stays on even when a token is set, so add
+your hostname to the variable if you widen the mapping.
 
 ### Use with OpenAI embeddings
 

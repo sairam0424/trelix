@@ -720,6 +720,11 @@ trelix serve /my/repo --host 0.0.0.0 --port 9000
 
 - Requires the `serve` extra: `pip install 'trelix[serve]'` (installs FastAPI
   and uvicorn).
+- With no `TRELIX_API_AUTH_TOKEN` and no OIDC on a loopback `--host`, requests whose
+  `Host` or `Origin` is not loopback (DNS rebinding, cross-site pages) get `403`;
+  `GET /health` is exempt. Add hostnames with `TRELIX_API_ALLOWED_HOSTS=a.example,b.example`
+  or disable with `TRELIX_API_ALLOWED_HOSTS=*`. It does not replace `TRELIX_API_AUTH_TOKEN`.
+  See [CONFIGURATION.md](CONFIGURATION.md#rest-api).
 - The API is undocumented in this reference. Point a browser at
   `http://127.0.0.1:8765/docs` after starting for the auto-generated OpenAPI
   docs.

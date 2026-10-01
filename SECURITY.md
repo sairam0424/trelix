@@ -40,6 +40,48 @@ The `output` query parameter on `GET /graph/visualize` is validated server-side:
 - Paths outside this directory are rejected with HTTP 400
 - This prevents arbitrary file writes to sensitive locations
 
+### REST API — Host and Origin check (DNS rebinding, drive-by requests)
+
+A loopback bind is a network boundary, not a browser boundary. With no credential
+configured the API is open, and a web page can reach `127.0.0.1` in two ways: fire
+`no-cors` GETs with side effects (`/ask` spends LLM credit; `/graph/visualize` writes
+`<repo>/.trelix/graph.html`), or, after DNS rebinding (an attacker domain re-resolved to
+`127.0.0.1`), become same-origin with the server and read `/search`, `/ask` and `/parse`.
+
+- **What is checked.** `Host` must be present exactly once and its hostname (port ignored,
+  case-insensitive) must be allowed. An `Origin` header, when present, must be an
+  `http`/`https` origin with an allowed hostname (any port); `null` is refused. A
+  `Sec-Fetch-Site: cross-site` request is refused. Anything else gets `403` with a fixed
+  message that names the fix and never echoes the offending value; each rejection logs one
+  warning. Requests with no `Origin` and no `Sec-Fetch-Site` (curl, scripts, the trelix
+  clients) are unaffected. There is no CORS support. A `no-cors` cross-site GET carries no
+  `Origin`, so it is caught by `Sec-Fetch-Site`, which current Chrome, Firefox and Safari send;
+  DNS rebinding is caught by the `Host` check in every browser.
+- **When it is on.** `trelix serve` enables it when no `TRELIX_API_AUTH_TOKEN` and no OIDC
+  is configured and the bind host is loopback (`127.0.0.0/8`, `::1`, `localhost`); the
+  allowed names are `localhost`, `127.0.0.1`, `::1` and the bind host. It stays off when a
+  credential is configured (a hostile page has no key) and for a non-loopback bind, unless
+  `TRELIX_API_ALLOWED_HOSTS` lists hostnames, which turns it on for any bind. `GET /health`
+  is exempt so container and Kubernetes probes keep working. A container binds `0.0.0.0`, so
+  the documented `docker run -p 127.0.0.1:8765:8765 ... serve /repo --host 0.0.0.0` shape
+  needs `-e 'TRELIX_API_ALLOWED_HOSTS=localhost,127.0.0.1,[::1]'` (keep the quotes: zsh
+  treats an unquoted `[::1]` as a glob). `docker-compose.yml` sets it for its
+  loopback-published port; the Helm chart leaves it off, so add the hostnames your Service
+  and Ingress use under `extraEnv`.
+- **Adding a hostname.** Set `TRELIX_API_ALLOWED_HOSTS=dev.example,other.example`
+  (comma-separated bare hostnames; ports, brackets and case are ignored; URLs with a scheme
+  and wildcards such as `*.example.com` are not supported and are dropped with a warning).
+  Behind a reverse proxy the `Host` header must reach trelix with a listed name.
+- **Disabling it.** `TRELIX_API_ALLOWED_HOSTS=*` switches the check off in every case.
+- **What it is not.** It does not replace `TRELIX_API_AUTH_TOKEN`: it does nothing against a
+  non-browser client that can reach the port and sets any `Host` it likes. See
+  [docs/CONFIGURATION.md](docs/CONFIGURATION.md#rest-api).
+- **Known limits.** A browser that sends no `Sec-Fetch-Site` (older Safari and other old
+  browsers) does not stop a `no-cors` cross-site GET to a loopback bind; DNS rebinding is
+  still caught there by the `Host` check. Any other web app served from a loopback address,
+  on any port, is an allowed origin. A browser request to `http://0.0.0.0:<port>` carries
+  that `Host` and gets `403`.
+
 ### MCP federation tools — config_path confinement (v2.8.1+)
 
 The `config_path` parameter accepted by `federation_list_repos`,
