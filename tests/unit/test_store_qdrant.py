@@ -273,6 +273,113 @@ class TestQdrantUpsertBatch:
 
 
 # ---------------------------------------------------------------------------
+# QdrantVectorStore — delete_batch
+# ---------------------------------------------------------------------------
+
+
+class _InvalidPointId(Exception):
+    """What qdrant-client raises for an HTTP 400 answer (it carries `status_code`)."""
+
+    status_code = 400
+
+
+class TestQdrantDeleteBatch:
+    """A Qdrant SERVER accepts only unsigned 64-bit or UUID point ids and rejects a whole
+    request that contains even one negative id (HTTP 400 "value -5 is not a valid point
+    ID", verified against Qdrant 1.19.1). The in-process client used elsewhere accepts
+    negative ids, so these tests model the server with a fake `delete` that refuses any
+    request holding one. Before the fix, deleting a file (chunk ids plus its file-summary
+    sentinel -file_id in one request) raised after the SQL rows were already gone and left
+    every vector of the file behind."""
+
+    def setup_method(self) -> None:
+        self.mock_client = _inject_fake_qdrant()
+        self.points: set[int] = {1, 2, 3, 4}
+        self.requests: list[list[int]] = []
+        self.mock_client.delete.side_effect = self._server_delete
+
+    def teardown_method(self) -> None:
+        _remove_fake_qdrant()
+
+    def _server_delete(self, collection_name: str, points_selector: Any) -> None:
+        ids = list(points_selector.points)
+        self.requests.append(ids)
+        if any(i < 0 for i in ids):
+            raise _InvalidPointId(f"value {min(ids)} is not a valid point ID")
+        self.points -= set(ids)
+
+    def _make_store(self) -> Any:
+        from trelix.store.vector_qdrant import QdrantVectorStore
+
+        return QdrantVectorStore(_make_config(), dimension=4)
+
+    def test_real_chunk_ids_are_deleted_in_one_request(self) -> None:
+        self._make_store().delete_batch([1, 2])
+
+        assert self.requests == [[1, 2]]
+        assert self.points == {3, 4}
+
+    def test_empty_list_sends_nothing(self) -> None:
+        self._make_store().delete_batch([])
+
+        assert self.requests == []
+
+    def test_a_server_refusing_the_sentinel_still_deletes_every_real_id(self) -> None:
+        """The regression: chunk ids + -file_id used to travel together and all stayed."""
+        self._make_store().delete_batch([1, 2, 3, -9])
+
+        assert self.points == {4}, "the real chunk ids must be gone"
+        assert self.requests == [[1, 2, 3], [-9]], "real ids first, sentinel in its own request"
+
+    def test_a_refusal_is_remembered_and_not_retried(self) -> None:
+        store = self._make_store()
+        store.delete_batch([1, -9])
+        store.delete_batch([2, -10])
+
+        assert self.requests == [[1], [-9], [2]]
+        assert self.points == {3, 4}
+
+    def test_only_sentinels_sends_one_request_and_does_not_raise(self) -> None:
+        self._make_store().delete_batch([-9])
+
+        assert self.requests == [[-9]]
+        assert self.points == {1, 2, 3, 4}
+
+    def test_a_client_side_range_error_on_the_sentinel_is_treated_the_same(self) -> None:
+        """gRPC: protobuf raises ValueError for a negative uint64 before anything is sent."""
+
+        def grpc_like(collection_name: str, points_selector: Any) -> None:
+            ids = list(points_selector.points)
+            if any(i < 0 for i in ids):
+                raise ValueError("Value out of range: -9")
+            self.points -= set(ids)
+
+        self.mock_client.delete.side_effect = grpc_like
+        self._make_store().delete_batch([1, -9])
+
+        assert self.points == {2, 3, 4}
+
+    def test_a_failure_deleting_real_ids_still_propagates(self) -> None:
+        self.mock_client.delete.side_effect = RuntimeError("connection reset")
+
+        with pytest.raises(RuntimeError, match="connection reset"):
+            self._make_store().delete_batch([1, 2])
+
+    def test_a_failure_deleting_the_sentinel_that_is_not_a_refusal_propagates(self) -> None:
+        class ServerDown(Exception):
+            status_code = 503
+
+        def flaky(collection_name: str, points_selector: Any) -> None:
+            if any(i < 0 for i in points_selector.points):
+                raise ServerDown("service unavailable")
+
+        self.mock_client.delete.side_effect = flaky
+
+        with pytest.raises(ServerDown):
+            self._make_store().delete_batch([1, -9])
+
+
+# ---------------------------------------------------------------------------
 # QdrantVectorStore — search
 # ---------------------------------------------------------------------------
 
