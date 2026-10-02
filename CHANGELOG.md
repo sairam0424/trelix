@@ -8,7 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 _Nothing yet._
 
-## [3.4.2] — 2026-10-01
+## [3.4.2] — 2026-10-02
 
 ### Security
 - **The public GitHub App let a pull request make `trelix index` read files from the host,

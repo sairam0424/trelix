@@ -164,4 +164,4 @@ per-file — see the note at the top.
 
 ---
 
-*Last updated: 2026-10-01 — trelix v3.4.2*
+*Last updated: 2026-10-02 — trelix v3.4.2*

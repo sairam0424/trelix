@@ -2285,4 +2285,4 @@ That's it — no changes to `Retriever` needed.
 
 ---
 
-*trelix v3.4.2 — last updated 2026-10-01*
+*trelix v3.4.2 — last updated 2026-10-02*

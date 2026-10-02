@@ -1,6 +1,6 @@
 # trelix v3.4.2 — Frequently Asked Questions
 
-> Last updated: 2026-10-01 — covers trelix 3.4.2, trelix-mcp 3.4.2, trelix-langchain 3.4.2, and trelix-llama-index 3.4.2.
+> Last updated: 2026-10-02 — covers trelix 3.4.2, trelix-mcp 3.4.2, trelix-langchain 3.4.2, and trelix-llama-index 3.4.2.
 
 ---
 
