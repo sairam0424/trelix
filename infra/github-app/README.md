@@ -31,7 +31,8 @@ registration required.
 
 1. Merge the PR that adds `.github/workflows/trelix-review.yml` to your repo
 2. On the next pull request, the `trelix Code Review` check runs
-   automatically
+   automatically (it is attached to the pull request's merge commit, so look for it
+   under that commit's checks and not on the pull request page)
 
 ### Required: an LLM provider
 
@@ -57,7 +58,9 @@ secrets**, then update the workflow's `env:` block to pass the key.
 - `trelix review` needs a working LLM provider: it has no structural-only
   fallback. Without one (or if every LLM call fails) it exits with code 3 and
   the Check run is posted as **neutral** ("trelix review did not run"), never
-  as "found 0 issue(s)"
+  as "found 0 issue(s)". In the Actions workflow that check is attached to the pull
+  request's merge commit, so it shows under that commit's checks and not on the pull
+  request page; the GitHub App posts on the pull request head
 
 ### Permissions required
 
