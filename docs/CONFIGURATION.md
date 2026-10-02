@@ -1,4 +1,4 @@
-# Trelix Configuration Reference — v3.4.1
+# Trelix Configuration Reference — v3.4.2
 
 Complete reference for all configuration options available in trelix.
 
@@ -355,7 +355,22 @@ Captioning supports Anthropic and Bedrock (every other `TRELIX_LLM_PROVIDER` rai
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRELIX_API_AUTH_TOKEN` | _(none)_ | Shared secret for `trelix serve`'s REST API. Opt-in: unset (the default) leaves every route open, matching the same "off by default" pattern as `TRELIX_OTEL_ENABLED` and `TRELIX_TELEMETRY_ENABLED`. When set, every route except `GET /health` requires a matching `X-Trelix-Api-Key` header (checked with a constant-time comparison) — see [USER_GUIDE.md § API Quick Reference](USER_GUIDE.md#14-api-quick-reference). |
+| `TRELIX_API_AUTH_TOKEN` | _(none)_ | Shared secret for `trelix serve`'s REST API. Opt-in: unset (the default) leaves every route open, and a blank or whitespace-only value counts as unset (a warning is logged), matching the same "off by default" pattern as `TRELIX_OTEL_ENABLED` and `TRELIX_TELEMETRY_ENABLED`. When set, every route except `GET /health` requires a matching `X-Trelix-Api-Key` header (checked with a constant-time comparison) — see [USER_GUIDE.md § API Quick Reference](USER_GUIDE.md#14-api-quick-reference). |
+
+`TRELIX_API_ALLOWED_HOSTS` is a separate control: a comma-separated list of hostnames that
+the REST API accepts in the `Host` header (and in an `Origin` header, any port), used to
+refuse DNS-rebinding and drive-by requests from web pages. Ports, `[::1]` brackets and case
+are ignored (`localhost,127.0.0.1,[::1]`). Unset, `trelix serve` turns the check on by
+itself only for an open API (no `TRELIX_API_AUTH_TOKEN`, no OIDC) on a loopback bind, with
+`localhost`, `127.0.0.1` and `::1` allowed; setting this variable turns it on for any bind
+and adds the listed hostnames to the loopback names. The single value `*` disables the check
+everywhere. `GET /health` is always exempt. A refused request gets `403`. Entries must be
+bare hostnames (no scheme, no wildcards). The Helm chart leaves the check off; to turn it on
+for a chart deployment, add an entry under `extraEnv`, for example
+`- name: TRELIX_API_ALLOWED_HOSTS` with `value: "trelix.example.com,trelix.default.svc"`,
+listing every hostname clients use (including in-cluster Service names; the kubelet probes
+on `/health` are exempt). This does not
+replace `TRELIX_API_AUTH_TOKEN`; see [SECURITY.md](../SECURITY.md#rest-api--host-and-origin-check-dns-rebinding-drive-by-requests).
 
 ### MCP Server
 

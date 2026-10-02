@@ -1,6 +1,6 @@
-# Trelix v3.4.1 Troubleshooting Guide
+# Trelix v3.4.2 Troubleshooting Guide
 
-This guide covers every common failure mode for trelix v3.4.1. Each entry follows the pattern: **Symptom → Cause → Fix**.
+This guide covers every common failure mode for trelix v3.4.2. Each entry follows the pattern: **Symptom → Cause → Fix**.
 
 ---
 
@@ -110,9 +110,11 @@ trelix index .
 
 ### Repo Not Indexed
 
-**Symptom:** `trelix search "..."` returns `0 results` or `No index found for this repository`.
+**Symptom:** `trelix search . "..."` (or `ask`, `query`, `call-graph`, `graph`, `stats`) exits with status 1 and prints `No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.` Before 3.4.2 these commands created an empty index instead and reported `0 results`.
 
 **Cause:** The repository has never been indexed. trelix requires an explicit indexing step before search is available.
+
+If instead `search` prints `No results found.` on a repository you never indexed, an older version (or the MCP server, the REST API, a LangChain or LlamaIndex retriever, or `trelix eval`/`trelix review`) has left an empty `.trelix/index.db` behind. `trelix index .` fills it; to start clean, delete the repository's `.trelix` directory first.
 
 **Fix:**
 ```bash
@@ -701,6 +703,7 @@ export TRELIX_EMBEDDER_BATCH_SIZE=128              # default 64
 export TRELIX_EMBEDDER_EMBED_MAX_TOKENS_PER_BATCH=100000   # default 100000
 export TRELIX_EMBEDDER_TPM_LIMIT=1000000           # default 0 = unlimited
 trelix index .
+```
 
 Check your API tier and increase limits if needed (OpenAI: Platform → Settings → Rate limits).
 

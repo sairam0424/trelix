@@ -273,6 +273,113 @@ class TestQdrantUpsertBatch:
 
 
 # ---------------------------------------------------------------------------
+# QdrantVectorStore — delete_batch
+# ---------------------------------------------------------------------------
+
+
+class _InvalidPointId(Exception):
+    """What qdrant-client raises for an HTTP 400 answer (it carries `status_code`)."""
+
+    status_code = 400
+
+
+class TestQdrantDeleteBatch:
+    """A Qdrant SERVER accepts only unsigned 64-bit or UUID point ids and rejects a whole
+    request that contains even one negative id (HTTP 400 "value -5 is not a valid point
+    ID", verified against Qdrant 1.19.1). The in-process client used elsewhere accepts
+    negative ids, so these tests model the server with a fake `delete` that refuses any
+    request holding one. Before the fix, deleting a file (chunk ids plus its file-summary
+    sentinel -file_id in one request) raised after the SQL rows were already gone and left
+    every vector of the file behind."""
+
+    def setup_method(self) -> None:
+        self.mock_client = _inject_fake_qdrant()
+        self.points: set[int] = {1, 2, 3, 4}
+        self.requests: list[list[int]] = []
+        self.mock_client.delete.side_effect = self._server_delete
+
+    def teardown_method(self) -> None:
+        _remove_fake_qdrant()
+
+    def _server_delete(self, collection_name: str, points_selector: Any) -> None:
+        ids = list(points_selector.points)
+        self.requests.append(ids)
+        if any(i < 0 for i in ids):
+            raise _InvalidPointId(f"value {min(ids)} is not a valid point ID")
+        self.points -= set(ids)
+
+    def _make_store(self) -> Any:
+        from trelix.store.vector_qdrant import QdrantVectorStore
+
+        return QdrantVectorStore(_make_config(), dimension=4)
+
+    def test_real_chunk_ids_are_deleted_in_one_request(self) -> None:
+        self._make_store().delete_batch([1, 2])
+
+        assert self.requests == [[1, 2]]
+        assert self.points == {3, 4}
+
+    def test_empty_list_sends_nothing(self) -> None:
+        self._make_store().delete_batch([])
+
+        assert self.requests == []
+
+    def test_a_server_refusing_the_sentinel_still_deletes_every_real_id(self) -> None:
+        """The regression: chunk ids + -file_id used to travel together and all stayed."""
+        self._make_store().delete_batch([1, 2, 3, -9])
+
+        assert self.points == {4}, "the real chunk ids must be gone"
+        assert self.requests == [[1, 2, 3], [-9]], "real ids first, sentinel in its own request"
+
+    def test_a_refusal_is_remembered_and_not_retried(self) -> None:
+        store = self._make_store()
+        store.delete_batch([1, -9])
+        store.delete_batch([2, -10])
+
+        assert self.requests == [[1], [-9], [2]]
+        assert self.points == {3, 4}
+
+    def test_only_sentinels_sends_one_request_and_does_not_raise(self) -> None:
+        self._make_store().delete_batch([-9])
+
+        assert self.requests == [[-9]]
+        assert self.points == {1, 2, 3, 4}
+
+    def test_a_client_side_range_error_on_the_sentinel_is_treated_the_same(self) -> None:
+        """gRPC: protobuf raises ValueError for a negative uint64 before anything is sent."""
+
+        def grpc_like(collection_name: str, points_selector: Any) -> None:
+            ids = list(points_selector.points)
+            if any(i < 0 for i in ids):
+                raise ValueError("Value out of range: -9")
+            self.points -= set(ids)
+
+        self.mock_client.delete.side_effect = grpc_like
+        self._make_store().delete_batch([1, -9])
+
+        assert self.points == {2, 3, 4}
+
+    def test_a_failure_deleting_real_ids_still_propagates(self) -> None:
+        self.mock_client.delete.side_effect = RuntimeError("connection reset")
+
+        with pytest.raises(RuntimeError, match="connection reset"):
+            self._make_store().delete_batch([1, 2])
+
+    def test_a_failure_deleting_the_sentinel_that_is_not_a_refusal_propagates(self) -> None:
+        class ServerDown(Exception):
+            status_code = 503
+
+        def flaky(collection_name: str, points_selector: Any) -> None:
+            if any(i < 0 for i in points_selector.points):
+                raise ServerDown("service unavailable")
+
+        self.mock_client.delete.side_effect = flaky
+
+        with pytest.raises(ServerDown):
+            self._make_store().delete_batch([1, -9])
+
+
+# ---------------------------------------------------------------------------
 # QdrantVectorStore — search
 # ---------------------------------------------------------------------------
 
@@ -298,7 +405,59 @@ class TestQdrantSearch:
         store = self._make_store()
         results = store.search([0.1, 0.2, 0.3, 0.4], k=5)
 
-        assert results == [(42, 0.95), (7, 0.80)]
+        # Distance semantics (lower = closer), matching sqlite-vec: 1.0 - similarity.
+        assert [cid for cid, _ in results] == [42, 7]
+        assert results[0][1] == pytest.approx(0.05)
+        assert results[1][1] == pytest.approx(0.20)
+
+    def test_search_maps_similarity_to_distance_and_preserves_order(self) -> None:
+        """Cosine similarity 1.0 -> distance 0.0 and 0.0 -> 1.0, best hit first."""
+        hits = [
+            MagicMock(id=1, score=1.0),
+            MagicMock(id=2, score=0.5),
+            MagicMock(id=3, score=0.0),
+        ]
+        self.mock_client.query_points.return_value = MagicMock(points=hits)
+
+        results = self._make_store().search([0.1, 0.2, 0.3, 0.4], k=5)
+
+        assert [cid for cid, _ in results] == [1, 2, 3]
+        assert [d for _, d in results] == pytest.approx([0.0, 0.5, 1.0])
+        assert [d for _, d in results] == sorted(d for _, d in results)
+
+    def test_search_distance_never_negative_for_rounding_overshoot(self) -> None:
+        """Float rounding can push cosine similarity marginally above 1.0."""
+        self.mock_client.query_points.return_value = MagicMock(
+            points=[MagicMock(id=1, score=1.0000001)]
+        )
+
+        results = self._make_store().search([0.1, 0.2, 0.3, 0.4], k=5)
+
+        assert results == [(1, 0.0)]
+
+    def test_search_negative_similarity_gives_distance_above_one(self) -> None:
+        """Opposite vectors (similarity -1) are farthest: distance 2.0, unclamped above."""
+        self.mock_client.query_points.return_value = MagicMock(points=[MagicMock(id=1, score=-1.0)])
+
+        results = self._make_store().search([0.1, 0.2, 0.3, 0.4], k=5)
+
+        assert results == [(1, 2.0)]
+
+    def test_sentinel_searches_keep_higher_is_better_scores(self) -> None:
+        """search_file_summaries / search_sub_chunks are documented as raw
+        similarity (higher = better); they must not pick up the distance flip."""
+        offset = self._make_store()._SUB_CHUNK_OFFSET
+        self.mock_client.query_points.return_value = MagicMock(
+            points=[
+                MagicMock(id=-5, score=0.9),
+                MagicMock(id=offset + 3, score=0.8),
+                MagicMock(id=11, score=0.7),
+            ]
+        )
+        store = self._make_store()
+
+        assert store.search_file_summaries([0.1, 0.2, 0.3, 0.4], k=3) == [(5, 0.9)]
+        assert store.search_sub_chunks([0.1, 0.2, 0.3, 0.4], k=3) == [(3, 0.8)]
 
     def test_search_passes_k_as_limit(self) -> None:
         """search() must forward k as `limit` to client.query_points."""
@@ -321,6 +480,89 @@ class TestQdrantSearch:
 
         results = store.search([0.0, 0.0, 0.0, 1.0], k=5)
         assert results == []
+
+
+class TestQdrantRetrieverScoreDirection:
+    """The retriever converts store distances with `max(0, 1 - d)`; the Qdrant
+    store must therefore hand it distances, not raw cosine similarity."""
+
+    def setup_method(self) -> None:
+        self.mock_client = _inject_fake_qdrant()
+
+    def teardown_method(self) -> None:
+        _remove_fake_qdrant()
+
+    def _retriever_over_qdrant(self, tmp_path: Path, similarities: dict[int, float]) -> Any:
+        import os
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from trelix.core.config import IndexConfig, RetrievalConfig
+        from trelix.core.models import (
+            Chunk,
+            IndexedFile,
+            Language,
+            Symbol,
+            SymbolKind,
+        )
+        from trelix.retrieval.retriever import Retriever
+        from trelix.store.vector_qdrant import QdrantVectorStore
+
+        with (
+            patch("trelix.retrieval.retriever.Database"),
+            patch("trelix.retrieval.retriever.make_embedder") as mock_emb_cls,
+            patch("trelix.retrieval.retriever.make_vector_store"),
+            patch("trelix.retrieval.retriever.QueryPlanner"),
+            patch.dict(os.environ, {"OPENAI_API_KEY": "fake-token-for-tests"}),
+        ):
+            mock_emb_cls.return_value = MagicMock(dimension=4)
+            retriever = Retriever(
+                IndexConfig(
+                    repo_path=str(tmp_path),
+                    retrieval=RetrievalConfig(query_cache_size=0),
+                )
+            )
+
+        retriever.vector_store = QdrantVectorStore(_make_config(), dimension=4)
+        self.mock_client.query_points.return_value = MagicMock(
+            points=[MagicMock(id=cid, score=sim) for cid, sim in similarities.items()]
+        )
+
+        def _hydrate(chunk_id: int) -> tuple[Chunk, Symbol, IndexedFile]:
+            file = IndexedFile(
+                path=f"/repo/f{chunk_id}.py",
+                rel_path=f"f{chunk_id}.py",
+                language=Language.PYTHON,
+                hash=f"sha-{chunk_id}",
+                size_bytes=10,
+                id=chunk_id,
+                indexed_at=datetime(2024, 1, 1),
+            )
+            symbol = Symbol(
+                file_id=chunk_id,
+                name=f"fn{chunk_id}",
+                qualified_name=f"m.fn{chunk_id}",
+                kind=SymbolKind.FUNCTION,
+                line_start=1,
+                line_end=2,
+                signature=f"def fn{chunk_id}()",
+                body="pass",
+                id=chunk_id,
+            )
+            chunk = Chunk(symbol_id=chunk_id, chunk_text="pass", token_count=1, id=chunk_id)
+            return chunk, symbol, file
+
+        retriever.db.get_chunk_with_context.side_effect = _hydrate
+        return retriever
+
+    def test_identical_vector_hydrates_with_score_one(self, tmp_path: Path) -> None:
+        retriever = self._retriever_over_qdrant(tmp_path, {1: 1.0, 2: 0.6, 3: 0.0})
+
+        results = retriever._vector_search([0.1, 0.2, 0.3, 0.4], k=3)
+
+        assert [r.chunk.id for r in results] == [1, 2, 3]
+        assert [r.score for r in results] == pytest.approx([1.0, 0.6, 0.0])
+        assert [r.rank for r in results] == [1, 2, 3]
 
 
 # ---------------------------------------------------------------------------
@@ -738,4 +980,4 @@ class TestQdrantRecreate:
 
         self.mock_client.query_points.return_value = MagicMock(points=[MagicMock(id=1, score=0.99)])
         results = store.search([0.1, 0.2, 0.3, 0.4], k=5)
-        assert results == [(1, 0.99)]
+        assert results == [(1, pytest.approx(0.01))]

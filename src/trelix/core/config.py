@@ -1753,10 +1753,20 @@ class IndexConfig(BaseSettings):
         return str(Path(v).resolve())
 
     @property
-    def db_path_absolute(self) -> Path:
+    def db_path_resolved(self) -> Path:
+        """Where the index lives, resolved against `repo_path`. Touches nothing on disk.
+
+        Read commands use this to ask "is there an index?" without creating one.
+        Writers want `db_path_absolute`, which also prepares the directory.
+        """
         p = Path(self.store.db_path)
         if not p.is_absolute():
             p = Path(self.repo_path) / p
+        return p
+
+    @property
+    def db_path_absolute(self) -> Path:
+        p = self.db_path_resolved
         p.parent.mkdir(parents=True, exist_ok=True)
         # Prevent Git / IDE watchers from tracking the index files
         gitignore = p.parent / ".gitignore"

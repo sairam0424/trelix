@@ -108,6 +108,11 @@ USER trelix
 
 ARG PORT=3000
 ENV PORT=${PORT}
+# The service checks out pull requests written by outsiders and runs `trelix index`
+# over them. trelix follows symlinks out of the repo by default; confine the walker
+# to each checkout so a committed symlink cannot pull files from this host into the
+# index. review-runner.ts forces the same value for both trelix children.
+ENV TRELIX_WALKER_FOLLOW_SYMLINKS=false
 EXPOSE $PORT
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

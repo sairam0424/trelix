@@ -1,4 +1,4 @@
-# trelix User Guide — v3.4.1
+# trelix User Guide — v3.4.2
 
 **Audience:** Developers, tech leads, and engineering teams who want to understand, navigate, and interrogate their codebases faster.
 **Time to read:** ~30 minutes (or jump directly to the section you need).
@@ -1717,9 +1717,21 @@ curl -s "http://localhost:8765/search?query=JWT+validation&repo=./my-repo" \
   -H "X-Trelix-Api-Key: my-secret-token" | jq .
 ```
 
-A missing or mismatched header returns `401 Invalid or missing API key` (checked with a constant-time `hmac.compare_digest`, and logged server-side as a warning). If `TRELIX_API_AUTH_TOKEN` is left unset, the server behaves exactly as before — every route is open, no header required.
+A missing or mismatched header returns `401 Invalid or missing API key` (checked with a constant-time `hmac.compare_digest`, and logged server-side as a warning). If `TRELIX_API_AUTH_TOKEN` is left unset (or blank), no API key is required and every route is open to a client that is allowed to reach the server; see the host check below for what a loopback server still refuses.
 
 **`/health` is always exempt** — it has no auth dependency at all, so liveness probes (Kubernetes, load balancers) can reach it without a token even when auth is enabled. Every other route (`/search`, `/ask`, `/index`, `/parse`, `/stats`, `/graph`, `/graph/communities`, `/graph/visualize`, `/graph/search`) is protected once the token is set.
+
+### REST API host check
+
+An open server on `127.0.0.1` can still be reached by a web page in your browser (DNS
+rebinding, or a plain cross-site request). While the API is open (no token, no OIDC) and bound to
+loopback, `trelix serve` therefore answers `403` to any request whose `Host` header is not
+`localhost`, `127.0.0.1`, `::1` or the bind address, whose `Origin` is a foreign site, or
+that is marked `Sec-Fetch-Site: cross-site`. `curl` and scripts that call `localhost` or
+`127.0.0.1` are unaffected (they send no `Origin`), and `/health` is exempt. To reach the
+server under another name, list it:
+`TRELIX_API_ALLOWED_HOSTS=dev.example trelix serve ./my-repo`; to turn the check off, set
+`TRELIX_API_ALLOWED_HOSTS=*`. It is not a substitute for `TRELIX_API_AUTH_TOKEN`.
 
 ### Health check
 
@@ -2201,4 +2213,4 @@ Everything below is **additive and off by default** — a v2.12.0 setup keeps be
 
 ---
 
-*trelix v3.4.1 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
+*trelix v3.4.2 — For changelog, see [CHANGELOG.md](../CHANGELOG.md). For architecture details, see [architecture.md](architecture.md). For contribution guide, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

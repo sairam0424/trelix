@@ -472,6 +472,72 @@ class TestNothingToPruneIsNotAFailure:
         assert "Prune refused" not in _flat(result.output), result.output
 
 
+class TestAPruneCandidateThatFailsToDelete:
+    """A candidate whose delete raises must be reported, not crash the whole prune.
+
+    `delete_file_by_path` used to raise `sqlite3.IntegrityError` for any file another file
+    imports, and the loop had no handler: the traceback ended the prune half-way, so the
+    candidates after the failing one were never attempted.
+    """
+
+    def test_a_file_that_a_surviving_file_imports_is_pruned(
+        self, tmp_path: Path, fake_indexer
+    ) -> None:  # type: ignore[no-untyped-def]
+        db = _seed_index(tmp_path, present=["a.py", "b.py"], deleted=["gone.py"])
+        a_id, gone_id = (
+            db._conn.execute("SELECT id FROM files WHERE rel_path = ?", (name,)).fetchone()[0]
+            for name in ("a.py", "gone.py")
+        )
+        db._conn.execute(
+            "INSERT INTO imports (file_id, imported_from, imported_names, imported_file_id) "
+            "VALUES (?, 'gone', '[]', ?)",
+            (a_id, gone_id),
+        )
+        db._conn.commit()
+        _write_current_provenance(tmp_path, db)
+        fake_indexer(db, _RecordingVectorStore())
+
+        from trelix.cli.main import app
+
+        result = runner.invoke(app, ["index", str(tmp_path), "--prune", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert db.get_file_hash("gone.py") is None
+        assert (
+            db._conn.execute(
+                "SELECT imported_from, imported_file_id FROM imports WHERE file_id = ?", (a_id,)
+            ).fetchall()[0][1]
+            is None
+        )
+
+    def test_a_failing_candidate_is_reported_and_the_rest_still_run(
+        self, tmp_path: Path, fake_indexer
+    ) -> None:  # type: ignore[no-untyped-def]
+        db = _seed_index(tmp_path, present=["a.py", "b.py", "c.py"], deleted=["bad.py", "good.py"])
+        db._conn.execute(
+            "CREATE TRIGGER refuse_bad BEFORE DELETE ON files WHEN OLD.rel_path = 'bad.py' "
+            "BEGIN SELECT RAISE(ABORT, 'forced failure'); END"
+        )
+        db._conn.commit()
+        _write_current_provenance(tmp_path, db)
+        store = _RecordingVectorStore()
+        fake_indexer(db, store)
+
+        from trelix.cli.main import app
+
+        result = runner.invoke(app, ["index", str(tmp_path), "--prune", "--yes"])
+
+        out = _flat(result.output)
+        assert result.exit_code != 0, result.output
+        assert isinstance(result.exception, SystemExit), repr(result.exception)  # no traceback
+        assert "bad.py" in out and "forced failure" in out, out
+        assert "stats --drift" in out, out  # the failure message says how to check the index
+        assert "Pruned 1 file(s)" in out, out
+        assert db.get_file_hash("good.py") is None, "a later candidate was skipped"
+        assert db.get_file_hash("bad.py") is not None
+        assert db._conn.in_transaction is False
+
+
 class TestRenderingIsMarkupSafe:
     def test_a_bracketed_path_survives_the_plan_table(
         self, monkeypatch: pytest.MonkeyPatch

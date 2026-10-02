@@ -37,6 +37,18 @@ _BATCH_SIZE = 100  # Qdrant upsert batch size
 _SCROLL_PAGE_SIZE = 1000
 
 
+def _is_invalid_point_id_refusal(exc: Exception) -> bool:
+    """True when `exc` is Qdrant refusing an id as "not a valid point ID".
+
+    A server accepts only unsigned 64-bit integers and UUIDs as point ids. Over REST a
+    negative id is answered with HTTP 400 ("value -5 is not a valid point ID"); the gRPC
+    client raises ValueError from protobuf's range check before anything is sent. Duck-typed
+    on `status_code` so the check needs no import of qdrant-client's exception classes
+    (an optional dependency, see `_QDRANT_MISSING_MSG`).
+    """
+    return isinstance(exc, ValueError) or getattr(exc, "status_code", None) == 400
+
+
 class QdrantVectorStore(BaseVectorStore):
     """
     Vector store backed by Qdrant HNSW index.
@@ -62,6 +74,8 @@ class QdrantVectorStore(BaseVectorStore):
         self._collection = config.store.qdrant_collection
         self._quantization = config.store.qdrant_quantization
         self._quantization_rescore = config.store.qdrant_quantization_rescore
+        # Set once a server has refused a negative point id (see `delete_batch`).
+        self._server_rejects_negative_ids = False
 
         self._client = QdrantClient(
             url=config.store.qdrant_url,
@@ -319,14 +333,22 @@ class QdrantVectorStore(BaseVectorStore):
 
     def search(self, query: list[float], k: int) -> list[tuple[int, float]]:
         """
-        Return top-k (chunk_id, score) pairs using cosine similarity.
+        Return top-k (chunk_id, distance) pairs; lower distance = more similar.
 
-        Note: Qdrant cosine search returns higher scores for more similar
-        vectors (unlike sqlite-vec which returns L2 distance — lower is closer).
-        Callers in retriever.py compute `max(0.0, 1.0 - distance)` on the
-        result; since Qdrant already returns similarity scores in [0, 1],
-        results pass through correctly.
+        Qdrant's cosine search natively returns a similarity (higher = closer), but
+        every caller (retriever.py, artifact_linker.py) converts store values with
+        `max(0.0, 1.0 - distance)`, the contract set by the sqlite-vec store. The
+        similarity is therefore converted here as `distance = 1.0 - similarity`
+        (floored at 0.0 against float overshoot above 1.0), so an identical vector
+        yields distance 0.0 and hydrates to score 1.0. Order is unchanged: Qdrant
+        returns the best hit first, which is also the smallest distance first.
         """
+        return [
+            (chunk_id, max(0.0, 1.0 - sim)) for chunk_id, sim in self._search_similarity(query, k)
+        ]
+
+    def _search_similarity(self, query: list[float], k: int) -> list[tuple[int, float]]:
+        """Return top-k (chunk_id, cosine similarity) pairs, best (highest) first."""
         search_params = self._build_search_params()
         # `search_params` kwarg omitted entirely (rather than passed as
         # `search_params=None`) when quantization is off, so this call stays
@@ -350,7 +372,17 @@ class QdrantVectorStore(BaseVectorStore):
         return [(int(hit.id), hit.score) for hit in response.points]
 
     def delete_batch(self, chunk_ids: list[int]) -> None:
-        """Delete embeddings for the given chunk_ids. No-op for empty list."""
+        """Delete embeddings for the given chunk_ids. No-op for empty list.
+
+        Negative ids are file-summary sentinels (`-file_id`, see
+        `upsert_file_summary_embedding`) and go in a request of their own. A Qdrant *server*
+        accepts only unsigned 64-bit or UUID point ids and rejects a whole request with
+        HTTP 400 if even one id in it is negative (verified against Qdrant 1.19.1), which
+        also stopped the real chunk ids in the same request from being deleted. A sentinel
+        can never have been stored on a server (its upsert is refused the same way), so that
+        refusal means there is nothing to delete: it is remembered and not retried. A
+        failure deleting real chunk ids still propagates.
+        """
         if not chunk_ids:
             return
         try:
@@ -358,10 +390,29 @@ class QdrantVectorStore(BaseVectorStore):
         except ImportError as exc:
             raise ImportError(_QDRANT_MISSING_MSG) from exc
 
-        self._client.delete(
-            collection_name=self._collection,
-            points_selector=PointIdsList(points=list(chunk_ids)),
-        )
+        real_ids = [i for i in chunk_ids if i >= 0]
+        sentinel_ids = [i for i in chunk_ids if i < 0]
+        if real_ids:
+            self._client.delete(
+                collection_name=self._collection,
+                points_selector=PointIdsList(points=list(real_ids)),
+            )
+        if sentinel_ids and not self._server_rejects_negative_ids:
+            try:
+                self._client.delete(
+                    collection_name=self._collection,
+                    points_selector=PointIdsList(points=list(sentinel_ids)),
+                )
+            except Exception as exc:
+                if not _is_invalid_point_id_refusal(exc):
+                    raise
+                self._server_rejects_negative_ids = True
+                logger.debug(
+                    "Qdrant refused the file-summary sentinel id(s) %s as invalid point ids "
+                    "(%s); none can be stored on a server, so nothing is left to delete.",
+                    sentinel_ids,
+                    exc,
+                )
 
     def count(self) -> int:
         """Points in the collection, sentinels included — see `BaseVectorStore.count`.
@@ -386,11 +437,12 @@ class QdrantVectorStore(BaseVectorStore):
 
         Exercised end-to-end against qdrant-client 1.18.0's local mode, which runs the real
         client and pagination path with no server: 184 ids over 4 pages of 50, sentinels
-        excluded, holes recovered exactly. NOT verified against a Qdrant *server*, and one
-        difference is known to matter: `upsert_file_summary_embedding` writes `id=-(file_id)`,
-        local mode accepts it, but the server requires unsigned 64-bit numeric ids. If it
-        rejects them, file-summary vectors never land on this backend at all — a separate
-        pre-existing bug, and this method would simply find no negative ids to exclude.
+        excluded, holes recovered exactly. One difference between local mode and a Qdrant
+        *server* matters (checked against Qdrant 1.19.1): `upsert_file_summary_embedding`
+        writes `id=-(file_id)`, local mode accepts it, but the server requires unsigned 64-bit
+        numeric ids and answers HTTP 400. File-summary vectors therefore never land on a
+        server backend at all — a separate pre-existing bug — and this method simply finds no
+        negative ids to exclude there.
         """
         seen: set[int] = set()
         # `object | None` because the cursor is opaque to us: we only ever hand back what
@@ -441,7 +493,7 @@ class QdrantVectorStore(BaseVectorStore):
         self, query_embedding: list[float], k: int
     ) -> list[tuple[int, float]]:
         """Search file-summary rows (negative point IDs). Returns (file_id, score) pairs."""
-        results = self.search(query_embedding, k=k * 5)
+        results = self._search_similarity(query_embedding, k=k * 5)
         return [(-cid, score) for cid, score in results if cid < 0][:k]
 
     def upsert_sub_chunk_embedding(self, sub_chunk_id: int, embedding: list[float]) -> None:
@@ -454,7 +506,7 @@ class QdrantVectorStore(BaseVectorStore):
 
     def search_sub_chunks(self, query_embedding: list[float], k: int) -> list[tuple[int, float]]:
         """Search sub-chunk embeddings only. Returns (sub_chunk_id, score) pairs."""
-        results = self.search(query_embedding, k=k * 5)
+        results = self._search_similarity(query_embedding, k=k * 5)
         return [
             (cid - self._SUB_CHUNK_OFFSET, score)
             for cid, score in results

@@ -33,9 +33,10 @@ registration required.
 2. On the next pull request, the `trelix Code Review` check runs
    automatically
 
-### Optional: richer reviews with an LLM provider
+### Required: an LLM provider
 
-Set one of these repository secrets for LLM-powered synthesis:
+`trelix review` needs an LLM provider to produce anything (see the behavior
+notes below). Set one of these repository secrets:
 
 | Secret | Provider |
 |--------|---------|
@@ -48,13 +49,15 @@ secrets**, then update the workflow's `env:` block to pass the key.
 
 ### Behavior notes
 
-- The index step has `continue-on-error: true` — if indexing fails
-  (network-restricted CI, OOM), the workflow continues and posts an empty
-  check rather than blocking the PR
+- The index step is tolerant — if indexing fails (network-restricted CI,
+  OOM), the workflow prints a warning and still runs the review against a
+  partial or empty index rather than blocking the PR
 - Review findings are capped at 50 annotations per PR (GitHub API limit)
 - Works on private repos — `GITHUB_TOKEN` scopes are sufficient
-- `trelix review` works without an LLM key (structural analysis only);
-  synthesis requires a provider
+- `trelix review` needs a working LLM provider: it has no structural-only
+  fallback. Without one (or if every LLM call fails) it exits with code 3 and
+  the Check run is posted as **neutral** ("trelix review did not run"), never
+  as "found 0 issue(s)"
 
 ### Permissions required
 
@@ -162,6 +165,23 @@ GitHub -- pull_request webhook -->  this service (Express)
 - `trelix` (the CLI) and a Python 3.12+ runtime must be present in the
   deployment image/environment — `review-runner.ts` shells out to it by
   name via `PATH`. `Dockerfile` (below) builds exactly this.
+- **Untrusted PR content.** Every PR is checked out from an outside author,
+  so the service hardens that checkout:
+  - `TRELIX_WALKER_FOLLOW_SYMLINKS=false` is set in the `Dockerfile` (and
+    `render.yaml`). trelix follows symlinks out of the repo by default, so
+    without it a symlink committed in a PR would make `trelix index` read
+    files from the host. If you deploy without this image (or override the
+    variable on your platform), set it yourself. `review-runner.ts` also
+    forces it to `false` for both `trelix` children, whatever the host
+    passes in.
+  - `repo-checkout.ts` checks out with `core.symlinks=false` (committed
+    symlinks become plain files holding the link text) and deletes any
+    `.trelix` entry from the fresh workspace, so a PR cannot supply its
+    own index database.
+  - `trelix index` and `trelix review` run without `GITHUB_APP_PRIVATE_KEY`
+    and `GITHUB_WEBHOOK_SECRET` in their environment. Only `trelix review`
+    receives the installation token (as `GITHUB_TOKEN`); LLM/embedder
+    provider variables are still passed through.
 - Logs (`console.error`/`console.warn` on review/indexing failures)
   currently go to stdout/stderr only; wire your platform's log
   aggregation on top rather than expecting structured logging from this

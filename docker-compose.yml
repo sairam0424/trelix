@@ -15,7 +15,9 @@ services:
       # and the API is open by design when no token is set (see api/app.py's authenticate
       # "3./4." branch) — so the previous mapping served unauthenticated code search over
       # the bind-mounted repository below to anything that could reach the host.
-      # Change to "8765:8765" only together with TRELIX_API_AUTH_TOKEN.
+      # Change to "8765:8765" only together with TRELIX_API_AUTH_TOKEN. Publishing on
+      # another interface also needs the hostname clients will use added to
+      # TRELIX_API_ALLOWED_HOSTS below, or the Host check answers 403.
       - "127.0.0.1:8765:8765"
     volumes:
       - "${REPO_PATH:-.}:/repo"
@@ -26,3 +28,8 @@ services:
       # so it is discoverable rather than something you have to know exists: set it before
       # widening the port mapping above.
       - TRELIX_API_AUTH_TOKEN=${TRELIX_API_AUTH_TOKEN:-}
+      # Host/Origin check against DNS rebinding and drive-by requests from web pages. The
+      # port is published on host loopback only, so these are the names a browser uses.
+      # Add a hostname (comma-separated) to serve under another name; `*` disables the
+      # check. It does not replace TRELIX_API_AUTH_TOKEN. GET /health is always exempt.
+      - TRELIX_API_ALLOWED_HOSTS=${TRELIX_API_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}

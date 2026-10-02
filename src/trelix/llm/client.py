@@ -16,6 +16,11 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
+# `ChatResponse.model` of the placeholder a backend returns instead of raising when it
+# has no credentials. Callers that would otherwise mistake that text for a model answer
+# (the diff reviewer) compare against this rather than parsing the prose.
+UNCONFIGURED_MODEL = "none"
+
 
 @dataclass
 class ImageContent:

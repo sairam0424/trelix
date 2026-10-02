@@ -1,6 +1,6 @@
-# trelix v3.4.1 — Frequently Asked Questions
+# trelix v3.4.2 — Frequently Asked Questions
 
-> Last updated: 2026-09-27 — covers trelix 3.4.1, trelix-mcp 3.4.1, trelix-langchain 3.4.1, and trelix-llama-index 3.4.1.
+> Last updated: 2026-10-02 — covers trelix 3.4.2, trelix-mcp 3.4.2, trelix-langchain 3.4.2, and trelix-llama-index 3.4.2.
 
 ---
 
@@ -235,7 +235,7 @@ Cursor will discover the trelix tools automatically via the MCP stdio protocol.
 
 ### What MCP tools does trelix expose?
 
-trelix-mcp v3.4.1 exposes **15 tools**:
+trelix-mcp v3.4.2 exposes **15 tools**:
 
 | Tool | Description |
 |------|-------------|
@@ -536,10 +536,10 @@ Yes. As of v2.4.0, the core `trelix` package and `trelix-mcp` have:
 So pin all four to the same version in your `requirements.txt`:
 
 ```
-trelix==3.4.1
-trelix-mcp==3.4.1
-trelix-langchain==3.4.1
-trelix-llama-index==3.4.1
+trelix==3.4.2
+trelix-mcp==3.4.2
+trelix-langchain==3.4.2
+trelix-llama-index==3.4.2
 ```
 
 The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.4.0 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.4.0 resolving against core 3.0.0 is supported and intended — the four-way 3.4.0 pin above is the combination CI installs and tests, not the only one that works.
@@ -585,6 +585,7 @@ gunicorn -w 4 -k uvicorn.workers.UvicornWorker "trelix.server:create_app(repo_pa
 
 # With Docker
 docker run -v $(pwd)/my-repo:/repo -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  -e 'TRELIX_API_ALLOWED_HOSTS=localhost,127.0.0.1,[::1]' \
   -p 127.0.0.1:8765:8765 trelix serve /repo --host 0.0.0.0 --port 8765
 ```
 
@@ -598,6 +599,13 @@ together with `TRELIX_API_AUTH_TOKEN`, which makes every route require an
 *container's* bind, which a published port needs in order to reach the process;
 the `-p` mapping is the exposure decision, and `docker-compose.yml` at the repo
 root carries the same split.)
+
+`TRELIX_API_ALLOWED_HOSTS` turns on the Host/Origin check that stops a web page from
+reaching a loopback port through DNS rebinding. `trelix serve` enables it by itself for an
+open API bound to loopback; a container (which binds `0.0.0.0`) or a factory deployment such
+as gunicorn gets it only through this variable, which is why the Docker command above sets
+it. Add any other hostname you reach the API by; `*` turns the check off. See
+[SECURITY.md](../SECURITY.md#rest-api--host-and-origin-check-dns-rebinding-drive-by-requests).
 
 Available endpoints:
 

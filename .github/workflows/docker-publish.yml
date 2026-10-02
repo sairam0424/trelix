@@ -1,3 +1,41 @@
+# KNOWN GAP (not fixed here): this workflow is NOT gated on release.yml's `test` job.
+#
+# Both workflows start concurrently on a `v*` tag push. The only guard below is "tag equals
+# pyproject version". If release.yml's test, smoke-test or binary build fails, PyPI and the
+# GitHub Release stay unpublished but ghcr.io/sairam0424/trelix:X.Y.Z, :X.Y.Z-local and
+# :latest / :latest-local are already pushed. Nothing rolls the images back.
+#
+# Why it has not been closed yet: no option below can be proven without a real release, and a
+# mistake here breaks publishing, not just a check. Options and trade-offs:
+#
+#   A. Fold these jobs into release.yml with `needs: [verify-version, test]`.
+#      + Uses only documented `needs` semantics; the strongest gate.
+#      - The "Docker Publish" workflow run disappears for tags. verify-release.yml listens
+#        for workflow_run of BOTH "Release" and "Docker Publish" and looks up the sibling's
+#        run for the tag; scripts/verify_release.py and its tests name both. All would need
+#        to change together. release.yml would also need `packages: write` on a job, and the
+#        workflow_dispatch backfill (with move_latest) would still need a home, so this file
+#        would survive anyway for dispatch, leaving two copies of the build steps.
+#
+#   B. Trigger on `workflow_run` of "Release" (types: completed, conclusion == success).
+#      + Small diff; images only ever follow a green test run.
+#      - workflow_run runs the file from the default branch and checks out the default
+#        branch head, so every step would need an explicit `ref: refs/tags/...` checkout.
+#      - github.event_name becomes workflow_run, which breaks the `== 'push'` conditions
+#        (tag/tree check, :latest movement). Images would publish only AFTER PyPI, and a
+#        failed Release would block a docker-only backfill of the same tag.
+#
+#   C. Add a first job that waits for the Release run of the same tag (gh run watch).
+#      - Needs `actions: read`, polling and a timeout; brittle, and it burns runner minutes.
+#
+#   D. Repository settings instead of workflow edits: a tag ruleset restricting `v*` to
+#      commits on main (whose CI already passed), and required reviewers on an
+#      environment attached to this job. Not visible in, or testable from, this repo.
+#
+# Recommendation: A, done as its own reviewed change together with verify-release.yml and
+# scripts/verify_release.py, and rehearsed once on a throwaway tag in a fork. D can be done
+# today. Until then, recover a bad image by deleting its GHCR tags and re-running.
+
 name: Docker Publish
 
 on:
@@ -18,10 +56,18 @@ jobs:
   publish:
     name: Build and push (extras=${{ matrix.extras }})
     runs-on: ubuntu-latest
+    # Multi-arch build under QEMU; the -local variant bundles torch. Generous on purpose: a
+    # timeout that kills a slow legitimate build is worse than a hang, and it is recoverable
+    # via the workflow_dispatch backfill.
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
     strategy:
+      # One failing variant must not cancel the other mid-push, which can leave a partly
+      # written image. This does not make the release atomic: the surviving variant still
+      # publishes, and the failed one is redone through the workflow_dispatch backfill.
+      fail-fast: false
       matrix:
         include:
           # Slim: API-embedder-only (OpenAI/Voyage/Cohere/Azure). Small image,

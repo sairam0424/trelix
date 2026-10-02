@@ -211,3 +211,33 @@ class TestRealSourceStillIndexed:
                 await asyncio.wait_for(watcher.run(stop_event), timeout=5.0)
 
         mock_indexer.db.delete_file_by_path.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_delete_is_logged_at_warning_level(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A delete that raises must be visible at the default log level: the watcher
+        never retries, so a debug-level line meant a stale index nobody could see."""
+        import logging
+
+        from trelix.indexing.multi_watcher import MultiRepoWatcher
+
+        gone = tmp_path / "src/gone.py"
+        watcher = MultiRepoWatcher(_registry(str(tmp_path)))
+        stop_event = asyncio.Event()
+
+        async def fake_awatch(*paths, stop_event=None, **kwargs):  # type: ignore[no-untyped-def]
+            yield {(watchfiles.Change.deleted, str(gone))}
+            stop_event.set()
+
+        mock_indexer = MagicMock()
+        mock_indexer.db.delete_file_by_path.side_effect = RuntimeError("disk on fire")
+        with caplog.at_level(logging.WARNING, logger="trelix.indexing.multi_watcher"):
+            with patch("trelix.indexing.multi_watcher.awatch", new=fake_awatch):
+                with patch("trelix.indexing.multi_watcher.Indexer", return_value=mock_indexer):
+                    await asyncio.wait_for(watcher.run(stop_event), timeout=5.0)
+
+        failures = [r for r in caplog.records if "delete failed" in r.getMessage()]
+        assert failures, "a failed delete was not logged at warning level or above"
+        assert failures[0].levelno >= logging.WARNING
+        assert "disk on fire" in failures[0].getMessage()

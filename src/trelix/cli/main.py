@@ -17,6 +17,7 @@ import errno
 import json
 import logging
 import os
+import sqlite3
 import sys
 import time
 import warnings
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig, IndexConfig
     from trelix.core.models import IndexedFile
     from trelix.indexing.indexer import Indexer
+    from trelix.review.reviewer import ReviewOutcome
     from trelix.store.db import Database
     from trelix.store.provenance import DriftReport, IndexProvenance, PrunePlan
 
@@ -232,6 +234,25 @@ def _print_error(label: str, detail: object) -> None:
     err_console.print(f"[red]{label}:[/red] {_safe_text(str(detail))}")
 
 
+def _require_index(config: IndexConfig, repo: str) -> None:
+    """Exit 1 unless `config`'s index database already exists.
+
+    Read commands call this BEFORE building a Retriever, GraphBuilder or AgentLoop:
+    constructing any of them opens the database, and opening a missing one creates it
+    (schema and an empty vec0 table), which then defeats every later "No index found"
+    check. Uses `db_path_resolved`, not `db_path_absolute`, because the latter creates
+    `.trelix/` and its `.gitignore` as a side effect of being read.
+    """
+    db_path = config.db_path_resolved
+    if db_path.exists():
+        return
+    err_console.print(
+        f"[red]No index found at {_safe_text(str(db_path))}.[/red]"
+        f" Run trelix index {_safe_text(repo)} first."
+    )
+    raise typer.Exit(1)
+
+
 def _print_json(payload: object, *, indent: int | None = 2) -> None:
     """Emit `payload` on stdout as JSON a consumer can parse.
 
@@ -260,6 +281,38 @@ def _print_json(payload: object, *, indent: int | None = 2) -> None:
         highlight=False,
         soft_wrap=True,
     )
+
+
+def _exit_if_review_not_run(outcome: ReviewOutcome, *, json_output: bool) -> None:
+    """Exit REVIEW_NOT_RUN_EXIT_CODE when nothing was reviewed; warn on a partial review.
+
+    An empty comment list from a review that never ran must not read as a clean
+    review, so the reason goes to stderr and (in --json mode) stdout still carries
+    a parseable, empty array. A partial failure keeps exit 0 and only warns.
+    """
+    if outcome.could_not_review:
+        if json_output:
+            _print_json([])
+        if outcome.llm_available:
+            reason = (
+                f"the LLM call failed for {outcome.hunks_failed} of {outcome.hunks_total} "
+                "hunks (see the warnings above)"
+            )
+        else:
+            reason = (
+                "the LLM is not configured (set OPENAI_API_KEY or AZURE_API_KEY, "
+                "or choose another provider with TRELIX_LLM_PROVIDER)"
+            )
+        err_console.print(
+            f"[red]trelix review did not run:[/red] {_safe_text(reason)}. "
+            "No code was reviewed, so this is not a clean result."
+        )
+        raise typer.Exit(REVIEW_NOT_RUN_EXIT_CODE)
+    if outcome.hunks_failed:
+        err_console.print(
+            f"[yellow]Warning: {outcome.hunks_failed} of {outcome.hunks_total} hunks could "
+            "not be reviewed; the results below cover only the rest.[/yellow]"
+        )
 
 
 # Relocated to trelix.core.console_safety so indexing/indexer.py can share it — it is
@@ -371,6 +424,11 @@ _EmbedderProvider = Literal[
     "bedrock-cohere",
     "cohere",
 ]
+
+# Exit code of `trelix review` when it could not review at all (no usable LLM, or every
+# hunk's LLM call failed). Not 1 (generic error), not 2 (click usage error, and the
+# audit commands' "could not check"), so a CI wrapper can tell "not reviewed" from both.
+REVIEW_NOT_RUN_EXIT_CODE = 3
 
 _PROVIDER_HELP = (
     "Embedding provider: local | openai | azure | voyage"
@@ -511,7 +569,10 @@ def index(
         # at runtime -- passing it as a kwarg type-checks against the wrong name
         # and fails CI's `mypy src/trelix/` gate. Attribute assignment checks
         # against the field's own declared type instead, and has no such gap.
-        config.use_batch_api = use_batch_api
+        # Only the flag being set overrides: leaving it unset must not clobber a value
+        # the environment (TRELIX_USE_BATCH_API) already put on the config.
+        if use_batch_api:
+            config.use_batch_api = True
     except _PydanticValidationError as exc:
         first_err = exc.errors()[0]
         msg = first_err.get("msg", str(exc))
@@ -707,14 +768,22 @@ def _run_prune(
     repo_root = Path(config.repo_path)
     deleted = 0
     unmatched: list[str] = []
+    failed: list[tuple[str, str]] = []
     for rel_path in plan.candidates:
         # The absolute path is reconstructed rather than read back out of `files.path`
         # because delete_file_by_path matches `path = ? OR rel_path = ?` — so a checkout
         # that has moved since it was indexed still deletes on the rel_path arm.
-        if db.delete_file_by_path(str(repo_root / rel_path), rel_path, vector_store):
-            deleted += 1
-        else:
-            unmatched.append(rel_path)
+        try:
+            if db.delete_file_by_path(str(repo_root / rel_path), rel_path, vector_store):
+                deleted += 1
+            else:
+                unmatched.append(rel_path)
+        except sqlite3.Error as exc:
+            # delete_file_by_path rolls its own transaction back; this is a second line of
+            # defence so one bad candidate can never leave the connection mid-transaction
+            # for the next. Keep going: the remaining candidates are independent.
+            db._conn.rollback()
+            failed.append((rel_path, str(exc)))
 
     console.print(
         f"[green]Pruned {deleted} file(s)[/green] — rows, symbols, chunks and embeddings."
@@ -729,6 +798,19 @@ def _run_prune(
             f"{' …' if len(unmatched) > 5 else ''}) — the plan and the index disagree. "
             "Run `trelix stats --drift` before trusting this index."
         )
+    if failed:
+        # Not "rolled back": a SQL failure is, but a vector-store failure after the commit is
+        # not (the rows are gone and only vectors are left over), so point at the drift check.
+        err_console.print(
+            f"[red]{len(failed)} planned deletion(s) failed[/red] "
+            "— re-run --prune to retry any that are still listed, and run "
+            "`trelix stats --drift` to check the index:"
+        )
+        for rel_path, message in failed[:_PRUNE_PREVIEW_LIMIT]:
+            err_console.print(f"  {_safe_text(rel_path)}: {_safe_text(message)}")
+        if len(failed) > _PRUNE_PREVIEW_LIMIT:
+            err_console.print(f"  … and {len(failed) - _PRUNE_PREVIEW_LIMIT} more")
+    if unmatched or failed:
         raise typer.Exit(1)
 
 
@@ -1241,6 +1323,8 @@ def search(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
+    _require_index(config, repo)
+
     try:
         retriever = Retriever(config)
         context = retriever.retrieve(query)
@@ -1337,6 +1421,8 @@ def ask(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
+    _require_index(config, repo)
+
     # --agentic flag overrides the config field; --session implies --agentic
     if session is not None or agentic:
         config.retrieval.agentic_enabled = True
@@ -1394,11 +1480,21 @@ def ask(
             # form a tag, and a complete "[/!]" inside one token can no longer
             # abort the stream mid-answer.
             for token in synth.stream(context, config.retrieval):
+                # stream() never raises: it records the failure in last_error before
+                # yielding its banner / "not configured" placeholder. Neither is an
+                # answer, so neither goes to stdout.
+                if synth.last_error is not None:
+                    break
                 console.print(_safe_text(token), end="", highlight=False)
             console.print()  # final newline
     except Exception as exc:
         _print_error("Synthesis failed", exc)
         raise typer.Exit(1) from exc
+
+    # Outside the try: typer.Exit is a RuntimeError, which the handler above would catch.
+    if synth.last_error is not None:
+        _print_error("Synthesis failed", synth.last_error)
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -1436,6 +1532,8 @@ def query(
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
+
+    _require_index(config, repo)
 
     console.print(Panel(f"[bold cyan]Query:[/bold cyan] {_safe_text(query_str)}", expand=False))
 
@@ -1514,6 +1612,8 @@ def call_graph(
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
+
+    _require_index(config, repo)
 
     try:
         retriever = Retriever(config)
@@ -1603,7 +1703,7 @@ def stats(
         _print_error("Error", exc)
         raise typer.Exit(1) from exc
 
-    db_path = config.db_path_absolute
+    db_path = config.db_path_resolved
     if not db_path.exists():
         err_console.print(
             f"[red]No index found at {_safe_text(str(db_path))}[/red] —"
@@ -2657,7 +2757,7 @@ def serve(
     # below, so `serve /one/repo` left every route willing to read any absolute
     # path the caller named; passing it here makes it the containment allow-list
     # root (see api/app.py's "Containment" section).
-    api_app = create_app(served_root=repo_path)
+    api_app = create_app(served_root=repo_path, allowed_hosts=_loopback_guard_hosts(host))
 
     _warn_if_exposed_without_auth(host)
 
@@ -2667,6 +2767,58 @@ def serve(
 
 # Loopback forms. Anything else is reachable from another machine.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+def _api_auth_is_open() -> bool:
+    """True when neither a static token nor an OIDC verifier is configured (open mode).
+
+    Reuses the exact objects `create_app()` gates on, so this cannot drift from the
+    real decision. `_ApiAuthSettings` lives in api/app.py rather than core/config
+    because auth is process-wide while IndexConfig is per-repo.
+
+    OIDC alone is sufficient protection: once a verifier exists, `authenticate()`
+    raises 401 for a missing credential, so an SSO-only deployment is not open. Asking
+    `_build_oidc_verifier` rather than reading an env var means an SSO config that is
+    enabled but unusable (bad issuer, unreachable JWKS) still counts as open — which is
+    the case where a reader would most wrongly assume they were covered.
+
+    Shared by the exposure warning below and the Host/Origin guard decision in `serve`.
+    Unreadable settings count as "not open": both callers then stay quiet, and
+    `create_app()` raises on the same error anyway.
+    """
+    from trelix.api.app import _ApiAuthSettings, _build_oidc_verifier
+    from trelix.core.config import SSOConfig
+
+    try:
+        if _ApiAuthSettings().api_auth_token is not None:
+            return False
+        if _build_oidc_verifier(SSOConfig()) is not None:
+            return False
+    except Exception as exc:  # pragma: no cover - config shape is validated elsewhere
+        logger.debug("Could not read auth settings for the exposure check: %s", exc)
+        return False
+    return True
+
+
+def _loopback_guard_hosts(host: str) -> tuple[str, ...] | None:
+    """Hostnames for the Host/Origin guard when `serve` should switch it on, else None.
+
+    ON only for an open API (no token, no OIDC) on a loopback bind: that is the DNS
+    rebinding / drive-by-GET exposure, where the browser is the attacker's way in.
+    None leaves the decision to `create_app`, i.e. to TRELIX_API_ALLOWED_HOSTS.
+
+    Deliberately NOT on for a configured credential (a hostile page has no key, so it is
+    already stopped, and a reverse proxy in front of a token-protected server must not
+    start answering 403) nor for a non-loopback bind (failing closed on a bind that
+    legitimately serves other hostnames is a bigger decision than this fix; an operator
+    opts in with TRELIX_API_ALLOWED_HOSTS).
+    """
+    from trelix.api.request_guard import loopback_bind_allowed_hosts
+
+    hosts = loopback_bind_allowed_hosts(host)
+    if hosts is None or not _api_auth_is_open():
+        return None
+    return hosts
 
 
 def _warn_if_exposed_without_auth(host: str) -> None:
@@ -2692,25 +2844,7 @@ def _warn_if_exposed_without_auth(host: str) -> None:
     if host in _LOOPBACK_HOSTS:
         return
 
-    # Reuses the exact objects `create_app()` gates on, so this cannot drift from the
-    # real decision. `_ApiAuthSettings` lives in api/app.py rather than core/config
-    # because auth is process-wide while IndexConfig is per-repo.
-    #
-    # OIDC alone is sufficient protection: once a verifier exists, `authenticate()`
-    # raises 401 for a missing credential, so an SSO-only deployment is not open. Asking
-    # `_build_oidc_verifier` rather than reading an env var means an SSO config that is
-    # enabled but unusable (bad issuer, unreachable JWKS) still triggers the warning —
-    # which is the case where a reader would most wrongly assume they were covered.
-    from trelix.api.app import _ApiAuthSettings, _build_oidc_verifier
-    from trelix.core.config import SSOConfig
-
-    try:
-        if _ApiAuthSettings().api_auth_token is not None:
-            return
-        if _build_oidc_verifier(SSOConfig()) is not None:
-            return
-    except Exception as exc:  # pragma: no cover - config shape is validated elsewhere
-        logger.debug("Could not read auth settings for the exposure check: %s", exc)
+    if not _api_auth_is_open():
         return
 
     err_console.print(
@@ -2766,6 +2900,7 @@ def graph(
     from trelix.graph.builder import GraphBuilder
 
     config = IndexConfig(repo_path=str(_Path(repo_path).resolve()))
+    _require_index(config, repo_path)
     builder = GraphBuilder(config)
 
     with _status_console(json_output).status("Building knowledge graph..."):
@@ -3302,6 +3437,8 @@ def review(
         with status_console.status("Retrieving context and generating review..."):
             comments = reviewer.review(diff_text=pr_diff_str)
 
+        _exit_if_review_not_run(reviewer.last_outcome, json_output=json_output)
+
         if not comments:
             if json_output:
                 _print_json([])
@@ -3409,6 +3546,8 @@ def review(
     reviewer = DiffReviewer(config)
     with _status_console(json_output).status("Retrieving context and generating review..."):
         comments = reviewer.review(filtered)
+
+    _exit_if_review_not_run(reviewer.last_outcome, json_output=json_output)
 
     if not comments:
         console.print("[green]No issues found.[/green]")

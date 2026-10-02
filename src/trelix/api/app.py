@@ -25,6 +25,13 @@ Every route except /health requires an ``X-Trelix-Api-Key`` header matching
 in this config surface (``otel_enabled``, ``telemetry_enabled``). See
 ``_ApiAuthSettings`` below.
 
+Host/Origin guard
+-----------------
+Separate from auth and off unless ``create_app(allowed_hosts=...)`` or
+``TRELIX_API_ALLOWED_HOSTS`` turns it on (``trelix serve`` does for an open API on a
+loopback bind): foreign ``Host`` / ``Origin`` headers and cross-site fetches get a 403.
+See ``request_guard.py``.
+
 Containment
 -----------
 Authentication answers *who*; it says nothing about *where*. There is one
@@ -74,7 +81,7 @@ from collections.abc import Generator, Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Intentionally at module scope — see "Import contract" in the module docstring.
@@ -82,6 +89,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # only works when they are resolved at import time, not inside the function body.
 # Neither module requires fastapi, so this file stays importable without trelix[serve].
 from trelix import __version__
+from trelix.api.request_guard import (
+    RequestGuardMiddleware,
+    RequestGuardSettings,
+    resolve_allowed_hosts,
+)
 from trelix.core.config import OPERATOR_ENV_FILE, IndexConfig, RetrievalConfig
 from trelix.retrieval.otel_tracing import pipeline_stage_span
 from trelix.retrieval.retriever import Retriever
@@ -174,6 +186,23 @@ class _ApiAuthSettings(BaseSettings):
     )
 
     api_auth_token: str | None = Field(default=None, alias="TRELIX_API_AUTH_TOKEN")
+
+    @field_validator("api_auth_token")
+    @classmethod
+    def _blank_token_is_unset(cls, value: str | None) -> str | None:
+        """Treat a blank token as unset.
+
+        ``docker-compose.yml`` passes ``${TRELIX_API_AUTH_TOKEN:-}``, which exports an
+        empty string when the operator sets nothing, and a missing CI secret does the
+        same. Read literally, ``hmac.compare_digest("", "")`` is True, so an empty
+        ``X-Trelix-Api-Key`` header would authenticate, and the exposure warning in
+        ``trelix serve`` would see "a token is configured". Normalising here means
+        every consumer sees ``None``. A real token is returned untouched.
+        """
+        if value is None or value.strip():
+            return value
+        logger.warning("TRELIX_API_AUTH_TOKEN is set but blank; treating it as unset")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +369,11 @@ def _build_oidc_verifier(sso: Any) -> Any:  # noqa: ANN401
     )
 
 
-def create_app(served_root: str | Path | None = None) -> Any:  # noqa: ANN201
+def create_app(
+    served_root: str | Path | None = None,
+    *,
+    allowed_hosts: Sequence[str] | None = None,
+) -> Any:  # noqa: ANN201
     """Create and return the FastAPI application.
 
     Args:
@@ -350,6 +383,12 @@ def create_app(served_root: str | Path | None = None) -> Any:  # noqa: ANN201
             still be built by an ASGI factory with no argument — in that case
             the allow-list comes from the env var alone, and if that is unset
             too every gated route refuses every caller-supplied path.
+        allowed_hosts: hostnames the Host/Origin guard accepts (see
+            ``api/request_guard.py``). ``None`` with ``TRELIX_API_ALLOWED_HOSTS``
+            unset means no guard, which is the behavior of every existing caller.
+            ``None`` with the env var set turns it on for the loopback names plus the
+            listed hosts; a sequence turns it on for exactly those hosts plus the env
+            hosts; ``TRELIX_API_ALLOWED_HOSTS=*`` turns it off in every case.
 
     FastAPI is imported lazily inside this function so the module is importable
     even without fastapi installed (``trelix[serve]`` is the optional extra that
@@ -391,11 +430,25 @@ def create_app(served_root: str | Path | None = None) -> Any:  # noqa: ANN201
     # unset means every route stays open (today's behavior, unchanged).
     auth_settings = _ApiAuthSettings()
 
+    # Host/Origin guard: OFF unless `allowed_hosts` or TRELIX_API_ALLOWED_HOSTS turns
+    # it on (`trelix serve` does so for an open API on a loopback bind). Registered
+    # BEFORE the audit middleware below: Starlette makes the LAST added middleware the
+    # outermost, so audit still sees the guard's 403.
+    guard_hosts = resolve_allowed_hosts(allowed_hosts, RequestGuardSettings().allowed_hosts)
+    if guard_hosts is not None:
+        app.add_middleware(RequestGuardMiddleware, allowed_hosts=guard_hosts)
+        logger.info(
+            "Host/Origin guard is ON (allowed hosts: %s); set TRELIX_API_ALLOWED_HOSTS=* "
+            "to disable it, or list more hostnames there to allow them",
+            ", ".join(sorted(guard_hosts)),
+        )
+
     # Audit is additive and OFF by default: when disabled, no middleware is
     # registered and no audit.db is created — byte-identical to pre-audit
-    # behavior. When enabled, the audit middleware is the FIRST add_middleware
+    # behavior. When enabled, the audit middleware is the LAST add_middleware
     # call so it stays outermost and observes the final status code (incl. the
-    # 401 raised below and any 500 from an unhandled route error).
+    # 403 from the guard above, the 401 raised below and any 500 from an
+    # unhandled route error).
     from trelix.core.config import AuditConfig, SSOConfig
 
     audit_config = AuditConfig()
