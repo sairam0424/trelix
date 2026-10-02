@@ -164,7 +164,9 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 no index, printing `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.`
 to stderr (`stats` words it slightly differently). They check before opening anything, so they leave
 no `.trelix/` directory behind. The commands that write an index (`index`, `update-index`,
-`watch`) still create it on first use.
+`watch`) still create it on first use, and so do `eval`, `eval-synthesis`, `review`,
+`telemetry`, `search-all`, `agent sessions` and (only once it finds a flow) `taint`, which do
+not check yet.
 
 ---
 
@@ -298,8 +300,8 @@ trelix search /my/repo "database connection pool" --provider openai
   `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.` to
   stderr and exits `1`, without creating `.trelix/`.
 - `trelix search` disables the reranker for its own invocation (it constructs
-  `RetrievalConfig(rerank=False)` — `src/trelix/cli/main.py:1173`), and so do three more
-  commands: `ask` (`:1269`), `query` (`:1365`) and `call-graph` (`:1443`). An init keyword
+  `RetrievalConfig(rerank=False)` in `search()` of `src/trelix/cli/main.py`), and so do three
+  more commands: `ask` (`ask()`), `query` (`query()`) and `call-graph` (`call_graph()`). An init keyword
   outranks the environment in pydantic-settings, so `TRELIX_RETRIEVAL_RERANK=true` cannot
   switch reranking back on for any of those four — including `--agentic` and FLARE runs of
   `ask`, which reuse the same config object. This note used to claim the var affected
@@ -327,7 +329,7 @@ trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session I
 #### Description
 
 Retrieves relevant code context and synthesizes a natural-language answer
-using an LLM. With `--provider local` (no LLM key), trelix prints the
+using an LLM. With `--provider local` (FLARE off, no `--agentic`), trelix prints the
 retrieved context text instead of a synthesized answer. Streaming output is
 used when an LLM is available.
 
@@ -358,15 +360,20 @@ OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to data
   `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.` to
   stderr and exits `1`, without creating `.trelix/`.
 - `--agentic` sets `TRELIX_RETRIEVAL_AGENTIC=true` for this invocation only.
-- With `--provider local` and no LLM key, the command prints the assembled
+- With `--provider local`, FLARE off and no `--agentic`, the command prints the assembled
   context text, which is useful for debugging retrieval quality.
 - FLARE iterative retrieval can be enabled globally with
   `TRELIX_RETRIEVAL_FLARE=true`.
 - If synthesis cannot produce an answer (no LLM configured, bad API key, network or
-  quota error), the reason is printed to stderr, nothing but the answer goes to stdout,
-  and the command exits `1`. This covers the streaming and the FLARE paths.
+  quota error) and the embedder provider is not `local`, the reason is printed to stderr,
+  stdout gets no failure banner (a failure before the first token leaves only the closing
+  blank line; text already streamed stays) and the command exits `1`. With
+  `TRELIX_RETRIEVAL_FLARE=true` (and no `--agentic`) a failed synthesis exits `1` whichever
+  embedder is configured, and the synthesizer's own notice (for example "No LLM API key
+  configured") also reaches stdout. With the `local` embedder and FLARE off, `ask` prints
+  the retrieved context and exits `0`. `--agentic` is unchanged.
 - Reranking is off for this command and cannot be enabled by environment: `ask` builds
-  `RetrievalConfig(rerank=False)` (`src/trelix/cli/main.py:1269`), which outranks
+  `RetrievalConfig(rerank=False)` (`ask()` in `src/trelix/cli/main.py`), which outranks
   `TRELIX_RETRIEVAL_RERANK`. Applies to the plain, `--agentic` and FLARE paths alike —
   all three share one config object. Use the MCP `search_code`/`ask_agent` tools, the REST
   `/search`/`/ask` endpoints, or `Retriever(IndexConfig(...))` if you need a reranked

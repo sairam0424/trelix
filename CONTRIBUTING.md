@@ -438,9 +438,9 @@ never fires on one).
 
 Two things that are **not** version sites, and must not be bumped with them:
 
-- `helm/trelix/Chart.yaml` has both `version:` (the *chart's* own version, currently
-  `0.2.0` and independent of trelix) and `appVersion:` (which tracks trelix). Only
-  `appVersion` moves.
+- `helm/trelix/Chart.yaml` has both `version:` (the *chart's* own version, independent of
+  trelix; the comment in that file says when it moves) and `appVersion:` (which tracks
+  trelix). Only `appVersion` is a version stamp.
 - Both adapters' `dependencies = ["trelix>=3.0.0", ...]`. Lockstep governs the version
   *stamp* — identity — not the dependency *floor*, which is a compatibility contract that
   moves only when an import demands it. Each `pyproject.toml:35` records why it reads

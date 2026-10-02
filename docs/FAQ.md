@@ -109,8 +109,8 @@ The `search` row used to read "LLM: No / Offline: Yes". That contradicted
 call applies to `search` too. See that section for the two ways to get zero LLM calls.
 
 The `ask` row used to read "Hybrid + reranking + synthesis". It does not rerank: `ask`
-constructs `RetrievalConfig(rerank=False)` at `src/trelix/cli/main.py:1269`, exactly as
-`search` does at `:1173`, and an init keyword outranks `TRELIX_RETRIEVAL_RERANK` in
+constructs `RetrievalConfig(rerank=False)` in `ask()` of `src/trelix/cli/main.py`, exactly as
+`search` does in `search()`, and an init keyword outranks `TRELIX_RETRIEVAL_RERANK` in
 pydantic-settings — so no environment setting switches it on. Reranking is on by default
 only on the surfaces that leave `retrieval` at its default: the MCP tools, the REST API,
 the Python API, and the `eval` / `eval-synthesis` / `review` / `search-all` commands.
@@ -542,7 +542,7 @@ trelix-langchain==3.4.2
 trelix-llama-index==3.4.2
 ```
 
-The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.4.0 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.4.0 resolving against core 3.0.0 is supported and intended — the four-way 3.4.0 pin above is the combination CI installs and tests, not the only one that works.
+The version stamp and the dependency floor are separate facts, and a reader pinning versions needs both. Both adapters at 3.4.2 still declare `trelix>=3.0.0`; the floor was deliberately not raised to match the stamp, because a floor is an API compatibility contract rather than a statement about release cadence. `packages/trelix-langchain/pyproject.toml` records the reasoning: 3.0.0 is the lowest published core verified to expose every name `retriever.py` reads. So `trelix-langchain` 3.4.2 resolving against core 3.0.0 is supported and intended — the four-way 3.4.2 pin above is the combination CI installs and tests, not the only one that works. The one exception is `provider="cohere"` (the direct Cohere embedder), which needs core 3.3.3 or newer.
 
 ---
 

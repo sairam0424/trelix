@@ -39,7 +39,8 @@ _Nothing yet._
   configured and the server is bound to loopback, it now answers 403 to a foreign `Host`, a
   foreign or `null` `Origin`, and `Sec-Fetch-Site: cross-site`, with a fixed message that never
   echoes the value. `GET`/`HEAD /health` stays exempt so container and Kubernetes probes keep
-  working. See `SECURITY.md` for the known limits.
+  working. A `Host` longer than 300 characters or an `Origin` longer than 320 is refused
+  without being scanned. See `SECURITY.md` for the known limits.
 - **The release workflow took its token scope from a repository setting and had no job
   timeouts.** `release.yml` had no `permissions:` block, so the token it ran with (read-only
   on this repository today) depended on a setting outside the file while the workflow
@@ -63,8 +64,9 @@ _Nothing yet._
 - **`trelix review` printed "No issues found." and exited 0 when it could not review, and
   `trelix ask` exited 0 when synthesis failed.** The repository's own PR workflow and the
   GitHub App then published a green "found 0 issue(s)" check that could never find anything.
-  See Changed for the new exit codes; the workflow and the App now publish a neutral "trelix
-  review did not run" check instead.
+  See Changed for the new exit codes; the App now publishes a neutral "trelix review did not
+  run" check on the pull request instead, and the repository's own PR workflow records the same
+  neutral check (on the pull request's merge commit, see Changed).
 - **`trelix index` ignored `TRELIX_USE_BATCH_API`**: the `--use-batch-api` flag's `False`
   default overwrote the value the environment variable had set. The flag now overrides only
   when it is passed.
@@ -73,13 +75,19 @@ _Nothing yet._
   "Knowledge Graph built" with zero nodes) and exited 0, and the stray file defeated the
   "is there an index?" guards in `stats`, `link-tickets`, `link-artifacts` and
   `migrate-vectors` on the next run. `stats` also no longer leaves `.trelix/` behind. Not
-  covered yet: the MCP server, the REST API, the LangChain and LlamaIndex retrievers and
-  `trelix eval` and `trelix review` still create an empty index for a repository that was
-  never indexed, and a stray empty `.trelix/index.db` left behind by an older version is
-  treated as a real index (delete `.trelix` or run `trelix index`).
+  covered yet: the MCP server, the REST API, the LangChain and LlamaIndex retrievers,
+  `trelix eval`, `eval-synthesis`, `review`, `telemetry`, `search-all` and the
+  `agent sessions` subcommands still create an empty index for a repository that was never
+  indexed (`taint` writes one once it finds a flow), and a stray empty `.trelix/index.db`
+  left behind by an older version is treated as a real index (delete `.trelix` or run
+  `trelix index`).
 - **The Qdrant vector store returned cosine similarity where every caller expects a
   distance**, inverting the per-hit score and the opt-in artifact-linker embedding fallback.
-  `search()` now returns distance like the sqlite-vec store.
+  `search()` now returns distance like the sqlite-vec store. If you had enabled that fallback
+  (`trelix link-artifacts --embedding-fallback`) on a Qdrant store, the inverted value kept
+  the least similar hits and dropped the most similar, so the `references_artifact` edges it
+  created point at poorly matching chunks and stay in the index: running the command again
+  adds the correct links but does not remove or rewrite the earlier ones.
 - **Deleting a file on a Qdrant server left all of its vectors behind.** The delete request
   carried the file-summary sentinel id (`-file_id`) together with the chunk ids, and a Qdrant
   server rejects a whole request that contains a negative point id (HTTP 400), so none of the
@@ -101,9 +109,11 @@ _Nothing yet._
   not review (no usable LLM, or the LLM call failed for every hunk; a partial failure, or a
   reply the model truncated or wrote as prose, still counts as a review and exits 0), and
   `trelix ask` exits 1 when synthesis fails or no LLM is configured, instead
-  of exiting 0. For `ask` this applies when the embedder provider is not `local` and
-  `--agentic` is not used: with the default `local` embedder it still prints the retrieved
-  context and exits 0, and `--agentic` is unchanged.
+  of exiting 0. For `ask` this applies when `--agentic` is not used and either the embedder
+  provider is not `local` or `TRELIX_RETRIEVAL_FLARE=true`. With FLARE on it exits 1
+  whichever embedder is configured, and the synthesizer's own notice (for example "No LLM
+  API key configured") also reaches stdout. With the default `local` embedder and FLARE off
+  it still prints the retrieved context and exits 0, and `--agentic` is unchanged.
 - `trelix search`, `ask`, `query`, `call-graph` and `graph` exit 1 with "No index found ...
   Run trelix index <repo> first." on a repository that has not been indexed.
 - A loopback `trelix serve` that runs open now answers 403 to a request whose `Host` is not
@@ -113,12 +123,17 @@ _Nothing yet._
   name (`http://trelix:8765`), add that hostname to `TRELIX_API_ALLOWED_HOSTS`. A `docker
   compose` user who widens the port mapping must add the hostname too, even with a token set.
 - `trelix index` now honors `TRELIX_USE_BATCH_API=true`, which it used to ignore. If you
-  already export it, indexing submits an asynchronous embedding batch job instead of
-  embedding inline; run `trelix index --resume-batch` later to collect the result.
+  already export it, indexing with the `openai` embedder submits an asynchronous embedding
+  batch job instead of embedding inline; run `trelix index --resume-batch` later to collect
+  the result. There is no `--no-use-batch-api`: unset the variable to embed inline again.
 - Until the workflow is edited to pass an LLM key to its "Run trelix review" step (it passes
   none today, so a repository secret alone is not enough), this repository's PR review
-  workflow shows a neutral "trelix review did not run" check on every pull request instead of
-  a green "0 issues".
+  workflow records a neutral "trelix review did not run" check instead of a green "0 issues".
+  It installs trelix from PyPI, so this starts with the published 3.4.2. The check is attached
+  to the pull request's merge commit (the SHA of a `pull_request` run), so it shows in that
+  commit's checks and not on the pull request page. For a pull request from this repository
+  the job itself still ends green; a fork's read-only token cannot create the check at all.
+  The GitHub App posts its check on the pull request head.
 
 ## [3.4.1] — 2026-09-27
 
