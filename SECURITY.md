@@ -150,7 +150,7 @@ Exposure by default vs opt-in:
 
 | Path | Default | What reaches a model |
 | ---- | ------- | -------------------- |
-| `trelix index` | on | with the default `local` embedder (`core/config.py:216-226`), nothing leaves the machine; with any remote embedder, every chunk's text is sent to the embedding model (`indexing/indexer.py:959`, `:1021`) |
+| `trelix index` | on | with the default `local` embedder (`EmbedderConfig.provider` in `core/config.py`), nothing leaves the machine; with any remote embedder, every chunk's text is sent to the embedding model (`indexing/indexer.py:959`, `:1021`) |
 | `trelix ask`, `GET /ask` | on | the assembled retrieval context (below) |
 | index-time file summaries | off — `TRELIX_FILE_SUMMARIES_ENABLED` (`core/config.py:1234-1237`) | file path, language, and top symbol signatures truncated to 80 chars (`indexing/file_summarizer.py:85-91`) |
 | agentic loop | off — `TRELIX_RETRIEVAL_AGENTIC` (`core/config.py:656-659`), or `--agentic`/`--session` (`cli/main.py:422-424`). **The MCP `ask_agent` tool ignores this** and forces the loop on unconditionally (`trelix_mcp/server.py:762`); it does require an LLM to be configured. | retrieval context plus prior-turn observations |
@@ -200,10 +200,11 @@ not to anything trelix asks it to do.
    `cli/main.py:1594-1605`.
 4. **Indexed text also reaches *you* with no model in the loop.** When the agent
    loop hits its turn cap it returns the first three successful observations as
-   the answer (`agent/loop.py:277-284`). With a `local` embedder provider,
-   `trelix ask` prints the assembled context and returns before any synthesis
-   call (`cli/main.py:461-469`). Terminal rendering is escaped for display only
-   (see the Rich-markup notes at `cli/main.py:432-437`) — escaping prevents
+   the answer (`AgentLoop._fallback_answer()` in `agent/loop.py`). With a `local` embedder provider
+   (and none of `TRELIX_RETRIEVAL_FLARE=true`, `TRELIX_RETRIEVAL_AGENTIC=true`,
+   `--agentic` or `--session`), `trelix ask` prints the assembled context and returns
+   before any synthesis call (`ask()` in `cli/main.py`). Terminal rendering is escaped
+   for display only (see the Rich-markup notes in `cli/main.py`) — escaping prevents
    markup errors, it is not sanitization.
 
 - **The index outlives its source, and re-indexing does not reclaim it.** A symbol's
@@ -324,8 +325,9 @@ Before indexing a repository you do not fully trust:
   `trelix ask` sends the retrieval-selected subset that fits the assembler's
   token budget, not the whole repository — but across enough queries any indexed
   chunk can reach a prompt. Note that on the *default* configuration `trelix ask`
-  makes no LLM call at all (the `local` embedder returns the assembled context
-  directly); the exposure below begins once an LLM-backed path is configured.
+  makes no synthesis call (the `local` embedder returns the assembled context
+  directly; only the question text goes to a configured chat model, for query planning);
+  the exposure below begins once an LLM-backed path is configured.
 - Leave the agentic loop off (`TRELIX_RETRIEVAL_AGENTIC` is already `false`) — it
   is the only path that re-feeds prior observations into a later prompt. **This
   does not cover the MCP `ask_agent` tool**, which forces the loop on regardless
@@ -341,9 +343,15 @@ Before indexing a repository you do not fully trust:
   the repository is indexed and reported under an in-repo path; see "File system
   access" under Scope above.
 - For retrieval-only use, run with a `local` embedder provider — `trelix ask`
-  then returns the context without making an LLM call (`cli/main.py:461-469`),
-  and indexing sends no chunk text to a remote embedding model. `local` is
-  already the default (`core/config.py:216-226`), but a `.env` or an exported
+  then skips synthesis and prints the context (unless `TRELIX_RETRIEVAL_FLARE=true`,
+  `TRELIX_RETRIEVAL_AGENTIC=true`, `--agentic` or `--session` is used; see `ask()` in
+  `cli/main.py`), and indexing sends no chunk text to a remote embedding model.
+  Retrieval's query planner is separate: while a chat credential is set it still sends
+  the question text to the chat model, at most once per query per process (the in-memory
+  plan cache does not persist between CLI runs; `docs/FAQ.md` explains how to switch that
+  off).
+  `local` is already the default (`EmbedderConfig.provider` in `core/config.py`), but a
+  `.env` or an exported
   `TRELIX_EMBEDDER_PROVIDER` can silently change it, so check the resolved value
   rather than assuming.
 
