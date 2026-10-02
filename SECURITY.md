@@ -60,9 +60,11 @@ configured the API is open, and a web page can reach `127.0.0.1` in two ways: fi
   `Sec-Fetch-Site: cross-site` request is refused. Anything else gets `403` with a fixed
   message that names the fix and never echoes the offending value; each rejection logs one
   warning. Requests with no `Origin` and no `Sec-Fetch-Site` (curl, scripts, the trelix
-  clients) are unaffected. There is no CORS support. A `no-cors` cross-site GET carries no
-  `Origin`, so it is caught by `Sec-Fetch-Site`, which current Chrome, Firefox and Safari send;
-  DNS rebinding is caught by the `Host` check in every browser.
+  clients) skip those two checks but still need an allowed `Host`: a client that reaches the
+  server under another hostname gets `403` until that hostname is listed. There is no CORS
+  support. A `no-cors` cross-site GET carries no `Origin`, so it is caught by
+  `Sec-Fetch-Site`, which current Chrome, Firefox and Safari send; DNS rebinding is caught by
+  the `Host` check in every browser.
 - **When it is on.** `trelix serve` enables it when no `TRELIX_API_AUTH_TOKEN` and no OIDC
   is configured and the bind host is loopback (`127.0.0.0/8`, `::1`, `localhost`); the
   allowed names are `localhost`, `127.0.0.1`, `::1` and the bind host. It stays off when a

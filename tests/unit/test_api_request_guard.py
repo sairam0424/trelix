@@ -513,6 +513,80 @@ def test_a_nul_byte_in_host_is_refused(guarded_app: Any) -> None:
     assert status == 403
 
 
+# -- oversized header values are refused before they are scanned ---------------
+#
+# The checks on a Host / Origin value are pure Python (about 0.1 microsecond per
+# character) and the guard runs ahead of authentication, so a 1 MB header used to hold
+# the event loop for ~100 ms per request. Under httptools (what `trelix[serve]` installs)
+# uvicorn applies no header cap, so four such connections pushed /health p50 from 2 ms to
+# 2.3 s. A value longer than any legal one is now refused without being looked at.
+
+
+@pytest.fixture
+def no_scans(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test if the per-character scan is ever handed an oversized value."""
+    from trelix.api import request_guard
+
+    real_scan = request_guard._is_plain_ascii
+
+    def guarded_scan(value: str) -> bool:
+        assert len(value) <= request_guard._MAX_HOST_CHARS, (
+            "an oversized value must be refused before any per-character scan"
+        )
+        return real_scan(value)
+
+    monkeypatch.setattr(request_guard, "_is_plain_ascii", guarded_scan)
+
+
+def test_an_oversized_host_is_refused_without_being_scanned(no_scans: None) -> None:
+    assert normalise_host("a" * 10_000) is None
+    assert not is_allowed_host("a" * 10_000 + ".example", frozenset(LOOPBACK))
+
+
+def test_an_oversized_origin_is_refused_without_being_scanned(no_scans: None) -> None:
+    assert not is_allowed_origin("http://" + "a" * 10_000, frozenset(LOOPBACK))
+    assert not is_allowed_origin("http://localhost:3000" + "x" * 10_000, frozenset(LOOPBACK))
+
+
+def test_the_longest_legal_host_and_origin_are_still_accepted() -> None:
+    name = ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 61])  # 253 characters, the DNS maximum
+    assert len(name) == 253
+    assert normalise_host(f"{name}:65535") == name
+    assert is_allowed_host(f"{name}:65535", frozenset({name}))
+    assert is_allowed_origin(f"https://{name}:65535", frozenset({name}))
+
+
+def test_a_one_megabyte_host_is_refused_quickly_with_the_fixed_body(
+    guarded_app: Any, no_scans: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING):
+        status, body = _drive(guarded_app, _scope([(b"host", b"a" * 1_000_000)]))
+    assert status == 403
+    assert b"add it to TRELIX_API_ALLOWED_HOSTS" in body
+    assert b"aaaa" not in body
+    assert max(len(record.getMessage()) for record in caplog.records) < 400
+
+
+def test_a_one_megabyte_origin_is_refused_with_a_bounded_log_line(
+    guarded_app: Any, no_scans: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    headers = [(b"host", b"localhost:8765"), (b"origin", b"http://" + b"a" * 1_000_000)]
+    with caplog.at_level(logging.WARNING):
+        status, _ = _drive(guarded_app, _scope(headers))
+    assert status == 403
+    assert max(len(record.getMessage()) for record in caplog.records) < 400
+
+
+def test_repeated_huge_host_headers_are_logged_bounded(
+    guarded_app: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    headers = [(b"host", b"a" * 500_000), (b"host", b"b" * 500_000)]
+    with caplog.at_level(logging.WARNING):
+        status, _ = _drive(guarded_app, _scope(headers))
+    assert status == 403
+    assert max(len(record.getMessage()) for record in caplog.records) < 400
+
+
 def test_non_http_scopes_pass_through_untouched() -> None:
     seen: list[str] = []
 

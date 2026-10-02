@@ -28,7 +28,9 @@ tracked follow-up, not something to route around at the Helm layer.
 
 ## Security — no auth on the REST API
 
-`trelix serve` has zero auth middleware. This chart defaults
+`trelix serve` runs with no authentication unless you set `apiAuth.token`
+(or `apiAuth.existingSecretName`), which then requires an `X-Trelix-Api-Key`
+header on every route except `/health`. This chart defaults
 `ingress.enabled: false` for exactly that reason — a public Ingress with no
 fronting auth exposes:
 
@@ -59,7 +61,7 @@ See `values.yaml` for the full list with defaults and comments. Highlights:
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `3.4.1` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
+| `image.tag` | `3.4.2` | Always equals `Chart.yaml`'s `appVersion`. Set to `X.Y.Z-local` to use the variant bundling `sentence-transformers`/torch for the local embedder |
 | `store.backend` | `sqlite` | `sqlite` \| `qdrant` \| `lance` |
 | `persistence.enabled` | `true` | Shared multi-repo PVC — see "Repo model" above |
 | `persistence.mountPath` | `/data` | |

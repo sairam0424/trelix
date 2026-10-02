@@ -144,7 +144,7 @@ trelix watch ./my-repo
 
 Step 3 above, for real — `trelix query` against trelix's own `retrieval/` + `graph/` source, no API key, no synthesis:
 
-![trelix query demo — real terminal output, no LLM synthesis, offline embeddings](docs/assets/search-demo.gif)
+![trelix query demo — real terminal output, no LLM synthesis, offline embeddings](https://raw.githubusercontent.com/sairam0424/trelix/main/docs/assets/search-demo.gif)
 
 ---
 
