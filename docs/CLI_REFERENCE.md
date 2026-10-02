@@ -329,7 +329,7 @@ trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session I
 #### Description
 
 Retrieves relevant code context and synthesizes a natural-language answer
-using an LLM. With `--provider local` (FLARE off, no `--agentic`), trelix prints the
+using an LLM. With `--provider local` (FLARE and agentic mode off), trelix prints the
 retrieved context text instead of a synthesized answer. Streaming output is
 used when an LLM is available.
 
@@ -360,18 +360,22 @@ OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to data
   `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.` to
   stderr and exits `1`, without creating `.trelix/`.
 - `--agentic` sets `TRELIX_RETRIEVAL_AGENTIC=true` for this invocation only.
-- With `--provider local`, FLARE off and no `--agentic`, the command prints the assembled
-  context text, which is useful for debugging retrieval quality.
+- With `--provider local`, FLARE off and agentic mode off (no `--agentic` or `--session`,
+  `TRELIX_RETRIEVAL_AGENTIC` not `true`), the command prints the assembled context text,
+  which is useful for debugging retrieval quality.
 - FLARE iterative retrieval can be enabled globally with
   `TRELIX_RETRIEVAL_FLARE=true`.
 - If synthesis cannot produce an answer (no LLM configured, bad API key, network or
   quota error) and the embedder provider is not `local`, the reason is printed to stderr,
   stdout gets no failure banner (a failure before the first token leaves only the closing
   blank line; text already streamed stays) and the command exits `1`. With
-  `TRELIX_RETRIEVAL_FLARE=true` (and no `--agentic`) a failed synthesis exits `1` whichever
+  `TRELIX_RETRIEVAL_FLARE=true` (and agentic mode off) a failed synthesis exits `1` whichever
   embedder is configured, and the synthesizer's own notice (for example "No LLM API key
   configured") also reaches stdout. With the `local` embedder and FLARE off, `ask` prints
-  the retrieved context and exits `0`. `--agentic` is unchanged.
+  the retrieved context and exits `0`. Agentic mode (`--agentic`, `--session` or
+  `TRELIX_RETRIEVAL_AGENTIC=true`) does not go through this check: if the LLM is missing or
+  fails, the agent loop falls back to the observations it has (or prints "Could not find
+  sufficient context for: <question>") and `ask` exits `0`.
 - Reranking is off for this command and cannot be enabled by environment: `ask` builds
   `RetrievalConfig(rerank=False)` (`ask()` in `src/trelix/cli/main.py`), which outranks
   `TRELIX_RETRIEVAL_RERANK`. Applies to the plain, `--agentic` and FLARE paths alike —
