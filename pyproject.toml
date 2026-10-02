@@ -86,7 +86,7 @@ dependencies = [
     # switch; the explicit <3.0.0 ceiling here is deliberate, not an oversight —
     # see tests/unit/test_dependency_floor_guards.py and
     # tests/unit/test_llm_sdk_floor_guards.py, both updated alongside this change.
-    "openai>=2.20.0,<3.0.0",
+    "openai>=2.20.0,<4.0.0",
     "tiktoken>=0.7.0",
     # --- Retrieval math ---
     # scikit-learn was an unconditional core dependency with zero importers.
