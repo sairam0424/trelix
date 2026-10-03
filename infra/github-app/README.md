@@ -130,7 +130,8 @@ GitHub -- pull_request webhook -->  this service (Express)
 - ✅ **Check-annotation posting.** `runReview` mints a token, clones and
   indexes the PR's actual head, runs the CLI review against that clone,
   and posts a completed Check run with inline annotations via
-  `octokit.rest.checks.create`.
+  `octokit.rest.checks.create`. Everything in it is sanitised first (see
+  "Everything the App posts to Checks is sanitised" below).
 - ✅ **Tolerant indexing.** `indexRepository` mirrors
   `trelix-review.yml`'s own `if ! trelix index .; then ::warning ...; fi`
   pattern — an indexing failure degrades findings to structural-only
@@ -277,6 +278,92 @@ GitHub -- pull_request webhook -->  this service (Express)
     removes it with the checkout and `sweepStaleWorkspaces` removes leftovers
     of both at boot. A PR that tracks a file named `.git-askpass.sh` therefore
     checks out normally.
+- **Everything the App posts to Checks is sanitised.** The text of a Check
+  comes from an LLM that reads attacker-written pull requests, so it may be
+  prompt-injected, and a Check is shown to maintainers. `src/sanitize.ts` makes
+  sure it cannot show them an image (a tracking pixel), a link or bare URL, an
+  @mention, raw HTML or hidden text. `createCheckRun` in `review-runner.ts` is
+  the only place that creates a Check run, and it passes the whole `output`
+  through `sanitizeCheckOutput` first, so `postCheckRun`,
+  `postReviewFailureCheckRun` and any poster added later are covered. A test
+  fails if another `checks.create` call appears.
+  - **What is covered.** The output `title` and `summary`, and each
+    annotation's `path`, `title` and `message`. Only those fields are copied
+    into the request. Line numbers are not text and are not checked.
+  - **The rules**, in this order, each a plain rewrite of the text with no
+    Markdown parser (so crafted input cannot desynchronise it from GitHub's):
+    1. Control characters, zero-width characters, bidi overrides and
+       isolates, the Unicode tag block (U+E0000 to U+E007F, where prompt
+       smuggling hides text), variation selectors, invisible fillers and
+       unpaired surrogates are removed. CR, CRLF, U+2028 and U+2029 become LF.
+    2. HTML comments are removed, including the HTML5 forms `<!-->`, `<!--->`
+       and `--!>`. An unterminated `<!--` removes the rest of the text, which
+       is what a renderer would hide.
+    3. Markdown images (`![alt](url)`) are dropped.
+    4. A run of more than four combining marks is cut to four (zalgo text
+       bleeds over the lines around it).
+    5. URLs: every `://` becomes `[:]//` (`https[:]//host/path`, backslash
+       escapes included) and `www.` becomes `www[.]`. The text stays readable
+       and is no longer a link.
+    6. Link syntax is broken: `](` becomes `] (`, so `[text](url)` reads
+       `[text] (url)`, and `]:` becomes `] :`, so a reference definition, which
+       renders as nothing, is shown.
+    7. Every `@` becomes a fullwidth `@` (`＠octocat`, `me＠host.example`),
+       which covers user mentions, team mentions and email addresses. It is
+       every `@`, not only one before a letter or digit: GitHub also links
+       an address whose domain starts with `-`, `_` or `.`, or with a
+       backslash escape of one of them (`a@-b.example`, `a@\.b.example`), so
+       no rule that guesses which `@` is harmless is safe.
+    8. `<` and `>` become the fullwidth `＜` and `＞`, so `List<String>`
+       reads `List＜String＞` in prose, in backticks and in a plain-text
+       annotation, and no tag can form. (An entity such as `&lt;` would show
+       literally inside a code span.) A character reference such as `&#64;`
+       or `&copy;` is shown as text (`&amp;#64;`), because the renderer would
+       decode it. A lone `&`, and `&amp;`, `&lt;` and `&gt;` as written, are
+       left alone.
+    9. Outer whitespace is trimmed and the text is cut to its limit with a
+       trailing `…`, never inside a character reference or a surrogate pair.
+
+    The output is a fixed point: sanitising sanitised text changes nothing,
+    which is why the poster and `toAnnotations` can both apply it.
+  - **Limits.** Title 140 characters, summary 4,000, annotation message 2,000,
+    path 1,024, and 50 annotations per check (GitHub's limit per request). A
+    message that is empty once sanitised is posted as `(no details provided)`,
+    because an annotation needs a message and one bad annotation would fail
+    the whole request.
+  - **Annotation paths.** An annotation is dropped when its path is not a
+    string, is empty or over the limit, has a line break, is absolute (`/`,
+    `\`, `C:\`), has a `..` segment, or looks like markup or a URL (`<`, `>`,
+    `://`, `](`). Hidden characters are removed from a path first, so a
+    zero-width character inside `..` does not hide it. Other characters,
+    including `@` and `[id]`, stay: GitHub matches the path against the
+    repository's files. The Check's verdict and issue count come from the
+    findings, not from the annotations, so a dropped or over-limit annotation
+    cannot turn a failure into a success; the summary says how many findings
+    went without an annotation.
+  - **What it costs in readability.** The rules are context free, so code is
+    treated like prose, even inside backticks: `@Override` reads `＠Override`
+    (so does a shell `"$@"` or an import alias `@/lib`), `Optional<String>`
+    reads `Optional＜String＞` (fullwidth signs are wider than ASCII and do
+    not paste back into code), `handlers[i](e)` reads `handlers[i] (e)` and
+    `x[1]: int` reads `x[1] : int`. Removing hidden characters also removes
+    the invisible characters that real text uses: an emoji loses its variation
+    selector (a red heart becomes a plain one), a joined emoji sequence (a
+    family) falls apart into its emoji, and the zero-width joiner and
+    non-joiner that Persian, Indic and other scripts use for shaping are
+    dropped.
+  - **Not covered.** Issue, pull request and commit references (`#123`,
+    `owner/repo#1`, a commit SHA) and emoji shortcodes still render as GitHub
+    renders them. Diagram and math blocks (a `mermaid` fence, `$...$`) get the
+    same rewrites as any text, so their URLs are defanged, but a scheme-relative
+    `//host` (which has no `://`) is left as it is. The escapes assume GitHub
+    renders the annotation message as Markdown, which is not verified. If it
+    shows plain text, nothing changes for `<`, `>` and `@` (they are replaced,
+    not escaped as entities), and only a character reference typed in a
+    finding (`&#64;`) shows as `&amp;#64;`. Line numbers are passed
+    through as they are. The Actions
+    workflow (`.github/workflows/trelix-review.yml`) does not use this
+    sanitiser.
 - Logs (`console.error`/`console.warn` on review/indexing failures)
   currently go to stdout/stderr only; wire your platform's log
   aggregation on top rather than expecting structured logging from this
@@ -301,6 +388,9 @@ GitHub -- pull_request webhook -->  this service (Express)
   reviews it via the `trelix` CLI, and posts the findings as a GitHub
   Check run (`toAnnotations`/`postCheckRun` — a TypeScript port of the
   same mapping logic in `trelix-review.yml`'s `github-script` step).
+- `src/sanitize.ts` — the sanitiser every string posted to Checks goes
+  through (`sanitizeCheckOutput`, applied in `review-runner.ts`'s
+  `createCheckRun`); see "Everything the App posts to Checks is sanitised".
 - `src/repo-checkout.ts` — clones a single PR's head into a per-request
   temp workspace via an installation token; see "Clone-on-demand" above
   for the security properties this enforces.
