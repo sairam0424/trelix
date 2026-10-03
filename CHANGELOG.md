@@ -6,7 +6,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+- **A refused, filtered or cut-off model reply was reported as a clean `"stop"`.** Providers
+  deliver these as an ordinary successful response and the stop field is the only sign. The
+  Anthropic and Bedrock backends turned every value they did not list (`refusal`,
+  `pause_turn`, `model_context_window_exceeded`, Bedrock's `guardrail_intervened`,
+  `content_filtered` and `malformed_*`) and a missing value into `"stop"`. The OpenAI, Azure
+  and LiteLLM backends passed any string through unchanged, defaulted a missing one to
+  `"stop"`, and ignored the refusal that arrives together with `finish_reason == "stop"`
+  (`message.refusal`; LiteLLM's response object keeps it in
+  `message.provider_specific_fields["refusal"]`). The Vertex backend read everything except
+  `STOP` and `MAX_TOKENS` (so `SAFETY` and `RECITATION` too) and a response with no candidates
+  as `"stop"`. The backends now classify through one module, `trelix.llm.finish_reasons`, into
+  `stop`, `length`, `tool_calls`, `refusal`, `content_filter`, `paused`, `error` or `unknown`,
+  and a value nobody has classified is `unknown`, never `stop`; Vertex's other finish reasons
+  therefore change from `stop` to `unknown` until each has been verified, and `function_call`
+  is now `tool_calls`. `ChatResponse` gains `raw_finish_reason` (the provider's own value),
+  `refusal` and `signals`; an Azure content-filter outage (HTTP 200 with an `error` object in
+  `content_filter_results`) is recorded as the signal `content_filter_error`, and logged by the
+  OpenAI and Azure backend. LiteLLM itself turns some provider stop values (for example
+  `pause_turn`, Bedrock `malformed_*` and Gemini `MALFORMED_FUNCTION_CALL`, as of litellm
+  1.90.2) into `"stop"` before trelix sees them, so through LiteLLM a `"stop"` is weaker
+  evidence than through a direct backend. No caller reads the new values yet, so behaviour is
+  unchanged until the reviewer uses them.
 
 ## [3.4.2] — 2026-10-02
 
