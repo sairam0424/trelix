@@ -16,18 +16,12 @@ from trelix.llm.client import (
     ToolCallResponse,
     TrelixChatClient,
 )
+from trelix.llm.finish_reasons import ANTHROPIC_STOP_REASONS, normalise
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
 
 logger = logging.getLogger("trelix.llm.anthropic_backend")
-
-_FINISH_REASON_MAP = {
-    "end_turn": "stop",
-    "max_tokens": "length",
-    "stop_sequence": "stop",
-    "tool_use": "tool_calls",
-}
 
 # Log once per process, not once per call — a per-query retrieval/synthesis path would
 # otherwise emit this on every single request once a caller starts passing temperature=.
@@ -42,7 +36,9 @@ class AnthropicBackend(TrelixChatClient):
     - max_tokens= (not max_completion_tokens)
     - system= as a separate top-level parameter (not in messages)
     - Tool schema uses input_schema instead of parameters
-    - finish_reason: "end_turn" normalized to "stop"
+    - finish_reason: "end_turn" normalized to "stop"; "refusal", "pause_turn" and
+      "model_context_window_exceeded" are HTTP 200 responses and are reported as such
+      ("refusal", "paused", "length"), never as "stop"
     """
 
     def __init__(self, config: LLMConfig) -> None:
@@ -107,8 +103,8 @@ class AnthropicBackend(TrelixChatClient):
         ]
         return effective, user_msgs
 
-    def _normalize_finish_reason(self, stop_reason: str) -> str:
-        return _FINISH_REASON_MAP.get(stop_reason, "stop")
+    def _normalize_finish_reason(self, stop_reason: object) -> str:
+        return normalise(ANTHROPIC_STOP_REASONS, stop_reason)
 
     def _warn_if_temperature_given(self, temperature: float | None) -> None:
         """anthropic-sdk-python v1.0.0 removed temperature from Messages.create.
@@ -220,10 +216,12 @@ class AnthropicBackend(TrelixChatClient):
             if thinking_text_blocks
             else None
         )
+        stop_reason = response.stop_reason
         return ChatResponse(
             content=content,
             model=response.model,
-            finish_reason=self._normalize_finish_reason(response.stop_reason or "end_turn"),
+            finish_reason=self._normalize_finish_reason(stop_reason),
+            raw_finish_reason=stop_reason if isinstance(stop_reason, str) else None,
             input_tokens=response.usage.input_tokens if response.usage else 0,
             output_tokens=response.usage.output_tokens if response.usage else 0,
             thinking=thinking_text,

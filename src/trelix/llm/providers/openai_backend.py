@@ -15,6 +15,7 @@ from trelix.llm.client import (
     ToolCallResponse,
     TrelixChatClient,
 )
+from trelix.llm.finish_reasons import classify_chat_choice
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -137,12 +138,21 @@ class OpenAIBackend(TrelixChatClient):
             **token_kwarg,
         )
         choice = response.choices[0]
+        finish = classify_chat_choice(choice)
+        if finish.signals:
+            logger.warning(
+                "LLM reply carries %s; the provider's content filter did not run on it",
+                ", ".join(finish.signals),
+            )
         return ChatResponse(
             content=choice.message.content or "",
             model=response.model,
-            finish_reason=choice.finish_reason or "stop",
+            finish_reason=finish.finish_reason,
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
+            raw_finish_reason=finish.raw_finish_reason,
+            refusal=finish.refusal,
+            signals=list(finish.signals),
         )
 
     def stream(

@@ -240,7 +240,7 @@ pip install -e ".[bge-code]"
 trelix uses a provider-agnostic `TrelixChatClient` ABC (`src/trelix/llm/client.py`). All five built-in backends (`OpenAIBackend`, `AnthropicBackend`, `BedrockBackend`, `VertexBackend`, `LiteLLMBackend`) implement the same three methods: `complete()`, `stream()`, and `tool_call()`. Adding a new provider requires zero changes to business logic (chunker, synthesizer, planner, graph_rag).
 
 1. Create `src/trelix/llm/providers/<name>_backend.py`
-2. Subclass `TrelixChatClient` and implement `complete()`, `stream()`, `tool_call()`
+2. Subclass `TrelixChatClient` and implement `complete()`, `stream()`, `tool_call()`. In `complete()`, translate the provider's stop field through a table in `src/trelix/llm/finish_reasons.py` (`normalise`, or `classify_chat_choice` for an OpenAI-shaped `choices[0]`): a value nobody has classified, or a missing one, is `unknown`, never `stop`, because providers return refusals, filtered replies and truncations as ordinary successful responses. Add the provider's values to `tests/unit/test_llm_finish_reason_matrix.py`. The "not configured" placeholder a backend returns when it has no credentials keeps `finish_reason="stop"` and is recognised by `model == UNCONFIGURED_MODEL`, so check that, not the finish reason
 3. Add a `case "<name>":` branch to `src/trelix/llm/factory.py` (`build_chat_client()`)
 4. Add credential fields to `LLMConfig` in `src/trelix/core/config.py`
 5. Add `"<name>"` to the `Literal` type of `LLMConfig.provider`

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from trelix.core.retry import with_retry
 from trelix.llm.client import ChatMessage, ChatResponse, ToolCallResponse, TrelixChatClient
+from trelix.llm.finish_reasons import classify_chat_choice
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -74,12 +75,19 @@ class LiteLLMBackend(TrelixChatClient):
             temperature=temperature if temperature is not None else self._config.temperature,
         )
         choice = response.choices[0]
+        # LiteLLM has already mapped the provider's own stop value onto the OpenAI set and maps some
+        # of them to "stop", so a "stop" here is weaker evidence than from a direct backend;
+        # callers that must know the reply is whole still need to check its content.
+        finish = classify_chat_choice(choice)
         return ChatResponse(
             content=choice.message.content or "",
             model=response.model or self._model,
-            finish_reason=choice.finish_reason or "stop",
+            finish_reason=finish.finish_reason,
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
+            raw_finish_reason=finish.raw_finish_reason,
+            refusal=finish.refusal,
+            signals=list(finish.signals),
         )
 
     def stream(
