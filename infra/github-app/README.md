@@ -280,6 +280,12 @@ review child cannot forge Checks or read another repository.
 - `trelix` (the CLI) and a Python 3.12+ runtime must be present in the
   deployment image/environment — `review-runner.ts` shells out to it by
   name via `PATH`. `Dockerfile` (below) builds exactly this.
+- Node 24 or newer (`engines.node` is `>=24`; Node 20 reached end of life on
+  2026-04-30). The `Dockerfile` takes the `node` binary from
+  `node:24-bookworm-slim`, the same image its build stages use, instead of
+  running a NodeSource install script, and the CI job "Docker build" starts
+  that binary in the built image and fails unless it reports Node 24. Outside
+  the image, run a Node 24 LTS build.
 - **Untrusted PR content.** Every PR is checked out from an outside author,
   so the service hardens that checkout:
   - `TRELIX_WALKER_FOLLOW_SYMLINKS=false` is set in the `Dockerfile` (and
@@ -646,6 +652,8 @@ already-working Azure credentials) instead of a placeholder
 `OPENAI_API_KEY` — no new credential was provisioned for this.
 
 ### Local development
+
+Needs Node 24 or newer (`engines.node`).
 
 ```bash
 npm install

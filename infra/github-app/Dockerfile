@@ -11,12 +11,12 @@
 # both — this image needs Node (to run the Express service) AND Python +
 # `trelix` (to run `trelix index`/`trelix review` as subprocesses).
 
-FROM node:20-bookworm-slim AS node-deps
+FROM node:24-bookworm-slim AS node-deps
 WORKDIR /app
 COPY infra/github-app/package.json infra/github-app/package-lock.json ./
 RUN npm ci --omit=dev
 
-FROM node:20-bookworm-slim AS node-builder
+FROM node:24-bookworm-slim AS node-builder
 WORKDIR /app
 COPY infra/github-app/package.json infra/github-app/package-lock.json ./
 RUN npm ci
@@ -68,22 +68,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
-# Debian trixie/bookworm's own `nodejs` apt package is too old for this
-# service (needs Node 20+, engines pins >=20) — NodeSource's setup script
-# installs a current Node 20 build instead.
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && apt-get purge -y --auto-remove curl gnupg \
-    && rm -rf /var/lib/apt/lists/*
+# Node 24 (LTS, end of life 2028-04-30; Node 20 reached end of life on
+# 2026-04-30) is copied in as one binary from the official node image that the
+# two stages above build with, so the service runs on the Node it was built and
+# type-checked on. Debian's own `nodejs` apt package is too old (engines pins
+# >=24), and the previous NodeSource `curl | bash` setup script ran whatever that
+# URL served at build time. The binary is the nodejs.org build, dynamically
+# linked against glibc and libstdc++: this stage is Debian trixie (glibc 2.41),
+# newer than the bookworm (glibc 2.36) image the binary comes from, so it loads
+# here, and the base already ships libstdc++6. npm and npx are not copied: the
+# entrypoint is `node dist/server.js` and nothing at runtime calls them.
+COPY --from=node-builder /usr/local/bin/node /usr/local/bin/node
 
 # `git` itself — not a Python or Node dependency, but repo-checkout.ts
 # shells out to the `git` binary directly (init/remote/fetch/checkout) to
 # clone each PR's head. Caught by Phase 5's real
 # `docker exec <container> which trelix git` check: the base
-# python:3.14-slim/node:20-bookworm-slim images provide neither `trelix`
-# (installed above via pip) nor `git` by default.
-RUN apt-get update && apt-get install -y --no-install-recommends git \
+# python:3.14-slim/node:24-bookworm-slim images provide neither `trelix`
+# (installed above via pip) nor `git` by default. `ca-certificates` is listed
+# because git fetches over HTTPS and needs the system CA bundle; python:3.14-slim
+# already has it, and naming it keeps that from depending on the base image.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system trelix \
@@ -118,7 +123,7 @@ ENV NODE_ENV=production
 # The service checks out pull requests written by outsiders and runs `trelix index`
 # over them. trelix follows symlinks out of the repo by default; confine the walker
 # to each checkout so a committed symlink cannot pull files from this host into the
-# index. review-runner.ts forces the same value for both trelix children.
+# index. child-env.ts forces the same value for both trelix children.
 ENV TRELIX_WALKER_FOLLOW_SYMLINKS=false
 EXPOSE $PORT
 

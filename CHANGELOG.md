@@ -54,25 +54,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `safe.bareRepository=explicit` needs git 2.38 or newer; older git ignores it. The git calls
   trelix makes itself (`git_linker.py`, `diff_parser.py`, `provenance.py`) get none of the git
   isolation above except that one setting.
-- **Workflows no longer leave the job token in the checkout's `.git/config`.** The first
-  `zizmor` run over this repository (`artipacked`) reported 27 `actions/checkout` steps in 12
-  workflows without `persist-credentials: false`, which keeps the job's `GITHUB_TOKEN` in
-  `.git/config`, readable by every later step of the job, third-party actions included, and by
-  anything that archives the workspace. All 27 now set it (`build-binaries`, `ci`, `codeql`,
-  `docker-publish`, `github-app-ci`, `helm-lint`, `redeliver-failed-webhooks`, `release`,
-  `schema-drift`, `security-scan`, `verify-release` and `vscode-extension-ci`); the three
-  checkouts that already did (`scorecard`, `trelix-review`, `zizmor`) are unchanged. **There are
-  no exceptions**: no workflow pushes or commits, `gh` and the token-taking actions get the
-  token from `env` or `with` rather than from `.git/config`, and the one `git fetch` after a
-  checkout (the tag fallback in `scripts/verify_release.py`) reads this public repository
-  anonymously. The three `ref-version-mismatch` findings are fixed too: the
-  `docker/build-push-action` pins (two in `ci.yml`, one in `docker-publish.yml`) are the v7.3.0
-  commit but were commented `# v7`, a floating tag that now points at v7.4.0, so the comment
-  says `v7.3.0`. `tests/unit/test_ci_supply_chain_invariants.py` now fails when a checkout
-  drops the setting (its allow-list of `(workflow, job, reason)` exceptions is empty, and a
-  stale or unexplained entry fails too) and when that pin's comment goes back to `# v7`. The
-  cache-poisoning findings in `release.yml` and the `workflow_run` trigger of
-  `verify-release.yml` are not touched here.
 - **The GitHub App now sanitises everything it posts to Checks.** The title, summary and each
   annotation's path, title and message come from an LLM that reads attacker-written pull
   requests, so a prompt-injected reply could have put a tracking pixel, a phishing link, an
@@ -95,6 +76,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   code span would show literally). Removing hidden characters also removes an emoji's variation
   selector and the zero-width joiners of joined emoji and of some scripts. The Actions workflow
   `trelix-review.yml` does not use this sanitiser.
+- **The GitHub App moved from Node 20, which reached end of life on 2026-04-30, to Node 24
+  (LTS, supported until 2028-04-30), and its image no longer runs a `curl | bash` install
+  script.** `infra/github-app/Dockerfile` builds on `node:24-bookworm-slim` and copies that
+  image's `node` binary into the runtime stage instead of installing Node from NodeSource's
+  `setup_20.x` script, so the image runs the Node it was built and tested on and its build no
+  longer executes a script fetched from the network. npm and npx are not in the runtime image;
+  the entrypoint is `node dist/server.js`. `engines.node` is now `>=24` and `@types/node` is
+  `^24` (the lockfile changes only that package and its `undici-types`). The workflows that
+  pinned Node 20 (`github-app-ci.yml`, `vscode-extension-ci.yml`, `schema-drift.yml`,
+  `redeliver-failed-webhooks.yml` and the SDK job in `ci.yml`) use 24. GitHub App CI prints
+  `node --version`, and its Docker job fails unless the built image reports Node 24. The
+  `@types/node` of the SDK and the VS Code extension is unchanged. **Running the App outside
+  the image now needs Node 24 or newer.**
+- **Workflows no longer leave the job token in the checkout's `.git/config`.** The first
+  `zizmor` run over this repository (`artipacked`) reported 27 `actions/checkout` steps in 12
+  workflows without `persist-credentials: false`, which keeps the job's `GITHUB_TOKEN` in
+  `.git/config`, readable by every later step of the job, third-party actions included, and by
+  anything that archives the workspace. All 27 now set it (`build-binaries`, `ci`, `codeql`,
+  `docker-publish`, `github-app-ci`, `helm-lint`, `redeliver-failed-webhooks`, `release`,
+  `schema-drift`, `security-scan`, `verify-release` and `vscode-extension-ci`); the three
+  checkouts that already did (`scorecard`, `trelix-review`, `zizmor`) are unchanged. **There are
+  no exceptions**: no workflow pushes or commits, `gh` and the token-taking actions get the
+  token from `env` or `with` rather than from `.git/config`, and the one `git fetch` after a
+  checkout (the tag fallback in `scripts/verify_release.py`) reads this public repository
+  anonymously. The three `ref-version-mismatch` findings are fixed too: the
+  `docker/build-push-action` pins (two in `ci.yml`, one in `docker-publish.yml`) are the v7.3.0
+  commit but were commented `# v7`, a floating tag that now points at v7.4.0, so the comment
+  says `v7.3.0`. `tests/unit/test_ci_supply_chain_invariants.py` now fails when a checkout
+  drops the setting (its allow-list of `(workflow, job, reason)` exceptions is empty, and a
+  stale or unexplained entry fails too) and when that pin's comment goes back to `# v7`. The
+  cache-poisoning findings in `release.yml` and the `workflow_run` trigger of
+  `verify-release.yml` are not touched here.
 - **The GitHub App's installation tokens reached every repository of the installation with
   every permission the App holds.** `getInstallationToken` asked GitHub for a token with no
   `repository_ids` and no `permissions`, and the same token went to `git`, to the
