@@ -21,7 +21,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from trelix.cli.main import REVIEW_NOT_RUN_EXIT_CODE, app
+from trelix.cli.main import REVIEW_INCOMPLETE_EXIT_CODE, REVIEW_NOT_RUN_EXIT_CODE, app
 from trelix.core.config import LLMConfig
 from trelix.llm.providers.openai_backend import OpenAIBackend
 from trelix.review.github import PRFile
@@ -59,12 +59,19 @@ def _fake_review(outcome: ReviewOutcome, comments: list[ReviewComment]) -> Any:
     return _review
 
 
-def _run_pr_review(outcome: ReviewOutcome, comments: list[ReviewComment], *extra: str) -> Any:
+def _run_pr_review(
+    outcome: ReviewOutcome,
+    comments: list[ReviewComment],
+    *extra: str,
+    env_extra: dict[str, str] | None = None,
+) -> Any:
     with (
         patch("trelix.review.github.GitHubPRClient.get_pr_files", return_value=_pr_files()),
         patch.object(DiffReviewer, "review", _fake_review(outcome, comments)),
     ):
-        return runner.invoke(app, ["review", "--pr", "owner/repo#1", *extra], env=_ENV)
+        return runner.invoke(
+            app, ["review", "--pr", "owner/repo#1", *extra], env={**_ENV, **(env_extra or {})}
+        )
 
 
 class TestExitCodeConstant:
@@ -73,6 +80,12 @@ class TestExitCodeConstant:
         assert REVIEW_NOT_RUN_EXIT_CODE not in (0, 1, 2)
         # The workflow script and the GitHub App hard-code the same number.
         assert REVIEW_NOT_RUN_EXIT_CODE == 3
+
+    def test_the_incomplete_review_code_is_its_own_number(self) -> None:
+        # Distinct from 3, so a wrapper can tell "no review" from "a partial review".
+        assert REVIEW_INCOMPLETE_EXIT_CODE not in (0, 1, 2, 3)
+        # The workflow script and the GitHub App hard-code the same number.
+        assert REVIEW_INCOMPLETE_EXIT_CODE == 4
 
 
 class TestCutOffHunksThatKeptFindings:
@@ -96,7 +109,8 @@ class TestCutOffHunksThatKeptFindings:
 
         result = _run_pr_review(outcome, [_COMMENT], "--json")
 
-        assert result.exit_code == 0, result.stderr
+        # Findings exist, so this is not "did not run" (3); it is an incomplete review (4).
+        assert result.exit_code == 4, result.stderr
         assert json.loads(result.stdout) == [
             {"file": "src/foo.py", "lines": "1-1", "severity": "WARN", "comment": "smell here"}
         ]
@@ -148,11 +162,25 @@ class TestPrPathExitsNonZeroWhenNotReviewed:
         assert json.loads(result.stdout) == []
         assert "4 of 4" in result.stderr
 
-    def test_partial_failure_keeps_exit_zero_and_warns_with_counts(self) -> None:
+    def test_partial_failure_exits_four_keeps_the_findings_and_warns_with_counts(self) -> None:
         result = _run_pr_review(
             ReviewOutcome(llm_available=True, hunks_total=5, hunks_failed=2),
             [_COMMENT],
             "--json",
+        )
+
+        assert result.exit_code == 4, result.stderr
+        assert json.loads(result.stdout) == [
+            {"file": "src/foo.py", "lines": "1-1", "severity": "WARN", "comment": "smell here"}
+        ]
+        assert "2 of 5" in result.stderr
+
+    def test_the_escape_hatch_restores_exit_zero_for_a_partial_review(self) -> None:
+        result = _run_pr_review(
+            ReviewOutcome(llm_available=True, hunks_total=5, hunks_failed=2),
+            [_COMMENT],
+            "--json",
+            env_extra={"TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION": "1"},
         )
 
         assert result.exit_code == 0, result.stderr
