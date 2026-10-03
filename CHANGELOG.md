@@ -54,6 +54,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `safe.bareRepository=explicit` needs git 2.38 or newer; older git ignores it. The git calls
   trelix makes itself (`git_linker.py`, `diff_parser.py`, `provenance.py`) get none of the git
   isolation above except that one setting.
+- **Workflows no longer leave the job token in the checkout's `.git/config`.** The first
+  `zizmor` run over this repository (`artipacked`) reported 27 `actions/checkout` steps in 12
+  workflows without `persist-credentials: false`, which keeps the job's `GITHUB_TOKEN` in
+  `.git/config`, readable by every later step of the job, third-party actions included, and by
+  anything that archives the workspace. All 27 now set it (`build-binaries`, `ci`, `codeql`,
+  `docker-publish`, `github-app-ci`, `helm-lint`, `redeliver-failed-webhooks`, `release`,
+  `schema-drift`, `security-scan`, `verify-release` and `vscode-extension-ci`); the three
+  checkouts that already did (`scorecard`, `trelix-review`, `zizmor`) are unchanged. **There are
+  no exceptions**: no workflow pushes or commits, `gh` and the token-taking actions get the
+  token from `env` or `with` rather than from `.git/config`, and the one `git fetch` after a
+  checkout (the tag fallback in `scripts/verify_release.py`) reads this public repository
+  anonymously. The three `ref-version-mismatch` findings are fixed too: the
+  `docker/build-push-action` pins (two in `ci.yml`, one in `docker-publish.yml`) are the v7.3.0
+  commit but were commented `# v7`, a floating tag that now points at v7.4.0, so the comment
+  says `v7.3.0`. `tests/unit/test_ci_supply_chain_invariants.py` now fails when a checkout
+  drops the setting (its allow-list of `(workflow, job, reason)` exceptions is empty, and a
+  stale or unexplained entry fails too) and when that pin's comment goes back to `# v7`. The
+  cache-poisoning findings in `release.yml` and the `workflow_run` trigger of
+  `verify-release.yml` are not touched here.
 - **The GitHub App now sanitises everything it posts to Checks.** The title, summary and each
   annotation's path, title and message come from an LLM that reads attacker-written pull
   requests, so a prompt-injected reply could have put a tracking pixel, a phishing link, an
@@ -233,6 +252,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   unchanged. `--post-comments` now says in
   the review body how many hunks were not fully reviewed, and a partial review with no findings
   says "No findings in the hunks that were reviewed" instead of "No issues found."
+- **CI reports the SQLite version that the test interpreters, images and binary build
+  interpreters link.** Nobody knew whether they link a SQLite in the 3.7.0 to 3.51.2 range where
+  committed WAL writes can be lost (fixed in 3.51.3, 3.50.7 and 3.44.6).
+  `scripts/report_sqlite_version.py` (standard library only) prints the version and emits a
+  `::warning::` annotation inside that range or a `::notice::` outside it, using
+  `trelix.store.db.wal_reset_risk` when trelix is importable and an embedded copy of the same
+  table otherwise. The script always exits 0: a Python without sqlite3, a range check that
+  raises or a broken stdout become a warning or a label, never a failure of the script, and the
+  version is still printed when only the range check or the platform query fails. The steps
+  themselves have no `continue-on-error`, so a Docker daemon error can still fail one.
+  It reports in the `ci.yml` unit matrix (three Python legs), the slim Docker image, the
+  `-local` image (when the `Dockerfile` or a `pyproject.toml` it builds from changed), the
+  GitHub App image (when `infra/github-app/` changes) and the `build-binaries.yml` jobs, which
+  report the build interpreter because a frozen binary cannot run a script. These workflows
+  run on pushes to `main` and `develop` and on pull requests targeting them (the binary builds:
+  pushes to `develop` and `main`, pull requests to `main`), so a stacked pull request on a
+  feature branch reports nothing. The number printed is the upstream one, so it cannot say
+  whether a distro build such as Debian's carries the fix under a lower number; adding the
+  distro package version is the follow-up. Informational only; no job or check name changed.
 
 ## [3.4.2] — 2026-10-02
 

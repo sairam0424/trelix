@@ -24,6 +24,8 @@ jobs:
         working-directory: infra/github-app
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
@@ -45,6 +47,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # Build context is the repo root (the Dockerfile's Python stage
       # needs src/ for the trelix CLI) — this is also the only thing that
@@ -53,3 +57,10 @@ jobs:
       # repo evolves, not just at the time it was added.
       - name: Build image
         run: docker build -f infra/github-app/Dockerfile -t trelix-github-app:ci .
+
+      # Informational: the SQLite the image's Python links. The App shells out to
+      # `trelix index` / `trelix review` inside this image, so this is the SQLite those
+      # children write their index with. Fed on stdin because the image carries no scripts/.
+      # The script exits 0 on every path; no `continue-on-error`, no `|| true`.
+      - name: Report the SQLite version linked inside the image
+        run: docker run --rm -i --entrypoint python trelix-github-app:ci - < scripts/report_sqlite_version.py

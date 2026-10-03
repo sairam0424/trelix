@@ -1,6 +1,6 @@
 """The supply-chain settings under .github/ must keep the shape that makes them protective.
 
-WHY THIS EXISTS. Three properties shrink the attack surface of this repo's CI, and each is
+WHY THIS EXISTS. Five properties shrink the attack surface of this repo's CI, and each is
 one deleted line away from silently not being there, with nothing failing:
 
 * `dependabot.yml`: every `updates` entry sets `cooldown: default-days: 7`, so a version is
@@ -10,6 +10,14 @@ one deleted line away from silently not being there, with nothing failing:
   a hijacked action tag cannot reach this repo's CI. test_release_workflow_hardening.py
   checks this for the two tag-triggered publish workflows only; this file widens it to all
   of them.
+* every `actions/checkout` step sets `persist-credentials: false`, so the job token is not
+  left in `.git/config`, readable by every later step (third-party actions included) and by
+  anything that archives the workspace. Only a job whose later steps really authenticate git
+  may keep it, and it must be named in `_CHECKOUT_CREDENTIAL_EXCEPTIONS` with the reason.
+  Today none does: no workflow pushes, and the one `git fetch` after a checkout
+  (`scripts/verify_release.py`, a tag fallback) reads this public repository anonymously.
+* a `# vX.Y.Z` comment on a SHA pin names the tag that points at that SHA (zizmor's
+  `ref-version-mismatch`), for the pins whose tag was checked against the upstream repo.
 * `zizmor.yml`: the audit is ADVISORY. It holds `contents: read` only, checks out without
   persisting the token, cannot fail a PR, and is time-bounded. Turning it into a gate
   (dropping `continue-on-error`) is meant to be a deliberate edit to this file's
@@ -29,11 +37,20 @@ MUTATIONS THAT MUST MAKE THIS FILE FAIL (each applied to a scratch copy of .gith
 3. zizmor.yml: add a write scope, set `persist-credentials: true`, drop
    `continue-on-error`, or drop `timeout-minutes`
    -> TestZizmorStaysAdvisory fails with the specific rule.
+4. Delete `persist-credentials: false` from any one checkout, or add a checkout without it
+   -> TestEveryCheckoutDropsItsCredentials fails naming the file, job and step.
+5. Add an entry to `_CHECKOUT_CREDENTIAL_EXCEPTIONS` for a job that does not exist, has no
+   checkout, already sets `persist-credentials: false`, or has a blank reason
+   -> the same class fails on the stale-entry test.
+6. Change a `docker/build-push-action` pin's comment back to `# v7` (the floating major tag,
+   which points at a different commit than the pinned v7.3.0)
+   -> TestVersionCommentsNameTheirTag fails for that file.
 """
 
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -50,12 +67,36 @@ _MIN_COOLDOWN_DAYS = 7
 _SHA_PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 _ADVISORY_PERMISSIONS = {"contents": "read"}
 _CHECKOUT = "actions/checkout"
+_USES_WITH_VERSION_COMMENT = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)\s+#\s*(\S+)")
+
+# (workflow file name, job id) -> why that job's checkout has to keep the job token in
+# .git/config because a LATER step in the same job authenticates git with it (a push, or a
+# fetch of a ref the anonymous caller cannot read).
+#
+# EMPTY ON PURPOSE. Every one of the 30 checkouts was read against the steps after it: no
+# workflow pushes or commits, `gh` and `GITHUB_TOKEN` steps take the token from `env`, not
+# from .git/config, and the only `git fetch` after a checkout is the tag fallback in
+# scripts/verify_release.py, which reads this public repository anonymously. An entry is
+# added here by a reviewed edit, with a reason; one whose job no longer needs it fails
+# `test_the_exception_list_has_no_stale_or_unexplained_entries`.
+_CHECKOUT_CREDENTIAL_EXCEPTIONS: dict[tuple[str, str], str] = {}
+
+# `uses:` pins whose version comment was resolved against the upstream repository, so the
+# comment can be checked offline: `owner/repo@<sha>` -> the tag that points at that commit.
+# docker/build-push-action@53b7df96... is v7.3.0 (`gh api
+# repos/docker/build-push-action/git/ref/tags/v7.3.0`), while the floating `v7` tag the
+# pins used to cite now points at c3c9e263 (v7.4.0): zizmor's `ref-version-mismatch`. An
+# entry goes inert when Dependabot moves the pin to a new SHA; delete it then.
+_VERIFIED_PIN_TAGS: dict[str, str] = {
+    "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a": "v7.3.0",
+}
 
 # A broken glob or parser reports "nothing unpinned" just as loudly as a clean tree. Today
-# there are 15 workflows and 106 `uses:`; the floors sit well below so that consolidating
-# workflows does not trip them, while an empty walk does.
+# there are 15 workflows, 106 `uses:` and 30 checkouts; the floors sit well below so that
+# consolidating workflows does not trip them, while an empty walk does.
 _MIN_WORKFLOWS = 10
 _MIN_USES_REFS = 50
+_MIN_CHECKOUTS = 20
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -108,6 +149,77 @@ def unpinned_uses(workflow: dict[str, Any]) -> list[str]:
     ]
 
 
+def is_checkout_step(step: dict[str, Any]) -> bool:
+    return str(step.get("uses", "")).split("@")[0] == _CHECKOUT
+
+
+def persists_credentials(step: dict[str, Any]) -> bool:
+    """True unless the step sets the YAML boolean `persist-credentials: false`.
+
+    A string, an expression and a missing key all leave the token in .git/config as far as
+    this check can prove, so all of them count as persisting.
+    """
+    return (step.get("with") or {}).get("persist-credentials") is not False
+
+
+def checkout_steps(workflow: dict[str, Any]) -> list[tuple[str, int, dict[str, Any]]]:
+    """Every (job, step index, step) that is an `actions/checkout` step."""
+    return [
+        (job_name, index, step)
+        for job_name, job in (workflow.get("jobs") or {}).items()
+        for index, step in enumerate(job.get("steps") or [])
+        if is_checkout_step(step)
+    ]
+
+
+def credential_persistence_violations(
+    file_name: str,
+    workflow: dict[str, Any],
+    exceptions: dict[tuple[str, str], str],
+) -> list[str]:
+    """Checkouts that leave the token in .git/config and are not an allow-listed job."""
+    return [
+        f"{file_name} job '{job}' step {index}: {_CHECKOUT} without `persist-credentials: false` "
+        "(set it, or allow-list the job with the reason a later step needs git credentials)"
+        for job, index, step in checkout_steps(workflow)
+        if persists_credentials(step) and (file_name, job) not in exceptions
+    ]
+
+
+def exception_problems(
+    workflows: dict[str, dict[str, Any]], exceptions: dict[tuple[str, str], str]
+) -> list[str]:
+    """Allow-list entries that excuse nothing, or that do not say why."""
+    problems: list[str] = []
+    for (file_name, job), reason in sorted(exceptions.items()):
+        where = f"{file_name} job '{job}'"
+        if not reason.strip():
+            problems.append(f"{where}: the exception has no reason")
+        if file_name not in workflows:
+            problems.append(f"{where}: no workflow file with that name")
+            continue
+        steps = [step for name, _, step in checkout_steps(workflows[file_name]) if name == job]
+        if not steps:
+            problems.append(f"{where}: the job has no {_CHECKOUT} step")
+        elif not any(persists_credentials(step) for step in steps):
+            problems.append(f"{where}: its checkout already sets `persist-credentials: false`")
+    return problems
+
+
+def version_comment_violations(text: str, verified: dict[str, str]) -> list[str]:
+    """`uses: <pin> # <comment>` lines whose comment is not the verified tag for that pin."""
+    problems: list[str] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        match = _USES_WITH_VERSION_COMMENT.match(line)
+        if not match:
+            continue
+        pin, comment = match.groups()
+        expected = verified.get(pin)
+        if expected is not None and comment != expected:
+            problems.append(f"line {lineno}: {pin} is commented '{comment}', its tag is {expected}")
+    return problems
+
+
 def _within_advisory_permissions(permissions: Any) -> bool:
     return isinstance(permissions, dict) and set(permissions.items()) <= set(
         _ADVISORY_PERMISSIONS.items()
@@ -136,10 +248,10 @@ def zizmor_shape_violations(workflow: dict[str, Any]) -> list[str]:
         if not isinstance(timeout, int) or timeout <= 0:
             problems.append(f"job '{name}' has no timeout-minutes")
         for index, step in enumerate(job.get("steps") or []):
-            if str(step.get("uses", "")).split("@")[0] != _CHECKOUT:
+            if not is_checkout_step(step):
                 continue
             checkouts += 1
-            if (step.get("with") or {}).get("persist-credentials") is not False:
+            if persists_credentials(step):
                 problems.append(
                     f"job '{name}' step {index}: {_CHECKOUT} without `persist-credentials: false`"
                 )
@@ -175,6 +287,32 @@ class TestZizmorStaysAdvisory:
     def test_shape(self) -> None:
         problems = zizmor_shape_violations(_load(_ZIZMOR))
         assert not problems, "zizmor.yml left its advisory shape:\n" + "\n".join(problems)
+
+
+class TestEveryCheckoutDropsItsCredentials:
+    def test_the_walk_reached_the_checkouts(self) -> None:
+        """PRECONDITION: a parser that finds no checkout reports every one of them clean."""
+        found = sum(len(checkout_steps(_load(path))) for path in _workflow_files())
+        assert found >= _MIN_CHECKOUTS, f"only {found} checkout steps found; the parser is wrong"
+
+    @pytest.mark.parametrize("path", _workflow_files(), ids=lambda path: path.name)
+    def test_checkout_sets_persist_credentials_false_unless_allow_listed(self, path: Path) -> None:
+        problems = credential_persistence_violations(
+            path.name, _load(path), _CHECKOUT_CREDENTIAL_EXCEPTIONS
+        )
+        assert not problems, "\n".join(problems)
+
+    def test_the_exception_list_has_no_stale_or_unexplained_entries(self) -> None:
+        workflows = {path.name: _load(path) for path in _workflow_files()}
+        problems = exception_problems(workflows, _CHECKOUT_CREDENTIAL_EXCEPTIONS)
+        assert not problems, "_CHECKOUT_CREDENTIAL_EXCEPTIONS:\n" + "\n".join(problems)
+
+
+class TestVersionCommentsNameTheirTag:
+    @pytest.mark.parametrize("path", _workflow_files(), ids=lambda path: path.name)
+    def test_a_verified_pin_carries_the_tag_that_points_at_it(self, path: Path) -> None:
+        problems = version_comment_violations(path.read_text(encoding="utf-8"), _VERIFIED_PIN_TAGS)
+        assert not problems, f"{path.name}:\n" + "\n".join(problems)
 
 
 # ---------------------------------------------------------------------------
@@ -348,3 +486,213 @@ class TestTheCheckersBite:
         problems = zizmor_shape_violations(yaml.safe_load(mutated))
         assert len(problems) == 1, problems
         assert expected in problems[0]
+
+
+# Two jobs, both clean. `build` has a non-checkout step first (so the checkout is step 1) and
+# a `with:` block holding another key; `release` has the bare one-key form. Each case below
+# breaks one line of this and nothing else.
+_CHECKOUT_JOBS_YAML = f"""\
+jobs:
+  build:
+    steps:
+      - uses: actions/setup-python@{_SHA}
+      - uses: actions/checkout@{_SHA}
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+  release:
+    steps:
+      - uses: actions/checkout@{_SHA}
+        with:
+          persist-credentials: false
+"""
+_BUILD_LINE = "          fetch-depth: 0\n          persist-credentials: false\n"
+_RELEASE_CHECKOUT = (
+    f"      - uses: actions/checkout@{_SHA}\n        with:\n          persist-credentials: false\n"
+)
+
+
+def _mutated(old: str, new: str) -> dict[str, Any]:
+    mutated = _CHECKOUT_JOBS_YAML.replace(old, new)
+    assert mutated != _CHECKOUT_JOBS_YAML, "the case did not change the fixture"
+    loaded: dict[str, Any] = yaml.safe_load(mutated)
+    return loaded
+
+
+class TestTheCheckoutCheckersBite:
+    def test_the_fixture_is_clean(self) -> None:
+        """CONTROL for the cases below."""
+        workflow = yaml.safe_load(_CHECKOUT_JOBS_YAML)
+        assert credential_persistence_violations("wf.yml", workflow, {}) == []
+        assert [(job, index) for job, index, _ in checkout_steps(workflow)] == [
+            ("build", 1),
+            ("release", 0),
+        ]
+
+    @pytest.mark.parametrize(
+        ("old", "new", "job", "index"),
+        [
+            pytest.param(_BUILD_LINE, "          fetch-depth: 0\n", "build", 1, id="key-missing"),
+            pytest.param(
+                _BUILD_LINE,
+                "          fetch-depth: 0\n          persist-credentials: true\n",
+                "build",
+                1,
+                id="true",
+            ),
+            pytest.param(
+                _BUILD_LINE,
+                '          fetch-depth: 0\n          persist-credentials: "false"\n',
+                "build",
+                1,
+                id="quoted-string",
+            ),
+            pytest.param(
+                _BUILD_LINE,
+                "          fetch-depth: 0\n          persist-credentials: ${{ inputs.keep }}\n",
+                "build",
+                1,
+                id="expression",
+            ),
+            pytest.param(
+                _RELEASE_CHECKOUT,
+                f"      - uses: actions/checkout@{_SHA}\n",
+                "release",
+                0,
+                id="with-block-missing",
+            ),
+            pytest.param(
+                _RELEASE_CHECKOUT,
+                _RELEASE_CHECKOUT + f"      - uses: actions/checkout@{_SHA}\n",
+                "release",
+                1,
+                id="second-checkout-added-without-it",
+            ),
+        ],
+    )
+    def test_a_checkout_that_keeps_the_token_is_flagged(
+        self, old: str, new: str, job: str, index: int
+    ) -> None:
+        problems = credential_persistence_violations("wf.yml", _mutated(old, new), {})
+        assert len(problems) == 1, problems
+        assert problems[0].startswith(f"wf.yml job '{job}' step {index}: actions/checkout")
+
+    def test_a_new_job_with_a_bare_checkout_is_flagged(self) -> None:
+        workflow = _mutated(
+            "  release:\n",
+            f"  added:\n    steps:\n      - uses: actions/checkout@{_SHA}\n  release:\n",
+        )
+        problems = credential_persistence_violations("wf.yml", workflow, {})
+        assert [problem.split(":")[0] for problem in problems] == ["wf.yml job 'added' step 0"]
+
+    @pytest.mark.parametrize(
+        ("exceptions", "flagged"),
+        [
+            pytest.param({("wf.yml", "release"): "pushes a tag"}, False, id="exact-file-and-job"),
+            pytest.param({("other.yml", "release"): "pushes a tag"}, True, id="other-file"),
+            pytest.param({("wf.yml", "build"): "pushes a tag"}, True, id="other-job"),
+        ],
+    )
+    def test_an_exception_excuses_exactly_its_file_and_job(
+        self, exceptions: dict[tuple[str, str], str], flagged: bool
+    ) -> None:
+        workflow = _mutated(_RELEASE_CHECKOUT, f"      - uses: actions/checkout@{_SHA}\n")
+        problems = credential_persistence_violations("wf.yml", workflow, exceptions)
+        assert bool(problems) is flagged, problems
+
+    def test_a_job_without_steps_is_not_a_checkout(self) -> None:
+        reusable = {"jobs": {"call": {"uses": f"org/repo/.github/workflows/x.yml@{_SHA}"}}}
+        assert checkout_steps(reusable) == []
+
+    @pytest.mark.parametrize(
+        ("exceptions", "expected"),
+        [
+            pytest.param({("wf.yml", "release"): "pushes a tag"}, None, id="needed-and-explained"),
+            pytest.param({("gone.yml", "release"): "pushes a tag"}, "no workflow file", id="file"),
+            pytest.param({("wf.yml", "lint"): "pushes a tag"}, "has no actions/checkout", id="job"),
+            pytest.param(
+                {("wf.yml", "build"): "pushes a tag"},
+                "already sets `persist-credentials: false`",
+                id="dead",
+            ),
+            pytest.param({("wf.yml", "release"): "  "}, "the exception has no reason", id="blank"),
+        ],
+    )
+    def test_a_stale_or_unexplained_exception_is_flagged(
+        self, exceptions: dict[tuple[str, str], str], expected: str | None
+    ) -> None:
+        # `release` keeps the token so an entry for it is live; `lint` has no checkout.
+        base = _mutated(_RELEASE_CHECKOUT, f"      - uses: actions/checkout@{_SHA}\n")
+        base["jobs"]["lint"] = {"steps": [{"uses": f"actions/setup-python@{_SHA}"}]}
+        problems = exception_problems({"wf.yml": base}, exceptions)
+        if expected is None:
+            assert problems == []
+            return
+        assert len(problems) == 1, problems
+        assert expected in problems[0]
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            pytest.param(f"uses: org/act@{_SHA}  # v1.2.3", [], id="right-tag-two-spaces"),
+            pytest.param(f"- uses: org/act@{_SHA} # v1.2.3", [], id="right-tag-dash-form"),
+            pytest.param(f"uses: org/act@{_SHA}", [], id="no-comment"),
+            pytest.param(f"uses: org/act@{_SHA[:-1]}0 # v9", [], id="another-pin-unchecked"),
+            pytest.param(f"uses: org/other@{_SHA} # v9", [], id="another-action-unchecked"),
+            pytest.param(
+                f"uses: org/act@{_SHA} # v1",
+                [f"line 1: org/act@{_SHA} is commented 'v1', its tag is v1.2.3"],
+                id="floating-major",
+            ),
+            pytest.param(
+                f"uses: org/act@{_SHA}  # v1.2.4",
+                [f"line 1: org/act@{_SHA} is commented 'v1.2.4', its tag is v1.2.3"],
+                id="wrong-patch",
+            ),
+        ],
+    )
+    def test_a_verified_pin_with_the_wrong_comment_is_flagged(
+        self, line: str, expected: list[str]
+    ) -> None:
+        verified = {f"org/act@{_SHA}": "v1.2.3"}
+        assert version_comment_violations(line + "\n", verified) == expected
+
+    def test_the_line_number_follows_the_offending_line(self) -> None:
+        text = f"name: x\njobs:\n  a:\n    steps:\n      - uses: org/act@{_SHA} # v1\n"
+        problems = version_comment_violations(text, {f"org/act@{_SHA}": "v1.2.3"})
+        assert [problem.split(":")[0] for problem in problems] == ["line 5"]
+
+
+_HOSTILE_LENGTH = 50_000
+_MAX_SCAN_SECONDS = 2.0
+_HOSTILE_LINES = {
+    "spaces-then-uses": " " * _HOSTILE_LENGTH + "uses: a",
+    "dash-runs": "- " * (_HOSTILE_LENGTH // 2) + "uses: a",
+    "one-long-token": "uses: " + "a" * _HOSTILE_LENGTH,
+    "trailing-spaces": "uses: a" + " " * _HOSTILE_LENGTH,
+    "space-hash-runs": "uses: a" + " #" * (_HOSTILE_LENGTH // 2),
+    "hash-run": "uses: a " + "#" * _HOSTILE_LENGTH,
+    "newline-runs": "\n" * _HOSTILE_LENGTH,
+    "space-newline-runs": " \n" * (_HOSTILE_LENGTH // 2),
+    "many-short-lines": "uses: a # v1\n" * (_HOSTILE_LENGTH // 10),
+    "backticks": "`" * _HOSTILE_LENGTH,
+    "tildes": "~" * _HOSTILE_LENGTH,
+    "nested-brackets": "[" * _HOSTILE_LENGTH,
+    "unterminated-comment-openers": "<!--" * (_HOSTILE_LENGTH // 4),
+    "combining-marks": "uses: a" + "\u0301" * _HOSTILE_LENGTH,
+    "zero-width-characters": "uses: a #" + "\u200b" * _HOSTILE_LENGTH,
+}
+
+
+class TestTheCommentScanIsLinear:
+    """The scan reads workflow files a fork's pull request can rewrite, so it must not be
+    something a crafted line can slow down."""
+
+    @pytest.mark.parametrize("hostile", _HOSTILE_LINES.values(), ids=_HOSTILE_LINES.keys())
+    def test_a_hostile_file_is_scanned_in_well_under_two_seconds(self, hostile: str) -> None:
+        assert len(hostile) >= _HOSTILE_LENGTH
+        started = time.perf_counter()
+        problems = version_comment_violations(hostile, {f"org/act@{_SHA}": "v1.2.3"})
+        elapsed = time.perf_counter() - started
+        assert problems == []
+        assert elapsed < _MAX_SCAN_SECONDS, f"{elapsed:.2f}s for {len(hostile)} characters"
