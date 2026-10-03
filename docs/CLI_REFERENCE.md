@@ -139,6 +139,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | `TRELIX_PARSER_TAINT` | `false` | **Inert.** `ParserConfig.taint_enabled` is declared but read nowhere in `src/`, so setting this has no effect. Taint analysis happens only when you run `trelix taint`, which does not consult it |
 | `TRELIX_FILE_SUMMARIES_ENABLED` | `false` | Generate LLM file-level summaries at index time (RAPTOR-style) |
 | `TRELIX_TELEMETRY_ENABLED` | `false` | Record every `retrieve()` call to `query_telemetry` table |
+| `TRELIX_REVIEW_MAX_TOKENS` | `4096` | Output-token limit for the model call that reviews one hunk (256–16384); a cut-off reply is retried once at four times this, capped at 16384 |
 
 ### Federation
 
@@ -158,7 +159,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 |------|---------|
 | `0` | Success |
 | `1` | Error — configuration invalid, index not found, I/O failure, API error, or user cancelled with Ctrl+C |
-| `3` | `trelix review` only — the review did not run: no usable LLM is configured, or every hunk's LLM call failed (see [`trelix review`](#trelix-review)) |
+| `3` | `trelix review` only — the review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review) (see [`trelix review`](#trelix-review)) |
 
 `trelix search`, `ask`, `query`, `call-graph`, `graph` and `stats` exit `1` when `<repo_path>` has
 no index, printing `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.`
@@ -1183,7 +1184,7 @@ With `--pr`, fetches the diff directly from the GitHub API.
 |------|---------|
 | `0` | A review ran. This includes "no issues found" and a partial failure, where some hunks could not be reviewed (a warning with the counts goes to stderr). |
 | `1` | Error: invalid configuration, GitHub API failure, unreadable diff. |
-| `3` | The review did not run: no usable LLM is configured, or every hunk's LLM call failed. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) (with `--pr` it is the only thing on stdout; in local-diff mode a `Reviewing N hunks across M files...` line is printed to stdout before it), so an empty array alone does not mean "clean": check the exit code. |
+| `3` | The review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review). A hunk cut off after some complete findings keeps them and counts as a partial review, not as one that did not run. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) (with `--pr` it is the only thing on stdout; in local-diff mode a `Reviewing N hunks across M files...` line is printed to stdout before it), so an empty array alone does not mean "clean": check the exit code. |
 
 Exit code `2` is not used by `review` itself (it is the usage-error code), so
 `3` is unambiguous for CI wrappers. With `--post-comments`, nothing is posted

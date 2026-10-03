@@ -74,6 +74,7 @@ CODE_DEFAULTS: Mapping[str, str] = MappingProxyType(
         "TRELIX_RETRIEVAL_COMPRESSION_PROVIDER": "extractive",
         "TRELIX_RETRIEVAL_COMPRESSION_RATIO": "0.45",
         "TRELIX_RETRIEVAL_COMPRESSION_MIN_TOKENS": "120",
+        "TRELIX_REVIEW_MAX_TOKENS": "4096",
     }
 )
 

@@ -1745,6 +1745,18 @@ class IndexConfig(BaseSettings):
         alias="TRELIX_USE_BATCH_API",
     )
 
+    # Output-token limit for one `trelix review` call per hunk. A review is a JSON array, so a
+    # limit that is too low cuts it off mid-object; the reviewer retries once at four times this
+    # (capped at 16384) and otherwise reports the hunk as truncated. The ceiling is 16384
+    # because the Anthropic SDK refuses a non-streaming request above 21333 tokens, and some
+    # models refuse less. Reasoning tokens count toward the limit on models that think.
+    review_max_tokens: int = Field(
+        default=4096,
+        ge=256,
+        le=16384,
+        alias="TRELIX_REVIEW_MAX_TOKENS",
+    )
+
     @field_validator("repo_path")
     @classmethod
     def repo_must_exist(cls, v: str) -> str:

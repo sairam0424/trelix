@@ -27,8 +27,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   OpenAI and Azure backend. LiteLLM itself turns some provider stop values (for example
   `pause_turn`, Bedrock `malformed_*` and Gemini `MALFORMED_FUNCTION_CALL`, as of litellm
   1.90.2) into `"stop"` before trelix sees them, so through LiteLLM a `"stop"` is weaker
-  evidence than through a direct backend. No caller reads the new values yet, so behaviour is
-  unchanged until the reviewer uses them.
+  evidence than through a direct backend. Only `trelix review` reads the new values (below);
+  the other callers behave as before.
+- **`trelix review` counted a cut-off, refused or unparseable reply as a clean "no issues"
+  result.** The reviewer asked for at most 512 tokens per hunk, never read the stop reason, and
+  returned `[]` for a reply that was cut off mid-array, empty, prose or refused, so a hunk that
+  was never reviewed looked the same as one with no findings. Each hunk now gets a status
+  (`reviewed`, `truncated`, `refused`, `parse_failed` or `error`) in
+  `ReviewOutcome.hunk_results`, and only a parsed JSON array after a clean stop counts as
+  reviewed; an empty `[]` that merely appears inside prose does not. A reply cut off by the
+  limit is retried once at four times it (capped at 16384); if it is still cut off, or the retry
+  itself fails, the complete findings written before the cut are kept and the hunk is marked
+  `truncated`. A reply that says it stopped cleanly but used every token it was allowed is
+  treated as cut off too, because LiteLLM can hide a truncation behind `stop`. The limit is now
+  `TRELIX_REVIEW_MAX_TOKENS` (default 4096, range 256–16384; the ceiling is below the 21333
+  tokens above which the Anthropic SDK refuses a non-streaming request). An array counts only
+  if at least one item has a text `comment`; a bad or missing line number falls back to the
+  hunk's range instead of discarding the hunk. `ReviewOutcome.hunks_failed` now counts every
+  hunk that was not reviewed, not only calls that raised, so a review in which no hunk was
+  reviewed and none kept a finding exits 3 ("did not run") instead of 0; a review with some
+  unreviewed hunks still exits 0 with the existing warning.
 
 ## [3.4.2] — 2026-10-02
 
