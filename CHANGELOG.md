@@ -95,6 +95,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   code span would show literally). Removing hidden characters also removes an emoji's variation
   selector and the zero-width joiners of joined emoji and of some scripts. The Actions workflow
   `trelix-review.yml` does not use this sanitiser.
+- **The GitHub App's installation tokens reached every repository of the installation with
+  every permission the App holds.** `getInstallationToken` asked GitHub for a token with no
+  `repository_ids` and no `permissions`, and the same token went to `git`, to the
+  `trelix review` child (which reads it as `GITHUB_TOKEN`) and to the Octokit that creates
+  Checks, so a compromised git or review child could have read other repositories or forged
+  Checks. Each review now mints three tokens (`infra/github-app/src/auth.ts`), each limited to
+  the one repository the pull request is in: `checkout` (`contents: read`, `metadata: read`,
+  for the `git fetch` only), `review` (`pull_requests: read`, `metadata: read`, for
+  `GET /pulls/{n}/files`, the only call `trelix review --pr --json` makes) and `poster`
+  (`checks: write`, `metadata: read`, for creating the Check). `@octokit/auth-app` caches a
+  token per installation, repository ids and permission set, so no purpose reuses another's
+  token; the tests assert the body of every token request. The webhook handler now passes
+  `repository.id` and `pull_request.head.sha` through, the Check is posted on that commit
+  instead of one read back from the API (so the poster token needs no pull request access),
+  and a review is skipped, with a log line and nothing posted, when `git rev-parse HEAD` after
+  the checkout is not that commit (a newer push moved `refs/pull/<n>/head` and has its own
+  delivery). A delivery without a usable repository id or head sha is acknowledged and
+  ignored. `manifest.yml` now asks for `pull_requests: read` instead of `write`, because
+  nothing in the App comments on or edits pull requests; the owner of the already registered
+  App must lower it in the App's settings (`infra/github-app/README.md`, "Token scopes").
 
 ### Fixed
 - **This repository's PR review workflow posted its Check on the pull request's merge commit,

@@ -26,6 +26,7 @@ import {
     outcomeTextFor,
     stdoutTextFor,
 } from "./support/conclusion-cases.js";
+import { HEAD_SHA, reviewRequest } from "./support/review-fixtures.js";
 import { runReviewForTest } from "./support/run-review.js";
 
 describe("toAnnotations", () => {
@@ -330,8 +331,9 @@ describe("runReview orchestration", () => {
     }
 
     /** Fakes @octokit/rest's own HTTP transport via its documented `hook.wrap("request", ...)` extension point. */
+    // Only the Checks call is answered: any other request (a `pulls.get` the poster
+    // token has no permission for) throws "unexpected octokit request".
     function fakeOctokit(
-        headSha: string,
         opts: {
             checksCreateShouldThrow?: boolean;
             checksCreateCalls?: Array<Record<string, unknown>>;
@@ -339,17 +341,6 @@ describe("runReview orchestration", () => {
     ) {
         const octokit = new Octokit({});
         octokit.hook.wrap("request", async (_request, options) => {
-            if (
-                options.method === "GET" &&
-                options.url === "/repos/{owner}/{repo}/pulls/{pull_number}"
-            ) {
-                return {
-                    status: 200,
-                    url: "",
-                    headers: {},
-                    data: { head: { sha: headSha } },
-                };
-            }
             if (
                 options.method === "POST" &&
                 options.url === "/repos/{owner}/{repo}/check-runs"
@@ -372,7 +363,7 @@ describe("runReview orchestration", () => {
         cleanup: ReturnType<typeof vi.fn>;
     } {
         const cleanup = vi.fn(async () => {});
-        return { workspace: { path: ".", cleanup }, cleanup };
+        return { workspace: { path: ".", headSha: HEAD_SHA, cleanup }, cleanup };
     }
 
     it("does not block the review when `trelix index` fails (tolerant-failure fallback)", async () => {
@@ -380,11 +371,11 @@ describe("runReview orchestration", () => {
         const { workspace, cleanup } = fakeWorkspace();
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
-        const octokit = fakeOctokit("deadbeef");
+        const octokit = fakeOctokit();
 
         const findings = await runReviewForTest(
             config,
-            { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+            reviewRequest(),
             {
                 checkoutPullRequest,
                 request: fakeAuthRequest("ghs_faketoken"),
@@ -403,14 +394,14 @@ describe("runReview orchestration", () => {
         const { workspace, cleanup } = fakeWorkspace();
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
-        const octokit = fakeOctokit("deadbeef", {
+        const octokit = fakeOctokit({
             checksCreateShouldThrow: true,
         });
 
         await expect(
             runReviewForTest(
                 config,
-                { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+                reviewRequest(),
                 {
                     checkoutPullRequest,
                     request: fakeAuthRequest("ghs_faketoken"),
@@ -433,7 +424,7 @@ describe("runReview orchestration", () => {
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
         const checksCreateCalls: Array<Record<string, unknown>> = [];
-        const octokit = fakeOctokit("deadbeef", { checksCreateCalls });
+        const octokit = fakeOctokit({ checksCreateCalls });
 
         const shim = join(binDir, "trelix");
         writeFileSync(
@@ -454,7 +445,7 @@ describe("runReview orchestration", () => {
         await expect(
             runReviewForTest(
                 config,
-                { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+                reviewRequest(),
                 {
                     checkoutPullRequest,
                     request: fakeAuthRequest("ghs_faketoken"),
@@ -478,7 +469,7 @@ describe("runReview orchestration", () => {
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
         const checksCreateCalls: Array<Record<string, unknown>> = [];
-        const octokit = fakeOctokit("deadbeef", { checksCreateCalls });
+        const octokit = fakeOctokit({ checksCreateCalls });
 
         const shim = join(binDir, "trelix");
         writeFileSync(
@@ -499,7 +490,7 @@ describe("runReview orchestration", () => {
         await expect(
             runReviewForTest(
                 config,
-                { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+                reviewRequest(),
                 {
                     checkoutPullRequest,
                     request: fakeAuthRequest("ghs_faketoken"),
@@ -522,11 +513,11 @@ describe("runReview orchestration", () => {
         const { workspace } = fakeWorkspace();
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
-        const octokit = fakeOctokit("deadbeef");
+        const octokit = fakeOctokit();
 
         await runReviewForTest(
             config,
-            { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+            reviewRequest(),
             {
                 checkoutPullRequest,
                 request: fakeAuthRequest("ghs_faketoken"),
@@ -553,7 +544,7 @@ describe("runReview orchestration", () => {
         const { workspace, cleanup } = fakeWorkspace();
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
-        const octokit = fakeOctokit("deadbeef");
+        const octokit = fakeOctokit();
         const installationTokenForCli = "installation-token-for-cli-env";
 
         const shim = join(binDir, "trelix");
@@ -577,7 +568,7 @@ describe("runReview orchestration", () => {
 
         const findings = await runReviewForTest(
             config,
-            { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+            reviewRequest(),
             {
                 checkoutPullRequest,
                 request: fakeAuthRequest(installationTokenForCli),
@@ -667,17 +658,6 @@ describe("runReview, by how the review ended", () => {
         const octokit = new Octokit({});
         octokit.hook.wrap("request", async (_request, options) => {
             if (
-                options.method === "GET" &&
-                options.url === "/repos/{owner}/{repo}/pulls/{pull_number}"
-            ) {
-                return {
-                    status: 200,
-                    url: "",
-                    headers: {},
-                    data: { head: { sha: "deadbeef" } },
-                };
-            }
-            if (
                 options.method === "POST" &&
                 options.url === "/repos/{owner}/{repo}/check-runs"
             ) {
@@ -702,10 +682,10 @@ describe("runReview, by how the review ended", () => {
             }
         });
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
-            vi.fn(async () => ({ path: workspaceDir, cleanup }));
+            vi.fn(async () => ({ path: workspaceDir, headSha: HEAD_SHA, cleanup }));
         const outcome = await runReviewForTest(
             config(),
-            { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+            reviewRequest(),
             {
                 checkoutPullRequest,
                 request: vi.fn(async () => ({
@@ -751,7 +731,7 @@ describe("runReview, by how the review ended", () => {
 
             expect(calls).toHaveLength(1);
             expect(calls[0]).toMatchObject({
-                head_sha: "deadbeef",
+                head_sha: "0123456789abcdef0123456789abcdef01234567",
                 status: "completed",
                 conclusion: row.conclusion,
             });

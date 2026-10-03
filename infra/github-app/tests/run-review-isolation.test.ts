@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config.js";
 import { runReview, type RunReviewOptions } from "../src/review-runner.js";
+import { reviewRequest } from "./support/review-fixtures.js";
 import { runReviewForTest } from "./support/run-review.js";
 
 vi.mock("../src/review-runner.js", () => ({ runReview: vi.fn() }));
@@ -33,7 +34,7 @@ const CONFIG: AppConfig = {
     webhookSecret: "unused",
     port: 0,
 };
-const REQUEST = { owner: "o", repo: "r", prNumber: 1, installationId: 9 };
+const REQUEST = reviewRequest({ installationId: 9 });
 
 describe("runReviewForTest", () => {
     const cleanups: string[] = [];

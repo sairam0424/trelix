@@ -1,13 +1,18 @@
 import express, { Router, Request, Response, NextFunction } from "express";
 import { verify } from "@octokit/webhooks-methods";
 import { runReview, ReviewRequest, ReviewFinding } from "./review-runner.js";
+import { isCommitId } from "./commit-id.js";
 import { AppConfig } from "./config.js";
 
+// What a `pull_request` delivery is read for. `repository.id` and `pull_request.head.sha`
+// are typed as present because GitHub always sends them, but they are checked before use:
+// the installation tokens are scoped to the repository id, and the head sha decides which
+// commit a review may be posted on.
 interface PullRequestWebhookPayload {
   action: string;
   number: number;
-  repository: { full_name: string; owner: { login: string }; name: string };
-  pull_request: { number: number };
+  repository: { id: number; full_name: string; owner: { login: string }; name: string };
+  pull_request: { number: number; head: { sha: string } };
   installation?: { id: number };
 }
 
@@ -16,6 +21,10 @@ interface RequestWithRawBody extends Request {
 }
 
 const HANDLED_ACTIONS = new Set(["opened", "synchronize", "reopened"]);
+
+function isRepositoryId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
 
 // GitHub caps webhook payloads at 25MB (see docs.github.com/en/webhooks/
 // webhook-events-and-payloads) — matching that cap here rejects an
@@ -90,6 +99,22 @@ export function createWebhookRouter(config: AppConfig, options: WebhookRouterOpt
       return;
     }
 
+    const repositoryId = payload.repository?.id;
+    const headSha = payload.pull_request?.head?.sha;
+    if (!isRepositoryId(repositoryId) || !isCommitId(headSha)) {
+      // A review needs both: the tokens are scoped to the repository and the Check goes
+      // on the head commit. A real GitHub delivery always has them; this one is ignored
+      // (not failed, so the redelivery backstop does not retry it for ever).
+      console.warn(
+        `[webhook] ignoring pull_request delivery for ${String(payload.repository?.full_name)}: no usable repository id or head sha`,
+      );
+      res.status(202).json({
+        ignored: true,
+        reason: "pull_request payload has no usable repository id or head sha",
+      });
+      return;
+    }
+
     // Acknowledge immediately — GitHub expects a fast response and will
     // retry/disable the hook on repeated timeouts. Review runs after.
     res.status(202).json({ accepted: true });
@@ -100,6 +125,8 @@ export function createWebhookRouter(config: AppConfig, options: WebhookRouterOpt
         repo: payload.repository.name,
         prNumber: payload.pull_request.number,
         installationId: payload.installation?.id,
+        repositoryId,
+        headSha,
       });
     } catch (err) {
       console.error(

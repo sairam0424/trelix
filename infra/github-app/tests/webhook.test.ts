@@ -42,16 +42,19 @@ async function sendSigned(
         .send(body);
 }
 
+const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
+
 function pullRequestPayload(action: string) {
     return {
         action,
         number: 42,
         repository: {
+            id: 4242,
             full_name: "owner/repo",
             owner: { login: "owner" },
             name: "repo",
         },
-        pull_request: { number: 42 },
+        pull_request: { number: 42, head: { sha: HEAD_SHA } },
         installation: { id: 999 },
     };
 }
@@ -75,7 +78,76 @@ describe("webhook router", () => {
             repo: "repo",
             prNumber: 42,
             installationId: 999,
+            repositoryId: 4242,
+            headSha: "0123456789abcdef0123456789abcdef01234567",
         });
+    });
+
+    describe("a delivery without a usable repository id or head sha", () => {
+        const withRepositoryId = (id: unknown) => {
+            const payload = pullRequestPayload("opened");
+            return { ...payload, repository: { ...payload.repository, id } };
+        };
+        const withHeadSha = (sha: unknown) => {
+            const payload = pullRequestPayload("opened");
+            return {
+                ...payload,
+                pull_request: { ...payload.pull_request, head: { sha } },
+            };
+        };
+        const withoutKey = (payload: Record<string, unknown>, key: string) => {
+            const { [key]: _dropped, ...rest } = payload;
+            return rest;
+        };
+
+        it.each([
+            ["a repository id of 0", withRepositoryId(0)],
+            ["a negative repository id", withRepositoryId(-5)],
+            ["a fractional repository id", withRepositoryId(1.5)],
+            ["a repository id sent as a string", withRepositoryId("4242")],
+            ["no repository id", withRepositoryId(undefined)],
+            ["a head sha that is too short", withHeadSha("deadbeef")],
+            ["an uppercase head sha", withHeadSha(HEAD_SHA.toUpperCase())],
+            ["a head sha that is not hex", withHeadSha("z".repeat(40))],
+            ["a head sha that is a number", withHeadSha(1234)],
+            ["no head sha", withHeadSha(undefined)],
+            [
+                "no head object",
+                {
+                    ...pullRequestPayload("opened"),
+                    pull_request: { number: 42 },
+                },
+            ],
+            [
+                "no pull_request object",
+                withoutKey(pullRequestPayload("opened"), "pull_request"),
+            ],
+            [
+                "no repository object",
+                withoutKey(pullRequestPayload("opened"), "repository"),
+            ],
+        ])(
+            "is acknowledged and ignored, with no review, for %s",
+            async (_name, payload) => {
+                const warn = vi
+                    .spyOn(console, "warn")
+                    .mockImplementation(() => {});
+                const runReview = vi.fn<RunReviewFn>().mockResolvedValue([]);
+                const app = buildApp(runReview);
+
+                const res = await sendSigned(app, "pull_request", payload);
+                await new Promise((r) => setTimeout(r, 0));
+
+                expect(res.status).toBe(202);
+                expect(res.body).toEqual({
+                    ignored: true,
+                    reason: "pull_request payload has no usable repository id or head sha",
+                });
+                expect(runReview).not.toHaveBeenCalled();
+                expect(warn).toHaveBeenCalledTimes(1);
+                warn.mockRestore();
+            },
+        );
     });
 
     it.each(["synchronize", "reopened"])(
