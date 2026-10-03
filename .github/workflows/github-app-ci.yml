@@ -71,5 +71,9 @@ jobs:
             *) echo "expected Node 24 in the image, got ${version}" >&2; exit 1 ;;
           esac
 
-      - name: Print the image's SQLite library version
-        run: docker run --rm --entrypoint python trelix-github-app:ci -c "import sqlite3; print(sqlite3.sqlite_version)"
+      # Informational: the SQLite the image's Python links. The App shells out to
+      # `trelix index` / `trelix review` inside this image, so this is the SQLite those
+      # children write their index with. Fed on stdin because the image carries no scripts/.
+      # The script exits 0 on every path; no `continue-on-error`, no `|| true`.
+      - name: Report the SQLite version linked inside the image
+        run: docker run --rm -i --entrypoint python trelix-github-app:ci - < scripts/report_sqlite_version.py

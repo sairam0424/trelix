@@ -227,6 +227,13 @@ jobs:
       # matrix actually executes tests/unit.
       - name: Install trelix + dev deps
         run: pip install -e ".[local,otel,sso,bge-code,nomic-code,dev,graph-viz]"
+      # Informational: prints the SQLite this leg's interpreter links and annotates it
+      # when it is in the WAL-reset range (3.7.0 through 3.51.2). The script exits 0 on
+      # every path, so this step is deliberately plain: no `continue-on-error` and no
+      # `|| true`, which would also hide a real break in the script. Placed right after
+      # the editable install so the leg reports even if a later step fails.
+      - name: Report linked SQLite version
+        run: python scripts/report_sqlite_version.py
       - name: Install trelix-mcp + deps
         run: pip install -e packages/trelix-mcp
       # The `lint` job installed these two but never ran their tests, and this job ran
@@ -480,6 +487,12 @@ jobs:
         run: docker run --rm trelix:ci-test --help
       - name: Verify trelix-mcp is present in the image
         run: docker run --rm --entrypoint trelix-mcp trelix:ci-test --version
+      # Informational: the SQLite the image's Python links (the image, not the runner).
+      # The script is fed on stdin because the image carries no scripts/ directory; it uses
+      # the image's own trelix for the range table. It exits 0 on every path, so this is a
+      # plain command on purpose (see the unit-matrix step for why there is no masking).
+      - name: Report the SQLite version linked inside the slim image
+        run: docker run --rm -i --entrypoint python trelix:ci-test - < scripts/report_sqlite_version.py
       # The -local variant (EXTRAS=serve,local) bundles torch/sentence-transformers and
       # is materially heavier to build than the slim image above — the Dockerfile's own
       # comments document a past hosted-runner disk-space incident from this exact
@@ -553,6 +566,9 @@ jobs:
       - name: Verify trelix-mcp is present in the local image
         if: steps.docker-relevant-changes.outputs.changed == 'true'
         run: docker run --rm --entrypoint trelix-mcp trelix:ci-test-local --version
+      - name: Report the SQLite version linked inside the local image
+        if: steps.docker-relevant-changes.outputs.changed == 'true'
+        run: docker run --rm -i --entrypoint python trelix:ci-test-local - < scripts/report_sqlite_version.py
       - name: Verify torch/sentence-transformers actually import in the local image
         if: steps.docker-relevant-changes.outputs.changed == 'true'
         run: docker run --rm --entrypoint python trelix:ci-test-local -c "import torch, sentence_transformers"

@@ -122,6 +122,8 @@ python -c "import sqlite3; print(sqlite3.sqlite_version)"
 ```
 A fixed build is 3.51.3 or later, 3.50.7 or later within 3.50.x, or 3.44.6 or later within 3.44.x. To stop the warning, upgrade to a Python that links a fixed SQLite, or update the system SQLite package if your Python uses the system library.
 
+Maintainers: CI reports the SQLite version as a `::warning::` (affected range) or `::notice::` annotation from `scripts/report_sqlite_version.py`. Not every run reports every artifact. The workflows run on pushes to `main` and `develop` and on pull requests targeting them (the binary builds: pushes to `develop` and `main`, pull requests to `main`, or a manual run), so a stacked pull request whose base is a feature branch reports nothing. Within those runs: the unit-test matrix and the slim Docker image always report; the `-local` image when the `Dockerfile`, the root `pyproject.toml` or `packages/trelix-mcp/pyproject.toml` changed; the GitHub App image when `infra/github-app/` changes; the binary builds report their build interpreter, not the frozen binary. The number is the upstream one, so it cannot tell whether a distro build (Debian, for one) carries the fix under a lower number. The script always exits 0, so a report that cannot be produced is a warning, not a red job; a step can still fail for a reason outside the script, such as a Docker daemon error.
+
 ---
 
 ## 2. Search Returns No Results
