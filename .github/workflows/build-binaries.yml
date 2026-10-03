@@ -75,6 +75,23 @@ jobs:
         if: runner.os != 'macOS'
         run: pip install -e ".[local]" && pip install pyinstaller
 
+      # Informational: the SQLite the BUILD INTERPRETER links. A frozen binary cannot run a
+      # script, so the interpreter is measured as a proxy for the binary. Which SQLite
+      # library PyInstaller bundles on each platform has not been confirmed from a build log
+      # or an archive listing, so read this line as "what the binary is built against", not
+      # as a measurement of the binary itself. The script exits 0 on every path; no
+      # `continue-on-error`, no `|| true`. Two steps because the macOS build runs in a uv
+      # venv.
+      - name: Report linked SQLite version (macOS build interpreter)
+        if: runner.os == 'macOS'
+        run: |
+          source .venv-build/bin/activate
+          python scripts/report_sqlite_version.py
+
+      - name: Report linked SQLite version (build interpreter)
+        if: runner.os != 'macOS'
+        run: python scripts/report_sqlite_version.py
+
       - name: Build binary (macOS)
         if: runner.os == 'macOS'
         run: |
