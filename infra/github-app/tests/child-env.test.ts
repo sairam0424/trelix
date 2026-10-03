@@ -523,3 +523,53 @@ describe("GITHUB_TOKEN", () => {
         expect(buildIndexChildEnv({})).not.toHaveProperty("GITHUB_TOKEN");
     });
 });
+
+describe("TRELIX_REVIEW_OUTCOME_FILE", () => {
+    const OUTCOME_PATH = "/private/outcome-dir/outcome.json";
+
+    it("is given to the review child, and only when the caller passes a path", () => {
+        expect(
+            buildReviewChildEnv(REVIEW_CREDENTIAL, {}, OUTCOME_PATH),
+        ).toMatchObject({ TRELIX_REVIEW_OUTCOME_FILE: OUTCOME_PATH });
+        expect(buildReviewChildEnv(REVIEW_CREDENTIAL, {})).not.toHaveProperty(
+            "TRELIX_REVIEW_OUTCOME_FILE",
+        );
+    });
+
+    it("is the caller's path even when the host sets another: the App reads only the one it chose", () => {
+        const base = {
+            TRELIX_REVIEW_OUTCOME_FILE: "/tmp/host-chose-this.json",
+        };
+
+        const env = buildReviewChildEnv(REVIEW_CREDENTIAL, base, OUTCOME_PATH);
+
+        expect(env.TRELIX_REVIEW_OUTCOME_FILE).toBe(OUTCOME_PATH);
+    });
+
+    it("adds exactly one name to the review child env and changes nothing else", () => {
+        const base = hostEnv(["PATH", "TRELIX_LLM_PROVIDER", "AZURE_API_KEY"]);
+
+        const without = buildReviewChildEnv(REVIEW_CREDENTIAL, base);
+        const withPath = buildReviewChildEnv(
+            REVIEW_CREDENTIAL,
+            base,
+            OUTCOME_PATH,
+        );
+
+        expect({ ...withPath, TRELIX_REVIEW_OUTCOME_FILE: undefined }).toEqual({
+            ...without,
+            TRELIX_REVIEW_OUTCOME_FILE: undefined,
+        });
+    });
+
+    it("is not given to the index child or the git child", () => {
+        const base = { TRELIX_LLM_PROVIDER: "azure" };
+
+        expect(buildIndexChildEnv(base)).not.toHaveProperty(
+            "TRELIX_REVIEW_OUTCOME_FILE",
+        );
+        expect(buildGitChildEnv(gitInput, base)).not.toHaveProperty(
+            "TRELIX_REVIEW_OUTCOME_FILE",
+        );
+    });
+});

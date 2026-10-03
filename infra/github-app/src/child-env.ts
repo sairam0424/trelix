@@ -149,6 +149,10 @@ const TRELIX_ENV_PREFIXES: readonly string[] = ["TRELIX_"];
 // host that happens to export the name does not leak it into a trelix child.
 const GIT_TOKEN_ENV = "TRELIX_GIT_TOKEN";
 
+// Where `trelix review` writes the JSON record of which hunks it did not review. Set by
+// the caller for the review child alone (see review-outcome.ts).
+const REVIEW_OUTCOME_FILE_ENV = "TRELIX_REVIEW_OUTCOME_FILE";
+
 const GIT_ALLOW_PROTOCOL_DEFAULT = "https";
 
 // trelix runs `git diff`, `git log` and `git rev-parse` itself, with the checkout root as
@@ -240,11 +244,20 @@ export function buildIndexChildEnv(
  * Environment for `trelix review --pr`, which fetches the PR diff through the
  * GitHub API and so needs the installation token. The token is passed in
  * explicitly and overrides any `GITHUB_TOKEN` the host has; it is never copied
- * from `base`.
+ * from `base`. `outcomeFile`, when given, is where `trelix review` writes its
+ * record of what it covered: it overrides the host's value of
+ * `TRELIX_REVIEW_OUTCOME_FILE`, so the path is always one the caller chose.
  */
 export function buildReviewChildEnv(
     token: string,
     base: NodeJS.ProcessEnv = process.env,
+    outcomeFile?: string,
 ): NodeJS.ProcessEnv {
-    return { ...buildTrelixChildEnv(base), GITHUB_TOKEN: token };
+    return {
+        ...buildTrelixChildEnv(base),
+        GITHUB_TOKEN: token,
+        ...(outcomeFile === undefined
+            ? {}
+            : { [REVIEW_OUTCOME_FILE_ENV]: outcomeFile }),
+    };
 }
