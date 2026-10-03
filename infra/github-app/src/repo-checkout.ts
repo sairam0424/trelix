@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { isCommitId } from "./commit-id.js";
 import { buildGitChildEnv } from "./child-env.js";
 
 const execFileAsync = promisify(execFile);
@@ -71,6 +72,8 @@ export interface CheckoutOptions {
 
 export interface Workspace {
     path: string;
+    /** The commit the checkout is at (`git rev-parse HEAD`): a full lowercase hex id. */
+    headSha: string;
     cleanup(): Promise<void>;
 }
 
@@ -91,6 +94,15 @@ case "$1" in
   Password*) echo "$TRELIX_GIT_TOKEN" ;;
 esac
 `;
+
+/** The `stdout` a `GitExecFile` result carries, or "" when it has none (a test double). */
+function stdoutOf(result: unknown): string {
+    if (typeof result !== "object" || result === null) {
+        return "";
+    }
+    const { stdout } = result as { stdout?: unknown };
+    return typeof stdout === "string" ? stdout : "";
+}
 
 /**
  * Clones a single pull request's head into a fresh, per-request temp
@@ -193,13 +205,20 @@ export async function checkoutPullRequest(
             "--quiet",
             "FETCH_HEAD",
         ]);
+        // What was actually checked out: refs/pull/<n>/head moves with every push, so
+        // it can be newer than the delivery that asked for this review (runReview
+        // compares the two).
+        const headSha = stdoutOf(await git(["rev-parse", "HEAD"])).trim();
+        if (!isCommitId(headSha)) {
+            throw new Error("git rev-parse HEAD did not print a commit id");
+        }
 
         // A PR must not supply its own trelix data directory: `trelix index`
         // would adopt a committed `.trelix/index.db` (or a `.trelix` link) as the
         // index. `rm` with `recursive`/`force` removes a link without following it.
         await rm(join(dir, ".trelix"), { recursive: true, force: true });
 
-        return { path: dir, cleanup: removeTempDirs };
+        return { path: dir, headSha, cleanup: removeTempDirs };
     } catch (err) {
         // A `Workspace` (and thus its `cleanup()`) only exists once this
         // function returns one — if any step above throws, this catch is the
