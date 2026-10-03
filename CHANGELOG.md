@@ -146,6 +146,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   hunk that was not reviewed, not only calls that raised, so a review in which no hunk was
   reviewed and none kept a finding exits 3 ("did not run") instead of 0; a review with some
   unreviewed hunks still exits 0 with the existing warning.
+- **A review that covered only part of the diff was published as "did not complete", and the
+  findings it had printed were lost.** Both consumers of `trelix review`, this repository's
+  `trelix-review.yml` and the GitHub App, treated every exit code other than 0 and 3 as "the
+  review did not complete" and posted a neutral check saying no review result was available, so
+  the exit 4 described under Changed would have hidden a partial review's findings and the fact
+  that it was partial. For exit 4 both now publish a "trelix review incomplete" check: the
+  findings as annotations, how many hunks were and were not reviewed, and the first ten
+  unreviewed hunks as `file:line (status)`, with the rest counted. The conclusion is neutral, or
+  failure if any finding is an `ERROR`; never success. The counts and the list come from the
+  `TRELIX_REVIEW_OUTCOME_FILE` record (the workflow sets a fixed path and removes a stale file
+  first; the App creates a private directory outside the checkout for each review and removes
+  it afterwards), which is read as untrusted input: a record that is missing, not a regular
+  file, over 1 MiB, not JSON, of another schema or whose counts do not add up is reported as
+  "unknown", never as clean. The summary carries no model text, only numbers, the fixed
+  statuses and file names from the diff, which are shown one to a line inside a code span after
+  control, hidden and backtick characters are removed and the name is cut at 100 characters
+  (the App also passes the whole summary through its sanitiser). The App handles the exit
+  status (`err.code === 4`) and reads the findings from the error's `stdout`, parsed exactly as
+  for exit 0. The workflow's verdict is now judged by every finding and not only the first 50
+  that get an annotation (an `ERROR` after the 50th used to leave it green), as the App's
+  already was. The exit-3 text said "every LLM call failed"; it now says no usable LLM is
+  configured, or no hunk got a usable review and none kept a finding. **This makes exit 4 safe
+  to release.**
+- **A clean `trelix review` exit whose output could not be read was published as a green
+  "found 0 issue(s)" check.** When the review step exited 0 but its stdout was missing or not
+  JSON, `trelix-review.yml` published success; when it was JSON but not an array of objects
+  (an object, `null`, a string, a number, or an array holding a `null`), the publishing script
+  threw and published nothing. The GitHub App already treated the first two as "did not
+  complete". The workflow now publishes a neutral "trelix review did not complete" check whose
+  summary says the findings could not be read and that this is not a clean result; an empty
+  array `[]` is still a clean result. After an exit 4 the same output is reported in the
+  "incomplete" check's summary as findings that could not be read. The App rejects an array
+  that holds something that is not an object the same way, where it used to throw while
+  mapping the findings and post no check at all.
 
 ### Changed
 - **Dependabot waits seven days before proposing a new version, and an advisory `zizmor` job

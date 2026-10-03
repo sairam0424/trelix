@@ -10,8 +10,9 @@ const execFileAsync = promisify(execFile);
 // The checkout lives in `trelix-review-<random>`; the askpass helper and git's
 // empty HOME live in `trelix-review-aux-<random>`, outside the checkout, so a PR
 // cannot overwrite or collide with them. Deriving the second prefix from the first
-// keeps `sweepStaleWorkspaces` covering both.
-const TEMP_DIR_PREFIX = "trelix-review-";
+// keeps `sweepStaleWorkspaces` covering both; review-outcome.ts derives the prefix of
+// its own directory (`trelix-review-outcome-<random>`) the same way.
+export const TEMP_DIR_PREFIX = "trelix-review-";
 const AUX_DIR_PREFIX = `${TEMP_DIR_PREFIX}aux-`;
 
 // Command-scope config for EVERY git child (`-c` outranks any config file):

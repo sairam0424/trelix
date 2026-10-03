@@ -18,6 +18,12 @@ import { rm } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildIndexChildEnv, buildReviewChildEnv } from "../src/child-env.js";
 import {
+    assertPrivateTmpdir,
+    enterPrivateTmpdir,
+    type PrivateTmpdir,
+    withPrivateTmpdir,
+} from "./support/private-tmpdir.js";
+import {
     checkoutPullRequest,
     sweepStaleWorkspaces,
     type GitExecFile,
@@ -60,8 +66,13 @@ function listFilesRecursively(rootDir: string): string[] {
     return files;
 }
 
-/** `trelix-review-*` dirs currently sitting under the OS temp dir. */
+/**
+ * `trelix-review-*` dirs currently sitting under the OS temp dir. Only meaningful in a
+ * private one (tests/support/private-tmpdir.ts): the shared one also holds what other
+ * test files and other copies of the suite create while this runs.
+ */
 function listTrelixReviewDirs(): string[] {
+    assertPrivateTmpdir();
     return readdirSync(tmpdir()).filter((name) =>
         name.startsWith("trelix-review-"),
     );
@@ -279,26 +290,30 @@ describe("checkoutPullRequest", () => {
     });
 
     it("cleans up the temp workspace even when the checkout fails (unreachable remote)", async () => {
-        const before = listTrelixReviewDirs();
-        const nonexistentRemote = join(
-            tmpdir(),
-            `trelix-checkout-nonexistent-${Date.now()}`,
-        );
+        // A private temp dir: other test files create trelix-review-* directories in the
+        // shared one (one per review, for the outcome record) while this runs.
+        await withPrivateTmpdir(async () => {
+            const before = listTrelixReviewDirs();
+            const nonexistentRemote = join(
+                tmpdir(),
+                `trelix-checkout-nonexistent-${Date.now()}`,
+            );
 
-        await expect(
-            checkoutPullRequest(
-                CANARY_CREDENTIAL,
-                { owner: "o", repo: "r", prNumber: 7 },
-                {
-                    remoteUrl: nonexistentRemote,
-                    allowProtocol: LOCAL_REMOTE_PROTOCOL,
-                    timeoutMs: 15_000,
-                },
-            ),
-        ).rejects.toThrow();
+            await expect(
+                checkoutPullRequest(
+                    CANARY_CREDENTIAL,
+                    { owner: "o", repo: "r", prNumber: 7 },
+                    {
+                        remoteUrl: nonexistentRemote,
+                        allowProtocol: LOCAL_REMOTE_PROTOCOL,
+                        timeoutMs: 15_000,
+                    },
+                ),
+            ).rejects.toThrow();
 
-        const after = listTrelixReviewDirs();
-        expect(after).toEqual(before);
+            const after = listTrelixReviewDirs();
+            expect(after).toEqual(before);
+        });
     }, 20_000);
 });
 
@@ -877,12 +892,22 @@ describe("checkoutPullRequest with a PR that tracks .git-askpass.sh", () => {
 
 describe("sweepStaleWorkspaces", () => {
     const leaked: string[] = [];
+    let privateTmpdir: PrivateTmpdir;
+
+    // sweepStaleWorkspaces removes every trelix-review-* entry of the temp dir, so these
+    // tests run in a private one: in the shared one it would remove the workspaces and
+    // outcome directories of reviews that other test files are running.
+    beforeEach(() => {
+        privateTmpdir = enterPrivateTmpdir();
+        assertPrivateTmpdir();
+    });
 
     afterEach(() => {
         for (const dir of leaked) {
             rmSync(dir, { recursive: true, force: true });
         }
         leaked.length = 0;
+        privateTmpdir.leave();
     });
 
     it("removes leftover trelix-review-* directories from a previous crashed instance", async () => {

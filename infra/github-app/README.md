@@ -31,8 +31,8 @@ registration required.
 
 1. Merge the PR that adds `.github/workflows/trelix-review.yml` to your repo
 2. On the next pull request, the `trelix Code Review` check runs
-   automatically (it is attached to the pull request's merge commit, so look for it
-   under that commit's checks and not on the pull request page)
+   automatically (it is attached to the pull request's head commit, so it shows in the
+   pull request's Checks tab)
 
 ### Required: an LLM provider
 
@@ -56,11 +56,42 @@ secrets**, then update the workflow's `env:` block to pass the key.
 - Review findings are capped at 50 annotations per PR (GitHub API limit)
 - Works on private repos — `GITHUB_TOKEN` scopes are sufficient
 - `trelix review` needs a working LLM provider: it has no structural-only
-  fallback. Without one (or if every LLM call fails) it exits with code 3 and
-  the Check run is posted as **neutral** ("trelix review did not run"), never
-  as "found 0 issue(s)". In the Actions workflow that check is attached to the pull
-  request's merge commit, so it shows under that commit's checks and not on the pull
-  request page; the GitHub App posts on the pull request head
+  fallback. Without one it exits with code 3, and so does a review in which no
+  hunk got a usable review (every reply was cut off, refused, filtered or not a
+  review, or the call failed) and none kept a finding. The Check run is posted
+  as **neutral** ("trelix review did not run"), never as "found 0 issue(s)". The
+  workflow and the App both post on the pull request head commit
+- A review that covered only part of the diff exits with code 4 after printing
+  the findings it has (`TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION`, default `0`, is
+  the share of unreviewed hunks it tolerates; at `1` it exits 0). The workflow
+  and the App then post a **"trelix review incomplete"** Check: the findings as
+  annotations, the counts ("3 of 5 hunks were reviewed and 2 were not") and the
+  first ten unreviewed hunks as `` `file:line` (status) ``, with "and N more" for
+  the rest. The conclusion is **neutral**, or **failure** if any finding is an
+  `ERROR` (judged by every finding, not only the 50 that get an annotation);
+  never success. The summary carries no model text: only numbers, the fixed
+  statuses (`truncated`, `refused`, `parse_failed`, `error`) and the file names,
+  which are pull-request text and are shown one to a line inside a code span,
+  cut at 100 characters, without hidden characters or backticks (in the App they
+  pass through the sanitiser as well). The App's rendering is the lossier of the
+  two: it counts UTF-16 code units where the workflow counts characters, and its
+  sanitiser also turns `@`, `<` and `>` into fullwidth look-alikes and breaks up
+  link syntax, so a path such as `node_modules/@scope/x.js` reads slightly
+  differently in the two Checks
+- The counts and the list come from the record `trelix review` writes to
+  `TRELIX_REVIEW_OUTCOME_FILE`. The workflow sets it to a fixed path
+  (`/tmp/trelix-review-outcome.json`, removed before the review runs); the App
+  gives each review its own private directory outside the checkout
+  (`trelix-review-outcome-*` in the OS temp directory, removed when the review
+  ends). Either reads the record as untrusted input: a record that is missing,
+  not a regular file, over 1 MiB, not JSON, of another schema or exit code, or
+  whose counts do not add up is **unknown**, and the Check says that how much was
+  left unreviewed is unknown instead of listing hunks. It is never read as
+  "nothing was left out". Findings that cannot be read from stdout (missing, not
+  JSON, not an array, or an array holding something that is not an object) are
+  reported the same way, as unread rather than absent, and after a clean exit 0
+  too: the Check is **neutral** ("trelix review did not complete"), never
+  "found 0 issue(s)", in the workflow and in the App alike
 
 ### Permissions required
 
@@ -285,8 +316,8 @@ GitHub -- pull_request webhook -->  this service (Express)
   @mention, raw HTML or hidden text. `createCheckRun` in `review-runner.ts` is
   the only place that creates a Check run, and it passes the whole `output`
   through `sanitizeCheckOutput` first, so `postCheckRun`,
-  `postReviewFailureCheckRun` and any poster added later are covered. A test
-  fails if another `checks.create` call appears.
+  `postIncompleteCheckRun`, `postReviewFailureCheckRun` and any poster added
+  later are covered. A test fails if another `checks.create` call appears.
   - **What is covered.** The output `title` and `summary`, and each
     annotation's `path`, `title` and `message`. Only those fields are copied
     into the request. Line numbers are not text and are not checked.
@@ -387,7 +418,17 @@ GitHub -- pull_request webhook -->  this service (Express)
   actual head into a fresh workspace (`repo-checkout.ts`), indexes and
   reviews it via the `trelix` CLI, and posts the findings as a GitHub
   Check run (`toAnnotations`/`postCheckRun` — a TypeScript port of the
-  same mapping logic in `trelix-review.yml`'s `github-script` step).
+  same mapping logic in `trelix-review.yml`'s `github-script` step). A
+  review that exits 4 (part of the diff unreviewed) is posted by
+  `postIncompleteCheckRun`.
+- `src/review-outcome.ts` — the exit codes 3 and 4 (kept equal to
+  `src/trelix/cli/main.py` by `tests/unit/test_review_exit_code_contract.py`),
+  the conclusion rule (`reviewConclusion`), the strict reader of the
+  outcome record (`parseOutcomeRecord`, `readOutcomeRecord`), the private
+  directory the record is written to (`createOutcomeLocation`) and the summary
+  text (`buildIncompleteSummary`). The workflow carries its own copy of the
+  rule, the reader and the summary; both are tested against the one table in
+  `tests/fixtures/review-conclusion-cases.json`.
 - `src/sanitize.ts` — the sanitiser every string posted to Checks goes
   through (`sanitizeCheckOutput`, applied in `review-runner.ts`'s
   `createCheckRun`); see "Everything the App posts to Checks is sanitised".
