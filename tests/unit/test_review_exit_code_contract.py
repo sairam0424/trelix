@@ -30,6 +30,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MAIN_PY = _REPO_ROOT / "src" / "trelix" / "cli" / "main.py"
 _REVIEW_OUTCOME_TS = _REPO_ROOT / "infra" / "github-app" / "src" / "review-outcome.ts"
 _REVIEW_RUNNER_TS = _REPO_ROOT / "infra" / "github-app" / "src" / "review-runner.ts"
+_CHECK_POSTING_TS = _REPO_ROOT / "infra" / "github-app" / "src" / "check-posting.ts"
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "trelix-review.yml"
 
 _NAMES = ("REVIEW_NOT_RUN_EXIT_CODE", "REVIEW_INCOMPLETE_EXIT_CODE")
@@ -107,7 +108,7 @@ class TestTheNumbers:
 class TestNobodyBypassesTheConstants:
     """A bare ``=== 3`` next to the constant would let a copy drift without this file noticing."""
 
-    @pytest.mark.parametrize("path", [_REVIEW_OUTCOME_TS, _REVIEW_RUNNER_TS])
+    @pytest.mark.parametrize("path", [_REVIEW_OUTCOME_TS, _REVIEW_RUNNER_TS, _CHECK_POSTING_TS])
     def test_the_app_compares_exit_codes_only_through_the_constants(self, path: Path) -> None:
         source = _without_comments(path.read_text(encoding="utf-8"))
 

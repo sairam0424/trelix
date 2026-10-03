@@ -122,6 +122,12 @@ permissions.
 
 ```
 GitHub -- pull_request webhook -->  this service (Express)
+                                       |  answers 202 at once
+                                       v
+                      kill switch, install policy, dedupe claim
+                                       |
+                                       v
+                       bounded in-process queue (20 waiting, 2 running)
                                        |
                                        v
                               trelix review --pr ... --json
@@ -200,6 +206,9 @@ GitHub -- pull_request webhook -->  this service (Express)
   the `trelix review` shell-out; Node kills the child process (`SIGTERM`)
   and the call rejects if it hangs past that — a slow/stuck review no
   longer ties up server resources indefinitely.
+- ✅ **Abuse controls.** The webhook answers at once and the review runs on a
+  bounded in-process queue, with a dedupe claim per commit, a kill switch and
+  an installation allow-list: see "Abuse controls" below.
 - **Not claimed: GitHub Marketplace listing.** This App is installable
   and hardened, not Marketplace-verified — Marketplace paid-app listing
   has its own separate business/adoption requirements that are out of
@@ -242,14 +251,155 @@ review child cannot forge Checks or read another repository.
   GitHub asks installers to approve added permissions, not removed ones. After
   deploying, open a test pull request and check that a `trelix Code Review`
   Check appears: a token request GitHub refuses (for example a permission the
-  App does not hold) is logged as `[webhook] review failed` and posts no Check.
+  App does not hold) is logged as one `[webhook] review failed {...}` line and
+  posts no Check.
+
+### Environment variables
+
+Every variable the service reads. The three without a default must be set, or
+the service does not start; a variable that is set to something it cannot read
+falls back to its default (or, where noted, stops the service) and is named in
+the startup log, never quoted.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `GITHUB_APP_ID` | none, required | The App's id. |
+| `GITHUB_APP_PRIVATE_KEY` | none, required | The App's private key (PEM). A secret: never in a child process's environment. |
+| `GITHUB_WEBHOOK_SECRET` | none, required | Signs every delivery (`X-Hub-Signature-256`). A secret: never in a child process's environment. |
+| `PORT` | `3000` | The port to listen on. |
+| `NODE_ENV` | unset; `production` in the `Dockerfile`'s runtime stage | Read by Express. See "`NODE_ENV` and error responses" below. |
+| `TRELIX_APP_REVIEWS_ENABLED` | `true` | The kill switch. `false` (or `0`, `no`, `off`) makes every `pull_request` delivery a `202` that is ignored. A value that is not a true or false word turns reviews **off** and says so in the log. |
+| `TRELIX_APP_INSTALL_POLICY` | `open` | `open` serves every installation; `allowlist` serves only the accounts and installations below. Any other value **stops the service from starting**. Unset means `open`, and `open` logs a startup WARNING. |
+| `TRELIX_APP_ALLOWED_ACCOUNTS` | empty | Comma-separated GitHub logins (no `@`), compared without case, for `allowlist`. It matches the repository owner's login, which can be renamed or reused; prefer `TRELIX_APP_ALLOWED_INSTALLATIONS`, the stable key, where you can. |
+| `TRELIX_APP_ALLOWED_INSTALLATIONS` | empty | Comma-separated installation ids (decimal), for `allowlist`. An entry that is not an id is dropped and counted in the log. |
+| `TRELIX_APP_QUEUE_CAPACITY` | `20` (1 to 1000) | Reviews that may wait for a slot. |
+| `TRELIX_APP_CONCURRENCY` | `2` (1 to 16) | Reviews that may run at the same time. |
+| `TRELIX_APP_CONCURRENCY_PER_INSTALLATION` | `1` (1 to 16) | Reviews of one installation that may run at the same time. |
+| `TMPDIR` | the OS default | Read by Node (`os.tmpdir()`): where the per-review workspaces and outcome files are created. |
+
+Also read, but not by the service's own code: `PATH`, `LANG`, `HOME`,
+`XDG_CONFIG_HOME`, the LLM provider variables and every `TRELIX_*` variable
+(except `TRELIX_GIT_TOKEN`) are copied into the `trelix index` and `trelix
+review` children, exactly as "Untrusted PR content" below describes. The
+`TRELIX_APP_*` variables above are the exception: they configure this service,
+not trelix, and the review child reads text an outside author wrote, so they
+are not copied (the install allow-list stays out of anything a prompt-injected
+reply could quote). The redelivery script reads the first four variables in the
+table (through `loadConfig`) and nothing else.
+
+### Abuse controls
+
+Anyone can install a public GitHub App, and every review spends the operator's
+LLM quota and CPU. `src/webhook.ts` answers each delivery at once (well inside
+GitHub's 10 seconds) and hands the work to `src/queue.ts`, an in-process
+first-in-first-out queue. There is no Redis and nothing is persisted. For a
+`pull_request` delivery with an `opened`, `synchronize` or `reopened` action,
+`src/review-intake.ts` decides, in this order:
+
+1. **Kill switch.** `TRELIX_APP_REVIEWS_ENABLED=false`: `202 {"ignored":true}`,
+   one `[webhook] reviews are disabled` log line per delivery.
+2. **Usable payload.** A delivery with no usable repository id, head sha,
+   owner, repository name, pull request number or installation id is answered
+   `202` with an `ignored` body and a warning (never a failure, so the
+   redelivery backstop does not retry it for ever).
+3. **Installation policy.** With `allowlist`, an installation is served if its
+   account (the repository owner) is in `TRELIX_APP_ALLOWED_ACCOUNTS` or its id
+   is in `TRELIX_APP_ALLOWED_INSTALLATIONS`. Any other installation gets exactly
+   the kill switch's answer, `202 {"ignored":true}`, and one log line: nothing in
+   the response reveals that a policy exists. An `allowlist` with both lists
+   empty serves nobody, and says so at startup.
+4. **Dedupe claim, then the queue.** The key is `installation:repositoryId:pr:headSha`.
+   It is claimed in the same synchronous step that queues the job, so two
+   deliveries of one commit cannot both pass: the second gets `202` with an
+   `ignored` body. The key is not the delivery GUID: a redelivery reuses the
+   GUID of the original. The claim is **released** when the review throws or
+   ends without a verdict Check (an "incomplete" review, or a checkout that is
+   no longer at the delivery's head commit), so that commit can be sent again,
+   and **kept for 24 hours** after a review that reached a verdict. At most
+   10,000 finished claims are kept (the oldest is forgotten past that) and expired
+   ones are dropped as the queue is used, with no timer.
+5. **Caps.** At most `TRELIX_APP_QUEUE_CAPACITY` reviews wait and
+   `TRELIX_APP_CONCURRENCY` run; at most `TRELIX_APP_CONCURRENCY_PER_INSTALLATION`
+   of them belong to one installation. A review that cannot start at once
+   waits; a review behind a busy installation does not hold up another
+   installation's. When the wait line is full the delivery is answered
+   **`503` with `Retry-After: 60`** and its claim is given back.
+
+A review runs after its delivery was answered, so a failure cannot reach the
+sender. It is logged once as a single `[webhook] review failed {...}` line
+(the job as `owner/repo#n`, the error's name and its text cut to 4,000
+characters), with the webhook secret and the private key removed, and the next
+job starts. A review has no time limit of the queue's own: `REVIEW_TIMEOUT_MS`
+in `review-runner.ts` (5 minutes for the `trelix review` child) is unchanged.
+
+What is lost, stated plainly:
+
+- **A restart forgets the dedupe claims and the queue.** Forgotten claims cost
+  at most one repeated review of a commit. Reviews that were waiting but had not
+  started are dropped on `SIGTERM`/`SIGINT` (the service stops listening, gives
+  running reviews 25 seconds, and exits `0` if nothing was lost, `1` if a
+  waiting review was dropped or a running one cut off); their deliveries were
+  already answered `202`, so GitHub does not send them again. Push a new
+  commit, or close and reopen the pull request, to review it. If the platform
+  kills the process sooner than 25 seconds after `SIGTERM`, running reviews are
+  lost too.
+- **One installation can fill the wait line.** The capacity is shared; there is
+  no per-installation limit on waiting reviews. Use `allowlist` to limit who can
+  install at all.
+- **The kill switch and the policy are read at startup.** Changing a variable
+  takes a redeploy. On the Free plan the deploy freeze described under
+  "Deploying on Railway" may delay that; to stop reviews at once without a
+  deploy, untick *Active* under *Webhook* in the App's settings on GitHub (and
+  tick it again afterwards).
+- **An ignored delivery is never reviewed later.** A delivery the kill switch,
+  the install policy or the usable-payload check turns away is answered `202`,
+  and the redelivery sweep only retries failures. If reviews are switched off for
+  two hours, the pull requests opened in between get no review until someone
+  pushes a commit or closes and reopens them; the switch does not backfill.
+- **A malformed variable is never "guessed".** An unreadable number is replaced
+  by its default; an unreadable kill switch turns reviews off; an unknown policy
+  stops the service from starting; an allow-list entry that cannot be read
+  allows nothing. The startup log names the variable, not the value.
+
+**Does the redelivery backstop recover a `503`?** Yes, with limits, read from
+`src/scripts/redeliver-webhook-deliveries.ts` and its test. A `503` counts as
+failed there (`status_code < 200 || >= 400`; a test redelivers a `503`), and the
+sweep (`.github/workflows/redeliver-failed-webhooks.yml`) runs every 6 hours. It
+looks at the **100 most recent deliveries** only (one page, no paging) and
+ignores deliveries younger than 15 minutes. The workflow's own comment puts
+GitHub's redelivery window at 3 days, so a `503` that later traffic pushes
+past the 100 newest, or that is older than 3 days, is never retried. The
+script keeps no record of what it already redelivered (it does not read a
+delivery's `redelivery` flag or compare GUIDs), so, unless GitHub stops listing
+a redelivered delivery as failed (not verified), a failed delivery that is
+still inside the window is sent again on every run. The 24-hour claim absorbs
+those repeats; after it expires, a review of a commit that has not changed can
+run again. Whether GitHub disables a webhook after repeated `503`s is also not
+verified here.
+
+**Rollout.** Set the Railway variables **before** merging to `main`, because
+every merge redeploys and the previous code ignores variables it does not know:
+
+1. Set `TRELIX_APP_INSTALL_POLICY=allowlist`,
+   `TRELIX_APP_ALLOWED_ACCOUNTS=<your GitHub login>` and
+   `TRELIX_APP_REVIEWS_ENABLED=true`.
+2. Merge; check `/health` and one real pull request (a `trelix Code Review` Check
+   appears). The startup log must not contain the `TRELIX_APP_INSTALL_POLICY is open`
+   WARNING; if it does, the variable did not reach the service.
+3. Flip the kill switch once (`false`, then back to `true`) and confirm that a
+   delivery is answered `202` and no Check appears while it is off.
+
+Rollback, in order: the kill switch; redeploy the previous Railway deployment;
+revert the pull request. Unset, the code behaves as before this change: `open`
+policy, reviews on.
 
 ### Production deployment notes
 
 - Run behind HTTPS (a reverse proxy or platform-provided TLS termination)
   — GitHub's webhook deliveries and the manifest's `hook_attributes.url`
   require it.
-- **`NODE_ENV` and error responses.** The `Dockerfile` sets
+- **`NODE_ENV` and error responses** (every variable the service reads is in
+  "Environment variables" above). The `Dockerfile` sets
   `NODE_ENV=production` in its runtime stage, and only there: the build
   stage runs `npm ci` and `tsc`, and `npm ci` skips devDependencies under
   `NODE_ENV=production`. Express reads an unset `NODE_ENV` as development,
@@ -398,7 +548,7 @@ review child cannot forge Checks or read another repository.
   comes from an LLM that reads attacker-written pull requests, so it may be
   prompt-injected, and a Check is shown to maintainers. `src/sanitize.ts` makes
   sure it cannot show them an image (a tracking pixel), a link or bare URL, an
-  @mention, raw HTML or hidden text. `createCheckRun` in `review-runner.ts` is
+  @mention, raw HTML or hidden text. `createCheckRun` in `check-posting.ts` is
   the only place that creates a Check run, and it passes the whole `output`
   through `sanitizeCheckOutput` first, so `postCheckRun`,
   `postIncompleteCheckRun`, `postReviewFailureCheckRun` and any poster added
@@ -493,31 +643,50 @@ review child cannot forge Checks or read another repository.
   `contents: read`; the App never comments on pull requests, so it has no
   `pull_requests: write`) and subscribes to the `pull_request` event. See
   "Token scopes" for what the already registered App's owner must change.
-- `src/server.ts` — the entry point: loads the config, builds the app with
-  `createApp`, sweeps stale workspaces and listens on the port.
+- `src/server.ts` — the entry point: loads the config and the abuse controls
+  (it does not start under an unknown `TRELIX_APP_INSTALL_POLICY`), builds the
+  review queue and the app with `createApp`, sweeps stale workspaces, listens on
+  the port and installs the shutdown handlers.
 - `src/app.ts` — `createApp(config, deps)`: the Express app without a port
   (`/health`, `/webhooks/github`, then the error handler as the last
   middleware), so tests drive it in process. `deps` replaces the webhook
-  router's options (`runReview`) and the error log (`logError`).
+  router's options (`runReview`, `controls`, `queue`) and the error log
+  (`logError`).
 - `src/error-handler.ts` — the final error middleware (`createErrorHandler`):
   a fixed response body for any error, one redacted log line; see
   "`NODE_ENV` and error responses" above.
 - `src/webhook.ts` — verifies `X-Hub-Signature-256`, then routes
   `pull_request` `opened`/`synchronize`/`reopened` deliveries (mirrors the
-  Actions workflow's trigger), invokes the review runner with the delivery's
-  repository id and head sha (`src/commit-id.ts` checks the sha).
+  Actions workflow's trigger) to the intake and sends its answer.
+- `src/review-intake.ts` — what happens to a routed delivery: kill switch,
+  payload checks (repository id, head sha via `src/commit-id.ts`, owner,
+  installation id), installation policy, then the dedupe claim and the queue;
+  `createReviewQueue` builds the queue a deployment runs.
+- `src/abuse-controls.ts` — reads the kill switch, the policy and the queue caps
+  from env (`loadAbuseControls`); see "Environment variables".
+- `src/policy.ts` — the installation policy: parsing and `isInstallationAllowed`.
+- `src/queue.ts` — the bounded queue (`JobQueue`): capacity, concurrency, the
+  per-installation cap, claim handling and `shutdown`.
+- `src/claims.ts` — the dedupe memory (`ClaimStore`): claim, release, keep 24 hours,
+  bounded.
+- `src/job-log.ts` — the one redacted log line for a job that threw.
+- `src/shutdown.ts` — `SIGTERM`/`SIGINT`: stop listening, drain the queue, exit.
 - `src/child-env.ts` — the allow-listed environment of each child process
   (`git`, `trelix index`, `trelix review`); see "Untrusted PR content"
   above.
 - `src/review-runner.ts` — mints the three purpose-scoped installation
   tokens, clones the PR's actual head into a fresh workspace
   (`repo-checkout.ts`), skips the review if that is no longer the delivery's
-  head commit, indexes and reviews it via the `trelix` CLI, and posts the
-  findings as a GitHub
-  Check run (`toAnnotations`/`postCheckRun` — a TypeScript port of the
-  same mapping logic in `trelix-review.yml`'s `github-script` step). A
-  review that exits 4 (part of the diff unreviewed) is posted by
-  `postIncompleteCheckRun`.
+  head commit, indexes and reviews it via the `trelix` CLI, and has the
+  findings posted. It calls `onNoVerdict` when the run ends without a verdict
+  Check (an exit-4 review, or the skipped checkout) so the queue can release
+  its claim on the commit.
+- `src/check-posting.ts` — everything posted to the Checks API: the mapping from
+  findings to annotations (`toAnnotations`, a TypeScript port of the same
+  mapping logic in `trelix-review.yml`'s `github-script` step), `postCheckRun`,
+  `postIncompleteCheckRun` for a review that exits 4 (part of the diff
+  unreviewed), and `postReviewFailureCheckRun`. `review-runner.ts` re-exports
+  them.
 - `src/review-outcome.ts` — the exit codes 3 and 4 (kept equal to
   `src/trelix/cli/main.py` by `tests/unit/test_review_exit_code_contract.py`),
   the conclusion rule (`reviewConclusion`), the strict reader of the
@@ -527,7 +696,7 @@ review child cannot forge Checks or read another repository.
   rule, the reader and the summary; both are tested against the one table in
   `tests/fixtures/review-conclusion-cases.json`.
 - `src/sanitize.ts` — the sanitiser every string posted to Checks goes
-  through (`sanitizeCheckOutput`, applied in `review-runner.ts`'s
+  through (`sanitizeCheckOutput`, applied in `check-posting.ts`'s
   `createCheckRun`); see "Everything the App posts to Checks is sanitised".
 - `src/repo-checkout.ts` — clones a single PR's head into a per-request
   temp workspace via an installation token; see "Clone-on-demand" above

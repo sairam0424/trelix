@@ -40,6 +40,8 @@ _ARRAY_LITERAL = re.compile(
 )
 _STRING_LITERAL = re.compile(r'"([^"\\]*)"')
 _FORCED_WALKER_FLAG = re.compile(r'\bTRELIX_WALKER_FOLLOW_SYMLINKS:\s*"([^"]*)"')
+_SERVICE_ENV_PREFIX = re.compile(r'\bconst\s+SERVICE_ENV_PREFIX\s*=\s*"([^"]*)"')
+_TRELIX_SOURCE = Path(__file__).resolve().parents[2] / "src" / "trelix"
 
 _EXPECTED_ARRAYS = (
     "GIT_INHERITED_ENV",
@@ -312,6 +314,25 @@ def test_the_config_home_variable_the_children_inherit_is_the_one_trelix_reads(
 
     assert resolve_operator_env_file() == operator_file.resolve()
     assert "XDG_CONFIG_HOME" in _allow_lists()["TRELIX_INHERITED_ENV"]
+
+
+def test_the_apps_own_settings_prefix_is_withheld_and_trelix_reads_nothing_under_it() -> None:
+    """TRELIX_APP_* configure the service (kill switch, install allow-list, queue sizes).
+
+    child-env.ts keeps them out of both children, because the review child reads text an
+    outside author wrote. That is only safe while trelix itself reads no name under the
+    prefix: a setting that reused it would silently stop reaching the children.
+    """
+    assert _SERVICE_ENV_PREFIX.findall(_child_env_source()) == ["TRELIX_APP_"]
+
+    offenders = sorted(
+        str(path.relative_to(_TRELIX_SOURCE))
+        for path in _TRELIX_SOURCE.rglob("*.py")
+        if "TRELIX_APP_" in path.read_text(encoding="utf-8", errors="replace")
+    )
+
+    assert offenders == []
+    assert any(_TRELIX_SOURCE.rglob("*.py")), "the scan must have looked at trelix's source"
 
 
 def test_the_forced_walker_flag_is_a_name_and_value_trelix_honours(

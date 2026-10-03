@@ -482,6 +482,29 @@ describe.each([
         expect(env).not.toHaveProperty("TRELIX_GIT_TOKEN");
     });
 
+    it("withholds the service's own TRELIX_APP_ settings but not a neighbour", () => {
+        const env = build({
+            TRELIX_APP_ALLOWED_ACCOUNTS: "operator-login",
+            TRELIX_APP_ALLOWED_INSTALLATIONS: "12345",
+            TRELIX_APP_INSTALL_POLICY: "allowlist",
+            TRELIX_APP_REVIEWS_ENABLED: "true",
+            TRELIX_APP_QUEUE_CAPACITY: "20",
+            TRELIX_APP_CONCURRENCY_PER_INSTALLATION: "1",
+            TRELIX_APPLE: "1",
+            TRELIX_APP: "1",
+            TRELIX_LLM_PROVIDER: "azure",
+        });
+
+        expect(
+            Object.keys(env).filter((name) => name.startsWith("TRELIX_APP_")),
+        ).toEqual([]);
+        expect(env).toMatchObject({
+            TRELIX_APPLE: "1",
+            TRELIX_APP: "1",
+            TRELIX_LLM_PROVIDER: "azure",
+        });
+    });
+
     it("matches names exactly: a lowercase or embedded spelling is withheld", () => {
         const env = build({
             trelix_llm_provider: "azure",

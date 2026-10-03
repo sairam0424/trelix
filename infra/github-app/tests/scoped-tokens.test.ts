@@ -180,21 +180,26 @@ describe("runReview with purpose-scoped installation tokens", () => {
         checkoutPullRequest: ReturnType<
             typeof fakeCheckout
         >["checkoutPullRequest"],
+        onNoVerdict?: () => void,
     ) =>
         runReviewForTest(makeConfig(), reviewRequest(), {
             checkoutPullRequest:
                 checkoutPullRequest as RunReviewOptions["checkoutPullRequest"],
             outcomeBaseDir: outcomeBase,
+            onNoVerdict,
         });
 
     it("hands the checkout, the review child and the Check call each the token minted for it, and nothing else is requested", async () => {
         installTrelix();
         const seen = fakeGitHub();
         const { checkoutPullRequest, cleanup } = fakeCheckout(HEAD_SHA);
+        const onNoVerdict = vi.fn();
 
-        const findings = await review(checkoutPullRequest);
+        const findings = await review(checkoutPullRequest, onNoVerdict);
 
         expect(findings).toEqual([]);
+        // A review that reached a verdict Check has nothing to hand back.
+        expect(onNoVerdict).not.toHaveBeenCalled();
         expect(checkoutPullRequest).toHaveBeenCalledTimes(1);
         expect(checkoutPullRequest.mock.calls[0][0]).toBe(CHECKOUT_CANARY);
         expect(readFileSync(join(dumpDir, "review-token"), "utf8")).toBe(
@@ -257,10 +262,13 @@ describe("runReview with purpose-scoped installation tokens", () => {
             const seen = fakeGitHub();
             const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
             const { checkoutPullRequest, cleanup } = fakeCheckout(checkoutSha);
+            const onNoVerdict = vi.fn();
 
-            const findings = await review(checkoutPullRequest);
+            const findings = await review(checkoutPullRequest, onNoVerdict);
 
             expect(findings).toEqual([]);
+            // Nothing was posted, so the commit has no verdict: it may be reviewed again.
+            expect(onNoVerdict).toHaveBeenCalledTimes(1);
             expect(checkRuns(seen)).toHaveLength(0);
             // Neither `trelix index` nor `trelix review` ran, and no outcome directory was made.
             expect(readdirSync(dumpDir)).toEqual([]);

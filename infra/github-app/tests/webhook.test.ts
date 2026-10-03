@@ -73,14 +73,18 @@ describe("webhook router", () => {
         expect(res.status).toBe(202);
         // Review runs after the response is sent — wait a tick for the fire-and-forget call.
         await new Promise((r) => setTimeout(r, 0));
-        expect(runReview).toHaveBeenCalledWith(config, {
-            owner: "owner",
-            repo: "repo",
-            prNumber: 42,
-            installationId: 999,
-            repositoryId: 4242,
-            headSha: "0123456789abcdef0123456789abcdef01234567",
-        });
+        expect(runReview).toHaveBeenCalledWith(
+            config,
+            {
+                owner: "owner",
+                repo: "repo",
+                prNumber: 42,
+                installationId: 999,
+                repositoryId: 4242,
+                headSha: "0123456789abcdef0123456789abcdef01234567",
+            },
+            { onNoVerdict: expect.any(Function) },
+        );
     });
 
     describe("a delivery without a usable repository id or head sha", () => {

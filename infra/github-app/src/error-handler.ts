@@ -80,7 +80,7 @@ function statusFor(err: unknown): number {
     }
 }
 
-function errorName(err: unknown): string {
+export function errorName(err: unknown): string {
     return err instanceof Error ? err.name : typeof err;
 }
 
@@ -97,6 +97,22 @@ function errorDetail(err: unknown): string {
 
 function truncate(text: string, limit: number): string {
     return text.length > limit ? `${text.slice(0, limit)}…[truncated]` : text;
+}
+
+/**
+ * The text of an error for a log line: its stack (else its name and message)
+ * with every secret removed, then cut to MAX_LOGGED_DETAIL_CHARS. The secrets
+ * come out before the cut, so one that straddles the limit is not left as two
+ * halves that match nothing. May throw if the error object does when it is read.
+ */
+export function describeErrorForLog(
+    err: unknown,
+    secrets: readonly string[],
+): string {
+    return truncate(
+        redactSecrets(errorDetail(err), secrets),
+        MAX_LOGGED_DETAIL_CHARS,
+    );
 }
 
 /**
@@ -121,13 +137,7 @@ function buildLogLine(
         alreadySent: alreadySent ? true : undefined,
         error: errorName(err),
         // JSON.stringify leaves out an undefined field: a 4xx has no detail.
-        detail:
-            status >= 500
-                ? truncate(
-                      redactSecrets(errorDetail(err), secrets),
-                      MAX_LOGGED_DETAIL_CHARS,
-                  )
-                : undefined,
+        detail: status >= 500 ? describeErrorForLog(err, secrets) : undefined,
     };
     return `[app] request failed ${JSON.stringify(record)}`;
 }

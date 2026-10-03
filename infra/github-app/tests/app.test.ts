@@ -120,14 +120,18 @@ describe("createApp webhook route", () => {
         expect(res.status).toBe(202);
         expect(res.text).toBe('{"accepted":true}');
         await new Promise((r) => setTimeout(r, 0));
-        expect(runReview).toHaveBeenCalledWith(config, {
-            owner: "owner",
-            repo: "repo",
-            prNumber: 42,
-            installationId: 999,
-            repositoryId: 4242,
-            headSha: "0123456789abcdef0123456789abcdef01234567",
-        });
+        expect(runReview).toHaveBeenCalledWith(
+            config,
+            {
+                owner: "owner",
+                repo: "repo",
+                prNumber: 42,
+                installationId: 999,
+                repositoryId: 4242,
+                headSha: "0123456789abcdef0123456789abcdef01234567",
+            },
+            { onNoVerdict: expect.any(Function) },
+        );
     });
 
     it("rejects a missing signature with the same 401 body", async () => {

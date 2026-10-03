@@ -142,12 +142,18 @@ const SDK_PROVIDER_ENV: readonly string[] = [
 ];
 
 // trelix's own settings: every TRELIX_* name passes (there are hundreds and new ones
-// appear), except the git token below.
+// appear), except the git token and this service's own TRELIX_APP_* settings below.
 const TRELIX_ENV_PREFIXES: readonly string[] = ["TRELIX_"];
 
 // The token the git askpass helper prints. It belongs to the git child alone, so a
 // host that happens to export the name does not leak it into a trelix child.
 const GIT_TOKEN_ENV = "TRELIX_GIT_TOKEN";
+
+// This service's own settings (kill switch, install allow-list, queue sizes). They are
+// not secrets, but the review child reads text an outside author wrote and a prompt-
+// injected reply could quote its environment into a Check, so the operator's allow-list
+// stays out of it. trelix itself reads no name under this prefix (a contract test pins it).
+const SERVICE_ENV_PREFIX = "TRELIX_APP_";
 
 // Where `trelix review` writes the JSON record of which hunks it did not review. Set by
 // the caller for the review child alone (see review-outcome.ts).
@@ -218,6 +224,7 @@ function buildTrelixChildEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
         ([name, value]) =>
             value !== undefined &&
             name !== GIT_TOKEN_ENV &&
+            !name.startsWith(SERVICE_ENV_PREFIX) &&
             TRELIX_ENV_PREFIXES.some((prefix) => name.startsWith(prefix)),
     );
     return {
