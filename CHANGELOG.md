@@ -6,7 +6,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+- **This repository's PR review workflow posted its Check on the pull request's merge commit,
+  where no pull request shows it.** `trelix-review.yml` used `context.sha`, which for a
+  `pull_request` event is the synthetic merge commit, so the "trelix Code Review" check never
+  appeared on the pull request. It now posts on the pull request's head commit
+  (`context.payload.pull_request.head.sha`). **Because this workflow has no LLM credential,
+  every pull request here will now show a neutral "trelix review did not run" check**: the
+  honest result since 3.4.2, which was previously invisible. Give the workflow a credential, or
+  remove it, if that is not wanted.
 
 ## [3.4.2] — 2026-10-02
 

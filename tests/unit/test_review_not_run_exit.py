@@ -254,7 +254,12 @@ const [scriptFile, reviewFile] = process.argv.slice(2);
 const script = fs.readFileSync(scriptFile, 'utf8');
 const calls = [];
 const github = { rest: { checks: { create: async (args) => { calls.push(args); } } } };
-const context = { repo: { owner: 'o', repo: 'r' }, sha: 'abc123' };
+// sha is the merge commit of a pull_request event; the PR page shows head.sha.
+const context = {
+  repo: { owner: 'o', repo: 'r' },
+  sha: 'merge000',
+  payload: { pull_request: { head: { sha: 'head111' } } },
+};
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 new AsyncFunction('github', 'context', 'require', 'process', script)(
   github, context, require, process
@@ -316,6 +321,24 @@ new AsyncFunction('github', 'context', 'require', 'process', script)(
         assert clean["output"]["title"] == "trelix found 0 issue(s)"
         assert found["conclusion"] == "success"
         assert found["output"]["annotations"][0]["annotation_level"] == "warning"
+
+    @pytest.mark.parametrize(
+        ("exit_code", "payload"),
+        [
+            ("3", "[]"),  # did not run
+            ("1", ""),  # did not complete
+            ("0", "[]"),  # clean
+            ("0", '[{"file": "a.py", "lines": "1-1", "severity": "ERROR", "comment": "x"}]'),
+        ],
+        ids=["did-not-run", "did-not-complete", "clean", "failure"],
+    )
+    def test_every_check_is_posted_on_the_pull_request_head_commit(
+        self, tmp_path: Path, exit_code: str, payload: str
+    ) -> None:
+        call = self._publish(tmp_path, exit_code, payload)
+
+        # Not context.sha ('merge000'): the merge commit of a pull_request event is on no PR page.
+        assert call["head_sha"] == "head111"
 
     def test_error_finding_still_fails_the_check(self, tmp_path: Path) -> None:
         finding = {"file": "a.py", "lines": "3-4", "severity": "ERROR", "comment": "x"}
