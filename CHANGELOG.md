@@ -76,6 +76,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   code span would show literally). Removing hidden characters also removes an emoji's variation
   selector and the zero-width joiners of joined emoji and of some scripts. The Actions workflow
   `trelix-review.yml` does not use this sanitiser.
+- **The GitHub App moved from Node 20, which reached end of life on 2026-04-30, to Node 24
+  (LTS, supported until 2028-04-30), and its image no longer runs a `curl | bash` install
+  script.** `infra/github-app/Dockerfile` builds on `node:24-bookworm-slim` and copies that
+  image's `node` binary into the runtime stage instead of installing Node from NodeSource's
+  `setup_20.x` script, so the image runs the Node it was built and tested on and its build no
+  longer executes a script fetched from the network. npm and npx are not in the runtime image;
+  the entrypoint is `node dist/server.js`. `engines.node` is now `>=24` and `@types/node` is
+  `^24` (the lockfile changes only that package and its `undici-types`). The workflows that
+  pinned Node 20 (`github-app-ci.yml`, `vscode-extension-ci.yml`, `schema-drift.yml`,
+  `redeliver-failed-webhooks.yml` and the SDK job in `ci.yml`) use 24. GitHub App CI prints
+  `node --version`, and its Docker job fails unless the built image reports Node 24. The
+  `@types/node` of the SDK and the VS Code extension is unchanged. **Running the App outside
+  the image now needs Node 24 or newer.**
 
 ### Fixed
 - **This repository's PR review workflow posted its Check on the pull request's merge commit,

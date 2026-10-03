@@ -26,7 +26,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "24"
+
+      - name: Print the Node version
+        run: node --version
 
       - name: Install dependencies
         run: npm ci
@@ -53,3 +56,20 @@ jobs:
       # repo evolves, not just at the time it was added.
       - name: Build image
         run: docker build -f infra/github-app/Dockerfile -t trelix-github-app:ci .
+
+      # The runtime stage gets `node` by COPY from node:24-bookworm-slim into a
+      # python:3.14-slim (Debian trixie) stage, so a glibc or libstdc++ mismatch
+      # would show up when the binary is started, not when the image is built.
+      # Start it as the image's own user and fail unless it reports Node 24.
+      - name: Verify the image runs Node 24
+        run: |
+          set -euo pipefail
+          version="$(docker run --rm --entrypoint node trelix-github-app:ci --version)"
+          echo "image node: ${version}"
+          case "${version}" in
+            v24.*) ;;
+            *) echo "expected Node 24 in the image, got ${version}" >&2; exit 1 ;;
+          esac
+
+      - name: Print the image's SQLite library version
+        run: docker run --rm --entrypoint python trelix-github-app:ci -c "import sqlite3; print(sqlite3.sqlite_version)"
