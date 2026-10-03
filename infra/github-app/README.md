@@ -191,11 +191,11 @@ GitHub -- pull_request webhook -->  this service (Express)
   `workflow_dispatch` — see "Deploying on Render" below.
 - ✅ **Payload size limit.** The webhook route caps request bodies at 25MB
   — GitHub's own documented webhook payload cap — rejecting oversized
-  bodies with `413` during parsing rather than buffering an arbitrarily
-  large request into memory. This matters because signature verification
-  happens *after* body parsing, so the size limit is the only defense
-  against a sender who doesn't know the webhook secret sending a
-  deliberately huge payload.
+  bodies with `413` (`{"error":"payload too large"}`) during parsing rather
+  than buffering an arbitrarily large request into memory. This matters
+  because signature verification happens *after* body parsing, so the size
+  limit is the only defense against a sender who doesn't know the webhook
+  secret sending a deliberately huge payload.
 - ✅ **Subprocess timeout.** `runReviewCli` passes a 5-minute `timeout` to
   the `trelix review` shell-out; Node kills the child process (`SIGTERM`)
   and the call rejects if it hangs past that — a slow/stuck review no
@@ -249,6 +249,31 @@ review child cannot forge Checks or read another repository.
 - Run behind HTTPS (a reverse proxy or platform-provided TLS termination)
   — GitHub's webhook deliveries and the manifest's `hook_attributes.url`
   require it.
+- **`NODE_ENV` and error responses.** The `Dockerfile` sets
+  `NODE_ENV=production` in its runtime stage, and only there: the build
+  stage runs `npm ci` and `tsc`, and `npm ci` skips devDependencies under
+  `NODE_ENV=production`. Express reads an unset `NODE_ENV` as development,
+  where its default handler answers an error with the stack trace. If you run
+  the service without this image (`npm start`, another Dockerfile), set
+  `NODE_ENV=production` yourself. The code does not depend on it for this:
+  `src/error-handler.ts` is the last middleware of `createApp` and answers
+  every error with a fixed JSON body, never the error's message or stack:
+  `{"error":"internal server error"}` with `500`, or, for a body the parser
+  rejects, `400` (`bad request`, e.g. malformed JSON), `413` (`payload too
+  large`) or `415` (`unsupported media type`). A `status` on any other error is
+  ignored, so a failed call to the GitHub API is never reported to the sender
+  as a client error. The detail goes to the log once, as a single
+  `[app] request failed {...}` line with the configured webhook secret and
+  private key removed (the exact values; a fragment of a multi-line key is not
+  recognised) and then the error's text and stack cut to 4,000 characters, so
+  a secret that straddles the cut is still removed. The request path is cut to
+  200 characters. The request's body, headers (the signature) and query string
+  are never logged, and a `4xx` line carries no message, because a JSON syntax
+  error quotes the body. An error that arrives after the response was sent is
+  logged with `"alreadySent":true` and the status the client got. The response
+  does not depend on the log: if the logger passed to `createApp` throws, the
+  handler writes the fixed line `[app] request failed; the error could not be
+  logged` to the console (quoting nothing) and still sends the fixed response.
 - `GITHUB_APP_PRIVATE_KEY`/`GITHUB_WEBHOOK_SECRET` must come from your
   platform's secret manager, never a committed file — `src/config.ts`
   reads them from env only and throws at startup if either is missing.
@@ -462,7 +487,15 @@ review child cannot forge Checks or read another repository.
   `contents: read`; the App never comments on pull requests, so it has no
   `pull_requests: write`) and subscribes to the `pull_request` event. See
   "Token scopes" for what the already registered App's owner must change.
-- `src/server.ts` — Express entry point (`/health`, `/webhooks/github`).
+- `src/server.ts` — the entry point: loads the config, builds the app with
+  `createApp`, sweeps stale workspaces and listens on the port.
+- `src/app.ts` — `createApp(config, deps)`: the Express app without a port
+  (`/health`, `/webhooks/github`, then the error handler as the last
+  middleware), so tests drive it in process. `deps` replaces the webhook
+  router's options (`runReview`) and the error log (`logError`).
+- `src/error-handler.ts` — the final error middleware (`createErrorHandler`):
+  a fixed response body for any error, one redacted log line; see
+  "`NODE_ENV` and error responses" above.
 - `src/webhook.ts` — verifies `X-Hub-Signature-256`, then routes
   `pull_request` `opened`/`synchronize`/`reopened` deliveries (mirrors the
   Actions workflow's trigger), invokes the review runner with the delivery's

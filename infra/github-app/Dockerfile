@@ -108,6 +108,13 @@ USER trelix
 
 ARG PORT=3000
 ENV PORT=${PORT}
+# Express (and the libraries under it) pick their production behaviour from this
+# variable; left unset it means "development", which among other things makes
+# the default error handler answer with a stack trace. Set here, in the runtime
+# stage only: node-builder needs `npm ci` to install devDependencies (tsc), and
+# NODE_ENV=production would make it skip them. src/error-handler.ts already
+# answers every error with a fixed body, so this is the second layer.
+ENV NODE_ENV=production
 # The service checks out pull requests written by outsiders and runs `trelix index`
 # over them. trelix follows symlinks out of the repo by default; confine the walker
 # to each checkout so a committed symlink cannot pull files from this host into the

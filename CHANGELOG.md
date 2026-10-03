@@ -96,6 +96,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   ignored. `manifest.yml` now asks for `pull_requests: read` instead of `write`, because
   nothing in the App comments on or edits pull requests; the owner of the already registered
   App must lower it in the App's settings (`infra/github-app/README.md`, "Token scopes").
+- **The GitHub App answered an unhandled error with its stack trace.** The App's image never set
+  `NODE_ENV`, and Express treats an unset `NODE_ENV` as development, where its default error
+  handler puts the error's message and stack in the response body. The app is now built by
+  `createApp(config, deps)` (`infra/github-app/src/app.ts`; `server.ts` loads the config, sweeps
+  stale workspaces and listens), which ends with a final error middleware
+  (`src/error-handler.ts`). Whatever reaches it, the sender gets a fixed JSON body and never the
+  message or the stack: `500`
+  `{"error":"internal server error"}`, or for a body the parser rejects `400` (`bad request`,
+  malformed JSON), `413` (`payload too large`) or `415` (`unsupported media type`). The status
+  of any other error is ignored, so a failed call to the GitHub API is not reported to the
+  sender as a client error. The detail is logged once, as one line, with the webhook secret and
+  the private key removed (before the text is cut to 4,000 characters, so a secret that straddles
+  the cut is still removed) and the request path cut to 200 characters; the request's body,
+  headers and query string are never logged, and a `4xx` line carries no message because a JSON
+  syntax error quotes the body. The response does not depend on the log: if the logger that
+  `createApp` was given throws, the handler writes one fixed line to the console and still sends
+  the same fixed response. `infra/github-app/Dockerfile` also sets `ENV NODE_ENV=production`,
+  in the runtime stage only: `npm ci` in the build stage must install `tsc`, and a test now
+  pins both. A deployment that runs the service without this image should set
+  `NODE_ENV=production` itself. Routes, the raw-body signature check and `/health` are
+  unchanged.
 
 ### Fixed
 - **This repository's PR review workflow posted its Check on the pull request's merge commit,
