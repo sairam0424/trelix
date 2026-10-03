@@ -149,6 +149,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   pins both. A deployment that runs the service without this image should set
   `NODE_ENV=production` itself. Routes, the raw-body signature check and `/health` are
   unchanged.
+- **The GitHub App had no limit on the reviews a flood of deliveries could start, and served
+  every installation.** Each `pull_request` delivery started a `git clone`, an index and an LLM
+  review at once, so anyone who installed the public App, or anyone who could open pull requests
+  on an installed repository, could spend the operator's LLM quota and CPU without bound. The
+  webhook now answers at once and hands the review to a bounded in-process queue
+  (`infra/github-app/src/queue.ts`): 20 reviews may wait, 2 may run, and 1 per installation
+  (`TRELIX_APP_QUEUE_CAPACITY`, `TRELIX_APP_CONCURRENCY`,
+  `TRELIX_APP_CONCURRENCY_PER_INSTALLATION`). A delivery is claimed under
+  `installation:repositoryId:pullRequest:headSha` before it is queued, so a redelivery (which
+  reuses the delivery GUID) or a second delivery of the same commit does not pay for a second
+  review; the claim is released if the review fails or ends without a verdict Check (an
+  incomplete review, or a checkout that is no longer at the delivery's commit), kept for 24 hours
+  otherwise, and at most 10,000 are kept. When the wait line is full the delivery is answered
+  `503` with `Retry-After` and its claim is given back; the 6-hourly
+  `redeliver-failed-webhooks.yml` sweep treats a `503` as failed and redelivers it, but only
+  while it is among the 100 newest deliveries, and it does not record what it already
+  redelivered (the README states the limits). `TRELIX_APP_REVIEWS_ENABLED=false` is a kill
+  switch: every `pull_request` delivery is answered `202` and ignored, with one log line.
+  `TRELIX_APP_INSTALL_POLICY=allowlist` with `TRELIX_APP_ALLOWED_ACCOUNTS` and/or
+  `TRELIX_APP_ALLOWED_INSTALLATIONS` serves only the listed accounts (the repository owner,
+  compared without case) and installation ids; any other installation gets the kill switch's
+  `202 {"ignored":true}`, so the answer does not reveal the policy. **The default policy is
+  still `open`**, so a self-hosted deployment keeps working after an upgrade, and the service
+  logs a startup WARNING that says so: set `allowlist` (and the Railway variables) before you
+  deploy this change. Parsing fails closed: an unknown policy name stops the service from
+  starting, an unreadable number falls back to its default, an unreadable kill switch turns
+  reviews off, an unreadable allow-list entry allows nothing, and no log line quotes a value. A
+  review that throws after its delivery was answered is logged once, as one
+  `[webhook] review failed {...}` line with the webhook secret and the private key removed, and
+  does not stop the queue. On `SIGTERM` or `SIGINT` the service stops listening, drops the
+  reviews that have not started, gives running ones 25 seconds, and exits. Nothing is
+  persisted: a restart forgets the queue and the claims, which costs at most a repeated review,
+  but a review that was waiting is dropped and its delivery, already answered `202`, is not sent
+  again. The README has the full table of environment variables and the rollout steps. The
+  Check-posting helpers moved from `review-runner.ts` to `check-posting.ts` (behaviour
+  unchanged; `review-runner.ts` re-exports them) to stay under the 500-line limit.
 
 ### Fixed
 - **This repository's PR review workflow posted its Check on the pull request's merge commit,

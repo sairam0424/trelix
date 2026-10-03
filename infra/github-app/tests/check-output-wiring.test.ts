@@ -618,7 +618,7 @@ describe("no way around the sanitiser", () => {
         // auth.ts mints tokens with a request of its own; it never posts a Check.
         const checkPosters = posting.filter(({ name }) => name !== "auth.ts");
         expect(checkPosters.map(({ name }) => name)).toEqual([
-            "review-runner.ts",
+            "check-posting.ts",
         ]);
         const runner = checkPosters[0].text;
         expect(runner.match(/\bchecks\.[a-z]+\(/g)).toEqual(["checks.create("]);

@@ -11,6 +11,8 @@ vi.mock("../src/repo-checkout.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../src/repo-checkout.js")>()),
     sweepStaleWorkspaces: mocks.sweepStaleWorkspaces,
 }));
+// The real handlers would listen for SIGTERM in the test runner's own process.
+vi.mock("../src/shutdown.js", () => ({ installShutdownHandlers: vi.fn() }));
 
 // Values the error handler must keep out of its log line.
 const HOOK_CANARY = "canary-hook-s";
@@ -38,6 +40,16 @@ describe("server entry point", () => {
         vi.stubEnv("GITHUB_APP_PRIVATE_KEY", PEM_CANARY);
         vi.stubEnv("GITHUB_WEBHOOK_SECRET", HOOK_CANARY);
         vi.stubEnv("PORT", "4321");
+        // Hermetic: the controls are read from the environment, which may be the developer's.
+        vi.stubEnv("TRELIX_APP_REVIEWS_ENABLED", undefined);
+        vi.stubEnv("TRELIX_APP_INSTALL_POLICY", undefined);
+        vi.stubEnv("TRELIX_APP_ALLOWED_ACCOUNTS", undefined);
+        vi.stubEnv("TRELIX_APP_ALLOWED_INSTALLATIONS", undefined);
+        vi.stubEnv("TRELIX_APP_QUEUE_CAPACITY", undefined);
+        vi.stubEnv("TRELIX_APP_CONCURRENCY", undefined);
+        vi.stubEnv("TRELIX_APP_CONCURRENCY_PER_INSTALLATION", undefined);
+        // The default policy is open, which the entry point says out loud.
+        vi.spyOn(console, "warn").mockImplementation(() => {});
         listen = spyOnListen();
 
         await import("../src/server.js");
@@ -47,6 +59,7 @@ describe("server entry point", () => {
 
     afterAll(() => {
         listen.mockRestore();
+        vi.restoreAllMocks();
         vi.unstubAllEnvs();
     });
 

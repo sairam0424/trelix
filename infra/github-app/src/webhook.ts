@@ -1,30 +1,21 @@
 import express, { Router, Request, Response, NextFunction } from "express";
 import { verify } from "@octokit/webhooks-methods";
-import { runReview, ReviewRequest, ReviewFinding } from "./review-runner.js";
-import { isCommitId } from "./commit-id.js";
+import { runReview } from "./review-runner.js";
 import { AppConfig } from "./config.js";
-
-// What a `pull_request` delivery is read for. `repository.id` and `pull_request.head.sha`
-// are typed as present because GitHub always sends them, but they are checked before use:
-// the installation tokens are scoped to the repository id, and the head sha decides which
-// commit a review may be posted on.
-interface PullRequestWebhookPayload {
-  action: string;
-  number: number;
-  repository: { id: number; full_name: string; owner: { login: string }; name: string };
-  pull_request: { number: number; head: { sha: string } };
-  installation?: { id: number };
-}
+import { AbuseControls, DEFAULT_ABUSE_CONTROLS } from "./abuse-controls.js";
+import { JobSubmitter } from "./queue.js";
+import {
+  createReviewIntake,
+  createReviewQueue,
+  PullRequestPayload,
+  RunReviewFn,
+} from "./review-intake.js";
 
 interface RequestWithRawBody extends Request {
   rawBody?: string;
 }
 
 const HANDLED_ACTIONS = new Set(["opened", "synchronize", "reopened"]);
-
-function isRepositoryId(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
 
 // GitHub caps webhook payloads at 25MB (see docs.github.com/en/webhooks/
 // webhook-events-and-payloads) — matching that cap here rejects an
@@ -36,7 +27,18 @@ const MAX_WEBHOOK_PAYLOAD_BYTES = "25mb";
 
 export interface WebhookRouterOptions {
   /** Injectable for tests — defaults to the real runReview (shells out to the trelix CLI). */
-  runReview?: (config: AppConfig, request: ReviewRequest) => Promise<ReviewFinding[]>;
+  runReview?: RunReviewFn;
+  /**
+   * Kill switch, installation policy and queue caps (see abuse-controls.ts). Defaults to
+   * DEFAULT_ABUSE_CONTROLS: reviews on, every installation served.
+   */
+  controls?: AbuseControls;
+  /**
+   * Where accepted reviews run after the delivery is answered. Defaults to a new queue per
+   * router, built from `controls.queue`; `server.ts` passes its own so it can drain it on
+   * shutdown.
+   */
+  queue?: JobSubmitter;
 }
 
 /**
@@ -72,7 +74,13 @@ function verifySignature(config: AppConfig) {
  */
 export function createWebhookRouter(config: AppConfig, options: WebhookRouterOptions = {}): Router {
   const router = Router();
-  const runReviewFn = options.runReview ?? runReview;
+  const controls = options.controls ?? DEFAULT_ABUSE_CONTROLS;
+  const intake = createReviewIntake({
+    config,
+    controls,
+    queue: options.queue ?? createReviewQueue(config, controls.queue),
+    runReview: options.runReview ?? runReview,
+  });
 
   router.use(
     express.json({
@@ -84,7 +92,7 @@ export function createWebhookRouter(config: AppConfig, options: WebhookRouterOpt
   );
   router.use(verifySignature(config));
 
-  router.post("/", async (req: Request, res: Response) => {
+  router.post("/", (req: Request, res: Response) => {
     const event = req.header("X-GitHub-Event");
 
     if (event !== "pull_request") {
@@ -92,48 +100,20 @@ export function createWebhookRouter(config: AppConfig, options: WebhookRouterOpt
       return;
     }
 
-    const payload = req.body as PullRequestWebhookPayload;
+    const payload = req.body as PullRequestPayload;
 
     if (!HANDLED_ACTIONS.has(payload.action)) {
       res.status(202).json({ ignored: true, reason: `unhandled action: ${payload.action}` });
       return;
     }
 
-    const repositoryId = payload.repository?.id;
-    const headSha = payload.pull_request?.head?.sha;
-    if (!isRepositoryId(repositoryId) || !isCommitId(headSha)) {
-      // A review needs both: the tokens are scoped to the repository and the Check goes
-      // on the head commit. A real GitHub delivery always has them; this one is ignored
-      // (not failed, so the redelivery backstop does not retry it for ever).
-      console.warn(
-        `[webhook] ignoring pull_request delivery for ${String(payload.repository?.full_name)}: no usable repository id or head sha`,
-      );
-      res.status(202).json({
-        ignored: true,
-        reason: "pull_request payload has no usable repository id or head sha",
-      });
-      return;
+    // Everything past the action filter is the intake's: the kill switch, the installation
+    // policy, the dedupe claim and the queue. It answers at once; the review runs after.
+    const decision = intake(payload);
+    if (decision.retryAfterSeconds !== undefined) {
+      res.set("Retry-After", String(decision.retryAfterSeconds));
     }
-
-    // Acknowledge immediately — GitHub expects a fast response and will
-    // retry/disable the hook on repeated timeouts. Review runs after.
-    res.status(202).json({ accepted: true });
-
-    try {
-      await runReviewFn(config, {
-        owner: payload.repository.owner.login,
-        repo: payload.repository.name,
-        prNumber: payload.pull_request.number,
-        installationId: payload.installation?.id,
-        repositoryId,
-        headSha,
-      });
-    } catch (err) {
-      console.error(
-        `[webhook] review failed for ${payload.repository.full_name}#${payload.pull_request.number}:`,
-        err,
-      );
-    }
+    res.status(decision.status).json(decision.body);
   });
 
   return router;

@@ -675,7 +675,11 @@ describe("runReview, by how the review ended", () => {
     }
 
     /** Runs the whole review; resolves to what runReview returned or the error it threw. */
-    async function review(octokit: Octokit, cleanupError?: Error) {
+    async function review(
+        octokit: Octokit,
+        cleanupError?: Error,
+        onNoVerdict?: () => void,
+    ) {
         const cleanup = vi.fn(async () => {
             if (cleanupError !== undefined) {
                 throw cleanupError;
@@ -698,6 +702,7 @@ describe("runReview, by how the review ended", () => {
                 })) as never,
                 octokit,
                 outcomeBaseDir: outcomeBase,
+                onNoVerdict,
             },
         ).then(
             (findings) => ({ findings }),
@@ -726,9 +731,15 @@ describe("runReview, by how the review ended", () => {
                 outcomeTextFor(row, CASES),
             );
             const { octokit, calls } = fakeOctokit();
+            const onNoVerdict = vi.fn();
 
-            const result = await review(octokit);
+            const result = await review(octokit, undefined, onNoVerdict);
 
+            // Only a review that ended with the "incomplete" Check is without a verdict:
+            // a complete review has one, and a failed one throws instead.
+            expect(onNoVerdict).toHaveBeenCalledTimes(
+                row.exit_code === "4" ? 1 : 0,
+            );
             expect(calls).toHaveLength(1);
             expect(calls[0]).toMatchObject({
                 head_sha: "0123456789abcdef0123456789abcdef01234567",
@@ -874,6 +885,29 @@ describe("runReview, by how the review ended", () => {
                 "The list of findings could not be read, so none are shown.",
             );
             expect(output(calls[0]).annotations).toEqual([]);
+        });
+
+        it("tells the caller there was no verdict, once, and only after the incomplete Check was posted", async () => {
+            installTrelix(4, "[]", JSON.stringify(CASES.valid_outcome));
+            const { octokit, calls } = fakeOctokit();
+            const checksWhenCalled: number[] = [];
+
+            await review(octokit, undefined, () => {
+                checksWhenCalled.push(calls.length);
+            });
+
+            expect(checksWhenCalled).toEqual([1]);
+        });
+
+        it("does not say there was no verdict when the incomplete Check could not be posted", async () => {
+            installTrelix(4, "[]", JSON.stringify(CASES.valid_outcome));
+            const { octokit } = fakeOctokit(true);
+            const onNoVerdict = vi.fn();
+
+            const result = await review(octokit, undefined, onNoVerdict);
+
+            expect(result).toMatchObject({ error: expect.any(Error) });
+            expect(onNoVerdict).not.toHaveBeenCalled();
         });
 
         it("returns normally instead of throwing, and does not use the did-not-run wording", async () => {
