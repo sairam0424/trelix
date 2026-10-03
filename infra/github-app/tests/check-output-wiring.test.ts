@@ -23,6 +23,7 @@ import { parseOutcomeRecord } from "../src/review-outcome.js";
 import { sanitizeAnnotation, sanitizeCheckOutput } from "../src/sanitize.js";
 import { AppConfig } from "../src/config.js";
 import { activeMarkupProblem } from "./support/active-markup.js";
+import { HEAD_SHA, reviewRequest } from "./support/review-fixtures.js";
 import { runReviewForTest } from "./support/run-review.js";
 
 // The real sanitiser, wrapped so that a test can see what it was called with
@@ -69,17 +70,6 @@ function fakeOctokit() {
         ) {
             calls.push(options);
             return { status: 201, url: "", headers: {}, data: {} };
-        }
-        if (
-            options.method === "GET" &&
-            options.url === "/repos/{owner}/{repo}/pulls/{pull_number}"
-        ) {
-            return {
-                status: 200,
-                url: "",
-                headers: {},
-                data: { head: { sha: "deadbeef" } },
-            };
         }
         throw new Error(
             `unexpected octokit request in test: ${options.method} ${options.url}`,
@@ -550,25 +540,22 @@ describe("runReview, end to end", () => {
     }
 
     async function review(octokit: Octokit): Promise<void> {
-        await runReviewForTest(
-            config(),
-            { owner: "o", repo: "r", prNumber: 1, installationId: 9 },
-            {
-                checkoutPullRequest: vi.fn(async () => ({
-                    path: ".",
-                    cleanup: async () => {},
-                })),
-                request: vi.fn(async () => ({
-                    data: {
-                        token: "test-k",
-                        expires_at: "2099-01-01T00:00:00Z",
-                        permissions: {},
-                        repository_selection: "all",
-                    },
-                })) as never,
-                octokit,
-            },
-        );
+        await runReviewForTest(config(), reviewRequest({ installationId: 9 }), {
+            checkoutPullRequest: vi.fn(async () => ({
+                path: ".",
+                headSha: HEAD_SHA,
+                cleanup: async () => {},
+            })),
+            request: vi.fn(async () => ({
+                data: {
+                    token: "test-k",
+                    expires_at: "2099-01-01T00:00:00Z",
+                    permissions: {},
+                    repository_selection: "all",
+                },
+            })) as never,
+            octokit,
+        });
     }
 
     it("sanitises what a hostile model reply puts in the Check", async () => {

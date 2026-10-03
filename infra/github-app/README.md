@@ -139,15 +139,18 @@ GitHub -- pull_request webhook -->  this service (Express)
   Requests with a missing, wrong-secret, or body-tampered-after-signing
   signature are rejected with `401` before the route handler ever sees
   the payload.
-- ✅ **Installation-token minting.** `src/auth.ts`'s `getInstallationToken`
-  uses `@octokit/auth-app` (App-ID + private-key JWT signing ->
-  installation-token exchange), with one `AuthInterface` reused per
-  `AppConfig` so the library's own expiry-aware cache actually has a
-  chance to hit across calls instead of re-minting on every request.
+- ✅ **Installation-token minting, one token per purpose.** `src/auth.ts`'s
+  `getInstallationToken` uses `@octokit/auth-app` (App-ID + private-key JWT
+  signing -> installation-token exchange), with one `AuthInterface` reused
+  per `AppConfig` so the library's own expiry-aware cache actually has a
+  chance to hit across calls instead of re-minting on every request. Every
+  token is limited to the one repository the pull request is in and to the
+  permissions of one job: see "Token scopes" below.
 - ✅ **Clone-on-demand.** `src/repo-checkout.ts`'s `checkoutPullRequest`
   clones the *actual* PR being reviewed into a fresh, per-request temp
-  workspace (`mkdtemp`, cleaned up in a `finally` block) using the minted
-  installation token — there is no static, hardcoded repo path anymore.
+  workspace (`mkdtemp`, cleaned up in a `finally` block) using the
+  `checkout` installation token — there is no static, hardcoded repo path
+  anymore.
   Fetches `refs/pull/<n>/head` against the base repo (never
   `--branch=<head.ref>`, which only exists on a fork's own repo for an
   external-contributor PR) and authenticates via a per-workspace
@@ -158,11 +161,23 @@ GitHub -- pull_request webhook -->  this service (Express)
   `--recurse-submodules`: this service clones PRs from arbitrary external
   contributors, and an attacker-controlled `.gitmodules` is a real risk
   that diff-level review doesn't need to take on.
-- ✅ **Check-annotation posting.** `runReview` mints a token, clones and
-  indexes the PR's actual head, runs the CLI review against that clone,
+- ✅ **Check-annotation posting.** `runReview` mints the three tokens, clones
+  and indexes the PR's actual head, runs the CLI review against that clone,
   and posts a completed Check run with inline annotations via
-  `octokit.rest.checks.create`. Everything in it is sanitised first (see
-  "Everything the App posts to Checks is sanitised" below).
+  `octokit.rest.checks.create`, on the head commit of the webhook delivery.
+  Everything in it is sanitised first (see "Everything the App posts to
+  Checks is sanitised" below).
+- ✅ **A review of a commit that is no longer the PR's head is skipped at
+  checkout.** The webhook
+  handler passes the delivery's `repository.id` and `pull_request.head.sha`
+  on (a delivery without a usable one is acknowledged and ignored). After the
+  checkout, `git rev-parse HEAD` must equal that sha: `refs/pull/<n>/head`
+  moves with every push, so when it does not, `runReview` logs
+  `skipping <owner>/<repo>#<n>: checkout is at <sha>, delivery is for <sha>`,
+  runs nothing and posts nothing. A push that outran the delivery has its own
+  delivery, which reviews the new head. A review that starts on one commit
+  can still finish after a push: the window is the time between the check
+  and the end of the review, not zero.
 - ✅ **Tolerant indexing.** `indexRepository` mirrors
   `trelix-review.yml`'s own `if ! trelix index .; then ::warning ...; fi`
   pattern — an indexing failure degrades findings to structural-only
@@ -189,6 +204,45 @@ GitHub -- pull_request webhook -->  this service (Express)
   and hardened, not Marketplace-verified — Marketplace paid-app listing
   has its own separate business/adoption requirements that are out of
   scope for this engineering work.
+
+### Token scopes
+
+A bare installation token reaches every repository of the installation with
+every permission the App holds. The App never asks for one: each review mints
+three tokens (`src/auth.ts`, `getPurposeTokens`), each limited to the single
+repository the pull request is in (`repository_ids: [<repository.id>]`) and to
+what one job needs. They are used in different places, so a compromised git or
+review child cannot forge Checks or read another repository.
+
+| Token | Permissions | Used by | What it is for |
+|---|---|---|---|
+| `checkout` | `contents: read`, `metadata: read` | the `git` child only, through the askpass helper (`TRELIX_GIT_TOKEN`) | `git fetch` of `refs/pull/<n>/head` |
+| `review` | `pull_requests: read`, `metadata: read` | the `trelix review` child only (`GITHUB_TOKEN`) | `GET /repos/{owner}/{repo}/pulls/{n}/files`, the only GitHub call `trelix review --pr --json` makes |
+| `poster` | `checks: write`, `metadata: read` | this process only (Octokit) | `POST /repos/{owner}/{repo}/check-runs`, the only call this process makes |
+
+- `trelix review --post-comments` would also call `GET /pulls/{n}` and
+  `POST /pulls/{n}/reviews`, which need `pull_requests: write`. The App never
+  passes that flag, so the `review` token has no write permission.
+- `@octokit/auth-app` caches a token per installation, repository ids and
+  permission set (`optionsToCacheKey`), so the three purposes never share a
+  cached token and a repeat review of the same repository reuses them for up to
+  59 minutes. `tests/auth.test.ts` asserts the body of every token request,
+  and `tests/scoped-tokens.test.ts` that each consumer gets the token minted for
+  it.
+- No installation token is logged: `tests/scoped-tokens.test.ts` runs a whole
+  review (clean, skipped, failing, refused by the API) and looks for the tokens
+  and the App JWT in everything printed to the console.
+- **The App's registration is changed by its owner.** `manifest.yml` now asks
+  for `pull_requests: read` (nothing in the App comments on or edits pull
+  requests, and the `pull_request` event needs only read), but a manifest is
+  read only when an App is created. For the already registered App, change
+  Settings -> Developer settings -> GitHub Apps -> Permissions & events ->
+  Pull requests from *Read & write* to *Read-only*. The tokens above are
+  requested with `read`, which works before and after that change, and
+  GitHub asks installers to approve added permissions, not removed ones. After
+  deploying, open a test pull request and check that a `trelix Code Review`
+  Check appears: a token request GitHub refuses (for example a permission the
+  App does not hold) is logged as `[webhook] review failed` and posts no Check.
 
 ### Production deployment notes
 
@@ -225,7 +279,7 @@ GitHub -- pull_request webhook -->  this service (Express)
     lists, so `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, the
     platform's `RAILWAY_*` variables and any other name not listed never reach
     a child:
-    - `git` (`init`, `remote add`, `fetch` and `checkout`): `PATH`, `LANG`,
+    - `git` (`init`, `remote add`, `fetch`, `checkout` and `rev-parse`): `PATH`, `LANG`,
       an empty `HOME` and `XDG_CONFIG_HOME`, `GIT_ASKPASS`, `TRELIX_GIT_TOKEN`
       and the isolation variables below.
     - `trelix index`: `PATH`, `LANG`, `HOME`, `XDG_CONFIG_HOME` (where trelix
@@ -248,8 +302,8 @@ GitHub -- pull_request webhook -->  this service (Express)
       variables are also set, see the git bullet below. A pointer such as
       `AWS_WEB_IDENTITY_TOKEN_FILE` hands the child the identity itself, so
       scope the role behind it to model inference only.
-    - `trelix review`: the same, plus the installation token as
-      `GITHUB_TOKEN`. Only this child receives it.
+    - `trelix review`: the same, plus the `review` installation token (see
+      "Token scopes") as `GITHUB_TOKEN`. Only this child receives it.
 
     Names are matched exactly and case-sensitively. **Not passed**, because
     they are on no list: proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`,
@@ -301,7 +355,7 @@ GitHub -- pull_request webhook -->  this service (Express)
     second guard.
   - **The git calls `trelix` makes itself get almost none of that.** This
     isolation covers the git commands the service runs (`init`, `remote add`,
-    `fetch`, `checkout`). The ones inside `trelix` (`git_linker.py`,
+    `fetch`, `checkout`, `rev-parse`). The ones inside `trelix` (`git_linker.py`,
     `diff_parser.py` and `provenance.py`, each run with `cwd=repo_path`) get
     no `-c` config, no empty `HOME` and no `GIT_CONFIG_GLOBAL=/dev/null`, and
     rely on the checkout root being their working directory. The one defence
@@ -410,19 +464,23 @@ GitHub -- pull_request webhook -->  this service (Express)
 
 - `manifest.yml` — GitHub App manifest for the [manifest registration
   flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest).
-  Declares the same three permissions the Actions workflow already uses
-  (`pull_requests: write`, `checks: write`, `contents: read`) and
-  subscribes to the `pull_request` event.
+  Declares the App's permissions (`pull_requests: read`, `checks: write`,
+  `contents: read`; the App never comments on pull requests, so it has no
+  `pull_requests: write`) and subscribes to the `pull_request` event. See
+  "Token scopes" for what the already registered App's owner must change.
 - `src/server.ts` — Express entry point (`/health`, `/webhooks/github`).
 - `src/webhook.ts` — verifies `X-Hub-Signature-256`, then routes
   `pull_request` `opened`/`synchronize`/`reopened` deliveries (mirrors the
-  Actions workflow's trigger), invokes the review runner.
+  Actions workflow's trigger), invokes the review runner with the delivery's
+  repository id and head sha (`src/commit-id.ts` checks the sha).
 - `src/child-env.ts` — the allow-listed environment of each child process
   (`git`, `trelix index`, `trelix review`); see "Untrusted PR content"
   above.
-- `src/review-runner.ts` — mints an installation token, clones the PR's
-  actual head into a fresh workspace (`repo-checkout.ts`), indexes and
-  reviews it via the `trelix` CLI, and posts the findings as a GitHub
+- `src/review-runner.ts` — mints the three purpose-scoped installation
+  tokens, clones the PR's actual head into a fresh workspace
+  (`repo-checkout.ts`), skips the review if that is no longer the delivery's
+  head commit, indexes and reviews it via the `trelix` CLI, and posts the
+  findings as a GitHub
   Check run (`toAnnotations`/`postCheckRun` — a TypeScript port of the
   same mapping logic in `trelix-review.yml`'s `github-script` step). A
   review that exits 4 (part of the diff unreviewed) is posted by
@@ -441,9 +499,12 @@ GitHub -- pull_request webhook -->  this service (Express)
 - `src/repo-checkout.ts` — clones a single PR's head into a per-request
   temp workspace via an installation token; see "Clone-on-demand" above
   for the security properties this enforces.
-- `src/auth.ts` — installation-token minting (`getInstallationToken`) and
+- `src/auth.ts` — installation-token minting, one token per purpose
+  (`getInstallationToken`, `getPurposeTokens`; see "Token scopes") and
   App-level JWT minting (`getAppJwt`, used only by the redelivery script)
   via `@octokit/auth-app`, one cached `AuthInterface` per `AppConfig`.
+- `src/commit-id.ts` — `isCommitId`, the check that a webhook's head sha and
+  what `git rev-parse HEAD` prints are full lowercase hex commit ids.
 - `src/scripts/redeliver-webhook-deliveries.ts` — the redelivery backstop;
   run via `npm run redeliver-failed-webhooks` or
   `.github/workflows/redeliver-failed-webhooks.yml`.

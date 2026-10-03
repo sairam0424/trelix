@@ -87,9 +87,13 @@ interface RecordedGitCall {
     homeEntries: string[];
 }
 
+/** What `git rev-parse HEAD` prints in a `recordGitCalls(false)` run, which has no repository. */
+const FAKE_HEAD = "0123456789abcdef0123456789abcdef01234567";
+
 /**
  * A `GitExecFile` that records every git child. With `realGit` it then runs the
- * real git; without, it does nothing, so the test needs no repository at all.
+ * real git; without, it does nothing (except answer `rev-parse` with FAKE_HEAD), so
+ * the test needs no repository at all.
  */
 function recordGitCalls(realGit: boolean): {
     run: GitExecFile;
@@ -103,7 +107,12 @@ function recordGitCalls(realGit: boolean): {
             env: options.env,
             homeEntries: readdirSync(options.env.HOME as string),
         });
-        return realGit ? execFileAsync(file, args, options) : undefined;
+        if (realGit) {
+            return execFileAsync(file, args, options);
+        }
+        return args.includes("rev-parse")
+            ? { stdout: `${FAKE_HEAD}\n`, stderr: "" }
+            : undefined;
     };
     return { run, calls };
 }
@@ -251,6 +260,54 @@ describe("checkoutPullRequest", () => {
             expect(
                 readFileSync(join(workspace.path, "README.md"), "utf8"),
             ).toBe("hello\n");
+        } finally {
+            await workspace.cleanup();
+        }
+    });
+
+    it("reports the commit it checked out as headSha", async () => {
+        const workspace = await checkoutPullRequest(
+            CANARY_CREDENTIAL,
+            { owner: "o", repo: "r", prNumber: 7 },
+            { remoteUrl: originDir, allowProtocol: LOCAL_REMOTE_PROTOCOL },
+        );
+
+        try {
+            expect(workspace.headSha).toBe(headSha);
+            expect(workspace.headSha).toMatch(/^[0-9a-f]{40}$/);
+        } finally {
+            await workspace.cleanup();
+        }
+    });
+
+    it("reports the commit the PR ref points at NOW, not the one an earlier delivery saw", async () => {
+        // A newer push: the base repo's refs/pull/7/head moves to a second commit.
+        writeFileSync(join(sourceDir, "README.md"), "hello again\n");
+        await execFileAsync("git", ["commit", "--quiet", "-am", "second"], {
+            cwd: sourceDir,
+        });
+        const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+            cwd: sourceDir,
+        });
+        const newerSha = stdout.trim();
+        await execFileAsync("git", ["fetch", "--quiet", sourceDir, "HEAD"], {
+            cwd: originDir,
+        });
+        await execFileAsync(
+            "git",
+            ["update-ref", "refs/pull/7/head", newerSha],
+            { cwd: originDir },
+        );
+
+        const workspace = await checkoutPullRequest(
+            CANARY_CREDENTIAL,
+            { owner: "o", repo: "r", prNumber: 7 },
+            { remoteUrl: originDir, allowProtocol: LOCAL_REMOTE_PROTOCOL },
+        );
+
+        try {
+            expect(newerSha).not.toBe(headSha);
+            expect(workspace.headSha).toBe(newerSha);
         } finally {
             await workspace.cleanup();
         }
@@ -430,7 +487,7 @@ describe("checkoutPullRequest git children", () => {
     const target = { owner: "o", repo: "r", prNumber: 7 };
     const httpsRemote = "https://example.invalid/o/r.git";
 
-    it("runs init, remote add, fetch and checkout, each with the isolated allow-listed env and nothing from the host", async () => {
+    it("runs init, remote add, fetch, checkout and rev-parse, each with the isolated allow-listed env and nothing from the host", async () => {
         for (const name of HOST_ONLY_NAMES) {
             vi.stubEnv(name, `host-value-of-${name}`);
         }
@@ -450,6 +507,7 @@ describe("checkoutPullRequest git children", () => {
                 "remote",
                 "fetch",
                 "checkout",
+                "rev-parse",
             ]);
             for (const call of calls) {
                 // Exactly these names, so a new host variable cannot slip in.
@@ -530,6 +588,7 @@ describe("checkoutPullRequest git children", () => {
             "--quiet",
             "FETCH_HEAD",
         ]);
+        expect(afterConfig(4)).toEqual(["rev-parse", "HEAD"]);
     });
 
     it("keeps the askpass helper and git's HOME outside the checkout, in a trelix-review-aux-* directory that cleanup() removes", async () => {
@@ -607,6 +666,39 @@ describe("checkoutPullRequest git children", () => {
         expect(existsSync(cwd)).toBe(false);
         expect(existsSync(dirname(env.GIT_ASKPASS as string))).toBe(false);
     });
+
+    it.each([
+        ["nothing", undefined],
+        ["a word that is not a commit id", { stdout: "HEAD\n" }],
+        ["a short id", { stdout: "deadbeef\n" }],
+        ["an uppercase id", { stdout: `${FAKE_HEAD.toUpperCase()}\n` }],
+        ["two lines", { stdout: `${FAKE_HEAD}\n${FAKE_HEAD}\n` }],
+    ])(
+        "rejects and removes both directories when git rev-parse HEAD prints %s",
+        async (_name, answer) => {
+            const seen: RecordedGitCall[] = [];
+            const badRevParse: GitExecFile = async (_file, args, options) => {
+                seen.push({
+                    args,
+                    cwd: options.cwd,
+                    env: options.env,
+                    homeEntries: [],
+                });
+                return args.includes("rev-parse") ? answer : undefined;
+            };
+
+            await expect(
+                checkoutPullRequest(CANARY_CREDENTIAL, target, {
+                    remoteUrl: httpsRemote,
+                    execFile: badRevParse,
+                }),
+            ).rejects.toThrow("git rev-parse HEAD did not print a commit id");
+
+            const { cwd, env } = seen[seen.length - 1];
+            expect(existsSync(cwd)).toBe(false);
+            expect(existsSync(dirname(env.GIT_ASKPASS as string))).toBe(false);
+        },
+    );
 
     describe("when the checkout cannot be removed", () => {
         const leftovers: string[] = [];
@@ -756,8 +848,10 @@ describe("checkoutPullRequest with an embedded bare repository in the PR", () =>
 
         try {
             // The exact env and -c config the module gave its own checkout child.
-            const checkout = calls[calls.length - 1];
-            expect(subcommandOf(checkout.args)).toBe("checkout");
+            const checkout = calls.find(
+                (call) => subcommandOf(call.args) === "checkout",
+            ) as RecordedGitCall;
+            expect(checkout).toBeDefined();
 
             for (const subcommand of ["status", "diff"]) {
                 await expect(

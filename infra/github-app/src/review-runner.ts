@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { Octokit } from "@octokit/rest";
 import type { RequestInterface } from "@octokit/types";
 import { AppConfig } from "./config.js";
-import { getInstallationToken } from "./auth.js";
+import { getPurposeTokens } from "./auth.js";
 import { buildIndexChildEnv, buildReviewChildEnv } from "./child-env.js";
 import { checkoutPullRequest as defaultCheckoutPullRequest } from "./repo-checkout.js";
 import {
@@ -46,6 +46,10 @@ export interface ReviewRequest {
     repo: string;
     prNumber: number;
     installationId?: number;
+    /** `repository.id`: every installation token is limited to this repository. */
+    repositoryId: number;
+    /** The delivery's `pull_request.head.sha`: a full lowercase hex commit id. */
+    headSha: string;
 }
 
 /** Matches trelix review --pr ... --json's real output shape exactly — see src/trelix/cli/main.py. */
@@ -125,10 +129,9 @@ export function parseFindings(stdout: string): ReviewFinding[] {
  * requires a GITHUB_TOKEN env var to do so — exactly like
  * .github/workflows/trelix-review.yml's own
  * `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` step. `token` here is the
- * same installation token runReview already minted for checkoutPullRequest
- * and the Checks API — found live: every real webhook failed with
- * "GITHUB_TOKEN environment variable is required for --pr." until this
- * was forwarded through.
+ * review-purpose installation token (pull_requests:read on one repository,
+ * see auth.ts) — found live: every real webhook failed with "GITHUB_TOKEN
+ * environment variable is required for --pr." until it was forwarded.
  *
  * `outcomeFile`, when given, is handed to the child as
  * TRELIX_REVIEW_OUTCOME_FILE: where it writes the record of which hunks it
@@ -137,7 +140,7 @@ export function parseFindings(stdout: string): ReviewFinding[] {
  * diff), where the findings are in the error's `stdout`: see runReview.
  */
 export async function runReviewCli(
-    request: ReviewRequest,
+    request: Pick<ReviewRequest, "owner" | "repo" | "prNumber">,
     repoPath: string,
     token: string,
     timeoutMs: number = REVIEW_TIMEOUT_MS,
@@ -345,18 +348,13 @@ export async function indexRepository(
 export interface RunReviewOptions {
     /** Injectable — tests substitute a fake to avoid a real git clone. */
     checkoutPullRequest?: typeof defaultCheckoutPullRequest;
-    /**
-     * Injectable fake HTTP transport for the installation-token mint —
-     * same RequestInterface-fake pattern getInstallationToken's own
-     * optional third param already uses (see auth.test.ts).
-     */
+    /** Injectable fake HTTP transport for the installation-token mints (see auth.test.ts). */
     request?: RequestInterface;
     /**
-     * Injectable Octokit instance for the PR-fetch/Check-run calls — tests
-     * substitute one with an `octokit.hook.wrap("request", ...)`
-     * interceptor registered so those calls never hit the real GitHub
-     * API. Defaults to a real Octokit authenticated with the minted
-     * installation token.
+     * Injectable Octokit instance for the Check-run call — tests substitute
+     * one with an `octokit.hook.wrap("request", ...)` interceptor so the call
+     * never hits the real GitHub API. Defaults to a real Octokit
+     * authenticated with the `poster` installation token.
      */
     octokit?: Octokit;
     /**
@@ -441,13 +439,13 @@ async function reviewAndPost(
 }
 
 /**
- * End-to-end: mint an installation token, clone the PR head into a fresh
- * workspace, index it, run the CLI review against it, and post the
- * findings as a Check run — cleaning up the workspace (and the private
- * directory the review writes its outcome record to) unconditionally.
- * Requires request.installationId (the webhook payload's
- * `installation.id` — always present for App-installed webhook
- * deliveries).
+ * End-to-end: mint the three purpose-scoped installation tokens (auth.ts: `checkout`
+ * for git, `review` for the `trelix review` child, `poster` for the Octokit that creates
+ * the Check), clone the PR head into a fresh workspace, index it, review it and post the
+ * findings as a Check run on `request.headSha`, cleaning up the workspace and the outcome
+ * directory unconditionally. Requires request.installationId (`installation.id`). If the
+ * checkout is not at `request.headSha` (a newer push moved refs/pull/<n>/head; it has its
+ * own delivery) it logs, reviews nothing and returns `[]`.
  */
 export async function runReview(
     config: AppConfig,
@@ -463,31 +461,32 @@ export async function runReview(
     const checkoutPullRequest =
         options.checkoutPullRequest ?? defaultCheckoutPullRequest;
 
-    const token = await getInstallationToken(
+    const tokens = await getPurposeTokens(
         config,
         request.installationId,
+        request.repositoryId,
         options.request,
     );
-    const octokit = options.octokit ?? new Octokit({ auth: token });
+    const octokit = options.octokit ?? new Octokit({ auth: tokens.poster });
 
-    const { data: pull } = await octokit.rest.pulls.get({
-        owner: request.owner,
-        repo: request.repo,
-        pull_number: request.prNumber,
-    });
-
-    const workspace = await checkoutPullRequest(token, request);
+    const workspace = await checkoutPullRequest(tokens.checkout, request);
     let outcomeLocation: OutcomeLocation | undefined;
     try {
+        if (workspace.headSha !== request.headSha) {
+            console.warn(
+                `[review-runner] skipping ${request.owner}/${request.repo}#${request.prNumber}: checkout is at ${workspace.headSha}, delivery is for ${request.headSha}; nothing posted`,
+            );
+            return [];
+        }
         // Outside the checkout, so the pull request cannot touch the file.
         outcomeLocation = await createOutcomeLocation(options.outcomeBaseDir);
         await indexRepository(workspace.path);
         return await reviewAndPost(
             octokit,
             request,
-            pull.head.sha,
+            request.headSha,
             workspace.path,
-            token,
+            tokens.review,
             outcomeLocation.file,
         );
     } finally {
