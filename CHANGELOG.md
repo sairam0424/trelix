@@ -6,6 +6,106 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Security
+- **trelix now warns, once per process, when the SQLite it is linked against can lose WAL
+  writes.** SQLite 3.7.0 through 3.51.2 can lose committed writes when two or more
+  connections, in different threads or processes, write or checkpoint the same WAL database
+  at the same instant. The fix is in 3.51.3 and was backported to 3.50.7 and 3.44.6. When a
+  writer opens the index on a build outside those fixed versions, `Database` logs one
+  WARNING that names the linked version and recommends running one writer at a time or
+  upgrading Python or SQLite. The check goes by the upstream version number, so the warning
+  says that a distro build may already carry the fix and does not claim the build is
+  affected. Read-only opens stay silent, and nothing else about how the index is opened
+  changes. `SECURITY.md` and `docs/TROUBLESHOOTING.md` describe it.
+- **The GitHub App's child processes inherited its environment, and its git commands were
+  not isolated.** `trelix index` and `trelix review` received every host variable except
+  `GITHUB_APP_PRIVATE_KEY` and `GITHUB_WEBHOOK_SECRET` (the platform's `RAILWAY_*` tokens
+  included), and `git init`, `git remote add` and `git checkout` inherited the whole
+  environment. Each child kind now gets an allow-listed environment built from an empty
+  object (`infra/github-app/src/child-env.ts`): `git` gets `PATH`, `LANG`, an empty `HOME` and
+  its own isolation variables; `trelix index` and `trelix review` get `PATH`, `LANG`, `HOME`,
+  `XDG_CONFIG_HOME` (where trelix finds the operator's `trelix/env` file), the provider
+  variables trelix's config reads, the common credential and endpoint names the provider SDKs
+  read for themselves (AWS role, web-identity and container credentials, a shared credentials
+  file, `GOOGLE_APPLICATION_CREDENTIALS` for Vertex, Anthropic identity federation, Azure AD
+  tokens, gateway base URLs) and every `TRELIX_*` variable except `TRELIX_GIT_TOKEN`, which only
+  the `git` child receives (the walker flag is still forced off, and
+  `safe.bareRepository=explicit` is set for the git calls trelix makes itself); only `review`
+  gets the installation token, as `GITHUB_TOKEN`. Every git
+  command also runs with no user or system config (`GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`
+  are `/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), `GIT_TERMINAL_PROMPT=0`, only https allowed,
+  `-c safe.bareRepository=explicit -c protocol.file.allow=never -c credential.helper=`, and an
+  empty `git init` template, so a bare repository a PR embeds in its tree is refused when git
+  runs inside it instead of running that repository's `core.fsmonitor`. The askpass helper
+  moved out of the checkout into a separate `trelix-review-aux-*` directory, so a PR that
+  tracks a file named `.git-askpass.sh` still checks out. A variable a deployment needs in a
+  child that is not on the list is no longer passed; add it to `child-env.ts`. That includes
+  proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), CA-bundle variables
+  (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `AWS_CA_BUNDLE`) and
+  `AWS_CONFIG_FILE`, and the provider-SDK names withheld on purpose (webhook-signing and admin
+  keys, Azure service-principal secrets, names of services trelix has no client for). The lists
+  do not cover everything the SDKs read either: `AWS_BEARER_TOKEN_BEDROCK` (a secret, Bedrock
+  API-key authentication), `AWS_EC2_METADATA_DISABLED`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`,
+  `OPENAI_API_TYPE`, `OPENAI_CUSTOM_HEADERS` and `GOOGLE_GENAI_USE_VERTEXAI` are not forwarded,
+  so a deployment that relies on one (Bedrock API-key users are not covered) typically sees
+  authentication fail: `trelix review` exits 3 and the PR gets a neutral check. Open an issue,
+  or add the name to the allow-list in `child-env.ts` (with a reviewed edit to the Python
+  contract test, which pins that list to the names the installed SDKs are scanned for).
+  `safe.bareRepository=explicit` needs git 2.38 or newer; older git ignores it. The git calls
+  trelix makes itself (`git_linker.py`, `diff_parser.py`, `provenance.py`) get none of the git
+  isolation above except that one setting.
+
+### Fixed
+- **This repository's PR review workflow posted its Check on the pull request's merge commit,
+  where no pull request shows it.** `trelix-review.yml` used `context.sha`, which for a
+  `pull_request` event is the synthetic merge commit, so the "trelix Code Review" check never
+  appeared on the pull request. It now posts on the pull request's head commit
+  (`context.payload.pull_request.head.sha`). **Because this workflow has no LLM credential,
+  every pull request here will now show a neutral "trelix review did not run" check**: the
+  honest result since 3.4.2, which was previously invisible. Give the workflow a credential, or
+  remove it, if that is not wanted.
+- **A refused, filtered or cut-off model reply was reported as a clean `"stop"`.** Providers
+  deliver these as an ordinary successful response and the stop field is the only sign. The
+  Anthropic and Bedrock backends turned every value they did not list (`refusal`,
+  `pause_turn`, `model_context_window_exceeded`, Bedrock's `guardrail_intervened`,
+  `content_filtered` and `malformed_*`) and a missing value into `"stop"`. The OpenAI, Azure
+  and LiteLLM backends passed any string through unchanged, defaulted a missing one to
+  `"stop"`, and ignored the refusal that arrives together with `finish_reason == "stop"`
+  (`message.refusal`; LiteLLM's response object keeps it in
+  `message.provider_specific_fields["refusal"]`). The Vertex backend read everything except
+  `STOP` and `MAX_TOKENS` (so `SAFETY` and `RECITATION` too) and a response with no candidates
+  as `"stop"`. The backends now classify through one module, `trelix.llm.finish_reasons`, into
+  `stop`, `length`, `tool_calls`, `refusal`, `content_filter`, `paused`, `error` or `unknown`,
+  and a value nobody has classified is `unknown`, never `stop`; Vertex's other finish reasons
+  therefore change from `stop` to `unknown` until each has been verified, and `function_call`
+  is now `tool_calls`. `ChatResponse` gains `raw_finish_reason` (the provider's own value),
+  `refusal` and `signals`; an Azure content-filter outage (HTTP 200 with an `error` object in
+  `content_filter_results`) is recorded as the signal `content_filter_error`, and logged by the
+  OpenAI and Azure backend. LiteLLM itself turns some provider stop values (for example
+  `pause_turn`, Bedrock `malformed_*` and Gemini `MALFORMED_FUNCTION_CALL`, as of litellm
+  1.90.2) into `"stop"` before trelix sees them, so through LiteLLM a `"stop"` is weaker
+  evidence than through a direct backend. Only `trelix review` reads the new values (below);
+  the other callers behave as before.
+- **`trelix review` counted a cut-off, refused or unparseable reply as a clean "no issues"
+  result.** The reviewer asked for at most 512 tokens per hunk, never read the stop reason, and
+  returned `[]` for a reply that was cut off mid-array, empty, prose or refused, so a hunk that
+  was never reviewed looked the same as one with no findings. Each hunk now gets a status
+  (`reviewed`, `truncated`, `refused`, `parse_failed` or `error`) in
+  `ReviewOutcome.hunk_results`, and only a parsed JSON array after a clean stop counts as
+  reviewed; an empty `[]` that merely appears inside prose does not. A reply cut off by the
+  limit is retried once at four times it (capped at 16384); if it is still cut off, or the retry
+  itself fails, the complete findings written before the cut are kept and the hunk is marked
+  `truncated`. A reply that says it stopped cleanly but used every token it was allowed is
+  treated as cut off too, because LiteLLM can hide a truncation behind `stop`. The limit is now
+  `TRELIX_REVIEW_MAX_TOKENS` (default 4096, range 256–16384; the ceiling is below the 21333
+  tokens above which the Anthropic SDK refuses a non-streaming request; a blank value is read
+  as unset, so an undefined CI variable does not break every command). An array counts only
+  if at least one item has a text `comment`; a bad or missing line number falls back to the
+  hunk's range instead of discarding the hunk. `ReviewOutcome.hunks_failed` now counts every
+  hunk that was not reviewed, not only calls that raised, so a review in which no hunk was
+  reviewed and none kept a finding exits 3 ("did not run") instead of 0; a review with some
+  unreviewed hunks still exits 0 with the existing warning.
+
 ### Changed
 - **Dependabot waits seven days before proposing a new version, and an advisory `zizmor` job
   audits the workflows.** All ten `dependabot.yml` entries now set `cooldown: default-days: 7`,
@@ -16,6 +116,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   the root one. The new `zizmor.yml` runs the zizmor static analyser over the workflows and
   the Dependabot config on pull requests and pushes that touch `.github/`. It is advisory:
   the job cannot fail a PR, and the findings are in its log until they have been triaged.
+- **`trelix review` exits 4 when it reviewed some of the diff but left hunks unreviewed, and can
+  write a JSON record of what it covered.** 3.4.2 made a review that could not run at all exit 3
+  but left a partial one at exit 0. Now, when more than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION`
+  of the hunks were not reviewed (cut off, refused, filtered, unparseable or failed; the default
+  `0.0` means any of them), the command prints the findings it has and then exits
+  `REVIEW_INCOMPLETE_EXIT_CODE = 4`, so stdout still carries them. Exit 3 stays for a review
+  where nothing usable came out. **A caller that treats any non-zero exit as failure now fails
+  on a partial review; set `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION=1` to keep the old exit 0.**
+  `TRELIX_REVIEW_OUTCOME_FILE=<path>` writes `{schema_version, hunks_total, hunks_reviewed,
+  hunks_unreviewed, exit_code, hunks, hunks_omitted}` there, where `hunks` lists the first 100
+  unreviewed hunks as `{file, line, status, detail}`; the file is created with mode 0600 and
+  moved into place atomically, carries no model prose (`status` and `detail` are a fixed
+  vocabulary plus a character-limited provider stop token or exception class name, while `file`
+  is text from the diff and must be escaped by whatever displays it), is written before any
+  comments are posted, and a failure to write it only warns. Nothing is written when the command
+  stops before reviewing (an error, or no changes to review), so a path that is reused should
+  be removed first. A blank value of either setting is read as unset. `--json` stdout is
+  unchanged. `--post-comments` now says in
+  the review body how many hunks were not fully reviewed, and a partial review with no findings
+  says "No findings in the hunks that were reviewed" instead of "No issues found."
 
 ## [3.4.2] — 2026-10-02
 

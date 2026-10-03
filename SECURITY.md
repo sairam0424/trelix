@@ -38,6 +38,19 @@ trelix processes local repository contents and makes network calls to configured
 - **Image and diagram connectors** (`trelix connector sync`) — do not use the symlink
   setting above: they always skip a symlink whose resolved target is outside the repo,
   so its contents are never sent to the configured LLM.
+- **SQLite WAL-reset bug** — the index is a SQLite file in WAL mode, and SQLite 3.7.0
+  through 3.51.2 can lose committed writes when two or more connections, in different
+  threads or processes, write or checkpoint it at the same instant. The fix is in 3.51.3
+  and was backported to 3.50.7 and 3.44.6. This is a risk to the integrity of the local
+  index, not a disclosure risk. trelix has no SQLite of its own; it uses the build of the
+  Python that runs it, including the Python inside a standalone binary or container image.
+  When a writer opens the index on a build outside the fixed versions, trelix logs one
+  warning per process (`wal_reset_risk` in `store/db.py`). The check goes by the
+  upstream version number, so a distro build that backported the fix can still trigger it;
+  the warning is a prompt to check, not a finding that the build is affected. Run one
+  process that writes to an index at a time, or upgrade Python or SQLite. Read-only opens
+  do not warn. See "trelix warned about SQLite WAL reset" in
+  [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ### REST API — /graph/visualize output path constraint
 

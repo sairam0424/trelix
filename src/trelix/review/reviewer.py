@@ -5,22 +5,31 @@ For each changed hunk:
 1. Build a search query from changed lines (identifier extraction)
 2. Retrieve relevant context via trelix hybrid search
 3. Call LLM with hunk + context -> structured review comments
-4. Parse and return ReviewComment objects
+4. Parse the reply into ReviewComment objects and record a status for the hunk
 
-Crash-safe: any failure returns [] and logs a warning.
+Crash-safe: any failure returns [] and logs a warning. `last_outcome` says what became of each
+hunk, because `[]` alone cannot tell "the model found nothing" from "the reply was cut off".
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from trelix.llm.finish_reasons import CONTENT_FILTER, LENGTH, PAUSED, REFUSAL, STOP
 from trelix.llm.prompt import fenced_block
+from trelix.review.hunk_status import (
+    HunkResult,
+    HunkStatus,
+    extract_review_items,
+    safe_token,
+    salvage_review_items,
+)
 
 if TYPE_CHECKING:
     from trelix.core.config import IndexConfig
+    from trelix.llm.client import ChatResponse
     from trelix.review.diff_parser import DiffHunk
 
 logger = logging.getLogger("trelix.review.reviewer")
@@ -47,6 +56,15 @@ Return [] if no issues are found. Do not explain your reasoning outside the JSON
 # (CLI table, --json, posted GitHub inline comments), so the label goes there.
 _NO_CONTEXT_LABEL = " [trelix: no codebase context — retrieval failed for this hunk]"
 
+# A reply cut off at the limit is retried once at this multiple of it, up to the ceiling. The
+# ceiling is also the largest `review_max_tokens`: the Anthropic SDK refuses a non-streaming
+# request above 21333 tokens (it would run longer than its 10-minute limit), and some models
+# refuse less, so a retry above this could raise before producing anything.
+_RETRY_FACTOR = 4
+_RETRY_CEILING = 16384
+_RETRYABLE = frozenset({LENGTH})
+_CUT_OFF = frozenset({LENGTH, PAUSED})
+
 
 @dataclass
 class ReviewComment:
@@ -65,22 +83,55 @@ class ReviewOutcome:
 
     `review()` returns `[]` both when the model looked and found nothing and when
     nothing was looked at; this record is how a caller tells the two apart.
+
+    `hunks_failed` counts the hunks that were not reviewed: every status except `reviewed`,
+    so a reply that was cut off, refused, filtered or unparseable counts, not only a call that
+    raised. `hunk_results` has the status of each hunk, in order.
+
+    `could_not_review` is stricter than "nothing was reviewed": a cut-off hunk that still kept
+    complete findings is a partial review, not a review that did not run.
     """
 
     llm_available: bool = True
     hunks_total: int = 0
     hunks_failed: int = 0
+    # Left out of ==, so two outcomes are equal when their counters are; the per-hunk detail is
+    # for display and the outcome file, and tests assert it directly.
+    hunk_results: tuple[HunkResult, ...] = field(default=(), compare=False)
 
     @property
     def could_not_review(self) -> bool:
-        """True when no hunk got a real review (no usable LLM, or every hunk failed)."""
-        return not self.llm_available or (
-            self.hunks_total > 0 and self.hunks_failed >= self.hunks_total
-        )
+        """True when nothing came of the review: no usable LLM, or no hunk was reviewed and
+        none kept a finding."""
+        if not self.llm_available:
+            return True
+        kept_findings = any(r.kept_comments for r in self.hunk_results)
+        return self.hunks_total > 0 and self.hunks_failed >= self.hunks_total and not kept_findings
+
+    @property
+    def hunks_reviewed(self) -> int:
+        return max(self.hunks_total - self.hunks_failed, 0)
+
+    @property
+    def unreviewed_fraction(self) -> float:
+        """The share of hunks that were not reviewed, 0.0 when there were no hunks."""
+        if self.hunks_total <= 0:
+            return 0.0
+        return min(self.hunks_failed / self.hunks_total, 1.0)
+
+
+@dataclass(frozen=True)
+class _HunkReview:
+    comments: list[ReviewComment]
+    result: HunkResult
 
 
 class LLMNotConfiguredError(RuntimeError):
     """A backend answered with its "no credentials" placeholder instead of a review."""
+
+
+def _error_result(hunk: DiffHunk, detail: str) -> HunkResult:
+    return HunkResult(hunk.file_path, hunk.new_start, HunkStatus.ERROR, detail)
 
 
 class DiffReviewer:
@@ -152,35 +203,66 @@ class DiffReviewer:
         if client is None:
             logger.warning("DiffReviewer: no LLM client available")
             self.last_outcome = ReviewOutcome(
-                llm_available=False, hunks_total=len(hunks), hunks_failed=len(hunks)
+                llm_available=False,
+                hunks_total=len(hunks),
+                hunks_failed=len(hunks),
+                hunk_results=tuple(_error_result(h, "no_llm_client") for h in hunks),
             )
             return []
 
-        hunks_failed = 0
+        results: list[HunkResult] = []
         llm_available = True
         for hunk in hunks:
             try:
-                hunk_comments = self._review_hunk(hunk, client)
-                comments.extend(hunk_comments)
+                review = self._review_hunk(hunk, client)
             except LLMNotConfiguredError as exc:
                 # Every remaining hunk would get the same placeholder answer.
                 logger.warning("DiffReviewer: %s", exc)
                 llm_available = False
-                hunks_failed = len(hunks)
+                results = [_error_result(h, "not_configured") for h in hunks]
                 break
             except Exception as exc:
-                hunks_failed += 1
                 logger.warning("DiffReviewer: hunk review failed (non-fatal): %s", exc)
+                results.append(
+                    _error_result(
+                        hunk, f"exception:{safe_token(type(exc).__name__, default='unknown')}"
+                    )
+                )
+                continue
+            comments.extend(review.comments)
+            results.append(review.result)
+            if not review.result.reviewed:
+                logger.warning(
+                    "DiffReviewer: %s:%d was not reviewed (%s: %s)",
+                    review.result.file_path,
+                    review.result.line,
+                    review.result.status.value,
+                    review.result.detail or "no detail",
+                )
 
         self.last_outcome = ReviewOutcome(
-            llm_available=llm_available, hunks_total=len(hunks), hunks_failed=hunks_failed
+            llm_available=llm_available,
+            hunks_total=len(hunks),
+            hunks_failed=sum(1 for r in results if not r.reviewed),
+            hunk_results=tuple(results),
         )
         return comments
 
-    def _review_hunk(self, hunk: DiffHunk, client: Any) -> list[ReviewComment]:
-        """Review a single hunk with retrieved context."""
+    def _call(self, client: Any, user_content: str, max_tokens: int) -> Any:
         from trelix.llm.client import UNCONFIGURED_MODEL, ChatMessage
 
+        response = client.complete(
+            messages=[ChatMessage(role="user", content=user_content)],
+            max_tokens=max_tokens,
+            temperature=0.0,
+            system=_REVIEW_SYSTEM,
+        )
+        if response.model == UNCONFIGURED_MODEL:
+            raise LLMNotConfiguredError(response.content)
+        return response
+
+    def _review_hunk(self, hunk: DiffHunk, client: Any) -> _HunkReview:
+        """Review a single hunk with retrieved context."""
         # Retrieve context for this hunk
         query = hunk.to_search_query()
         context_text = ""
@@ -223,43 +305,130 @@ class DiffReviewer:
             user_content += f"Related codebase context:\n{fenced_block(context_text)}\n\n"
         user_content += "Provide review comments as a JSON array."
 
-        response = client.complete(
-            messages=[ChatMessage(role="user", content=user_content)],
-            max_tokens=512,
-            temperature=0.0,
-            system=_REVIEW_SYSTEM,
+        limit = self._config.review_max_tokens
+        response = self._call(client, user_content, limit)
+        used, retried, retry_failed = limit, False, False
+        if self._effective_finish(response, used) in _RETRYABLE:
+            larger = min(limit * _RETRY_FACTOR, _RETRY_CEILING)
+            if larger > limit:
+                logger.info(
+                    "DiffReviewer: reply for %s was cut off at %d tokens; retrying at %d",
+                    hunk.file_path,
+                    limit,
+                    larger,
+                )
+                try:
+                    retry = self._call(client, user_content, larger)
+                except LLMNotConfiguredError:
+                    raise
+                except Exception as exc:
+                    # The first reply still holds the complete findings written before it was
+                    # cut off; a failed retry must not throw them away.
+                    retry_failed = True
+                    logger.warning(
+                        "DiffReviewer: retry for %s at %d tokens failed, keeping first reply: %s",
+                        hunk.file_path,
+                        larger,
+                        exc,
+                    )
+                else:
+                    response, used, retried = retry, larger, True
+
+        return self._classify_reply(
+            response,
+            hunk,
+            used=used,
+            context_failed=retrieval_failed,
+            retried=retried,
+            retry_failed=retry_failed,
         )
 
-        if response.model == UNCONFIGURED_MODEL:
-            raise LLMNotConfiguredError(response.content)
+    @staticmethod
+    def _effective_finish(response: ChatResponse, limit: int) -> str:
+        """The reply's finish reason, read as `length` when it says stop but used every token.
 
-        return self._parse_response(response.content, hunk, context_failed=retrieval_failed)
+        LiteLLM turns some provider stop values into "stop" before trelix sees them, and a reply
+        that consumed the whole limit it was given was cut off whatever the provider called it.
+        """
+        finish = response.finish_reason
+        tokens = response.output_tokens
+        if finish == STOP and isinstance(tokens, int) and not isinstance(tokens, bool):
+            if tokens >= limit:
+                return LENGTH
+        return finish
 
-    def _parse_response(
-        self, content: str, hunk: DiffHunk, *, context_failed: bool = False
-    ) -> list[ReviewComment]:
-        """Parse LLM JSON response into ReviewComment objects."""
+    def _classify_reply(
+        self,
+        response: ChatResponse,
+        hunk: DiffHunk,
+        *,
+        used: int,
+        context_failed: bool,
+        retried: bool,
+        retry_failed: bool,
+    ) -> _HunkReview:
+        """Turn a model reply into comments and a status; only a clean, parsed array is reviewed."""
         # Labelled per hunk, not per review: retrieval failing on one file must
         # not cast doubt on the grounded comments for the rest of the PR.
         suffix = _NO_CONTEXT_LABEL if context_failed else ""
-        try:
-            # Extract JSON array from response (LLM may add prose before/after)
-            start = content.find("[")
-            end = content.rfind("]") + 1
-            if start == -1 or end == 0:
-                return []
-            items = json.loads(content[start:end])
-            return [
-                ReviewComment(
-                    file_path=hunk.file_path,
-                    line_start=int(item.get("line_start", hunk.new_start)),
-                    line_end=int(item.get("line_end", hunk.new_start + hunk.new_lines)),
-                    severity=str(item.get("severity", "INFO")),
-                    comment=str(item.get("comment", "")) + suffix,
-                )
-                for item in items
-                if isinstance(item, dict) and item.get("comment")
-            ]
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            logger.debug("DiffReviewer._parse_response failed: %s", exc)
-            return []
+
+        def outcome(status: HunkStatus, detail: str = "", kept: int = 0) -> HunkResult:
+            return HunkResult(hunk.file_path, hunk.new_start, status, detail, kept)
+
+        finish = self._effective_finish(response, used)
+        is_text = isinstance(response.content, str)
+        content = response.content if is_text else ""
+        if finish in (REFUSAL, CONTENT_FILTER):
+            return _HunkReview([], outcome(HunkStatus.REFUSED, finish))
+        if finish in _CUT_OFF:
+            kept = self._comments(salvage_review_items(content), hunk, suffix)
+            detail = finish
+            if retry_failed:
+                detail = f"{finish}_retry_failed"
+            elif retried:
+                detail = f"{finish}_after_retry"
+            return _HunkReview(kept, outcome(HunkStatus.TRUNCATED, detail, len(kept)))
+        if finish != STOP:
+            # Only a plain stop is a finished review. The reviewer offers no tools, so a
+            # tool_calls stop is as suspect as an error or an unclassified value.
+            token = safe_token(getattr(response, "raw_finish_reason", None))
+            return _HunkReview([], outcome(HunkStatus.ERROR, f"{safe_token(finish)}:{token}"))
+
+        items = extract_review_items(content)
+        if items is None:
+            if not is_text:
+                detail = "non_text_reply"
+            else:
+                detail = "empty_reply" if not content.strip() else "no_review_array"
+            return _HunkReview([], outcome(HunkStatus.PARSE_FAILED, detail))
+        parsed = self._comments(items, hunk, suffix)
+        detail = "retried" if retried else ""
+        return _HunkReview(parsed, outcome(HunkStatus.REVIEWED, detail, len(parsed)))
+
+    @staticmethod
+    def _comments(items: list[dict[str, Any]], hunk: DiffHunk, suffix: str) -> list[ReviewComment]:
+        default_end = hunk.new_start + hunk.new_lines
+        return [
+            ReviewComment(
+                file_path=hunk.file_path,
+                line_start=_line_number(item.get("line_start"), hunk.new_start),
+                line_end=_line_number(item.get("line_end"), default_end),
+                severity=str(item.get("severity", "INFO")),
+                comment=str(item["comment"]) + suffix,
+            )
+            for item in items
+        ]
+
+
+def _line_number(value: object, default: int) -> int:
+    """A line number from model output, or `default` when it is missing or not a usable number.
+
+    One bad number must not cost the hunk its other findings, and a finding with an approximate
+    location is worth more than none.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return default
+    try:
+        return int(value)
+    except (ValueError, OverflowError):
+        return default
