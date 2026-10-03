@@ -12,7 +12,6 @@ import { Octokit } from "@octokit/rest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     toAnnotations,
-    buildTrelixChildEnv,
     indexRepository,
     runReviewCli,
     runReview,
@@ -584,12 +583,16 @@ describe("runReview orchestration", () => {
     });
 });
 
-// The two credentials that identify the App itself. Neither `trelix index`
-// nor `trelix review` has any use for them, and both children run over
-// content an outside PR author controls.
+// Secrets the App's own process holds (its credentials, the platform's tokens) and
+// a name nobody listed. Neither `trelix index` nor `trelix review` may see any of
+// them: both children run over content an outside PR author controls.
+// child-env.test.ts covers the allow-list itself; the tests below prove the two
+// spawn sites really use it.
 const APP_CREDENTIAL_NAMES = [
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_WEBHOOK_SECRET",
+    "RAILWAY_TOKEN",
+    "SOME_UNLISTED_SECRET",
 ] as const;
 
 function fakeAppCredentials(): Record<string, string> {
@@ -598,43 +601,16 @@ function fakeAppCredentials(): Record<string, string> {
     );
 }
 
-describe("buildTrelixChildEnv", () => {
-    it("drops the App's own credentials and forces the walker symlink flag off", () => {
-        const base = {
-            ...fakeAppCredentials(),
-            PATH: "/usr/bin",
-            TRELIX_WALKER_FOLLOW_SYMLINKS: "true",
-            TRELIX_LLM_PROVIDER: "azure",
-        };
-
-        const env = buildTrelixChildEnv(base);
-
-        for (const name of APP_CREDENTIAL_NAMES) {
-            expect(env).not.toHaveProperty(name);
-        }
-        expect(env.TRELIX_WALKER_FOLLOW_SYMLINKS).toBe("false");
-        // Everything else the child needs (PATH, provider settings) survives.
-        expect(env.PATH).toBe("/usr/bin");
-        expect(env.TRELIX_LLM_PROVIDER).toBe("azure");
-    });
-
-    it("returns a new object and leaves its input untouched", () => {
-        const base = {
-            ...fakeAppCredentials(),
-            TRELIX_WALKER_FOLLOW_SYMLINKS: "true",
-        };
-        const snapshot = { ...base };
-
-        const env = buildTrelixChildEnv(base);
-
-        expect(env).not.toBe(base);
-        expect(base).toEqual(snapshot);
-    });
-});
+// What an operator configures so the LLM works: these must still reach the child.
+const PROVIDER_SETTINGS: Record<string, string> = {
+    AZURE_ENDPOINT: "https://llm.example.invalid",
+    TRELIX_LLM_PROVIDER: "azure",
+};
 
 describe("trelix child process environment", () => {
     const MANAGED_KEYS = [
         ...APP_CREDENTIAL_NAMES,
+        ...Object.keys(PROVIDER_SETTINGS),
         "GITHUB_TOKEN",
         "TRELIX_WALKER_FOLLOW_SYMLINKS",
         "TRELIX_TEST_ENV_DUMP_DIR",
@@ -659,7 +635,7 @@ describe("trelix child process environment", () => {
         );
         chmodSync(shim, 0o755);
 
-        Object.assign(process.env, fakeAppCredentials());
+        Object.assign(process.env, fakeAppCredentials(), PROVIDER_SETTINGS);
         process.env.PATH = `${binDir}:${savedEnv.PATH}`;
         process.env.TRELIX_TEST_ENV_DUMP_DIR = dumpDir;
         process.env.TRELIX_WALKER_FOLLOW_SYMLINKS = "true";
@@ -694,23 +670,25 @@ describe("trelix child process environment", () => {
 
     const request = { owner: "o", repo: "r", prNumber: 1 };
 
-    it("hides the App credentials from `trelix index` and forces the symlink flag off", async () => {
+    it("hides the App's secrets from `trelix index`, keeps the provider settings and forces the symlink flag off", async () => {
         await indexRepository(".", 5000);
 
         const env = readChildEnv("index");
         for (const name of APP_CREDENTIAL_NAMES) {
             expect(env).not.toHaveProperty(name);
         }
+        expect(env).toMatchObject(PROVIDER_SETTINGS);
         expect(env.TRELIX_WALKER_FOLLOW_SYMLINKS).toBe("false");
     });
 
-    it("hides the App credentials from `trelix review` and forces the symlink flag off", async () => {
+    it("hides the App's secrets from `trelix review`, keeps the provider settings and forces the symlink flag off", async () => {
         await runReviewCli(request, ".", "fake-installation-token", 5000);
 
         const env = readChildEnv("review");
         for (const name of APP_CREDENTIAL_NAMES) {
             expect(env).not.toHaveProperty(name);
         }
+        expect(env).toMatchObject(PROVIDER_SETTINGS);
         expect(env.TRELIX_WALKER_FOLLOW_SYMLINKS).toBe("false");
     });
 

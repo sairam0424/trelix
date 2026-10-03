@@ -4,6 +4,7 @@ import { Octokit } from "@octokit/rest";
 import type { RequestInterface } from "@octokit/types";
 import { AppConfig } from "./config.js";
 import { getInstallationToken } from "./auth.js";
+import { buildIndexChildEnv, buildReviewChildEnv } from "./child-env.js";
 import { checkoutPullRequest as defaultCheckoutPullRequest } from "./repo-checkout.js";
 
 const execFileAsync = promisify(execFile);
@@ -17,35 +18,6 @@ const REVIEW_TIMEOUT_MS = 5 * 60 * 1000;
 // Indexing a huge/pathological repo shouldn't hang the whole review either
 // — same ceiling as the review step itself.
 const INDEX_TIMEOUT_MS = 5 * 60 * 1000;
-
-// The two credentials that identify this App itself. Neither `trelix index` nor
-// `trelix review` has any use for them, and both run over content that an outside
-// PR author controls.
-const APP_CREDENTIAL_ENV: readonly string[] = [
-    "GITHUB_APP_PRIVATE_KEY",
-    "GITHUB_WEBHOOK_SECRET",
-];
-
-/**
- * Environment for a `trelix` child process: `base` without the App's own
- * credentials, and with the walker confined to the checkout.
- *
- * trelix follows symlinks out of the repo by default, and a PR can commit any
- * symlink it likes. Forcing TRELIX_WALKER_FOLLOW_SYMLINKS=false here (whatever the
- * host passed in) keeps that true even if the image or platform config drops the
- * Dockerfile's own setting. Provider variables (LLM, embedder) pass through
- * because trelix needs them. Returns a new object; `base` is never mutated.
- */
-export function buildTrelixChildEnv(
-    base: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-    const inherited = Object.fromEntries(
-        Object.entries(base).filter(
-            ([name]) => !APP_CREDENTIAL_ENV.includes(name),
-        ),
-    );
-    return { ...inherited, TRELIX_WALKER_FOLLOW_SYMLINKS: "false" };
-}
 
 export interface ReviewRequest {
     owner: string;
@@ -121,7 +93,7 @@ export async function runReviewCli(
         ["review", repoPath, "--pr", prRef, "--json"],
         {
             timeout: timeoutMs,
-            env: { ...buildTrelixChildEnv(), GITHUB_TOKEN: token },
+            env: buildReviewChildEnv(token),
         },
     );
     return JSON.parse(stdout) as ReviewFinding[];
@@ -233,7 +205,7 @@ export async function indexRepository(
     try {
         await execFileAsync("trelix", ["index", repoPath], {
             timeout: timeoutMs,
-            env: buildTrelixChildEnv(),
+            env: buildIndexChildEnv(),
         });
     } catch (err) {
         console.warn(
