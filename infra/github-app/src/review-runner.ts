@@ -6,6 +6,17 @@ import { AppConfig } from "./config.js";
 import { getInstallationToken } from "./auth.js";
 import { buildIndexChildEnv, buildReviewChildEnv } from "./child-env.js";
 import { checkoutPullRequest as defaultCheckoutPullRequest } from "./repo-checkout.js";
+import {
+    CheckAnnotation,
+    CheckOutput,
+    MAX_ANNOTATIONS,
+    sanitizeAnnotation,
+    sanitizeCheckOutput,
+} from "./sanitize.js";
+
+// Defined next to the sanitiser that produces it, so sanitize.ts does not
+// import from this module; re-exported because callers know it from here.
+export type { CheckAnnotation };
 
 const execFileAsync = promisify(execFile);
 
@@ -34,22 +45,23 @@ export interface ReviewFinding {
     comment: string;
 }
 
-export interface CheckAnnotation {
-    path: string;
-    start_line: number;
-    end_line: number;
-    annotation_level: "failure" | "warning" | "notice";
-    message: string;
-    title: string;
-}
-
+/**
+ * Maps findings to Check annotations, sanitised (see sanitize.ts). A finding
+ * whose file path is not acceptable (absolute, a `..` segment, markup) gets no
+ * annotation, so the result can be shorter than `findings`; it holds at most
+ * `limit` annotations, counted after the unacceptable ones are skipped.
+ */
 export function toAnnotations(
     findings: ReviewFinding[],
-    limit = 50,
+    limit = MAX_ANNOTATIONS,
 ): CheckAnnotation[] {
-    return findings.slice(0, limit).map((f) => {
+    const annotations: CheckAnnotation[] = [];
+    for (const f of findings) {
+        if (annotations.length >= limit) {
+            break;
+        }
         const [startLine, endLine] = f.lines.split("-").map(Number);
-        return {
+        const annotation = sanitizeAnnotation({
             path: f.file,
             start_line: startLine || 1,
             end_line: endLine || startLine || 1,
@@ -61,8 +73,12 @@ export function toAnnotations(
                       : "notice",
             message: f.comment,
             title: "trelix review",
-        };
-    });
+        });
+        if (annotation !== null) {
+            annotations.push(annotation);
+        }
+    }
+    return annotations;
 }
 
 /**
@@ -99,11 +115,44 @@ export async function runReviewCli(
     return JSON.parse(stdout) as ReviewFinding[];
 }
 
+const CHECK_RUN_NAME = "trelix Code Review";
+
+type CheckConclusion = "success" | "failure" | "neutral" | "timed_out";
+
+/**
+ * The only place this service creates a Check run. The text comes from an
+ * LLM reading attacker-written pull requests, so `output` always goes
+ * through sanitizeCheckOutput on the way out: a poster cannot forget it.
+ */
+async function createCheckRun(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    headSha: string,
+    conclusion: CheckConclusion,
+    output: CheckOutput,
+): Promise<void> {
+    await octokit.rest.checks.create({
+        owner,
+        repo,
+        name: CHECK_RUN_NAME,
+        head_sha: headSha,
+        status: "completed",
+        conclusion,
+        output: sanitizeCheckOutput(output),
+    });
+}
+
 /**
  * Posts findings as a completed Check run with inline annotations,
  * mirroring trelix-review.yml's github-script step's github.rest.checks.create
- * call exactly (same conclusion logic: any 'failure'-level annotation ->
- * overall 'failure', else 'success').
+ * call (any 'ERROR' finding -> overall 'failure', else 'success').
+ *
+ * The verdict and the count come from the findings, not from the
+ * annotations: a finding can go without an annotation (over GitHub's limit of
+ * 50 per request, or an unacceptable file path) and must not turn a failure
+ * into a success or vanish from the count. The summary says how many were
+ * left out.
  */
 export async function postCheckRun(
     octokit: Octokit,
@@ -113,21 +162,23 @@ export async function postCheckRun(
     findings: ReviewFinding[],
 ): Promise<void> {
     const annotations = toAnnotations(findings);
-    await octokit.rest.checks.create({
+    const withoutAnnotation = findings.length - annotations.length;
+    let summary = `trelix reviewed the PR and found ${findings.length} issue(s).`;
+    if (withoutAnnotation > 0) {
+        summary += ` ${withoutAnnotation} of them could not be shown as inline annotations (GitHub allows 50 per check, or the file path was not usable).`;
+    }
+    await createCheckRun(
+        octokit,
         owner,
         repo,
-        name: "trelix Code Review",
-        head_sha: headSha,
-        status: "completed",
-        conclusion: annotations.some((a) => a.annotation_level === "failure")
-            ? "failure"
-            : "success",
-        output: {
-            title: `trelix found ${annotations.length} issue(s)`,
-            summary: `trelix reviewed the PR and found ${annotations.length} issue(s).`,
+        headSha,
+        findings.some((f) => f.severity === "ERROR") ? "failure" : "success",
+        {
+            title: `trelix found ${findings.length} issue(s)`,
+            summary,
             annotations,
         },
-    });
+    );
 }
 
 /**
@@ -180,15 +231,14 @@ export async function postReviewFailureCheckRun(
             "trelix could not review this PR: no usable LLM is configured for this trelix instance, or every LLM call failed. No code was reviewed, so this is not a clean result.";
     }
 
-    await octokit.rest.checks.create({
+    await createCheckRun(
+        octokit,
         owner,
         repo,
-        name: "trelix Code Review",
-        head_sha: headSha,
-        status: "completed",
-        conclusion: timedOut ? "timed_out" : "neutral",
-        output: { title, summary },
-    });
+        headSha,
+        timedOut ? "timed_out" : "neutral",
+        { title, summary },
+    );
 }
 
 /**

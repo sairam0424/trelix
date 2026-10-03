@@ -73,6 +73,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   stale or unexplained entry fails too) and when that pin's comment goes back to `# v7`. The
   cache-poisoning findings in `release.yml` and the `workflow_run` trigger of
   `verify-release.yml` are not touched here.
+- **The GitHub App now sanitises everything it posts to Checks.** The title, summary and each
+  annotation's path, title and message come from an LLM that reads attacker-written pull
+  requests, so a prompt-injected reply could have put a tracking pixel, a phishing link, an
+  @mention, raw HTML or hidden text (zero-width, bidi or Unicode-tag characters, an HTML
+  comment, even an unterminated `<!--`) in front of maintainers. `infra/github-app/src/sanitize.ts`
+  now removes hidden characters and HTML comments, drops Markdown images, keeps link text but
+  not the link (`[text] (https[:]//host)`, `www[.]host`), replaces every `@` with a fullwidth `@`
+  (mentions and email addresses, including the ones GitHub links although the domain starts
+  with `-`, `_`, `.` or a backslash escape), replaces `<` and `>` with the fullwidth `＜` and `＞`,
+  shows a character reference as text, and caps lengths (title 140,
+  summary 4,000, message 2,000, 50 annotations per check). An annotation whose path is absolute,
+  has a `..` segment or looks like markup is dropped. The rules are plain rewrites with no
+  Markdown parser, linear in the input, and idempotent. `createCheckRun` is now the only call to
+  `checks.create` and applies the sanitiser to the whole `output`; a test fails if another
+  appears. The Check's verdict and issue count now come from the findings instead of the
+  annotations, so a finding left without an annotation (over the 50 limit, or an unusable path)
+  can no longer turn a failure into a success, and the summary says how many were left out.
+  Code is treated like prose, so `@Override` reads `＠Override` and `Optional<String>` reads
+  `Optional＜String＞`, in backticks too (fullwidth characters rather than entities, which a
+  code span would show literally). Removing hidden characters also removes an emoji's variation
+  selector and the zero-width joiners of joined emoji and of some scripts. The Actions workflow
+  `trelix-review.yml` does not use this sanitiser.
 
 ### Fixed
 - **This repository's PR review workflow posted its Check on the pull request's merge commit,
