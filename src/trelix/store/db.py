@@ -334,6 +334,56 @@ def read_only_uri(db_path: Path | str) -> str:
     return f"file:{urllib.request.pathname2url(str(db_path))}?mode=ro"
 
 
+def wal_reset_risk(version_info: tuple[int, ...]) -> bool:
+    """True when `version_info` (`sqlite3.sqlite_version_info`) is in the WAL-reset range.
+
+    SQLite 3.7.0 (the first WAL release) through 3.51.2 can lose committed writes when two
+    or more connections, in different threads or processes, write or checkpoint the same
+    WAL database at the same instant. Fixed in 3.51.3 (2026-03-13) and backported to 3.50.7
+    and 3.44.6, so those two lines are safe from their patch release on.
+
+    Answers for the UPSTREAM version number only. A distro build (Debian, for one) can carry
+    the fix under a lower number, so the caller's warning says "may", never "is vulnerable".
+    Pure, so the boundary table is testable without touching the linked library.
+    """
+    if version_info < (3, 7, 0):
+        return False
+    is_fixed = (
+        version_info >= (3, 51, 3)
+        or (3, 50, 7) <= version_info < (3, 51, 0)
+        or (3, 44, 6) <= version_info < (3, 45, 0)
+    )
+    return not is_fixed
+
+
+# One WARNING per process, not per Database(): `trelix watch` and the test suite open many.
+# Test seam: a test that needs the warning again re-arms it with
+# `monkeypatch.setattr(trelix.store.db, "_wal_reset_warned", False)`, which also restores
+# the previous value afterwards so one test cannot decide what the next observes.
+_wal_reset_warned = False
+_wal_reset_warn_lock = threading.Lock()
+
+
+def _warn_once_if_wal_reset_risk() -> None:
+    """Log the WAL-reset warning the first time a writer opens on an affected SQLite."""
+    global _wal_reset_warned
+    if not wal_reset_risk(sqlite3.sqlite_version_info):
+        return
+    with _wal_reset_warn_lock:
+        if _wal_reset_warned:
+            return
+        _wal_reset_warned = True
+    logger.warning(
+        "The linked SQLite is %s. SQLite 3.7.0 through 3.51.2 can lose committed writes "
+        "when two or more connections, in different threads or processes, write or "
+        "checkpoint the same WAL database at the same instant. It is fixed in 3.51.3 and "
+        "backported to 3.50.7 and 3.44.6; a distro build may carry the fix under a lower "
+        "number, so this is not a confirmed defect in your build. Run only one process that "
+        "writes to the index at a time, or upgrade Python or SQLite.",
+        sqlite3.sqlite_version,
+    )
+
+
 class Database:
     """
     Thin wrapper around sqlite3 with typed methods for each table.
@@ -362,6 +412,9 @@ class Database:
         cannot quietly reintroduce the write. Schema init is skipped, which is why this must
         not be used for anything that needs a current schema — reads that touch a table a
         migration would have added will fail, loudly, which is the right outcome.
+
+        The writer path also logs one WARNING per process when the linked SQLite is in the
+        WAL-reset range (see `wal_reset_risk`); the read-only path never does.
         """
         self._read_only = read_only
         self._db_path = db_path
@@ -388,6 +441,10 @@ class Database:
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self.init_schema()
+        # After init_schema() so an open that is refused (SchemaVersionError) does not spend
+        # the once-only warning. The read-only path above returns before this: it cannot
+        # write, so it cannot lose a write.
+        _warn_once_if_wal_reset_risk()
 
     def enable_bm25_read_pool(self, pool_size: int) -> None:
         """Opt-in: open a ReadOnlyConnectionPool for bm25_search() to draw
