@@ -7,6 +7,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 ## [Unreleased]
 
 ### Security
+- **trelix now warns, once per process, when the SQLite it is linked against can lose WAL
+  writes.** SQLite 3.7.0 through 3.51.2 can lose committed writes when two or more
+  connections, in different threads or processes, write or checkpoint the same WAL database
+  at the same instant. The fix is in 3.51.3 and was backported to 3.50.7 and 3.44.6. When a
+  writer opens the index on a build outside those fixed versions, `Database` logs one
+  WARNING that names the linked version and recommends running one writer at a time or
+  upgrading Python or SQLite. The check goes by the upstream version number, so the warning
+  says that a distro build may already carry the fix and does not claim the build is
+  affected. Read-only opens stay silent, and nothing else about how the index is opened
+  changes. `SECURITY.md` and `docs/TROUBLESHOOTING.md` describe it.
 - **The GitHub App's child processes inherited its environment, and its git commands were
   not isolated.** `trelix index` and `trelix review` received every host variable except
   `GITHUB_APP_PRIVATE_KEY` and `GITHUB_WEBHOOK_SECRET` (the platform's `RAILWAY_*` tokens

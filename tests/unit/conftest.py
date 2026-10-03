@@ -37,6 +37,7 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import pytest  # noqa: E402 - must follow the env vars above
 
+import trelix.store.db as _store_db  # noqa: E402
 from tests._env_isolation import (  # noqa: E402
     apply_env_isolation,
     disable_litellm_dotenv_autoload,
@@ -100,6 +101,20 @@ def _isolate_beast_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     scrub_operator_env(monkeypatch)
     neutralize_operator_env_file(monkeypatch)
     apply_env_isolation(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _wal_reset_warning_already_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the once-per-process WAL-reset warning out of every test but its own.
+
+    `Database()` logs one WARNING per process when the linked SQLite is in the WAL-reset
+    range (store/db.py). On such a build, whichever test first opens a writer would receive
+    it, so a test that asserts `caplog.records == []` around an index or store call would
+    pass or fail depending on collection order, and on which worker xdist handed it to.
+    Marking the warning spent before each test makes every test observe the same thing on
+    every SQLite build. tests/unit/test_sqlite_wal_reset_warning.py re-arms it explicitly.
+    """
+    monkeypatch.setattr(_store_db, "_wal_reset_warned", True)
 
 
 @pytest.fixture(autouse=True)
