@@ -41,7 +41,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `truncated`. A reply that says it stopped cleanly but used every token it was allowed is
   treated as cut off too, because LiteLLM can hide a truncation behind `stop`. The limit is now
   `TRELIX_REVIEW_MAX_TOKENS` (default 4096, range 256–16384; the ceiling is below the 21333
-  tokens above which the Anthropic SDK refuses a non-streaming request). An array counts only
+  tokens above which the Anthropic SDK refuses a non-streaming request; a blank value is read
+  as unset, so an undefined CI variable does not break every command). An array counts only
   if at least one item has a text `comment`; a bad or missing line number falls back to the
   hunk's range instead of discarding the hunk. `ReviewOutcome.hunks_failed` now counts every
   hunk that was not reviewed, not only calls that raised, so a review in which no hunk was

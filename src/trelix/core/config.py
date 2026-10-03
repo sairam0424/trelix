@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field, field_validator
+from pydantic_core import PydanticUseDefault
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Language
@@ -1756,6 +1757,18 @@ class IndexConfig(BaseSettings):
         le=16384,
         alias="TRELIX_REVIEW_MAX_TOKENS",
     )
+
+    @field_validator("review_max_tokens", mode="before")
+    @classmethod
+    def _blank_review_max_tokens_is_the_default(cls, value: object) -> object:
+        """Read a blank `TRELIX_REVIEW_MAX_TOKENS=` as unset.
+
+        A CI variable that is not defined (`${{ vars.X }}`) reaches the process as an empty
+        string, and without this it failed config validation in every command, not just review.
+        """
+        if isinstance(value, str) and not value.strip():
+            raise PydanticUseDefault()
+        return value
 
     @field_validator("repo_path")
     @classmethod

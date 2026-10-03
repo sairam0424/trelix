@@ -453,6 +453,23 @@ class TestTheLimit:
 
         assert client.complete.call_args.kwargs["max_tokens"] == 4096
 
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_a_blank_variable_means_the_default_not_a_config_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blank: str
+    ) -> None:
+        # An undefined CI variable arrives as an empty string.
+        monkeypatch.setenv("TRELIX_REVIEW_MAX_TOKENS", blank)
+
+        assert IndexConfig(repo_path=str(tmp_path)).review_max_tokens == 4096
+
+    def test_a_non_numeric_variable_is_still_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRELIX_REVIEW_MAX_TOKENS", "lots")
+
+        with pytest.raises(ValidationError):
+            IndexConfig(repo_path=str(tmp_path))
+
     def test_the_code_default_limit_is_4096(self) -> None:
         # The test environment pins the variable to its default (tests/_env_isolation.py), so
         # an instance would always say 4096; read the field's own default instead.
