@@ -1,0 +1,51 @@
+# zizmor — static analysis of this repo's own GitHub Actions workflows and Dependabot config
+# (https://docs.zizmor.sh). It looks for the things that turn a workflow into an attack
+# path: template injection, over-broad token permissions, unpinned or impostor `uses:`
+# refs, credentials persisted by checkout, Dependabot entries without a cooldown.
+# Nothing else here reports on individual workflow lines: CodeQL and semgrep scan the code
+# the workflows run, and Scorecard reports a score per practice, not the lines behind it.
+#
+# ADVISORY for now. The findings over the 14 existing workflows have not been measured, so
+# the job cannot fail a PR: `continue-on-error` is set on it, and findings are printed to
+# the job log (`advanced-security: false` keeps the token at `contents: read`; the default
+# mode uploads SARIF and needs `security-events: write`). Triage the first run's output,
+# fix or suppress what it finds, and only then drop `continue-on-error` to make it a gate.
+#
+# Pinning: both actions are pinned to a full commit SHA with the version after it on the
+# same line (the position dependabot's github-actions updater rewrites). zizmor itself is
+# pinned by the action's `version:` input: an exact X.Y.Z that the action maps to an image
+# digest in its support/versions file (at this SHA, 1.30.1 is the digest `latest` resolves
+# to as well), so the scanner cannot change under this file without a reviewed edit. The
+# updater does not touch that value: raise it by hand once a bumped action pin lists a
+# newer zizmor.
+
+name: zizmor
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - ".github/**"
+  push:
+    branches: [main, develop]
+    paths:
+      - ".github/**"
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    name: zizmor (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: 1.30.1
+          advanced-security: false
