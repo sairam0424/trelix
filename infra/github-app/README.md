@@ -120,9 +120,10 @@ GitHub -- pull_request webhook -->  this service (Express)
   Fetches `refs/pull/<n>/head` against the base repo (never
   `--branch=<head.ref>`, which only exists on a fork's own repo for an
   external-contributor PR) and authenticates via a per-workspace
-  `GIT_ASKPASS` script that reads the token from an env var — the token
-  is never embedded in the remote URL, written to `.git/config`, or
-  passed as a subprocess argument. Deliberately never passes
+  `GIT_ASKPASS` script, kept outside the checkout, that reads the token
+  from an env var — the token is never embedded in the remote URL,
+  written to `.git/config`, or passed as a subprocess argument.
+  Deliberately never passes
   `--recurse-submodules`: this service clones PRs from arbitrary external
   contributors, and an attacker-controlled `.gitmodules` is a real risk
   that diff-level review doesn't need to take on.
@@ -174,17 +175,108 @@ GitHub -- pull_request webhook -->  this service (Express)
     `render.yaml`). trelix follows symlinks out of the repo by default, so
     without it a symlink committed in a PR would make `trelix index` read
     files from the host. If you deploy without this image (or override the
-    variable on your platform), set it yourself. `review-runner.ts` also
+    variable on your platform), set it yourself. `src/child-env.ts` also
     forces it to `false` for both `trelix` children, whatever the host
     passes in.
   - `repo-checkout.ts` checks out with `core.symlinks=false` (committed
     symlinks become plain files holding the link text) and deletes any
     `.trelix` entry from the fresh workspace, so a PR cannot supply its
     own index database.
-  - `trelix index` and `trelix review` run without `GITHUB_APP_PRIVATE_KEY`
-    and `GITHUB_WEBHOOK_SECRET` in their environment. Only `trelix review`
-    receives the installation token (as `GITHUB_TOKEN`); LLM/embedder
-    provider variables are still passed through.
+  - **Every child process gets an allow-listed environment.** `src/child-env.ts`
+    builds each one from an empty object and copies in only the names it
+    lists, so `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, the
+    platform's `RAILWAY_*` variables and any other name not listed never reach
+    a child:
+    - `git` (`init`, `remote add`, `fetch` and `checkout`): `PATH`, `LANG`,
+      an empty `HOME` and `XDG_CONFIG_HOME`, `GIT_ASKPASS`, `TRELIX_GIT_TOKEN`
+      and the isolation variables below.
+    - `trelix index`: `PATH`, `LANG`, `HOME`, `XDG_CONFIG_HOME` (where trelix
+      looks for the operator's `trelix/env` file), every provider variable
+      trelix's config reads (for example `AZURE_API_KEY`, `AZURE_ENDPOINT`,
+      `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AWS_ACCESS_KEY_ID`), the names
+      the provider SDKs read for themselves, and every `TRELIX_*` variable
+      except `TRELIX_GIT_TOKEN`. The SDK names include the common credential
+      chains of a deployment without static keys, though not every name the
+      SDKs read (see "Not passed" below): AWS role and web-identity login
+      (`AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_SESSION_TOKEN`),
+      ECS/EKS container credentials (`AWS_CONTAINER_CREDENTIALS_FULL_URI` and
+      `_RELATIVE_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN` and `_FILE`), a
+      shared credentials file (`AWS_SHARED_CREDENTIALS_FILE`) and region
+      (`AWS_DEFAULT_REGION`), Vertex (`GOOGLE_APPLICATION_CREDENTIALS`),
+      Anthropic identity federation, Azure AD tokens, and gateway base URLs
+      such as `OPENAI_BASE_URL`. The full lists are in `child-env.ts`, and a
+      Python test keeps them in step with trelix's config and with the names
+      the installed provider SDKs are scanned for. Three `GIT_CONFIG_*`
+      variables are also set, see the git bullet below. A pointer such as
+      `AWS_WEB_IDENTITY_TOKEN_FILE` hands the child the identity itself, so
+      scope the role behind it to model inference only.
+    - `trelix review`: the same, plus the installation token as
+      `GITHUB_TOKEN`. Only this child receives it.
+
+    Names are matched exactly and case-sensitively. **Not passed**, because
+    they are on no list: proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`,
+    `NO_PROXY` and their lowercase spellings), CA-bundle variables
+    (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`,
+    `NODE_EXTRA_CA_CERTS`, `AWS_CA_BUNDLE`), `AWS_CONFIG_FILE`, and every
+    other platform variable. Some provider-SDK names are withheld on purpose:
+    webhook-signing and admin keys (`ANTHROPIC_WEBHOOK_SIGNING_KEY`,
+    `OPENAI_WEBHOOK_SECRET`, `OPENAI_ADMIN_KEY`), Azure service-principal
+    secrets (`AZURE_CLIENT_SECRET` and the certificate and federated-token
+    names), and the names of services trelix has no client for (S3, Azure
+    services other than Azure OpenAI, Google search).
+
+    **The lists do not cover everything the SDKs read.** These are also not
+    forwarded: `AWS_BEARER_TOKEN_BEDROCK` (a secret: Bedrock API-key
+    authentication), `AWS_EC2_METADATA_DISABLED`, `OPENAI_ORG_ID`,
+    `OPENAI_PROJECT_ID`, `OPENAI_API_TYPE`, `OPENAI_CUSTOM_HEADERS` and
+    `GOOGLE_GENAI_USE_VERTEXAI`. A deployment that relies on one of them (a
+    Bedrock API-key user, for one) is not covered: typically authentication
+    fails, `trelix review` exits 3 and the PR gets a neutral check instead of
+    a review. Open an issue, or add the name to the allow-list in
+    `child-env.ts`; `tests/unit/test_github_app_child_env_contract.py` pins
+    that list to the names the installed SDKs are scanned for, so a name
+    outside that scan also needs a reviewed edit to that test.
+
+    Every `TRELIX_*` variable passes to the `trelix` children, so do not keep
+    an App secret under a `TRELIX_` name. Env filtering is leak hardening,
+    not a sandbox: a child running as the same user may be able to read the
+    App process's environment through the operating system (for example
+    `/proc/<pid>/environ` on Linux).
+  - **git is isolated from the host and from the PR.** Each git child runs
+    with `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`,
+    `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`,
+    `GIT_ALLOW_PROTOCOL=https` and `HOME`/`XDG_CONFIG_HOME` set to an empty
+    directory. Every git command also gets
+    `-c safe.bareRepository=explicit -c protocol.file.allow=never -c credential.helper=`,
+    and the repository is created with `git init --template=` (an empty
+    template). `safe.bareRepository=explicit` matters because a PR can commit
+    a bare repository into its tree as ordinary files: a git command run from
+    inside it would otherwise adopt that repository and could run the command
+    in its `core.fsmonitor`. The allowed protocol can be widened only by the
+    `allowProtocol` option of `checkoutPullRequest` (used by the tests to
+    fetch from a local repository), never from the environment.
+    `-c safe.bareRepository=explicit` needs git 2.38 or newer; an older git
+    silently ignores it. The image installs Debian's git, which is newer.
+    `-c protocol.file.allow=never` is redundant with
+    `GIT_ALLOW_PROTOCOL=https` (the environment variable overrides it, which
+    is also why the tests' `allowProtocol: "file"` works); it is kept as a
+    second guard.
+  - **The git calls `trelix` makes itself get almost none of that.** This
+    isolation covers the git commands the service runs (`init`, `remote add`,
+    `fetch`, `checkout`). The ones inside `trelix` (`git_linker.py`,
+    `diff_parser.py` and `provenance.py`, each run with `cwd=repo_path`) get
+    no `-c` config, no empty `HOME` and no `GIT_CONFIG_GLOBAL=/dev/null`, and
+    rely on the checkout root being their working directory. The one defence
+    they do get is `safe.bareRepository=explicit`, passed to the `trelix`
+    children as `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0` and
+    `GIT_CONFIG_VALUE_0` (command-scope config, so it outranks any config
+    file; same git 2.38 floor), which keeps them from adopting a bare
+    repository found implicitly.
+  - The `GIT_ASKPASS` helper and git's `HOME` live in a separate
+    `trelix-review-aux-*` temp directory outside the checkout. `cleanup()`
+    removes it with the checkout and `sweepStaleWorkspaces` removes leftovers
+    of both at boot. A PR that tracks a file named `.git-askpass.sh` therefore
+    checks out normally.
 - Logs (`console.error`/`console.warn` on review/indexing failures)
   currently go to stdout/stderr only; wire your platform's log
   aggregation on top rather than expecting structured logging from this
@@ -201,6 +293,9 @@ GitHub -- pull_request webhook -->  this service (Express)
 - `src/webhook.ts` — verifies `X-Hub-Signature-256`, then routes
   `pull_request` `opened`/`synchronize`/`reopened` deliveries (mirrors the
   Actions workflow's trigger), invokes the review runner.
+- `src/child-env.ts` — the allow-listed environment of each child process
+  (`git`, `trelix index`, `trelix review`); see "Untrusted PR content"
+  above.
 - `src/review-runner.ts` — mints an installation token, clones the PR's
   actual head into a fresh workspace (`repo-checkout.ts`), indexes and
   reviews it via the `trelix` CLI, and posts the findings as a GitHub
