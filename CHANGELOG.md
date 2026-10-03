@@ -211,6 +211,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   unchanged. `--post-comments` now says in
   the review body how many hunks were not fully reviewed, and a partial review with no findings
   says "No findings in the hunks that were reviewed" instead of "No issues found."
+- **CI reports the SQLite version that the test interpreters, images and binary build
+  interpreters link.** Nobody knew whether they link a SQLite in the 3.7.0 to 3.51.2 range where
+  committed WAL writes can be lost (fixed in 3.51.3, 3.50.7 and 3.44.6).
+  `scripts/report_sqlite_version.py` (standard library only) prints the version and emits a
+  `::warning::` annotation inside that range or a `::notice::` outside it, using
+  `trelix.store.db.wal_reset_risk` when trelix is importable and an embedded copy of the same
+  table otherwise. The script always exits 0: a Python without sqlite3, a range check that
+  raises or a broken stdout become a warning or a label, never a failure of the script, and the
+  version is still printed when only the range check or the platform query fails. The steps
+  themselves have no `continue-on-error`, so a Docker daemon error can still fail one.
+  It reports in the `ci.yml` unit matrix (three Python legs), the slim Docker image, the
+  `-local` image (when the `Dockerfile` or a `pyproject.toml` it builds from changed), the
+  GitHub App image (when `infra/github-app/` changes) and the `build-binaries.yml` jobs, which
+  report the build interpreter because a frozen binary cannot run a script. These workflows
+  run on pushes to `main` and `develop` and on pull requests targeting them (the binary builds:
+  pushes to `develop` and `main`, pull requests to `main`), so a stacked pull request on a
+  feature branch reports nothing. The number printed is the upstream one, so it cannot say
+  whether a distro build such as Debian's carries the fix under a lower number; adding the
+  distro package version is the follow-up. Informational only; no job or check name changed.
 
 ## [3.4.2] — 2026-10-02
 

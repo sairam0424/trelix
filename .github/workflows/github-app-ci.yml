@@ -57,3 +57,10 @@ jobs:
       # repo evolves, not just at the time it was added.
       - name: Build image
         run: docker build -f infra/github-app/Dockerfile -t trelix-github-app:ci .
+
+      # Informational: the SQLite the image's Python links. The App shells out to
+      # `trelix index` / `trelix review` inside this image, so this is the SQLite those
+      # children write their index with. Fed on stdin because the image carries no scripts/.
+      # The script exits 0 on every path; no `continue-on-error`, no `|| true`.
+      - name: Report the SQLite version linked inside the image
+        run: docker run --rm -i --entrypoint python trelix-github-app:ci - < scripts/report_sqlite_version.py
