@@ -15,11 +15,26 @@ from trelix.llm.client import (
     ToolCallResponse,
     TrelixChatClient,
 )
+from trelix.llm.finish_reasons import VERTEX_FINISH_REASONS, normalise
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
 
 logger = logging.getLogger("trelix.llm.vertex_backend")
+
+
+def _candidate_finish_name(response: Any) -> str | None:
+    """The first candidate's `finish_reason` name (e.g. "STOP"), or None when there is none.
+
+    A response can have no candidates at all (a blocked prompt), or a candidate whose
+    finish reason is unset; both stay unclassified instead of being read as a normal stop.
+    """
+    candidates = getattr(response, "candidates", None)
+    if not candidates:
+        return None
+    reason = getattr(candidates[0], "finish_reason", None)
+    name = getattr(reason, "name", reason)
+    return name if isinstance(name, str) else None
 
 
 class VertexBackend(TrelixChatClient):
@@ -110,20 +125,12 @@ class VertexBackend(TrelixChatClient):
             contents=self._build_contents(messages),
             config=gen_config,
         )
-        finish = (
-            response.candidates[0].finish_reason.name.lower() if response.candidates else "stop"
-        )
-        normalized = (
-            "stop"
-            if finish in ("stop", "1")
-            else "length"
-            if finish in ("max_tokens", "2")
-            else "stop"
-        )
+        raw_finish = _candidate_finish_name(response)
         return ChatResponse(
             content=response.text or "",
             model=self._model,
-            finish_reason=normalized,
+            finish_reason=normalise(VERTEX_FINISH_REASONS, raw_finish),
+            raw_finish_reason=raw_finish,
             input_tokens=getattr(response.usage_metadata, "prompt_token_count", 0),
             output_tokens=getattr(response.usage_metadata, "candidates_token_count", 0),
         )

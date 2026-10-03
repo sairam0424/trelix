@@ -16,18 +16,12 @@ from trelix.llm.client import (
     ToolCallResponse,
     TrelixChatClient,
 )
+from trelix.llm.finish_reasons import BEDROCK_STOP_REASONS, normalise
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
 
 logger = logging.getLogger("trelix.llm.bedrock_backend")
-
-_STOP_REASON_MAP = {
-    "end_turn": "stop",
-    "max_tokens": "length",
-    "stop_sequence": "stop",
-    "tool_use": "tool_calls",
-}
 
 _IMAGE_FORMATS = {
     "image/png": "png",
@@ -258,8 +252,8 @@ class BedrockBackend(TrelixChatClient):
             }
         }
 
-    def _normalize_finish_reason(self, stop_reason: str) -> str:
-        return _STOP_REASON_MAP.get(stop_reason, "stop")
+    def _normalize_finish_reason(self, stop_reason: object) -> str:
+        return normalise(BEDROCK_STOP_REASONS, stop_reason)
 
     def _extract_thinking_blocks(self, content: list[dict[str, Any]]) -> list[ThinkingBlock]:
         """Extract Bedrock Converse reasoningContent blocks.
@@ -396,6 +390,7 @@ class BedrockBackend(TrelixChatClient):
             else None
         )
         usage = response.get("usage", {})
+        stop_reason = response.get("stopReason")
         return ChatResponse(
             content=content,
             # request["modelId"], not self._model: _try_with_fallback() may
@@ -406,7 +401,8 @@ class BedrockBackend(TrelixChatClient):
             # served this specific response, not whatever self._model
             # happens to hold by the time this line runs.
             model=request["modelId"],
-            finish_reason=self._normalize_finish_reason(response.get("stopReason", "end_turn")),
+            finish_reason=self._normalize_finish_reason(stop_reason),
+            raw_finish_reason=stop_reason if isinstance(stop_reason, str) else None,
             input_tokens=usage.get("inputTokens", 0),
             output_tokens=usage.get("outputTokens", 0),
             thinking=thinking_text,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from trelix.llm.client import ChatResponse
 from trelix.review.diff_parser import DiffHunk
 from trelix.review.reviewer import DiffReviewer, ReviewComment
 
@@ -73,11 +74,13 @@ class TestDiffReviewer:
         mock_ctx.results = []
 
         mock_llm = MagicMock()
-        mock_llm.complete.return_value = MagicMock(
+        mock_llm.complete.return_value = ChatResponse(
             content=(
                 '[{"line_start": 10, "line_end": 12, "severity": "WARN",'
                 ' "comment": "Consider logging before raise."}]'
-            )
+            ),
+            model="gpt-test",
+            finish_reason="stop",
         )
 
         reviewer._retriever = MagicMock()
@@ -130,8 +133,10 @@ class TestDiffReviewer:
         mock_ctx = MagicMock()
         mock_ctx.context_text = ""
         mock_llm = MagicMock()
-        mock_llm.complete.return_value = MagicMock(
-            content='[{"line_start": 10, "line_end": 11, "severity": "INFO", "comment": "ok"}]'
+        mock_llm.complete.return_value = ChatResponse(
+            content='[{"line_start": 10, "line_end": 11, "severity": "INFO", "comment": "ok"}]',
+            model="gpt-test",
+            finish_reason="stop",
         )
 
         reviewer._retriever = MagicMock()
@@ -165,7 +170,9 @@ class TestDiffReviewer:
         mock_ctx = MagicMock()
         mock_ctx.context_text = ""
         mock_llm = MagicMock()
-        mock_llm.complete.return_value = MagicMock(content="[]")
+        mock_llm.complete.return_value = ChatResponse(
+            content="[]", model="gpt-test", finish_reason="stop"
+        )
 
         reviewer._retriever = MagicMock()
         reviewer._retriever.retrieve.return_value = mock_ctx
@@ -188,7 +195,9 @@ def _capture_user_content(tmp_path: Path, hunk: DiffHunk, context_text: str) -> 
     reviewer._retriever.retrieve.return_value = mock_ctx
 
     mock_llm = MagicMock()
-    mock_llm.complete.return_value = MagicMock(content="[]")
+    mock_llm.complete.return_value = ChatResponse(
+        content="[]", model="gpt-test", finish_reason="stop"
+    )
     reviewer._llm_client = mock_llm
 
     reviewer.review([hunk])

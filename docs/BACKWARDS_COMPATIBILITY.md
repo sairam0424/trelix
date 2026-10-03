@@ -98,6 +98,19 @@ v3.0.0's.
 The earlier wording promised the file unconditionally, which made this document false
 the moment v3.0.0 tagged.
 
+### Behaviour changes shipped as fixes: `trelix review` exit codes
+
+Two exit codes of `trelix review` were added in patch releases on purpose, as correctness fixes
+rather than flagged breaking changes: `3` in 3.4.2 (the review could not run, which used to
+exit `0` and print "No issues found."), and `4` in the release that follows it (the review ran but
+left hunks unreviewed, which used to exit `0`; 3.4.2's own CHANGELOG entry recorded that
+limitation). Both replace a false "clean" result, and a caller that treats any non-zero exit as
+failure will now fail where it used to pass, which is the point. The escape hatch for `4` is
+`TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION=1`, which restores the old exit `0` for a partial review;
+there is none for `3`, because nothing had been reviewed. The CHANGELOG entry for `4` says so in
+bold. The default of `4` is a judgement call, not a settled one: shipping it opt-in first and
+flipping the default in a flagged MINOR release would follow this policy more strictly.
+
 ### v3.3.0 Breaking Changes
 
 The following deprecated item was removed in v3.3.0. Its `AliasChoices`/`DeprecationWarning` backward-compat shim had been active since v2.4.0.
