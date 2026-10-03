@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field, field_validator
+from pydantic_core import PydanticUseDefault
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Language
@@ -1744,6 +1745,30 @@ class IndexConfig(BaseSettings):
         default=False,
         alias="TRELIX_USE_BATCH_API",
     )
+
+    # Output-token limit for one `trelix review` call per hunk. A review is a JSON array, so a
+    # limit that is too low cuts it off mid-object; the reviewer retries once at four times this
+    # (capped at 16384) and otherwise reports the hunk as truncated. The ceiling is 16384
+    # because the Anthropic SDK refuses a non-streaming request above 21333 tokens, and some
+    # models refuse less. Reasoning tokens count toward the limit on models that think.
+    review_max_tokens: int = Field(
+        default=4096,
+        ge=256,
+        le=16384,
+        alias="TRELIX_REVIEW_MAX_TOKENS",
+    )
+
+    @field_validator("review_max_tokens", mode="before")
+    @classmethod
+    def _blank_review_max_tokens_is_the_default(cls, value: object) -> object:
+        """Read a blank `TRELIX_REVIEW_MAX_TOKENS=` as unset.
+
+        A CI variable that is not defined (`${{ vars.X }}`) reaches the process as an empty
+        string, and without this it failed config validation in every command, not just review.
+        """
+        if isinstance(value, str) and not value.strip():
+            raise PydanticUseDefault()
+        return value
 
     @field_validator("repo_path")
     @classmethod

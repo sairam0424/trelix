@@ -295,8 +295,9 @@ def _exit_if_review_not_run(outcome: ReviewOutcome, *, json_output: bool) -> Non
             _print_json([])
         if outcome.llm_available:
             reason = (
-                f"the LLM call failed for {outcome.hunks_failed} of {outcome.hunks_total} "
-                "hunks (see the warnings above)"
+                f"{outcome.hunks_failed} of {outcome.hunks_total} hunks got no usable review: "
+                "the LLM call failed, or its reply was cut off, refused or not a review "
+                "(see the warnings above)"
             )
         else:
             reason = (
@@ -311,7 +312,7 @@ def _exit_if_review_not_run(outcome: ReviewOutcome, *, json_output: bool) -> Non
     if outcome.hunks_failed:
         err_console.print(
             f"[yellow]Warning: {outcome.hunks_failed} of {outcome.hunks_total} hunks could "
-            "not be reviewed; the results below cover only the rest.[/yellow]"
+            "not be fully reviewed; the results below may be incomplete.[/yellow]"
         )
 
 
@@ -425,8 +426,9 @@ _EmbedderProvider = Literal[
     "cohere",
 ]
 
-# Exit code of `trelix review` when it could not review at all (no usable LLM, or every
-# hunk's LLM call failed). Not 1 (generic error), not 2 (click usage error, and the
+# Exit code of `trelix review` when it could not review at all (no usable LLM, or no hunk
+# got a usable review: every call failed or every reply was cut off, refused or not a
+# review). Not 1 (generic error), not 2 (click usage error, and the
 # audit commands' "could not check"), so a CI wrapper can tell "not reviewed" from both.
 REVIEW_NOT_RUN_EXIT_CODE = 3
 
