@@ -6,7 +6,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Security
+- **The GitHub App's child processes inherited its environment, and its git commands were
+  not isolated.** `trelix index` and `trelix review` received every host variable except
+  `GITHUB_APP_PRIVATE_KEY` and `GITHUB_WEBHOOK_SECRET` (the platform's `RAILWAY_*` tokens
+  included), and `git init`, `git remote add` and `git checkout` inherited the whole
+  environment. Each child kind now gets an allow-listed environment built from an empty
+  object (`infra/github-app/src/child-env.ts`): `git` gets `PATH`, `LANG`, an empty `HOME` and
+  its own isolation variables; `trelix index` and `trelix review` get `PATH`, `LANG`, `HOME`,
+  `XDG_CONFIG_HOME` (where trelix finds the operator's `trelix/env` file), the provider
+  variables trelix's config reads, the common credential and endpoint names the provider SDKs
+  read for themselves (AWS role, web-identity and container credentials, a shared credentials
+  file, `GOOGLE_APPLICATION_CREDENTIALS` for Vertex, Anthropic identity federation, Azure AD
+  tokens, gateway base URLs) and every `TRELIX_*` variable except `TRELIX_GIT_TOKEN`, which only
+  the `git` child receives (the walker flag is still forced off, and
+  `safe.bareRepository=explicit` is set for the git calls trelix makes itself); only `review`
+  gets the installation token, as `GITHUB_TOKEN`. Every git
+  command also runs with no user or system config (`GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`
+  are `/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), `GIT_TERMINAL_PROMPT=0`, only https allowed,
+  `-c safe.bareRepository=explicit -c protocol.file.allow=never -c credential.helper=`, and an
+  empty `git init` template, so a bare repository a PR embeds in its tree is refused when git
+  runs inside it instead of running that repository's `core.fsmonitor`. The askpass helper
+  moved out of the checkout into a separate `trelix-review-aux-*` directory, so a PR that
+  tracks a file named `.git-askpass.sh` still checks out. A variable a deployment needs in a
+  child that is not on the list is no longer passed; add it to `child-env.ts`. That includes
+  proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), CA-bundle variables
+  (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `AWS_CA_BUNDLE`) and
+  `AWS_CONFIG_FILE`, and the provider-SDK names withheld on purpose (webhook-signing and admin
+  keys, Azure service-principal secrets, names of services trelix has no client for). The lists
+  do not cover everything the SDKs read either: `AWS_BEARER_TOKEN_BEDROCK` (a secret, Bedrock
+  API-key authentication), `AWS_EC2_METADATA_DISABLED`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`,
+  `OPENAI_API_TYPE`, `OPENAI_CUSTOM_HEADERS` and `GOOGLE_GENAI_USE_VERTEXAI` are not forwarded,
+  so a deployment that relies on one (Bedrock API-key users are not covered) typically sees
+  authentication fail: `trelix review` exits 3 and the PR gets a neutral check. Open an issue,
+  or add the name to the allow-list in `child-env.ts` (with a reviewed edit to the Python
+  contract test, which pins that list to the names the installed SDKs are scanned for).
+  `safe.bareRepository=explicit` needs git 2.38 or newer; older git ignores it. The git calls
+  trelix makes itself (`git_linker.py`, `diff_parser.py`, `provenance.py`) get none of the git
+  isolation above except that one setting.
 
 ## [3.4.2] — 2026-10-02
 
