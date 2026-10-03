@@ -16,6 +16,7 @@
 #   npm             /packages/trelix-typescript      (@trelix/sdk, published)
 #   npm             /infra/github-app                (@trelix/github-app)
 #   docker          /                                (ghcr.io/sairam0424/trelix[-local])
+#   docker          /infra/github-app                (the App image)
 #   github-actions  /
 #
 # Dependabot only reports advisories it can fix by moving a version constraint it can see.
@@ -28,6 +29,16 @@
 # on main while develop moved on independently, and needed a manual two-PR reconciliation
 # (#378, #379) to fix. All non-Dependabot work already goes through develop first; this
 # just makes Dependabot follow the same path.
+#
+# Every entry also sets `cooldown: default-days: 7`, so a version is not proposed until it has
+# been public for a week instead of Dependabot's implicit three days. A compromised package or
+# action release is usually noticed and taken down within days, and the longer wait gives that
+# more time to happen before a PR exists to be merged. Seven days is the figure the
+# `dependabot-cooldown` audit of zizmor recommends (see workflows/zizmor.yml). Cooldown delays
+# version updates only; a security update is not held back by it.
+#
+# infra/github-app/Dockerfile is a tenth manifest. Its base images were watched by nothing, so
+# it has a docker entry below, next to the one for the root Dockerfile.
 version: 2
 updates:
   # Python dependencies
@@ -37,6 +48,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       dev-dependencies:
@@ -63,6 +76,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
 
   # trelix-langchain — published to PyPI by release.yml. Two dependencies
@@ -73,6 +88,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 2
     ignore:
       # `trelix>=3.0.0` is bumped by the release process, not by dependabot: release.yml
@@ -89,6 +106,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 2
     ignore:
       # Same reason as trelix-langchain above.
@@ -104,6 +123,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
     groups:
       vscode-dev-dependencies:
@@ -128,6 +149,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 2
     groups:
       sdk-dev-dependencies:
@@ -145,6 +168,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 4
     groups:
       github-app-dev-dependencies:
@@ -173,6 +198,22 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+
+  # infra/github-app/Dockerfile — the App image (build context is the repo root; see the
+  # Dockerfile's header). Same reading as the entry above: a base-image bump moves the runtime
+  # the App ships on, so treat these PRs as decisions. Limit 2 for the same reason as the root
+  # entry.
+  - package-ecosystem: "docker"
+    directory: "/infra/github-app"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 2
 
   # GitHub Actions
@@ -182,6 +223,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     ignore:
       # Ignore major version bumps for Actions — review manually

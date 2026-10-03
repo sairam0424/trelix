@@ -6,7 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+- **Dependabot waits seven days before proposing a new version, and an advisory `zizmor` job
+  audits the workflows.** All ten `dependabot.yml` entries now set `cooldown: default-days: 7`,
+  so a version is offered as a PR a week after it is published instead of Dependabot's
+  implicit three days, which gives a compromised package or action release more time to be
+  caught and taken down first; security updates are not held back.
+  `infra/github-app/Dockerfile`, whose base images nothing watched, gets a docker entry like
+  the root one. The new `zizmor.yml` runs the zizmor static analyser over the workflows and
+  the Dependabot config on pull requests and pushes that touch `.github/`. It is advisory:
+  the job cannot fail a PR, and the findings are in its log until they have been triaged.
 
 ## [3.4.2] — 2026-10-02
 
