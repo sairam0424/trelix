@@ -1770,6 +1770,31 @@ class IndexConfig(BaseSettings):
             raise PydanticUseDefault()
         return value
 
+    # `trelix review` exits 4 when MORE than this share of the hunks was not reviewed (cut off,
+    # refused, unparseable or failed); exit 3 is for a review in which nothing was. The default
+    # 0.0 means any unreviewed hunk; 1.0 restores the old exit 0 for a partial review.
+    review_max_unreviewed_fraction: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        alias="TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION",
+    )
+
+    # Where `trelix review` writes its JSON outcome record (see trelix.review.outcome_file).
+    # Unset or blank: no file.
+    review_outcome_file: str | None = Field(
+        default=None,
+        alias="TRELIX_REVIEW_OUTCOME_FILE",
+    )
+
+    @field_validator("review_max_unreviewed_fraction", mode="before")
+    @classmethod
+    def _blank_review_fraction_is_the_default(cls, value: object) -> object:
+        """A blank `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION=` is unset (an undefined CI variable)."""
+        if isinstance(value, str) and not value.strip():
+            raise PydanticUseDefault()
+        return value
+
     @field_validator("repo_path")
     @classmethod
     def repo_must_exist(cls, v: str) -> str:

@@ -49,6 +49,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   reviewed and none kept a finding exits 3 ("did not run") instead of 0; a review with some
   unreviewed hunks still exits 0 with the existing warning.
 
+### Changed
+- **`trelix review` exits 4 when it reviewed some of the diff but left hunks unreviewed, and can
+  write a JSON record of what it covered.** 3.4.2 made a review that could not run at all exit 3
+  but left a partial one at exit 0. Now, when more than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION`
+  of the hunks were not reviewed (cut off, refused, filtered, unparseable or failed; the default
+  `0.0` means any of them), the command prints the findings it has and then exits
+  `REVIEW_INCOMPLETE_EXIT_CODE = 4`, so stdout still carries them. Exit 3 stays for a review
+  where nothing usable came out. **A caller that treats any non-zero exit as failure now fails
+  on a partial review; set `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION=1` to keep the old exit 0.**
+  `TRELIX_REVIEW_OUTCOME_FILE=<path>` writes `{schema_version, hunks_total, hunks_reviewed,
+  hunks_unreviewed, exit_code, hunks, hunks_omitted}` there, where `hunks` lists the first 100
+  unreviewed hunks as `{file, line, status, detail}`; the file is created with mode 0600 and
+  moved into place atomically, carries no model prose (`status` and `detail` are a fixed
+  vocabulary plus a character-limited provider stop token or exception class name, while `file`
+  is text from the diff and must be escaped by whatever displays it), is written before any
+  comments are posted, and a failure to write it only warns. Nothing is written when the command
+  stops before reviewing (an error, or no changes to review), so a path that is reused should
+  be removed first. A blank value of either setting is read as unset. `--json` stdout is
+  unchanged. `--post-comments` now says in
+  the review body how many hunks were not fully reviewed, and a partial review with no findings
+  says "No findings in the hunks that were reviewed" instead of "No issues found."
+
 ## [3.4.2] — 2026-10-02
 
 ### Security
