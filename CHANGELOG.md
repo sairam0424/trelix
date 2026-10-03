@@ -54,6 +54,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `safe.bareRepository=explicit` needs git 2.38 or newer; older git ignores it. The git calls
   trelix makes itself (`git_linker.py`, `diff_parser.py`, `provenance.py`) get none of the git
   isolation above except that one setting.
+- **Workflows no longer leave the job token in the checkout's `.git/config`.** The first
+  `zizmor` run over this repository (`artipacked`) reported 27 `actions/checkout` steps in 12
+  workflows without `persist-credentials: false`, which keeps the job's `GITHUB_TOKEN` in
+  `.git/config`, readable by every later step of the job, third-party actions included, and by
+  anything that archives the workspace. All 27 now set it (`build-binaries`, `ci`, `codeql`,
+  `docker-publish`, `github-app-ci`, `helm-lint`, `redeliver-failed-webhooks`, `release`,
+  `schema-drift`, `security-scan`, `verify-release` and `vscode-extension-ci`); the three
+  checkouts that already did (`scorecard`, `trelix-review`, `zizmor`) are unchanged. **There are
+  no exceptions**: no workflow pushes or commits, `gh` and the token-taking actions get the
+  token from `env` or `with` rather than from `.git/config`, and the one `git fetch` after a
+  checkout (the tag fallback in `scripts/verify_release.py`) reads this public repository
+  anonymously. The three `ref-version-mismatch` findings are fixed too: the
+  `docker/build-push-action` pins (two in `ci.yml`, one in `docker-publish.yml`) are the v7.3.0
+  commit but were commented `# v7`, a floating tag that now points at v7.4.0, so the comment
+  says `v7.3.0`. `tests/unit/test_ci_supply_chain_invariants.py` now fails when a checkout
+  drops the setting (its allow-list of `(workflow, job, reason)` exceptions is empty, and a
+  stale or unexplained entry fails too) and when that pin's comment goes back to `# v7`. The
+  cache-poisoning findings in `release.yml` and the `workflow_run` trigger of
+  `verify-release.yml` are not touched here.
 
 ### Fixed
 - **This repository's PR review workflow posted its Check on the pull request's merge commit,

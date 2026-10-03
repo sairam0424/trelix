@@ -28,6 +28,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       # Passed through env rather than interpolated into the script body, matching
       # docker-publish.yml's own documented convention: a workflow_dispatch input (or
