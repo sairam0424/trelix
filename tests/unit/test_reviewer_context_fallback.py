@@ -15,6 +15,7 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from trelix.llm.client import ChatResponse
 from trelix.review.diff_parser import DiffHunk
 from trelix.review.reviewer import _NO_CONTEXT_LABEL, DiffReviewer
 
@@ -48,7 +49,9 @@ def _reviewer(tmp_path: Path, *, retrieval_raises: bool, comments_json: str) -> 
         reviewer._retriever.retrieve.return_value = ctx
 
     reviewer._llm_client = MagicMock()
-    reviewer._llm_client.complete.return_value = MagicMock(content=comments_json)
+    reviewer._llm_client.complete.return_value = ChatResponse(
+        content=comments_json, model="gpt-test", finish_reason="stop"
+    )
     return reviewer
 
 
@@ -123,7 +126,9 @@ class TestContextFreeCommentsAreLabelled:
         reviewer._retriever = MagicMock()
         reviewer._retriever.retrieve.side_effect = [_RETRIEVAL_BOOM, ok_ctx]
         reviewer._llm_client = MagicMock()
-        reviewer._llm_client.complete.return_value = MagicMock(content=_ONE_COMMENT)
+        reviewer._llm_client.complete.return_value = ChatResponse(
+            content=_ONE_COMMENT, model="gpt-test", finish_reason="stop"
+        )
 
         comments = reviewer.review([_hunk("broken.py"), _hunk("fine.py")])
 

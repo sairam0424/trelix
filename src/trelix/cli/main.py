@@ -283,36 +283,109 @@ def _print_json(payload: object, *, indent: int | None = 2) -> None:
     )
 
 
-def _exit_if_review_not_run(outcome: ReviewOutcome, *, json_output: bool) -> None:
-    """Exit REVIEW_NOT_RUN_EXIT_CODE when nothing was reviewed; warn on a partial review.
+def _write_review_outcome(outcome: ReviewOutcome, config: IndexConfig, exit_code: int) -> None:
+    """Write the JSON outcome record when TRELIX_REVIEW_OUTCOME_FILE names a path.
+
+    A failure to write only warns: the record is extra information, and losing it must not
+    change how the review ends.
+    """
+    path = (config.review_outcome_file or "").strip()
+    if not path:
+        return
+    from trelix.review.outcome_file import build_outcome_payload, write_outcome_file
+
+    error = write_outcome_file(path, build_outcome_payload(outcome, exit_code=exit_code))
+    if error is not None:
+        err_console.print(
+            "[yellow]Warning: could not write the review outcome file: "
+            f"{_safe_text(error)}[/yellow]"
+        )
+
+
+def _exit_if_review_not_run(
+    outcome: ReviewOutcome, *, json_output: bool, config: IndexConfig
+) -> None:
+    """Exit REVIEW_NOT_RUN_EXIT_CODE when nothing came of the review.
 
     An empty comment list from a review that never ran must not read as a clean
     review, so the reason goes to stderr and (in --json mode) stdout still carries
-    a parseable, empty array. A partial failure keeps exit 0 and only warns.
+    a parseable, empty array. A review that only partly ran is handled by
+    `_finish_review`, after its findings have been printed.
     """
-    if outcome.could_not_review:
-        if json_output:
-            _print_json([])
-        if outcome.llm_available:
-            reason = (
-                f"the LLM call failed for {outcome.hunks_failed} of {outcome.hunks_total} "
-                "hunks (see the warnings above)"
-            )
-        else:
-            reason = (
-                "the LLM is not configured (set OPENAI_API_KEY or AZURE_API_KEY, "
-                "or choose another provider with TRELIX_LLM_PROVIDER)"
-            )
-        err_console.print(
-            f"[red]trelix review did not run:[/red] {_safe_text(reason)}. "
-            "No code was reviewed, so this is not a clean result."
+    if not outcome.could_not_review:
+        return
+    if json_output:
+        _print_json([])
+    if outcome.llm_available:
+        reason = (
+            f"{outcome.hunks_failed} of {outcome.hunks_total} hunks got no usable review: "
+            "the LLM call failed, or its reply was cut off, refused or not a review "
+            "(see the warnings above)"
         )
-        raise typer.Exit(REVIEW_NOT_RUN_EXIT_CODE)
+    else:
+        reason = (
+            "the LLM is not configured (set OPENAI_API_KEY or AZURE_API_KEY, "
+            "or choose another provider with TRELIX_LLM_PROVIDER)"
+        )
+    err_console.print(
+        f"[red]trelix review did not run:[/red] {_safe_text(reason)}. "
+        "No code was reviewed, so this is not a clean result."
+    )
+    _write_review_outcome(outcome, config, REVIEW_NOT_RUN_EXIT_CODE)
+    raise typer.Exit(REVIEW_NOT_RUN_EXIT_CODE)
+
+
+def _no_findings_message(outcome: ReviewOutcome) -> str:
+    """What to print when a review returned no findings, without overstating a partial review."""
     if outcome.hunks_failed:
+        return "[yellow]No findings in the hunks that were reviewed.[/yellow]"
+    return "[green]No issues found.[/green]"
+
+
+def _review_summary(inline_comment_count: int, outcome: ReviewOutcome) -> str:
+    """The body of the PR review that `--post-comments` posts."""
+    summary = f"trelix review: {inline_comment_count} inline comment(s) found."
+    if outcome.hunks_failed:
+        summary += (
+            f" {outcome.hunks_failed} of {outcome.hunks_total} hunks could not be fully "
+            "reviewed, so this review may be incomplete."
+        )
+    return summary
+
+
+def _review_exit_code(outcome: ReviewOutcome, config: IndexConfig) -> int:
+    """0, or REVIEW_INCOMPLETE_EXIT_CODE when MORE than the allowed share of hunks is unreviewed.
+
+    With the default allowed share of 0.0 that means any unreviewed hunk; a share exactly at
+    the limit is allowed. A review where nothing came of it (exit 3) never gets here.
+    """
+    if outcome.unreviewed_fraction > config.review_max_unreviewed_fraction:
+        return REVIEW_INCOMPLETE_EXIT_CODE
+    return 0
+
+
+def _finish_review(outcome: ReviewOutcome, config: IndexConfig) -> None:
+    """End a review that produced output: warn about unreviewed hunks, exit 4 if incomplete.
+
+    Called after the findings are printed (and posted), so a caller reading stdout has them
+    even when the exit code says the review covered less than all of the diff. The outcome
+    record was written earlier, before any posting could be interrupted. Returns normally for
+    a complete or tolerated review.
+    """
+    exit_code = _review_exit_code(outcome, config)
+    if outcome.hunks_failed:
+        hint = (
+            " Exiting with code 4; set TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION=1 to accept a "
+            "partial review."
+            if exit_code
+            else ""
+        )
         err_console.print(
             f"[yellow]Warning: {outcome.hunks_failed} of {outcome.hunks_total} hunks could "
-            "not be reviewed; the results below cover only the rest.[/yellow]"
+            f"not be fully reviewed; the results may be incomplete.{hint}[/yellow]"
         )
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 # Relocated to trelix.core.console_safety so indexing/indexer.py can share it — it is
@@ -425,10 +498,16 @@ _EmbedderProvider = Literal[
     "cohere",
 ]
 
-# Exit code of `trelix review` when it could not review at all (no usable LLM, or every
-# hunk's LLM call failed). Not 1 (generic error), not 2 (click usage error, and the
+# Exit code of `trelix review` when it could not review at all (no usable LLM, or no hunk
+# got a usable review: every call failed or every reply was cut off, refused or not a
+# review). Not 1 (generic error), not 2 (click usage error, and the
 # audit commands' "could not check"), so a CI wrapper can tell "not reviewed" from both.
 REVIEW_NOT_RUN_EXIT_CODE = 3
+
+# Exit code of `trelix review` when it reviewed some of the diff but more of it was left
+# unreviewed than TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION allows (default: any). Stdout still has
+# the findings there are. Distinct from 3 so a caller can tell "no review" from "partial review".
+REVIEW_INCOMPLETE_EXIT_CODE = 4
 
 _PROVIDER_HELP = (
     "Embedding provider: local | openai | azure | voyage"
@@ -3437,13 +3516,17 @@ def review(
         with status_console.status("Retrieving context and generating review..."):
             comments = reviewer.review(diff_text=pr_diff_str)
 
-        _exit_if_review_not_run(reviewer.last_outcome, json_output=json_output)
+        _exit_if_review_not_run(reviewer.last_outcome, json_output=json_output, config=config)
+        _write_review_outcome(
+            reviewer.last_outcome, config, _review_exit_code(reviewer.last_outcome, config)
+        )
 
         if not comments:
             if json_output:
                 _print_json([])
             else:
-                console.print("[green]No issues found.[/green]")
+                console.print(_no_findings_message(reviewer.last_outcome))
+            _finish_review(reviewer.last_outcome, config)
             raise typer.Exit(0)
 
         if json_output:
@@ -3503,7 +3586,7 @@ def review(
                     repo=repo_name,
                     pr_number=pr_number,
                     commit_sha=head_sha,
-                    body=f"trelix review: {len(inline_comments)} inline comment(s) found.",
+                    body=_review_summary(len(inline_comments), reviewer.last_outcome),
                     comments=inline_comments,
                 )
                 console.print(
@@ -3514,6 +3597,7 @@ def review(
                     f"[yellow]Warning: failed to post comments: {_safe_text(str(exc))}[/yellow]"
                 )
 
+        _finish_review(reviewer.last_outcome, config)
         raise typer.Exit(0)
 
     # ------------------------------------------------------------------
@@ -3547,10 +3631,14 @@ def review(
     with _status_console(json_output).status("Retrieving context and generating review..."):
         comments = reviewer.review(filtered)
 
-    _exit_if_review_not_run(reviewer.last_outcome, json_output=json_output)
+    _exit_if_review_not_run(reviewer.last_outcome, json_output=json_output, config=config)
+    _write_review_outcome(
+        reviewer.last_outcome, config, _review_exit_code(reviewer.last_outcome, config)
+    )
 
     if not comments:
-        console.print("[green]No issues found.[/green]")
+        console.print(_no_findings_message(reviewer.last_outcome))
+        _finish_review(reviewer.last_outcome, config)
         return
 
     if json_output:
@@ -3567,6 +3655,7 @@ def review(
                 for c in comments
             ]
         )
+        _finish_review(reviewer.last_outcome, config)
         return
 
     from rich.table import Table
@@ -3587,6 +3676,7 @@ def review(
             _safe_text(c.comment),
         )
     console.print(table)
+    _finish_review(reviewer.last_outcome, config)
 
 
 # ---------------------------------------------------------------------------
