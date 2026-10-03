@@ -1,0 +1,368 @@
+{
+  "comment": "The one table of cases that the GitHub App (tests/review-runner.test.ts and tests/review-outcome.test.ts) and the Actions workflow (tests/unit/test_review_not_run_exit.py and test_review_publish_incomplete.py, which run the inline script of .github/workflows/trelix-review.yml under node) are both tested against. It fixes what the Check says for each way `trelix review` can end. exit_code is what the workflow step records (a string; null = it recorded nothing). severities is the severity of each finding `trelix review --json` printed, in order. stdout_text, when present, is what `trelix review --json` printed instead (text that is not a JSON array of objects, so the findings cannot be read; severities is then empty): the Check must say so and never read it as \"found 0 issue(s)\" or as a review that is clean, and its conclusion is neutral whatever the exit code. outcome applies to exit 4 only: valid = the record in valid_outcome, missing = no file, corrupt = a file that is not JSON. applies_to lists the sides the row is run on; omitted means both. Keep the titles and conclusions literal. invalid_outcomes are records (raw text, so that NaN and cut-off documents can be written) that both sides must read as unknown: the App's parseOutcomeRecord and the workflow's readOutcome.",
+  "valid_outcome": {
+    "schema_version": 1,
+    "hunks_total": 5,
+    "hunks_reviewed": 3,
+    "hunks_unreviewed": 2,
+    "exit_code": 4,
+    "hunks": [
+      {
+        "file": "src/a.py",
+        "line": 10,
+        "status": "truncated",
+        "detail": "length_after_retry"
+      },
+      {
+        "file": "src/b.py",
+        "line": 20,
+        "status": "refused",
+        "detail": "refusal"
+      }
+    ],
+    "hunks_omitted": 0
+  },
+  "corrupt_outcome_text": "{\"schema_version\": 1, \"hunks_total\": ",
+  "cases": [
+    {
+      "id": "clean-review",
+      "exit_code": "0",
+      "severities": [],
+      "conclusion": "success",
+      "title": "trelix found 0 issue(s)"
+    },
+    {
+      "id": "warnings-only",
+      "exit_code": "0",
+      "severities": [
+        "WARN",
+        "INFO"
+      ],
+      "conclusion": "success",
+      "title": "trelix found 2 issue(s)"
+    },
+    {
+      "id": "an-error-finding",
+      "exit_code": "0",
+      "severities": [
+        "INFO",
+        "ERROR"
+      ],
+      "conclusion": "failure",
+      "title": "trelix found 2 issue(s)"
+    },
+    {
+      "id": "did-not-run",
+      "exit_code": "3",
+      "severities": [],
+      "conclusion": "neutral",
+      "title": "trelix review did not run"
+    },
+    {
+      "id": "did-not-run-whatever-stdout-holds",
+      "exit_code": "3",
+      "severities": [
+        "ERROR"
+      ],
+      "conclusion": "neutral",
+      "title": "trelix review did not run"
+    },
+    {
+      "id": "incomplete-no-findings",
+      "exit_code": "4",
+      "severities": [],
+      "outcome": "valid",
+      "conclusion": "neutral",
+      "title": "trelix review incomplete"
+    },
+    {
+      "id": "incomplete-warning-only",
+      "exit_code": "4",
+      "severities": [
+        "WARN"
+      ],
+      "outcome": "valid",
+      "conclusion": "neutral",
+      "title": "trelix review incomplete"
+    },
+    {
+      "id": "incomplete-with-an-error-finding",
+      "exit_code": "4",
+      "severities": [
+        "WARN",
+        "ERROR"
+      ],
+      "outcome": "valid",
+      "conclusion": "failure",
+      "title": "trelix review incomplete"
+    },
+    {
+      "id": "incomplete-outcome-missing",
+      "exit_code": "4",
+      "severities": [
+        "INFO"
+      ],
+      "outcome": "missing",
+      "conclusion": "neutral",
+      "title": "trelix review incomplete"
+    },
+    {
+      "id": "incomplete-outcome-missing-with-an-error-finding",
+      "exit_code": "4",
+      "severities": [
+        "ERROR"
+      ],
+      "outcome": "missing",
+      "conclusion": "failure",
+      "title": "trelix review incomplete"
+    },
+    {
+      "id": "incomplete-outcome-corrupt",
+      "exit_code": "4",
+      "severities": [
+        "INFO"
+      ],
+      "outcome": "corrupt",
+      "conclusion": "neutral",
+      "title": "trelix review incomplete"
+    },
+    {
+      "id": "incomplete-outcome-corrupt-with-an-error-finding",
+      "exit_code": "4",
+      "severities": [
+        "ERROR"
+      ],
+      "outcome": "corrupt",
+      "conclusion": "failure",
+      "title": "trelix review incomplete"
+    },
+    {
+      "id": "clean-exit-stdout-is-text",
+      "exit_code": "0",
+      "severities": [],
+      "stdout_text": "not json",
+      "conclusion": "neutral",
+      "title": "trelix review did not complete"
+    },
+    {
+      "id": "clean-exit-stdout-is-empty",
+      "exit_code": "0",
+      "severities": [],
+      "stdout_text": "",
+      "conclusion": "neutral",
+      "title": "trelix review did not complete"
+    },
+    {
+      "id": "clean-exit-stdout-is-an-object",
+      "exit_code": "0",
+      "severities": [],
+      "stdout_text": "{}",
+      "conclusion": "neutral",
+      "title": "trelix review did not complete"
+    },
+    {
+      "id": "clean-exit-stdout-is-null",
+      "exit_code": "0",
+      "severities": [],
+      "stdout_text": "null",
+      "conclusion": "neutral",
+      "title": "trelix review did not complete"
+    },
+    {
+      "id": "clean-exit-stdout-array-holds-null",
+      "exit_code": "0",
+      "severities": [],
+      "stdout_text": "[null]",
+      "conclusion": "neutral",
+      "title": "trelix review did not complete"
+    },
+    {
+      "id": "clean-exit-stdout-array-holds-text",
+      "exit_code": "0",
+      "severities": [],
+      "stdout_text": "[\"x\"]",
+      "conclusion": "neutral",
+      "title": "trelix review did not complete"
+    },
+    {
+      "id": "incomplete-stdout-is-an-object",
+      "exit_code": "4",
+      "severities": [],
+      "stdout_text": "{}",
+      "outcome": "valid",
+      "conclusion": "neutral",
+      "title": "trelix review incomplete"
+    },
+    {
+      "id": "incomplete-stdout-array-holds-null",
+      "exit_code": "4",
+      "severities": [],
+      "stdout_text": "[null]",
+      "outcome": "valid",
+      "conclusion": "neutral",
+      "title": "trelix review incomplete"
+    },
+    {
+      "id": "other-exit-code",
+      "exit_code": "1",
+      "severities": [],
+      "conclusion": "neutral",
+      "title": "trelix review did not complete"
+    },
+    {
+      "id": "other-exit-code-whatever-stdout-holds",
+      "exit_code": "2",
+      "severities": [
+        "ERROR"
+      ],
+      "conclusion": "neutral",
+      "title": "trelix review did not complete"
+    },
+    {
+      "id": "an-exit-code-after-the-known-ones",
+      "exit_code": "5",
+      "severities": [
+        "ERROR"
+      ],
+      "outcome": "valid",
+      "conclusion": "neutral",
+      "title": "trelix review did not complete"
+    },
+    {
+      "id": "no-exit-code-recorded",
+      "exit_code": null,
+      "severities": [],
+      "conclusion": "neutral",
+      "title": "trelix review did not complete",
+      "applies_to": [
+        "workflow"
+      ]
+    }
+  ],
+  "invalid_outcomes": [
+    {
+      "id": "schema version 2",
+      "text": "{\"schema_version\": 2, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "schema version missing",
+      "text": "{\"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "exit code 0",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 0, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "exit code 3",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 3, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "exit code as text",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": \"4\", \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "exit code missing",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "counts do not add up",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 4, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "nothing unreviewed",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 3, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 0, \"exit_code\": 4, \"hunks\": [], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "negative count",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 7, \"hunks_unreviewed\": -2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "fractional count",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5.5, \"hunks_reviewed\": 3.5, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "count as text",
+      "text": "{\"schema_version\": 1, \"hunks_total\": \"5\", \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "count past the safe integers",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 1152921504606846976, \"hunks_reviewed\": 1152921504606846974, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "omitted count does not match",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 5}"
+    },
+    {
+      "id": "omitted count missing",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}]}"
+    },
+    {
+      "id": "hunks missing",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "hunks not a list",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": {\"0\": {\"file\": \"src/a.py\", \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}}, \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "hunk status reviewed",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"reviewed\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "hunk status not in the vocabulary",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"mystery\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "hunk status in capitals",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 10, \"status\": \"TRUNCATED\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "hunk line negative",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": -1, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "hunk line as text",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": \"10\", \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "hunk line fractional",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": \"src/a.py\", \"line\": 1.5, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "hunk file not text",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [{\"file\": 7, \"line\": 10, \"status\": \"truncated\", \"detail\": \"length_after_retry\"}, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "hunk is text",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [\"src/a.py\", {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "hunk is null",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5, \"hunks_reviewed\": 3, \"hunks_unreviewed\": 2, \"exit_code\": 4, \"hunks\": [null, {\"file\": \"src/b.py\", \"line\": 20, \"status\": \"refused\", \"detail\": \"refusal\"}], \"hunks_omitted\": 0}"
+    },
+    {
+      "id": "record is an array",
+      "text": "[]"
+    },
+    {
+      "id": "record is null",
+      "text": "null"
+    },
+    {
+      "id": "record is text",
+      "text": "\"4\""
+    },
+    {
+      "id": "record is empty",
+      "text": ""
+    },
+    {
+      "id": "record is cut off",
+      "text": "{\"schema_version\": 1, \"hunks_total\": 5,"
+    },
+    {
+      "id": "count is NaN",
+      "text": "{\"schema_version\": 1, \"exit_code\": 4, \"hunks_total\": NaN}"
+    }
+  ]
+}
