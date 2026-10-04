@@ -1,6 +1,6 @@
-# Trelix v3.4.2 — Installation Guide
+# Trelix v3.4.3 — Installation Guide
 
-This guide covers every installation scenario for Trelix v3.4.2, from a quick
+This guide covers every installation scenario for Trelix v3.4.3, from a quick
 one-liner to Docker, standalone binaries, and virtual-environment setups.
 
 ---
