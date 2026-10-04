@@ -7,7 +7,9 @@ exists. It does not run zizmor or GitHub Actions and does not evaluate expressio
 verify-release.yml is in test_verify_release_workflow_guards.py.
 
 WHY. release.yml publishes to PyPI, so a step there that can SAVE a cache lets an earlier step (a
-pip-installed dependency) poison what a later run restores (zizmor: cache-poisoning). Its two
+pip-installed dependency) poison what a later run restores (zizmor: cache-poisoning). Such a step
+is `actions/cache`, `actions/cache/save` or a `setup-*` action given a cache input
+(workflow_yaml_helpers.saves_a_cache). Its two
 Hugging Face cache steps are restore-only and ci.yml is the only writer, so the restore must read
 exactly the path and key ci.yml writes (or it never hits) and must not stop or fail on a miss
 (`lookup-only`, `fail-on-cache-miss`). A miss costs time, not correctness, only because a LATER
@@ -28,7 +30,15 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.unit.workflow_yaml_helpers import GITHUB, ROOT, action, load_workflow, steps, triggers
+from tests.unit.workflow_yaml_helpers import (
+    GITHUB,
+    ROOT,
+    action,
+    load_workflow,
+    saves_a_cache,
+    steps,
+    triggers,
+)
 
 _HF_WITH = {
     "path": "~/.cache/huggingface",
@@ -63,7 +73,7 @@ def release_cache_problems(workflow: dict[str, Any]) -> list[str]:
         job_steps = job.get("steps", [])
         for index, step in enumerate(job_steps):
             name = step.get("name")
-            if action(step) in ("actions/cache", "actions/cache/save"):
+            if saves_a_cache(step):
                 problems.append(f"{name}: {action(step)} can save a cache")
             elif action(step) == _RESTORE:
                 if step.get("with") != _HF_WITH:
@@ -204,6 +214,30 @@ def test_a_cache_step_that_reads_or_writes_something_else_is_flagged(with_: dict
 @pytest.mark.parametrize("uses", ["actions/cache@v4", "Actions/Cache@v4", "actions/cache/save@v4"])
 def test_a_step_that_can_save_a_cache_is_flagged(uses: str) -> None:
     assert release_cache_problems(_workflow(uses, _HF_WITH)) != []
+
+
+# One fixture per cache input of the setup actions. Default-on caches with no input written are
+# left to zizmor itself (see saves_a_cache).
+_SETUP_CACHE_ON = {
+    "python-cache-pip": ("actions/setup-python@v5", {"cache": "pip"}),
+    "uv-enable-cache": ("astral-sh/setup-uv@v6", {"enable-cache": True}),
+    "node-package-manager-cache": ("actions/setup-node@v5", {"package-manager-cache": True}),
+}
+_SETUP_CACHE_OFF = {
+    "no-cache-input": ("actions/setup-python@v5", {"python-version": "3.12"}),
+    "uv-cache-false": ("astral-sh/setup-uv@v6", {"enable-cache": False}),
+    "node-cache-false-text": ("actions/setup-node@v5", {"package-manager-cache": "false"}),
+}
+
+
+@pytest.mark.parametrize(("uses", "with_"), _SETUP_CACHE_ON.values(), ids=_SETUP_CACHE_ON.keys())
+def test_a_setup_action_with_its_cache_on_is_flagged(uses: str, with_: dict[str, Any]) -> None:
+    assert release_cache_problems(_workflow(uses, with_)) != []
+
+
+@pytest.mark.parametrize(("uses", "with_"), _SETUP_CACHE_OFF.values(), ids=_SETUP_CACHE_OFF.keys())
+def test_a_setup_action_with_its_cache_off_is_clean(uses: str, with_: dict[str, Any]) -> None:
+    assert release_cache_problems(_workflow(uses, with_)) == []
 
 
 def test_a_restore_without_with_and_a_ci_without_a_cache_step_are_flagged() -> None:

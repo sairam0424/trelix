@@ -12,6 +12,11 @@ static triage found three gaps that no other test covers:
 * The docker matrix lacked `fail-fast: false`, so one failing image variant cancelled the
   other mid-push and left the registry with half a release.
 
+A fourth gap was found later: the job that builds what is uploaded to PyPI ran
+`pip install build twine`, so a release took whatever version of either tool was newest on
+the day of the tag. They are pinned to exact versions now, and `TestBuildToolsArePinned`
+fails when either goes back to a range or to no version at all.
+
 These tests read the workflow YAML rather than mocking Actions: the failure being
 prevented is a *missing* key, and only the file can show whether it is there. The pinning
 check re-asserts a property that already holds today so that it stays true.
@@ -32,6 +37,8 @@ _RELEASE = _WORKFLOWS / "release.yml"
 _DOCKER = _WORKFLOWS / "docker-publish.yml"
 
 _SHA_PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+_BUILD_TOOLS = ("build", "twine")
+_PIP_INSTALL_LINE = re.compile(r"\bpip3?\s+install\b.*")
 _PUBLISH_WRITE_SCOPES = {"id-token", "contents"}
 
 
@@ -111,3 +118,53 @@ class TestEveryActionIsPinnedToACommit:
             if ref.startswith("./"):
                 continue
             assert _SHA_PIN.match(ref), f"{path.name}: {location} uses mutable ref '{ref}'"
+
+
+def build_tool_problems(workflow: dict[str, Any]) -> list[str]:
+    """`build` and `twine` must each carry an exact `==X.Y.Z` pin on a `pip install` line of a
+    `run:` script. A removed install line is flagged the same way: a pin named on a line that
+    does not install (an `echo`) does not count."""
+    scripts = "\n".join(
+        str(step.get("run", ""))
+        for job in workflow["jobs"].values()
+        for step in job.get("steps") or []
+    )
+    installs = " ".join(_PIP_INSTALL_LINE.findall(scripts))
+    return [
+        f"{tool} is not installed with an exact ==X.Y.Z pin"
+        for tool in _BUILD_TOOLS
+        if not re.search(rf"{tool}==\d+(\.\d+)*(?![\w.*])", installs)
+    ]
+
+
+def _run_step(script: str) -> dict[str, Any]:
+    return {"jobs": {"build": {"steps": [{"run": script}]}}}
+
+
+class TestBuildToolsArePinned:
+    def test_release_installs_build_and_twine_at_exact_versions(self) -> None:
+        assert build_tool_problems(_workflow(_RELEASE)) == []
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            "pip install build==1.6.1 twine==7.0.0",
+            'python -m pip install --upgrade "build==1.6.1" "twine==7.0.0"',
+        ],
+    )
+    def test_exact_pins_are_clean(self, script: str) -> None:
+        assert build_tool_problems(_run_step(script)) == []
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            "pip install build twine",
+            "pip install build==1.6.1 twine",
+            'pip install "build>=1.6" twine==7.0.0',
+            "pip install build==1.* twine==7.0.0",
+            "echo build==1.6.1 twine==7.0.0",
+        ],
+        ids=["unpinned", "half-pinned", "range", "wildcard", "removed"],
+    )
+    def test_a_range_or_no_version_or_no_install_is_flagged(self, script: str) -> None:
+        assert build_tool_problems(_run_step(script)) != []
