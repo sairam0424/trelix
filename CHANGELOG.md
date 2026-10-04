@@ -6,6 +6,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+## [3.4.3] — 2026-10-04
+
 ### Security
 - **trelix now warns, once per process, when the SQLite it is linked against can lose WAL
   writes.** SQLite 3.7.0 through 3.51.2 can lose committed writes when two or more
@@ -29,9 +31,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   read for themselves (AWS role, web-identity and container credentials, a shared credentials
   file, `GOOGLE_APPLICATION_CREDENTIALS` for Vertex, Anthropic identity federation, Azure AD
   tokens, gateway base URLs) and every `TRELIX_*` variable except `TRELIX_GIT_TOKEN`, which only
-  the `git` child receives (the walker flag is still forced off, and
-  `safe.bareRepository=explicit` is set for the git calls trelix makes itself); only `review`
-  gets the installation token, as `GITHUB_TOKEN`. Every git
+  the `git` child receives, and the service's own `TRELIX_APP_*` settings (the walker flag is
+  still forced off, `safe.bareRepository=explicit` is set for the git calls trelix makes itself,
+  and for the `review` child the App sets `TRELIX_REVIEW_OUTCOME_FILE` to a path it chose); only
+  `review` gets a token as `GITHUB_TOKEN`, and it is the `review`-purpose installation token
+  (`pull_requests: read` and `metadata: read` on the one repository); the `git` child gets the
+  separate `checkout` token (`contents: read`, `metadata: read`) as `TRELIX_GIT_TOKEN`, and the
+  `poster` token never leaves the App's process. Every git
   command also runs with no user or system config (`GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`
   are `/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), `GIT_TERMINAL_PROMPT=0`, only https allowed,
   `-c safe.bareRepository=explicit -c protocol.file.allow=never -c credential.helper=`, and an
@@ -43,7 +49,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), CA-bundle variables
   (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `AWS_CA_BUNDLE`) and
   `AWS_CONFIG_FILE`, and the provider-SDK names withheld on purpose (webhook-signing and admin
-  keys, Azure service-principal secrets, names of services trelix has no client for). The lists
+  keys, Azure service-principal secrets, names of services trelix has no client for, and the
+  names of Anthropic platform clients trelix does not construct, such as the Foundry and Vertex
+  ones). The lists
   do not cover everything the SDKs read either: `AWS_BEARER_TOKEN_BEDROCK` (a secret, Bedrock
   API-key authentication), `AWS_EC2_METADATA_DISABLED`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`,
   `OPENAI_API_TYPE`, `OPENAI_CUSTOM_HEADERS` and `GOOGLE_GENAI_USE_VERTEXAI` are not forwarded,
@@ -54,14 +62,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `safe.bareRepository=explicit` needs git 2.38 or newer; older git ignores it. The git calls
   trelix makes itself (`git_linker.py`, `diff_parser.py`, `provenance.py`) get none of the git
   isolation above except that one setting.
-- **The GitHub App now sanitises everything it posts to Checks.** The title, summary and each
-  annotation's path, title and message come from an LLM that reads attacker-written pull
-  requests, so a prompt-injected reply could have put a tracking pixel, a phishing link, an
-  @mention, raw HTML or hidden text (zero-width, bidi or Unicode-tag characters, an HTML
-  comment, even an unterminated `<!--`) in front of maintainers. `infra/github-app/src/sanitize.ts`
-  now removes hidden characters and HTML comments, drops Markdown images, keeps link text but
-  not the link (`[text] (https[:]//host)`, `www[.]host`), replaces every `@` with a fullwidth `@`
-  (mentions and email addresses, including the ones GitHub links although the domain starts
+- **The GitHub App now sanitises everything it posts to Checks.** The annotation message comes
+  from an LLM that reads attacker-written pull requests, and the annotation path is a file name
+  from the pull request's own diff; the Check's title and summary and each annotation's title are
+  written by the App (counts, fixed strings and, for an incomplete review, the first unreviewed
+  file names from the diff). A prompt-injected reply could have put hidden characters
+  (zero-width, bidi or Unicode-tag) in front of maintainers and, wherever a field is rendered as
+  Markdown, a tracking pixel, a phishing link, an @mention, raw HTML or a hidden HTML comment
+  (even an unterminated `<!--`). GitHub documents Markdown only for a Check's summary and text,
+  not for annotation messages, so the sanitiser treats every field the App posts alike.
+  `infra/github-app/src/sanitize.ts` now removes hidden characters and HTML comments, drops
+  one-line inline Markdown images (`![alt](url)`, with an alt of up to 200 and a destination of
+  up to 500 characters) and defuses longer and reference-style ones by breaking their `](` and
+  `]:`, keeps link text but not the link (`[text] (https[:]//host)`, `www[.]host`), replaces
+  every `@` with a fullwidth commercial at (U+FF20, `＠`) (mentions and email addresses,
+  including the ones GitHub links although the domain starts
   with `-`, `_`, `.` or a backslash escape), replaces `<` and `>` with the fullwidth `＜` and `＞`,
   shows a character reference as text, and caps lengths (title 140,
   summary 4,000, message 2,000, 50 annotations per check). An annotation whose path is absolute,
@@ -80,8 +95,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   (LTS, supported until 2028-04-30), and its image no longer runs a `curl | bash` install
   script.** `infra/github-app/Dockerfile` builds on `node:24-bookworm-slim` and copies that
   image's `node` binary into the runtime stage instead of installing Node from NodeSource's
-  `setup_20.x` script, so the image runs the Node it was built and tested on and its build no
-  longer executes a script fetched from the network. npm and npx are not in the runtime image;
+  `setup_20.x` script, so the image runs the Node that its build stage compiled the service with
+  and its build no longer pipes a setup script downloaded from a URL into a shell. npm and npx
+  are not in the runtime image;
   the entrypoint is `node dist/server.js`. `engines.node` is now `>=24` and `@types/node` is
   `^24` (the lockfile changes only that package and its `undici-types`). The workflows that
   pinned Node 20 (`github-app-ci.yml`, `vscode-extension-ci.yml`, `schema-drift.yml`,
@@ -131,10 +147,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 - **The GitHub App answered an unhandled error with its stack trace.** The App's image never set
   `NODE_ENV`, and Express treats an unset `NODE_ENV` as development, where its default error
   handler puts the error's message and stack in the response body. The app is now built by
-  `createApp(config, deps)` (`infra/github-app/src/app.ts`; `server.ts` loads the config, sweeps
-  stale workspaces and listens), which ends with a final error middleware
-  (`src/error-handler.ts`). Whatever reaches it, the sender gets a fixed JSON body and never the
-  message or the stack: `500`
+  `createApp(config, deps)` (`infra/github-app/src/app.ts`; `server.ts` loads the config and the
+  abuse controls, builds the review queue, sweeps stale workspaces, listens and installs the
+  `SIGTERM` and `SIGINT` shutdown handlers), which ends with a final error middleware
+  (`src/error-handler.ts`). Whatever reaches it, the sender never gets the message or the
+  stack: it gets a fixed JSON body (a response that has already started is closed instead, with
+  no error body): `500`
   `{"error":"internal server error"}`, or for a body the parser rejects `400` (`bad request`,
   malformed JSON), `413` (`payload too large`) or `415` (`unsupported media type`). The status
   of any other error is ignored, so a failed call to the GitHub API is not reported to the
@@ -147,11 +165,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   the same fixed response. `infra/github-app/Dockerfile` also sets `ENV NODE_ENV=production`,
   in the runtime stage only: `npm ci` in the build stage must install `tsc`, and a test now
   pins both. A deployment that runs the service without this image should set
-  `NODE_ENV=production` itself. Routes, the raw-body signature check and `/health` are
-  unchanged.
+  `NODE_ENV=production` itself. The route paths, the raw-body signature check and `/health` are
+  unchanged by this change (what the webhook route answers changed separately: see the next
+  item).
 - **The GitHub App had no limit on the reviews a flood of deliveries could start, and served
-  every installation.** Each `pull_request` delivery started a `git clone`, an index and an LLM
-  review at once, so anyone who installed the public App, or anyone who could open pull requests
+  every installation.** Each `pull_request` delivery started a shallow `git fetch` of the pull
+  request head, an index and an LLM review at once, so anyone who could install the App
+  (`manifest.yml` registers it as public; as of this release the registered App, `trelix-review`,
+  is private, so only its owner's account can install it), or anyone who could open pull requests
   on an installed repository, could spend the operator's LLM quota and CPU without bound. The
   webhook now answers at once and hands the review to a bounded in-process queue
   (`infra/github-app/src/queue.ts`): 20 reviews may wait, 2 may run, and 1 per installation
@@ -166,7 +187,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `redeliver-failed-webhooks.yml` sweep treats a `503` as failed and redelivers it, but only
   while it is among the 100 newest deliveries, and it does not record what it already
   redelivered (the README states the limits). `TRELIX_APP_REVIEWS_ENABLED=false` is a kill
-  switch: every `pull_request` delivery is answered `202` and ignored, with one log line.
+  switch: every `pull_request` delivery is answered `202` and ignored, and each `opened`,
+  `synchronize` or `reopened` one (the actions that start a review) writes one log line.
   `TRELIX_APP_INSTALL_POLICY=allowlist` with `TRELIX_APP_ALLOWED_ACCOUNTS` and/or
   `TRELIX_APP_ALLOWED_INSTALLATIONS` serves only the listed accounts (the repository owner,
   compared without case) and installation ids; any other installation gets the kill switch's
@@ -192,11 +214,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `pull_request` event is the synthetic merge commit, so the "trelix Code Review" check never
   appeared on the pull request. It now posts on the pull request's head commit
   (`context.payload.pull_request.head.sha`). **Because this workflow has no LLM credential,
-  every pull request here will now show a neutral "trelix review did not run" check**: the
-  honest result since 3.4.2, which was previously invisible. Give the workflow a credential, or
-  remove it, if that is not wanted.
+  every pull request from a branch of this repository that changes text files will now show a
+  neutral "trelix review did not run" check** (a pull request whose changed files are all
+  binary or oversized still gets a green "found 0 issue(s)"): the honest result since 3.4.2,
+  which was previously invisible. Give the workflow a credential, or remove it, if that is not
+  wanted.
 - **A refused, filtered or cut-off model reply was reported as a clean `"stop"`.** Providers
-  deliver these as an ordinary successful response and the stop field is the only sign. The
+  deliver these as an ordinary successful response, and the stop field is the usual sign (an
+  OpenAI refusal arrives with a normal `"stop"` and shows only in `message.refusal`, an Azure
+  content-filter outage only in `content_filter_results`). The
   Anthropic and Bedrock backends turned every value they did not list (`refusal`,
   `pause_turn`, `model_context_window_exceeded`, Bedrock's `guardrail_intervened`,
   `content_filtered` and `malformed_*`) and a missing value into `"stop"`. The OpenAI, Azure
@@ -223,26 +249,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   was never reviewed looked the same as one with no findings. Each hunk now gets a status
   (`reviewed`, `truncated`, `refused`, `parse_failed` or `error`) in
   `ReviewOutcome.hunk_results`, and only a parsed JSON array after a clean stop counts as
-  reviewed; an empty `[]` that merely appears inside prose does not. A reply cut off by the
+  reviewed (an empty `[]` counts only as the whole reply, at the start of the reply on a line
+  of its own, or alone in a code fence; one that merely appears inside prose does not). A reply
+  cut off by the
   limit is retried once at four times it (capped at 16384); if it is still cut off, or the retry
   itself fails, the complete findings written before the cut are kept and the hunk is marked
   `truncated`. A reply that says it stopped cleanly but used every token it was allowed is
   treated as cut off too, because LiteLLM can hide a truncation behind `stop`. The limit is now
   `TRELIX_REVIEW_MAX_TOKENS` (default 4096, range 256–16384; the ceiling is below the 21333
   tokens above which the Anthropic SDK refuses a non-streaming request; a blank value is read
-  as unset, so an undefined CI variable does not break every command). An array counts only
-  if at least one item has a text `comment`; a bad or missing line number falls back to the
+  as unset, so an undefined CI variable does not break every command). A non-empty array
+  counts only if at least one item has a non-blank text `comment` (`[]` still counts as a review
+  with no findings); a bad or missing line number falls back to the
   hunk's range instead of discarding the hunk. `ReviewOutcome.hunks_failed` now counts every
   hunk that was not reviewed, not only calls that raised, so a review in which no hunk was
   reviewed and none kept a finding exits 3 ("did not run") instead of 0; a review with some
-  unreviewed hunks still exits 0 with the existing warning.
-- **A review that covered only part of the diff was published as "did not complete", and the
-  findings it had printed were lost.** Both consumers of `trelix review`, this repository's
-  `trelix-review.yml` and the GitHub App, treated every exit code other than 0 and 3 as "the
-  review did not complete" and posted a neutral check saying no review result was available, so
-  the exit 4 described under Changed would have hidden a partial review's findings and the fact
-  that it was partial. For exit 4 both now publish a "trelix review incomplete" check: the
-  findings as annotations, how many hunks were and were not reviewed, and the first ten
+  unreviewed hunks prints the findings it has with a warning and, by default, exits 4 (see
+  Changed; `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` lets a partial review exit 0).
+- **Exit 4, a review that covered only part of the diff, would have been published as "did not
+  complete" and the findings it had printed lost.** Both consumers of `trelix review`, this
+  repository's `trelix-review.yml` and the GitHub App, treated every exit code other than 0 and
+  3 as "the review did not complete" and posted a neutral check saying no review result was
+  available, so the exit 4 described under Changed would have hidden a partial review's
+  findings and the fact that it was partial (in 3.4.2 a partial review exited 0 and was
+  published as a complete result). For exit 4 both now publish a "trelix review incomplete"
+  check: the findings as annotations, how many hunks were and were not reviewed, and the first ten
   unreviewed hunks as `file:line (status)`, with the rest counted. The conclusion is neutral, or
   failure if any finding is an `ERROR`; never success. The counts and the list come from the
   `TRELIX_REVIEW_OUTCOME_FILE` record (the workflow sets a fixed path and removes a stale file
@@ -251,14 +282,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   file, over 1 MiB, not JSON, of another schema or whose counts do not add up is reported as
   "unknown", never as clean. The summary carries no model text, only numbers, the fixed
   statuses and file names from the diff, which are shown one to a line inside a code span after
-  control, hidden and backtick characters are removed and the name is cut at 100 characters
-  (the App also passes the whole summary through its sanitiser). The App handles the exit
+  hidden characters are removed, line breaks and other control characters are turned into
+  spaces (the App turns line breaks, including a carriage return, and tabs into spaces and
+  drops the other control characters) and backticks are
+  replaced by a look-alike that cannot close the span, and the name is cut to 100 characters
+  including the ellipsis (the App counts UTF-16 code units, the workflow characters; the App
+  also passes the whole summary through its sanitiser). The App handles the exit
   status (`err.code === 4`) and reads the findings from the error's `stdout`, parsed exactly as
   for exit 0. The workflow's verdict is now judged by every finding and not only the first 50
   that get an annotation (an `ERROR` after the 50th used to leave it green), as the App's
-  already was. The exit-3 text said "every LLM call failed"; it now says no usable LLM is
-  configured, or no hunk got a usable review and none kept a finding. **This makes exit 4 safe
-  to release.**
+  verdict now does (see Security). The exit-3 text said "every LLM call failed"; it now says no
+  usable LLM is configured, or no hunk got a usable review and none kept a finding. **This makes
+  exit 4 safe for this repository's two consumers, the workflow and the App; any other caller
+  that treats a non-zero exit as failure must be changed or set
+  `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION=1`.**
 - **A clean `trelix review` exit whose output could not be read was published as a green
   "found 0 issue(s)" check.** When the review step exited 0 but its stdout was missing or not
   JSON, `trelix-review.yml` published success; when it was JSON but not an array of objects
@@ -274,20 +311,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 ### Changed
 - **Dependabot waits seven days before proposing a new version, and an advisory `zizmor` job
   audits the workflows.** All ten `dependabot.yml` entries now set `cooldown: default-days: 7`,
-  so a version is offered as a PR a week after it is published instead of Dependabot's
-  implicit three days, which gives a compromised package or action release more time to be
-  caught and taken down first; security updates are not held back.
+  so a version is not offered as a PR until at least a week after it is published (at the
+  next weekly run after that) instead of Dependabot's implicit three days, which, by the
+  reasoning in zizmor's `dependabot-cooldown` audit, gives a compromised package or action
+  release more time to be caught and taken down first; security updates are not held back.
   `infra/github-app/Dockerfile`, whose base images nothing watched, gets a docker entry like
   the root one. The new `zizmor.yml` runs the zizmor static analyser over the workflows and
-  the Dependabot config on pull requests and pushes that touch `.github/`. It is advisory:
-  the job cannot fail a PR, and the findings are in its log until they have been triaged.
-- **`trelix review` exits 4 when it reviewed some of the diff but left hunks unreviewed, and can
-  write a JSON record of what it covered.** 3.4.2 made a review that could not run at all exit 3
+  the Dependabot config on pull requests targeting `main` or `develop`, and pushes to them,
+  that touch `.github/`. It is advisory: `continue-on-error` keeps the workflow run green and
+  the job is not a required check, so it cannot block a PR, although the job's own check shows
+  as failed when zizmor reports findings; the findings are in its log until they have been
+  triaged.
+- **`trelix review` exits 4 when it reviewed some of the diff but left unreviewed some of the
+  hunks it was asked about, and can write a JSON record of what it covered.** 3.4.2 made a
+  review that could not run at all exit 3
   but left a partial one at exit 0. Now, when more than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION`
   of the hunks were not reviewed (cut off, refused, filtered, unparseable or failed; the default
   `0.0` means any of them), the command prints the findings it has and then exits
   `REVIEW_INCOMPLETE_EXIT_CODE = 4`, so stdout still carries them. Exit 3 stays for a review
-  where nothing usable came out. **A caller that treats any non-zero exit as failure now fails
+  where nothing usable came out. Only hunks the model was asked about count: files skipped as
+  binary or oversized (`--pr`) and files beyond `--max-files` (local diff) are not counted.
+  **A caller that treats any non-zero exit as failure now fails
   on a partial review; set `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION=1` to keep the old exit 0.**
   `TRELIX_REVIEW_OUTCOME_FILE=<path>` writes `{schema_version, hunks_total, hunks_reviewed,
   hunks_unreviewed, exit_code, hunks, hunks_omitted}` there, where `hunks` lists the first 100
@@ -298,16 +342,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   comments are posted, and a failure to write it only warns. Nothing is written when the command
   stops before reviewing (an error, or no changes to review), so a path that is reused should
   be removed first. A blank value of either setting is read as unset. `--json` stdout is
-  unchanged. `--post-comments` now says in
+  unchanged with `--pr`; in local-diff mode it is unchanged except for the "No findings"
+  sentence below. `--post-comments` now says in
   the review body how many hunks were not fully reviewed, and a partial review with no findings
   says "No findings in the hunks that were reviewed" instead of "No issues found."
 - **CI reports the SQLite version that the test interpreters, images and binary build
-  interpreters link.** Nobody knew whether they link a SQLite in the 3.7.0 to 3.51.2 range where
-  committed WAL writes can be lost (fixed in 3.51.3, 3.50.7 and 3.44.6).
+  interpreters link.** A run on `develop` shows most of them, by upstream version number, in
+  the 3.7.0 to 3.51.2 range where committed WAL writes can be lost (fixed in 3.51.3, 3.50.7
+  and 3.44.6).
   `scripts/report_sqlite_version.py` (standard library only) prints the version and emits a
   `::warning::` annotation inside that range or a `::notice::` outside it, using
   `trelix.store.db.wal_reset_risk` when trelix is importable and an embedded copy of the same
-  table otherwise. The script always exits 0: a Python without sqlite3, a range check that
+  table otherwise. The script exits 0 on every path a CI step can meet (only Ctrl-C stops it
+  otherwise): a Python without sqlite3, a range check that
   raises or a broken stdout become a warning or a label, never a failure of the script, and the
   version is still printed when only the range check or the platform query fails. The steps
   themselves have no `continue-on-error`, so a Docker daemon error can still fail one.
@@ -319,7 +366,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   pushes to `develop` and `main`, pull requests to `main`), so a stacked pull request on a
   feature branch reports nothing. The number printed is the upstream one, so it cannot say
   whether a distro build such as Debian's carries the fix under a lower number; adding the
-  distro package version is the follow-up. Informational only; no job or check name changed.
+  distro package version is a possible follow-up. Informational only; no job or check name
+  changed.
 
 ## [3.4.2] — 2026-10-02
 
