@@ -1360,7 +1360,7 @@ class LLMConfig(BaseSettings):
     temperature: float = 0.0
     timeout: float = 30.0
 
-    # ── Extended thinking (Anthropic only) ────────────────────────────────────
+    # ── Claude extended thinking (anthropic and bedrock) ──────────────────────
     thinking_enabled: bool = Field(default=False, alias="TRELIX_LLM_THINKING_ENABLED")
     thinking_budget_tokens: int = Field(default=4096, alias="TRELIX_LLM_THINKING_BUDGET_TOKENS")
 

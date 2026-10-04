@@ -399,18 +399,20 @@ Any environment variable expected by the underlying provider (e.g. `OPENAI_API_K
 
 ### Extended thinking support
 
-Extended thinking is an Anthropic-API request parameter (`thinking={"type": "enabled", "budget_tokens": N}`), not a model name. `TRELIX_LLM_THINKING_ENABLED=true` opts the answer synthesizer into it; see [CONFIGURATION.md § Extended Thinking (Anthropic)](CONFIGURATION.md#extended-thinking-anthropic) for the full behaviour contract.
+Extended thinking is an Anthropic-API request parameter, not a model name: `thinking={"type": "enabled", "budget_tokens": N}` for most models, and `thinking={"type": "adaptive"}` for the models that reject a budget (Claude 5 and newer, plus Opus 4.7 and newer). `TRELIX_LLM_THINKING_ENABLED=true` opts the answer synthesizer into it; see [CONFIGURATION.md § Extended Thinking (Anthropic)](CONFIGURATION.md#extended-thinking-anthropic) for the model list and the full behaviour contract.
 
 | Provider | Extended thinking |
 |---|---|
-| `anthropic` | **Supported** — sends the `thinking` parameter, forces `temperature=1.0` for that call, and returns the reasoning text on `ChatResponse.thinking` |
+| `anthropic` | **Supported** — sends the `thinking` parameter (budget or adaptive, by model) and returns any reasoning text the response carries on `ChatResponse.thinking`; the backend never sends a temperature |
 | `openai` | Accepted and ignored |
 | `azure` | Accepted and ignored |
-| `bedrock` | Accepted and ignored — even for `us.anthropic.*` profiles |
+| `bedrock` | **Supported for Claude models** — sends `additionalModelRequestFields` with `reasoning_config` (budget models, with `temperature=1.0` forced) or `thinking: {"type": "adaptive"}` (adaptive-only models, temperature omitted), and returns any reasoning text the response carries on `ChatResponse.thinking` |
 | `vertex` | Accepted and ignored |
 | `litellm` | Accepted and ignored |
 
-"Accepted and ignored" is literal: every backend takes the flag in its `chat()`/`stream()` signature so the synthesizer needs no provider branch, but only the Anthropic backend acts on it. Setting the flag on another provider is a silent no-op, not an error — nothing is added to the request and `ChatResponse.thinking` stays `None`.
+On an adaptive-only model the model decides whether to think, and trelix sends plain `{"type": "adaptive"}` without a `display` setting, so `ChatResponse.thinking` can be `None` or empty. Live on Bedrock, an easy question came back with no reasoning block; what the default display returns for a harder question on Claude 5 was not measured.
+
+"Accepted and ignored" is literal: every backend takes the flag in its `chat()`/`stream()` signature so the synthesizer needs no provider branch, but only the Anthropic and Bedrock backends act on it. Setting the flag on another provider is a silent no-op, not an error — nothing is added to the request and `ChatResponse.thinking` stays `None`.
 
 ### Model-aware context budgets
 
@@ -537,8 +539,8 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — (required for anthropic) | Anthropic API key |
-| `TRELIX_LLM_THINKING_ENABLED` | `false` | Anthropic extended thinking on the synthesizer's calls. Other backends accept and ignore it |
-| `TRELIX_LLM_THINKING_BUDGET_TOKENS` | `4096` | `thinking.budget_tokens` sent to the Anthropic Messages API. Bills as output tokens |
+| `TRELIX_LLM_THINKING_ENABLED` | `false` | Claude extended thinking on the synthesizer's calls (`anthropic` and `bedrock`). Other backends accept and ignore it |
+| `TRELIX_LLM_THINKING_BUDGET_TOKENS` | `4096` | `thinking.budget_tokens` sent to the Anthropic Messages API (Bedrock: `reasoning_config`). Bills as output tokens. Ignored for adaptive-only models (Claude 5 and newer, Opus 4.7 and newer) |
 | `TRELIX_LLM_BEDROCK_PRIMARY_MODEL` | `us.anthropic.claude-sonnet-4-6` | Bedrock primary inference profile |
 | `TRELIX_LLM_BEDROCK_FALLBACK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock fallback profile |
 | `GOOGLE_CLOUD_PROJECT` | — | GCP project (Vertex AI) |

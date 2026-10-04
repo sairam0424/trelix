@@ -24,6 +24,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   - *Accepted, `superfluous-actions` (GitHub Release step).* `gh release create` could replace the
     pinned action, but the publish path cannot be exercised before a real tag.
 
+### Fixed
+- **Extended thinking (`TRELIX_LLM_THINKING_ENABLED=true`) failed on Claude models that only
+  accept adaptive thinking.** trelix always asked for a token budget
+  (`thinking={"type": "enabled", "budget_tokens": N}`, and `reasoning_config` on Bedrock), which
+  the Claude API reference lists as rejected on Claude 5 and newer (fable, mythos, opus, sonnet
+  and haiku) and on Opus 4.7 and 4.8. Only two of those models were called: on Bedrock Converse
+  (us-east-1), `us.anthropic.claude-sonnet-5` and `us.anthropic.claude-sonnet-5-5` rejected the
+  budget request with `"thinking.type.enabled" is not supported for this model. Use
+  "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.` and accepted
+  `{"thinking": {"type": "adaptive"}}`. The other listed models, and the direct Anthropic API
+  (a 400 for `budget_tokens`, Opus 4.6 and Sonnet 4.6 still accepting it), follow the Claude API
+  reference and were not measured, because no API key was available. On
+  Bedrock the error also contains the words "not supported", which the model-unavailable check
+  matches, so the backend read it as "model not available on demand", logged a misleading
+  "unavailable" warning and, with the default fallback model, moved the instance to Haiku 4.5
+  for the rest of its life (and raised when the fallback was the same model).
+  `thinking_mode_for_model()` in the new `trelix.llm.thinking` reads the model id numerically
+  (`claude-sonnet-5-5` is 5.5, `claude-sonnet-4-5-20250929` is 4.5 with a date) in every bare and
+  prefixed model-id form (`anthropic.`, `us.anthropic.`, `global.anthropic.` prefixes, dated and
+  `-v1:0` suffixes; ARNs are not recognised by name) and
+  classifies Claude 5 and newer in every family, and Opus 4.7 and newer, as adaptive-only. Both
+  backends now send `{"thinking": {"type": "adaptive"}}` to those: the Anthropic backend as
+  `thinking`, the Bedrock backend in `additionalModelRequestFields`, where `temperature` is
+  omitted instead of forced to `1.0`. `TRELIX_LLM_THINKING_BUDGET_TOKENS` is not used for those
+  models. Because the model decides whether to think, a response may carry no thinking block
+  (`ChatResponse.thinking` is then `None`); whether a harder question returns readable reasoning
+  text under the default display setting was not measured (only an easy question was called, and
+  it returned none). Every other model id, including ones trelix has never
+  seen, keeps exactly the request it had before. A model the table does not know yet that
+  rejects the budget shape is handled at runtime: the backend switches that model to adaptive,
+  retries once, logs one warning naming the model, and remembers (per backend instance and per
+  model, so a Bedrock fallback model keeps its own shape); other errors are not swallowed.
+  `docs/CONFIGURATION.md`, `docs/PROVIDERS.md`, `docs/USER_GUIDE.md` and `.env.example` describe the
+  behaviour, and
+  `docs/PROVIDERS.md` and `.env.example` no longer say the Bedrock backend ignores the thinking
+  flag (it has sent `reasoning_config` since 3.3.0) or that Anthropic forces `temperature=1.0`
+  (the Anthropic backend never sends a temperature).
+
 ## [3.4.3] — 2026-10-04
 
 ### Security
