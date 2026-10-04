@@ -43,7 +43,7 @@ MUTATIONS THAT MUST MAKE THIS FILE FAIL (each applied to a scratch copy of .gith
    checkout, already sets `persist-credentials: false`, or has a blank reason
    -> the same class fails on the stale-entry test.
 6. Change a `docker/build-push-action` pin's comment back to `# v7` (the floating major tag,
-   which points at a different commit than the pinned v7.3.0)
+   which points at a different commit than the pinned v7.4.0)
    -> TestVersionCommentsNameTheirTag fails for that file.
 """
 
@@ -83,12 +83,13 @@ _CHECKOUT_CREDENTIAL_EXCEPTIONS: dict[tuple[str, str], str] = {}
 
 # `uses:` pins whose version comment was resolved against the upstream repository, so the
 # comment can be checked offline: `owner/repo@<sha>` -> the tag that points at that commit.
-# docker/build-push-action@53b7df96... is v7.3.0 (`gh api
-# repos/docker/build-push-action/git/ref/tags/v7.3.0`), while the floating `v7` tag the
-# pins used to cite now points at c3c9e263 (v7.4.0): zizmor's `ref-version-mismatch`. An
-# entry goes inert when Dependabot moves the pin to a new SHA; delete it then.
+# docker/build-push-action@c3c9e263... is v7.4.0 (`gh api
+# repos/docker/build-push-action/git/ref/tags/v7.4.0`); the pins once cited the floating `v7`
+# tag, which points at a different commit whenever a release lands: zizmor's
+# `ref-version-mismatch`. An entry goes inert when Dependabot moves the pin to a new SHA, and
+# the guard stops biting silently: in the same PR, replace the entry with the new SHA and tag.
 _VERIFIED_PIN_TAGS: dict[str, str] = {
-    "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a": "v7.3.0",
+    "docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc": "v7.4.0",
 }
 
 # A broken glob or parser reports "nothing unpinned" just as loudly as a clean tree. Today
