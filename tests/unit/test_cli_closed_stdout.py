@@ -39,7 +39,15 @@ import pytest
 
 # The console script installed by `[project.scripts] trelix = "trelix.cli.main:app"`
 # does exactly this, so the test drives the real entry point rather than `-m`.
-_ENTRY = "import sys; from trelix.cli.main import app; sys.exit(app())"
+# The one extra statement spends the once-per-process SQLite WAL-reset warning before the
+# CLI runs. `stats` opens the index as a writer, and on an affected SQLite build (CI runners
+# link some) that warning would land on the child's stderr, which the test asserts is empty
+# to catch closed-pipe diagnostics. tests/unit/conftest.py does the same for in-process tests
+# but cannot reach a child process.
+_ENTRY = (
+    "import sys; import trelix.store.db as db; db._wal_reset_warned = True; "
+    "from trelix.cli.main import app; sys.exit(app())"
+)
 
 
 def _child_env() -> dict[str, str]:

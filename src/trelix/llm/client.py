@@ -70,13 +70,20 @@ class ChatResponse:
 
     content: str
     model: str
-    finish_reason: str  # "stop" | "length" | "tool_calls" (normalized across providers)
+    # Normalized across providers (see trelix.llm.finish_reasons): "stop" | "length" |
+    # "tool_calls" | "refusal" | "content_filter" | "paused" | "error" | "unknown". Only "stop" and
+    # "tool_calls" mean the reply is complete; a backend reports "unknown" for a provider value it
+    # cannot classify rather than guessing "stop".
+    finish_reason: str
     input_tokens: int = 0
     output_tokens: int = 0
     thinking: str | None = None  # back-compat: joined text of "thinking"-type blocks only
     thinking_blocks: list[ThinkingBlock] = field(default_factory=list)
     cache_read_tokens: int = 0  # Prompt cache hits (Anthropic only)
     cache_write_tokens: int = 0  # Prompt cache writes (Anthropic only)
+    raw_finish_reason: str | None = None  # the provider's own value, for logs and traces
+    refusal: str | None = None  # a refusal the provider reported outside the content
+    signals: list[str] = field(default_factory=list)  # non-fatal observations, e.g. a filter outage
 
 
 @dataclass

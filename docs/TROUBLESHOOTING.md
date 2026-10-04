@@ -1,6 +1,6 @@
-# Trelix v3.4.2 Troubleshooting Guide
+# Trelix v3.4.3 Troubleshooting Guide
 
-This guide covers every common failure mode for trelix v3.4.2. Each entry follows the pattern: **Symptom → Cause → Fix**.
+This guide covers every common failure mode for trelix v3.4.3. Each entry follows the pattern: **Symptom → Cause → Fix**.
 
 ---
 
@@ -103,6 +103,26 @@ trelix index .
 ```
 
 > **Warning:** This deletes all cached embeddings and re-indexes from zero. On large repositories with a remote provider, this will consume API credits. Use `trelix index . --provider local` for a cost-free baseline, then switch providers if needed.
+
+---
+
+### trelix warned about SQLite WAL reset
+
+**Symptom:** The first time a process opens an index for writing (commands that look read-only, such as `trelix stats`, also take that path for schema init), it logs one warning that starts `The linked SQLite is 3.x.y. SQLite 3.7.0 through 3.51.2 can lose committed writes ...`.
+
+**Cause:** SQLite 3.7.0 through 3.51.2 can lose committed writes when two or more connections, in different threads or processes, write or checkpoint the same WAL database at the same instant. The fix is in 3.51.3 and was backported to 3.50.7 and 3.44.6. trelix has no SQLite of its own; it uses the build of the Python that runs it (including the Python inside a standalone binary or container image), and it checks the upstream version number only. A Linux distro build may carry the fix under a lower number, so the warning does not mean your index is damaged or that your build is affected. It is logged once per process, has no setting of its own, and is never logged for read-only opens.
+
+**Fix:**
+
+Run one process that writes to an index at a time. For example, do not start `trelix index` or `trelix update-index` on a repository while `trelix watch` is running on it, and do not run two indexing commands on the same repository at once.
+
+Check the SQLite your Python links:
+```bash
+python -c "import sqlite3; print(sqlite3.sqlite_version)"
+```
+A fixed build is 3.51.3 or later, 3.50.7 or later within 3.50.x, or 3.44.6 or later within 3.44.x. To stop the warning, upgrade to a Python that links a fixed SQLite, or update the system SQLite package if your Python uses the system library.
+
+Maintainers: CI reports the SQLite version as a `::warning::` (affected range) or `::notice::` annotation from `scripts/report_sqlite_version.py`. Not every run reports every artifact. The workflows run on pushes to `main` and `develop` and on pull requests targeting them (the binary builds: pushes to `develop` and `main`, pull requests to `main`, or a manual run), so a stacked pull request whose base is a feature branch reports nothing. Within those runs: the unit-test matrix and the slim Docker image always report; the `-local` image when the `Dockerfile`, the root `pyproject.toml` or `packages/trelix-mcp/pyproject.toml` changed; the GitHub App image when `infra/github-app/` changes; the binary builds report their build interpreter, not the frozen binary. The number is the upstream one, so it cannot tell whether a distro build (Debian, for one) carries the fix under a lower number. The script always exits 0, so a report that cannot be produced is a warning, not a red job; a step can still fail for a reason outside the script, such as a Docker daemon error.
 
 ---
 

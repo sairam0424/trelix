@@ -240,7 +240,7 @@ pip install -e ".[bge-code]"
 trelix uses a provider-agnostic `TrelixChatClient` ABC (`src/trelix/llm/client.py`). All five built-in backends (`OpenAIBackend`, `AnthropicBackend`, `BedrockBackend`, `VertexBackend`, `LiteLLMBackend`) implement the same three methods: `complete()`, `stream()`, and `tool_call()`. Adding a new provider requires zero changes to business logic (chunker, synthesizer, planner, graph_rag).
 
 1. Create `src/trelix/llm/providers/<name>_backend.py`
-2. Subclass `TrelixChatClient` and implement `complete()`, `stream()`, `tool_call()`
+2. Subclass `TrelixChatClient` and implement `complete()`, `stream()`, `tool_call()`. In `complete()`, translate the provider's stop field through a table in `src/trelix/llm/finish_reasons.py` (`normalise`, or `classify_chat_choice` for an OpenAI-shaped `choices[0]`): a value nobody has classified, or a missing one, is `unknown`, never `stop`, because providers return refusals, filtered replies and truncations as ordinary successful responses. Add the provider's values to `tests/unit/test_llm_finish_reason_matrix.py`. The "not configured" placeholder a backend returns when it has no credentials keeps `finish_reason="stop"` and is recognised by `model == UNCONFIGURED_MODEL`, so check that, not the finish reason
 3. Add a `case "<name>":` branch to `src/trelix/llm/factory.py` (`build_chat_client()`)
 4. Add credential fields to `LLMConfig` in `src/trelix/core/config.py`
 5. Add `"<name>"` to the `Literal` type of `LLMConfig.provider`
@@ -552,6 +552,29 @@ script itself, or re-checking an older release:
 — it verifies the *published* artifacts themselves (PyPI, the Docker images, the
 Helm chart at the tag, the GitHub Release binaries), which is a different claim
 than "the stamps agreed with the tag."
+
+#### Publish `trelix-mcp` to the MCP registry
+
+A green "Verify Release" run is not the end of a release: nothing in CI updates the MCP
+registry, so that entry only moves when someone runs the publish by hand. That is how the
+`io.github.sairam0424/trelix` entry came to read `0.5.1` when PyPI already had `3.4.2`.
+Once PyPI shows the new `trelix-mcp` version and "Verify Release" is green, publish the
+same version to the registry. It has to come after PyPI, because the registry checks the
+package named in `server.json` against PyPI, where it looks for the `mcp-name:` line that
+`packages/trelix-mcp/README.md` carries (keep it).
+
+```bash
+cd packages/trelix-mcp
+mcp-publisher validate      # server.json against the registry schema; both of its version fields are site 7 above
+mcp-publisher login github  # GitHub device flow, as the account that owns the io.github.sairam0424 namespace
+mcp-publisher publish       # publishes ./server.json
+curl -s 'https://registry.modelcontextprotocol.io/v0/servers?search=io.github.sairam0424/trelix' | python -m json.tool
+```
+
+`mcp-publisher` installs with `brew install mcp-publisher`. The `curl` is the check, not
+the publish: its output must name the version you just released, in both
+`servers[0].server.version` and `servers[0].server.packages[0].version`. An old version
+there means the publish did not land.
 
 ---
 

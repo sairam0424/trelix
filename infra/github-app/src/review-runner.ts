@@ -3,8 +3,39 @@ import { promisify } from "node:util";
 import { Octokit } from "@octokit/rest";
 import type { RequestInterface } from "@octokit/types";
 import { AppConfig } from "./config.js";
-import { getInstallationToken } from "./auth.js";
+import { getPurposeTokens } from "./auth.js";
+import { buildIndexChildEnv, buildReviewChildEnv } from "./child-env.js";
+import {
+    exitCodeOf,
+    postCheckRun,
+    postIncompleteCheckRun,
+    postReviewFailureCheckRun,
+    ReviewFinding,
+    toAnnotations,
+} from "./check-posting.js";
 import { checkoutPullRequest as defaultCheckoutPullRequest } from "./repo-checkout.js";
+import {
+    createOutcomeLocation,
+    isRecord,
+    OutcomeLocation,
+    readOutcomeRecord,
+    REVIEW_INCOMPLETE_EXIT_CODE,
+} from "./review-outcome.js";
+import type { CheckAnnotation } from "./sanitize.js";
+
+// The Check-posting helpers live in check-posting.ts; callers (and the tests)
+// know them from here, so they are re-exported.
+export {
+    postCheckRun,
+    postIncompleteCheckRun,
+    postReviewFailureCheckRun,
+    toAnnotations,
+};
+export type { ReviewFinding };
+
+// Defined next to the sanitiser that produces it, so sanitize.ts does not
+// import from this module; re-exported because callers know it from here.
+export type { CheckAnnotation };
 
 const execFileAsync = promisify(execFile);
 
@@ -18,79 +49,37 @@ const REVIEW_TIMEOUT_MS = 5 * 60 * 1000;
 // — same ceiling as the review step itself.
 const INDEX_TIMEOUT_MS = 5 * 60 * 1000;
 
-// The two credentials that identify this App itself. Neither `trelix index` nor
-// `trelix review` has any use for them, and both run over content that an outside
-// PR author controls.
-const APP_CREDENTIAL_ENV: readonly string[] = [
-    "GITHUB_APP_PRIVATE_KEY",
-    "GITHUB_WEBHOOK_SECRET",
-];
-
-/**
- * Environment for a `trelix` child process: `base` without the App's own
- * credentials, and with the walker confined to the checkout.
- *
- * trelix follows symlinks out of the repo by default, and a PR can commit any
- * symlink it likes. Forcing TRELIX_WALKER_FOLLOW_SYMLINKS=false here (whatever the
- * host passed in) keeps that true even if the image or platform config drops the
- * Dockerfile's own setting. Provider variables (LLM, embedder) pass through
- * because trelix needs them. Returns a new object; `base` is never mutated.
- */
-export function buildTrelixChildEnv(
-    base: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-    const inherited = Object.fromEntries(
-        Object.entries(base).filter(
-            ([name]) => !APP_CREDENTIAL_ENV.includes(name),
-        ),
-    );
-    return { ...inherited, TRELIX_WALKER_FOLLOW_SYMLINKS: "false" };
-}
-
 export interface ReviewRequest {
     owner: string;
     repo: string;
     prNumber: number;
     installationId?: number;
+    /** `repository.id`: every installation token is limited to this repository. */
+    repositoryId: number;
+    /** The delivery's `pull_request.head.sha`: a full lowercase hex commit id. */
+    headSha: string;
 }
 
-/** Matches trelix review --pr ... --json's real output shape exactly — see src/trelix/cli/main.py. */
-export interface ReviewFinding {
-    file: string;
-    lines: string; // "start-end", 1-indexed
-    severity: "ERROR" | "WARN" | "INFO";
-    comment: string;
-}
-
-export interface CheckAnnotation {
-    path: string;
-    start_line: number;
-    end_line: number;
-    annotation_level: "failure" | "warning" | "notice";
-    message: string;
-    title: string;
-}
-
-export function toAnnotations(
-    findings: ReviewFinding[],
-    limit = 50,
-): CheckAnnotation[] {
-    return findings.slice(0, limit).map((f) => {
-        const [startLine, endLine] = f.lines.split("-").map(Number);
-        return {
-            path: f.file,
-            start_line: startLine || 1,
-            end_line: endLine || startLine || 1,
-            annotation_level:
-                f.severity === "ERROR"
-                    ? "failure"
-                    : f.severity === "WARN"
-                      ? "warning"
-                      : "notice",
-            message: f.comment,
-            title: "trelix review",
-        };
-    });
+/**
+ * The findings in what `trelix review --json` printed. The same parse for a
+ * review that finished (exit 0) and for one that covered only part of the diff
+ * (exit 4, whose stdout is still the findings array). Throws when it is not a
+ * JSON array of objects: a `null` or a number among the findings would make
+ * toAnnotations throw later, after the point where a Check can still be posted
+ * about it. The workflow's readFindings applies the same checks.
+ */
+export function parseFindings(stdout: string): ReviewFinding[] {
+    const parsed: unknown = JSON.parse(stdout);
+    if (!Array.isArray(parsed)) {
+        throw new Error("trelix review did not print a JSON array");
+    }
+    if (!parsed.every(isRecord)) {
+        throw new Error(
+            "trelix review printed a finding that is not an object",
+        );
+    }
+    // Each is an object; the fields of a finding are not checked here.
+    return parsed as unknown as ReviewFinding[];
 }
 
 /**
@@ -104,16 +93,22 @@ export function toAnnotations(
  * requires a GITHUB_TOKEN env var to do so — exactly like
  * .github/workflows/trelix-review.yml's own
  * `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` step. `token` here is the
- * same installation token runReview already minted for checkoutPullRequest
- * and the Checks API — found live: every real webhook failed with
- * "GITHUB_TOKEN environment variable is required for --pr." until this
- * was forwarded through.
+ * review-purpose installation token (pull_requests:read on one repository,
+ * see auth.ts) — found live: every real webhook failed with "GITHUB_TOKEN
+ * environment variable is required for --pr." until it was forwarded.
+ *
+ * `outcomeFile`, when given, is handed to the child as
+ * TRELIX_REVIEW_OUTCOME_FILE: where it writes the record of which hunks it
+ * did not review. Resolves with the findings on exit 0 and rejects on any
+ * other exit status, including 4 (a review that covered only part of the
+ * diff), where the findings are in the error's `stdout`: see runReview.
  */
 export async function runReviewCli(
-    request: ReviewRequest,
+    request: Pick<ReviewRequest, "owner" | "repo" | "prNumber">,
     repoPath: string,
     token: string,
     timeoutMs: number = REVIEW_TIMEOUT_MS,
+    outcomeFile?: string,
 ): Promise<ReviewFinding[]> {
     const prRef = `${request.owner}/${request.repo}#${request.prNumber}`;
     const { stdout } = await execFileAsync(
@@ -121,102 +116,10 @@ export async function runReviewCli(
         ["review", repoPath, "--pr", prRef, "--json"],
         {
             timeout: timeoutMs,
-            env: { ...buildTrelixChildEnv(), GITHUB_TOKEN: token },
+            env: buildReviewChildEnv(token, process.env, outcomeFile),
         },
     );
-    return JSON.parse(stdout) as ReviewFinding[];
-}
-
-/**
- * Posts findings as a completed Check run with inline annotations,
- * mirroring trelix-review.yml's github-script step's github.rest.checks.create
- * call exactly (same conclusion logic: any 'failure'-level annotation ->
- * overall 'failure', else 'success').
- */
-export async function postCheckRun(
-    octokit: Octokit,
-    owner: string,
-    repo: string,
-    headSha: string,
-    findings: ReviewFinding[],
-): Promise<void> {
-    const annotations = toAnnotations(findings);
-    await octokit.rest.checks.create({
-        owner,
-        repo,
-        name: "trelix Code Review",
-        head_sha: headSha,
-        status: "completed",
-        conclusion: annotations.some((a) => a.annotation_level === "failure")
-            ? "failure"
-            : "success",
-        output: {
-            title: `trelix found ${annotations.length} issue(s)`,
-            summary: `trelix reviewed the PR and found ${annotations.length} issue(s).`,
-            annotations,
-        },
-    });
-}
-
-/**
- * Exit status of `trelix review` when it could not review at all (no usable
- * LLM, or every hunk's LLM call failed) — REVIEW_NOT_RUN_EXIT_CODE in
- * src/trelix/cli/main.py. Keep the two in step.
- */
-const REVIEW_NOT_RUN_EXIT_CODE = 3;
-
-/**
- * Posts a completed Check run recording that the review itself never ran
- * to completion — distinct from postCheckRun, which posts real findings.
- * Without this, a `runReviewCli` failure (timeout, CLI crash, bad JSON)
- * left the PR with NO Check run at all: the caller only saw a server-side
- * console.error, invisible to anyone looking at the PR. `conclusion` is
- * "timed_out" for Node's timeout-triggered kill (matches
- * runReviewCli timeout's `{ killed: true, signal: 'SIGTERM' }` shape) and
- * "neutral" otherwise — a broken reviewer isn't the same claim as "this
- * code has failures".
- */
-export async function postReviewFailureCheckRun(
-    octokit: Octokit,
-    owner: string,
-    repo: string,
-    headSha: string,
-    err: unknown,
-): Promise<void> {
-    const timedOut =
-        typeof err === "object" &&
-        err !== null &&
-        (err as { killed?: boolean }).killed === true &&
-        (err as { signal?: string }).signal === "SIGTERM";
-
-    // execFile rejects with the child's numeric exit status in `code`.
-    const notRun =
-        typeof err === "object" &&
-        err !== null &&
-        (err as { code?: unknown }).code === REVIEW_NOT_RUN_EXIT_CODE;
-
-    let title = "trelix review did not complete";
-    let summary =
-        "trelix review failed to run to completion. No findings were produced for this PR.";
-    if (timedOut) {
-        title = "trelix review timed out";
-        summary =
-            "trelix review did not finish within the time limit and was stopped. No findings were produced for this PR.";
-    } else if (notRun) {
-        title = "trelix review did not run";
-        summary =
-            "trelix could not review this PR: no usable LLM is configured for this trelix instance, or every LLM call failed. No code was reviewed, so this is not a clean result.";
-    }
-
-    await octokit.rest.checks.create({
-        owner,
-        repo,
-        name: "trelix Code Review",
-        head_sha: headSha,
-        status: "completed",
-        conclusion: timedOut ? "timed_out" : "neutral",
-        output: { title, summary },
-    });
+    return parseFindings(stdout);
 }
 
 /**
@@ -233,7 +136,7 @@ export async function indexRepository(
     try {
         await execFileAsync("trelix", ["index", repoPath], {
             timeout: timeoutMs,
-            env: buildTrelixChildEnv(),
+            env: buildIndexChildEnv(),
         });
     } catch (err) {
         console.warn(
@@ -246,86 +149,170 @@ export async function indexRepository(
 export interface RunReviewOptions {
     /** Injectable — tests substitute a fake to avoid a real git clone. */
     checkoutPullRequest?: typeof defaultCheckoutPullRequest;
-    /**
-     * Injectable fake HTTP transport for the installation-token mint —
-     * same RequestInterface-fake pattern getInstallationToken's own
-     * optional third param already uses (see auth.test.ts).
-     */
+    /** Injectable fake HTTP transport for the installation-token mints (see auth.test.ts). */
     request?: RequestInterface;
     /**
-     * Injectable Octokit instance for the PR-fetch/Check-run calls — tests
-     * substitute one with an `octokit.hook.wrap("request", ...)`
-     * interceptor registered so those calls never hit the real GitHub
-     * API. Defaults to a real Octokit authenticated with the minted
-     * installation token.
+     * Injectable Octokit instance for the Check-run call — tests substitute
+     * one with an `octokit.hook.wrap("request", ...)` interceptor so the call
+     * never hits the real GitHub API. Defaults to a real Octokit
+     * authenticated with the `poster` installation token.
      */
     octokit?: Octokit;
+    /**
+     * Tests only: the directory the per-review outcome directory is created
+     * in, so a test can see that it is created and removed. Defaults to the
+     * OS temp directory.
+     */
+    outcomeBaseDir?: string;
+    /**
+     * Called when the run ends without a verdict Check for `request.headSha`:
+     * the review covered only part of the diff (a neutral or failing
+     * "incomplete" Check was posted) or the checkout was no longer at that
+     * commit (nothing was posted). The webhook queue uses it to release its
+     * claim on the commit, so the same commit can be reviewed again. Not
+     * called when the run throws: the caller sees the error instead.
+     */
+    onNoVerdict?: () => void;
+}
+
+/** The findings `trelix review` printed before it exited 4, or null when its stdout is missing or not a JSON array. */
+function findingsOfIncompleteReview(err: unknown): ReviewFinding[] | null {
+    const { stdout } = err as { stdout?: unknown };
+    if (typeof stdout !== "string") {
+        return null;
+    }
+    try {
+        return parseFindings(stdout);
+    } catch (parseErr) {
+        console.warn(
+            "[review-runner] the findings of an incomplete review could not be parsed:",
+            parseErr,
+        );
+        return null;
+    }
 }
 
 /**
- * End-to-end: mint an installation token, clone the PR head into a fresh
- * workspace, index it, run the CLI review against it, and post the
- * findings as a Check run — cleaning up the workspace unconditionally.
- * Requires request.installationId (the webhook payload's
- * `installation.id` — always present for App-installed webhook
- * deliveries).
+ * Runs the review in an already checked-out workspace and posts the Check run
+ * that matches how it ended: the findings on exit 0, the findings with what was
+ * left unreviewed on exit 4 (REVIEW_INCOMPLETE_EXIT_CODE; returns normally,
+ * because the review did run, after calling `onNoVerdict`: that Check is not
+ * a verdict), and a neutral or timed-out Check on anything else, after which
+ * the error is rethrown.
+ */
+async function reviewAndPost(
+    octokit: Octokit,
+    request: ReviewRequest,
+    headSha: string,
+    workspacePath: string,
+    token: string,
+    outcomeFile: string,
+    onNoVerdict?: () => void,
+): Promise<ReviewFinding[]> {
+    let findings: ReviewFinding[];
+    try {
+        findings = await runReviewCli(
+            request,
+            workspacePath,
+            token,
+            undefined,
+            outcomeFile,
+        );
+    } catch (err) {
+        if (exitCodeOf(err) === REVIEW_INCOMPLETE_EXIT_CODE) {
+            // Only exit 4 has findings in `stdout`: a crash, a timeout or exit 3
+            // prints nothing that is a review.
+            const partial = findingsOfIncompleteReview(err);
+            await postIncompleteCheckRun(
+                octokit,
+                request.owner,
+                request.repo,
+                headSha,
+                partial,
+                await readOutcomeRecord(outcomeFile),
+            );
+            onNoVerdict?.();
+            return partial ?? [];
+        }
+        // A timed-out or crashed CLI must still leave a visible signal
+        // on the PR -- without this, the exception below propagated
+        // straight past postCheckRun, and webhook.ts's caller only
+        // console.error'd it, leaving the PR with no Check run at all.
+        await postReviewFailureCheckRun(
+            octokit,
+            request.owner,
+            request.repo,
+            headSha,
+            err,
+        );
+        throw err;
+    }
+    await postCheckRun(octokit, request.owner, request.repo, headSha, findings);
+    return findings;
+}
+
+/** `request.installationId`; throws, before any token is minted, when the delivery had none. */
+function requireInstallationId(request: ReviewRequest): number {
+    if (request.installationId === undefined) {
+        throw new Error(
+            "runReview requires an installationId to authenticate the Checks API call",
+        );
+    }
+    return request.installationId;
+}
+
+/**
+ * End-to-end: mint the three purpose-scoped installation tokens (auth.ts: `checkout`
+ * for git, `review` for the `trelix review` child, `poster` for the Octokit that creates
+ * the Check), clone the PR head into a fresh workspace, index it, review it and post the
+ * findings as a Check run on `request.headSha`, cleaning up the workspace and the outcome
+ * directory unconditionally. Requires request.installationId (`installation.id`). If the
+ * checkout is not at `request.headSha` (a newer push moved refs/pull/<n>/head; it has its
+ * own delivery) it logs, reviews nothing and returns `[]`.
  */
 export async function runReview(
     config: AppConfig,
     request: ReviewRequest,
     options: RunReviewOptions = {},
 ): Promise<ReviewFinding[]> {
-    if (request.installationId === undefined) {
-        throw new Error(
-            "runReview requires an installationId to authenticate the Checks API call",
-        );
-    }
-
     const checkoutPullRequest =
         options.checkoutPullRequest ?? defaultCheckoutPullRequest;
 
-    const token = await getInstallationToken(
+    const tokens = await getPurposeTokens(
         config,
-        request.installationId,
+        requireInstallationId(request),
+        request.repositoryId,
         options.request,
     );
-    const octokit = options.octokit ?? new Octokit({ auth: token });
+    const octokit = options.octokit ?? new Octokit({ auth: tokens.poster });
 
-    const { data: pull } = await octokit.rest.pulls.get({
-        owner: request.owner,
-        repo: request.repo,
-        pull_number: request.prNumber,
-    });
-
-    const workspace = await checkoutPullRequest(token, request);
+    const workspace = await checkoutPullRequest(tokens.checkout, request);
+    let outcomeLocation: OutcomeLocation | undefined;
     try {
-        await indexRepository(workspace.path);
-        let findings: ReviewFinding[];
-        try {
-            findings = await runReviewCli(request, workspace.path, token);
-        } catch (err) {
-            // A timed-out or crashed CLI must still leave a visible signal
-            // on the PR -- without this, the exception below propagated
-            // straight past postCheckRun, and webhook.ts's caller only
-            // console.error'd it, leaving the PR with no Check run at all.
-            await postReviewFailureCheckRun(
-                octokit,
-                request.owner,
-                request.repo,
-                pull.head.sha,
-                err,
+        if (workspace.headSha !== request.headSha) {
+            console.warn(
+                `[review-runner] skipping ${request.owner}/${request.repo}#${request.prNumber}: checkout is at ${workspace.headSha}, delivery is for ${request.headSha}; nothing posted`,
             );
-            throw err;
+            options.onNoVerdict?.();
+            return [];
         }
-        await postCheckRun(
+        // Outside the checkout, so the pull request cannot touch the file.
+        outcomeLocation = await createOutcomeLocation(options.outcomeBaseDir);
+        await indexRepository(workspace.path);
+        return await reviewAndPost(
             octokit,
-            request.owner,
-            request.repo,
-            pull.head.sha,
-            findings,
+            request,
+            request.headSha,
+            workspace.path,
+            tokens.review,
+            outcomeLocation.file,
+            options.onNoVerdict,
         );
-        return findings;
     } finally {
-        await workspace.cleanup();
+        try {
+            await workspace.cleanup();
+        } finally {
+            await outcomeLocation?.cleanup();
+        }
     }
 }

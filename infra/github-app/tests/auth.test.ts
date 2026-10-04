@@ -1,6 +1,10 @@
 import { generateKeyPairSync, verify as verifySignature } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { getInstallationToken, getAppJwt } from "../src/auth.js";
+import {
+    getAppJwt,
+    getInstallationToken,
+    getPurposeTokens,
+} from "../src/auth.js";
 import { AppConfig } from "../src/config.js";
 
 // A real (test-only, never used against GitHub) RSA keypair — @octokit/auth-app
@@ -42,7 +46,13 @@ describe("getInstallationToken", () => {
         const config = makeConfig();
         const request = fakeRequest("ghs_faketoken1", "2099-01-01T00:00:00Z");
 
-        const token = await getInstallationToken(config, 999, request);
+        const token = await getInstallationToken(
+            config,
+            999,
+            4242,
+            "checkout",
+            request,
+        );
 
         expect(token).toBe("ghs_faketoken1");
         expect(request).toHaveBeenCalledTimes(1);
@@ -56,8 +66,20 @@ describe("getInstallationToken", () => {
         const config = makeConfig();
         const request = fakeRequest("ghs_cached_token", "2099-01-01T00:00:00Z");
 
-        const first = await getInstallationToken(config, 999, request);
-        const second = await getInstallationToken(config, 999, request);
+        const first = await getInstallationToken(
+            config,
+            999,
+            4242,
+            "checkout",
+            request,
+        );
+        const second = await getInstallationToken(
+            config,
+            999,
+            4242,
+            "checkout",
+            request,
+        );
 
         expect(first).toBe("ghs_cached_token");
         expect(second).toBe("ghs_cached_token");
@@ -81,8 +103,20 @@ describe("getInstallationToken", () => {
             },
         ) as never;
 
-        const tokenA = await getInstallationToken(config, 111, request);
-        const tokenB = await getInstallationToken(config, 222, request);
+        const tokenA = await getInstallationToken(
+            config,
+            111,
+            4242,
+            "checkout",
+            request,
+        );
+        const tokenB = await getInstallationToken(
+            config,
+            222,
+            4242,
+            "checkout",
+            request,
+        );
 
         expect(tokenA).toBe("ghs_token_for_111");
         expect(tokenB).toBe("ghs_token_for_222");
@@ -95,8 +129,20 @@ describe("getInstallationToken", () => {
         const requestA = fakeRequest("ghs_token_a", "2099-01-01T00:00:00Z");
         const requestB = fakeRequest("ghs_token_b", "2099-01-01T00:00:00Z");
 
-        const tokenA = await getInstallationToken(configA, 999, requestA);
-        const tokenB = await getInstallationToken(configB, 999, requestB);
+        const tokenA = await getInstallationToken(
+            configA,
+            999,
+            4242,
+            "checkout",
+            requestA,
+        );
+        const tokenB = await getInstallationToken(
+            configB,
+            999,
+            4242,
+            "checkout",
+            requestB,
+        );
 
         expect(tokenA).toBe("ghs_token_a");
         expect(tokenB).toBe("ghs_token_b");
@@ -139,7 +185,12 @@ describe("getInstallationToken", () => {
         }) as never;
 
         try {
-            const token = await getInstallationToken(config, 999);
+            const token = await getInstallationToken(
+                config,
+                999,
+                4242,
+                "checkout",
+            );
             expect(token).toBe(canaryTokenValue);
             expect(capturedUrl).toContain(
                 "/app/installations/999/access_tokens",
@@ -148,6 +199,237 @@ describe("getInstallationToken", () => {
             globalThis.fetch = originalFetch;
         }
     });
+});
+
+/** One access_tokens request as the (fake) transport saw it, and what it was answered with. */
+interface IssuedToken {
+    token: string;
+    body: Record<string, unknown>;
+}
+
+/**
+ * A fake transport for the installation-token exchange that answers every request with a
+ * distinct placeholder of its own and keeps the request, so a test can say which body got
+ * which answer.
+ */
+function recordingRequest() {
+    const issued: IssuedToken[] = [];
+    const request = vi.fn(
+        async (_route: string, payload: Record<string, unknown>) => {
+            const answer = `canary-${issued.length + 1}`;
+            issued.push({ token: answer, body: payload });
+            return {
+                data: {
+                    token: answer,
+                    expires_at: "2099-01-01T00:00:00Z",
+                    permissions: {},
+                    repository_selection: "selected",
+                },
+            };
+        },
+    ) as never;
+    return { request, issued };
+}
+
+/** What a request asks GitHub for: the body without the App's own authorization header and media type. */
+function scopeOf(issued: IssuedToken) {
+    const { headers: _headers, mediaType: _mediaType, ...scope } = issued.body;
+    return scope;
+}
+
+describe("installation tokens are scoped per purpose", () => {
+    it.each([
+        [
+            "checkout",
+            {
+                installation_id: 999,
+                repository_ids: [4242],
+                permissions: { contents: "read", metadata: "read" },
+            },
+        ],
+        [
+            "review",
+            {
+                installation_id: 999,
+                repository_ids: [4242],
+                permissions: { pull_requests: "read", metadata: "read" },
+            },
+        ],
+        [
+            "poster",
+            {
+                installation_id: 999,
+                repository_ids: [4242],
+                permissions: { checks: "write", metadata: "read" },
+            },
+        ],
+    ] as const)(
+        "asks GitHub for the %s token with exactly one repository and exactly its permissions",
+        async (purpose, expectedScope) => {
+            const { request, issued } = recordingRequest();
+
+            const got = await getInstallationToken(
+                makeConfig(),
+                999,
+                4242,
+                purpose,
+                request,
+            );
+
+            expect(issued).toHaveLength(1);
+            expect(got).toBe(issued[0].token);
+            // toStrictEqual: an extra permission, a second repository or a
+            // `repositories`/`permissions: {}` key would each fail here.
+            expect(scopeOf(issued[0])).toStrictEqual(expectedScope);
+            // The exchange is authenticated as the App itself (a JWT).
+            expect(
+                (issued[0].body.headers as { authorization: string })
+                    .authorization,
+            ).toMatch(/^bearer \S+\.\S+\.\S+$/);
+        },
+    );
+
+    it("sends the scope on the wire: repository_ids and permissions in the JSON body of the real transport", async () => {
+        const config = makeConfig();
+        const originalFetch = globalThis.fetch;
+        const sent: Array<{ url: string; body: unknown }> = [];
+        globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+            sent.push({ url, body: JSON.parse(String(init?.body)) });
+            return new Response(
+                JSON.stringify({
+                    token: "test-k",
+                    expires_at: "2099-01-01T00:00:00Z",
+                    permissions: {},
+                    repository_selection: "selected",
+                }),
+                {
+                    status: 201,
+                    headers: { "content-type": "application/json" },
+                },
+            );
+        }) as never;
+
+        try {
+            await getInstallationToken(config, 999, 4242, "poster");
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+
+        expect(sent).toHaveLength(1);
+        expect(sent[0].url).toContain("/app/installations/999/access_tokens");
+        expect(sent[0].body).toStrictEqual({
+            repository_ids: [4242],
+            permissions: { checks: "write", metadata: "read" },
+        });
+    });
+
+    it("gives each purpose its own token, and never hands one purpose the token minted for another", async () => {
+        const config = makeConfig();
+        const { request, issued } = recordingRequest();
+
+        const first = await getPurposeTokens(config, 999, 4242, request);
+
+        expect(issued).toHaveLength(3);
+        expect(new Set([first.checkout, first.review, first.poster]).size).toBe(
+            3,
+        );
+        const permissionsOf = (answer: string) =>
+            scopeOf(issued.find((i) => i.token === answer) as IssuedToken)
+                .permissions;
+        expect(permissionsOf(first.checkout)).toStrictEqual({
+            contents: "read",
+            metadata: "read",
+        });
+        expect(permissionsOf(first.review)).toStrictEqual({
+            pull_requests: "read",
+            metadata: "read",
+        });
+        expect(permissionsOf(first.poster)).toStrictEqual({
+            checks: "write",
+            metadata: "read",
+        });
+
+        // The cache answers the second round, purpose by purpose: no new request, and
+        // each purpose gets its own token back again.
+        const second = await getPurposeTokens(config, 999, 4242, request);
+        expect(issued).toHaveLength(3);
+        expect(second).toStrictEqual(first);
+    });
+
+    it("does not reuse a token minted for one repository for another repository", async () => {
+        const config = makeConfig();
+        const { request, issued } = recordingRequest();
+
+        const forFirst = await getInstallationToken(
+            config,
+            999,
+            4242,
+            "checkout",
+            request,
+        );
+        const forSecond = await getInstallationToken(
+            config,
+            999,
+            4343,
+            "checkout",
+            request,
+        );
+
+        expect(forSecond).not.toBe(forFirst);
+        expect(issued.map((i) => scopeOf(i).repository_ids)).toStrictEqual([
+            [4242],
+            [4343],
+        ]);
+    });
+
+    it.each([
+        ["zero", 0],
+        ["negative", -1],
+        ["fractional", 1.5],
+        ["NaN", Number.NaN],
+        ["infinite", Number.POSITIVE_INFINITY],
+        ["past the safe-integer range", 2 ** 53],
+    ])(
+        "refuses a repository id that is %s, without asking GitHub for anything",
+        async (_name, repositoryId) => {
+            const { request, issued } = recordingRequest();
+
+            await expect(
+                getInstallationToken(
+                    makeConfig(),
+                    999,
+                    repositoryId,
+                    "checkout",
+                    request,
+                ),
+            ).rejects.toThrow(
+                "an installation token needs the numeric id of one repository",
+            );
+
+            expect(issued).toHaveLength(0);
+        },
+    );
+
+    // "constructor" and "toString" are found on any object's prototype: an own-property
+    // test is what keeps them from being taken for a purpose.
+    it.each(["admin", "", "constructor", "toString", "hasOwnProperty"])(
+        "refuses the purpose %j, which it does not know, without asking GitHub for anything",
+        async (purpose) => {
+            const { request, issued } = recordingRequest();
+
+            await expect(
+                getInstallationToken(
+                    makeConfig(),
+                    999,
+                    4242,
+                    purpose as never,
+                    request,
+                ),
+            ).rejects.toThrow(`unknown installation token purpose: ${purpose}`);
+
+            expect(issued).toHaveLength(0);
+        },
+    );
 });
 
 describe("getAppJwt", () => {

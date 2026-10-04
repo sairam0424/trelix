@@ -78,9 +78,16 @@ jobs:
           # corrupt the file again.
           #
           # The exit code is captured, not discarded: swallowing it here used to turn a
-          # review that never ran (exit 3: no usable LLM, or every hunk failed) into
-          # an empty array and a green "found 0 issue(s)" check. The step itself
-          # still succeeds; the publishing step decides what the check says.
+          # review that never ran (exit 3: no usable LLM, or no hunk got a usable review
+          # and none kept a finding) into an empty array and a green "found 0 issue(s)"
+          # check. The step itself still succeeds; the publishing step decides what the
+          # check says.
+          #
+          # Exit 4 is a review that covered only part of the diff: stdout still has its
+          # findings, and TRELIX_REVIEW_OUTCOME_FILE (set below) names where trelix
+          # writes which hunks it left unreviewed. A file already at that path is removed
+          # first, so what the publishing step reads is this run's record or none.
+          rm -f -- "$TRELIX_REVIEW_OUTCOME_FILE"
           review_exit_code=0
           trelix review --pr "${TRELIX_REPO}#${TRELIX_PR_NUMBER}" --json > /tmp/trelix-review.json 2>/tmp/trelix-review.stderr.log || review_exit_code=$?
           cat /tmp/trelix-review.stderr.log
@@ -90,6 +97,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRELIX_PR_NUMBER: ${{ github.event.pull_request.number }}
           TRELIX_REPO: ${{ github.repository }}
+          # A fixed, trusted path; the publishing step reads the same one.
+          TRELIX_REVIEW_OUTCOME_FILE: /tmp/trelix-review-outcome.json
 
       - name: Post review as Check annotations
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
@@ -100,71 +109,235 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            // Use a fixed, trusted path — never interpolate step outputs into JS source
+            // Use fixed, trusted paths — never interpolate step outputs into JS source. The
+            // outcome record is written by the review step (TRELIX_REVIEW_OUTCOME_FILE there
+            // must be this same path); it is still read as untrusted input, see readOutcome.
             const reviewFile = '/tmp/trelix-review.json';
+            const outcomeFile = '/tmp/trelix-review-outcome.json';
             // PR number comes from env, not directly from context expression in source
             const prNumber = parseInt(process.env.TRELIX_PR_NUMBER, 10);
 
             // trelix review --json emits a bare array of
             // {file, lines: "start-end", severity: "ERROR"|"WARN"|"INFO", comment}
             // — see src/trelix/cli/main.py's review() --pr --json path.
-            // Exit code of the review step. 0 = a real review ran; 3 =
-            // REVIEW_NOT_RUN_EXIT_CODE in src/trelix/cli/main.py (no usable LLM, or
-            // every hunk failed); anything else, or nothing, = it did not complete.
-            // None of those may be published as "found 0 issue(s)".
+            // Exit code of the review step. 0 = a real review ran and covered the diff; 3 =
+            // REVIEW_NOT_RUN_EXIT_CODE in src/trelix/cli/main.py (no usable LLM, or no hunk
+            // got a usable review and none kept a finding); 4 = REVIEW_INCOMPLETE_EXIT_CODE
+            // (it reviewed only part of the diff; stdout still has the findings it has);
+            // anything else, or nothing, = it did not complete. None of those may be
+            // published as "found 0 issue(s)". tests/unit/test_review_exit_code_contract.py
+            // keeps these two numbers equal to the ones in main.py.
             const reviewNotRunExitCode = '3';
+            const reviewIncompleteExitCode = '4';
             const reviewExitCode = process.env.TRELIX_REVIEW_EXIT_CODE || '';
-            if (reviewExitCode !== '0') {
-              const notRun = reviewExitCode === reviewNotRunExitCode;
-              await github.rest.checks.create({
+
+            // The conclusion for each way the review can end: 0 -> success, or failure if a
+            // finding is an ERROR; 4 (incomplete) -> neutral, or failure if a finding is an
+            // ERROR; 3, any other code, or none -> neutral. Judged by ALL the findings, not
+            // only the ones that get an annotation. `findings` null means the findings could
+            // not be read (see readFindings): neutral whatever the exit code, because nothing
+            // can be said about them. The GitHub App has the same rule (reviewConclusion in
+            // infra/github-app/src/review-outcome.ts); both are tested against
+            // infra/github-app/tests/fixtures/review-conclusion-cases.json.
+            function conclusionFor(exitCode, findings) {
+              if (findings === null) return 'neutral';
+              const hasError = findings.some(f => f && f.severity === 'ERROR');
+              if (exitCode === '0') return hasError ? 'failure' : 'success';
+              if (exitCode === reviewIncompleteExitCode) return hasError ? 'failure' : 'neutral';
+              return 'neutral';
+            }
+
+            // The check belongs on the pull request's HEAD commit. context.sha is the
+            // synthetic merge commit of a pull_request event, which no PR page shows, so a
+            // check created on it never appeared on the pull request at all.
+            function publish(conclusion, output) {
+              return github.rest.checks.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 name: 'trelix Code Review',
-                head_sha: context.sha,
+                head_sha: context.payload.pull_request.head.sha,
                 status: 'completed',
-                conclusion: 'neutral',
-                output: {
-                  title: notRun ? 'trelix review did not run' : 'trelix review did not complete',
-                  summary: notRun
-                    ? `trelix could not review PR #${prNumber}: no usable LLM is configured for this workflow, or every LLM call failed. No code was reviewed, so this is not a clean result. See the "Run trelix review" step log for the reason.`
-                    : `trelix review exited with exit code ${reviewExitCode || 'unknown'} on PR #${prNumber}, so no review result is available. See the "Run trelix review" step log.`,
-                },
+                conclusion,
+                output,
+              });
+            }
+
+            // The findings array from the review step's stdout, or null when the file is
+            // missing, is not JSON, is not an array or holds something that is not an object.
+            // Null is never read as "no findings": the caller says the findings could not be
+            // read. The GitHub App's parseFindings applies the same checks.
+            function readFindings() {
+              try {
+                const parsed = JSON.parse(fs.readFileSync(reviewFile, 'utf8'));
+                if (!Array.isArray(parsed)) {
+                  console.log('No structured review output: not a JSON array');
+                  return null;
+                }
+                if (!parsed.every(f => f !== null && typeof f === 'object' && !Array.isArray(f))) {
+                  console.log('No structured review output: an element is not an object');
+                  return null;
+                }
+                return parsed;
+              } catch (e) {
+                console.log('No structured review output:', e.message);
+              }
+              return null;
+            }
+
+            function toAnnotations(findings) {
+              return findings.slice(0, 50).map(f => {
+                const [startLine, endLine] = String(f.lines || '1-1').split('-').map(Number);
+                return {
+                  path: f.file || 'unknown',
+                  start_line: startLine || 1,
+                  end_line: endLine || startLine || 1,
+                  annotation_level: f.severity === 'ERROR' ? 'failure'
+                    : f.severity === 'WARN' ? 'warning' : 'notice',
+                  message: f.comment || String(f),
+                  title: 'trelix review',
+                };
+              });
+            }
+
+            // The record `trelix review` writes to TRELIX_REVIEW_OUTCOME_FILE
+            // (src/trelix/review/outcome_file.py), read as untrusted input: it must be a
+            // regular file of sane size holding JSON that adds up, or it is "unknown" (null)
+            // and nothing in it is used. Nothing is repaired. The App's parseOutcomeRecord
+            // (infra/github-app/src/review-outcome.ts) applies the same checks.
+            const unreviewedStatuses = ['truncated', 'refused', 'parse_failed', 'error'];
+            const maxOutcomeBytes = 1024 * 1024;
+            const isCount = v => Number.isSafeInteger(v) && v >= 0;
+
+            function parseHunk(h) {
+              if (h === null || typeof h !== 'object' || Array.isArray(h)) return null;
+              if (typeof h.file !== 'string' || !isCount(h.line)) return null;
+              if (!unreviewedStatuses.includes(h.status)) return null;
+              return { file: h.file, line: h.line, status: h.status };
+            }
+
+            function readOutcome() {
+              let doc;
+              try {
+                const info = fs.lstatSync(outcomeFile);
+                if (!info.isFile() || info.size > maxOutcomeBytes) {
+                  console.log('The outcome record is not a regular file of a sane size');
+                  return null;
+                }
+                doc = JSON.parse(fs.readFileSync(outcomeFile, 'utf8'));
+              } catch (e) {
+                console.log('No usable outcome record:', e.message);
+                return null;
+              }
+              if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return null;
+              const total = doc.hunks_total;
+              const reviewed = doc.hunks_reviewed;
+              const unreviewed = doc.hunks_unreviewed;
+              const omitted = doc.hunks_omitted;
+              if (doc.schema_version !== 1 || doc.exit_code !== Number(reviewIncompleteExitCode)
+                || !isCount(total) || !isCount(reviewed) || !isCount(unreviewed) || !isCount(omitted)
+                || unreviewed < 1 || reviewed + unreviewed !== total || !Array.isArray(doc.hunks)) {
+                console.log('The outcome record is not consistent');
+                return null;
+              }
+              const hunks = doc.hunks.map(parseHunk);
+              if (hunks.includes(null) || hunks.length + omitted !== unreviewed) {
+                console.log('The outcome record is not consistent');
+                return null;
+              }
+              return { total, reviewed, unreviewed, hunks };
+            }
+
+            // A file name is PR-controlled text. It is shown only inside a code span, on one
+            // line, with hidden and control characters gone, combining runs capped, at most
+            // maxDisplayPathLength characters, and without a backtick (replaced by a lookalike
+            // that cannot close the span). Only the first few hundred characters are looked
+            // at, so the cost does not depend on how long the name is.
+            const maxListedHunks = 10;
+            const maxDisplayPathLength = 100;
+            function displayPath(file) {
+              const text = file.slice(0, 4 * maxDisplayPathLength)
+                .replace(/[\p{Cf}\p{Cs}]/gu, '')
+                .replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ')
+                .replace(/\p{M}{5,}/gu, run => Array.from(run).slice(0, 4).join(''))
+                .trim();
+              const chars = Array.from(text);
+              const capped = chars.length > maxDisplayPathLength
+                ? chars.slice(0, maxDisplayPathLength - 1).join('').trimEnd() + '…'
+                : text;
+              return capped === '' ? '(unprintable file name)' : capped.replace(/`/g, 'ˋ');
+            }
+
+            function incompleteSummary(findings, annotationCount, outcome) {
+              const lines = [];
+              if (outcome === null) {
+                lines.push(`trelix reviewed only part of PR #${prNumber}, but the record of what it covered is missing or unreadable, so how much was left unreviewed is unknown. This is not a clean result.`);
+              } else {
+                lines.push(`trelix reviewed only part of PR #${prNumber}: ${outcome.reviewed} of ${outcome.total} hunks were reviewed and ${outcome.unreviewed} were not. This is not a clean result.`);
+              }
+              lines.push('');
+              if (findings === null) {
+                lines.push('The list of findings could not be read, so none are shown.');
+              } else if (findings.length === 0) {
+                lines.push('No findings in the hunks that were reviewed.');
+              } else {
+                lines.push(`${findings.length} issue(s) found in the hunks that were reviewed.`);
+                if (annotationCount < findings.length) {
+                  lines[lines.length - 1] += ` ${findings.length - annotationCount} of them could not be shown as inline annotations (GitHub allows 50 per check).`;
+                }
+              }
+              if (outcome !== null) {
+                const listed = outcome.hunks.slice(0, maxListedHunks);
+                lines.push('', 'Hunks that were not reviewed:');
+                for (const h of listed) {
+                  lines.push(`- \`${displayPath(h.file)}:${h.line}\` (${h.status})`);
+                }
+                if (outcome.unreviewed > listed.length) {
+                  lines.push(`- and ${outcome.unreviewed - listed.length} more.`);
+                }
+              }
+              lines.push('', 'See the "Run trelix review" step log for the reason.');
+              return lines.join('\n');
+            }
+
+            if (reviewExitCode === reviewIncompleteExitCode) {
+              // stdout still has the findings; the record says which hunks were left out.
+              // Either may be unreadable, and the check says so instead of reading it as clean.
+              const findings = readFindings();
+              const annotations = toAnnotations(findings || []);
+              await publish(conclusionFor(reviewExitCode, findings), {
+                title: 'trelix review incomplete',
+                summary: incompleteSummary(findings, annotations.length, readOutcome()),
+                annotations,
               });
               return;
             }
 
-            let findings = [];
-            try {
-              const raw = fs.readFileSync(reviewFile, 'utf8');
-              findings = JSON.parse(raw);
-            } catch (e) {
-              console.log('No structured review output:', e.message);
+            if (reviewExitCode !== '0') {
+              const notRun = reviewExitCode === reviewNotRunExitCode;
+              await publish(conclusionFor(reviewExitCode, []), {
+                title: notRun ? 'trelix review did not run' : 'trelix review did not complete',
+                summary: notRun
+                  ? `trelix could not review PR #${prNumber}: no usable LLM is configured for this workflow, or no hunk got a usable review and none kept a finding. No code was reviewed, so this is not a clean result. See the "Run trelix review" step log for the reason.`
+                  : `trelix review exited with exit code ${reviewExitCode || 'unknown'} on PR #${prNumber}, so no review result is available. See the "Run trelix review" step log.`,
+              });
+              return;
             }
 
-            const annotations = findings.slice(0, 50).map(f => {
-              const [startLine, endLine] = String(f.lines || '1-1').split('-').map(Number);
-              return {
-                path: f.file || 'unknown',
-                start_line: startLine || 1,
-                end_line: endLine || startLine || 1,
-                annotation_level: f.severity === 'ERROR' ? 'failure'
-                  : f.severity === 'WARN' ? 'warning' : 'notice',
-                message: f.comment || String(f),
-                title: 'trelix review',
-              };
-            });
+            // Exit 0 says a review ran and covered the diff, so its stdout must be a findings
+            // array. If it is not, "found 0 issue(s)" would be a claim nobody checked: say
+            // the result could not be read, as the GitHub App does for the same output.
+            const findings = readFindings();
+            if (findings === null) {
+              await publish(conclusionFor(reviewExitCode, findings), {
+                title: 'trelix review did not complete',
+                summary: `trelix review finished on PR #${prNumber}, but the findings it printed could not be read, so no review result is available. This is not a clean result. See the "Run trelix review" step log.`,
+              });
+              return;
+            }
+            const annotations = toAnnotations(findings);
 
-            await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'trelix Code Review',
-              head_sha: context.sha,
-              status: 'completed',
-              conclusion: annotations.some(a => a.annotation_level === 'failure')
-                ? 'failure' : 'success',
-              output: {
-                title: `trelix found ${annotations.length} issue(s)`,
-                summary: `trelix reviewed PR #${prNumber} and found ${annotations.length} issue(s).`,
-                annotations,
-              },
+            await publish(conclusionFor(reviewExitCode, findings), {
+              title: `trelix found ${annotations.length} issue(s)`,
+              summary: `trelix reviewed PR #${prNumber} and found ${annotations.length} issue(s).`,
+              annotations,
             });

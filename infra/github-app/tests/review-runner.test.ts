@@ -3,6 +3,7 @@ import {
     writeFileSync,
     mkdtempSync,
     chmodSync,
+    readdirSync,
     readFileSync,
     rmSync,
 } from "node:fs";
@@ -12,16 +13,21 @@ import { Octokit } from "@octokit/rest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     toAnnotations,
-    buildTrelixChildEnv,
     indexRepository,
     runReviewCli,
-    runReview,
     postReviewFailureCheckRun,
     ReviewFinding,
     RunReviewOptions,
 } from "../src/review-runner.js";
 import { AppConfig } from "../src/config.js";
 import { Workspace } from "../src/repo-checkout.js";
+import {
+    loadConclusionCases,
+    outcomeTextFor,
+    stdoutTextFor,
+} from "./support/conclusion-cases.js";
+import { HEAD_SHA, reviewRequest } from "./support/review-fixtures.js";
+import { runReviewForTest } from "./support/run-review.js";
 
 describe("toAnnotations", () => {
     it("maps ERROR/WARN/INFO severities to failure/warning/notice", () => {
@@ -141,8 +147,9 @@ describe("postReviewFailureCheckRun", () => {
     });
 
     // `trelix review` exits 3 (REVIEW_NOT_RUN_EXIT_CODE in src/trelix/cli/main.py)
-    // when no LLM is usable or every hunk failed. The check must say so instead of
-    // the generic "failed to run to completion", and must never read as a pass.
+    // when no LLM is usable or no hunk got a usable review and none kept a finding.
+    // The check must say so instead of the generic "failed to run to completion",
+    // and must never read as a pass.
     it("explains the 'review did not run' exit code (3) instead of a generic failure", async () => {
         const { octokit, calls } = fakeOctokitCapturingChecksCreate();
         const notRunErr = Object.assign(new Error("Command failed"), { code: 3 });
@@ -324,8 +331,9 @@ describe("runReview orchestration", () => {
     }
 
     /** Fakes @octokit/rest's own HTTP transport via its documented `hook.wrap("request", ...)` extension point. */
+    // Only the Checks call is answered: any other request (a `pulls.get` the poster
+    // token has no permission for) throws "unexpected octokit request".
     function fakeOctokit(
-        headSha: string,
         opts: {
             checksCreateShouldThrow?: boolean;
             checksCreateCalls?: Array<Record<string, unknown>>;
@@ -333,17 +341,6 @@ describe("runReview orchestration", () => {
     ) {
         const octokit = new Octokit({});
         octokit.hook.wrap("request", async (_request, options) => {
-            if (
-                options.method === "GET" &&
-                options.url === "/repos/{owner}/{repo}/pulls/{pull_number}"
-            ) {
-                return {
-                    status: 200,
-                    url: "",
-                    headers: {},
-                    data: { head: { sha: headSha } },
-                };
-            }
             if (
                 options.method === "POST" &&
                 options.url === "/repos/{owner}/{repo}/check-runs"
@@ -366,7 +363,7 @@ describe("runReview orchestration", () => {
         cleanup: ReturnType<typeof vi.fn>;
     } {
         const cleanup = vi.fn(async () => {});
-        return { workspace: { path: ".", cleanup }, cleanup };
+        return { workspace: { path: ".", headSha: HEAD_SHA, cleanup }, cleanup };
     }
 
     it("does not block the review when `trelix index` fails (tolerant-failure fallback)", async () => {
@@ -374,11 +371,11 @@ describe("runReview orchestration", () => {
         const { workspace, cleanup } = fakeWorkspace();
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
-        const octokit = fakeOctokit("deadbeef");
+        const octokit = fakeOctokit();
 
-        const findings = await runReview(
+        const findings = await runReviewForTest(
             config,
-            { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+            reviewRequest(),
             {
                 checkoutPullRequest,
                 request: fakeAuthRequest("ghs_faketoken"),
@@ -397,14 +394,14 @@ describe("runReview orchestration", () => {
         const { workspace, cleanup } = fakeWorkspace();
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
-        const octokit = fakeOctokit("deadbeef", {
+        const octokit = fakeOctokit({
             checksCreateShouldThrow: true,
         });
 
         await expect(
-            runReview(
+            runReviewForTest(
                 config,
-                { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+                reviewRequest(),
                 {
                     checkoutPullRequest,
                     request: fakeAuthRequest("ghs_faketoken"),
@@ -427,7 +424,7 @@ describe("runReview orchestration", () => {
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
         const checksCreateCalls: Array<Record<string, unknown>> = [];
-        const octokit = fakeOctokit("deadbeef", { checksCreateCalls });
+        const octokit = fakeOctokit({ checksCreateCalls });
 
         const shim = join(binDir, "trelix");
         writeFileSync(
@@ -446,9 +443,9 @@ describe("runReview orchestration", () => {
         chmodSync(shim, 0o755);
 
         await expect(
-            runReview(
+            runReviewForTest(
                 config,
-                { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+                reviewRequest(),
                 {
                     checkoutPullRequest,
                     request: fakeAuthRequest("ghs_faketoken"),
@@ -472,7 +469,7 @@ describe("runReview orchestration", () => {
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
         const checksCreateCalls: Array<Record<string, unknown>> = [];
-        const octokit = fakeOctokit("deadbeef", { checksCreateCalls });
+        const octokit = fakeOctokit({ checksCreateCalls });
 
         const shim = join(binDir, "trelix");
         writeFileSync(
@@ -491,9 +488,9 @@ describe("runReview orchestration", () => {
         chmodSync(shim, 0o755);
 
         await expect(
-            runReview(
+            runReviewForTest(
                 config,
-                { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+                reviewRequest(),
                 {
                     checkoutPullRequest,
                     request: fakeAuthRequest("ghs_faketoken"),
@@ -516,11 +513,11 @@ describe("runReview orchestration", () => {
         const { workspace } = fakeWorkspace();
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
-        const octokit = fakeOctokit("deadbeef");
+        const octokit = fakeOctokit();
 
-        await runReview(
+        await runReviewForTest(
             config,
-            { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+            reviewRequest(),
             {
                 checkoutPullRequest,
                 request: fakeAuthRequest("ghs_faketoken"),
@@ -547,7 +544,7 @@ describe("runReview orchestration", () => {
         const { workspace, cleanup } = fakeWorkspace();
         const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
             vi.fn(async () => workspace);
-        const octokit = fakeOctokit("deadbeef");
+        const octokit = fakeOctokit();
         const installationTokenForCli = "installation-token-for-cli-env";
 
         const shim = join(binDir, "trelix");
@@ -569,9 +566,9 @@ describe("runReview orchestration", () => {
         );
         chmodSync(shim, 0o755);
 
-        const findings = await runReview(
+        const findings = await runReviewForTest(
             config,
-            { owner: "o", repo: "r", prNumber: 1, installationId: 999 },
+            reviewRequest(),
             {
                 checkoutPullRequest,
                 request: fakeAuthRequest(installationTokenForCli),
@@ -584,12 +581,474 @@ describe("runReview orchestration", () => {
     });
 });
 
-// The two credentials that identify the App itself. Neither `trelix index`
-// nor `trelix review` has any use for them, and both children run over
-// content an outside PR author controls.
+// How a review ends decides what the Check says. Each case runs the whole of runReview
+// against a real `trelix` stand-in (a shell script that exits with the row's status, prints
+// the row's findings and, like the real one, writes the outcome record to the path in
+// TRELIX_REVIEW_OUTCOME_FILE). The rows are the ones the workflow is tested with.
+describe("runReview, by how the review ended", () => {
+    const CASES = loadConclusionCases();
+    const APP_ROWS = CASES.cases.filter((row) =>
+        (row.applies_to ?? ["workflow", "app"]).includes("app"),
+    );
+
+    let binDir: string;
+    let dumpDir: string;
+    let outcomeBase: string;
+    let workspaceDir: string;
+    let originalPath: string | undefined;
+
+    beforeEach(() => {
+        binDir = mkdtempSync(join(tmpdir(), "trelix-ended-bin-"));
+        dumpDir = mkdtempSync(join(tmpdir(), "trelix-ended-dump-"));
+        outcomeBase = mkdtempSync(join(tmpdir(), "trelix-ended-outcomes-"));
+        workspaceDir = mkdtempSync(join(tmpdir(), "trelix-ended-workspace-"));
+        originalPath = process.env.PATH;
+        process.env.PATH = `${binDir}:${originalPath}`;
+    });
+
+    afterEach(() => {
+        process.env.PATH = originalPath;
+        for (const dir of [binDir, dumpDir, outcomeBase, workspaceDir]) {
+            rmSync(dir, { recursive: true, force: true });
+        }
+        vi.restoreAllMocks();
+    });
+
+    /** A `trelix` that exits `exitCode` after printing `stdout` and writing `outcomeText` (none: no file) where it was told to. */
+    function installTrelix(
+        exitCode: number,
+        stdout: string,
+        outcomeText: string | null = null,
+    ): void {
+        writeFileSync(join(binDir, "stdout.txt"), stdout);
+        if (outcomeText !== null) {
+            writeFileSync(join(binDir, "outcome-source.json"), outcomeText);
+        }
+        const shim = join(binDir, "trelix");
+        writeFileSync(
+            shim,
+            [
+                "#!/bin/sh",
+                'if [ "$1" = "index" ]; then',
+                `  echo "\${TRELIX_REVIEW_OUTCOME_FILE-unset}" > "${dumpDir}/index.outcome-path"`,
+                "  exit 0",
+                "fi",
+                `echo "\${TRELIX_REVIEW_OUTCOME_FILE-unset}" > "${dumpDir}/review.outcome-path"`,
+                // An empty destination would make BSD cp write into the current directory.
+                `if [ -n "$TRELIX_REVIEW_OUTCOME_FILE" ] && [ -f "${binDir}/outcome-source.json" ]; then cp "${binDir}/outcome-source.json" "$TRELIX_REVIEW_OUTCOME_FILE"; fi`,
+                `cat "${binDir}/stdout.txt"`,
+                `exit ${exitCode}`,
+                "",
+            ].join("\n"),
+        );
+        chmodSync(shim, 0o755);
+    }
+
+    function config(): AppConfig {
+        const { privateKey } = generateKeyPairSync("rsa", {
+            modulusLength: 2048,
+            publicKeyEncoding: { type: "spki", format: "pem" },
+            privateKeyEncoding: { type: "pkcs1", format: "pem" },
+        });
+        return { appId: "1", privateKey, webhookSecret: "fake", port: 0 };
+    }
+
+    function fakeOctokit(checksCreateShouldThrow = false) {
+        const calls: Array<Record<string, unknown>> = [];
+        const octokit = new Octokit({});
+        octokit.hook.wrap("request", async (_request, options) => {
+            if (
+                options.method === "POST" &&
+                options.url === "/repos/{owner}/{repo}/check-runs"
+            ) {
+                calls.push(options);
+                if (checksCreateShouldThrow) {
+                    throw new Error("checks.create failed (simulated)");
+                }
+                return { status: 201, url: "", headers: {}, data: {} };
+            }
+            throw new Error(
+                `unexpected octokit request in test: ${options.method} ${options.url}`,
+            );
+        });
+        return { octokit, calls };
+    }
+
+    /** Runs the whole review; resolves to what runReview returned or the error it threw. */
+    async function review(
+        octokit: Octokit,
+        cleanupError?: Error,
+        onNoVerdict?: () => void,
+    ) {
+        const cleanup = vi.fn(async () => {
+            if (cleanupError !== undefined) {
+                throw cleanupError;
+            }
+        });
+        const checkoutPullRequest: RunReviewOptions["checkoutPullRequest"] =
+            vi.fn(async () => ({ path: workspaceDir, headSha: HEAD_SHA, cleanup }));
+        const outcome = await runReviewForTest(
+            config(),
+            reviewRequest(),
+            {
+                checkoutPullRequest,
+                request: vi.fn(async () => ({
+                    data: {
+                        token: "test-k",
+                        expires_at: "2099-01-01T00:00:00Z",
+                        permissions: {},
+                        repository_selection: "all",
+                    },
+                })) as never,
+                octokit,
+                outcomeBaseDir: outcomeBase,
+                onNoVerdict,
+            },
+        ).then(
+            (findings) => ({ findings }),
+            (error: unknown) => ({ error }),
+        );
+        return { ...outcome, cleanup };
+    }
+
+    const output = (call: Record<string, unknown>) =>
+        call.output as {
+            title: string;
+            summary: string;
+            annotations?: Array<Record<string, unknown>>;
+        };
+
+    it("has a row for every way a review ends", () => {
+        expect(APP_ROWS.length).toBeGreaterThanOrEqual(14);
+    });
+
+    it.each(APP_ROWS.map((row) => [row.id, row] as const))(
+        "the shared row %s gets its conclusion and title",
+        async (_id, row) => {
+            installTrelix(
+                Number(row.exit_code),
+                stdoutTextFor(row),
+                outcomeTextFor(row, CASES),
+            );
+            const { octokit, calls } = fakeOctokit();
+            const onNoVerdict = vi.fn();
+
+            const result = await review(octokit, undefined, onNoVerdict);
+
+            // Only a review that ended with the "incomplete" Check is without a verdict:
+            // a complete review has one, and a failed one throws instead.
+            expect(onNoVerdict).toHaveBeenCalledTimes(
+                row.exit_code === "4" ? 1 : 0,
+            );
+            expect(calls).toHaveLength(1);
+            expect(calls[0]).toMatchObject({
+                head_sha: "0123456789abcdef0123456789abcdef01234567",
+                status: "completed",
+                conclusion: row.conclusion,
+            });
+            expect(output(calls[0]).title).toBe(row.title);
+            // Exit 4 is a review that ran and returns its findings, readable or not. Exit 0
+            // returns them only if stdout is a findings array; when it is not, the error is
+            // thrown after the Check is posted, as it is for any other status.
+            const returned =
+                row.exit_code === "4" ||
+                (row.exit_code === "0" && row.stdout_text === undefined);
+            expect("findings" in result).toBe(returned);
+            expect("error" in result).toBe(!returned);
+            expect(result.cleanup).toHaveBeenCalledTimes(1);
+            expect(readdirSync(outcomeBase)).toEqual([]);
+        },
+    );
+
+    describe("a review that covered only part of the diff (exit 4)", () => {
+        const WARN = {
+            file: "src/a.py",
+            lines: "3-4",
+            severity: "WARN",
+            comment: "smell",
+        };
+
+        it("posts the findings as annotations and what was left unreviewed, and returns the findings", async () => {
+            installTrelix(
+                4,
+                JSON.stringify([WARN]),
+                JSON.stringify(CASES.valid_outcome),
+            );
+            const { octokit, calls } = fakeOctokit();
+
+            const result = await review(octokit);
+
+            expect(result).toMatchObject({ findings: [WARN] });
+            expect(calls).toHaveLength(1);
+            expect(calls[0].conclusion).toBe("neutral");
+            expect(output(calls[0])).toEqual({
+                title: "trelix review incomplete",
+                summary: [
+                    "trelix reviewed only part of this PR: 3 of 5 hunks were reviewed and 2 were not. This is not a clean result.",
+                    "",
+                    "1 issue(s) found in the hunks that were reviewed.",
+                    "",
+                    "Hunks that were not reviewed:",
+                    "- `src/a.py:10` (truncated)",
+                    "- `src/b.py:20` (refused)",
+                ].join("\n"),
+                annotations: [
+                    {
+                        path: "src/a.py",
+                        start_line: 3,
+                        end_line: 4,
+                        annotation_level: "warning",
+                        message: "smell",
+                        title: "trelix review",
+                    },
+                ],
+            });
+        });
+
+        it("fails the check for an ERROR finding", async () => {
+            installTrelix(
+                4,
+                JSON.stringify([{ ...WARN, severity: "ERROR" }]),
+                JSON.stringify(CASES.valid_outcome),
+            );
+            const { octokit, calls } = fakeOctokit();
+
+            await review(octokit);
+
+            expect(calls[0].conclusion).toBe("failure");
+            expect(output(calls[0]).title).toBe("trelix review incomplete");
+        });
+
+        it("says the extent is unknown when the record is missing, and does not call the review clean", async () => {
+            vi.spyOn(console, "warn").mockImplementation(() => {});
+            installTrelix(4, JSON.stringify([WARN]));
+            const { octokit, calls } = fakeOctokit();
+
+            await review(octokit);
+
+            expect(calls[0].conclusion).toBe("neutral");
+            const { summary } = output(calls[0]);
+            expect(summary).toContain(
+                "how much was left unreviewed is unknown",
+            );
+            expect(summary).not.toContain("Hunks that were not reviewed");
+            expect(output(calls[0]).annotations).toHaveLength(1);
+        });
+
+        it("says the findings could not be read when stdout is not a JSON array, and still posts", async () => {
+            vi.spyOn(console, "warn").mockImplementation(() => {});
+            installTrelix(4, "not json", JSON.stringify(CASES.valid_outcome));
+            const { octokit, calls } = fakeOctokit();
+
+            const result = await review(octokit);
+
+            expect(result).toMatchObject({ findings: [] });
+            expect(calls[0].conclusion).toBe("neutral");
+            expect(output(calls[0]).summary).toContain(
+                "The list of findings could not be read, so none are shown.",
+            );
+            expect(output(calls[0]).annotations).toEqual([]);
+        });
+
+        it("says the findings could not be read when stdout is a JSON object", async () => {
+            vi.spyOn(console, "warn").mockImplementation(() => {});
+            installTrelix(
+                4,
+                '{"severity":"ERROR"}',
+                JSON.stringify(CASES.valid_outcome),
+            );
+            const { octokit, calls } = fakeOctokit();
+
+            await review(octokit);
+
+            expect(calls[0].conclusion).toBe("neutral");
+            expect(output(calls[0]).summary).toContain("could not be read");
+        });
+
+        it("says the findings could not be read when stdout is an array with something that is not an object in it", async () => {
+            vi.spyOn(console, "warn").mockImplementation(() => {});
+            // toAnnotations would throw on the null, and no Check would be posted at all.
+            installTrelix(
+                4,
+                '[{"file":"a.py","lines":"1-1","severity":"ERROR","comment":"x"},null]',
+                JSON.stringify(CASES.valid_outcome),
+            );
+            const { octokit, calls } = fakeOctokit();
+
+            const result = await review(octokit);
+
+            expect(result).toMatchObject({ findings: [] });
+            expect(calls).toHaveLength(1);
+            expect(calls[0].conclusion).toBe("neutral");
+            expect(output(calls[0]).title).toBe("trelix review incomplete");
+            expect(output(calls[0]).summary).toContain(
+                "The list of findings could not be read, so none are shown.",
+            );
+            expect(output(calls[0]).annotations).toEqual([]);
+        });
+
+        it("tells the caller there was no verdict, once, and only after the incomplete Check was posted", async () => {
+            installTrelix(4, "[]", JSON.stringify(CASES.valid_outcome));
+            const { octokit, calls } = fakeOctokit();
+            const checksWhenCalled: number[] = [];
+
+            await review(octokit, undefined, () => {
+                checksWhenCalled.push(calls.length);
+            });
+
+            expect(checksWhenCalled).toEqual([1]);
+        });
+
+        it("does not say there was no verdict when the incomplete Check could not be posted", async () => {
+            installTrelix(4, "[]", JSON.stringify(CASES.valid_outcome));
+            const { octokit } = fakeOctokit(true);
+            const onNoVerdict = vi.fn();
+
+            const result = await review(octokit, undefined, onNoVerdict);
+
+            expect(result).toMatchObject({ error: expect.any(Error) });
+            expect(onNoVerdict).not.toHaveBeenCalled();
+        });
+
+        it("returns normally instead of throwing, and does not use the did-not-run wording", async () => {
+            installTrelix(4, "[]", JSON.stringify(CASES.valid_outcome));
+            const { octokit, calls } = fakeOctokit();
+
+            const result = await review(octokit);
+
+            expect("error" in result).toBe(false);
+            expect(output(calls[0]).title).not.toMatch(
+                /did not (run|complete)/,
+            );
+        });
+
+        it("still removes the outcome directory and the workspace when posting the Check fails", async () => {
+            installTrelix(4, "[]", JSON.stringify(CASES.valid_outcome));
+            const { octokit } = fakeOctokit(true);
+
+            const result = await review(octokit);
+
+            expect(result).toMatchObject({ error: expect.any(Error) });
+            expect(result.cleanup).toHaveBeenCalledTimes(1);
+            expect(readdirSync(outcomeBase)).toEqual([]);
+        });
+    });
+
+    it("still removes the outcome directory when the workspace cannot be cleaned up", async () => {
+        installTrelix(4, "[]", JSON.stringify(CASES.valid_outcome));
+        const { octokit } = fakeOctokit();
+
+        const result = await review(octokit, new Error("workspace stuck"));
+
+        expect(result).toMatchObject({ error: new Error("workspace stuck") });
+        expect(readdirSync(outcomeBase)).toEqual([]);
+    });
+
+    describe("the findings on stdout are read for exit 0 and exit 4 only", () => {
+        const ERROR = JSON.stringify([
+            {
+                file: "src/a.py",
+                lines: "1-1",
+                severity: "ERROR",
+                comment: "bug",
+            },
+        ]);
+
+        it.each([1, 2, 3, 5, 124, 255])(
+            "exit %i: a neutral check with no annotations, whatever stdout holds",
+            async (exitCode) => {
+                installTrelix(
+                    exitCode,
+                    ERROR,
+                    JSON.stringify(CASES.valid_outcome),
+                );
+                const { octokit, calls } = fakeOctokit();
+
+                const result = await review(octokit);
+
+                expect(result).toMatchObject({ error: expect.anything() });
+                expect(calls[0].conclusion).toBe("neutral");
+                expect(output(calls[0]).annotations).toBeUndefined();
+                expect(output(calls[0]).summary).not.toContain(
+                    "Hunks that were not reviewed",
+                );
+                expect(output(calls[0]).title).toMatch(
+                    /^trelix review did not (run|complete)$/,
+                );
+            },
+        );
+    });
+
+    describe("the outcome record's path", () => {
+        it("goes to the review child alone, in a private directory outside the checkout", async () => {
+            installTrelix(0, "[]");
+            const { octokit } = fakeOctokit();
+
+            await review(octokit);
+
+            const given = readFileSync(
+                join(dumpDir, "review.outcome-path"),
+                "utf8",
+            ).trim();
+            expect(
+                given.startsWith(`${outcomeBase}/trelix-review-outcome-`),
+            ).toBe(true);
+            expect(given.endsWith("/outcome.json")).toBe(true);
+            expect(given.startsWith(workspaceDir)).toBe(false);
+            expect(
+                readFileSync(
+                    join(dumpDir, "index.outcome-path"),
+                    "utf8",
+                ).trim(),
+            ).toBe("unset");
+        });
+
+        it("is a different fresh directory for each review, removed when it ends", async () => {
+            installTrelix(0, "[]");
+            const first = fakeOctokit();
+            const second = fakeOctokit();
+
+            await review(first.octokit);
+            const pathOne = readFileSync(
+                join(dumpDir, "review.outcome-path"),
+                "utf8",
+            );
+            await review(second.octokit);
+            const pathTwo = readFileSync(
+                join(dumpDir, "review.outcome-path"),
+                "utf8",
+            );
+
+            expect(pathOne).not.toBe(pathTwo);
+            expect(readdirSync(outcomeBase)).toEqual([]);
+        });
+
+        it("ignores a record left in the checkout: only the path it chose is read", async () => {
+            vi.spyOn(console, "warn").mockImplementation(() => {});
+            installTrelix(4, "[]");
+            writeFileSync(
+                join(workspaceDir, "outcome.json"),
+                JSON.stringify(CASES.valid_outcome),
+            );
+            const { octokit, calls } = fakeOctokit();
+
+            await review(octokit);
+
+            expect(output(calls[0]).summary).toContain("is unknown");
+        });
+    });
+});
+
+// Secrets the App's own process holds (its credentials, the platform's tokens) and
+// a name nobody listed. Neither `trelix index` nor `trelix review` may see any of
+// them: both children run over content an outside PR author controls.
+// child-env.test.ts covers the allow-list itself; the tests below prove the two
+// spawn sites really use it.
 const APP_CREDENTIAL_NAMES = [
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_WEBHOOK_SECRET",
+    "RAILWAY_TOKEN",
+    "SOME_UNLISTED_SECRET",
 ] as const;
 
 function fakeAppCredentials(): Record<string, string> {
@@ -598,43 +1057,16 @@ function fakeAppCredentials(): Record<string, string> {
     );
 }
 
-describe("buildTrelixChildEnv", () => {
-    it("drops the App's own credentials and forces the walker symlink flag off", () => {
-        const base = {
-            ...fakeAppCredentials(),
-            PATH: "/usr/bin",
-            TRELIX_WALKER_FOLLOW_SYMLINKS: "true",
-            TRELIX_LLM_PROVIDER: "azure",
-        };
-
-        const env = buildTrelixChildEnv(base);
-
-        for (const name of APP_CREDENTIAL_NAMES) {
-            expect(env).not.toHaveProperty(name);
-        }
-        expect(env.TRELIX_WALKER_FOLLOW_SYMLINKS).toBe("false");
-        // Everything else the child needs (PATH, provider settings) survives.
-        expect(env.PATH).toBe("/usr/bin");
-        expect(env.TRELIX_LLM_PROVIDER).toBe("azure");
-    });
-
-    it("returns a new object and leaves its input untouched", () => {
-        const base = {
-            ...fakeAppCredentials(),
-            TRELIX_WALKER_FOLLOW_SYMLINKS: "true",
-        };
-        const snapshot = { ...base };
-
-        const env = buildTrelixChildEnv(base);
-
-        expect(env).not.toBe(base);
-        expect(base).toEqual(snapshot);
-    });
-});
+// What an operator configures so the LLM works: these must still reach the child.
+const PROVIDER_SETTINGS: Record<string, string> = {
+    AZURE_ENDPOINT: "https://llm.example.invalid",
+    TRELIX_LLM_PROVIDER: "azure",
+};
 
 describe("trelix child process environment", () => {
     const MANAGED_KEYS = [
         ...APP_CREDENTIAL_NAMES,
+        ...Object.keys(PROVIDER_SETTINGS),
         "GITHUB_TOKEN",
         "TRELIX_WALKER_FOLLOW_SYMLINKS",
         "TRELIX_TEST_ENV_DUMP_DIR",
@@ -659,7 +1091,7 @@ describe("trelix child process environment", () => {
         );
         chmodSync(shim, 0o755);
 
-        Object.assign(process.env, fakeAppCredentials());
+        Object.assign(process.env, fakeAppCredentials(), PROVIDER_SETTINGS);
         process.env.PATH = `${binDir}:${savedEnv.PATH}`;
         process.env.TRELIX_TEST_ENV_DUMP_DIR = dumpDir;
         process.env.TRELIX_WALKER_FOLLOW_SYMLINKS = "true";
@@ -694,23 +1126,25 @@ describe("trelix child process environment", () => {
 
     const request = { owner: "o", repo: "r", prNumber: 1 };
 
-    it("hides the App credentials from `trelix index` and forces the symlink flag off", async () => {
+    it("hides the App's secrets from `trelix index`, keeps the provider settings and forces the symlink flag off", async () => {
         await indexRepository(".", 5000);
 
         const env = readChildEnv("index");
         for (const name of APP_CREDENTIAL_NAMES) {
             expect(env).not.toHaveProperty(name);
         }
+        expect(env).toMatchObject(PROVIDER_SETTINGS);
         expect(env.TRELIX_WALKER_FOLLOW_SYMLINKS).toBe("false");
     });
 
-    it("hides the App credentials from `trelix review` and forces the symlink flag off", async () => {
+    it("hides the App's secrets from `trelix review`, keeps the provider settings and forces the symlink flag off", async () => {
         await runReviewCli(request, ".", "fake-installation-token", 5000);
 
         const env = readChildEnv("review");
         for (const name of APP_CREDENTIAL_NAMES) {
             expect(env).not.toHaveProperty(name);
         }
+        expect(env).toMatchObject(PROVIDER_SETTINGS);
         expect(env.TRELIX_WALKER_FOLLOW_SYMLINKS).toBe("false");
     });
 

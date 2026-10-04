@@ -19,12 +19,21 @@ hook_attributes:
   url: https://trelix-github-app-production.up.railway.app/webhooks/github
   active: true
 
-# Same three permissions the existing Actions-workflow-based integration
-# already declares (.github/workflows/trelix-review.yml) — this App is an
-# alternative delivery mechanism for the identical review capability, not
-# a capability expansion.
+# What the App itself holds. It never holds more than it uses: it reads a PR's
+# files (pull_requests: read; the `pull_request` event needs it too), fetches
+# the PR head (contents: read) and creates Check runs (checks: write). It does
+# not comment on or edit pull requests, so it has no pull_requests: write.
+#
+# Each review mints three installation tokens from these, each limited to the
+# one repository the PR is in and to one job (src/auth.ts, README "Token
+# scopes"): checkout = contents:read, review = pull_requests:read, posting
+# the Check = checks:write (each with metadata:read, which every token has).
+#
+# Registering from this file sets these on a NEW App. An existing App's
+# permissions are changed by its owner in Settings -> Developer settings ->
+# GitHub Apps -> Permissions & events: pull_requests write -> read there.
 default_permissions:
-  pull_requests: write
+  pull_requests: read
   checks: write
   contents: read
 
