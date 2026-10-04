@@ -190,8 +190,15 @@ class TestDockerPublishIsGatedToo:
 
     def test_the_check_is_skipped_for_manual_backfills(self) -> None:
         """workflow_dispatch exists to backfill an older release, where the tree
-        legitimately does not match — gating that path would break the feature."""
-        assert "if: github.event_name == 'push'" in _DOCKER.read_text(encoding="utf-8")
+        legitimately does not match — gating that path would break the feature.
+
+        Read from this step, not searched for in the file: other steps carry the same `if`,
+        so a text search still passes after it is removed from the tag-versus-tree check."""
+        steps = _workflow(_DOCKER)["jobs"]["publish"]["steps"]
+        conditions = [
+            s.get("if") for s in steps if s.get("name") == "Verify the tag matches the tree"
+        ]
+        assert conditions == ["github.event_name == 'push'"]
 
     def test_no_dispatch_input_is_interpolated_into_a_script_body(self) -> None:
         """`${{ github.event.inputs.* }}` inside `run:` is a shell-injection sink."""
