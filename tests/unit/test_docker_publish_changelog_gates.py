@@ -46,14 +46,18 @@ def _position(name: str) -> int:
     return names.index(name)
 
 
-def _script(workflow: str, name: str) -> str:
-    return "\n".join(line.rstrip() for line in _step(workflow, name)["run"].rstrip().splitlines())
+def _shape(workflow: str, name: str) -> dict[str, Any]:
+    """The step minus its `if` (only docker-publish.yml has one), with `run` right-trimmed, so
+    an `env:` or `shell:` added to one copy is drift too."""
+    step = {key: value for key, value in _step(workflow, name).items() if key != "if"}
+    step["run"] = "\n".join(line.rstrip() for line in step["run"].rstrip().splitlines())
+    return step
 
 
 @pytest.mark.parametrize("name", [_SECTION_GATE, _DATE_GATE])
 class TestTheGates:
-    def test_the_script_is_release_ymls_script(self, name: str) -> None:
-        assert _script("docker-publish.yml", name) == _script("release.yml", name)
+    def test_the_step_is_release_ymls_step(self, name: str) -> None:
+        assert _shape("docker-publish.yml", name) == _shape("release.yml", name)
 
     def test_it_precedes_the_login_and_the_build(self, name: str) -> None:
         assert _position(name) < _position("Log in to GHCR") < _position("Build and push")
