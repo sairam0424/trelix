@@ -24,16 +24,21 @@ const MAX_LOGGED_DETAIL_CHARS = 4000;
 const MAX_LOGGED_PATH_CHARS = 200;
 
 /**
- * Written to the console when the configured logger throws, or when the line
- * cannot be built because the error object throws when it is read. It quotes
- * nothing: what was thrown is not known to be free of the secrets.
+ * Written to the console when the configured logger throws or its promise
+ * rejects, or when the line cannot be built because the error object throws
+ * when it is read. It quotes nothing: what was thrown is not known to be free
+ * of the secrets.
  */
 const LOG_FAILURE_LINE = "[app] request failed; the error could not be logged";
 
 export interface ErrorHandlerOptions {
     /** Values that must never reach the log, such as the webhook secret and the private key. */
     readonly secrets: readonly string[];
-    /** Called once for every error the handler takes. */
+    /**
+     * Called once for every error the handler takes. It may be async (a
+     * transport that sends the line elsewhere): the returned promise is not
+     * awaited, and a rejection is handled like a throw.
+     */
     readonly logError: (line: string) => void;
 }
 
@@ -143,16 +148,26 @@ function buildLogLine(
 }
 
 /**
+ * Hands a logger's result to `report` if it is a promise that rejects. A
+ * logger is typed to return nothing, but an async one returns a promise, and
+ * nobody awaits it: without this its rejection would be unhandled. It is not
+ * awaited here either, so the caller never waits for a log.
+ */
+export function reportIfRejected(result: unknown, report: () => void): void {
+    void Promise.resolve(result).catch(report);
+}
+
+/**
  * Writes the line, and never throws: the response below has to go out even
- * when the log cannot be written. The failure itself is reported on the
- * console with a fixed line.
+ * when the log cannot be written. The failure itself, a throw or a rejected
+ * promise, is reported on the console with a fixed line.
  */
 function writeLogLine(
     logError: (line: string) => void,
     buildLine: () => string,
 ): void {
     try {
-        logError(buildLine());
+        reportIfRejected(logError(buildLine()), reportLogFailure);
     } catch {
         reportLogFailure();
     }
@@ -172,8 +187,8 @@ function reportLogFailure(): void {
  * the log, once, with the configured secrets removed. The request's body,
  * headers and query string are never logged: the signature header and the
  * webhook payload are not the error's business. The response does not depend
- * on the log: if the logger throws, a fixed line goes to the console and the
- * response is sent all the same.
+ * on the log: if the logger throws, or returns a promise that rejects, a fixed
+ * line goes to the console and the response is sent all the same.
  *
  * A message is only logged for a 5xx. A 4xx is the sender's fault and its
  * message can quote the request body (a JSON syntax error does), so the line

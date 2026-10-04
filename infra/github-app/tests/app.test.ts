@@ -256,6 +256,32 @@ describe("createApp body errors", () => {
         }
     });
 
+    // An async transport returns a promise. Nobody awaits it, so a rejection
+    // must be handled the way a throw is, or it ends the process.
+    it("still answers malformed JSON with the fixed 400 when the logger's promise rejects", async () => {
+        const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+        const app = createApp(config, {
+            runReview: vi.fn<RunReviewFn>().mockResolvedValue([]),
+            logError: () =>
+                Promise.reject(
+                    new Error("canary log sink is down at /canary/sink.ts"),
+                ),
+        });
+
+        try {
+            const res = await postSigned(app, '{"canary-body": ');
+            await new Promise((resolve) => setImmediate(resolve));
+
+            expect(res.status).toBe(400);
+            expect(res.text).toBe('{"error":"bad request"}');
+            expect(spy.mock.calls).toEqual([
+                ["[app] request failed; the error could not be logged"],
+            ]);
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
     it("answers an unsupported charset with a fixed 415", async () => {
         const { app } = buildApp();
 

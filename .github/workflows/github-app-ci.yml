@@ -6,11 +6,13 @@ on:
     paths:
       - "infra/github-app/**"
       - ".github/workflows/github-app-ci.yml"
+      - ".github/workflows/redeliver-failed-webhooks.yml"
   pull_request:
     branches: [main, develop]
     paths:
       - "infra/github-app/**"
       - ".github/workflows/github-app-ci.yml"
+      - ".github/workflows/redeliver-failed-webhooks.yml"
 
 permissions:
   contents: read

@@ -236,8 +236,8 @@ async function reviewAndPost(
         }
         // A timed-out or crashed CLI must still leave a visible signal
         // on the PR -- without this, the exception below propagated
-        // straight past postCheckRun, and webhook.ts's caller only
-        // console.error'd it, leaving the PR with no Check run at all.
+        // straight past postCheckRun, and the queue's job-failure logger
+        // only logged it, leaving the PR with no Check run at all.
         await postReviewFailureCheckRun(
             octokit,
             request.owner,
