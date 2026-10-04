@@ -232,7 +232,7 @@ jobs:
       # bar for blocking. `version` is pinned because the action's default is `latest`.
       - name: Scan the diff
         if: github.event_name == 'pull_request' || github.event_name == 'push'
-        uses: trufflesecurity/trufflehog@64d939a56362f519781c53ea09b27f8d1dc0140a  # v3.97.6
+        uses: trufflesecurity/trufflehog@4dd8831c5f12599465d4d45c3c447b4018a34c85  # v3.97.9
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -247,7 +247,7 @@ jobs:
       - name: Scan full history (report-only)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@64d939a56362f519781c53ea09b27f8d1dc0140a  # v3.97.6
+        uses: trufflesecurity/trufflehog@4dd8831c5f12599465d4d45c3c447b4018a34c85  # v3.97.9
         with:
           path: ./
           base: ""
