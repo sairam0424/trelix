@@ -553,6 +553,12 @@ script itself, or re-checking an older release:
 Helm chart at the tag, the GitHub Release binaries), which is a different claim
 than "the stamps agreed with the tag."
 
+The automatic run starts only after a successful tag-push run of those two workflows.
+After a `Docker Publish` backfill started by hand, run "Verify Release" yourself from
+the Actions tab, with the version. Start the backfill from the tag ref (a backfill started
+from `main` makes it find the original failed tag run and end green without checking
+anything), or run `python scripts/verify_release.py --version X.Y.Z` locally.
+
 #### Publish `trelix-mcp` to the MCP registry
 
 A green "Verify Release" run is not the end of a release: nothing in CI updates the MCP
