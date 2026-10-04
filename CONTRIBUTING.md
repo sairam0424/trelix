@@ -416,6 +416,11 @@ exceptions. Site 4 used to be one: it was documented as "verify it by hand until
 is added", which is the same silent-mis-publish risk as the adapters had, so it is now
 checked like the rest.
 
+The same job refuses a tag whose `CHANGELOG.md` has no `## [X.Y.Z]` section, or whose section
+is not dated (`## [X.Y.Z] — YYYY-MM-DD`) to the tag's **UTC** creation day. `docker-publish.yml`
+repeats both checks before it logs in to GHCR, so a tag that fails them pushes no images either;
+a `workflow_dispatch` backfill skips them.
+
 Sites 4 and 8–11 are newly gated.
 [docs/BACKWARDS_COMPATIBILITY.md](docs/BACKWARDS_COMPATIBILITY.md#integration-package-policy)
 has always put all three integration packages on the core version; both adapters sat at

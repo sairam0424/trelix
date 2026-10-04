@@ -1,7 +1,11 @@
 # KNOWN GAP (not fixed here): this workflow is NOT gated on release.yml's `test` job.
 #
-# Both workflows start concurrently on a `v*` tag push. The only guard below is "tag equals
-# pyproject version". If release.yml's test, smoke-test or binary build fails, PyPI and the
+# Both workflows start concurrently on a `v*` tag push. The guards below, all before any
+# login or push, are: the tag equals the pyproject version, CHANGELOG.md has a `## [X.Y.Z]`
+# section for the tag, and that section is dated to the tag's UTC creation day. The last two
+# are copies of release.yml's verify-version steps, kept identical by
+# tests/unit/test_docker_publish_changelog_gates.py; the other eleven version stamps are
+# not checked here. If release.yml's test, smoke-test or binary build fails, PyPI and the
 # GitHub Release stay unpublished but ghcr.io/sairam0424/trelix:X.Y.Z, :X.Y.Z-local and
 # :latest / :latest-local are already pushed. Nothing rolls the images back.
 #
@@ -80,8 +84,17 @@ jobs:
             tag-suffix: "-local"
 
     steps:
+      # The CHANGELOG date gate below reads the tag OBJECT out of refs/tags/, so a tag push
+      # needs the tags, and release.yml's verify-version checkout explains why fetch-tags only
+      # works together with fetch-depth: 0 (a shallow fetch of a tag ref aborts the job).
+      # A workflow_dispatch backfill does not run the gate, so it keeps the default shallow,
+      # tag-less checkout it always had (depth 1, no tags). fetch-depth is written with the
+      # condition inverted on purpose: `event_name == 'push' && 0 || 1` would give 1 on a
+      # push, because 0 is falsy in a GitHub expression and `||` then takes its right side.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          fetch-depth: ${{ github.event_name != 'push' && 1 || 0 }}
+          fetch-tags: ${{ github.event_name == 'push' }}
           persist-credentials: false
 
       - name: Extract version
@@ -120,6 +133,54 @@ jobs:
             exit 1
           fi
           echo "ok: tree and tag agree on $actual"
+
+      # The next two steps are copies of release.yml's verify-version steps of the same
+      # names; tests/unit/test_docker_publish_changelog_gates.py keeps the scripts identical.
+      # Without them, a tag that release.yml refuses (no `## [X.Y.Z]` section, or a section
+      # dated to any day but the tag's UTC creation day) stopped PyPI but still pushed
+      # :X.Y.Z, :X.Y.Z-local, :latest and :latest-local, and a pushed GHCR tag is hard to take
+      # back (deleting it is manual, and anyone who pulled :latest already has the image).
+      # release.yml explains why the date is the tag's UTC day, not a local one.
+      #
+      # Tag pushes only, like the check above: a workflow_dispatch backfill builds a tree
+      # that need not describe the version being published, and does not fetch tags.
+      - name: CHANGELOG has a section for this version
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          grep -qE "^## \[${tag}\]" CHANGELOG.md \
+            || { echo "::error file=CHANGELOG.md::no '## [$tag]' section — is this release still under [Unreleased]?"; exit 1; }
+
+      - name: CHANGELOG section is dated to the tag's UTC day
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+
+          heading=$(grep -m1 -oE "^## \[${tag}\] — [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGELOG.md || true)
+          if [ -z "$heading" ]; then
+            echo "::error file=CHANGELOG.md::'## [$tag]' has no 'YYYY-MM-DD' date. Expected '## [$tag] — <the tag's UTC day>'."
+            exit 1
+          fi
+          changelog_date="${heading##* }"
+
+          tag_date=$(TZ=UTC git for-each-ref \
+            --format='%(creatordate:format-local:%Y-%m-%d)' "refs/tags/${GITHUB_REF_NAME}")
+          if [ -z "$tag_date" ]; then
+            # Refuse rather than pass. An unreadable tag object means this gate checked
+            # nothing, and "checked nothing" must never look like "checked and agreed" —
+            # the same failure shape the version comparison above guards against when a
+            # reader yields an empty string.
+            echo "::error::could not read the creation date of refs/tags/${GITHUB_REF_NAME}; refusing to certify the CHANGELOG date"
+            exit 1
+          fi
+
+          if [ "$changelog_date" != "$tag_date" ]; then
+            echo "::error file=CHANGELOG.md::'## [$tag]' is dated $changelog_date but tag ${GITHUB_REF_NAME} was created $tag_date (UTC). Use the tag's UTC day — not a local date, which is a day ahead after 18:30 IST."
+            exit 1
+          fi
+          echo "ok: [$tag] dated $changelog_date matches tag creation $tag_date (UTC)"
 
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4

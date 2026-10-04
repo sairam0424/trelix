@@ -23,6 +23,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     both tag-triggered workflows finish, and the guards above make it safe.
   - *Accepted, `superfluous-actions` (GitHub Release step).* `gh release create` could replace the
     pinned action, but the publish path cannot be exercised before a real tag.
+- **`Docker Publish` no longer pushes images for a tag that `Release` would refuse.** `release.yml`
+  stops a `v*` tag whose `CHANGELOG.md` has no `## [X.Y.Z]` section, or whose section is dated to a
+  day other than the tag's UTC creation day, before anything reaches PyPI. `docker-publish.yml`
+  starts from the same tag push but only compared the tag with `pyproject.toml`, so such a tag still
+  pushed `:X.Y.Z`, `:X.Y.Z-local`, `:latest` and `:latest-local` to GHCR, where a pushed tag is hard
+  to take back (deleting it is manual, and anyone who pulled `:latest` already has the image). Both
+  CHANGELOG checks now run before the GHCR login and the build, as the same scripts as
+  `release.yml` (a test keeps them identical). Nothing changes for a valid release, or for a
+  `workflow_dispatch` backfill: the checks, and the full-history checkout with tags that the date
+  check reads, apply to tag pushes only. A real tag release was not run; a test runs both scripts
+  in a scratch git repository, including either side of UTC midnight.
 
 ### Fixed
 - **Extended thinking (`TRELIX_LLM_THINKING_ENABLED=true`) failed on Claude models that only
