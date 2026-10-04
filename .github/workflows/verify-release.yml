@@ -1,7 +1,35 @@
 name: Verify Release
 
+# WHY `workflow_run`, and why it is safe here (zizmor: dangerous-triggers, ACCEPTED).
+#
+# zizmor reports every `workflow_run` trigger because such a workflow runs with the base
+# repository's token and secrets even when the run that triggered it came from a fork, so a
+# careless one can be made to run attacker-controlled code. This is the chosen design, not the
+# only one: the artifacts it checks (PyPI packages, GHCR images, release binaries) are published
+# by two independent tag-triggered workflows, "Release" and "Docker Publish", and listening for
+# their completion verifies the result after BOTH have finished without restructuring either
+# pipeline. Folding Docker Publish into release.yml with `needs:` (option A in docker-publish.yml's
+# header) would change how verification is triggered; that is a separate reviewed change.
+# What makes the chosen design defensible:
+#
+# * A `workflow_run` event gets past the job's `if:` only for a `push` run of THIS repository
+#   (base and head) that succeeded and whose `head_branch` starts with `v`; for the push runs
+#   of these two workflows that is the tag. A pull-request run of either workflow, a branch push,
+#   a hand-started (`workflow_dispatch`) run, or one from a fork, never gets past it. The
+#   workflow's own `workflow_dispatch` is the one other way in: maintainers only (it needs
+#   write access), and it checks out the ref it was started on.
+# * The token is read-only (`contents: read`, `actions: read`).
+# * The checkout takes no `ref:` and no `repository:`, so on a `workflow_run` it is the default
+#   branch head and never the triggering run's head commit; the script that runs is the
+#   reviewed default copy.
+# * Event, input and step-output data reach a `run:` script only through `env:` (`HEAD_SHA`
+#   below), never `${{ }}`.
+#
+# The ignore comment on `workflow_run:` carries this reason on one line because
+# tests/unit/test_release_workflow_zizmor_fixes.py reads it there. It silences the whole `on:`
+# block, so tests/unit/test_verify_release_workflow_guards.py pins the trigger set and the job set.
 on:
-  workflow_run:
+  workflow_run:  # zizmor: ignore[dangerous-triggers] accepted: verifies after both publish workflows finish; for workflow_run runs only this repo's successful push runs whose head_branch starts with v, default-branch checkout; workflow_dispatch is maintainer-only; read-only token; event data only via env
     workflows: ["Release", "Docker Publish"]
     types: [completed]
   workflow_dispatch:
@@ -10,20 +38,41 @@ on:
         description: "Version to verify, e.g. 3.2.3 (no leading v)"
         required: true
 
-permissions:
-  contents: read
-  packages: read
-  actions: read
+# No workflow-level scopes: the one job below declares exactly what it uses.
+permissions: {}
 
 jobs:
   verify:
     name: Verify release artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Checked against what the job really does, not inherited from an older block:
+    # `packages: read` was dropped because nothing here authenticates to GHCR (no docker
+    # login step and none in scripts/verify_release.py), so the image pulls are anonymous
+    # whatever the token's scopes are.
+    permissions:
+      contents: read  # checkout and `gh release download` (verify_release.py's tag `git fetch` is anonymous)
+      actions: read  # `gh run list --workflow ... --branch <tag>` in the sibling-run check
+    # A `workflow_run` event is only trusted when ALL of these hold, so a fork's run, a
+    # pull-request run or a branch push can never reach the steps below. For a push run,
+    # `head_branch` is the tag name when a tag started it, and both watched workflows are
+    # triggered by `v*` tag pushes (Docker Publish's one other trigger, a hand-started run,
+    # fails the `== 'push'` clause). This workflow's own `workflow_dispatch` is the manual
+    # re-verification path.
     if: >
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.repository.full_name == github.repository &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        startsWith(github.event.workflow_run.head_branch, 'v')
+      )
     steps:
+      # No `ref:` and no `repository:` on purpose: on a workflow_run event this checks out the
+      # default branch head, never the head of the run that triggered us (which could be a
+      # fork's). verify_release.py below is therefore the reviewed default-branch copy.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0

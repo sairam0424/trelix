@@ -6,6 +6,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 
 ## [Unreleased]
 
+### Security
+- **The advisory `zizmor` job now reports no findings** (`zizmor 1.30.1` over `.github/`: one
+  informational and three high before; two ignored with reasons now). It stays advisory.
+  - *Fixed, `cache-poisoning` (twice).* `release.yml` publishes to PyPI, and its `test` and
+    `smoke-test-built-artifacts` jobs restored the Hugging Face model cache with `actions/cache`,
+    which also saves. Both now use `actions/cache/restore`: a release run can read the cache
+    `ci.yml` writes (when its ref can see it) and can no longer write it. A cold cache only costs
+    time (the prefetch step after each restore downloads the model).
+  - *Hardened, `verify-release.yml`.* It runs only for a `workflow_dispatch` or a successful
+    `push` run (a `v*` tag) of this repository, with `contents: read` and `actions: read`
+    (`packages: read` dropped); it already passed event data through `env:` only, and a test now
+    pins that. A hand-started `Docker Publish` backfill no longer starts it: run `Verify Release`
+    from the Actions tab.
+  - *Accepted, `dangerous-triggers`.* `workflow_run` stays (the chosen design): it verifies after
+    both tag-triggered workflows finish, and the guards above make it safe.
+  - *Accepted, `superfluous-actions` (GitHub Release step).* `gh release create` could replace the
+    pinned action, but the publish path cannot be exercised before a real tag.
+
 ## [3.4.3] — 2026-10-04
 
 ### Security
