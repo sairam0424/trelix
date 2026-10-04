@@ -172,21 +172,28 @@ Unknown or absent intents fall back to `TRELIX_RETRIEVAL_COMPRESSION_RATIO` (`0.
 | `TRELIX_LLM_MODEL` | `gpt-4o` | Chat model for synthesis. Used verbatim by the `openai`, `anthropic`, and `vertex` backends, and it is the model name the auto-derived context budget resolves its window from — see [Model-Aware Context Budget](#model-aware-context-budget). |
 | `AZURE_CHAT_MODEL` | `gpt-4o` | Azure chat deployment name — what the `azure` backend actually calls, instead of `TRELIX_LLM_MODEL` |
 | `ANTHROPIC_API_KEY` | _(none)_ | Anthropic API key — required when `TRELIX_LLM_PROVIDER=anthropic` |
-| `TRELIX_LLM_THINKING_ENABLED` | `false` | Opt the answer synthesizer into Anthropic extended thinking. Only has an effect when `TRELIX_LLM_PROVIDER=anthropic` — every other backend accepts the flag and ignores it. See [Extended Thinking (Anthropic)](#extended-thinking-anthropic). |
-| `TRELIX_LLM_THINKING_BUDGET_TOKENS` | `4096` | Value sent as `thinking.budget_tokens` on the Anthropic Messages API request. Not range-validated locally — `0` or a negative value is accepted by config and forwarded to the API as-is. |
+| `TRELIX_LLM_THINKING_ENABLED` | `false` | Opt the answer synthesizer into Claude extended thinking. Only has an effect when `TRELIX_LLM_PROVIDER` is `anthropic` or `bedrock` (a Claude model on Bedrock) — every other backend accepts the flag and ignores it. On adaptive-only models (Claude 5 and newer; see below) the model decides whether to think, so a response may carry no thinking block. See [Extended Thinking (Anthropic)](#extended-thinking-anthropic). |
+| `TRELIX_LLM_THINKING_BUDGET_TOKENS` | `4096` | Value sent as `thinking.budget_tokens` on the Anthropic Messages API request (on Bedrock, as `reasoning_config.budget_tokens`). **Ignored for adaptive-only models** — Claude 5 and newer (fable, mythos, opus, sonnet, haiku) and Opus 4.7 and newer — which reject a budget; nothing is sent for it there. Not range-validated locally — `0` or a negative value is accepted by config and forwarded to the API as-is. |
 | `TRELIX_RETRIEVAL_AGENTIC` | `false` | Enable the agentic ReAct loop — the LLM iteratively issues retrieval calls before producing a final answer |
 
 ### Extended Thinking (Anthropic)
 
-Extended thinking is a **request parameter**, not a model: enabling it sends `thinking={"type": "enabled", "budget_tokens": N}` alongside the messages. You do not change `TRELIX_LLM_MODEL` to turn it on, and there is no separate "thinking model" to select.
+Extended thinking is a **request parameter**, not a model: enabling it adds a thinking parameter alongside the messages. You do not change `TRELIX_LLM_MODEL` to turn it on, and there is no separate "thinking model" to select. Which parameter is sent depends on the model id:
+
+- **Budget models** — every model that accepted thinking before, and any id trelix does not recognise — get `thinking={"type": "enabled", "budget_tokens": N}` (on Bedrock, `additionalModelRequestFields.reasoning_config`). `N` is `TRELIX_LLM_THINKING_BUDGET_TOKENS`. Claude Sonnet 4.6, Sonnet 4.5, Opus 4.6, Haiku 4.5 and Claude 3.7 are in this group.
+- **Adaptive-only models** — any `claude-fable`, `claude-mythos`, `claude-opus`, `claude-sonnet` or `claude-haiku` id at version 5 or newer (`claude-sonnet-5` and `claude-sonnet-5-5` are the ones confirmed live), plus any `claude-opus` id from 4.7 up (`claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-4-10`), in any id form (`anthropic.`, `us.anthropic.` and `global.anthropic.` prefixes, a dated suffix, a `-v1:0` suffix) — reject `budget_tokens` with a 400 / `ValidationException`, so they get `thinking={"type": "adaptive"}` (on Bedrock, `additionalModelRequestFields.thinking`). `TRELIX_LLM_THINKING_BUDGET_TOKENS` is not used for them.
+- **An id trelix does not know yet that turns out to be adaptive-only** is handled at runtime: on the first `"thinking.type.enabled" is not supported` rejection the backend switches that model to adaptive, retries once, logs one warning naming the model, and uses adaptive for that model from then on (per backend instance; nothing is persisted). An Amazon Bedrock ARN or application inference profile id is not recognised by name, so it takes this path.
+
+The adaptive shape was confirmed live on Bedrock Converse for `us.anthropic.claude-sonnet-5` and `us.anthropic.claude-sonnet-5-5` only. For every other model in the list, and for the direct Anthropic API, the list follows the Claude API reference and was not measured here.
 
 Opt-in is **per call site, and only the synthesizer opts in.** The index-time LLM call sites — contextual chunking (one call per symbol) and file summarization (one call per file) — deliberately never pass the flag. A single global switch would multiply indexing cost several-fold across thousands of calls for no retrieval-quality gain, so the flag is wired only where a human is waiting on one answer.
 
 Behaviour to expect when it is on:
 
-- **`temperature` is forced to `1.0`** for that request, overriding the temperature the synthesizer would otherwise use — the API requires it.
+- **`temperature` is forced to `1.0`** for that request on a budget model over Bedrock, overriding the temperature the synthesizer would otherwise use — the API requires it. For an adaptive-only model the Bedrock backend omits `temperature` instead, and the Anthropic backend never sends one.
+- **Adaptive thinking may return no thinking block.** The model decides whether a question needs reasoning; an easy question comes back as text only. `ChatResponse.thinking` is then `None` and `ChatResponse.thinking_blocks` is empty — a normal response, not an error. trelix sends plain `{"type": "adaptive"}` without a `display` setting, and what the default display returns for a harder question on these models was not measured (only an easy question was called), so do not rely on `ChatResponse.thinking` being populated.
 - **Incompatible with a forced `tool_choice`**; do not combine it with a call site that pins tool selection.
-- **Thinking bills as output tokens.** There is no separate thinking counter — the tokens land in `output_tokens`, so raising `TRELIX_LLM_THINKING_BUDGET_TOKENS` directly raises the per-answer bill.
+- **Thinking bills as output tokens.** There is no separate thinking counter — the tokens land in `output_tokens`, so raising `TRELIX_LLM_THINKING_BUDGET_TOKENS` directly raises the per-answer bill on a budget model. On an adaptive-only model the budget setting has no effect and the model chooses how much to think.
 - Thinking blocks are split out of the response rather than concatenated into the answer: `ChatResponse.thinking` carries the reasoning text (`None` when absent), alongside the `cache_read_tokens` / `cache_write_tokens` counters.
 
 ### Agentic ReAct Loop — Persistent Sessions
@@ -502,8 +509,9 @@ TRELIX_LLM_MODEL=gpt-4o
 # Anthropic
 # ANTHROPIC_API_KEY=sk-ant-...
 
-# Anthropic extended thinking — synthesizer only, forces temperature=1.0,
-# and the budget bills as OUTPUT tokens. Ignored by non-Anthropic backends.
+# Claude extended thinking (anthropic and bedrock backends) — synthesizer only. On budget
+# models Bedrock forces temperature=1.0 and the budget bills as OUTPUT tokens; adaptive-only
+# models (Claude 5 and newer, Opus 4.7 and newer) ignore the budget. Ignored by the other backends.
 TRELIX_LLM_THINKING_ENABLED=false
 # TRELIX_LLM_THINKING_BUDGET_TOKENS=4096
 
