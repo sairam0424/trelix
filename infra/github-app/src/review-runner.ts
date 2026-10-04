@@ -21,6 +21,7 @@ import {
     readOutcomeRecord,
     REVIEW_INCOMPLETE_EXIT_CODE,
 } from "./review-outcome.js";
+import { INDEX_TIMEOUT_MS, REVIEW_TIMEOUT_MS } from "./review-timeouts.js";
 import type { CheckAnnotation } from "./sanitize.js";
 
 // The Check-posting helpers live in check-posting.ts; callers (and the tests)
@@ -38,16 +39,6 @@ export type { ReviewFinding };
 export type { CheckAnnotation };
 
 const execFileAsync = promisify(execFile);
-
-// A slow/hung `trelix review` (LLM synthesis latency, a huge diff, a stuck
-// index) would otherwise tie up this process indefinitely per webhook
-// delivery — Node kills the child and execFileAsync rejects once this
-// elapses.
-const REVIEW_TIMEOUT_MS = 5 * 60 * 1000;
-
-// Indexing a huge/pathological repo shouldn't hang the whole review either
-// — same ceiling as the review step itself.
-const INDEX_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface ReviewRequest {
     owner: string;

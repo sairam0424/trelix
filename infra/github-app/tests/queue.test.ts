@@ -188,6 +188,163 @@ describe("JobQueue", () => {
         });
     });
 
+    describe("the share of the wait line one group may hold", () => {
+        it("refuses a group's job once perGroupCapacity of its jobs are waiting, and still takes another group's", async () => {
+            const h = makeHarness({
+                capacity: 10,
+                perGroupCapacity: 2,
+                concurrency: 1,
+            });
+            const results = ["a1", "a2", "a3", "a4"].map((key) =>
+                h.queue.submit(h.hold(key, "A").job),
+            );
+            const other = h.queue.submit(h.hold("b1", "B").job);
+
+            expect(results).toEqual([
+                "accepted", // runs
+                "accepted", // waits
+                "accepted", // waits
+                "group_full",
+            ]);
+            expect(other).toBe("accepted");
+            await settle();
+            expect(h.queue.counts()).toEqual({ waiting: 3, running: 1 });
+        });
+
+        it("lets one group alone wait up to its share, no further, and leaves the rest of the line to the others", async () => {
+            const h = makeHarness({
+                capacity: 6,
+                perGroupCapacity: 3,
+                concurrency: 1,
+            });
+            const own = ["a1", "a2", "a3", "a4", "a5"].map((key) =>
+                h.queue.submit(h.hold(key, "A").job),
+            );
+            const others = ["b1", "b2", "b3", "b4"].map((key) =>
+                h.queue.submit(h.hold(key, "B").job),
+            );
+
+            expect(own).toEqual([
+                "accepted", // runs
+                "accepted",
+                "accepted",
+                "accepted",
+                "group_full",
+            ]);
+            expect(others).toEqual([
+                "accepted",
+                "accepted",
+                "accepted",
+                "full",
+            ]);
+        });
+
+        it("says 'full' when the whole line is full, even for a group that is also at its share", async () => {
+            const h = makeHarness({
+                capacity: 2,
+                perGroupCapacity: 2,
+                concurrency: 1,
+            });
+            h.queue.submit(h.hold("a1", "A").job); // runs
+            h.queue.submit(h.hold("a2", "A").job);
+            h.queue.submit(h.hold("a3", "A").job);
+
+            expect(h.queue.submit(h.hold("a4", "A").job)).toBe("full");
+        });
+
+        it("counts only the jobs that wait: running ones do not use the share", async () => {
+            const h = makeHarness({
+                capacity: 10,
+                perGroupCapacity: 1,
+                concurrency: 4,
+                perGroupConcurrency: 2,
+            });
+            const results = ["a1", "a2", "a3", "a4"].map((key) =>
+                h.queue.submit(h.hold(key, "A").job),
+            );
+
+            expect(results).toEqual([
+                "accepted", // runs
+                "accepted", // runs
+                "accepted", // waits
+                "group_full",
+            ]);
+            await settle();
+            expect(h.queue.counts()).toEqual({ waiting: 1, running: 2 });
+        });
+
+        it("frees the share when a waiting job starts", async () => {
+            const h = makeHarness({
+                capacity: 10,
+                perGroupCapacity: 1,
+                concurrency: 2,
+                perGroupConcurrency: 1,
+            });
+            const first = h.hold("a1", "A");
+            h.queue.submit(first.job); // runs
+            h.queue.submit(h.hold("a2", "A").job); // waits: the whole share
+            expect(h.queue.submit(h.hold("a3", "A").job)).toBe("group_full");
+
+            first.gate.resolve(); // a2 starts, so nothing of A is waiting
+            await settle();
+
+            expect(h.started).toEqual(["a1", "a2"]);
+            expect(h.queue.submit(h.hold("a4", "A").job)).toBe("accepted");
+            expect(h.queue.submit(h.hold("a5", "A").job)).toBe("group_full");
+        });
+
+        it("gives the claim back when it refuses, so the same key is accepted once the share is free", async () => {
+            const h = makeHarness({
+                capacity: 10,
+                perGroupCapacity: 1,
+                concurrency: 1,
+            });
+            const first = h.hold("a1", "A");
+            h.queue.submit(first.job);
+            h.queue.submit(h.hold("a2", "A").job);
+            expect(h.queue.submit(h.hold("a3", "A").job)).toBe("group_full");
+            expect(h.claims.counts().inFlight).toBe(2);
+
+            first.gate.resolve();
+            await settle(); // a2 starts; nothing of A is waiting
+
+            expect(h.queue.submit(h.hold("a3", "A").job)).toBe("accepted");
+        });
+
+        it("still answers 'duplicate' for a key that is claimed, from a group with no share left", async () => {
+            const h = makeHarness({
+                capacity: 10,
+                perGroupCapacity: 1,
+                concurrency: 1,
+            });
+            h.queue.submit(h.hold("a1", "A").job); // runs
+            h.queue.submit(h.hold("a2", "A").job); // waits: the whole share
+
+            expect(h.queue.submit(h.hold("a2", "A").job)).toBe("duplicate");
+            expect(h.queue.submit(h.hold("a1", "A").job)).toBe("duplicate");
+            expect(h.claims.counts().inFlight).toBe(2);
+        });
+
+        it("holds a flood from one group to its share", async () => {
+            const h = makeHarness({
+                capacity: 20,
+                perGroupCapacity: 10,
+                concurrency: 2,
+                perGroupConcurrency: 1,
+            });
+            const results: string[] = [];
+            for (let i = 0; i < 1_000; i += 1) {
+                results.push(h.queue.submit(h.hold(`job-${i}`, "A").job));
+            }
+            await settle();
+
+            expect(results.filter((r) => r === "accepted")).toHaveLength(11);
+            expect(results.filter((r) => r === "group_full")).toHaveLength(989);
+            expect(h.queue.counts()).toEqual({ waiting: 10, running: 1 });
+            expect(h.claims.counts()).toEqual({ inFlight: 11, kept: 0 });
+        });
+    });
+
     describe("dedupe", () => {
         it("refuses a second job with the same key and runs the first once", async () => {
             const h = makeHarness();
