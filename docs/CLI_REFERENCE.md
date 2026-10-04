@@ -370,7 +370,9 @@ OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to data
 - FLARE iterative retrieval can be enabled globally with
   `TRELIX_RETRIEVAL_FLARE=true`.
 - If synthesis cannot produce an answer (no LLM configured, bad API key, network or
-  quota error) and the embedder provider is not `local`, the reason is printed to stderr,
+  quota error, or a reply with no answer in it: an empty or whitespace-only stream, or an
+  endpoint that is not an OpenAI-compatible chat API, such as an HTML page from a wrong
+  `OPENAI_BASE_URL`) and the embedder provider is not `local`, the reason is printed to stderr,
   stdout gets no failure banner (a failure before the first token leaves only the closing
   blank line; text already streamed stays) and the command exits `1`. With
   `TRELIX_RETRIEVAL_FLARE=true` (and agentic mode off) a failed synthesis exits `1` whichever

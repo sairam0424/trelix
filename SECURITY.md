@@ -185,9 +185,9 @@ not to anything trelix asks it to do.
 ### What reaches a model, and in what form
 
 1. **Assembled retrieval context, in the same message as your question.**
-   `_USER_TEMPLATE` (`retrieval/synthesizer.py:86-93`) interpolates
+   `_USER_TEMPLATE` (`retrieval/synthesizer.py:88-95`) interpolates
    `context_text` and `query` into a single `role="user"` message
-   (`retrieval/synthesizer.py:237-240`, `:274-277`). `context_text` is the output
+   (`retrieval/synthesizer.py:277-280`, `:325-328`). `context_text` is the output
    of `ContextAssembler._format_context` (`retrieval/assembler.py:291-337`),
    which emits each result's chunk text verbatim under a `=== <path> ===` /
    `[Lines a-b] <qualified_name>` header. `GET /ask` runs the same two steps

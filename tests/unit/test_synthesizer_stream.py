@@ -50,6 +50,24 @@ class TestSynthesizerStream:
             # Should yield one error message token, not raise
             assert len(tokens) >= 1
 
+    def test_closing_the_stream_early_is_not_an_empty_answer(self) -> None:
+        """A reader that closes the generator before it ends has not seen the end of the
+        stream, so a blank first token must not be recorded as "the LLM said nothing"."""
+        from trelix.core.config import EmbedderConfig, RetrievalConfig
+        from trelix.retrieval.synthesizer import Synthesizer
+
+        mock_client = MagicMock()
+        mock_client.stream.return_value = iter(["  ", "The answer."])
+
+        with patch("trelix.retrieval.synthesizer.build_chat_client", return_value=mock_client):
+            synth = Synthesizer(EmbedderConfig(_env_file=None))
+            tokens = synth.stream(_make_context(), RetrievalConfig())
+
+            assert next(tokens) == "  "
+            tokens.close()
+
+            assert synth.last_error is None
+
     def test_stream_reuses_llm_client_from_init(self) -> None:
         """stream() must use self._llm_client built in __init__, not create a new one.
 
