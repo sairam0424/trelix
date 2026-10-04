@@ -82,6 +82,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `docs/PROVIDERS.md` and `.env.example` no longer say the Bedrock backend ignores the thinking
   flag (it has sent `reasoning_config` since 3.3.0) or that Anthropic forces `temperature=1.0`
   (the Anthropic backend never sends a temperature).
+- **GitHub App: small gaps left by the first App releases.** An async logger whose promise rejects
+  (the `logError` given to `createApp`, or the writer of the job-failure logger) was not covered by
+  "the response does not depend on the log": nobody awaited the promise, so the rejection went
+  unhandled, which ends a Node 24 process. It is now reported like a throw (the same fixed console
+  line, quoting nothing) and still not awaited. Tests now pin the manifest's exact permissions
+  (`pull_requests: read`, `checks: write`, `contents: read`) and event (`pull_request`), so widening
+  one no longer passes CI. `github-app-ci.yml` now also runs when `redeliver-failed-webhooks.yml`
+  changes (that workflow builds and runs the App's script). Comments and docs: `sanitize.ts` and the
+  App README wrote the ASCII `@` where the sanitiser's replacement `＠` (U+FF20) is meant, and the
+  `createApp` comment still said `server.ts` only loads the config and listens.
 
 ### Changed
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):

@@ -144,6 +144,124 @@ describe("when the configured logger throws", () => {
     });
 });
 
+/** A logger for an async transport: it returns a promise that rejects. */
+function rejectingSink(): Promise<never> {
+    return Promise.reject(new Error(`${SINK_DOWN} ${HOOK_CANARY}`));
+}
+
+/** Lets the microtasks and the unhandled-rejection check of the event loop run. */
+function settle(): Promise<void> {
+    return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Counts the unhandled rejections raised while `body` runs and settles. */
+async function countUnhandledRejections(
+    body: () => Promise<void>,
+): Promise<number> {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+        await body();
+        await settle();
+        return unhandled.mock.calls.length;
+    } finally {
+        process.off("unhandledRejection", unhandled);
+    }
+}
+
+function appThatFailsWith(logError: (line: string) => void): Express {
+    return buildApp(
+        (a) =>
+            a.get("/x", () => {
+                throw new Error(MESSAGE);
+            }),
+        logError,
+    );
+}
+
+describe("when the configured logger returns a promise that rejects", () => {
+    it("still answers with the fixed 500", async () => {
+        const res = await request(appThatFailsWith(rejectingSink)).get("/x");
+        await settle();
+
+        expect(res.status).toBe(500);
+        expect(res.text).toBe(FIXED_500);
+        expect(res.text).not.toContain(SINK_DOWN);
+    });
+
+    it("reports the failure once on the console with the fixed line that quotes no error", async () => {
+        await request(appThatFailsWith(rejectingSink)).get("/x");
+        await settle();
+
+        expect(consoleError.mock.calls).toEqual([[LOG_FAILURE_LINE]]);
+    });
+
+    it("raises no unhandled rejection", async () => {
+        const unhandled = await countUnhandledRejections(async () => {
+            await request(appThatFailsWith(rejectingSink)).get("/x");
+        });
+
+        expect(unhandled).toBe(0);
+    });
+
+    it("raises no unhandled rejection when the console fails as well", async () => {
+        consoleError.mockImplementation(() => {
+            throw new Error(CONSOLE_DOWN);
+        });
+
+        const unhandled = await countUnhandledRejections(async () => {
+            await request(appThatFailsWith(rejectingSink)).get("/x");
+        });
+
+        expect(unhandled).toBe(0);
+        expect(consoleError).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        ["a string", () => Promise.reject("sink down")],
+        ["undefined", () => Promise.reject(undefined)],
+        [
+            "a thenable that is not a native promise",
+            () => ({
+                then: (_ok: unknown, fail: (reason: unknown) => void) =>
+                    fail(new Error(SINK_DOWN)),
+            }),
+        ],
+    ])(
+        "reports a failure signalled by %s once and raises no unhandled rejection",
+        async (_name, logError) => {
+            const unhandled = await countUnhandledRejections(async () => {
+                await request(appThatFailsWith(logError)).get("/x");
+            });
+
+            expect(unhandled).toBe(0);
+            expect(consoleError.mock.calls).toEqual([[LOG_FAILURE_LINE]]);
+        },
+    );
+
+    it("does not wait for the logger: a promise that never settles still gets its response", async () => {
+        const res = await request(
+            appThatFailsWith(() => new Promise<void>(() => {})),
+        ).get("/x");
+
+        expect(res.status).toBe(500);
+        expect(res.text).toBe(FIXED_500);
+    });
+
+    it("does not touch the console when an async logger succeeds", async () => {
+        const lines: string[] = [];
+        const app = appThatFailsWith((line) =>
+            Promise.resolve().then(() => lines.push(line)),
+        );
+
+        await request(app).get("/x");
+        await settle();
+
+        expect(lines).toHaveLength(1);
+        expect(consoleError).not.toHaveBeenCalled();
+    });
+});
+
 describe("an error object that throws when it is inspected", () => {
     it("is answered with the fixed 500 when reading its status throws", async () => {
         const { lines, logError } = collector();

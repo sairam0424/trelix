@@ -421,9 +421,10 @@ policy, reviews on.
   are never logged, and a `4xx` line carries no message, because a JSON syntax
   error quotes the body. An error that arrives after the response was sent is
   logged with `"alreadySent":true` and the status the client got. The response
-  does not depend on the log: if the logger passed to `createApp` throws, the
-  handler writes the fixed line `[app] request failed; the error could not be
-  logged` to the console (quoting nothing) and still sends the fixed response.
+  does not depend on the log: if the logger passed to `createApp` throws, or
+  returns a promise that rejects (an async logger; the promise is not awaited),
+  the handler writes the fixed line `[app] request failed; the error could not
+  be logged` to the console (quoting nothing) and still sends the fixed response.
 - `GITHUB_APP_PRIVATE_KEY`/`GITHUB_WEBHOOK_SECRET` must come from your
   platform's secret manager, never a committed file — `src/config.ts`
   reads them from env only and throws at startup if either is missing.
@@ -574,7 +575,7 @@ policy, reviews on.
     6. Link syntax is broken: `](` becomes `] (`, so `[text](url)` reads
        `[text] (url)`, and `]:` becomes `] :`, so a reference definition, which
        renders as nothing, is shown.
-    7. Every `@` becomes a fullwidth `@` (`＠octocat`, `me＠host.example`),
+    7. Every `@` becomes a fullwidth `＠` (`＠octocat`, `me＠host.example`),
        which covers user mentions, team mentions and email addresses. It is
        every `@`, not only one before a letter or digit: GitHub also links
        an address whose domain starts with `-`, `_` or `.`, or with a

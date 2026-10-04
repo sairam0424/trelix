@@ -2,12 +2,14 @@ import {
     describeErrorForLog,
     errorName,
     redactSecrets,
+    reportIfRejected,
 } from "./error-handler.js";
 
 /**
- * Written to the console when the failure of a job cannot be logged, or when
- * the error object throws as it is read. It quotes nothing: what was thrown is
- * not known to be free of the secrets.
+ * Written to the console when the failure of a job cannot be logged (the writer
+ * throws or its promise rejects), or when the error object throws as it is
+ * read. It quotes nothing: what was thrown is not known to be free of the
+ * secrets.
  */
 const LOG_FAILURE_LINE = "[queue] a job failed; the error could not be logged";
 
@@ -24,7 +26,8 @@ function logToConsole(line: string): void {
  * on a single line, with the configured secrets removed from the error text
  * before it is cut, and never the request, its headers or its body.
  *
- * `prefix` starts the line. `write` and the reporter never throw.
+ * `prefix` starts the line. `write` may be async: its promise is not awaited,
+ * and a rejection is reported like a throw. The reporter never throws.
  */
 export function createJobFailureLogger(
     secrets: readonly string[],
@@ -38,7 +41,10 @@ export function createJobFailureLogger(
                 error: redactSecrets(errorName(err), secrets),
                 detail: describeErrorForLog(err, secrets),
             };
-            write(`${prefix} ${JSON.stringify(record)}`);
+            reportIfRejected(
+                write(`${prefix} ${JSON.stringify(record)}`),
+                reportLogFailure,
+            );
         } catch {
             reportLogFailure();
         }
