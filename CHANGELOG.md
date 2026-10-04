@@ -23,6 +23,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     both tag-triggered workflows finish, and the guards above make it safe.
   - *Accepted, `superfluous-actions` (GitHub Release step).* `gh release create` could replace the
     pinned action, but the publish path cannot be exercised before a real tag.
+- **Dependency security updates for the VS Code extension workspace.** Five Dependabot security PRs
+  (open since 2026-09-29 for two, 2026-10-02 for three) targeted `main`; they are now on `develop` and
+  ship with the next release: `undici` 7.29.0 to 7.30.0 (10 advisories, two of them high:
+  GHSA-w293-vg96-wgc3 and GHSA-rfgv-xxqx-mfg5), `fast-uri` 3.1.6 to 3.1.8 (three advisories, two
+  high: GHSA-qw65-cvwx-89v3 and GHSA-58mr-gqgx-xq4g, and medium GHSA-hrr3-gc8f-f4qj), `hono` 4.13.5 to
+  4.13.12, `ip-address` 10.5.0 to 10.7.2 and `brace-expansion` 5.0.9 to 5.0.12. They affect
+  `workspace-vscode` only, not the Python packages or the GitHub App. `npm audit` for that workspace
+  goes from 13 findings to 8, all in development tooling (`@vscode/vsce`, `mocha`); the production
+  tree reports none.
 
 ### Fixed
 - **Extended thinking (`TRELIX_LLM_THINKING_ENABLED=true`) failed on Claude models that only
@@ -61,6 +70,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `docs/PROVIDERS.md` and `.env.example` no longer say the Bedrock backend ignores the thinking
   flag (it has sent `reasoning_config` since 3.3.0) or that Anthropic forces `temperature=1.0`
   (the Anthropic backend never sends a temperature).
+
+### Changed
+- **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):
+  `docker/build-push-action` 7.3.0 to 7.4.0, `github/codeql-action` (`init`, `analyze`, `upload-sarif`)
+  4.38.1 to 4.38.2, `trufflesecurity/trufflehog` 3.97.6 to 3.97.9. npm: `supertest` 7.2.2 to 7.3.0 (the
+  GitHub App's tests), `@types/node` 26.6.2 to 26.6.3 (`packages/trelix-typescript`, `workspace-vscode`),
+  `@modelcontextprotocol/sdk` 1.30.0 to 1.30.1 (`workspace-vscode`). Deliberately not taken: the
+  `openai` ceiling stays `<3.0.0` (every `litellm` release through 1.104.0 requires `openai<3.0.0`, so
+  `openai>=3` would make `trelix[litellm]` unresolvable), and the GitHub App image stays on Node 24
+  (an LTS line supported until 2028-04-30; Node 26 enters LTS on 2026-10-28, revisit then). The `trufflehog` pin
+  moves the wrapper action only: the scanner version stays set by `version:` in `security-scan.yml`.
 
 ## [3.4.3] — 2026-10-04
 
