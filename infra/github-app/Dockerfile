@@ -11,12 +11,12 @@
 # both — this image needs Node (to run the Express service) AND Python +
 # `trelix` (to run `trelix index`/`trelix review` as subprocesses).
 
-FROM node:24-bookworm-slim AS node-deps
+FROM node:26-bookworm-slim AS node-deps
 WORKDIR /app
 COPY infra/github-app/package.json infra/github-app/package-lock.json ./
 RUN npm ci --omit=dev
 
-FROM node:24-bookworm-slim AS node-builder
+FROM node:26-bookworm-slim AS node-builder
 WORKDIR /app
 COPY infra/github-app/package.json infra/github-app/package-lock.json ./
 RUN npm ci
