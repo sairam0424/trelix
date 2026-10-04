@@ -144,6 +144,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   retrieval ("No relevant code found") is still not an LLM failure. `GET /ask` is unchanged (it
   never reads `last_error`, so an empty answer is still a bare `data: [DONE]`), and so is
   `--agentic`, whose fallback is documented.
+- **The first `trelix index --prune` after an upgrade was refused with advice that could not
+  clear it.** The refusals said "Re-index with this version, then prune", but right after an
+  upgrade the tree is unchanged, and a plain `trelix index` (default batch pipeline) prints
+  "Nothing to index — all files up to date." and returns before it writes provenance, so the
+  same refusal came back until some file happened to change. The refusals now name
+  `TRELIX_INCREMENTAL=false trelix index <repo>`, run once under the environment and
+  `--provider` that built the index and followed by a separate prune (0 chunks embedded over an
+  unchanged tree), or a rebuild where a re-index would be refused again (a walk config recorded
+  with no history, as 3.1.2 did; an older `.gitignore` digest scheme; several walk configs). All
+  of an index's refusals name the same one. No check changed, and for an index that recorded a
+  walk config the step still cannot clear a changed walk (pinned on real runs). The step only
+  certifies the walk as it is now, not the one that wrote the rows, so the refusal says to check
+  the listed files against the disk before `--yes`: for an index that recorded no walk config,
+  and for the plain upgrade, where it re-stamps the version without proving anything about the
+  rows. A record under an older `.gitignore` digest scheme was also mislabelled: the prune
+  refusal said "records no walk config" and `stats --drift` said it "predates walk-config
+  recording". `--prune`, `--yes`, `--prune-max-percent`, `--dry-run`, the six checks and the
+  upgrade step are now in `docs/CLI_REFERENCE.md`, and each refusal in
+  `docs/TROUBLESHOOTING.md`.
 
 ### Changed
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):

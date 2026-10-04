@@ -89,6 +89,41 @@ trelix index ./repo
 
 ---
 
+### `trelix index --prune` says "Prune refused"
+
+**Symptom:** `trelix index ./repo --prune` (with or without `--yes`) lists files under "Indexed but no longer in the repository", prints one or more `Prune refused: ...` lines, deletes nothing and exits 1. Most often this is the first `--prune` after upgrading trelix.
+
+**Cause:** "Indexed but not yielded by this walk" is also what a truncated or differently configured walk looks like, so trelix deletes only when it can show the walk is the one that built the index. The message says which check failed:
+
+| The refusal says | What it means | What to do |
+|---|---|---|
+| `N path(s) could not be read during the walk` | A directory was unreadable (permissions, broken symlink), so every file under it looks deleted. | Fix the permission or the symlink, then re-run. |
+| `this index records no walk config` | The index was written by a trelix that recorded none, so there is nothing to compare this walk against. | Run `TRELIX_INCREMENTAL=false trelix index ./repo` once, under the environment and `--provider` that built the index, then prune again. That records the walk as it is now, not the one that wrote the rows, so check the files the prune lists against the disk before `--yes`. |
+| `recorded walk config is in a form this version cannot compare` | The record was written under an older `.gitignore` digest scheme (3.1.2). A re-index would add a second walk config beside it and be refused again. | Rebuild: delete `./repo/.trelix/index.db`, run `trelix index ./repo` (this re-embeds everything), then prune. |
+| `built by trelix X and this is Y` | A release can change which files are walked without changing any recorded setting (3.1.2 did). | Do what the refusal says: `TRELIX_INCREMENTAL=false trelix index ./repo` once, under the environment and `--provider` that built the index, then prune again. That re-stamps the version without proving the rows were written under this walk, so check the files the prune lists against the disk before `--yes`. It names a rebuild instead when a re-index would leave the index refused; do that. |
+| `does not record which walk configurations wrote its rows` | The index predates the record of which walk configs wrote its rows. | If `this index records no walk config` is also printed, the same `TRELIX_INCREMENTAL=false` step starts that record. Otherwise a re-index cannot vouch for the rows an earlier run wrote: rebuild by deleting `./repo/.trelix/index.db`, running `trelix index ./repo` (this re-embeds everything), then pruning. |
+| `the walk settings changed since this index was built (...)` | The ignore lists, a `TRELIX_WALKER_*` setting or the `.gitignore` chain differ from index time, so files the walk no longer reaches look deleted while present. A `.trelix.bak-*` copy of `.trelix` adds a `.gitignore` to the chain. | Re-run with the environment that built the index, or delete the backup copy. Re-indexing does not clear this. |
+| `rows were written under N different walk configurations` | The index was once re-indexed under a different walk, and a re-index deletes no rows. | Rebuild: delete `./repo/.trelix/index.db`, run `trelix index ./repo` (this re-embeds everything), then prune. |
+| `N of M indexed files (P%) would be removed, over the 10% cap` | That is the shape of a walk that lost a subtree. | Read the list. If the files are really gone, re-run with `--prune-max-percent`. |
+
+**Fix (the first prune after an upgrade):**
+
+```bash
+# Re-parses every file and embeds nothing that is unchanged (with file summaries enabled, only
+# a file with a changed symbol is summarised again). Run it with the same environment and
+# --provider that built the index (TRELIX_WALKER_* is read from the process environment only).
+TRELIX_INCREMENTAL=false trelix index ./repo
+
+# Then prune, as a second command. Preview first; add --yes to delete.
+trelix index ./repo --prune
+```
+
+On Windows set the variable first (`set TRELIX_INCREMENTAL=false` in cmd, `$env:TRELIX_INCREMENTAL = "false"` in PowerShell), run `trelix index ./repo`, then clear it (`set TRELIX_INCREMENTAL=` or `Remove-Item Env:TRELIX_INCREMENTAL`) so later runs are incremental again.
+
+With the default batch pipeline a plain `trelix index ./repo` does not clear these refusals. Over an unchanged tree it prints `Nothing to index — all files up to date.` and returns before it writes the version and walk config, so the refusal comes back until some file changes. Do not combine the two steps in one command (`TRELIX_INCREMENTAL=false trelix index ./repo --prune --yes`): the prune checks read the index as it stood before that run, so it is refused again.
+
+---
+
 ### Index DB Corrupted
 
 **Symptom:** Commands fail with `sqlite3.DatabaseError: database disk image is malformed`, `database is locked`, or other SQLite integrity errors that persist after retrying.

@@ -2112,9 +2112,10 @@ def _print_drift(report: DriftReport) -> None:
         )
     elif not report.walk_config_comparable:
         console.print(
-            "\n[dim]This index predates walk-config recording, so whether the walk used "
-            "the same ignore rules could not be checked. Treat [bold]missing[/bold] as "
-            "unverified.[/dim]"
+            "\n[dim]This index's walk config cannot be compared (it predates walk-config "
+            "recording, or was written under an older `.gitignore` digest scheme), so "
+            "whether the walk used the same ignore rules could not be checked. Treat "
+            "[bold]missing[/bold] as unverified.[/dim]"
         )
 
     if report.is_clean:
