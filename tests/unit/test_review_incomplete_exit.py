@@ -246,8 +246,7 @@ class TestLocalDiffPath:
         result = _local(tmp_path, _outcome(3, 1), [_COMMENT], "--json")
 
         assert result.exit_code == 4, result.stderr
-        # In local-diff mode a "Reviewing N hunks..." line precedes the (indented) array.
-        assert json.loads(result.stdout[result.stdout.index("\n[") + 1 :]) == _FINDING_JSON
+        assert json.loads(result.stdout) == _FINDING_JSON
 
     def test_table_mode_exits_four_with_the_findings(self, tmp_path: Path) -> None:
         result = _local(tmp_path, _outcome(3, 1), [_COMMENT])
