@@ -214,6 +214,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   recording". `--prune`, `--yes`, `--prune-max-percent`, `--dry-run`, the six checks and the
   upgrade step are now in `docs/CLI_REFERENCE.md`, and each refusal in
   `docs/TROUBLESHOOTING.md`.
+- **`trelix eval` exited 0 when queries raised.** A query whose retrieval raised was scored 0.0 and
+  logged as a warning, and the run went on and printed means that blended those zeros in with real
+  misses; nothing in the exit code or the table said so. It now prints the number of failed queries and
+  the first five messages (each cut at 200 characters), and exits 1. The table is still printed first
+  and `--per-query-out` still writes its file, which names every failed query. `EvalHarness.run()` is
+  unchanged: it still returns the mean with the failed queries counted as 0.0.
+
+### Added
+- **Per-query eval results and the statistics to compare two runs** (first of three changes toward
+  comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
+  - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
+    `split`, `ndcg`, `recall`, `mrr`, `top10` (the first ten distinct files retrieved) and `error`.
+    `run()` is the mean of these records and returns the same values as before. A golden entry without
+    an `id` is numbered by its 1-based position (`q0001`); `kind`, `lang` and `split` are `null` unless
+    the entry has them. A query that raised carries its message (at most 200 characters) and 0.0 scores.
+  - `trelix eval --per-query-out PATH` writes `{"schema_version": 1, "records": [...], "aggregate":
+    {...}}` as ASCII-escaped JSON with sorted keys and mode 0600, atomically: a temporary file with a
+    random name beside PATH is renamed over it, and a symlink at PATH is replaced, not followed. A path
+    that cannot be written (missing directory, no file name) is a one-line error and exit 1. The printed
+    results are unchanged by the flag.
+  - New `trelix.eval.stats` (numpy only): `paired_bootstrap` (percentile interval and two-sided
+    bootstrap p-value for the mean paired difference; the same resampled queries are applied to both
+    runs), `mde` (`2.8 * sigma_d / sqrt(n)`, the minimum detectable effect at 80 percent power and 5
+    percent two-sided error) and `holm` (Holm-Bonferroni step-down). See `eval/README.md`.
 
 ### Changed
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):

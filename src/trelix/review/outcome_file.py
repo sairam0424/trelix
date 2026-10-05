@@ -45,6 +45,7 @@ def write_outcome_file(path: str, payload: dict[str, Any]) -> str | None:
     never sees a half-written document and a symlink at `path` is replaced, not followed. The
     parent directory must already exist, and `path` must name a file. A failure is reported,
     never raised: not being able to write this record must not change how the review ends.
+    `trelix.eval.harness.write_per_query_file` writes its JSON through this too.
     """
     try:
         target = Path(path)
