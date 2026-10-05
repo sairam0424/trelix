@@ -1567,7 +1567,7 @@ TRELIX_LLM_PROVIDER=anthropic TRELIX_LLM_MODEL=claude-haiku-4-5 trelix ask ./my-
 ## 13. CLI Flags and Configuration Reference
 
 **[docs/CLI_REFERENCE.md](CLI_REFERENCE.md) is the authoritative, per-command flag
-reference.** It is generated against the real Typer application and covers all 30
+reference.** It is generated against the real Typer application and covers all 34
 commands and subcommands with synopsis, options, examples, and notes. Read it there
 rather than here — a second full flag table in this guide would only drift out of date.
 
@@ -1651,7 +1651,7 @@ that copy-pasted commands fail loudly rather than silently:
 | `trelix-mcp --version` / `--cache-dir` | `trelix-mcp` parses no arguments at all; use `python -c "import trelix_mcp; print(trelix_mcp.__version__)"` |
 
 There is also no `trelix config`, `trelix doctor`, `trelix mcp`, or `trelix federation
-stats` command. `trelix --help` lists the real 25 top-level commands.
+stats` command. `trelix --help` lists the real 26 top-level commands.
 
 ### Key environment variables
 

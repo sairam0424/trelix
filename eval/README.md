@@ -293,7 +293,8 @@ returning the mean.
 ### Comparing two runs
 
 `trelix.eval.stats` (numpy only) takes per-query scores paired **by position**, so pair the
-two files by `id` first:
+two files by `id` first. The snippet is for exploring two `--per-query-out` files; a decision
+goes through `trelix eval-compare` (next section), which is the only thing that produces a PASS.
 
 ```python
 import json
@@ -333,6 +334,191 @@ print(result.mean_delta, result.ci_low, result.ci_high, result.p_value, result.n
 An interval that includes 0 is not evidence that the runs are equal, and a delta inside
 the `mde` is not evidence of anything; see "What a difference has to be before it means
 anything" above, where the same idea is called the MDD.
+
+### Pre-registration and `trelix eval-compare`
+
+`trelix eval-compare` is the only command that produces a PASS. It judges a candidate run
+against a baseline run by a rule that was written down before anyone looked at a number:
+
+```bash
+trelix eval-compare BASE.json CAND.json --prereg EXP.yaml
+```
+
+It needs no git, no index and no embedder. The verdict is a pure function of the three files:
+queries are paired by `id`, fed to the bootstrap in sorted-`id` order with a fixed seed
+(`seed=0`, 10,000 resamples), and the output is identical for identical files.
+
+#### The results file (`results.json`, schema_version 1)
+
+One file per run. It is **not** the `--per-query-out` file: that one also says
+`schema_version: 1` but names no repository, commit or golden file, so `eval-compare`
+refuses it (`not a results.json`). The format lives in `trelix.eval.results`, which has the
+writer (`build_results`, `write_results`) beside the reader (`load_results`) so the two cannot
+drift; the command that writes these files for a whole suite, `trelix eval-suite`, is not part
+of this change. Written with sorted keys and mode 0600, like the per-query file:
+
+```json
+{
+  "aggregate": {"mrr": 1.0, "n_queries": 1.0, "ndcg@10": 1.0, "recall@10": 1.0},
+  "arm": "baseline",
+  "embedder": {"dimension": 384, "library_version": "5.1.0", "model": "sentence-transformers/all-MiniLM-L6-v2", "provider": "local"},
+  "pipeline": {"config": {"retrieval": {"top_k": 10}}, "flare_enabled": false, "hyde_fallback_enabled": false, "multi_query_enabled": false, "plans": "replayed", "rerank": false, "rerank_summary": "disabled"},
+  "records": [
+    {"error": null, "id": "q0001", "kind": null, "lang": null, "mrr": 1.0, "ndcg": 1.0, "recall": 1.0, "repo": "demo", "split": null, "top10": ["src/app.py"]}
+  ],
+  "run": {"created_at": "2026-10-05T12:00:00+00:00"},
+  "schema_version": 1,
+  "suite": {"golden_sha256": "<64 hex>", "golden_version": "v1", "license": "MIT", "name": "demo", "plans_sha256": "<64 hex>", "repo_sha": "<40 hex>", "repo_url": "https://example.invalid/demo.git"},
+  "trelix_version": "3.4.3"
+}
+```
+
+| Key | Rule |
+|---|---|
+| top level | exactly `aggregate, arm, embedder, pipeline, records, run, schema_version, suite, trelix_version`; another key, or a missing one, is refused |
+| `arm` | `^[a-z0-9][a-z0-9_-]{0,62}$`; the label the pre-registration's `comparison_id` binds to |
+| `suite` | exactly `name, golden_version, repo_url, repo_sha, license, golden_sha256, plans_sha256`: which repository, commit, golden file and plans file the run measured. `repo_sha` is 40 hex, the hashes 64 hex |
+| `embedder` | exactly `provider, model, dimension` (integer, 1 or more) and `library_version` (a string, or `null` when the package is not installed; never an error) |
+| `pipeline` | `rerank, hyde_fallback_enabled, multi_query_enabled, flare_enabled` (booleans), `plans`, `rerank_summary` (strings) and `config` (an object: the effective configuration, which `eval-compare` reports but never refuses on). Keys it does not know are accepted and ignored, so a later field needs no schema bump |
+| `aggregate` | exactly `mrr, n_queries, ndcg@10, recall@10`, compared with `==` against `aggregate_metrics(records)` recomputed from the records as they stand in the file: a hand-edited file cannot keep a stale aggregate |
+| `records` | a non-empty list; each record has exactly the ten `QueryRecord` keys, scores are numbers in 0 to 1 (a bool is not a number), `top10` is at most 10 strings, `split` is `null`, `dev` or `test`, `error` is `null` or a non-empty string (a message of only whitespace counts: the query still raised), `id` is unique, and `repo` equals `suite.name` |
+| `run` | an object with `created_at` (a string). The one non-deterministic datum: two runs of the same code agree on everything but `run`, and no verdict reads it. Keys it does not know are ignored |
+
+A file over 32 MiB, one that is not UTF-8 JSON, and one that contains `NaN` or `Infinity` are
+refused; every problem found in a readable file is listed (the first 20). `write_results` applies
+the same rules before it writes, so it refuses a document carrying a `NaN`, an infinity or a value
+that is not JSON (`pipeline.config` is the one place a value is free-form).
+
+#### The pre-registration
+
+A small YAML file, written and committed before the run. **All ten keys are required**, there are
+no defaults, and unknown keys, duplicate keys, YAML anchors and aliases are refused (it is read with
+PyYAML's safe loader only):
+
+```yaml
+schema_version: 1
+experiment_id: EXP-declaration-boost
+comparison_id: baseline..declaration-boost
+primary_metric: ndcg@10
+direction: increase
+expected_effect: 0.03
+alpha: 0.05
+family_size: 3
+min_queries: 30
+cost_class: flag
+```
+
+| Key | Rule |
+|---|---|
+| `schema_version` | the integer `1` |
+| `experiment_id` | `EXP-` followed by letters, digits and `. _ -` |
+| `comparison_id` | `<baseline arm>..<candidate arm>`: two different arm names, which must be the `arm` of BASE and of CAND in that order (swapped arguments are refused) |
+| `primary_metric` | exactly `ndcg@10` |
+| `direction` | exactly `increase` |
+| `expected_effect` | a number above 0 and at most 1: the gain the experiment expects, compared with the minimum detectable effect |
+| `alpha` | a number above 0 and at most 0.05, and `alpha / family_size` at least 0.001 (below that a tail of the 10,000-replicate bootstrap holds fewer than 5 replicates and `1 - alpha / family_size` can round to 1.0) |
+| `family_size` | an integer from 1 to 50: how many comparisons against this baseline the experiment makes, fixed before the first run. Every interval is taken at confidence `1 - alpha / family_size` (Bonferroni) |
+| `min_queries` | an integer of at least 20, compared with the size of the **decision set** (below), not with the number of records |
+| `cost_class` | `flag` (hurdle 0.01), `index` (0.02) or `heavy` (0.03): the smallest nDCG@10 gain worth shipping. A fixed table, so a file cannot pick its own hurdle |
+
+`min_queries` matters on a golden file with `split` labels: it is compared with the test split, so
+a file with 54 queries of which 38 are `test` can never satisfy `min_queries: 54`.
+
+#### The decision set and the rule
+
+The decision set `D` comes from the **baseline** file's labels, so a results file cannot choose its
+own: with no `split` on any baseline record `D` is every record; with one on every baseline record
+`D` is the `test` records (dev queries never enter a decision); a mixture is refused. The two files
+must give every query the same `split`, `kind` and `lang`. With `n = |D|`, `delta` the mean paired
+nDCG@10 difference (`cand - base`) and `[L, H]` its interval at confidence `1 - alpha / family_size`;
+`[Lr, Hr]` the same for recall@10; `h` the hurdle; `G = -0.02`; and
+`MDE = 2.8 * sigma_d / sqrt(n)` with `sigma_d` the sample standard deviation (`n - 1`) of the paired
+nDCG@10 differences on `D`:
+
+| Row | Condition | Outcome |
+|---|---|---|
+| 1 | the candidate has a record with an `error` (checked over all its records) | FAIL |
+| 2 | `n < min_queries` (no statistics are computed) | INCONCLUSIVE |
+| 3 | `H < 0`: nDCG@10 is confidently worse | FAIL |
+| 4 | `Hr < G`: recall@10 is confidently down by more than 0.02 | FAIL |
+| 5 | `expected_effect < MDE`: exploratory, cannot change a default | INCONCLUSIVE |
+| 6 | `L <= 0`: the improvement is not demonstrated | INCONCLUSIVE |
+| 7 | `delta < h`: below the hurdle | INCONCLUSIVE |
+| 8 | `Lr < G`: the recall guard is not resolved | INCONCLUSIVE |
+| 9 | none of the above | PASS |
+
+Rows 1 and 2 stop the evaluation. After them, any match among rows 3 and 4 makes the verdict FAIL,
+else any match among rows 5 to 8 makes it INCONCLUSIVE, and every matching row of the winning class
+is printed as a `reason:` line. Recall@10 is a guard, not a second hypothesis. "No demonstrated gain"
+(identical arms give the interval `[0, 0]`) is INCONCLUSIVE, not FAIL: an interval containing 0 is not
+an equivalence result. A recall point estimate below -0.02 whose interval still reaches 0 is also
+INCONCLUSIVE (row 8), not FAIL.
+
+Four limits, stated so nobody reads more into a PASS than it holds. **Holm is not applied**:
+one invocation judges one pair, so `family_size` widens the intervals by Bonferroni (never less
+conservative than Holm) and `stats.holm` is not called. **`stats.mde` uses the fixed constant
+2.8** (5 percent two-sided error, 80 percent power), so row 5 does not tighten when
+`alpha / family_size` shrinks although the interval of row 6 does. **`sigma_d` is measured on the pair
+being judged**, so a noisy candidate raises its own MDE. The bootstrap draws from
+`numpy.random.default_rng(0)`, whose stream numpy does not promise across releases (the tests here
+were measured with numpy 2.5.0); a verdict within a few percent of a tail could flip after an
+upgrade, which is why the interval is always printed. **Memory**: each bootstrap allocates
+`10,000 x n` indices and then the deltas gathered with them, so its peak is about
+`2 x 8 bytes x 10,000 x n` (about 56 MB at `n = 350`, 800 MB at `n = 5,000`; measured with
+`tracemalloc`) and `eval-compare` does not chunk them, so a decision set of several thousand
+queries needs that first.
+
+#### Refusals, output and exit codes
+
+Anything that makes the comparison invalid rather than unfavourable is REFUSED, with every
+reason listed: a file that is unreadable or malformed; a `--prereg` that is missing or invalid;
+suites that differ in `name, golden_version, repo_url, repo_sha, license, golden_sha256` or
+`plans_sha256`; a run with `rerank`, `hyde_fallback_enabled`, `multi_query_enabled` or
+`flare_enabled` on, or whose `plans` is not `replayed`; runs that cover different queries, or label
+them differently, or a baseline with mixed `split` labels; a `comparison_id` that does not match the
+two arms; and a baseline with an `error` (a bad baseline is a bad instrument). Differences that are
+not refusals are printed as `note:` lines: a different `trelix_version`, a different `embedder`, and
+every leaf of `pipeline.config` that differs (at most 20; or `note: pipeline.config identical`).
+
+| Exit code | Verdict | Last line of stdout |
+|---|---|---|
+| 0 | PASS | `verdict: PASS` |
+| 1 | FAIL | `verdict: FAIL` |
+| 2 | INCONCLUSIVE | `verdict: INCONCLUSIVE` |
+| 3 | REFUSED (stderr gets one `refused: ...` line per reason) | `verdict: REFUSED` |
+
+Only PASS exits 0, also when a reader stops reading: `trelix eval-compare ... | head -n 20` under
+`pipefail` drops the lines `head` did not take and still exits with the verdict's code, where
+`stats` and the other commands that print through the shared consoles (telemetry, graph,
+review, the search tables) exit 0 on a closed pipe. A click usage error (an unknown option, a
+missing argument) also exits 2 but prints no `verdict:` line, so a script that must tell
+INCONCLUSIVE from a mistyped command reads the `verdict:` line; the most likely mistake, leaving
+out `--prereg`, is a refusal (3), not a usage error. Text that comes from the files (ids, error
+messages, config keys) is printed literally: Rich markup is escaped, control bytes are dropped and
+a line break becomes a space, so a value cannot start a line of its own and pass for a `verdict:`
+line. Worked example: 20 queries, baseline nDCG@10 0.5 on all of them, a candidate at 0.5625 on
+all of them, and a pre-registration like the one above but with
+`comparison_id: baseline..flag-on`, `family_size: 1` and `min_queries: 20`:
+
+```
+comparison: baseline..flag-on
+experiment: EXP-example
+suite: demo golden_version v1 repo_sha 0123456789abcdef0123456789abcdef01234567
+runs: base 2026-10-05T12:00:00+00:00 cand 2026-10-05T12:30:00+00:00
+queries: 20 in the decision set (no split labels: all queries), min_queries 20
+note: pipeline.config identical
+ndcg@10: base 0.5000 cand 0.5625 delta +0.0625 ci [+0.0625, +0.0625] at 95.00% confidence
+recall@10: base 0.5000 cand 0.5000 delta +0.0000 ci [+0.0000, +0.0000] at 95.00% confidence
+mde: 0.0000 (sigma_d 0.0000, n 20); expected_effect 0.0300
+hurdle: 0.0100 (cost_class flag)
+verdict: PASS
+```
+
+Lines before the `reason:` lines are informational and may gain fields; the `reason:` and
+`verdict:` lines are the contract. The same base run against a candidate at 0.75 on half of the
+queries and 0.5 on the other half gives delta +0.1250, interval `[+0.0750, +0.1750]`, `sigma_d`
+0.1282 and MDE 0.0803: an `expected_effect` of 0.05 or 0.079 is INCONCLUSIVE (row 5 only, with the
+reason `expected_effect ... is below the minimum detectable effect 0.0803`), and 0.10 is PASS.
 
 ## `golden_synthesis_sample.jsonl` — synthesis quality
 

@@ -287,6 +287,45 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     is a usage error (exit 2). It reads the golden file only: a malformed `<stem>-metadata.json`
     beside it, which `trelix eval` refuses, is not reported. The shipped `eval/golden.jsonl` passes.
     See `eval/README.md` and `docs/CLI_REFERENCE.md`.
+- **`trelix eval-compare` with a pre-registered decision rule, and the `results.json` format** (third
+  change toward comparing retrieval runs honestly, and the judging half of it: the command that writes
+  `results.json` for a whole suite comes next, so nothing produces the files yet except
+  `trelix.eval.results.build_results` and `write_results`). No retrieval default changes.
+  - `trelix eval-compare BASE CAND --prereg EXP.yaml` judges a candidate run against a baseline under a
+    pre-registration, needs no git, no index and no embedder, and is the only producer of PASS. Exit
+    code 0 is PASS, 1 FAIL, 2 INCONCLUSIVE and 3 REFUSED, and the last stdout line of every real
+    outcome is `verdict: PASS`, `FAIL`, `INCONCLUSIVE` or `REFUSED` (a usage error also exits 2 and
+    prints no verdict line; a refusal prints one `refused: ...` line per reason on stderr). Queries
+    are paired by `id` and resampled with a fixed seed, so the output is identical for identical files.
+    Text that comes from the files is printed on one line, so a value cannot forge a `verdict:` line.
+    When a reader of stdout or stderr stops reading (`| head`), the remaining lines are dropped and
+    the exit code is still the verdict's; the commands that print through the shared consoles exit 0 on a closed pipe, which would
+    have turned a FAIL into success under `pipefail`.
+  - The pre-registration is a YAML file with ten required keys and no defaults: `experiment_id`,
+    `comparison_id` (`<baseline arm>..<candidate arm>`), `primary_metric` (`ndcg@10`), `direction`
+    (`increase`), `expected_effect`, `alpha` (at most 0.05), `family_size`, `min_queries` (at least 20)
+    and `cost_class` (`flag` 0.01, `index` 0.02 or `heavy` 0.03, the smallest nDCG@10 gain worth
+    shipping). `alpha / family_size` may not fall below 0.001. Unknown keys, duplicate keys and YAML
+    anchors are refused. The rule: a candidate query that raised is FAIL; fewer than `min_queries` is
+    INCONCLUSIVE; a confidently worse nDCG@10, or a confidently lower Recall@10 (by more than 0.02), is
+    FAIL; an `expected_effect` below the minimum detectable effect, no demonstrated gain, a gain below
+    the hurdle, or an unresolved recall guard is INCONCLUSIVE; anything else is PASS. Holm is not
+    applied (`family_size` widens the intervals by Bonferroni) and `stats.mde` keeps its fixed 2.8, so
+    the minimum detectable effect does not tighten with `alpha / family_size`.
+  - The decision set is taken from the baseline file's `split` labels (the `test` records when every
+    record has one, all records when none has; a mixture is refused), the two files must label every
+    query alike, and `min_queries` is compared with the size of that set. A run is refused, not judged,
+    when the suites differ in name, golden version, repository URL or commit, licence or the hashes of
+    the golden and plans files; when a run was not frozen-plan and rerank-off; when the runs cover
+    different queries; when `comparison_id` does not name the two arms (swapped arguments); or when the
+    baseline has an error. A different `trelix_version`, `embedder` or `pipeline.config` is printed as
+    a `note:`, not refused.
+  - New `trelix.eval.results` owns `results.json` schema_version 1 (`build_results`, `write_results`,
+    `load_results`; a round trip test holds the writer and the reader together, and the writer refuses
+    what the reader would, a NaN or a non-JSON value in `pipeline.config` included), and
+    `trelix.eval.prereg` the pre-registration. `results.json` is a different document from the
+    `--per-query-out` file and that file is refused with a pointed message. See `eval/README.md` and
+    `docs/CLI_REFERENCE.md`.
 
 ### Changed
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):
