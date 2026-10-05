@@ -1004,7 +1004,7 @@ trelix telemetry /my/repo -n 50
 #### Synopsis
 
 ```
-trelix eval [<repo_path>] --golden <file>
+trelix eval [<repo_path>] --golden <file> [--per-query-out <file>]
 ```
 
 #### Description
@@ -1037,6 +1037,7 @@ rows differ are not two measurements of the same thing.
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
 | `--golden` | `-g` | string | `.trelix/golden.jsonl` | Path to the golden JSONL file. |
+| `--per-query-out` | | string | *(none)* | Also write every query's scores and the aggregate to this JSON file. The printed results are the same with or without it. |
 
 #### Examples
 
@@ -1047,6 +1048,9 @@ trelix eval .
 # Use a custom golden file
 trelix eval . --golden tests/golden_queries.jsonl
 trelix eval /my/repo -g /shared/golden.jsonl
+
+# Keep the per-query scores, to compare two runs query by query
+trelix eval . --golden eval/golden.jsonl --per-query-out /tmp/run-a.json
 ```
 
 #### Golden file format
@@ -1057,6 +1061,11 @@ Each line is a JSON object:
 {"query": "how does token refresh work", "relevant_files": ["src/auth.py"]}
 {"query": "database connection pool", "relevant_files": ["src/db/pool.go", "src/db/connection.go"]}
 ```
+
+A line may also carry the optional string keys `id`, `kind`, `lang` and `split`, which label
+the query in the `--per-query-out` file. A line without an `id` is numbered by position
+(`q0001`, `q0002`, ...), so keep explicit ids unique and not shaped like those. See
+`eval/README.md`.
 
 #### Output
 
@@ -1077,6 +1086,18 @@ Each line is a JSON object:
 - `<repo_path>` defaults to `.` if omitted.
 - Exits with code 1 if the golden file does not exist, and prints instructions
   for creating one.
+- Exits with code 1 if any query raised during retrieval. Such a query is scored 0.0
+  (never as a hit) and the run continues, so the table is still printed, but it is
+  followed by the number of failed queries and the first five messages: the means
+  include those zeros and are not a valid measurement.
+- `--per-query-out` writes `{"schema_version": 1, "records": [...], "aggregate": {...}}`
+  (ASCII-escaped JSON with sorted keys, mode 0600, written atomically through a temporary
+  file beside the target) once per run, before the exit code is decided, so a run with
+  failed queries still leaves its results, and the file names every failed query where the
+  screen lists the first five (each message is cut at 200 characters in both). Exits with
+  code 1 and a one-line error if the file cannot be written: the directory must exist, and
+  the path must name a file. The record fields and `trelix.eval.stats`, which compares two
+  such files, are described in `eval/README.md`.
 
 ---
 

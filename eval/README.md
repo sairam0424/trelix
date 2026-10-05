@@ -15,6 +15,7 @@ One JSON object per line:
 | `query` | Natural-language question, phrased the way a developer would ask it |
 | `relevant_files` | Repo-relative POSIX paths whose contents answer the query |
 | `area` | Optional. Usually supplied by `golden-metadata.json` instead — see below |
+| `id`, `kind`, `lang`, `split` | Optional strings that label the query in the per-query output — see "Per-query results". Entries without them are numbered by position |
 
 Run it with:
 
@@ -178,6 +179,115 @@ sequence is: freeze the plans first, then measure. `TRELIX_RETRIEVAL_HYDE_FALLBA
 `TRELIX_RETRIEVAL_FLARE` add LLM calls at retrieval time and are worth disabling for
 speed, but disabling HyDE moves nDCG@10 by −0.000033 and is not what makes a run
 repeatable.
+
+### Per-query results
+
+`trelix eval` prints one mean per metric. To compare two runs query by query, add
+`--per-query-out`:
+
+```bash
+trelix eval . --golden eval/golden.jsonl --plan-cache-file /tmp/plans.jsonl \
+    --per-query-out /tmp/run-a.json
+```
+
+The table prints exactly as it does without the flag. The file is ASCII-escaped JSON (any
+text round-trips) with sorted keys, two-space indentation, a trailing newline and mode 0600,
+written to a temporary file beside it and renamed into place, so an interrupted run never
+leaves a truncated one. The directory must exist and the path must name a file. With one
+record shown:
+
+```json
+{
+  "aggregate": {
+    "mrr": 0.53,
+    "n_queries": 54.0,
+    "ndcg@10": 0.63,
+    "recall@10": 0.81
+  },
+  "records": [
+    {
+      "error": null,
+      "id": "q0001",
+      "kind": null,
+      "lang": null,
+      "mrr": 1.0,
+      "ndcg": 1.0,
+      "recall": 1.0,
+      "repo": "trelix",
+      "split": null,
+      "top10": [
+        "src/trelix/indexing/walker.py"
+      ]
+    }
+  ],
+  "schema_version": 1
+}
+```
+
+`aggregate` is what `EvalHarness.run()` returns, and `EvalHarness.run_detailed()` returns
+the same records as `QueryRecord` objects. One record per scored query:
+
+| Field | Meaning |
+|---|---|
+| `id` | The golden entry's `id` when it has one, else `q0001`, `q0002`, ... — its 1-based position among the golden entries, counted before `area`/`limit` narrow the run, so a query keeps its id |
+| `repo` | Basename of the repository directory that was evaluated |
+| `kind`, `lang`, `split` | The golden entry's string of that name, else `null` |
+| `ndcg`, `recall`, `mrr` | The same three functions `run()` averages |
+| `top10` | The first ten **distinct** files retrieved, in rank order — the files the metrics scored, since one file can supply several chunks |
+| `error` | `null`, or the exception message (at most 200 characters) if retrieval raised |
+
+Ids are not checked for uniqueness: keep explicit ones unique and not shaped like `q0001`,
+or an explicit `q0001` on a later line repeats the number given to an entry without an `id`.
+The check in the snippet below ("an id is used twice") is what catches it.
+
+A query that raises is scored 0.0 on all three metrics (never as a hit), recorded with its
+`error`, and does not stop the run. `trelix eval` then prints which queries failed and
+**exits 1**: the means it printed blend failures into misses. `EvalHarness.run()` keeps
+returning the mean.
+
+### Comparing two runs
+
+`trelix.eval.stats` (numpy only) takes per-query scores paired **by position**, so pair the
+two files by `id` first:
+
+```python
+import json
+from trelix.eval.stats import holm, mde, paired_bootstrap
+
+def scores(path):
+    records = json.load(open(path))["records"]
+    assert not any(r["error"] for r in records), f"{path}: a query raised, scored 0.0"
+    by_id = {r["id"]: r["ndcg"] for r in records}
+    assert len(by_id) == len(records), f"{path}: an id is used twice"
+    return by_id
+
+a = scores("/tmp/run-a.json")
+b = scores("/tmp/run-b.json")
+assert a.keys() == b.keys(), "the runs cover different queries"
+ids = sorted(a)
+result = paired_bootstrap([a[i] for i in ids], [b[i] for i in ids])  # b against a
+print(result.mean_delta, result.ci_low, result.ci_high, result.p_value, result.n)
+```
+
+* `paired_bootstrap(base, cand, *, n_resamples=10_000, confidence=0.95, seed=0)` draws
+  query indices with replacement once per replicate and applies them to both runs. The
+  interval is the percentile interval of the replicate mean deltas and `p_value` is
+  `2 * min(share of replicates <= 0, share >= 0)`, capped at 1.0. It is a multiple of
+  `1 / n_resamples`, and 0.0 means no replicate reached zero. The same `seed` gives the
+  same numbers. It resamples queries only: freeze the plans first (above), or each run's
+  per-query scores are one draw of a planner that re-plans every time.
+* `mde(sigma_d, n)` is `2.8 * sigma_d / sqrt(n)`: the smallest true mean difference that a
+  two-sided 5 percent test over `n` queries detects 80 percent of the time, where
+  `sigma_d` is the standard deviation of one paired per-query difference. The constant
+  2.8 is `1.96 + 0.84`, the normal quantiles for 5 percent two-sided error (1.96) and
+  80 percent power (0.84). With `sigma_d = 0.2` over the 54 queries it is 0.076.
+* `holm(p_values, alpha=0.05)` is the Holm-Bonferroni step-down for several comparisons at
+  once (one per area, say): a list of booleans, in input order, true where the hypothesis
+  is rejected.
+
+An interval that includes 0 is not evidence that the runs are equal, and a delta inside
+the `mde` is not evidence of anything; see "What a difference has to be before it means
+anything" above, where the same idea is called the MDD.
 
 ## `golden_synthesis_sample.jsonl` — synthesis quality
 
