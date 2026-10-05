@@ -1,9 +1,9 @@
-"""Tests for MCP resource subscription capability.
+"""Tests for the MCP resource subscription registry and the capability trelix-mcp reports.
 
-Per MCP spec 2024-11-05 §Resources, a server must declare
-``capabilities.resources.subscribe=True`` before any MCP client
-(Claude Code, Cursor, VS Code Copilot) will attempt to send
-``resources/subscribe`` requests.
+Per MCP spec 2024-11-05 §Resources, ``capabilities.resources.subscribe=True`` tells a
+client it may send ``resources/subscribe``. trelix-mcp registers no such handler (its
+``subscribe_resource`` / ``unsubscribe_resource`` are plain tools), so it must report
+``subscribe`` as false and must not force it to true.
 """
 
 from __future__ import annotations
@@ -95,57 +95,113 @@ class TestFileChangeNotificationBridge:
 
         mock_send.assert_not_called()
 
+    def test_docstrings_do_not_claim_delivery_or_an_unserved_request(self) -> None:
+        """The registry docs must not call resources/subscribe served or trelix watch a pusher."""
+        import trelix_mcp.subscriptions as subscriptions
+
+        module_doc = subscriptions.__doc__ or ""
+        hook_doc = subscriptions.notify_file_changed.__doc__ or ""
+        docs = module_doc + hook_doc
+
+        assert "Client → server:  resources/subscribe" not in docs
+        assert "When trelix watch detects a file change" not in docs
+        assert "Called by the MCP server's watch bridge" not in docs
+        assert "nothing is delivered today" in module_doc
+        assert "nothing is delivered today" in hook_doc
+
 
 class TestMCPSubscriptionCapability:
-    """The trelix-mcp server must advertise resources.subscribe=True."""
+    """trelix-mcp reports only what it serves: resources.subscribe is false.
 
-    def test_server_advertises_resource_subscribe(self) -> None:
-        """trelix-mcp must declare resources.subscribe=True in capabilities.
+    The SDK derives ServerCapabilities from the registered request handlers, and
+    trelix-mcp registers no resources/subscribe (or subscriptions/listen) handler.
+    These tests use the real server, in-process, the way a client sees it.
+    """
 
-        FastMCP 2.x exposes capabilities via the LowLevelServer._get_capabilities
-        pathway.  We call get_capabilities() directly so the test is independent
-        of a running transport.
-        """
+    @pytest.mark.parametrize(
+        ("mode", "is_handshake_era"),
+        [("legacy", True), ("auto", False)],
+    )
+    async def test_server_does_not_advertise_resource_subscribe(
+        self, mode: str, is_handshake_era: bool
+    ) -> None:
+        """Both protocol eras (initialize handshake, server/discover) report subscribe false."""
+        from fastmcp import Client
+        from trelix_mcp.server import mcp
+
+        async with Client(mcp, mode=mode) as client:
+            caps = client.server_capabilities
+            assert (client.initialize_result is not None) == is_handshake_era
+
+        assert caps is not None
+        assert caps.resources is not None, "trelix-mcp registers resources, so the block must exist"
+        assert caps.resources.subscribe is False
+
+    @pytest.mark.parametrize("resources_changed", [True, False])
+    def test_subscribe_is_false_whatever_list_changed_is(self, resources_changed: bool) -> None:
+        """subscribe and listChanged are independent fields; neither switches the other on."""
         from mcp.server.lowlevel.server import NotificationOptions
         from trelix_mcp.server import mcp
 
         caps = mcp._mcp_server.get_capabilities(
-            NotificationOptions(resources_changed=True),
+            NotificationOptions(resources_changed=resources_changed),
             {},
         )
 
-        assert caps.resources is not None, (
-            "trelix-mcp must have a resources capability block — no @mcp.resource "
-            "decorators appear to be registered."
-        )
-        assert caps.resources.subscribe is True, (
-            "trelix-mcp must declare resources.subscribe=True so MCP clients "
-            "(Claude Code, Cursor) know they can subscribe to resource changes. "
-            f"Current value: {caps.resources.subscribe!r}"
-        )
-
-    def test_resource_subscribe_does_not_set_list_changed(self) -> None:
-        """subscribe and listChanged are independent; listChanged must not be forced True.
-
-        Per MCP spec the two fields are orthogonal.  We only opt-in to subscribe,
-        not listChanged — that would require a separate notification infrastructure.
-        NOTE: FastMCP sets listChanged=True by default
-        (notification_options.resources_changed=True), so we only assert that
-        subscribe is True, not that listChanged is False.
-        """
-        from mcp.server.lowlevel.server import NotificationOptions
-        from trelix_mcp.server import mcp
-
-        caps = mcp._mcp_server.get_capabilities(
-            NotificationOptions(resources_changed=False),
-            {},
-        )
-
-        # The only change we made is subscribe=True; listChanged follows notification_options
         assert caps.resources is not None
-        assert caps.resources.subscribe is True, (
-            "subscribe capability must be True regardless of listChanged setting"
+        assert caps.resources.subscribe is False
+
+    def test_get_capabilities_is_not_patched(self) -> None:
+        """Reported capabilities equal FastMCP's own derivation, for the call shapes mcp 2.x uses.
+
+        Guards against re-installing a wrapper on the server instance that forces
+        resources.subscribe=True. The unbound class method is the un-patched derivation.
+        """
+        from mcp.server.lowlevel.server import NotificationOptions
+        from trelix_mcp.server import mcp
+
+        server = mcp._mcp_server
+        options = NotificationOptions(resources_changed=True)
+
+        assert server.get_capabilities(options, {}) == type(server).get_capabilities(
+            server, options, {}
         )
+        assert server.get_capabilities(protocol_version="2026-07-28") == type(
+            server
+        ).get_capabilities(server, protocol_version="2026-07-28")
+
+    @pytest.mark.filterwarnings("ignore:resources/subscribe is removed:UserWarning")
+    async def test_resources_subscribe_request_is_not_served(self) -> None:
+        """A raw resources/subscribe request is method-not-found, matching the capability."""
+        from fastmcp import Client
+        from mcp import MCPError
+        from trelix_mcp.server import mcp
+
+        async with Client(mcp, mode="legacy") as client:
+            with pytest.raises(MCPError) as excinfo:
+                await client.session.subscribe_resource("trelix://index/stats")
+
+        assert excinfo.value.code == -32601
+
+    async def test_subscribe_tool_description_matches_the_capability(self) -> None:
+        """tools/list, the text models read, must not say to wait for resources.subscribe=True.
+
+        The description used to tell models to call subscribe_resource "after receiving
+        resources.subscribe=True in capabilities"; the server reports false now and delivers
+        nothing. Whitespace is normalised so re-wrapping the docstring does not matter.
+        """
+        from fastmcp import Client
+        from trelix_mcp.server import mcp
+
+        async with Client(mcp, mode="legacy") as client:
+            tools = await client.list_tools()
+
+        tool = next(t for t in tools if t.name == "subscribe_resource")
+        description = " ".join((tool.description or "").split())
+
+        assert "resources.subscribe=True" not in description
+        assert "does not advertise resources.subscribe" in description
+        assert "none is delivered yet" in description
 
 
 class TestSendResourceNotificationWireFormat:

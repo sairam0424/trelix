@@ -245,8 +245,8 @@ trelix-mcp v3.4.3 exposes **15 tools**:
 | `blast_radius` | Find what depends on a symbol |
 | `build_knowledge_graph` | Build the Code Property Graph for a repo |
 | `graph_search_mcp` | Graph BFS search from a seed symbol |
-| `subscribe_resource` | Subscribe to file change notifications (v2.5.0+) |
-| `unsubscribe_resource` | Unsubscribe from file change notifications (v2.5.0+) |
+| `subscribe_resource` | Register a resource subscription (v2.5.0+); no change notification is delivered yet |
+| `unsubscribe_resource` | Remove a resource subscription (v2.5.0+) |
 | `federation_list_repos` | List all repos registered for federated search (v2.8.0+) |
 | `federation_add_repo` | Register a repo for federated search (v2.8.0+) |
 | `federation_remove_repo` | Unregister a repo by alias (v2.8.0+) |
