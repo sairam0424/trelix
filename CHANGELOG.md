@@ -92,6 +92,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   changes (that workflow builds and runs the App's script). Comments and docs: `sanitize.ts` and the
   App README wrote the ASCII `@` where the sanitiser's replacement `＠` (U+FF20) is meant, and the
   `createApp` comment still said `server.ts` only loads the config and listens.
+- **One installation could fill the hosted GitHub App's whole wait line.** The review queue has one
+  bounded line of waiting reviews shared by every installation, so an installation that sent many
+  `pull_request` events took every waiting slot and all the others were answered `503` "review queue
+  is full". The queue now also caps the waiting reviews of one installation
+  (`TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION`, default half of `TRELIX_APP_QUEUE_CAPACITY` rounded
+  up, so 10 of 20). A delivery over the cap is answered with the same `503` body and `Retry-After` as
+  a full line, its dedupe claim is given back, and one log line names the installation id and the
+  pull request, nothing else from the delivery. Running reviews do not count against the cap (they
+  stay limited by `TRELIX_APP_CONCURRENCY_PER_INSTALLATION`), the share frees as soon as one of the
+  installation's reviews starts, and a repeat of a commit that is already queued is still answered as
+  a duplicate. One installation alone now has at most 10 reviews waiting (and one running) by
+  default, not 20; raise the setting to get that back.
+- **A review that never finished held its running slot for ever and stalled the hosted GitHub App's
+  queue.** The checkout, the index and the `trelix review` child each have a timeout, but the App sets
+  none on an installation-token request or a GitHub API call, and a child that ignores its kill never
+  ends, so a job that hung there held its slot for ever. The queue
+  now has a per-job deadline, `TRELIX_APP_JOB_TIMEOUT_MINUTES` (default 17; 13 to 240): when it
+  elapses the slot is taken back, the claim is released, the failure is logged once through the
+  existing job-failure logger as a `JobTimeoutError`, and the next review starts. The default is the
+  checkout (2 minutes), index (5) and review (5) time limits one after the other plus 5 minutes, so a
+  slow review that is still working is not cut. The least you can set is one minute more than those
+  three, which is all the token requests and the Check post, with no time limit of their own, then
+  get. The hung work itself cannot be stopped: if it settles later that is ignored (it does
+  not free a slot a second time or start a job), and it may still post its Check.
+- **The hosted GitHub App forgot a finished review after 24 hours, although the redelivery sweep can
+  re-send a failed delivery for about 3 days.** The sweep keeps no record of what it re-sent, so a
+  redelivery after the claim expired started a second review of a commit that already had one. The
+  claim is now kept 4 days (the 3-day window of `redeliver-failed-webhooks.yml` plus a day), and a
+  test reads the window from the workflow. Memory is still bounded by the 10,000-claim cap (about a
+  megabyte), not by time. A commit that got a verdict is now ignored for 4 days if it is sent again,
+  not 1: push a new commit to review it sooner.
+- **The GitHub App's review queue had the gap the loggers just had, in its own `onError`.**
+  `onError` is typed to return nothing and only a synchronous throw was caught, so an async one that
+  rejected was an unhandled rejection. The queue now uses `reportIfRejected` (from
+  `error-handler.ts`) and a rejection gets the same fixed console line as a throw (`[queue] a job
+  failed; the error could not be logged`), without quoting the error.
 - **`trelix ask` exited 0 with an empty stdout when the LLM reply carried no answer.** It
   affects anyone who points `OPENAI_BASE_URL` at an endpoint that answers HTTP 200 but is not an
   OpenAI-compatible chat API (an HTML page from a wrong URL, a proxy that ignores
@@ -134,6 +170,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `openai>=3` would make `trelix[litellm]` unresolvable), and the GitHub App image stays on Node 24
   (an LTS line supported until 2028-04-30; Node 26 enters LTS on 2026-10-28, revisit then). The `trufflehog` pin
   moves the wrapper action only: the scanner version stays set by `version:` in `security-scan.yml`.
+- **GitHub App: the time limits of a review's stages moved to `src/review-timeouts.ts`** (checkout 2
+  minutes, index 5, review child 5; values unchanged) so the queue's deadline is sized from them. The
+  README documents the two new settings and the longer claim.
 
 ## [3.4.3] — 2026-10-04
 

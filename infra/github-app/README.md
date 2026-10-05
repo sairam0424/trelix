@@ -273,8 +273,10 @@ the startup log, never quoted.
 | `TRELIX_APP_ALLOWED_ACCOUNTS` | empty | Comma-separated GitHub logins (no `@`), compared without case, for `allowlist`. It matches the repository owner's login, which can be renamed or reused; prefer `TRELIX_APP_ALLOWED_INSTALLATIONS`, the stable key, where you can. |
 | `TRELIX_APP_ALLOWED_INSTALLATIONS` | empty | Comma-separated installation ids (decimal), for `allowlist`. An entry that is not an id is dropped and counted in the log. |
 | `TRELIX_APP_QUEUE_CAPACITY` | `20` (1 to 1000) | Reviews that may wait for a slot. |
+| `TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION` | half of `TRELIX_APP_QUEUE_CAPACITY`, rounded up: `10` (1 to 1000) | Reviews of one installation that may wait for a slot, so one installation cannot fill the wait line. Running reviews do not count. A value at or above `TRELIX_APP_QUEUE_CAPACITY` means no per-installation limit. |
 | `TRELIX_APP_CONCURRENCY` | `2` (1 to 16) | Reviews that may run at the same time. |
 | `TRELIX_APP_CONCURRENCY_PER_INSTALLATION` | `1` (1 to 16) | Reviews of one installation that may run at the same time. |
+| `TRELIX_APP_JOB_TIMEOUT_MINUTES` | `17` (13 to 240) | The longest a review may hold a running slot. Then the queue takes the slot back and the next review starts (see "Abuse controls"). The default is the checkout, index and review time limits one after the other (2 + 5 + 5 minutes) plus 5 minutes; the least you can set, 13, is still more than those three. |
 | `TMPDIR` | the OS default | Read by Node (`os.tmpdir()`): where the per-review workspaces and outcome files are created. |
 
 Also read, but not by the service's own code: `PATH`, `LANG`, `HOME`,
@@ -315,22 +317,39 @@ first-in-first-out queue. There is no Redis and nothing is persisted. For a
    GUID of the original. The claim is **released** when the review throws or
    ends without a verdict Check (an "incomplete" review, or a checkout that is
    no longer at the delivery's head commit), so that commit can be sent again,
-   and **kept for 24 hours** after a review that reached a verdict. At most
-   10,000 finished claims are kept (the oldest is forgotten past that) and expired
-   ones are dropped as the queue is used, with no timer.
+   and **kept for 4 days** after a review that reached a verdict: the redelivery
+   sweep can re-send a failed delivery for the 3 days GitHub lists it (see below),
+   and a day is added for "about". At most 10,000 finished claims are kept (the
+   oldest is forgotten past that, so memory is bounded by that count, about a
+   megabyte, whatever the 4 days) and expired ones are dropped as the queue is
+   used, with no timer.
 5. **Caps.** At most `TRELIX_APP_QUEUE_CAPACITY` reviews wait and
-   `TRELIX_APP_CONCURRENCY` run; at most `TRELIX_APP_CONCURRENCY_PER_INSTALLATION`
-   of them belong to one installation. A review that cannot start at once
+   `TRELIX_APP_CONCURRENCY` run; at most `TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION`
+   of the waiting ones and `TRELIX_APP_CONCURRENCY_PER_INSTALLATION` of the
+   running ones belong to one installation. A review that cannot start at once
    waits; a review behind a busy installation does not hold up another
-   installation's. When the wait line is full the delivery is answered
-   **`503` with `Retry-After: 60`** and its claim is given back.
+   installation's. When the wait line is full, or the installation already has
+   its share of it waiting, the delivery is answered **`503` with
+   `Retry-After: 60`** (the same body either way) and its claim is given back.
+   The second case is logged as `[webhook] installation <id> already has its
+   share of the review queue waiting`, with the installation id and the pull
+   request, and nothing else from the delivery.
 
 A review runs after its delivery was answered, so a failure cannot reach the
 sender. It is logged once as a single `[webhook] review failed {...}` line
 (the job as `owner/repo#n`, the error's name and its text cut to 4,000
 characters), with the webhook secret and the private key removed, and the next
-job starts. A review has no time limit of the queue's own: `REVIEW_TIMEOUT_MS`
-in `review-runner.ts` (5 minutes for the `trelix review` child) is unchanged.
+job starts. A review that never finishes (a hung token request or GitHub API
+call, a child that ignores its kill) is cut off by a per-job **deadline**,
+`TRELIX_APP_JOB_TIMEOUT_MINUTES` (17 minutes by default): its slot is taken back,
+its claim is released, the failure is logged once as a `JobTimeoutError`, and
+the next review starts. The deadline is larger than the stages' own limits in
+`review-timeouts.ts` (checkout 2, `trelix index` 5 and the `trelix review` child
+5 minutes, one after the other) by 5 minutes by default, so a slow review that is
+still working is not cut; the least you can set leaves 1 minute, for the token
+requests and the Check post, which have no time limit of their own. The queue
+cannot stop the work itself: a cut-off review that settles later
+is ignored, and may still post its Check.
 
 What is lost, stated plainly:
 
@@ -343,9 +362,13 @@ What is lost, stated plainly:
   commit, or close and reopen the pull request, to review it. If the platform
   kills the process sooner than 25 seconds after `SIGTERM`, running reviews are
   lost too.
-- **One installation can fill the wait line.** The capacity is shared; there is
-  no per-installation limit on waiting reviews. Use `allowlist` to limit who can
-  install at all.
+- **An installation holds at most half of the wait line by default.** With the
+  default capacity of 20, one installation can have 10 reviews waiting (and one
+  running); its next delivery gets a `503` while another installation's delivery
+  is still accepted. The share is a limit, not a reservation: a single
+  installation cannot use the other half, and it stays free for the others.
+  Raise `TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION` to let one installation use
+  more. Use `allowlist` to limit who can install at all.
 - **The kill switch and the policy are read at startup.** Changing a variable
   takes a redeploy. On the Free plan the deploy freeze described under
   "Deploying on Railway" may delay that; to stop reviews at once without a
@@ -372,10 +395,14 @@ past the 100 newest, or that is older than 3 days, is never retried. The
 script keeps no record of what it already redelivered (it does not read a
 delivery's `redelivery` flag or compare GUIDs), so, unless GitHub stops listing
 a redelivered delivery as failed (not verified), a failed delivery that is
-still inside the window is sent again on every run. The 24-hour claim absorbs
-those repeats; after it expires, a review of a commit that has not changed can
-run again. Whether GitHub disables a webhook after repeated `503`s is also not
-verified here.
+still inside the window is sent again on every run. The 4-day claim outlasts
+the 3-day window, so a repeat of a delivery whose commit was already reviewed to
+a verdict finds the kept claim and is ignored; it would run a second review only
+if a restart, or the 10,000-claim cap, had made the queue forget that commit.
+The cost of the longer claim: a commit that got a verdict is not reviewed again
+for 4 days if the same commit is sent again (push a new commit instead).
+Whether GitHub disables a webhook after repeated `503`s is also not verified
+here.
 
 **Rollout.** Set the Railway variables **before** merging to `main`, because
 every merge redeploys and the previous code ignores variables it does not know:
@@ -667,8 +694,11 @@ policy, reviews on.
   from env (`loadAbuseControls`); see "Environment variables".
 - `src/policy.ts` — the installation policy: parsing and `isInstallationAllowed`.
 - `src/queue.ts` — the bounded queue (`JobQueue`): capacity, concurrency, the
-  per-installation cap, claim handling and `shutdown`.
-- `src/claims.ts` — the dedupe memory (`ClaimStore`): claim, release, keep 24 hours,
+  per-installation caps on waiting and running reviews, the per-job deadline,
+  claim handling and `shutdown`.
+- `src/review-timeouts.ts` — the time limits of a review's checkout, index and
+  review child, and their sum, which the per-job deadline is sized from.
+- `src/claims.ts` — the dedupe memory (`ClaimStore`): claim, release, keep 4 days,
   bounded.
 - `src/job-log.ts` — the one redacted log line for a job that threw.
 - `src/shutdown.ts` — `SIGTERM`/`SIGINT`: stop listening, drain the queue, exit.

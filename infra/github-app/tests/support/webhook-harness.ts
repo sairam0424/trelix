@@ -113,8 +113,12 @@ export function buildHarness(options: HarnessOptions = {}) {
     const review = controlledReview();
     const limits: QueueLimits = {
         capacity: 20,
+        // As large as the capacity, so that only the tests of the share set a smaller one.
+        perGroupCapacity: 20,
         concurrency: 2,
         perGroupConcurrency: 1,
+        // Long, so that no test is cut by the watchdog.
+        jobTimeoutMs: DAY_MS,
         ...options.limits,
     };
     // The queue a deployment runs, with a clock the test moves and the real redacting failure log.
