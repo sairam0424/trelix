@@ -1651,7 +1651,7 @@ that copy-pasted commands fail loudly rather than silently:
 | `trelix-mcp --version` / `--cache-dir` | `trelix-mcp` parses no arguments at all; use `python -c "import trelix_mcp; print(trelix_mcp.__version__)"` |
 
 There is also no `trelix config`, `trelix doctor`, `trelix mcp`, or `trelix federation
-stats` command. `trelix --help` lists the real 23 top-level commands.
+stats` command. `trelix --help` lists the real 25 top-level commands.
 
 ### Key environment variables
 

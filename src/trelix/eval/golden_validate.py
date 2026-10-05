@@ -10,10 +10,11 @@ What is checked, and why:
   repeated query is counted twice in every mean;
 * with a repository, every `relevant_files` path exists in it at a revision: a stale path
   scores 0 and looks exactly like a retrieval miss, which `trelix eval` cannot tell apart;
-* in a file where some entry has a `kind` (a v2 file), every kind present has enough queries
-  for a per-kind mean to mean something, and enough entries have a reviewed `gold_status`.
+* in a file where some entry has a `kind` or a `gold_status` (a v2 file), every kind present
+  has enough queries for a per-kind mean to mean something, and enough entries have a
+  reviewed `gold_status`.
 
-A file where no entry has a `kind` is checked as v1: the first three only.
+A file where no entry has a `kind` or a `gold_status` is checked as v1: the first three only.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import subprocess
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from operator import itemgetter
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +51,10 @@ class _Entry:
 
     line_no: int
     item: dict[str, Any]
+
+
+# A violation tied to a line of the file: (1-based line number, the text to print).
+_LineViolation = tuple[int, str]
 
 
 @dataclass(frozen=True)
@@ -105,57 +111,74 @@ def validate_golden(
             0, (f"file: not valid UTF-8 ({exc.reason} at byte {exc.start})",), ()
         )
 
-    entries, violations = _parse_lines(text)
+    entries, line_violations = _parse_lines(text)
+    line_violations.extend(_line_problems(entries, tree))
+    violations = _in_line_order(line_violations)
     notes: list[str] = []
     if not entries:
         violations.append("file: no golden entries")
         return ValidationReport(0, tuple(violations), ())
 
-    violations.extend(_line_problems(entries, tree))
     if tree is None:
         notes.append("--repo was not given, so relevant_files paths were not checked")
-    if any("kind" in e.item for e in entries):
+    if _is_v2(entries):
         violations.extend(_stratum_problems(entries, min_per_stratum))
         violations.extend(_validated_share_problems(entries, min_validated))
     else:
         notes.append(
-            "no entry has a kind, so this file is checked as v1: only the schema, "
-            "duplicate and (with --repo) path checks ran"
+            "no entry has a kind or a gold_status, so this file is checked as v1: only the "
+            "schema, duplicate and (with --repo) path checks ran"
         )
     return ValidationReport(len(entries), tuple(violations), tuple(notes))
 
 
-def _parse_lines(text: str) -> tuple[list[_Entry], list[str]]:
+def _is_v2(entries: list[_Entry]) -> bool:
+    """Whether some entry has a `kind` or a `gold_status`, the two fields the v2 checks read.
+
+    A key counts when present, whatever its value: a `kind` of `null` is a wrong-typed `kind`.
+    `id`, `lang`, `source` and `split` are not read by a v2 check and do not make a v2 file.
+    """
+    return any("kind" in e.item or "gold_status" in e.item for e in entries)
+
+
+def _parse_lines(text: str) -> tuple[list[_Entry], list[_LineViolation]]:
     """The lines that are JSON objects, and a violation for each line that is not."""
     entries: list[_Entry] = []
-    violations: list[str] = []
+    violations: list[_LineViolation] = []
     for line_no, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
         try:
             item = json.loads(line)
         except json.JSONDecodeError as exc:
-            violations.append(f"line {line_no}: not valid JSON ({exc.msg} at column {exc.colno})")
+            message = f"not valid JSON ({exc.msg} at column {exc.colno})"
+            violations.append((line_no, f"line {line_no}: {message}"))
             continue
         if not isinstance(item, dict):
-            violations.append(f"line {line_no}: expected a JSON object, got {type(item).__name__}")
+            message = f"expected a JSON object, got {type(item).__name__}"
+            violations.append((line_no, f"line {line_no}: {message}"))
             continue
         entries.append(_Entry(line_no, item))
     return entries, violations
 
 
-def _line_problems(entries: list[_Entry], tree: RepoTree | None) -> list[str]:
+def _line_problems(entries: list[_Entry], tree: RepoTree | None) -> list[_LineViolation]:
     """Schema, duplicate and missing-path problems, each prefixed with its line, in file order."""
     first_query = _first_lines(entries, _query_key)
     first_id = _first_lines(entries, _id_key)
-    problems: list[str] = []
+    problems: list[_LineViolation] = []
     for entry in entries:
         found = _schema_problems(entry.item)
         found.extend(_duplicate_problems(entry, first_query, first_id))
         if tree is not None:
             found.extend(_missing_path_problems(entry.item, tree))
-        problems.extend(f"line {entry.line_no}: {p}" for p in found)
+        problems.extend((entry.line_no, f"line {entry.line_no}: {p}") for p in found)
     return problems
+
+
+def _in_line_order(found: list[_LineViolation]) -> list[str]:
+    """The texts of `found` by line number; the problems of one line keep their order."""
+    return [text for _, text in sorted(found, key=itemgetter(0))]
 
 
 def _query_key(item: dict[str, Any]) -> str | None:
@@ -231,8 +254,8 @@ def _stratum_problems(entries: list[_Entry], min_per_stratum: int) -> list[str]:
     """
     counts = Counter(e.item["kind"] for e in entries if isinstance(e.item.get("kind"), str))
     return [
-        f"file: kind {kind!r} has {counts[kind]} queries, fewer than the "
-        f"{min_per_stratum} required per kind (--min-per-stratum)"
+        f"file: kind {kind!r} has {counts[kind]} {'query' if counts[kind] == 1 else 'queries'}, "
+        f"fewer than the {min_per_stratum} required per kind (--min-per-stratum)"
         for kind in KINDS
         if 0 < counts[kind] < min_per_stratum
     ]

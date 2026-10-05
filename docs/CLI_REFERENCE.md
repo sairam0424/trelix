@@ -1005,7 +1005,7 @@ trelix telemetry /my/repo -n 50
 #### Synopsis
 
 ```
-trelix eval [<repo_path>] --golden <file>
+trelix eval [<repo_path>] --golden <file> [--per-query-out <file>]
 ```
 
 #### Description
@@ -1038,6 +1038,7 @@ rows differ are not two measurements of the same thing.
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
 | `--golden` | `-g` | string | `.trelix/golden.jsonl` | Path to the golden JSONL file. |
+| `--per-query-out` | | string | *(none)* | Also write every query's scores and the aggregate to this JSON file. The printed results are the same with or without it. |
 
 #### Examples
 
@@ -1048,6 +1049,9 @@ trelix eval .
 # Use a custom golden file
 trelix eval . --golden tests/golden_queries.jsonl
 trelix eval /my/repo -g /shared/golden.jsonl
+
+# Keep the per-query scores, to compare two runs query by query
+trelix eval . --golden eval/golden.jsonl --per-query-out /tmp/run-a.json
 ```
 
 #### Golden file format
@@ -1058,6 +1062,13 @@ Each line is a JSON object:
 {"query": "how does token refresh work", "relevant_files": ["src/auth.py"]}
 {"query": "database connection pool", "relevant_files": ["src/db/pool.go", "src/db/connection.go"]}
 ```
+
+A line may also carry the optional string keys `id`, `kind`, `lang` and `split`, which label
+the query in the `--per-query-out` file. A line without an `id` is numbered by position
+(`q0001`, `q0002`, ...), so keep explicit ids unique and not shaped like those. `kind` must be
+one of `nl`, `keyword`, `commit`, `issue` and `split` one of `dev`, `test`; any other value
+(or a non-string) refuses the file with a line-numbered error, and `trelix eval-validate`
+reports the same. See `eval/README.md`.
 
 #### Output
 
@@ -1078,6 +1089,18 @@ Each line is a JSON object:
 - `<repo_path>` defaults to `.` if omitted.
 - Exits with code 1 if the golden file does not exist, and prints instructions
   for creating one.
+- Exits with code 1 if any query raised during retrieval. Such a query is scored 0.0
+  (never as a hit) and the run continues, so the table is still printed, but it is
+  followed by the number of failed queries and the first five messages: the means
+  include those zeros and are not a valid measurement.
+- `--per-query-out` writes `{"schema_version": 1, "records": [...], "aggregate": {...}}`
+  (ASCII-escaped JSON with sorted keys, mode 0600, written atomically through a temporary
+  file beside the target) once per run, before the exit code is decided, so a run with
+  failed queries still leaves its results, and the file names every failed query where the
+  screen lists the first five (each message is cut at 200 characters in both). Exits with
+  code 1 and a one-line error if the file cannot be written: the directory must exist, and
+  the path must name a file. The record fields and `trelix.eval.stats`, which compares two
+  such files, are described in `eval/README.md`.
 
 ---
 
@@ -1172,10 +1195,11 @@ LLM is called. It checks that every line is schema-valid (the `trelix eval` rule
 optional golden v2 fields `id`, `lang`, `kind`, `source`, `gold_status` and `split`), that
 no two queries are equal once stripped and case-folded and no two `id`s are equal, and,
 with `--repo`, that every `relevant_files` path exists in the repository at `--rev` (read
-with `git ls-tree`). In a v2 file (some entry has a `kind`) it also checks that every `kind`
-that occurs has enough queries and that enough entries have a `gold_status` of `validated`
-or `pooled`. A file where no entry has a `kind` is checked as v1 and the command says so.
-The fields, their allowed values and the checks are described in `eval/README.md`.
+with `git ls-tree`). In a v2 file (some entry has a `kind` or a `gold_status`) it also checks
+that every `kind` that occurs has enough queries and that enough entries have a `gold_status`
+of `validated` or `pooled`. A file where no entry has a `kind` or a `gold_status` is checked
+as v1 and the command says so. The fields, their allowed values and the checks are described
+in `eval/README.md`.
 
 #### Options
 
@@ -1205,13 +1229,13 @@ trelix eval-validate my-golden-v2.jsonl --repo . --min-per-stratum 10 --min-vali
 
 #### Output
 
-One line per violation on stdout, `line N: ...` for an entry or `file: ...` for the file as
-a whole, then any `note:` lines and a one-line summary:
+One line per violation on stdout, `line N: ...` for an entry (in line order) and then
+`file: ...` for the file as a whole, then any `note:` lines and a one-line summary:
 
 ```
 line 2: "relevant_files" path 'src/old.py' does not exist at HEAD
 line 3: duplicate query (same as line 1 once stripped and case-folded)
-note: no entry has a kind, so this file is checked as v1: only the schema, duplicate and (with --repo) path checks ran
+note: no entry has a kind or a gold_status, so this file is checked as v1: only the schema, duplicate and (with --repo) path checks ran
 invalid: entries 3, violations 2
 ```
 
@@ -1221,13 +1245,15 @@ invalid: entries 3, violations 2
 |------|---------|
 | `0` | No violation (the summary line says `valid`). |
 | `1` | One or more violations, or an error printed on stderr: the golden file is missing or cannot be opened, `--repo` is not a directory or not a git repository, or `--rev` is unknown. |
-| `2` | A usage error, including `--min-per-stratum` below 0 or `--min-validated` outside 0 to 1. |
+| `2` | A usage error, including `--min-per-stratum` below 0 or `--min-validated` outside 0 to 1 (or `nan`). |
 
 #### Notes
 
 - Run it before `trelix eval` and whenever files move: a well-formed but stale path scores 0
   in `trelix eval`, which cannot tell it from a retrieval miss.
 - `--rev` has no effect without `--repo`.
+- It reads the golden file only. A malformed `<stem>-metadata.json` beside it, which
+  `trelix eval` refuses, is not reported.
 
 ---
 

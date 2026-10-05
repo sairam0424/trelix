@@ -14,11 +14,18 @@ An optional `"area"` key per line (or a sibling `<stem>-metadata.json` carrying
 `queries: [{query, area}]`, which is how `eval/golden.jsonl` labels its 54 queries)
 makes `run(..., area=...)` able to score one area at a time.
 
+Optional `"id"`, `"kind"`, `"lang"` and `"split"` string keys label a query for
+`run_detailed()`. A line without an `id` gets its 1-based position among the golden
+entries, formatted `q0001`, and the other three are reported as None.
+The golden v2 keys `id`, `lang`, `kind`, `source`, `gold_status` and `split` are type-checked
+when present (`trelix.eval.golden`): a wrong-typed one refuses the file with its line number.
+
 Usage:
     harness = EvalHarness(config)
     metrics = harness.run("golden.jsonl")
     # -> {"ndcg@10": 0.74, "recall@10": 0.81, "mrr": 0.66, "n_queries": 12}
     metrics = harness.run("eval/golden.jsonl", area="storage", limit=5)
+    records = harness.run_detailed("golden.jsonl")  # one QueryRecord per query
 """
 
 from __future__ import annotations
@@ -26,17 +33,23 @@ from __future__ import annotations
 import json
 import logging
 import posixpath
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from trelix.core.config import IndexConfig
 from trelix.core.models import RerankOutcome
 from trelix.eval.golden import validate_entry
 from trelix.eval.ndcg import mrr, ndcg_at_k, recall_at_k
+from trelix.review.outcome_file import write_outcome_file
 
 logger = logging.getLogger("trelix.eval")
 
 _METADATA_SUFFIX = "-metadata.json"
+_TOP_K = 10
+_ERROR_MAX_CHARS = 200
+_PER_QUERY_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -47,6 +60,72 @@ class _GoldenEntry:
     query: str
     relevant_files: frozenset[str]
     area: str | None
+    id: str
+    kind: str | None
+    lang: str | None
+    split: str | None
+
+
+@dataclass(frozen=True)
+class QueryRecord:
+    """One golden query as scored: the numbers `run()` averages, kept per query.
+
+    `top10` is the first ten DISTINCT files retrieved, in rank order — the same
+    files the metrics scored, since retrieval ranks chunks and one file can supply
+    several of them. A query that raised has `error` set, every score 0.0 and an
+    empty `top10`: it is a failure to score, never a hit.
+    """
+
+    id: str
+    repo: str
+    kind: str | None
+    lang: str | None
+    split: str | None
+    ndcg: float
+    recall: float
+    mrr: float
+    top10: tuple[str, ...]
+    error: str | None
+
+
+def aggregate_metrics(records: Sequence[QueryRecord]) -> dict[str, float]:
+    """The mean of each metric over `records`: exactly what `EvalHarness.run()` returns."""
+    if not records:
+        raise ValueError("no records to aggregate — a mean over nothing is not 0.0")
+    n = len(records)
+    return {
+        "ndcg@10": sum(r.ndcg for r in records) / n,
+        "recall@10": sum(r.recall for r in records) / n,
+        "mrr": sum(r.mrr for r in records) / n,
+        "n_queries": float(n),
+    }
+
+
+def write_per_query_file(
+    path: str, records: Sequence[QueryRecord], aggregate: Mapping[str, float]
+) -> str | None:
+    """Write `records` and their `aggregate` to `path` as JSON; return an error or None.
+
+    The write is `write_outcome_file`'s, which is the hardened one: a private (0600)
+    temp file with a random name, moved over `path` with `os.replace`, so a reader (or
+    a crash halfway through) never sees a truncated file, an existing file is only
+    replaced by a complete one, and a symlink at `path` or at a guessed temp name is
+    never followed. The JSON is ASCII-escaped, so any text a query can raise with (a
+    lone surrogate from an undecodable file name, say) is written, not refused. A
+    failure (missing directory, a path with no file name) is returned, not raised.
+    """
+    payload = {
+        "schema_version": _PER_QUERY_SCHEMA_VERSION,
+        "records": [asdict(record) for record in records],
+        "aggregate": dict(aggregate),
+    }
+    return write_outcome_file(path, payload)
+
+
+def _label(item: dict[str, Any], key: str) -> str | None:
+    """`item[key]` when it is a non-blank string, else None."""
+    value = item.get(key)
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def _path_problem(rel_path: object) -> str | None:
@@ -141,13 +220,23 @@ def _parse_golden(path: Path) -> list[_GoldenEntry]:
             problems.extend(f'line {line_no}: "relevant_files" {p}' for p in path_problems)
             continue
 
-        area = item.get("area")
         entries.append(
             _GoldenEntry(
                 line_no=line_no,
                 query=query,
                 relevant_files=frozenset(relevant),
-                area=area if isinstance(area, str) and area.strip() else areas.get(query),
+                area=_label(item, "area") or areas.get(query),
+                # `id`, `kind`, `lang` and `split` are a non-blank string or absent:
+                # validate_entry (above) refused anything else.
+                #
+                # Position among the golden entries, before any area/limit filter, so a
+                # query keeps its id however the run is narrowed. Every unusable line
+                # raises after this loop, so this is also its position among the
+                # non-blank lines.
+                id=item.get("id") or f"q{len(entries) + 1:04d}",
+                kind=item.get("kind"),
+                lang=item.get("lang"),
+                split=item.get("split"),
             )
         )
 
@@ -186,6 +275,48 @@ def _select_area(entries: list[_GoldenEntry], area: str, path: Path) -> list[_Go
     if not selected:
         raise ValueError(f"no golden entries in area {area!r}; areas present: {', '.join(present)}")
     return selected
+
+
+def _scored_record(entry: _GoldenEntry, repo: str, ranked_files: list[str]) -> QueryRecord:
+    # Use file rel_path as the ID for matching. Retrieval ranks CHUNKS, so the
+    # same file legitimately appears several times here. Ground truth is
+    # file-level, so each file must score once: the metric functions collapse
+    # repeats to their best rank (see `_dedupe` in eval/ndcg.py), which is what
+    # makes `@10` mean ten distinct files rather than ten chunks.
+    # Convert to integer IDs for metric functions (hash-based)
+    file_to_id = {f: i for i, f in enumerate(set(ranked_files) | set(entry.relevant_files))}
+    ranked_ids = [file_to_id[f] for f in ranked_files]
+    relevant_ids = {file_to_id[f] for f in entry.relevant_files if f in file_to_id}
+    return QueryRecord(
+        id=entry.id,
+        repo=repo,
+        kind=entry.kind,
+        lang=entry.lang,
+        split=entry.split,
+        ndcg=ndcg_at_k(ranked_ids, relevant_ids, k=_TOP_K),
+        recall=recall_at_k(ranked_ids, relevant_ids, k=_TOP_K),
+        mrr=mrr(ranked_ids, relevant_ids),
+        top10=tuple(dict.fromkeys(ranked_files))[:_TOP_K],
+        error=None,
+    )
+
+
+def _failed_record(entry: _GoldenEntry, repo: str, exc: Exception) -> QueryRecord:
+    # `or type(exc).__name__`: an exception raised without a message would otherwise
+    # leave `error` empty, which reads as "no error" to anything testing its truthiness.
+    message = str(exc) or type(exc).__name__
+    return QueryRecord(
+        id=entry.id,
+        repo=repo,
+        kind=entry.kind,
+        lang=entry.lang,
+        split=entry.split,
+        ndcg=0.0,
+        recall=0.0,
+        mrr=0.0,
+        top10=(),
+        error=message[:_ERROR_MAX_CHARS],
+    )
 
 
 class EvalHarness:
@@ -272,6 +403,25 @@ class EvalHarness:
         `trelix eval --plan-cache-file`) to record the plans once and replay them: the
         same pipeline then reproduced nDCG@10 at sd exactly 0.000000 over six runs.
         See `eval/README.md`.
+
+        A query that raises is scored 0.0 and the run goes on, so this mean cannot tell
+        a failed query from a miss; `run_detailed()` keeps the difference (`error`).
+        """
+        return aggregate_metrics(self.run_detailed(golden_path, area=area, limit=limit))
+
+    def run_detailed(
+        self,
+        golden_path: str,
+        *,
+        area: str | None = None,
+        limit: int | None = None,
+    ) -> list[QueryRecord]:
+        """Run the golden file's queries and return one `QueryRecord` per query.
+
+        Takes `run()`'s arguments and follows its rules; `run()` is the mean of these
+        records (`aggregate_metrics`). A query that raises gets a record with `error`
+        set and every score 0.0 instead of stopping the run — except a frozen-plan
+        miss, which still propagates. `rerank_outcomes` describes this call afterwards.
         """
         from trelix.retrieval.planner.agent import PlanCacheMissError
 
@@ -287,9 +437,8 @@ class EvalHarness:
                 raise ValueError(f"limit must be >= 1, got {limit}")
             entries = entries[:limit]
 
-        ndcg_scores: list[float] = []
-        recall_scores: list[float] = []
-        mrr_scores: list[float] = []
+        repo = Path(self._config.repo_path).resolve().name
+        records: list[QueryRecord] = []
         rerank_outcomes: list[RerankOutcome | None] = []
 
         for entry in entries:
@@ -304,39 +453,17 @@ class EvalHarness:
                 raise
             except Exception as exc:
                 logger.warning("Query %r failed: %s", entry.query[:60], exc)
-                ndcg_scores.append(0.0)
-                recall_scores.append(0.0)
-                mrr_scores.append(0.0)
+                records.append(_failed_record(entry, repo, exc))
                 # No retrieval, so no verdict — recorded to keep this list the same
-                # length as the score lists, so "how many queries had no verdict"
+                # length as the records, so "how many queries had no verdict"
                 # stays answerable.
                 rerank_outcomes.append(None)
                 continue
 
             rerank_outcomes.append(ctx.rerank)
+            records.append(_scored_record(entry, repo, [r.file.rel_path for r in ctx.results]))
 
-            # Use file rel_path as the ID for matching. Retrieval ranks CHUNKS, so the
-            # same file legitimately appears several times here. Ground truth is
-            # file-level, so each file must score once: the metric functions collapse
-            # repeats to their best rank (see `_dedupe` in eval/ndcg.py), which is what
-            # makes `@10` mean ten distinct files rather than ten chunks.
-            ranked_files = [r.file.rel_path for r in ctx.results]
-            # Convert to integer IDs for metric functions (hash-based)
-            file_to_id = {f: i for i, f in enumerate(set(ranked_files) | set(entry.relevant_files))}
-            ranked_ids = [file_to_id[f] for f in ranked_files]
-            relevant_ids = {file_to_id[f] for f in entry.relevant_files if f in file_to_id}
-
-            ndcg_scores.append(ndcg_at_k(ranked_ids, relevant_ids, k=10))
-            recall_scores.append(recall_at_k(ranked_ids, relevant_ids, k=10))
-            mrr_scores.append(mrr(ranked_ids, relevant_ids))
-
-        n = len(ndcg_scores)
         # Single assignment at the end: a caller reading rerank_outcomes mid-run would
         # otherwise see a partial picture and could describe the wrong pipeline.
         self._rerank_outcomes = tuple(rerank_outcomes)
-        return {
-            "ndcg@10": sum(ndcg_scores) / n,
-            "recall@10": sum(recall_scores) / n,
-            "mrr": sum(mrr_scores) / n,
-            "n_queries": float(n),
-        }
+        return records

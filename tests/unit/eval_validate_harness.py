@@ -20,8 +20,8 @@ from trelix.cli.main import app
 
 NOTE_NO_REPO = "note: --repo was not given, so relevant_files paths were not checked"
 NOTE_V1 = (
-    "note: no entry has a kind, so this file is checked as v1: only the schema, "
-    "duplicate and (with --repo) path checks ran"
+    "note: no entry has a kind or a gold_status, so this file is checked as v1: only the "
+    "schema, duplicate and (with --repo) path checks ran"
 )
 
 

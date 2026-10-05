@@ -1,5 +1,7 @@
 """`trelix eval-validate` on a v2 file: strata, the validated share, and v1-only handling.
 
+Also the order violations are printed in and the `--min-validated` thresholds that are refused.
+
 The helpers and the git fixture are in `eval_validate_harness.py`.
 
 MUTATIONS THAT MUST MAKE THIS FILE FAIL
@@ -11,12 +13,23 @@ MUTATIONS THAT MUST MAKE THIS FILE FAIL
 4. a missing gold_status counted as reviewed           (test_a_missing_gold_status_counts_...)
 5. the CLI defaults 20 / 0.95 changed                  (the 19-versus-20 and 94-versus-95 tests)
 6. `kind` not type-checked                             (test_an_unknown_kind_is_one_schema_...)
-7. a file without a `kind` taken as v2                 (test_a_v1_file_is_not_held_to_...)
-   or any extra key making it v2                       (test_v2_fields_without_a_kind_...)
+7. a file without a `kind` or a `gold_status` taken as v2  (test_a_v1_file_is_not_held_to_...)
+   or any extra key making it v2        (test_v2_fields_the_v2_checks_do_not_read_...)
+   or a `gold_status` alone not making it v2   (test_an_unreviewed_file_with_no_kind_...,
+                                                test_one_entry_with_a_gold_status_...)
+   or a `kind` alone not making it v2                  (test_one_entry_with_a_kind_makes_it_...)
 8. the skipped-path-check note printed the wrong way round (test_a_v1_file_still_gets_...)
 9. the share divided by the entries that have a `kind`, not all (test_the_share_is_over_all_...)
 10. the `isinstance(..., str)` guard on `kind` in `_stratum_problems` replaced by `"kind" in e.item`
                                                        (test_a_kind_that_is_a_list_or_object_...)
+11. REVIEWED_GOLD_STATUSES a set, not a tuple
+                                             (test_a_gold_status_that_is_a_list_or_object_...)
+12. "query" said for a count other than 1, or "queries" for 1
+                                             (test_every_short_kind_is_reported, test_one_entry_...)
+13. `_in_line_order` not sorting (test_violations_are_printed_in_line_order_...), or sorting by
+    the text as well as the line number (test_every_violation_is_on_its_own_line, other file)
+14. `callback=_reject_nan` removed from `--min-validated`
+                                             (test_an_out_of_range_threshold_is_a_usage_error)
 """
 
 from __future__ import annotations
@@ -74,7 +87,7 @@ class TestStrataAndValidatedShare:
         result = invoke_eval_validate(golden)
 
         assert result.stdout.splitlines()[:2] == [
-            "file: kind 'commit' has 1 queries, fewer than the 20 required per kind "
+            "file: kind 'commit' has 1 query, fewer than the 20 required per kind "
             "(--min-per-stratum)",
             "file: kind 'issue' has 3 queries, fewer than the 20 required per kind "
             "(--min-per-stratum)",
@@ -116,6 +129,23 @@ class TestStrataAndValidatedShare:
         assert result.exit_code == 1
         assert result.stdout.splitlines() == [
             f'line 1: "kind" must be one of nl, keyword, commit, issue (got {shown})',
+            NOTE_NO_REPO,
+            "invalid: entries 1, violations 1",
+        ]
+
+    @pytest.mark.parametrize(
+        ("status", "shown"), [(["validated"], "['validated']"), ({"a": 1}, "{'a': 1}")]
+    )
+    def test_a_gold_status_that_is_a_list_or_object_is_one_schema_violation_not_a_crash(
+        self, tmp_path: Path, status: object, shown: str
+    ) -> None:
+        golden = write_golden(tmp_path, [golden_entry("one", kind="nl", gold_status=status)])
+
+        result = invoke_eval_validate(golden, "--min-per-stratum", "0", "--min-validated", "0")
+
+        assert result.exit_code == 1
+        assert result.stdout.splitlines() == [
+            f'line 1: "gold_status" must be one of validated, pooled, unreviewed (got {shown})',
             NOTE_NO_REPO,
             "invalid: entries 1, violations 1",
         ]
@@ -209,14 +239,24 @@ class TestStrataAndValidatedShare:
 
     @pytest.mark.parametrize(
         ("option", "value"),
-        [("--min-per-stratum", "-1"), ("--min-validated", "1.01"), ("--min-validated", "-0.1")],
+        [
+            ("--min-per-stratum", "-1"),
+            ("--min-validated", "1.01"),
+            ("--min-validated", "-0.1"),
+            ("--min-validated", "inf"),
+            ("--min-validated", "nan"),
+        ],
     )
     def test_an_out_of_range_threshold_is_a_usage_error(
         self, tmp_path: Path, option: str, value: str
     ) -> None:
         golden = write_golden(tmp_path, v2_entries("nl", 20))
 
-        assert invoke_eval_validate(golden, option, value).exit_code == 2
+        result = invoke_eval_validate(golden, option, value)
+
+        assert result.exit_code == 2
+        assert result.stdout == ""
+        assert f"Invalid value for '{option}': {value} is not in the range" in result.stderr
 
 
 class TestAV1FileGetsOnlyTheV1Checks:
@@ -228,12 +268,14 @@ class TestAV1FileGetsOnlyTheV1Checks:
         assert result.exit_code == 0
         assert NOTE_V1 in result.stdout.splitlines()
 
-    def test_v2_fields_without_a_kind_do_not_make_it_a_v2_file(self, tmp_path: Path) -> None:
+    def test_v2_fields_the_v2_checks_do_not_read_do_not_make_it_a_v2_file(
+        self, tmp_path: Path
+    ) -> None:
         golden = write_golden(
             tmp_path,
             [
-                golden_entry("one", id="a", gold_status="unreviewed"),
-                golden_entry("two", split="dev"),
+                golden_entry("one", id="a", lang="python"),
+                golden_entry("two", source="issue tracker", split="dev"),
             ],
         )
 
@@ -249,7 +291,64 @@ class TestAV1FileGetsOnlyTheV1Checks:
 
         assert result.exit_code == 1
         assert NOTE_V1 not in result.stdout.splitlines()
-        assert result.stdout.splitlines()[0].startswith("file: kind 'nl' has 1 queries")
+        assert result.stdout.splitlines()[0].startswith("file: kind 'nl' has 1 query, ")
+
+    def test_one_entry_with_a_gold_status_makes_it_a_v2_file(self, tmp_path: Path) -> None:
+        golden = write_golden(
+            tmp_path, [golden_entry("one", gold_status="validated"), golden_entry("two")]
+        )
+
+        result = invoke_eval_validate(golden)
+
+        assert result.exit_code == 1
+        assert NOTE_V1 not in result.stdout.splitlines()
+        assert result.stdout.splitlines()[0] == (
+            "file: 1 of 2 entries have a gold_status of validated or pooled (0.5000); "
+            "--min-validated requires 0.95"
+        )
+
+    def test_a_gold_status_of_null_still_makes_it_a_v2_file(self, tmp_path: Path) -> None:
+        golden = write_golden(tmp_path, [golden_entry("one", gold_status=None)])
+
+        result = invoke_eval_validate(golden)
+
+        assert result.exit_code == 1
+        assert result.stdout.splitlines() == [
+            'line 1: "gold_status" must be one of validated, pooled, unreviewed (got None)',
+            "file: 0 of 1 entries have a gold_status of validated or pooled (0.0000); "
+            "--min-validated requires 0.95",
+            NOTE_NO_REPO,
+            "invalid: entries 1, violations 2",
+        ]
+
+    def test_an_unreviewed_file_with_no_kind_fails_the_validated_share(
+        self, tmp_path: Path
+    ) -> None:
+        unreviewed = [
+            golden_entry(f"q{i}", "README.md", id=f"i{i}", gold_status="unreviewed", split="dev")
+            for i in range(30)
+        ]
+        golden = write_golden(tmp_path, unreviewed)
+
+        result = invoke_eval_validate(golden)
+
+        assert result.exit_code == 1
+        assert result.stdout.splitlines() == [
+            "file: 0 of 30 entries have a gold_status of validated or pooled (0.0000); "
+            "--min-validated requires 0.95",
+            NOTE_NO_REPO,
+            "invalid: entries 30, violations 1",
+        ]
+
+    def test_a_reviewed_file_with_no_kind_passes_as_v2(self, tmp_path: Path) -> None:
+        golden = write_golden(
+            tmp_path, [golden_entry(f"q{i}", gold_status="pooled") for i in range(30)]
+        )
+
+        result = invoke_eval_validate(golden)
+
+        assert result.exit_code == 0
+        assert result.stdout.splitlines() == [NOTE_NO_REPO, "valid: entries 30, violations 0"]
 
     def test_a_v1_file_still_gets_the_duplicate_and_path_checks(
         self, tmp_path: Path, repo: Path
@@ -263,4 +362,49 @@ class TestAV1FileGetsOnlyTheV1Checks:
         assert result.stdout.splitlines()[:2] == [
             "line 1: \"relevant_files\" path 'src/old.py' does not exist at HEAD",
             "line 2: duplicate query (same as line 1 once stripped and case-folded)",
+        ]
+
+
+class TestViolationOrder:
+    def test_violations_are_printed_in_line_order_and_the_file_ones_last(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "golden.jsonl"
+        path.write_text(
+            '{"query": "first", "relevant_files": ["a.py"], "kind": "nl", '
+            '"gold_status": "validated"}\n'
+            '{"query": "second", "relevant_files": ["a.py"], "split": "train"}\n'
+            '{"query": oops}\n'
+            '{"query": "FIRST", "relevant_files": ["a.py"]}\n',
+            encoding="utf-8",
+        )
+
+        result = invoke_eval_validate(str(path))
+
+        assert result.exit_code == 1
+        assert result.stdout.splitlines() == [
+            "line 2: \"split\" must be one of dev, test (got 'train')",
+            "line 3: not valid JSON (Expecting value at column 11)",
+            "line 4: duplicate query (same as line 1 once stripped and case-folded)",
+            "file: kind 'nl' has 1 query, fewer than the 20 required per kind (--min-per-stratum)",
+            "file: 1 of 3 entries have a gold_status of validated or pooled (0.3333); "
+            "--min-validated requires 0.95",
+            NOTE_NO_REPO,
+            "invalid: entries 3, violations 5",
+        ]
+
+    def test_a_file_of_unreadable_lines_lists_them_before_saying_it_has_no_entries(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "golden.jsonl"
+        path.write_text('{"query": oops}\n[1]\n', encoding="utf-8")
+
+        result = invoke_eval_validate(str(path))
+
+        assert result.exit_code == 1
+        assert result.stdout.splitlines() == [
+            "line 1: not valid JSON (Expecting value at column 11)",
+            "line 2: expected a JSON object, got list",
+            "file: no golden entries",
+            "invalid: entries 0, violations 3",
         ]
