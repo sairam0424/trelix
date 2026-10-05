@@ -35,7 +35,8 @@ The extension spawns it by name (`trelix-mcp`, no args) — it must be on
 `PATH` for whichever Python environment the VS Code process resolves.
 
 You'll also need a repo already indexed (`trelix index <path>`) before
-`trelix.search`/`trelix.ask` return anything.
+`trelix.search`/`trelix.ask` return anything; against an unindexed repo the server answers
+`No index found at ...` and creates nothing.
 
 ---
 

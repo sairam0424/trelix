@@ -302,8 +302,11 @@ for n in nodes:
 **Slow first query** — the `local` provider downloads the embedding model on
 first use (~90 MB). Subsequent queries are fast.
 
-**Empty results** — run `trelix index /path/to/repo` to build the index before
-querying. Both integrations require a pre-built Trelix index.
+**`IndexNotFoundError: No index found at ...`** — run `trelix index /path/to/repo` to
+build the index before querying. Both integrations require a pre-built Trelix index and
+raise `trelix.core.index_check.IndexNotFoundError` (a `FileNotFoundError`) for a repository
+that has none, without creating one. Earlier releases returned an empty result list and left
+an empty `.trelix/index.db` behind, so a repository that was never indexed looked indexed.
 
 **Score always 0.0 in LlamaIndex** — update to `trelix-llama-index>=2.4.0`;
 earlier versions did not propagate scores from the hybrid ranker.

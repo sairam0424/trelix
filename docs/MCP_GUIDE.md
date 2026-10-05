@@ -583,7 +583,7 @@ federation_search_all(query, k=10, cursor=0, config_path=None) → {results, nex
 **What it does:** Searches across ALL registered repos simultaneously using Reciprocal Rank Fusion to merge results, weighted by each repo's registered `weight`.
 
 **Important:**
-- Requires repos to already be registered via `federation_add_repo` AND already indexed
+- Requires repos to already be registered via `federation_add_repo` AND already indexed. A registered repo with no index is skipped (not opened, not counted in `repos_searched`); if none of the queried repos is indexed, `error` carries the `No index found at ...` message
 - Results are deduplicated by `(file_path, symbol_id)`
 - Only the first `TRELIX_FEDERATION_MAX_REPOS` registered repos (default 50) are actually queried — `repos_skipped` reports the omitted count
 - Pagination uses a stable fixed-width fetch (100 results per repo) sliced by `cursor`/`k`, so page contents don't shift between calls
@@ -1127,9 +1127,13 @@ TRELIX_WALKER_MAX_FILE_SIZE_BYTES=200000 TRELIX_EMBEDDER_BATCH_SIZE=16 trelix-mc
 
 > `TRELIX_WALKER_*` variables are read from the process environment only — they ignore `.env`. See [CONFIGURATION.md](CONFIGURATION.md#file-walker-which-files-get-indexed).
 
+### `search_code` returns an error: `No index found at ...`
+
+The repository has no index. Run `index_codebase` (or `trelix index <repo>`) and check that it returned `files_indexed > 0` before querying. Every tool that reads an index (`search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`, `graph_search_mcp`, `ask_agent`, `agent_list_sessions`, `agent_clear_session`) answers this way, as a normal tool error (`isError: true`) that leaves the session running, and none of them creates `.trelix/` on the way. Earlier releases returned an empty result and left an empty `index.db` behind, so a repository that was never indexed looked indexed.
+
 ### `search_code` returns empty results
 
-The codebase must be indexed first. Run `index_codebase` and check that it returned `files_indexed > 0` before querying.
+The repository is indexed but nothing matched, or the index holds no files: check that `index_codebase` returned `files_indexed > 0`.
 
 ### `graph_search_mcp` returns no results or errors
 

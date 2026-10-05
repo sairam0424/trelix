@@ -39,6 +39,8 @@ if (next_cursor !== null) {
 
 Other methods: `health()`, `index(repoPath)`, `parseFile(request)`, `stats(repo)`, `graphStats(repo)`, `graphCommunities(repo, { minCommunitySize?, maxCommunities? })`, `graphVisualize(repo, output?)`, `graphSearch(repo, symbolId, depth?)`.
 
+The read methods (`search()`, `stats()`, `graphStats()`, `graphCommunities()`, `graphVisualize()`, `graphSearch()`) reject with a `TrelixApiError` whose `status` is `400` and whose `body.detail` is `No index found at ...` when the server has no index for that repo, and `askStream()` throws a `TrelixAskError` (`... request failed: 400 Bad Request`); the server creates nothing in that case, so call `index(repoPath)` first.
+
 `parseFile()` parses a single file without persisting anything to the index — for editor / pre-commit callers that need structural info on unsaved or not-yet-indexed content. Pass exactly one content source, `file_path` (read fresh from disk) or `content` + `file_name` (inline text); the server rejects both/neither with a 422. Cross-file call and type resolution is skipped, so the returned edge counts reflect only what Tree-sitter could determine from that file in isolation.
 
 ```ts

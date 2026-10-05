@@ -167,9 +167,14 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 `trelix search`, `ask`, `query`, `call-graph`, `graph` and `stats` exit `1` when `<repo_path>` has
 no index, printing `No index found at <repo_path>/.trelix/index.db. Run trelix index <repo_path> first.`
 to stderr (`stats` words it slightly differently). They check before opening anything, so they leave
-no `.trelix/` directory behind. The commands that write an index (`index`, `update-index`,
-`watch`) still create it on first use, and so do `eval`, `eval-synthesis`, `review`,
-`telemetry`, `search-all`, `agent sessions` and (only once it finds a flow) `taint`, which do
+no `.trelix/` directory behind. The other read surfaces follow the same rule with the same words:
+the MCP tools answer with a tool error, the REST read routes with HTTP 400, and the LangChain and
+LlamaIndex retrievers raise `trelix.core.index_check.IndexNotFoundError` (a `FileNotFoundError`).
+Two commands do not fail: `trelix review` reviews from the diff alone when the repository has no
+index, and `trelix search-all` skips a registered repo that has none (it exits `1` only when every
+repo it would query is unindexed). None of them creates `.trelix/`. The commands that write an
+index (`index`, `update-index`, `watch`) still create it on first use, and so do `eval`,
+`eval-synthesis`, `telemetry`, `agent sessions` and (only once it finds a flow) `taint`, which do
 not check yet.
 
 ---
@@ -847,6 +852,11 @@ trelix serve /my/repo --host 0.0.0.0 --port 9000
   `GET /health` is exempt. Add hostnames with `TRELIX_API_ALLOWED_HOSTS=a.example,b.example`
   or disable with `TRELIX_API_ALLOWED_HOSTS=*`. It does not replace `TRELIX_API_AUTH_TOKEN`.
   See [CONFIGURATION.md](CONFIGURATION.md#rest-api).
+- A read route (`/search`, `/ask`, `/stats`, `/graph`, `/graph/communities`,
+  `/graph/visualize`, `/graph/search`) whose `repo` has no index answers HTTP `400` with
+  `{"detail": "No index found at <repo>/.trelix/index.db. Run trelix index <repo> first."}`
+  and creates nothing (the check runs after authentication and containment). `POST /index`
+  creates the index as before; `POST /parse` and `GET /health` never needed one.
 - The API is undocumented in this reference. Point a browser at
   `http://127.0.0.1:8765/docs` after starting for the auto-generated OpenAPI
   docs.
@@ -1269,7 +1279,9 @@ trelix review [<repo_path>] --pr OWNER/REPO#NUMBER [--post-comments] [--json]
 
 Performs retrieval-augmented code review on a git diff. trelix retrieves
 context for each changed hunk and uses an LLM to generate structured review
-comments with severity labels (`ERROR`, `WARN`, `INFO`).
+comments with severity labels (`ERROR`, `WARN`, `INFO`). A repository with no
+index is still reviewed, from the diff alone and without the retrieved context;
+`review` never creates `.trelix/` (run `trelix index` first for grounded comments).
 
 Without `--pr`, uses a local git diff (from a file or by running `git diff`).
 With `--pr`, fetches the diff directly from the GitHub API.
@@ -1663,6 +1675,12 @@ trelix search-all <query> [--k N] [--json] [--config PATH]
 Runs a hybrid search across all repositories registered in the federation
 registry. Uses Reciprocal Rank Fusion (RRF) weighted by each repo's registered
 weight to merge results. Displays results grouped by source repo.
+
+A registered repo that has no index is skipped, not searched, and named on stderr
+(`Skipping <alias>: No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`);
+it is not opened, so `search-all` never creates an index there. If none of the repos it
+would query has an index, it prints `None of the queried repos has an index.` and exits `1`,
+with nothing on stdout even under `--json`.
 
 #### Options
 

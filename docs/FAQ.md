@@ -621,6 +621,8 @@ Available endpoints:
 | `GET /graph/visualize` | GET | Export Pyvis HTML, return path |
 | `GET /graph/search` | GET | BFS from symbol: `?repo=<path>&symbol_id=<id>&depth=2` |
 
+The read endpoints answer HTTP 400 (`No index found at ...`) for a repository that has no index, and create nothing; `POST /index` is what creates it.
+
 The server is stateless — all state is in `.trelix/index.db`. Horizontal scaling is possible by mounting the index file as a read-only volume on multiple server instances.
 
 ---
