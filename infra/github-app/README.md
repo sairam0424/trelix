@@ -53,7 +53,9 @@ secrets**, then update the workflow's `env:` block to pass the key.
 - The index step is tolerant — if indexing fails (network-restricted CI,
   OOM), the workflow prints a warning and still runs the review against a
   partial or empty index rather than blocking the PR
-- Review findings are capped at 50 annotations per PR (GitHub API limit)
+- At most 50 findings get an inline annotation per Check (GitHub's limit per request).
+  The title counts every finding and the summary says how many went without an
+  annotation, in the workflow and in the App alike
 - Works on private repos — `GITHUB_TOKEN` scopes are sufficient
 - `trelix review` needs a working LLM provider: it has no structural-only
   fallback. Without one it exits with code 3, and so does a review in which no

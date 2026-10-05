@@ -27,7 +27,8 @@ name: Verify Release
 #
 # The ignore comment on `workflow_run:` carries this reason on one line because
 # tests/unit/test_release_workflow_zizmor_fixes.py reads it there. It silences the whole `on:`
-# block, so tests/unit/test_verify_release_workflow_guards.py pins the trigger set and the job set.
+# block, so tests/unit/test_verify_release_workflow_guards.py pins the trigger set, the exact list
+# of workflows it watches and the job set, and that no step uses the `secrets` context or a cache.
 on:
   workflow_run:  # zizmor: ignore[dangerous-triggers] accepted: verifies after both publish workflows finish; for workflow_run runs only this repo's successful push runs whose head_branch starts with v, default-branch checkout; workflow_dispatch is maintainer-only; read-only token; event data only via env
     workflows: ["Release", "Docker Publish"]

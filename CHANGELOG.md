@@ -44,6 +44,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `workspace-vscode` only, not the Python packages or the GitHub App. `npm audit` for that workspace
   goes from 13 findings to 8, all in development tooling (`@vscode/vsce`, `mocha`); the production
   tree reports none.
+- **The release job's build tools are pinned.** `release.yml` ran `pip install build twine`, so the
+  job that builds what is uploaded to PyPI took whatever version of either tool was newest on the day
+  of the tag. It now installs `build==1.6.1` and `twine==7.0.0`, checked together on 2026-10-05:
+  `python -m build` made the sdist and wheel of `trelix`, `trelix-mcp`, `trelix-langchain` and
+  `trelix-llama-index`, and `twine check` (also with `--strict`) passed on all eight files. Nothing
+  proposes a bump of these pins (Dependabot does not read a `run:` line), so a bump is made by hand
+  and must be re-verified the same way. The two tools' own dependencies still float, and so does
+  `hatchling`, the build backend, which stays unpinned in `pyproject.toml`: a `[build-system]` pin
+  would bind every downstream build of the sdist (an accepted trade-off). A test fails when either
+  tool goes back to a range or to no version.
 
 ### Fixed
 - **`trelix review --json` on a local diff printed text ahead of the JSON, so stdout did not
@@ -163,6 +173,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   retrieval ("No relevant code found") is still not an LLM failure. `GET /ask` is unchanged (it
   never reads `last_error`, so an empty answer is still a bare `data: [DONE]`), and so is
   `--agentic`, whose fallback is documented.
+- **The review workflow's check counted the annotations, not the findings.** GitHub takes at most 50
+  annotations per request, and `trelix-review.yml` titled a clean-exit check "trelix found N issue(s)"
+  with N the number of annotations sent, so a review with 60 findings read "found 50" (the verdict
+  already judged every finding). The title and summary now give the real count, and the summary says
+  how many findings have no inline annotation ("10 of them could not be shown as inline annotations
+  (GitHub allows 50 per check)"), as the GitHub App and the "incomplete" check already did. The App
+  README states it.
 - **`trelix-mcp` no longer advertises a `resources.subscribe` capability it does not serve.**
   `server.py` replaced `get_capabilities` on the MCP server to force `resources.subscribe: true`
   into the capabilities sent at connect time, but trelix-mcp registers no `resources/subscribe`
@@ -211,6 +228,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 - **GitHub App: the time limits of a review's stages moved to `src/review-timeouts.ts`** (checkout 2
   minutes, index 5, review child 5; values unchanged) so the queue's deadline is sized from them. The
   README documents the two new settings and the longer claim.
+- **The `openai<3.0.0` comments and messages name the one real reason.** The comment in
+  `pyproject.toml` and the text in `test_dependency_floor_guards.py` and `test_llm_sdk_floor_guards.py`
+  said the retry layer does not recognise the `httpx2` transport and cited `litellm` "through
+  1.102.0"; `core/retry.py` has recognised `httpx2` since 3.3.0. They now state what was checked on
+  2026-10-05: `litellm` 1.104.0 (the latest) and every release since 1.84.0 require
+  `openai>=2.20.0,<3.0.0`, and `uv pip compile` of `litellm>=1.90.2` with `openai>=3.0.0` has no
+  solution. The comment on the removed `plaid` extra no longer calls `openai>=3.0.0` the core floor
+  (the core is `openai>=2.20.0,<3.0.0`). The requirement and what the tests assert are unchanged;
+  one test is renamed to `test_openai_ceiling_matches_litellm_requirement`.
+- **The sdist size comment in `pyproject.toml` is current.** It said the released sdist is ~1.9 MiB;
+  3.4.3 on PyPI is 4.16 MiB and a build of a clean `git archive` of `develop` is about 4.2 MiB. The
+  incident figures (928 MB, 158 MiB, 329 MB) are left as they were.
+- **More of the release workflows' safety rules are pinned by tests.** The check that no step in
+  `release.yml` can save a cache now also flags a `setup-*` step given a cache input (`cache`,
+  `enable-cache` or `package-manager-cache`) that is not `false`. A setup action whose cache is on by
+  default and that names no input is left to zizmor. For `verify-release.yml`, no step or `env:` may
+  use the `secrets` context, no step may use an `actions/cache` action or a setup action's cache, and
+  the `workflow_run` trigger must watch exactly `Release` and `Docker Publish`, the names of those
+  two workflows. Each new rule has a fixture that must be flagged.
 
 ## [3.4.3] — 2026-10-04
 

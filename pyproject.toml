@@ -6,7 +6,9 @@ build-backend = "hatchling.build"
 packages = ["src/trelix"]
 
 # Local-build hygiene, not a change to what ships. CI publishes from a clean
-# checkout where none of these exist, so the released sdist is ~1.9 MiB either way.
+# checkout where none of these exist, so the released sdist is ~4.2 MiB either way
+# (3.4.3 on PyPI: 4.16 MiB; a `python -m build` of a clean `git archive` of develop
+# on 2026-10-05: about 4.2 MiB).
 # But hatchling does not honour NESTED .gitignore files, and
 # workspace-vscode/.gitignore ignores .vscode-test/ — which @vscode/test-electron
 # fills with three ~900 MB VS Code app bundles. A developer who runs the extension
@@ -77,15 +79,15 @@ dependencies = [
     # --- Storage ---
     "sqlite-vec>=0.1.6",
     # --- Embeddings ---
-    # Lowered from an unbounded >=3.0.0 to >=2.20.0,<3.0.0: every litellm release
-    # through 1.102.0 caps openai<3.0.0 (verified via `uv pip compile`'s full
-    # resolver trace), so >=3.0.0 made trelix[litellm] permanently unresolvable
-    # from a fresh lock — the old lock only "worked" because it had a stale,
-    # pre-floor-bump openai==2.44.0 nobody re-verified against. The original
-    # >=3.0.0 bump was to safely adopt openai-python v3.0.0's "httpx2" transport
-    # switch; the explicit <3.0.0 ceiling here is deliberate, not an oversight —
-    # see tests/unit/test_dependency_floor_guards.py and
-    # tests/unit/test_llm_sdk_floor_guards.py, both updated alongside this change.
+    # The <3.0.0 ceiling is deliberate, and litellm is the one reason for it: litellm
+    # 1.104.0 (the latest when checked, 2026-10-05) requires openai>=2.20.0,<3.0.0, and
+    # so does every release since 1.84.0. The litellm extra asks for litellm>=1.90.2, and
+    # `uv pip compile` on a two-line requirements file (litellm>=1.90.2, openai>=3.0.0)
+    # reports no solution, so an openai>=3 floor makes trelix[litellm] unresolvable.
+    # The retry layer is not the reason: core/retry.py has recognised httpx2 since 3.3.0.
+    # Before lifting the ceiling, re-check https://pypi.org/pypi/litellm/json; see
+    # tests/unit/test_dependency_floor_guards.py and
+    # tests/unit/test_llm_sdk_floor_guards.py.
     "openai>=2.20.0,<3.0.0",
     "tiktoken>=0.7.0",
     # --- Retrieval math ---
@@ -293,8 +295,10 @@ knowledge-graph = ["networkx>=3.3.0", "pyvis>=0.3.2"]
 # `plaid` (RAGatouille PLAID reranker) was removed entirely, not just excluded from
 # `all`: every ragatouille release resolves llama-index-llms-openai, which caps
 # `openai<3` on every version through 0.7.10 (verified via `uv pip compile`'s full
-# resolver trace) — permanently incompatible with the core `openai>=3.0.0` floor
-# above. `PlaidReranker` (retrieval/reranker_plaid.py) is untouched and still works
+# resolver trace), which made it unresolvable with the `openai>=3.0.0` floor the core had
+# then. The core is now `openai>=2.20.0,<3.0.0` (see the comment at that requirement) and
+# the extra has not been re-checked against it. `PlaidReranker`
+# (retrieval/reranker_plaid.py) is untouched and still works
 # via `TRELIX_RETRIEVAL_RERANK_PROVIDER=plaid`; it lazily imports ragatouille and
 # degrades gracefully if missing. Install it manually (`pip install ragatouille`)
 # outside trelix's own extras if you accept the openai<3 downgrade risk yourself;
