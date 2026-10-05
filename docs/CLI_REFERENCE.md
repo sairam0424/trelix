@@ -1270,8 +1270,8 @@ With `--pr`, fetches the diff directly from the GitHub API.
 | Code | Meaning |
 |------|---------|
 | `0` | The review covered every hunk it was given: "no issues found", or findings with every hunk reviewed. A partial review also exits `0` when `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` allows the share of unreviewed hunks (a warning with the counts goes to stderr). |
-| `1` | Error: invalid configuration, GitHub API failure, unreadable diff. |
-| `3` | The review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review). A hunk cut off after some complete findings keeps them and counts as a partial review, not as one that did not run. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) (with `--pr` it is the only thing on stdout; in local-diff mode a `Reviewing N hunks across M files...` line is printed to stdout before it), so an empty array alone does not mean "clean": check the exit code. |
+| `1` | Error: invalid configuration, GitHub API failure, unreadable diff, or (without `--diff`) a `--base` or `--head` that git cannot resolve to an object, or a `git diff` between them that fails. |
+| `3` | The review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review). A hunk cut off after some complete findings keeps them and counts as a partial review, not as one that did not run. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) and nothing else, so an empty array alone does not mean "clean": check the exit code. |
 | `4` | The review ran but more than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` of the hunks were not reviewed because the reply was cut off (even after a retry), refused, filtered, not a review, or the call failed. The default `0.0` means any hunk. The findings are printed first, so stdout carries what there is (with `--json`, the array as usual); the counts go to stderr. Set the variable to `1` to exit `0` for a partial review. |
 
 Exit code `2` is not used by `review` itself (it is the usage-error code), so
@@ -1319,6 +1319,19 @@ GITHUB_TOKEN=$TOKEN trelix review . --pr acme/backend#142 --post-comments
 
 - `<repo_path>` defaults to `.` if omitted.
 - `--pr` and `--diff`/`--base`/`--head` are mutually exclusive.
+- Without `--diff`, `--base` and `--head` must each resolve to an object that exists (a branch, a tag,
+  a commit id, any other revision that names one object such as `HEAD~2`, `:/text`, `HEAD~1:src` or
+  `HEAD~1:src/foo.py`, or the empty tree to review a repository's first commit; a range such as
+  `HEAD~2..HEAD` is not accepted); otherwise the command
+  prints `cannot resolve --base 'REF' to a git object` to stderr and exits `1`. If `git diff` still fails
+  between two refs that each resolve (a blob against a commit, a timeout, output that is not UTF-8), the
+  command prints `git diff 'BASE' 'HEAD' failed: ...` and exits `1` as well. Refs that resolve but
+  differ in nothing print `No changes found in diff.` and exit `0`. A `--diff` file never looks at the refs.
+- With `--json`, stdout is exactly one JSON array, for a local diff and for `--pr` without `--post-comments`:
+  the findings, or `[]` when there are none, the diff is empty or the review did not run (exit `3`). Progress
+  and status lines such as `Reviewing N hunks across M files...` go to stderr. An error exit (`1`) writes
+  nothing to stdout. `--pr` with `--post-comments` prints `Posted review with N inline comments.` to stdout
+  after the array once the review is posted, so stdout is then more than the array.
 - Binary and oversized files from GitHub PRs are skipped automatically.
 - PRs with more than 3,000 changed files will trigger a truncation warning.
 

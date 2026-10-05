@@ -1,14 +1,20 @@
 """
 MCP resource subscription registry.
 
-Tracks which MCP subscription IDs are watching which trelix:// resource URIs.
-When trelix watch detects a file change, it looks up all subscription IDs for
-the affected URI and sends notifications/resources/updated for each.
+Tracks which subscription IDs are registered for which trelix:// resource URIs.
+The registry is filled by the subscribe_resource / unsubscribe_resource tools in
+server.py. trelix-mcp does not serve the resources/subscribe request (a client that
+sends it gets "Method not found") and reports resources.subscribe as false.
 
-Wire protocol (MCP spec 2024-11-05 §Resources, confirmed 3-0 adversarial):
-  1. Client → server:  resources/subscribe  { uri }
-  2. Server → client:  notifications/resources/updated  { uri }  (URI only — no content)
-  3. Client → server:  resources/read  { uri }  (client fetches updated content on demand)
+notify_file_changed() looks up the subscription IDs for a repo's manifest URI and
+writes notifications/resources/updated to stdout for each. That can only reach an MCP
+client when it runs inside the stdio server process. The FileWatcher hook calls it
+from the `trelix watch` process, where this registry is empty, and nothing starts a
+watcher inside the server, so nothing is delivered today.
+
+Notification wire format (MCP spec 2024-11-05 §Resources):
+  1. Server → client:  notifications/resources/updated  { uri }  (URI only — no content)
+  2. Client → server:  resources/read  { uri }  (client fetches updated content on demand)
 
 Multiplexed over stdio's single bidirectional channel using subscriptionId in _meta.
 """
@@ -163,7 +169,8 @@ def notify_file_changed(
 ) -> None:
     """Fire notifications/resources/updated for all subscribers watching repo_path.
 
-    Called by the MCP server's watch bridge when watchfiles detects a change.
+    Only looks in the registry it is given. FileWatcher._do_reindex calls it in the
+    `trelix watch` process, whose registry is empty, so nothing is delivered today.
     The manifest URI for a repo is: trelix://repo/{repo_path}/manifest
     """
     manifest_uri = f"trelix://repo/{repo_path}/manifest"

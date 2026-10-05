@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig, IndexConfig
     from trelix.core.models import IndexedFile
     from trelix.indexing.indexer import Indexer
+    from trelix.review.diff_parser import DiffHunk, DiffParser
     from trelix.review.reviewer import ReviewOutcome
     from trelix.store.db import Database
     from trelix.store.provenance import DriftReport, IndexProvenance, PrunePlan
@@ -333,6 +334,50 @@ def _exit_if_review_not_run(
     )
     _write_review_outcome(outcome, config, REVIEW_NOT_RUN_EXIT_CODE)
     raise typer.Exit(REVIEW_NOT_RUN_EXIT_CODE)
+
+
+def _print_empty_review(message: str, *, json_output: bool) -> None:
+    """Report a local review that has nothing to show: `[]` under --json, else `message`.
+
+    With --json stdout must be the JSON array and nothing else (the `--pr` path does the
+    same inline), so the prose for a human is not printed at all.
+    """
+    if json_output:
+        _print_json([])
+        return
+    console.print(message)
+
+
+def _exit_if_git_ref_unresolved(parser: DiffParser, repo_path: str, refs: dict[str, str]) -> None:
+    """Exit 1, naming the option and ref, when git cannot resolve one of `refs`.
+
+    `refs` maps an option name to its value. A mistyped `--base` is the usual reason for a
+    failing `git diff`, so it gets a message that names the option; `_git_diff_hunks` reports
+    any other failure. Only the local git diff needs either; a `--diff FILE` never looks at
+    the refs.
+    """
+    for option, ref in refs.items():
+        if parser.ref_resolves(repo_path, ref):
+            continue
+        _print_error("Error", f"cannot resolve {option} {ref!r} to a git object")
+        raise typer.Exit(1)
+
+
+def _git_diff_hunks(parser: DiffParser, repo_path: str, base: str, head: str) -> list[DiffHunk]:
+    """Parse `git diff base head`; exit 1 when git could not produce the diff.
+
+    Refs that each resolve can still fail together (a blob against a commit, a timeout, output
+    that is not UTF-8). `from_git` turns that into [] and the command then reported "No changes
+    found in diff." with exit 0, so it is `git_diff` that is called here: an empty list from
+    this function means git found no changes.
+    """
+    from trelix.review.diff_parser import GitDiffError
+
+    try:
+        return parser.parse(parser.git_diff(repo_path, base, head))
+    except GitDiffError as exc:
+        _print_error("Error", f"git diff {base!r} {head!r} failed: {exc}")
+        raise typer.Exit(1) from exc
 
 
 def _no_findings_message(outcome: ReviewOutcome) -> str:
@@ -3605,16 +3650,23 @@ def review(
     # Local git diff path
     # ------------------------------------------------------------------
     parser = DiffParser()
+    # With --json every status line goes to stderr, so stdout is only the JSON array
+    # (the --pr path above does the same).
+    status_console = _status_console(json_output)
+    repo_path = str(Path(repo).resolve())
 
-    with _status_console(json_output).status("Parsing diff..."):
+    if not diff:
+        _exit_if_git_ref_unresolved(parser, repo_path, {"--base": base, "--head": head})
+
+    with status_console.status("Parsing diff..."):
         if diff:
             diff_text = Path(diff).read_text()
             hunks = parser.parse(diff_text)
         else:
-            hunks = parser.from_git(str(Path(repo).resolve()), base=base, head=head)
+            hunks = _git_diff_hunks(parser, repo_path, base, head)
 
     if not hunks:
-        console.print("[yellow]No changes found in diff.[/yellow]")
+        _print_empty_review("[yellow]No changes found in diff.[/yellow]", json_output=json_output)
         return
 
     # Limit to max_files unique files
@@ -3626,10 +3678,10 @@ def review(
         if len(seen_files) <= max_files:
             filtered.append(h)
 
-    console.print(f"Reviewing {len(filtered)} hunks across {len(seen_files)} files...")
+    status_console.print(f"Reviewing {len(filtered)} hunks across {len(seen_files)} files...")
 
     reviewer = DiffReviewer(config)
-    with _status_console(json_output).status("Retrieving context and generating review..."):
+    with status_console.status("Retrieving context and generating review..."):
         comments = reviewer.review(filtered)
 
     _exit_if_review_not_run(reviewer.last_outcome, json_output=json_output, config=config)
@@ -3638,7 +3690,7 @@ def review(
     )
 
     if not comments:
-        console.print(_no_findings_message(reviewer.last_outcome))
+        _print_empty_review(_no_findings_message(reviewer.last_outcome), json_output=json_output)
         _finish_review(reviewer.last_outcome, config)
         return
 

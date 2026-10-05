@@ -1660,6 +1660,10 @@ class DiffParser:
     def parse(self, diff_text: str) -> list[DiffHunk]     # instance method
     def from_git(self, repo_path, base="HEAD~1", head="HEAD") -> list[DiffHunk]
     # Runs: git diff --unified=3; returns [] on any failure
+    def git_diff(self, repo_path, base="HEAD~1", head="HEAD") -> str
+    # Same command, returns the text; raises GitDiffError on any failure (the CLI uses this one)
+    def ref_resolves(self, repo_path, ref) -> bool
+    # rev-parse --verify, then cat-file -e: True when the object exists; False on any failure
 ```
 
 ### `DiffReviewer`
