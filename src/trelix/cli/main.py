@@ -16,6 +16,7 @@ from __future__ import annotations
 import errno
 import json
 import logging
+import math
 import os
 import sqlite3
 import sys
@@ -3327,6 +3328,76 @@ def eval_synthesis(
     table.add_row("Overall", f"{metrics['overall']:.4f}", "higher = better")
     table.add_row("Queries evaluated", str(int(metrics["n_queries"])), "")
     console.print(table)
+
+
+def _reject_nan(value: float) -> float:
+    """Make `--min-validated nan` a usage error like any other value outside 0 to 1.
+
+    click's range check misses it, because every comparison with nan is False, and a nan
+    threshold would make every v2 file fail with a message that asks for "nan".
+    """
+    if math.isnan(value):
+        raise typer.BadParameter("nan is not in the range 0.0<=x<=1.0.")
+    return value
+
+
+@app.command("eval-validate")
+def eval_validate(
+    golden: Annotated[str, typer.Argument(help="Path to the golden JSONL file to check.")],
+    repo: Annotated[
+        str | None,
+        typer.Option(
+            "--repo",
+            help=(
+                "Git repository to check every relevant_files path against. "
+                "Without it the path check is skipped."
+            ),
+        ),
+    ] = None,
+    rev: Annotated[
+        str, typer.Option("--rev", help="Revision of --repo the paths must exist at.")
+    ] = "HEAD",
+    min_per_stratum: Annotated[
+        int,
+        typer.Option(
+            "--min-per-stratum",
+            min=0,
+            help="v2 files: the fewest queries each kind present may have.",
+        ),
+    ] = 20,
+    min_validated: Annotated[
+        float,
+        typer.Option(
+            "--min-validated",
+            min=0.0,
+            max=1.0,
+            callback=_reject_nan,
+            help="v2 files: the least share of entries whose gold_status is validated or pooled.",
+        ),
+    ] = 0.95,
+) -> None:
+    """Check a golden file without running any query: schema, duplicates, paths, strata."""
+    from trelix.eval.golden_validate import RepoTreeError, read_repo_tree, validate_golden
+
+    path = Path(golden)
+    if not path.is_file():
+        _print_error("Golden file not found", golden)
+        raise typer.Exit(1)
+    try:
+        tree = read_repo_tree(repo, rev) if repo is not None else None
+        report = validate_golden(
+            path, tree=tree, min_per_stratum=min_per_stratum, min_validated=min_validated
+        )
+    except (RepoTreeError, OSError) as exc:
+        _print_error("Golden validation failed", exc)
+        raise typer.Exit(1) from exc
+
+    for line in report.lines():
+        # Printed as is, like `_print_json`: no markup, no ":name:" emoji, no wrapping. A user
+        # greps the golden file for what is printed here, so it must match byte for byte.
+        console.print(line, markup=False, emoji=False, highlight=False, soft_wrap=True)
+    if report.violations:
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------

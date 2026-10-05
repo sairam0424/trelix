@@ -264,6 +264,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     bootstrap p-value for the mean paired difference; the same resampled queries are applied to both
     runs), `mde` (`2.8 * sigma_d / sqrt(n)`, the minimum detectable effect at 80 percent power and 5
     percent two-sided error) and `holm` (Holm-Bonferroni step-down). See `eval/README.md`.
+- **Golden file format v2 and `trelix eval-validate`** (second of three changes toward comparing
+  retrieval runs honestly; no score is computed any differently).
+  - A golden line may add `id`, `lang`, `kind` (`nl`, `keyword`, `commit` or `issue`), `source`,
+    `gold_status` (`validated`, `pooled` or `unreviewed`) and `split` (`dev` or `test`). All are
+    optional: a file that uses none of them loads and scores exactly as before, and other keys are
+    still ignored. A field that is present with the wrong type or value (a `kind` of `"code"`, an
+    empty `id`, a `null`) is now refused by `trelix eval` with its line number, like every other
+    unusable entry. The allowed values live in the new `trelix.eval.golden`. An existing golden
+    file that already uses one of these key names for something else (an `id` of `7`, a `split` of
+    `"train"`, an empty `source`) must be edited before `trelix eval` accepts it.
+  - `trelix eval-validate GOLDEN [--repo PATH] [--rev REV] [--min-per-stratum N] [--min-validated
+    FRACTION]` checks a golden file without running a query. Every line must be schema-valid, no two
+    queries may be equal once stripped and case-folded, no two `id`s may be equal, and with `--repo`
+    every `relevant_files` path must exist at `--rev` (default `HEAD`; read with `git ls-tree`). In a
+    file where some entry has a `kind` or a `gold_status`, each kind that occurs needs at least
+    `--min-per-stratum` queries (default 20), and at least `--min-validated` (default 0.95) of the
+    entries need a `gold_status` of `validated` or `pooled`. Each violation is one `line N: ...` or
+    `file: ...` line on stdout, the `line N` ones in line order and the `file` ones last; the exit
+    code is 0 with none and 1 with any, or for a missing golden file, a `--repo` that is not a git
+    repository or an unknown `--rev`. A threshold outside its range, `--min-validated nan` included,
+    is a usage error (exit 2). It reads the golden file only: a malformed `<stem>-metadata.json`
+    beside it, which `trelix eval` refuses, is not reported. The shipped `eval/golden.jsonl` passes.
+    See `eval/README.md` and `docs/CLI_REFERENCE.md`.
 
 ### Changed
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):

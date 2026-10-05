@@ -17,6 +17,8 @@ makes `run(..., area=...)` able to score one area at a time.
 Optional `"id"`, `"kind"`, `"lang"` and `"split"` string keys label a query for
 `run_detailed()`. A line without an `id` gets its 1-based position among the golden
 entries, formatted `q0001`, and the other three are reported as None.
+The golden v2 keys `id`, `lang`, `kind`, `source`, `gold_status` and `split` are type-checked
+when present (`trelix.eval.golden`): a wrong-typed one refuses the file with its line number.
 
 Usage:
     harness = EvalHarness(config)
@@ -38,6 +40,7 @@ from typing import Any
 
 from trelix.core.config import IndexConfig
 from trelix.core.models import RerankOutcome
+from trelix.eval.golden import validate_entry
 from trelix.eval.ndcg import mrr, ndcg_at_k, recall_at_k
 from trelix.review.outcome_file import write_outcome_file
 
@@ -199,6 +202,11 @@ def _parse_golden(path: Path) -> list[_GoldenEntry]:
             problems.append(f'line {line_no}: "query" must be a non-empty string')
             continue
 
+        # Golden v2's optional fields (trelix.eval.golden): refused when present and
+        # wrong-typed, never required. Not a `continue`: the line's other problems are
+        # reported in the same run.
+        problems.extend(f"line {line_no}: {p}" for p in validate_entry(item))
+
         relevant = item.get("relevant_files")
         if not isinstance(relevant, list) or not relevant:
             problems.append(
@@ -218,14 +226,17 @@ def _parse_golden(path: Path) -> list[_GoldenEntry]:
                 query=query,
                 relevant_files=frozenset(relevant),
                 area=_label(item, "area") or areas.get(query),
+                # `id`, `kind`, `lang` and `split` are a non-blank string or absent:
+                # validate_entry (above) refused anything else.
+                #
                 # Position among the golden entries, before any area/limit filter, so a
                 # query keeps its id however the run is narrowed. Every unusable line
                 # raises after this loop, so this is also its position among the
                 # non-blank lines.
-                id=_label(item, "id") or f"q{len(entries) + 1:04d}",
-                kind=_label(item, "kind"),
-                lang=_label(item, "lang"),
-                split=_label(item, "split"),
+                id=item.get("id") or f"q{len(entries) + 1:04d}",
+                kind=item.get("kind"),
+                lang=item.get("lang"),
+                split=item.get("split"),
             )
         )
 

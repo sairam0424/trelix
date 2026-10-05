@@ -158,7 +158,7 @@ class TestLabels:
                     "query": "q one",
                     "relevant_files": ["a.py"],
                     "id": "walker-01",
-                    "kind": "symbol",
+                    "kind": "keyword",
                     "lang": "python",
                     "split": "dev",
                 }
@@ -167,7 +167,7 @@ class TestLabels:
         (record,) = _harness(repo).run_detailed(golden)
         assert (record.id, record.kind, record.lang, record.split) == (
             "walker-01",
-            "symbol",
+            "keyword",
             "python",
             "dev",
         )
@@ -189,23 +189,6 @@ class TestLabels:
         entries[1]["id"] = "custom"
         records = _harness(repo).run_detailed(_write_golden(tmp_path, entries))
         assert [r.id for r in records] == ["q0001", "custom", "q0003"]
-
-    def test_blank_and_non_string_labels_are_ignored(self, tmp_path: Path, repo: Path) -> None:
-        golden = _write_golden(
-            tmp_path,
-            [
-                {
-                    "query": "q one",
-                    "relevant_files": ["a.py"],
-                    "id": "  ",
-                    "kind": 7,
-                    "lang": "",
-                    "split": ["dev"],
-                }
-            ],
-        )
-        (record,) = _harness(repo).run_detailed(golden)
-        assert (record.id, record.kind, record.lang, record.split) == ("q0001", None, None, None)
 
     def test_ids_count_golden_entries_not_lines(self, tmp_path: Path, repo: Path) -> None:
         one, two, three = (json.dumps(entry) for entry in _GOLDEN)
@@ -249,7 +232,7 @@ class TestAFailedQuery:
         # A failed query must stay in its kind/lang/split subgroup, or a per-subgroup
         # comparison drops exactly the failures that the error field exists to expose.
         entries = [dict(e) for e in _GOLDEN]
-        entries[1].update(id="walker-02", kind="symbol", lang="python", split="dev")
+        entries[1].update(id="walker-02", kind="keyword", lang="python", split="dev")
         golden = _write_golden(tmp_path, entries)
 
         (_, failed, _) = _harness(repo, self._FAILING).run_detailed(golden)
@@ -257,7 +240,7 @@ class TestAFailedQuery:
         assert failed == QueryRecord(
             id="walker-02",
             repo="example-repo",
-            kind="symbol",
+            kind="keyword",
             lang="python",
             split="dev",
             ndcg=0.0,
