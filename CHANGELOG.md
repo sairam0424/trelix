@@ -92,6 +92,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   changes (that workflow builds and runs the App's script). Comments and docs: `sanitize.ts` and the
   App README wrote the ASCII `@` where the sanitiser's replacement `＠` (U+FF20) is meant, and the
   `createApp` comment still said `server.ts` only loads the config and listens.
+- **`trelix ask` exited 0 with an empty stdout when the LLM reply carried no answer.** It
+  affects anyone who points `OPENAI_BASE_URL` at an endpoint that answers HTTP 200 but is not an
+  OpenAI-compatible chat API (an HTML page from a wrong URL, a proxy that ignores
+  `stream=True`), and anyone whose model streams only empty or whitespace-only content. For
+  those replies the openai SDK returns a stream that yields no chunk (checked on openai 2.44.0:
+  zero chunks for an HTML body and for a JSON body), the synthesizer recorded no error, and
+  `ask` reported success, so a script or CI job saw an empty answer as a pass.
+  `Synthesizer.stream()` and `Synthesizer.synthesize()` (the call FLARE makes) now record
+  `The LLM returned no answer: the endpoint may not be an OpenAI-compatible chat API,
+  OPENAI_BASE_URL (or a proxy in front of it) may be wrong, or the model returned nothing.`
+  when the answer has no non-whitespace character, and `ask` ends as it does for any other
+  synthesis failure: that message on stderr, no banner on stdout, exit `1`, with and without
+  `TRELIX_RETRIEVAL_FLARE=true`. A "not configured" error keeps its own message, and an empty
+  retrieval ("No relevant code found") is still not an LLM failure. `GET /ask` is unchanged (it
+  never reads `last_error`, so an empty answer is still a bare `data: [DONE]`), and so is
+  `--agentic`, whose fallback is documented.
 
 ### Changed
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):

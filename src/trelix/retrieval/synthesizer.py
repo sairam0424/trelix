@@ -103,6 +103,10 @@ GRAPH_RAG_EMPTY_MESSAGE = (
     "GraphRAG synthesis produced no answer (every LLM call failed; check the API key "
     "and connectivity)."
 )
+EMPTY_ANSWER_MESSAGE = (
+    "The LLM returned no answer: the endpoint may not be an OpenAI-compatible chat API, "
+    "OPENAI_BASE_URL (or a proxy in front of it) may be wrong, or the model returned nothing."
+)
 
 # ---------------------------------------------------------------------------
 # Synthesizer
@@ -194,7 +198,8 @@ class Synthesizer:
 
         Returns:
             The full synthesized text (same content that was streamed).
-            Returns an empty string when no client is available.
+            Returns an empty string when no client is available. An empty or
+            whitespace-only answer is returned as is, with ``last_error`` set.
         """
         cfg = config or self._config
         self.last_error = None
@@ -234,13 +239,19 @@ class Synthesizer:
             logger.warning("GraphRAG check/dispatch failed, falling back to standard: %s", exc)
 
         try:
-            return self._stream_response(context, cfg)
+            answer = self._stream_response(context, cfg)
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)
             msg = f"[trelix] Synthesis failed: {exc}"
             logger.warning(msg)
             print(f"\n{msg}", flush=True)
             return ""
+        if not answer.strip():
+            # The call succeeded but carried nothing readable: an endpoint that ignores
+            # stream=True, an HTML error page behind a 200, or a model that said nothing.
+            logger.warning("Synthesis returned an empty answer")
+            self.last_error = EMPTY_ANSWER_MESSAGE
+        return answer
 
     def stream(
         self,
@@ -253,6 +264,8 @@ class Synthesizer:
         Yields str tokens as they arrive from the LLM.
         Yields a single error message string on failure (never raises); the same
         failure is recorded in ``last_error`` *before* that token is yielded.
+        A stream that ends with no non-whitespace text is a failure too: it is recorded
+        in ``last_error`` when the stream ends, with no banner token after it.
 
         Usage::
             for token in synth.stream(context, config):
@@ -268,20 +281,29 @@ class Synthesizer:
         max_tokens: int = getattr(config, "synthesis_max_tokens", 2048)
 
         self.last_error = None if self.is_configured else NOT_CONFIGURED_MESSAGE
+        has_answer = False
         try:
             from trelix.llm.client import ChatMessage
 
-            yield from self._llm_client.stream(
+            for token in self._llm_client.stream(
                 messages=[ChatMessage(role="user", content=user_message)],
                 system=system_prompt,
                 max_tokens=max_tokens,
                 temperature=0.0,
                 thinking=self._llm_config.thinking_enabled,
-            )
+            ):
+                has_answer = has_answer or bool(token.strip())
+                yield token
         except Exception as exc:
             logger.warning("Streaming synthesis failed: %s", exc)
             self.last_error = str(exc)
             yield f"\n[trelix: synthesis unavailable — {exc}]"
+        else:
+            if not has_answer and self.last_error is None:
+                # No banner token here: unlike an exception there is no error text to show,
+                # and the caller reads last_error once the stream has ended.
+                logger.warning("Streaming synthesis returned an empty answer")
+                self.last_error = EMPTY_ANSWER_MESSAGE
 
     # ------------------------------------------------------------------
     # Internal helpers
