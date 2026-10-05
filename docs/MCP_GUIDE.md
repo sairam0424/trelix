@@ -332,9 +332,9 @@ Answered from SQLite, so it needs no embedding model and costs 56-117 ms. Before
 subscribe_resource(uri, subscription_id) → {status}
 ```
 
-**What it does:** Registers a subscription for a `trelix://` resource URI. Once subscribed, the MCP client receives `notifications/resources/updated` whenever trelix detects a file change that affects that resource (e.g. a manifest change after a re-index). Requires the client to support MCP resource subscriptions (`resources.subscribe=True`).
+**What it does:** Records a subscription for a `trelix://` resource URI in the server's in-memory registry. This is a plain tool: the server does not advertise `resources.subscribe` and does not serve the `resources/subscribe` request. No `notifications/resources/updated` is delivered yet, because nothing starts a file watcher inside the server process (see [section 17](#17-resource-subscriptions-v250)).
 
-**When to use:** Use in MCP clients (Claude Code, Cursor) that support resource subscriptions when you want the AI to be notified automatically whenever the index changes, without polling.
+**When to use:** Not useful for live updates yet, since no notification is delivered today (see [section 17](#17-resource-subscriptions-v250)). The registration itself works.
 
 **Parameters:**
 | Parameter | Type | Default | Description |
@@ -878,15 +878,9 @@ Prompts the model to run `blast_radius`, group the results by dependency depth, 
 
 ## 12. Watch Bridge (v2.7.0)
 
-The `trelix watch` command now fires `notifications/resources/updated` events to all subscribed MCP clients after every file re-index. This enables real-time codebase awareness in Claude Code and other agents without polling.
+**Status: no MCP client receives `notifications/resources/updated` today.** After a file re-index that was not skipped, `trelix watch` calls `notify_file_changed()`, which looks up the subscriptions that `subscribe_resource` registered for the repo's manifest URI. `trelix watch` runs in its own process, where that registry is empty (subscriptions live in the `trelix-mcp` stdio server process), and nothing in trelix-mcp starts a file watcher. The notification can only reach a client when the watcher runs inside the stdio server process. See [section 17](#17-resource-subscriptions-v250).
 
-**How it works:**
-1. Run `trelix watch` in your project directory
-2. trelix-mcp listens for file system changes
-3. After re-indexing completes, MCP clients receive a notification via `notifications/resources/updated`
-4. The client can refresh cached code context or trigger workflows based on changed files
-
-This is useful for:
+Once delivery works, this is intended for:
 - Keeping codebase context fresh during active development
 - Triggering automated analysis pipelines when code changes
 - Multi-agent coordination where file changes need propagation
@@ -1057,15 +1051,16 @@ Claude will call `build_knowledge_graph`, then `graph_search_mcp("database ORM q
 
 ## 17. Resource Subscriptions (v2.5.0)
 
-trelix-mcp v2.5.0 implements the MCP resource subscription protocol
+trelix-mcp v2.5.0 added two tools modelled on the MCP resource subscription flow
 ([MCP spec §Resources](https://modelcontextprotocol.io/specification/2024-11-05/server/resources)).
+It does not implement the protocol's `resources/subscribe` request.
 
-### How it works
+### What works today
 
-1. trelix-mcp advertises `resources.subscribe=True` in server capabilities
-2. MCP clients (Claude Code, Cursor) can subscribe to a resource URI
-3. When trelix watch detects a file change, it fires `notifications/resources/updated`
-4. The client then calls `resources/read` to fetch the updated index content
+1. The server does not advertise `resources.subscribe` (it reports `false`) and does not serve `resources/subscribe`; a client that sends it gets "Method not found"
+2. Clients register a URI with the `subscribe_resource` tool instead; the registration lives in memory inside the `trelix-mcp` stdio server process
+3. `notifications/resources/updated` is sent only if `notify_file_changed()` runs inside that same process, and nothing in trelix-mcp starts a file watcher, so no client receives one yet
+4. Once a notification arrives, the client would call `resources/read` to fetch the updated index content
 
 ### Subscription tools
 
@@ -1080,11 +1075,11 @@ subscription_id: any string — used to correlate notifications
 **`unsubscribe_resource(subscription_id)`**
 Remove a subscription by its ID.
 
-### Wire protocol
+### Wire protocol (target flow; only the first step works today)
 
 ```
-Client → Server:  resources/subscribe  { uri }
-Server → Client:  notifications/resources/updated  { uri, _meta: { subscriptionId } }
+Client → Server:  tools/call subscribe_resource  { uri, subscription_id }   (works today)
+Server → Client:  notifications/resources/updated  { uri, _meta: { subscriptionId } }   (not sent today)
 Client → Server:  resources/read  { uri }
 ```
 

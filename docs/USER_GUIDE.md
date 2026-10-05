@@ -1150,12 +1150,12 @@ graph_search_mcp(query="auth middleware", repo_path="./my-repo", depth=2, max_re
 ```
 Returns structurally adjacent symbols to the query's top results, traversed via the Code Property Graph.
 
-> **v2.5.0 — MCP resource subscriptions.** trelix-mcp now advertises `resources.subscribe=True` in server capabilities and exposes two new tools:
+> **v2.5.0 — MCP resource subscription tools.** trelix-mcp exposes two tools for registering interest in a resource. It does not advertise `resources.subscribe` (it reports `false`) and does not serve the `resources/subscribe` request, and no change notification is delivered yet:
 >
-> - **`subscribe_resource(uri, subscription_id)`** — Subscribe to a `trelix://` resource URI. When the underlying file changes and the index is updated, the server fires a `notifications/resources/updated` notification (URI + `subscriptionId` in `_meta`).
+> - **`subscribe_resource(uri, subscription_id)`** — Register a `trelix://` resource URI in the server's in-memory registry. The server is meant to send `notifications/resources/updated` (URI + `subscriptionId` in `_meta`) when the index changes, but that only works if a file watcher runs inside the `trelix-mcp` process, and nothing starts one.
 > - **`unsubscribe_resource(subscription_id)`** — Cancel an active subscription by ID.
 >
-> URI scheme: `trelix://repo/{repo_path}/manifest`. The wire protocol is: `resources/subscribe` → `notifications/resources/updated` → `resources/read`. This is the standard MCP subscription flow and allows assistants to react to live code changes without polling.
+> URI scheme: `trelix://repo/{repo_path}/manifest`. The intended flow is `subscribe_resource` → `notifications/resources/updated` → `resources/read`; see [MCP_GUIDE.md](MCP_GUIDE.md) section 17 for what works today.
 
 ### Example Claude Code session
 
@@ -2205,7 +2205,7 @@ Everything below is **additive and off by default** — a v2.12.0 setup keeps be
 
 ## Phase 1–3 Features (v2.7.0)
 
-- **Watch bridge MCP notifications** — file-system watcher now emits real-time MCP events when the index is updated, enabling editors and agents to subscribe to live re-indexing signals.
+- **Watch bridge hook** — `trelix watch` calls `notify_file_changed()` after each re-index. No MCP client receives the resulting notification yet, because `trelix watch` runs in a separate process from `trelix-mcp`; see [MCP_GUIDE.md](MCP_GUIDE.md) section 12.
 - **Cross-repo symbol resolution** — symbol lookups can now resolve definitions that live in a sibling or dependency repository; configure via `cross_repo_paths` in `trelix.config.json`.
 - **Streaming indexing** (`TRELIX_INDEXER_STREAMING=1`) — large repositories are indexed incrementally in a streaming pass, reducing peak memory usage and enabling partial results during initial index builds.
 - **VS Code extension** (`workspace-vscode/`) — first-party extension adds inline symbol hover, semantic search palette, and a Trelix side-panel directly inside VS Code.

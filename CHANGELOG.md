@@ -180,6 +180,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   how many findings have no inline annotation ("10 of them could not be shown as inline annotations
   (GitHub allows 50 per check)"), as the GitHub App and the "incomplete" check already did. The App
   README states it.
+- **`trelix-mcp` no longer advertises a `resources.subscribe` capability it does not serve.**
+  `server.py` replaced `get_capabilities` on the MCP server to force `resources.subscribe: true`
+  into the capabilities sent at connect time, but trelix-mcp registers no `resources/subscribe`
+  handler, so a client that trusted the flag and sent that request got JSON-RPC "Method not
+  found" (measured in process with fastmcp 4.0.10 and mcp 2.3.0, over both the `initialize`
+  handshake and `server/discover`). The patch is deleted and the server reports
+  `resources.subscribe: false`, derived from what is registered. Any MCP client that gated on the
+  capability now sees `false`; the `subscribe_resource` and `unsubscribe_resource` tools are
+  unchanged apart from the `subscribe_resource` description text in `tools/list` (see
+  `docs/BACKWARDS_COMPATIBILITY.md`). The docs also said `trelix watch` pushes
+  `notifications/resources/updated` to MCP clients. It does not: `trelix watch` runs in its own
+  process, where the subscription registry is empty, and nothing in trelix-mcp starts a watcher,
+  so no client receives those notifications. `docs/MCP_GUIDE.md` (sections 12 and 17), the
+  trelix-mcp README, `CONFIGURATION.md`, `USER_GUIDE.md`, `FAQ.md`, `GETTING_STARTED.md` and
+  `ROADMAP.md` now say what works today.
 
 ### Changed
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):

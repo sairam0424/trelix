@@ -665,18 +665,18 @@ trelix ships a Model Context Protocol server (`trelix-mcp`) that exposes indexed
 
 ### Resource subscriptions (v2.5.0)
 
-trelix-mcp v2.5.0 advertises `resources.subscribe = true` in its server capabilities and exposes two new tools:
+trelix-mcp v2.5.0 exposes two tools for registering interest in a resource. It does not advertise `resources.subscribe` (it reports `false`) and does not serve the `resources/subscribe` request:
 
 | Tool | Parameters | Description |
 |---|---|---|
-| `subscribe_resource` | `uri`, `subscription_id` | Subscribe to change notifications for a `trelix://` resource URI |
+| `subscribe_resource` | `uri`, `subscription_id` | Register a subscription for a `trelix://` resource URI |
 | `unsubscribe_resource` | `subscription_id` | Cancel an active subscription |
 
 **URI scheme:** `trelix://repo/{repo_path}/manifest`
 
 **Wire protocol:**
 1. Client calls `subscribe_resource(uri, subscription_id)` — the server registers the subscription.
-2. When a watched file changes, trelix-mcp emits a `notifications/resources/updated` notification (URI only, with `subscriptionId` in `params._meta`).
-3. Client calls `resources/read` to fetch the updated content.
+2. Intended: when a watched file changes, trelix-mcp emits a `notifications/resources/updated` notification (URI only, with `subscriptionId` in `params._meta`). **Not delivered today:** this only works if a file watcher runs inside the `trelix-mcp` process, and nothing starts one.
+3. Client would then call `resources/read` to fetch the updated content.
 
 Subscriptions are held in-memory (not persisted across server restarts). The subscription registry is thread-safe.
