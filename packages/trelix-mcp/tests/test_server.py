@@ -844,7 +844,7 @@ def test_agent_clear_session_returns_dict() -> None:
 
 
 class TestSearchCodePagination:
-    def test_search_code_returns_pagination_envelope(self, tmp_path) -> None:
+    def test_search_code_returns_pagination_envelope(self, tmp_path, mark_indexed) -> None:
         """search_code returns dict with results + next_cursor + total_available."""
         from unittest.mock import MagicMock, patch
 
@@ -867,6 +867,7 @@ class TestSearchCodePagination:
         mock_ctx = MagicMock()
         mock_ctx.results = mock_results
 
+        mark_indexed(tmp_path)
         with patch("trelix_mcp.server.Retriever") as MockRetriever:
             MockRetriever.return_value.retrieve.return_value = mock_ctx
             response = search_code(
@@ -883,7 +884,7 @@ class TestSearchCodePagination:
         assert response["next_cursor"] == 10
         assert response["total_available"] == 25
 
-    def test_search_code_pagination_second_page(self, tmp_path) -> None:
+    def test_search_code_pagination_second_page(self, tmp_path, mark_indexed) -> None:
         """cursor=10 returns items 10-19."""
         from unittest.mock import MagicMock, patch
 
@@ -906,6 +907,7 @@ class TestSearchCodePagination:
         mock_ctx = MagicMock()
         mock_ctx.results = mock_results
 
+        mark_indexed(tmp_path)
         with patch("trelix_mcp.server.Retriever") as MockRetriever:
             MockRetriever.return_value.retrieve.return_value = mock_ctx
             response = search_code(
@@ -919,7 +921,7 @@ class TestSearchCodePagination:
         assert response["results"][0]["symbol"] == "Func10"
         assert response["next_cursor"] == 20
 
-    def test_search_code_last_page_has_null_next_cursor(self, tmp_path) -> None:
+    def test_search_code_last_page_has_null_next_cursor(self, tmp_path, mark_indexed) -> None:
         """last page has next_cursor=None."""
         from unittest.mock import MagicMock, patch
 
@@ -940,6 +942,7 @@ class TestSearchCodePagination:
         mock_ctx = MagicMock()
         mock_ctx.results = mock_results
 
+        mark_indexed(tmp_path)
         with patch("trelix_mcp.server.Retriever") as MockRetriever:
             MockRetriever.return_value.retrieve.return_value = mock_ctx
             response = search_code(

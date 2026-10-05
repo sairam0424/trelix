@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.fixtures.indexed import mark_indexed
 from trelix.api.app import create_app
 
 
@@ -29,8 +30,13 @@ def allow_repo_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     live negative control — see
     ``TestContainmentWithoutTheAllowlistFixture`` at the bottom of this file,
     which asserts the refusal from exactly that position.
+
+    The root also gets an (empty) index: the read routes answer 400 for a repository
+    that has none, and these tests patch the Retriever behind them. The unindexed case
+    has its own tests in ``test_api_requires_index.py``.
     """
     monkeypatch.setenv("TRELIX_ALLOWED_REPO_ROOTS", str(tmp_path))
+    mark_indexed(tmp_path)
     return tmp_path
 
 

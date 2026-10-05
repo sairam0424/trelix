@@ -32,6 +32,7 @@ from rich.table import Table
 
 from trelix.cli.progress import make_progress
 from trelix.core.console_safety import safe_text
+from trelix.core.index_check import IndexNotFoundError, require_index
 from trelix.federation.registry import RepoRegistry
 
 # Imported eagerly, unlike every other store import in this module, because it is the
@@ -242,16 +243,18 @@ def _require_index(config: IndexConfig, repo: str) -> None:
     constructing any of them opens the database, and opening a missing one creates it
     (schema and an empty vec0 table), which then defeats every later "No index found"
     check. Uses `db_path_resolved`, not `db_path_absolute`, because the latter creates
-    `.trelix/` and its `.gitignore` as a side effect of being read.
+    `.trelix/` and its `.gitignore` as a side effect of being read. The check itself is
+    `trelix.core.index_check.require_index`, shared with every other read surface; this
+    wrapper only turns its error into the CLI's message and exit code.
     """
-    db_path = config.db_path_resolved
-    if db_path.exists():
-        return
-    err_console.print(
-        f"[red]No index found at {_safe_text(str(db_path))}.[/red]"
-        f" Run trelix index {_safe_text(repo)} first."
-    )
-    raise typer.Exit(1)
+    try:
+        require_index(config)
+    except IndexNotFoundError as exc:
+        err_console.print(
+            f"[red]No index found at {_safe_text(str(exc.db_path))}.[/red]"
+            f" Run trelix index {_safe_text(repo)} first."
+        )
+        raise typer.Exit(1) from exc
 
 
 def _print_json(payload: object, *, indent: int | None = 2) -> None:
@@ -3790,7 +3793,22 @@ def search_all(
             f"{total_registered - repos_queried} skipped by "
             f"TRELIX_FEDERATION_MAX_REPOS={max_repos}.[/yellow]"
         )
-    with _status_console(json_output).status(f"Searching {repos_queried} repos..."):
+    # A registered repo that was never indexed is skipped and named, not opened: opening
+    # it would create an empty index, and `search-all` would go on to report "No results"
+    # for a repo that was never searched. Only when nothing queried has an index is
+    # there nothing to search at all, which is an error like every other read command's.
+    unindexed = fed.unindexed_repos()
+    for entry, missing in unindexed:
+        err_console.print(
+            f"[yellow]Skipping {_safe_text(entry.alias)}:[/yellow] {_safe_text(str(missing))}"
+        )
+    if unindexed and len(unindexed) == repos_queried:
+        err_console.print("[red]None of the queried repos has an index.[/red]")
+        raise typer.Exit(1)
+
+    with _status_console(json_output).status(
+        f"Searching {repos_queried - len(unindexed)} repos..."
+    ):
         results = fed.retrieve(query, k=k)
 
     if not results:

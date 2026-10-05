@@ -134,6 +134,36 @@ separate process whose subscription registry is empty, so no MCP client receives
 change because the old value was a false statement about the server, not a feature a working
 client could depend on; the tool names, parameters and return values are untouched.
 
+### Behaviour changes shipped as fixes: read surfaces on a repository with no index
+
+Pointed at a repository that was never indexed, these used to answer with an empty result and
+leave an empty `.trelix/index.db` behind, which made the repository look indexed (a later
+`trelix search` said "no results" instead of "not indexed"). 3.4.2 fixed the CLI read commands;
+the rest now refuse too, with the CLI's words (`No index found at <repo>/.trelix/index.db. Run
+trelix index <repo> first.`) and without creating `.trelix/`:
+
+| Surface | Before | Now |
+|---------|--------|-----|
+| MCP tools `search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`, `graph_search_mcp`, `ask_agent`, `agent_list_sessions`, `agent_clear_session` | an empty result (`get_symbol` and `blast_radius`: `null` and `[]`) | a tool error (`isError: true`, the session carries on) |
+| MCP resource handlers in `trelix_mcp.resources` | zero counts, an empty manifest, "Symbol not found" | `{"error": "No index found at ..."}` |
+| MCP `federation_search_all` | an empty page | the unindexed repo is skipped and not counted in `repos_searched`; `error` is set only when none of the queried repos is indexed |
+| REST `/search`, `/ask`, `/stats`, `/graph`, `/graph/communities`, `/graph/visualize`, `/graph/search` | `200` with zero results, zero counts or an empty graph | `400` with `{"detail": "No index found at ..."}` |
+| `TrelixRetriever` (LangChain), `TrelixIndexRetriever` (LlamaIndex) | `[]` | raise `trelix.core.index_check.IndexNotFoundError`, a `FileNotFoundError` |
+| `FederatedRetriever.retrieve` and `trelix search-all` | the unindexed repo contributed nothing | the same, but it is skipped before it is opened (so no index, and for a registered path that does not exist no directory, is created); `search-all` names it on stderr and exits `1` when every repo it would query is unindexed |
+
+A caller that treated the empty answer as "nothing found" now gets an error where it had none,
+which is the point: the old answer claimed a search that never happened. There is no toggle; the
+remedy is `trelix index <repo>` (or the `index_codebase` tool, or `POST /index`), which still
+creates the index. `trelix review` is deliberately not in the table: it keeps working on a
+repository with no index, from the diff alone, and only stops creating the empty index.
+`trelix eval`, `eval-synthesis`, `telemetry`, `agent sessions` and `taint` do not check yet
+(unchanged).
+
+`trelix-mcp`, `trelix-langchain` and `trelix-llama-index` now import `trelix.core.index_check`,
+which the core ships from the release that contains this change. An older core under a newer
+package fails on import (`trelix-mcp` at start-up, the adapters on their first query), so the
+release that ships this raises their `trelix>=` floors to that release.
+
 ### v3.3.0 Breaking Changes
 
 The following deprecated item was removed in v3.3.0. Its `AliasChoices`/`DeprecationWarning` backward-compat shim had been active since v2.4.0.

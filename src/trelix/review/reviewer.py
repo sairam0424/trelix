@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from trelix.core.index_check import IndexNotFoundError, require_index
 from trelix.llm.finish_reasons import CONTENT_FILTER, LENGTH, PAUSED, REFUSAL, STOP
 from trelix.llm.prompt import fenced_block
 from trelix.review.hunk_status import (
@@ -151,7 +152,17 @@ class DiffReviewer:
         self.last_outcome = ReviewOutcome()
 
     def _get_retriever(self) -> Any:
+        """The Retriever for this repository, or None when it has no index yet.
+
+        A repository nobody indexed is still reviewed, from the diff alone: there is
+        nothing to retrieve. Building a Retriever there would only create an empty index
+        (see `trelix.core.index_check`), so it is skipped.
+        """
         if self._retriever is None:
+            try:
+                require_index(self._config)
+            except IndexNotFoundError:
+                return None
             from trelix.retrieval.retriever import Retriever
 
             self._retriever = Retriever(self._config)
@@ -269,8 +280,9 @@ class DiffReviewer:
         retrieval_failed = False
         try:
             retriever = self._get_retriever()
-            ctx = retriever.retrieve(query)
-            context_text = ctx.context_text[:3000]  # cap context size
+            if retriever is not None:
+                ctx = retriever.retrieve(query)
+                context_text = ctx.context_text[:3000]  # cap context size
         except Exception as exc:
             # WARNING, matching the sibling per-hunk handler in review(): the CLI
             # configures WARNING, so a DEBUG record would be as silent as the

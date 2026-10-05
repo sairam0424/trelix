@@ -178,6 +178,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   so no client receives those notifications. `docs/MCP_GUIDE.md` (sections 12 and 17), the
   trelix-mcp README, `CONFIGURATION.md`, `USER_GUIDE.md`, `FAQ.md`, `GETTING_STARTED.md` and
   `ROADMAP.md` now say what works today.
+- **The read surfaces beyond the CLI no longer create an empty index on a repository that was never
+  indexed, and most now say so.** 3.4.2 fixed `search`, `ask`, `query`, `call-graph` and `graph`;
+  the MCP tools, the REST read routes, the LangChain and LlamaIndex retrievers, `trelix
+  search-all` and `trelix review` still built a `Retriever`, `GraphBuilder` or `Database` first,
+  and opening a missing index creates it (schema plus an empty vec0 table). Each answered as if it
+  had searched (`{"results": []}`, `200` with zero counts, `[]`), and the file it left behind made
+  the repository look indexed, so a later `trelix search` said "no results" instead of "not
+  indexed". One check, `trelix.core.index_check.require_index` (filesystem only; the CLI's
+  `_require_index` now uses it), runs before anything is opened, and each surface reports in its
+  own form with the CLI's words (`No index found at <repo>/.trelix/index.db. Run trelix index
+  <repo> first.`): the eight MCP read tools return a tool error (`isError: true`) and the
+  `trelix_mcp.resources` handlers reply `{"error": ...}`; `/search`, `/ask`, `/stats`, `/graph`,
+  `/graph/communities`, `/graph/visualize` and `/graph/search` answer HTTP `400` (after
+  authentication and containment; `POST /index` and `POST /parse` are untouched); `TrelixRetriever`
+  and `TrelixIndexRetriever` raise `IndexNotFoundError`, a `FileNotFoundError` that pickles and
+  copies (a process-pool worker hands it to its parent intact). `trelix search-all`
+  and the MCP `federation_search_all` skip a registered repo with no index (which also stops them
+  creating the directory of a registered path that does not exist); `search-all` names each on
+  stderr and exits `1` when every repo it would query is unindexed. `trelix review` keeps working
+  on an unindexed repository, from the diff alone (the PR workflow tolerates a failed `trelix
+  index` and reviews anyway); it only stops creating the empty index. **Behaviour change:** a
+  caller that read the empty answer as "nothing found" now gets an error; run `trelix index`,
+  `index_codebase` or `POST /index` first (see `docs/BACKWARDS_COMPATIBILITY.md`). Not covered
+  here, and unchanged: `trelix eval`, `eval-synthesis`, `telemetry`, `agent sessions` and `taint`
+  do not check yet, and neither does `FederatedRetriever.record_exports` (a library method that no
+  CLI or MCP path calls).
 
 ### Changed
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):

@@ -453,7 +453,11 @@ Two things that are **not** version sites, and must not be bumped with them:
   adapter stamped `3.1.2` that declares `trelix>=3.0.0` is saying something true. Raising
   the floor to match a release is the mistake CHANGELOG v2.7.1 already reverted
   ("Unjustified dependency-floor bumps reverted") on these same two packages, where it had
-  been raised on an unverified assumption about API usage.
+  been raised on an unverified assumption about API usage. A floor that an import demands
+  does move: `trelix-mcp` and both adapters import `trelix.core.index_check`, which the core
+  ships from the release that contains the read-surface fix, so that release's PR raises the
+  three `trelix>=` floors to it (CI installs the core editable and cannot notice a missing
+  bump; an older core under a newer package fails on import).
 
 #### Verify by printing what each site says — never by grepping for a version string
 

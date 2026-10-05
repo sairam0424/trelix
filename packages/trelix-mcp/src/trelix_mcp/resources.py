@@ -22,10 +22,22 @@ import logging
 from pathlib import Path
 
 from trelix.core.config import IndexConfig
+from trelix.core.index_check import require_index
 from trelix.core.models import Symbol
 from trelix.store.db import Database
 
 _log = logging.getLogger("trelix_mcp.resources")
+
+
+def _open_index(repo_path: str) -> Database:
+    """Open the existing index at `repo_path`, or raise `IndexNotFoundError`.
+
+    Opening a missing index creates one, so these read-only handlers check first; the
+    handlers' own `except Exception` turns the error into their `{"error": ...}` reply.
+    """
+    config = IndexConfig(repo_path=repo_path)
+    require_index(config)
+    return Database(config.db_path_absolute)
 
 
 def get_index_stats(repo_path: str) -> str:
@@ -41,8 +53,7 @@ def get_index_stats(repo_path: str) -> str:
     if not Path(repo_path).is_dir():
         return json.dumps({"error": f"repo_path is not a directory: {repo_path}"})
     try:
-        config = IndexConfig(repo_path=repo_path)
-        db = Database(config.db_path_absolute)
+        db = _open_index(repo_path)
         row = db._conn.execute(
             """
             SELECT
@@ -79,8 +90,7 @@ def get_repo_manifest(repo_path: str) -> str:
     if not Path(repo_path).is_dir():
         return json.dumps({"error": f"repo_path is not a directory: {repo_path}"})
     try:
-        config = IndexConfig(repo_path=repo_path)
-        db = Database(config.db_path_absolute)
+        db = _open_index(repo_path)
         rows = db._conn.execute(
             """
             SELECT f.rel_path, f.language, COUNT(s.id) AS symbol_count
@@ -132,8 +142,7 @@ def get_symbol_source(repo_path: str, qualified_name: str) -> str:
     if not Path(repo_path).is_dir():
         return json.dumps({"error": f"repo_path is not a directory: {repo_path}"})
     try:
-        config = IndexConfig(repo_path=repo_path)
-        db = Database(config.db_path_absolute)
+        db = _open_index(repo_path)
         short_name = qualified_name.split(".")[-1]
         symbols = db.get_symbol_by_name(short_name)
         exact = [s for s in symbols if s.qualified_name == qualified_name]

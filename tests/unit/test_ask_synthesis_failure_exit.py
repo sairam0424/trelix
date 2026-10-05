@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from openai import OpenAI
 from typer.testing import CliRunner
 
+from tests.fixtures.indexed import mark_indexed
 from trelix.api.app import create_app
 from trelix.cli.main import app
 from trelix.core.config import EmbedderConfig, LLMConfig, RetrievalConfig
@@ -475,6 +476,7 @@ class TestRestAskWithAnEmptyAnswer:
         `[DONE]`. Whether /ask should answer with an `[ERROR: ...]` frame is a separate
         decision; this only proves the new recording does not break the stream."""
         monkeypatch.setenv("TRELIX_ALLOWED_REPO_ROOTS", str(tmp_path))
+        mark_indexed(tmp_path)
         with (
             patch("trelix.api.app.Retriever") as mock_retriever,
             patch(

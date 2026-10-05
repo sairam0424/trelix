@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.fixtures.indexed import mark_indexed
 from trelix.api.app import create_app
 from trelix.api.request_guard import (
     CROSS_SITE_DETAIL,
@@ -281,8 +282,9 @@ class TestLoopbackBindAllowedHosts:
 
 @pytest.fixture
 def guarded_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
-    """The real app with the guard ON and `tmp_path` as the only served root."""
+    """The real app with the guard ON and `tmp_path` as the only (indexed) served root."""
     monkeypatch.setenv("TRELIX_ALLOWED_REPO_ROOTS", str(tmp_path))
+    mark_indexed(tmp_path)
     mock_ctx = MagicMock()
     mock_ctx.results = []
     with patch("trelix.api.app.Retriever") as retriever:
