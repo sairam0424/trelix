@@ -172,6 +172,19 @@ TRELIX_MCP_MAX_SUBSCRIBERS=1000
 TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 ```
 
+### Result size limits
+
+```bash
+# Largest page a list tool returns: k (and agent_list_sessions's limit) is clamped to 1..this
+TRELIX_MCP_MAX_K=50
+
+# Budget, in characters, for a list result. Over it the tail is dropped and the response says
+# so; the whole response (both copies a client is sent) is at most twice this. 0 turns the cut off.
+TRELIX_MCP_MAX_RESULT_CHARS=15000
+```
+
+Both are read on every call. A blank value means the default; a value that is not an integer (of at least 1 for `TRELIX_MCP_MAX_K`, at least 0 for `TRELIX_MCP_MAX_RESULT_CHARS`) stops `trelix-mcp` at start-up with exit code 2. See [Result size](#result-size).
+
 ## Tools
 
 `tools/list` returns the tools in a fixed order and marks each one with MCP annotation hints; the server also sends short `instructions` that tell a model to index first and which search tool to use next. Only `search_code`, `get_symbol` and `blast_radius` are marked `readOnlyHint: true` (each is tested to leave the index database byte-identical once the server's database connections are closed, with telemetry off and the index already at the current schema; `TRELIX_TELEMETRY_ENABLED=true` adds a `query_telemetry` row per `search_code`, the first open of an index written by an older trelix migrates it, and every `search_code` writes a small JSON trace of the query to `.trelix/debug/`, so the hint means the index database is left alone, not the whole repository directory); `agent_clear_session` and `federation_remove_repo` are marked `destructiveHint: true`; every tool has `openWorldHint: false`. The full table is in [docs/MCP_GUIDE.md](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md), section 8.
@@ -180,12 +193,12 @@ TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 
 | Tool | Description |
 |------|-------------|
-| `search_code(query, repo_path, k=10, cursor=0)` | Hybrid semantic+BM25 search with cursor pagination |
+| `search_code(query, repo_path, k=10, cursor=0, detail="detailed")` | Hybrid semantic+BM25 search with cursor pagination; `detail="concise"` returns a one-line `signature` instead of each `body` |
 | `index_codebase(repo_path, provider="local")` | Index a repo (run once); emits progress notifications |
-| `get_symbol(qualified_name, repo_path)` | Get full source of a symbol by qualified name |
-| `blast_radius(symbol_name, repo_path)` | Direct callers + importers of a symbol, from the call/import graph (no embedding model, ~60-120 ms) |
+| `get_symbol(qualified_name, repo_path, max_body_chars=20000)` | Get the source of a symbol by qualified name; a longer body is cut and `body_truncated` is `true` (`0` = no limit) |
+| `blast_radius(symbol_name, repo_path, limit=100)` | Direct callers + importers of a symbol, from the call/import graph (no embedding model, ~60-120 ms); `limit` is 1 to 500 |
 | `build_knowledge_graph(repo_path)` | Build code property graph |
-| `graph_search_mcp(query, repo_path)` | Search via knowledge graph |
+| `graph_search_mcp(query, repo_path, k=10, detail="detailed")` | Search via knowledge graph |
 | `subscribe_resource(uri, subscription_id)` | Register a subscription for a trelix:// resource URI (v2.5.0+); no notification is delivered yet, see Resource Subscriptions |
 | `unsubscribe_resource(subscription_id)` | Cancel a resource subscription (v2.5.0+) |
 
@@ -196,14 +209,14 @@ TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 | `federation_list_repos(config_path=None)` | List all repos registered for federated search |
 | `federation_add_repo(alias, path, weight=1.0, config_path=None)` | Register a repo for federated search (absolute path required) |
 | `federation_remove_repo(alias, config_path=None)` | Unregister a repo by alias |
-| `federation_search_all(query, k=10, cursor=0, config_path=None)` | Search across all registered repos with RRF-weighted fusion |
+| `federation_search_all(query, k=10, cursor=0, config_path=None, detail="detailed")` | Search across all registered repos with RRF-weighted fusion |
 
 ### Persistent Agent Session Tools (v2.8.0)
 
 | Tool | Description |
 |------|-------------|
 | `ask_agent(query, repo_path, session_id=None)` | Multi-turn ReAct Q&A with persistent memory (pass session_id to resume) |
-| `agent_list_sessions(repo_path, limit=50)` | List recent agent sessions for a repo |
+| `agent_list_sessions(repo_path, limit=50)` | List recent agent sessions for a repo (`limit` is clamped to 1..`TRELIX_MCP_MAX_K`) |
 | `agent_clear_session(repo_path, session_id)` | Delete a persisted agent session and all its turn history |
 
 ## Resource Subscriptions (v2.5.0)
@@ -240,6 +253,18 @@ print(page1["results"])          # this page's results
 if page1["next_cursor"] is not None:
     page2 = search_code(query="authentication", repo_path="/repo", k=10, cursor=page1["next_cursor"])
 ```
+
+`next_cursor` is `null` after the last page, and a negative `cursor` is an error result.
+
+## Result size
+
+A tool result costs a client's context twice (FastMCP sends a dict result as a text block and again as `structuredContent`), so these bound it:
+
+- `k` (and `limit` on `agent_list_sessions`) is clamped to 1..`TRELIX_MCP_MAX_K` (default 50); `page_size` in the response is the value used.
+- A list result is cut to fit `TRELIX_MCP_MAX_RESULT_CHARS` (default 15,000; `0` turns it off) by dropping the tail. The budget counts both copies a client is sent, so the whole response is at most twice the budget (30,000 characters by default) and its text under the budget. A cursor-paged response (`search_code`, `federation_search_all`) sets `truncated` and `omitted` and points `next_cursor` at the first dropped result, so paging loses and repeats nothing. A bare array (`blast_radius`, `graph_search_mcp`) keeps the JSON array as its first text block and adds a note block and `_meta.trelix` (`total_available`, `omitted`). One result is always kept, so a single result longer than the budget is returned whole.
+- `detail="concise"` drops each `body`; `get_symbol` cuts a body over `max_body_chars` and reports `body_truncated`; `agent_list_sessions` cuts each session's `query` (its most recent prompt) to 300 characters and reports `query_truncated`.
+
+The full description, with measured sizes, is in [docs/MCP_GUIDE.md](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#output-size-and-limits).
 
 ## Knowledge Graph Tools
 

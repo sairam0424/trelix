@@ -102,7 +102,14 @@ def test_a_refused_search_does_not_poison_the_retriever_cache(
         retriever.return_value.retrieve.return_value = context
         response = search_code(query="add", repo_path=str(repo))
 
-    assert response == {"results": [], "next_cursor": None, "total_available": 0}
+    assert response == {
+        "results": [],
+        "next_cursor": None,
+        "total_available": 0,
+        "page_size": 10,
+        "truncated": False,
+        "omitted": 0,
+    }
     retriever.assert_called_once()
 
 
@@ -113,7 +120,13 @@ def test_agent_list_sessions_on_an_indexed_repo_still_answers(
 
     mark_indexed(repo)
 
-    assert agent_list_sessions(repo_path=str(repo)) == {"sessions": [], "count": 0}
+    assert agent_list_sessions(repo_path=str(repo)) == {
+        "sessions": [],
+        "count": 0,
+        "page_size": 50,
+        "truncated": False,
+        "omitted": 0,
+    }
 
 
 def test_agent_clear_session_on_an_indexed_repo_still_answers(

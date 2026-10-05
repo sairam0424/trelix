@@ -246,6 +246,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   here, and unchanged: `trelix eval`, `eval-synthesis`, `telemetry`, `agent sessions` and `taint`
   do not check yet, and neither does `FederatedRetriever.record_exports` (a library method that no
   CLI or MCP path calls).
+- **`get_symbol` and the `trelix://` resource readers closed no database connection.** Each call
+  opened a `Database` and left it to the garbage collector, so a long-running `trelix-mcp` kept a
+  file handle (and, in WAL mode, a `-wal` and `-shm` pair) open per call until collection. They now
+  close it on every path: found, not found, and when a query raises. A test spies on every
+  `Database` these open and requires each to refuse a query afterwards.
 
 ### Added
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
@@ -316,6 +321,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     table. Five guides (`MCP_GUIDE`, `TROUBLESHOOTING`, `INSTALLATION_GUIDE`, `USER_GUIDE`,
     `integrations/vscode-plugin`) said `trelix-mcp` takes no arguments; they now say it accepts
     `--help`, `--version` and `--tools` (the first two already worked).
+- **`trelix-mcp`: `detail` on the search tools, `limit` on `blast_radius`, `max_body_chars` on
+  `get_symbol`, and three keys on list responses.** All additive; the defaults keep each tool's old
+  meaning.
+  - `detail` (`"detailed"`, the default and unchanged, or `"concise"`) on `search_code`,
+    `graph_search_mcp` and `federation_search_all`. `concise` drops each result's `body` and adds a
+    one-line `signature`: the first line of the symbol's signature, at most 200 characters, or the
+    first line of its body when the signature is blank.
+  - `blast_radius(limit=100)`, clamped to 1..500.
+  - `get_symbol(max_body_chars=20000)`: a longer body is cut and `body_truncated` is `true`; `0`
+    means no limit; a negative value is an error result.
+  - `search_code` and `federation_search_all` responses gain `page_size` (the `k` the server used),
+    `truncated` and `omitted`; `agent_list_sessions` gains the same three. The `federation_search_all`
+    error and empty-registry responses keep their shorter shape.
+  - Two environment variables, `TRELIX_MCP_MAX_K` and `TRELIX_MCP_MAX_RESULT_CHARS` (below).
 
 ### Changed
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):
@@ -353,6 +372,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
   `server.disable(names=, components=)`. 4.0.10 is the release those were run against (4.0.0 to
   4.0.9 were not tested), and `tests/unit/test_dependency_floor_guards.py` pins it.
+- **`trelix-mcp` list results are bounded, and a cut says so.** A tool result costs a client twice
+  (FastMCP sends a dict result as a text block, where every quote is escaped, and as
+  `structuredContent`): measured with 100,000-character bodies, `search_code` at `k=100` was about
+  97,000 characters of text and 197,000 on the wire, over Claude Code's 25,000-token cap for one tool
+  result. The code is in `trelix_mcp/budget.py`.
+  - **`k` above 50 is now clamped** (`k` on the search tools and `limit` on `agent_list_sessions`
+    go to `1..TRELIX_MCP_MAX_K`); `TRELIX_MCP_MAX_K=<n>` raises the cap.
+  - **A long result is now cut, with a note,** to fit `TRELIX_MCP_MAX_RESULT_CHARS` (default 15,000;
+    `0` turns the cut off). The budget counts what a client is sent, so the whole response is at
+    most 30,000 characters and its text under 15,000. A cursor-paged response sets `truncated` and
+    `omitted`, and `next_cursor` points at the first dropped result, so paging loses and repeats
+    nothing. A bare array (`blast_radius`, `graph_search_mcp`) keeps the JSON array as its first text
+    block, which the VS Code extension reads, and adds a note block and `_meta.trelix`; the
+    `graph_search_mcp` note points at `detail="concise"`, as a larger `k` cannot help there. One
+    result is always kept, so paging advances.
+  - **`agent_list_sessions` cuts each session's `query` (its most recent prompt) to 300 characters** and
+    sets `query_truncated: true` on a session it cut. The prompt has no bound of its own.
+  - **`blast_radius` returns at most 100 dependents by default** (it returned all of them); `limit`
+    raises that to 500 (it has no offset), and the character cut still applies (about 108 dependents
+    fit with short paths, about 84 with 72-character ones). The VS Code "N dependents" lens and the
+    `@trelix /impact` chat command therefore show at most 100 (fewer when the character budget cuts first), with no
+    sign that the list was cut, until the extension reads `_meta.trelix.total_available` (a follow-up: passing `limit`
+    does not help, the character budget cuts the list first).
+    **`get_symbol` cuts a body over 20,000 characters** (`max_body_chars=0` restores it).
+  - A negative `cursor` returned a slice taken from the end of the list; it is now an error result.
+    An unusable `TRELIX_MCP_MAX_K` or `TRELIX_MCP_MAX_RESULT_CHARS` stops `trelix-mcp` at start-up
+    with exit code 2. `docs/MCP_GUIDE.md` and `docs/BACKWARDS_COMPATIBILITY.md` describe the limits.
+  - Not covered: `build_knowledge_graph` and `federation_list_repos` are not cut.
 
 ## [3.4.3] — 2026-10-04
 
