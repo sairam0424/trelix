@@ -1574,8 +1574,9 @@ rather than here — a second full flag table in this guide would only drift out
 Three things are worth stating plainly before you go looking for a flag:
 
 **1. The repo is a positional argument, never a flag.** Every command that operates on a
-repository takes it as the first positional argument. There is no `--repo` anywhere in
-trelix.
+repository takes it as the first positional argument. The only `--repo` is on
+`eval-validate`, which checks a golden file and names the git repository its paths are
+checked against.
 
 ```bash
 trelix index  ./my-repo
@@ -1645,7 +1646,7 @@ that copy-pasted commands fail loudly rather than silently:
 | `--token` (on `review`) | the `GITHUB_TOKEN` environment variable |
 | `--debounce`, `--graph` (on `watch`) | nothing — `watch` takes only `--provider`; there is no debounce flag *or* env var |
 | `--since`, `--query-filter`, `--json` (on `telemetry`) | `--limit`/`-n`, or query the `query_telemetry` table with `sqlite3` |
-| `--repo` (anywhere) | the repo is positional |
+| `--repo` (on any command but `eval-validate`) | the repo is positional |
 | `--embedder` | `--provider` |
 | `trelix-mcp --version` / `--cache-dir` | `trelix-mcp` parses no arguments at all; use `python -c "import trelix_mcp; print(trelix_mcp.__version__)"` |
 

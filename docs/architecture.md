@@ -1833,7 +1833,9 @@ Single entry point: `trelix = "trelix.cli.main:app"` (Typer application).
 
 ### Command Summary
 
-Repo paths are **positional arguments**, never flags — there is no `--repo` anywhere.
+Repo paths are **positional arguments**, never flags. The one `--repo` is on `eval-validate`,
+whose positional argument is the golden file and whose `--repo` names the git repository its
+paths are checked against.
 Most tuning is done through environment variables rather than flags; see
 [CLI_REFERENCE.md](CLI_REFERENCE.md) for the authoritative per-command flag list.
 
@@ -1856,6 +1858,7 @@ Most tuning is done through environment variables rather than flags; see
 | `telemetry [repo]` | --limit/-n | Query telemetry |
 | `eval [repo]` | --golden/-g | nDCG@10/Recall/MRR |
 | `eval-synthesis [repo]` | --golden/-g | GroUSE synthesis scoring |
+| `eval-validate <golden>` | --repo, --rev, --min-per-stratum, --min-validated | Check a golden file without running a query |
 | `taint [repo]` | --tier/-t, --severity/-s, --json | Semgrep taint analysis |
 | `review [repo]` | --diff/-d, --base, --head, --json, --max-files, --pr, --post-comments | Diff review (v2.4.0) |
 | `search-all <query>` | --config, --k, --json | Federated search |

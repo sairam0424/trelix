@@ -101,19 +101,59 @@ runs and listing every offending line at once:
 `Queries evaluated` therefore equals this file's non-blank line count on any unfiltered
 run; it is smaller only when you asked for a subset (next section).
 
-**Still not checked: whether the paths exist.** A path that is well-formed but stale
-(renamed or deleted file) scores 0 and looks like a retrieval miss. Verify before adding
-an entry:
+**Still not checked by `trelix eval`: whether the paths exist.** A path that is well-formed
+but stale (renamed or deleted file) scores 0 and looks like a retrieval miss. Verify before
+adding an entry, and whenever files move:
 
 ```bash
-python - <<'PY'
-import json, pathlib
-for n, line in enumerate(open("eval/golden.jsonl"), 1):
-    for p in json.loads(line)["relevant_files"]:
-        if not pathlib.Path(p).exists():
-            print(f"line {n}: missing {p}")
-PY
+trelix eval-validate eval/golden.jsonl --repo .
 ```
+
+### Golden v2 and `trelix eval-validate`
+
+Golden v2 adds optional keys to a v1 line; `query` and `relevant_files` stay exactly as
+above. A file that uses none of them is a v1 file (`golden.jsonl` is one) and loads and
+scores as it always did, and keys trelix does not know are still ignored.
+
+| Field | Allowed values | Meaning |
+|---|---|---|
+| `id` | non-empty string, unique within the file | Label for the query |
+| `lang` | non-empty string | Language of the code the query is about |
+| `kind` | `nl`, `keyword`, `commit`, `issue` | How the query was phrased or found |
+| `source` | non-empty string | Where the query came from |
+| `gold_status` | `validated`, `pooled`, `unreviewed` | The result of checking the entry's `relevant_files` |
+| `split` | `dev`, `test` | Which part of the file the query belongs to |
+
+A field that is present with another type or value (a `kind` of `"code"`, an `id` of `""`,
+any of them `null`) is refused like every other unusable entry: `trelix eval` names the line
+and runs no query.
+
+```bash
+trelix eval-validate GOLDEN [--repo PATH] [--rev REV] [--min-per-stratum N] [--min-validated FRACTION]
+```
+
+runs no query and checks:
+
+1. every line is schema-valid: the rules above, and the table;
+2. no two queries are equal once stripped and case-folded, and no two `id`s are equal
+   (an `id` is compared exactly: `A` and `a` are different ids, and an empty one is a
+   violation of item 1, not a duplicate);
+3. with `--repo`, every `relevant_files` path exists in that git repository at `--rev`
+   (default `HEAD`), read with `git ls-tree`. Paths are relative to `--repo`, so a
+   subdirectory of a checkout is checked against its own subtree. Without `--repo` this
+   check is skipped and a note says so;
+4. in a file where some entry has a `kind` (a v2 file), every kind that occurs has at least
+   `--min-per-stratum` queries (default 20). An entry without a `kind` is in no stratum;
+5. in a v2 file, at least `--min-validated` (default 0.95) of all entries have a
+   `gold_status` of `validated` or `pooled`; an entry with no `gold_status` counts as
+   `unreviewed`.
+
+A file where no entry has a `kind` is checked as v1 (1 to 3 only), and the command says so.
+Each violation is one line on stdout, `line N: ...` or `file: ...`, followed by any notes and
+a summary line. The exit code is `0` with no violation and `1` with any. A golden file that
+is missing or cannot be opened, a `--repo` that is not a git repository and an unknown
+`--rev` print an error on stderr and also exit `1`; a threshold out of range (`--min-per-stratum` below 0,
+`--min-validated` outside 0 to 1) is a usage error, exit `2`.
 
 ### Scoring one area
 

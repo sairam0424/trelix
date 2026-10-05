@@ -31,6 +31,7 @@ from pathlib import Path, PurePosixPath
 
 from trelix.core.config import IndexConfig
 from trelix.core.models import RerankOutcome
+from trelix.eval.golden import validate_entry
 from trelix.eval.ndcg import mrr, ndcg_at_k, recall_at_k
 
 logger = logging.getLogger("trelix.eval")
@@ -121,6 +122,11 @@ def _parse_golden(path: Path) -> list[_GoldenEntry]:
         if not isinstance(query, str) or not query.strip():
             problems.append(f'line {line_no}: "query" must be a non-empty string')
             continue
+
+        # Golden v2's optional fields (trelix.eval.golden): refused when present and
+        # wrong-typed, never required. Not a `continue`: the line's other problems are
+        # reported in the same run.
+        problems.extend(f"line {line_no}: {p}" for p in validate_entry(item))
 
         relevant = item.get("relevant_files")
         if not isinstance(relevant, list) or not relevant:

@@ -32,6 +32,7 @@ on most commands.
    - [telemetry](#trelix-telemetry)
    - [eval](#trelix-eval)
    - [eval-synthesis](#trelix-eval-synthesis)
+   - [eval-validate](#trelix-eval-validate)
    - [taint](#trelix-taint)
    - [review](#trelix-review)
    - [link-tickets](#trelix-link-tickets)
@@ -1153,6 +1154,80 @@ adding two optional fields:
   `Queries evaluated = 0`. Double-check the `--golden` path if you see an
   all-zero result; it usually means the file wasn't found, not that
   synthesis quality is actually zero.
+
+---
+
+### `trelix eval-validate`
+
+#### Synopsis
+
+```
+trelix eval-validate <golden> [--repo <path>] [--rev <rev>] [--min-per-stratum <n>] [--min-validated <fraction>]
+```
+
+#### Description
+
+Checks a golden JSONL file without running any query: no index is read or created and no
+LLM is called. It checks that every line is schema-valid (the `trelix eval` rules, plus the
+optional golden v2 fields `id`, `lang`, `kind`, `source`, `gold_status` and `split`), that
+no two queries are equal once stripped and case-folded and no two `id`s are equal, and,
+with `--repo`, that every `relevant_files` path exists in the repository at `--rev` (read
+with `git ls-tree`). In a v2 file (some entry has a `kind`) it also checks that every `kind`
+that occurs has enough queries and that enough entries have a `gold_status` of `validated`
+or `pooled`. A file where no entry has a `kind` is checked as v1 and the command says so.
+The fields, their allowed values and the checks are described in `eval/README.md`.
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `<golden>` | | argument | *(required)* | Path to the golden JSONL file. |
+| `--repo` | | string | *(none)* | Git repository to check every `relevant_files` path against. Paths are relative to it, so a subdirectory of a checkout is checked against its own subtree. Without it the path check is skipped and a note says so. |
+| `--rev` | | string | `HEAD` | Revision of `--repo` the paths must exist at. |
+| `--min-per-stratum` | | integer, 0 or more | `20` | v2 files only: the fewest queries each `kind` that occurs may have. |
+| `--min-validated` | | float, 0.0 to 1.0 | `0.95` | v2 files only: the least share of all entries whose `gold_status` is `validated` or `pooled`; an entry with no `gold_status` counts as `unreviewed`. |
+
+#### Examples
+
+```bash
+# Schema and duplicates only
+trelix eval-validate eval/golden.jsonl
+
+# Also check every path against the files committed at HEAD
+trelix eval-validate eval/golden.jsonl --repo .
+
+# ... or as they were at an older revision
+trelix eval-validate eval/golden.jsonl --repo . --rev v3.4.3
+
+# A v2 file, with looser thresholds
+trelix eval-validate my-golden-v2.jsonl --repo . --min-per-stratum 10 --min-validated 0.9
+```
+
+#### Output
+
+One line per violation on stdout, `line N: ...` for an entry or `file: ...` for the file as
+a whole, then any `note:` lines and a one-line summary:
+
+```
+line 2: "relevant_files" path 'src/old.py' does not exist at HEAD
+line 3: duplicate query (same as line 1 once stripped and case-folded)
+note: no entry has a kind, so this file is checked as v1: only the schema, duplicate and (with --repo) path checks ran
+invalid: entries 3, violations 2
+```
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | No violation (the summary line says `valid`). |
+| `1` | One or more violations, or an error printed on stderr: the golden file is missing or cannot be opened, `--repo` is not a directory or not a git repository, or `--rev` is unknown. |
+| `2` | A usage error, including `--min-per-stratum` below 0 or `--min-validated` outside 0 to 1. |
+
+#### Notes
+
+- Run it before `trelix eval` and whenever files move: a well-formed but stale path scores 0
+  in `trelix eval`, which cannot tell it from a retrieval miss.
+- `--rev` has no effect without `--repo`.
 
 ---
 
