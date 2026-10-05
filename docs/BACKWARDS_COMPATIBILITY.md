@@ -116,6 +116,24 @@ A `--base` or `--head` that git cannot resolve is the same kind of change: it us
 with a single commit included). So does any other `git diff` failure between refs that each resolve.
 There is no escape hatch, for the same reason as for `3`: no diff had been read.
 
+### Behaviour changes shipped as fixes: the MCP `resources.subscribe` capability
+
+`trelix-mcp` used to force `resources.subscribe: true` into the capabilities it returns to a
+client at connect time (both the `initialize` result and `server/discover`), although it does
+not serve the `resources/subscribe` request: a client that sent it got JSON-RPC "Method not
+found". The forced value is removed, so the server now reports `resources.subscribe: false`,
+which is what it does. A client that gated on the capability now sees `false`, which is the
+truth; a client that ignored the capability sees no difference. The `subscribe_resource` and
+`unsubscribe_resource` tools work as before (only the `subscribe_resource` description text that
+`tools/list` sends was reworded, because it told models to call the tool after seeing
+`resources.subscribe: true`), and there is no escape hatch because none is needed: a client that
+wants them calls the tools by name. What did not work before, and still does not, is delivery:
+nothing starts a file watcher inside the `trelix-mcp` process, and `trelix watch` runs in a
+separate process whose subscription registry is empty, so no MCP client receives
+`notifications/resources/updated`. This was shipped as a fix rather than a flagged breaking
+change because the old value was a false statement about the server, not a feature a working
+client could depend on; the tool names, parameters and return values are untouched.
+
 ### v3.3.0 Breaking Changes
 
 The following deprecated item was removed in v3.3.0. Its `AliasChoices`/`DeprecationWarning` backward-compat shim had been active since v2.4.0.

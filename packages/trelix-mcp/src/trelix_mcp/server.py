@@ -23,7 +23,6 @@ from mcp.types import (  # noqa: E402
     ElicitRequestFormParams,
     ElicitResult,
     InputRequiredResult,
-    ServerCapabilities,
 )
 
 from trelix.agent.loop import AgentLoop  # noqa: E402
@@ -65,65 +64,21 @@ def _get_retriever(repo_path: str) -> Retriever:
         return retriever
 
 
-# Global subscription registry — tracks which MCP clients are watching which
-# trelix:// resource URIs.  notify_file_changed() fires notifications to all
-# active subscribers when trelix watch detects a file change.
+# Global subscription registry — records which subscription IDs were registered
+# (via the subscribe_resource tool) for which trelix:// resource URIs.  It lives in this
+# server process only; the `trelix watch` process has its own, empty one.
 _subscription_registry = SubscriptionRegistry(
     max_subscribers=int(os.environ.get("TRELIX_MCP_MAX_SUBSCRIBERS", "1000")),
     ttl_seconds=float(os.environ.get("TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS", "3600")),
 )
 
 # ---------------------------------------------------------------------------
-# MCP spec 2024-11-05 §Resources — declare resources.subscribe=True so that
-# MCP clients (Claude Code, Cursor, VS Code Copilot) know they may send
-# resources/subscribe requests.  FastMCP's low-level SDK hardcodes
-# subscribe=False when it builds ServerCapabilities, so we patch the
-# get_capabilities method on the server instance after construction.
-# subscribe and listChanged are independent optional fields; we only
-# opt-in to subscribe here — listChanged is handled separately by FastMCP's
-# notification_options.
-#
-# The wrapper is deliberately *args/**kwargs rather than a fixed
-# (notification_options, experimental_capabilities) signature: the mcp SDK's
-# own internal call sites for this method are not stable across SDK major
-# versions —
-#   mcp 1.x  Server.create_initialization_options() calls
-#            get_capabilities(notification_options, experimental_capabilities)
-#            — 2 positional args, no `extensions`/`protocol_version`.
-#   mcp 2.x  Server.create_initialization_options() calls
-#            get_capabilities(notification_options or ..., experimental_capabilities
-#            or ..., extensions if ... else ...) — 3 positional args.
-#   mcp 2.x  Server._handle_discover() calls
-#            get_capabilities(protocol_version=ctx.protocol_version) — 0
-#            positional args, one keyword-only arg unknown to the 1.x shape.
-# A fixed 2-positional-arg signature raises TypeError against the second and
-# third call shapes (confirmed against real mcp 2.1.1: "takes 2 positional
-# arguments but 3 were given"). Forwarding everything straight through to the
-# real bound method keeps this correct across SDK generations without
-# version-sniffing mcp's version at import time.
-# ---------------------------------------------------------------------------
-
-_orig_get_capabilities = mcp._mcp_server.get_capabilities
-
-
-def _get_capabilities_with_subscribe(*args: Any, **kwargs: Any) -> ServerCapabilities:
-    """Wrap get_capabilities to advertise resources.subscribe=True."""
-    caps = _orig_get_capabilities(*args, **kwargs)
-    if caps.resources is not None:
-        caps = caps.model_copy(
-            update={"resources": caps.resources.model_copy(update={"subscribe": True})}
-        )
-    return caps
-
-
-mcp._mcp_server.get_capabilities = _get_capabilities_with_subscribe  # type: ignore[method-assign]
-
-
-# ---------------------------------------------------------------------------
-# MCP Resource Subscription handlers (MCP spec 2024-11-05 §Resources)
-# Wire protocol: resources/subscribe → notifications/resources/updated → resources/read
-# The subscribe/unsubscribe tools register/deregister URIs in _subscription_registry.
-# Callers (trelix watch) call notify_file_changed() to fire the push notifications.
+# Resource subscription TOOLS. This server does not serve the MCP
+# resources/subscribe request, so it does not advertise resources.subscribe (the
+# capability is derived from the registered handlers, not forced).
+# The tools below only register/deregister URIs in _subscription_registry.
+# notify_file_changed() can push notifications/resources/updated for them, but only
+# when it runs inside this stdio server process, and nothing here starts a watcher.
 # ---------------------------------------------------------------------------
 
 
@@ -131,10 +86,11 @@ mcp._mcp_server.get_capabilities = _get_capabilities_with_subscribe  # type: ign
 def subscribe_resource(uri: str, subscription_id: str) -> dict[str, Any]:
     """Register a subscription for a trelix:// resource URI.
 
-    MCP clients call this after receiving resources.subscribe=True in capabilities.
-    When the resource changes (e.g. trelix watch detects a file edit), the server
-    pushes notifications/resources/updated carrying only the URI — no content.
-    The client then calls resources/read to fetch the updated content.
+    Registers the URI in this server process's in-memory subscription registry. The
+    server does not advertise resources.subscribe and does not serve resources/subscribe,
+    so this tool is the only way to register. A notifications/resources/updated (URI
+    only, no content) is sent for a registered URI only if a file watcher runs inside
+    this server process; nothing starts one today, so none is delivered yet.
 
     Args:
         uri: The trelix:// resource URI to watch (e.g. trelix://repo//path/manifest).

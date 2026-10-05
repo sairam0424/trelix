@@ -2,7 +2,7 @@
 
 <!-- mcp-name: io.github.sairam0424/trelix -->
 
-MCP server for [trelix](https://github.com/sairam0424/trelix) v3.3.7 — semantic code search with streaming /ask endpoint, watch bridge notifications, and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
+MCP server for [trelix](https://github.com/sairam0424/trelix) v3.3.7 — semantic code search with streaming /ask endpoint and REST API integration for Claude Code, Cursor, Windsurf, and Continue.dev.
 
 ## ⚠️ Breaking Change in v2.4.0
 
@@ -176,7 +176,7 @@ TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 | `blast_radius(symbol_name, repo_path)` | Direct callers + importers of a symbol, from the call/import graph (no embedding model, ~60-120 ms) |
 | `build_knowledge_graph(repo_path)` | Build code property graph |
 | `graph_search_mcp(query, repo_path)` | Search via knowledge graph |
-| `subscribe_resource(uri, subscription_id)` | Subscribe to change notifications for a trelix:// resource URI (v2.5.0+) |
+| `subscribe_resource(uri, subscription_id)` | Register a subscription for a trelix:// resource URI (v2.5.0+); no notification is delivered yet, see Resource Subscriptions |
 | `unsubscribe_resource(subscription_id)` | Cancel a resource subscription (v2.5.0+) |
 
 ### Multi-Repo Federation Tools (v2.8.0)
@@ -198,7 +198,7 @@ TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 
 ## Resource Subscriptions (v2.5.0)
 
-trelix-mcp supports live index change notifications. When `trelix watch` detects a file change, connected MCP clients receive a `notifications/resources/updated` push — then call `resources/read` to fetch the updated index. Subscribe with the `subscribe_resource` tool.
+trelix-mcp has tools for registering interest in a resource, but it does not push index change notifications yet: see the status note below. Register a URI with the `subscribe_resource` tool.
 
 ```python
 # Subscribe to a repo manifest
@@ -206,14 +206,13 @@ subscribe_resource(
     uri="trelix://repo//path/to/repo/manifest",
     subscription_id="my-sub-001"
 )
-# → client receives notifications/resources/updated when trelix watch fires
-# → call resources/read on the URI to get the refreshed index
+# → the URI is registered; no notification is delivered yet (see below)
 
 # Cancel the subscription
 unsubscribe_resource(subscription_id="my-sub-001")
 ```
 
-The `resources.subscribe` capability is advertised in server capabilities. URIs follow the scheme `trelix://repo/{repo_path}/manifest`. The `notify_file_changed()` hook (wired into `FileWatcher._do_reindex` since v2.7.0) fires per-URI notifications with the `subscriptionId` in `params._meta`.
+The server does not advertise `resources.subscribe` (it reports `false`) and does not serve the `resources/subscribe` request: `subscribe_resource` and `unsubscribe_resource` are ordinary tools that record URIs in an in-memory registry inside the `trelix-mcp` process. URIs follow the scheme `trelix://repo/{repo_path}/manifest`. The `notify_file_changed()` hook (wired into `FileWatcher._do_reindex` since v2.7.0) would fire per-URI notifications with the `subscriptionId` in `params._meta`, but it runs in the `trelix watch` process, where this registry is empty, and nothing starts a watcher inside `trelix-mcp` — so no notification is delivered today.
 
 Subscriptions are capped and TTL'd by default — see [Resource subscription limits](#resource-subscription-limits) (`TRELIX_MCP_MAX_SUBSCRIBERS`, default `1000`; `TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS`, default `3600`). Subscriptions older than the TTL are swept on the next registry access. If the registry is at capacity, `subscribe_resource` does not raise — it returns `{"subscribed": false, "uri": ..., "subscription_id": ..., "error": "..."}` so callers can handle rejection gracefully.
 
@@ -270,23 +269,15 @@ pip install trelix-mcp 'trelix[knowledge-graph]'
 
 ## Watch Bridge (v2.7.0)
 
-The `trelix watch` command now fires MCP notifications after every file re-index, allowing real-time codebase awareness across all subscribed clients:
+After each file re-index, `trelix watch` calls `notify_file_changed()`, which writes `notifications/resources/updated` for the URIs registered with `subscribe_resource`. **No MCP client receives these notifications today.** `trelix watch` is a separate process from `trelix-mcp` and its subscription registry is empty, and nothing in trelix-mcp starts a file watcher, so running `trelix-mcp` in one terminal and `trelix watch /path/to/repo` in another does not connect them. The notification can only reach a client when the watcher runs inside the stdio server process.
 
-```bash
-# Terminal 1: Start trelix-mcp
-trelix-mcp
-
-# Terminal 2: Enable file watching
-trelix watch /path/to/repo
-```
-
-Clients subscribe to a repository's manifest URI via `subscribe_resource`, which takes two
+Registering a subscription to a repository's manifest URI works; `subscribe_resource` takes two
 required strings. There is no glob support:
 
 ```
 subscribe_resource(uri="trelix://repo//path/to/repo/manifest", subscription_id="my-sub-001")
 ```
 
-After each re-index, subscribed clients receive `notifications/resources/updated` carrying only
+Once delivery works, a notification will carry only
 `{"uri": ..., "_meta": {"subscriptionId": ...}}` — no file paths and no stats. Call
 `resources/read` on that URI to see what changed.
