@@ -410,10 +410,13 @@ def _harness_with(retriever: Any):
     `__init__` builds a real Retriever, which needs an index; the loop under test
     needs neither.
     """
+    from types import SimpleNamespace
+
     from trelix.eval.harness import EvalHarness
 
     harness = EvalHarness.__new__(EvalHarness)
-    harness._config = None  # type: ignore[assignment]
+    # Only `repo_path` is read (for the per-query `repo` label), and only its basename.
+    harness._config = SimpleNamespace(repo_path="/work/example-repo")  # type: ignore[assignment]
     harness._retriever = retriever
     return harness
 
@@ -472,6 +475,24 @@ class TestConfigSurface:
         assert cfg.plan_seed is None
 
 
+def _record(score: float) -> Any:
+    """One per-query record scoring `score` on every metric, for a stubbed harness."""
+    from trelix.eval.harness import QueryRecord
+
+    return QueryRecord(
+        id="q0001",
+        repo="example-repo",
+        kind=None,
+        lang=None,
+        split=None,
+        ndcg=score,
+        recall=score,
+        mrr=score,
+        top10=("a.py",),
+        error=None,
+    )
+
+
 class TestEvalCommandWiring:
     """`--plan-cache-file` has to arrive in RetrievalConfig, not just in `--help`.
 
@@ -493,8 +514,8 @@ class TestEvalCommandWiring:
             def __init__(self, config: Any) -> None:
                 seen.append(config)
 
-            def run(self, golden_path: str) -> dict[str, float]:
-                return {"ndcg@10": 0.5, "recall@10": 0.5, "mrr": 0.5, "n_queries": 1.0}
+            def run_detailed(self, golden_path: str) -> list[Any]:
+                return [_record(0.5)]
 
             def rerank_summary(self) -> str:
                 # The real harness reports which rerank pipeline produced the scores, and
@@ -537,8 +558,8 @@ class TestEvalCommandWiring:
             def __init__(self, config: Any) -> None:
                 seen.append(config)
 
-            def run(self, golden_path: str) -> dict[str, float]:
-                return {"ndcg@10": 0.0, "recall@10": 0.0, "mrr": 0.0, "n_queries": 1.0}
+            def run_detailed(self, golden_path: str) -> list[Any]:
+                return [_record(0.0)]
 
             def rerank_summary(self) -> str:
                 return "disabled"

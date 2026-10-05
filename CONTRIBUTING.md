@@ -165,7 +165,9 @@ trelix eval --golden .trelix/golden.jsonl
 **Adding new metrics:**
 
 1. Add the pure-Python metric function to `src/trelix/eval/ndcg.py`
-2. Wire it into `EvalHarness.run()` in `src/trelix/eval/harness.py`
+2. Add the per-query value to `QueryRecord` and score it in `EvalHarness.run_detailed()`, then
+   average it in `aggregate_metrics()` (all in `src/trelix/eval/harness.py`); `run()` just
+   delegates to those
 3. Write tests in `tests/unit/test_eval_<name>.py` — no LLM calls required for metric functions
 
 ### trelix/agent/ — ReAct Agentic Loop

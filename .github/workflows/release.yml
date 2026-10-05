@@ -398,8 +398,19 @@ jobs:
         with:
           python-version: "3.12"
 
+      # `build` and `twine` are pinned to exact versions on purpose: this job builds what is
+      # uploaded to PyPI, and an unpinned install takes whatever is newest on the day of the tag.
+      # Verified together on 2026-10-05: with build 1.6.1 and twine 7.0.0, `python -m build` made
+      # the sdist and wheel of trelix, trelix-mcp, trelix-langchain and trelix-llama-index, and
+      # `twine check` (also with `--strict`) passed on all eight files. Nothing proposes a bump
+      # of these two pins (Dependabot does not read a `run:` line), so they move only when
+      # someone bumps them by hand, and a bump must be re-verified the same way. The two tools'
+      # own dependencies (packaging, requests, urllib3 and others) float. So does the build
+      # backend (`hatchling`), left unpinned in pyproject.toml: a `[build-system]` pin would bind
+      # every downstream build of the sdist, so it resolves to the newest release at build time
+      # (an accepted trade-off).
       - name: Install build tools
-        run: pip install build twine
+        run: pip install build==1.6.1 twine==7.0.0
 
       - name: Build trelix
         run: python -m build

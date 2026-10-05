@@ -211,7 +211,8 @@ Run `trelix migrate-vectors <repo> --reset --provider <new-provider>` and then r
 #### Synopsis
 
 ```
-trelix index <repo_path> [--provider PROVIDER] [--verbose]
+trelix index <repo_path> [--provider PROVIDER] [--verbose] [--dry-run]
+                         [--prune [--yes] [--prune-max-percent PERCENT]]
 ```
 
 #### Description
@@ -227,6 +228,10 @@ a summary table with file counts, symbol count, chunk count, and elapsed time.
 |--------|------|---------|-------------|
 | `--provider` | string | `local` | Embedding provider. See [Embedding providers](#embedding-providers). |
 | `--verbose`, `-v` | flag | `false` | Show DEBUG-level log output from the indexer and embedder. |
+| `--dry-run` | flag | `false` | Cost preview only: walks, chunks and counts tokens, embeds nothing and writes nothing to the index. With `--prune` it also prints the prune plan against the index as it stands. Cannot be combined with `--yes`. |
+| `--prune` | flag | `false` | After indexing, remove the rows and embeddings of files no longer in the repository. Previews only unless `--yes` is also given, and refuses unless the walk can be shown to be trustworthy. See [Pruning files that no longer exist](#pruning-files-that-no-longer-exist---prune). |
+| `--yes` | flag | `false` | Actually delete what `--prune` found. Only valid with `--prune`. |
+| `--prune-max-percent` | float | `10` | Refuse a prune that would remove more than this percentage of the index. Applies only above 10 candidates, so a small repository can still drop a few files. Raise it only after reading the previewed list. |
 
 #### Examples
 
@@ -250,6 +255,83 @@ trelix index . --verbose
 - Languages indexed by default: Python, JavaScript, TypeScript, TSX, Go, Rust,
   Java, Kotlin, Ruby, C/C++, C#, Razor, Markdown, JSON, YAML, TOML, HTML, CSS.
   Files larger than 500 KB are skipped.
+
+#### Pruning files that no longer exist (`--prune`)
+
+A plain `trelix index` never deletes anything: a file removed from the repository keeps its
+rows and embeddings. `--prune` indexes as usual, then lists the indexed files this walk did not
+yield. That is a preview; `--prune --yes` deletes them. `trelix index <repo_path> --prune --dry-run`
+previews against the index as it stands, without indexing.
+
+"Indexed but not yielded by this walk" is also what a truncated or differently configured walk
+looks like (measured on trelix's own repository: 35 of 467 files, all present on disk), so a
+deletion is licensed only when every one of these holds. Otherwise trelix prints
+`Prune refused: ...` for each check that failed, deletes nothing, and exits 1:
+
+1. the walk read every directory;
+2. the index recorded a walk config this version can compare;
+3. that config matches this walk's (languages, ignore lists, size cap, symlink setting and the
+   `.gitignore` chain);
+4. every row was written under one walk config (the index keeps the set of walk configs that
+   wrote it);
+5. the index was built by this trelix version;
+6. the deletion is at most `--prune-max-percent` of the index.
+
+The checks read the index as it stood **before** the run that precedes the prune. With no
+candidates nothing is blocked, so trelix prints `Nothing to prune` and exits 0.
+
+**The first prune after upgrading trelix is refused** by check 5 (and by 2 and 4 for an index
+written before those were recorded) until this version has rewritten the index once. With the
+default batch pipeline a plain `trelix index` does not do that: over an unchanged tree it
+prints "Nothing to index — all files up to date." and returns before writing anything, so the
+refusal would repeat. The refusal names the step to take. For most indexes it is this, run with
+the same environment (`TRELIX_WALKER_*` is read from the process environment only) and the same
+`--provider` that built the index:
+
+```bash
+# Re-parses every file and embeds nothing that is unchanged (0 chunks embedded; with file
+# summaries enabled, only a file with a changed symbol is summarised again)
+TRELIX_INCREMENTAL=false trelix index /path/to/myrepo
+# Now preview the prune; add --yes to delete
+trelix index /path/to/myrepo --prune
+```
+
+On Windows there is no inline `VAR=value` prefix: set the variable first (`set TRELIX_INCREMENTAL=false`
+in cmd, `$env:TRELIX_INCREMENTAL = "false"` in PowerShell), run `trelix index`, then clear it
+(`set TRELIX_INCREMENTAL=` or `Remove-Item Env:TRELIX_INCREMENTAL`) so later runs are
+incremental again.
+
+Run them as two commands, because the second reads the record the first wrote. The first
+re-parses every file, so on a large repository it takes a while even though it embeds nothing
+new. Run it under the environment and `--provider` that built the index: a re-index adds the
+walk config of its own run to the index's record, so one run under a changed environment leaves
+two walk configs and the next prune is refused for it (only a rebuild recovers).
+
+The refusals for a given index that name a step all name the same one. For some indexes that
+one step is a **rebuild** (delete `/path/to/myrepo/.trelix/index.db`, run
+`trelix index /path/to/myrepo`, which re-embeds everything, then prune): the ones where the
+re-index would add this run's walk config beside an older one and the next prune would be
+refused for "N different walk configurations". That is an index written before trelix 3.1.3
+that recorded a walk config but not which configs wrote its rows, one whose record was written
+under an older `.gitignore` digest scheme, and one that already holds rows from several walk
+configs.
+
+What the step does not do:
+
+- It does not clear a refusal about a changed walk (3) or about rows written under more than
+  one walk config (4) for an index that recorded a walk config to compare against: those exist
+  to protect files that are still on disk.
+- It does not prove the rows were written under this walk. After the step the prune compares
+  against the walk as it is **now**, not the one that wrote the rows, so a file an older trelix
+  indexed that this walk no longer yields (because of a nested `.gitignore` the older trelix did
+  not read, for instance) is listed as a candidate although it is on disk, and `--yes` would
+  delete its rows. This holds for an index that recorded no walk config at all (the refusal says
+  `this index records no walk config`) and for the plain upgrade (`built by trelix X and this is
+  Y`), where the step passes the version check by re-stamping the version. Check the listed
+  files against the disk before `--yes`, or rebuild.
+
+See [`trelix index --prune` says "Prune refused"](TROUBLESHOOTING.md#trelix-index---prune-says-prune-refused)
+for each message and its fix.
 
 ---
 
@@ -932,7 +1014,7 @@ trelix telemetry /my/repo -n 50
 #### Synopsis
 
 ```
-trelix eval [<repo_path>] --golden <file>
+trelix eval [<repo_path>] --golden <file> [--per-query-out <file>]
 ```
 
 #### Description
@@ -965,6 +1047,7 @@ rows differ are not two measurements of the same thing.
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
 | `--golden` | `-g` | string | `.trelix/golden.jsonl` | Path to the golden JSONL file. |
+| `--per-query-out` | | string | *(none)* | Also write every query's scores and the aggregate to this JSON file. The printed results are the same with or without it. |
 
 #### Examples
 
@@ -975,6 +1058,9 @@ trelix eval .
 # Use a custom golden file
 trelix eval . --golden tests/golden_queries.jsonl
 trelix eval /my/repo -g /shared/golden.jsonl
+
+# Keep the per-query scores, to compare two runs query by query
+trelix eval . --golden eval/golden.jsonl --per-query-out /tmp/run-a.json
 ```
 
 #### Golden file format
@@ -985,6 +1071,11 @@ Each line is a JSON object:
 {"query": "how does token refresh work", "relevant_files": ["src/auth.py"]}
 {"query": "database connection pool", "relevant_files": ["src/db/pool.go", "src/db/connection.go"]}
 ```
+
+A line may also carry the optional string keys `id`, `kind`, `lang` and `split`, which label
+the query in the `--per-query-out` file. A line without an `id` is numbered by position
+(`q0001`, `q0002`, ...), so keep explicit ids unique and not shaped like those. See
+`eval/README.md`.
 
 #### Output
 
@@ -1005,6 +1096,18 @@ Each line is a JSON object:
 - `<repo_path>` defaults to `.` if omitted.
 - Exits with code 1 if the golden file does not exist, and prints instructions
   for creating one.
+- Exits with code 1 if any query raised during retrieval. Such a query is scored 0.0
+  (never as a hit) and the run continues, so the table is still printed, but it is
+  followed by the number of failed queries and the first five messages: the means
+  include those zeros and are not a valid measurement.
+- `--per-query-out` writes `{"schema_version": 1, "records": [...], "aggregate": {...}}`
+  (ASCII-escaped JSON with sorted keys, mode 0600, written atomically through a temporary
+  file beside the target) once per run, before the exit code is decided, so a run with
+  failed queries still leaves its results, and the file names every failed query where the
+  screen lists the first five (each message is cut at 200 characters in both). Exits with
+  code 1 and a one-line error if the file cannot be written: the directory must exist, and
+  the path must name a file. The record fields and `trelix.eval.stats`, which compares two
+  such files, are described in `eval/README.md`.
 
 ---
 

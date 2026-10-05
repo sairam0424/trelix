@@ -42,9 +42,11 @@ from trelix.store.provenance import _PRUNE_MAX_FRACTION_DEFAULT
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Sequence
 
     from trelix.core.config import EmbedderConfig, IndexConfig
     from trelix.core.models import IndexedFile
+    from trelix.eval.harness import QueryRecord
     from trelix.indexing.indexer import Indexer
     from trelix.review.diff_parser import DiffHunk, DiffParser
     from trelix.review.reviewer import ReviewOutcome
@@ -2160,9 +2162,10 @@ def _print_drift(report: DriftReport) -> None:
         )
     elif not report.walk_config_comparable:
         console.print(
-            "\n[dim]This index predates walk-config recording, so whether the walk used "
-            "the same ignore rules could not be checked. Treat [bold]missing[/bold] as "
-            "unverified.[/dim]"
+            "\n[dim]This index's walk config cannot be compared (it predates walk-config "
+            "recording, or was written under an older `.gitignore` digest scheme), so "
+            "whether the walk used the same ignore rules could not be checked. Treat "
+            "[bold]missing[/bold] as unverified.[/dim]"
         )
 
     if report.is_clean:
@@ -3169,6 +3172,28 @@ def telemetry(
 # eval
 # ---------------------------------------------------------------------------
 
+_EVAL_MAX_FAILURES_LISTED = 5
+
+
+def _exit_if_queries_failed(records: Sequence[QueryRecord]) -> None:
+    """Exit 1 when any query raised, after naming the first few.
+
+    A query that raised was scored 0.0 (never as a hit) and the run went on, so the
+    means `trelix eval` prints blend failures into misses and are not a measurement.
+    """
+    failed = [r for r in records if r.error is not None]
+    if not failed:
+        return
+    err_console.print(
+        f"[red]{len(failed)} of {len(records)} queries raised during retrieval and "
+        "were scored 0.0, so these scores are not a valid measurement.[/red]"
+    )
+    for record in failed[:_EVAL_MAX_FAILURES_LISTED]:
+        err_console.print(f"  {_safe_text(record.id)}: {_safe_text(record.error)}")
+    if len(failed) > _EVAL_MAX_FAILURES_LISTED:
+        err_console.print(f"  ... and {len(failed) - _EVAL_MAX_FAILURES_LISTED} more")
+    raise typer.Exit(1)
+
 
 @app.command()
 def eval(
@@ -3187,10 +3212,25 @@ def eval(
             ),
         ),
     ] = None,
+    per_query_out: Annotated[
+        str | None,
+        typer.Option(
+            "--per-query-out",
+            help=(
+                "Also write every query's scores and the aggregate to this JSON file "
+                "(schema_version 1), for comparing two runs query by query. The printed "
+                "results are the same with or without it."
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """Evaluate retrieval quality against a golden query set (nDCG@10, Recall@10, MRR)."""
+    """Evaluate retrieval quality against a golden query set (nDCG@10, Recall@10, MRR).
+
+    Exits 1 if any query raised: it is scored 0.0 and the printed means are not a
+    valid measurement.
+    """
     from trelix.core.config import IndexConfig
-    from trelix.eval.harness import EvalHarness
+    from trelix.eval.harness import EvalHarness, aggregate_metrics, write_per_query_file
 
     config = IndexConfig(repo_path=repo)
     if plan_cache_file is not None:
@@ -3206,7 +3246,7 @@ def eval(
         )
     harness = EvalHarness(config)
     try:
-        metrics = harness.run(golden)
+        records = harness.run_detailed(golden)
     except FileNotFoundError:
         console.print(f"[red]Golden file not found: {_safe_text(golden)}[/red]")
         console.print("Create a golden.jsonl with lines like:")
@@ -3216,6 +3256,7 @@ def eval(
         _print_error("Evaluation failed", exc)
         raise typer.Exit(1) from exc
 
+    metrics = aggregate_metrics(records)
     table = Table(title="Retrieval Evaluation Results")
     table.add_column("Metric", style="bold")
     table.add_column("Score", justify="right")
@@ -3238,6 +3279,15 @@ def eval(
         else f"[yellow]{rerank_state}[/yellow]",
     )
     console.print(table)
+
+    if per_query_out is not None:
+        error = write_per_query_file(per_query_out, records, metrics)
+        if error is not None:
+            _print_error("Could not write per-query results", error)
+            raise typer.Exit(1)
+    # After the file is written, so a run with failed queries still leaves its results
+    # (the file names every failed query; the screen lists the first five).
+    _exit_if_queries_failed(records)
 
 
 @app.command("eval-synthesis")

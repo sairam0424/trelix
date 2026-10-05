@@ -44,6 +44,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `workspace-vscode` only, not the Python packages or the GitHub App. `npm audit` for that workspace
   goes from 13 findings to 8, all in development tooling (`@vscode/vsce`, `mocha`); the production
   tree reports none.
+- **The release job's build tools are pinned.** `release.yml` ran `pip install build twine`, so the
+  job that builds what is uploaded to PyPI took whatever version of either tool was newest on the day
+  of the tag. It now installs `build==1.6.1` and `twine==7.0.0`, checked together on 2026-10-05:
+  `python -m build` made the sdist and wheel of `trelix`, `trelix-mcp`, `trelix-langchain` and
+  `trelix-llama-index`, and `twine check` (also with `--strict`) passed on all eight files. Nothing
+  proposes a bump of these pins (Dependabot does not read a `run:` line), so a bump is made by hand
+  and must be re-verified the same way. The two tools' own dependencies still float, and so does
+  `hatchling`, the build backend, which stays unpinned in `pyproject.toml`: a `[build-system]` pin
+  would bind every downstream build of the sdist (an accepted trade-off). A test fails when either
+  tool goes back to a range or to no version.
 
 ### Fixed
 - **`trelix review --json` on a local diff printed text ahead of the JSON, so stdout did not
@@ -163,6 +173,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   retrieval ("No relevant code found") is still not an LLM failure. `GET /ask` is unchanged (it
   never reads `last_error`, so an empty answer is still a bare `data: [DONE]`), and so is
   `--agentic`, whose fallback is documented.
+- **The review workflow's check counted the annotations, not the findings.** GitHub takes at most 50
+  annotations per request, and `trelix-review.yml` titled a clean-exit check "trelix found N issue(s)"
+  with N the number of annotations sent, so a review with 60 findings read "found 50" (the verdict
+  already judged every finding). The title and summary now give the real count, and the summary says
+  how many findings have no inline annotation ("10 of them could not be shown as inline annotations
+  (GitHub allows 50 per check)"), as the GitHub App and the "incomplete" check already did. The App
+  README states it.
 - **`trelix-mcp` no longer advertises a `resources.subscribe` capability it does not serve.**
   `server.py` replaced `get_capabilities` on the MCP server to force `resources.subscribe: true`
   into the capabilities sent at connect time, but trelix-mcp registers no `resources/subscribe`
@@ -178,6 +195,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   so no client receives those notifications. `docs/MCP_GUIDE.md` (sections 12 and 17), the
   trelix-mcp README, `CONFIGURATION.md`, `USER_GUIDE.md`, `FAQ.md`, `GETTING_STARTED.md` and
   `ROADMAP.md` now say what works today.
+- **The first `trelix index --prune` after an upgrade was refused with advice that could not
+  clear it.** The refusals said "Re-index with this version, then prune", but right after an
+  upgrade the tree is unchanged, and a plain `trelix index` (default batch pipeline) prints
+  "Nothing to index — all files up to date." and returns before it writes provenance, so the
+  same refusal came back until some file happened to change. The refusals now name
+  `TRELIX_INCREMENTAL=false trelix index <repo>`, run once under the environment and
+  `--provider` that built the index and followed by a separate prune (0 chunks embedded over an
+  unchanged tree), or a rebuild where a re-index would be refused again (a walk config recorded
+  with no history, as 3.1.2 did; an older `.gitignore` digest scheme; several walk configs). All
+  of an index's refusals name the same one. No check changed, and for an index that recorded a
+  walk config the step still cannot clear a changed walk (pinned on real runs). The step only
+  certifies the walk as it is now, not the one that wrote the rows, so the refusal says to check
+  the listed files against the disk before `--yes`: for an index that recorded no walk config,
+  and for the plain upgrade, where it re-stamps the version without proving anything about the
+  rows. A record under an older `.gitignore` digest scheme was also mislabelled: the prune
+  refusal said "records no walk config" and `stats --drift` said it "predates walk-config
+  recording". `--prune`, `--yes`, `--prune-max-percent`, `--dry-run`, the six checks and the
+  upgrade step are now in `docs/CLI_REFERENCE.md`, and each refusal in
+  `docs/TROUBLESHOOTING.md`.
+- **`trelix eval` exited 0 when queries raised.** A query whose retrieval raised was scored 0.0 and
+  logged as a warning, and the run went on and printed means that blended those zeros in with real
+  misses; nothing in the exit code or the table said so. It now prints the number of failed queries and
+  the first five messages (each cut at 200 characters), and exits 1. The table is still printed first
+  and `--per-query-out` still writes its file, which names every failed query. `EvalHarness.run()` is
+  unchanged: it still returns the mean with the failed queries counted as 0.0.
 - **The read surfaces beyond the CLI no longer create an empty index on a repository that was never
   indexed, and most now say so.** 3.4.2 fixed `search`, `ask`, `query`, `call-graph` and `graph`;
   the MCP tools, the REST read routes, the LangChain and LlamaIndex retrievers, `trelix
@@ -205,6 +247,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   do not check yet, and neither does `FederatedRetriever.record_exports` (a library method that no
   CLI or MCP path calls).
 
+### Added
+- **Per-query eval results and the statistics to compare two runs** (first of three changes toward
+  comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
+  - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
+    `split`, `ndcg`, `recall`, `mrr`, `top10` (the first ten distinct files retrieved) and `error`.
+    `run()` is the mean of these records and returns the same values as before. A golden entry without
+    an `id` is numbered by its 1-based position (`q0001`); `kind`, `lang` and `split` are `null` unless
+    the entry has them. A query that raised carries its message (at most 200 characters) and 0.0 scores.
+  - `trelix eval --per-query-out PATH` writes `{"schema_version": 1, "records": [...], "aggregate":
+    {...}}` as ASCII-escaped JSON with sorted keys and mode 0600, atomically: a temporary file with a
+    random name beside PATH is renamed over it, and a symlink at PATH is replaced, not followed. A path
+    that cannot be written (missing directory, no file name) is a one-line error and exit 1. The printed
+    results are unchanged by the flag.
+  - New `trelix.eval.stats` (numpy only): `paired_bootstrap` (percentile interval and two-sided
+    bootstrap p-value for the mean paired difference; the same resampled queries are applied to both
+    runs), `mde` (`2.8 * sigma_d / sqrt(n)`, the minimum detectable effect at 80 percent power and 5
+    percent two-sided error) and `holm` (Holm-Bonferroni step-down). See `eval/README.md`.
+
 ### Changed
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):
   `docker/build-push-action` 7.3.0 to 7.4.0, `github/codeql-action` (`init`, `analyze`, `upload-sarif`)
@@ -218,6 +278,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 - **GitHub App: the time limits of a review's stages moved to `src/review-timeouts.ts`** (checkout 2
   minutes, index 5, review child 5; values unchanged) so the queue's deadline is sized from them. The
   README documents the two new settings and the longer claim.
+- **The `openai<3.0.0` comments and messages name the one real reason.** The comment in
+  `pyproject.toml` and the text in `test_dependency_floor_guards.py` and `test_llm_sdk_floor_guards.py`
+  said the retry layer does not recognise the `httpx2` transport and cited `litellm` "through
+  1.102.0"; `core/retry.py` has recognised `httpx2` since 3.3.0. They now state what was checked on
+  2026-10-05: `litellm` 1.104.0 (the latest) and every release since 1.84.0 require
+  `openai>=2.20.0,<3.0.0`, and `uv pip compile` of `litellm>=1.90.2` with `openai>=3.0.0` has no
+  solution. The comment on the removed `plaid` extra no longer calls `openai>=3.0.0` the core floor
+  (the core is `openai>=2.20.0,<3.0.0`). The requirement and what the tests assert are unchanged;
+  one test is renamed to `test_openai_ceiling_matches_litellm_requirement`.
+- **The sdist size comment in `pyproject.toml` is current.** It said the released sdist is ~1.9 MiB;
+  3.4.3 on PyPI is 4.16 MiB and a build of a clean `git archive` of `develop` is about 4.2 MiB. The
+  incident figures (928 MB, 158 MiB, 329 MB) are left as they were.
+- **More of the release workflows' safety rules are pinned by tests.** The check that no step in
+  `release.yml` can save a cache now also flags a `setup-*` step given a cache input (`cache`,
+  `enable-cache` or `package-manager-cache`) that is not `false`. A setup action whose cache is on by
+  default and that names no input is left to zizmor. For `verify-release.yml`, no step or `env:` may
+  use the `secrets` context, no step may use an `actions/cache` action or a setup action's cache, and
+  the `workflow_run` trigger must watch exactly `Release` and `Docker Publish`, the names of those
+  two workflows. Each new rule has a fixture that must be flagged.
 
 ## [3.4.3] — 2026-10-04
 

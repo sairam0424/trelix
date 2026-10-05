@@ -315,7 +315,7 @@ def test_eval_failure_prints_a_clean_error_not_a_traceback(tmp_path) -> None:  #
     from trelix.store.dimension_guard import DimensionMismatchError
 
     exc = DimensionMismatchError(stored=768, current=1536, provider="openai")
-    with patch("trelix.eval.harness.EvalHarness.run", side_effect=exc):
+    with patch("trelix.eval.harness.EvalHarness.run_detailed", side_effect=exc):
         result = runner.invoke(app, ["eval", str(tmp_path)])
 
     assert result.exit_code == 1
