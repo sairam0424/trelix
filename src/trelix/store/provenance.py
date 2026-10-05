@@ -706,6 +706,38 @@ _PRUNE_MAX_FRACTION_DEFAULT = 0.10
 # can read ten paths before typing --yes, which is a better check than any ratio.
 _PRUNE_MIN_CANDIDATES_FOR_CAP = 10
 
+# The next step a "this index was not written by a run that can be compared" refusal gives.
+# It is NOT a plain `trelix index`: with the default batch pipeline that run finds every
+# file unchanged, prints "Nothing to index — all files up to date." and returns before it
+# writes provenance, so the refusal repeats until some file happens to change. (With
+# `TRELIX_INDEXER_STREAMING=true` a plain run does write it, so the text promises nothing
+# about a plain run.) `TRELIX_INCREMENTAL=false` re-parses every file, which reaches the
+# write. Only a file with a changed symbol is chunked, embedded or (with
+# `file_summaries_enabled`) summarised, so over an unchanged tree it costs nothing
+# (measured: 0 chunks embedded, 0 summary requests).
+#
+# Two qualifiers travel with the command, so a refusal that names it names it whole.
+# "With the environment and `--provider` that built the index": a re-index ADDS the walk
+# config of ITS run to the history, which only grows, so one run under a different walk
+# (`TRELIX_WALKER_*` is read from the process environment) leaves two members and only a
+# rebuild recovers (measured, with a version refusal beside a changed-walk refusal).
+# "Check the files listed": the re-index records the walk as it is NOW, so it cannot vouch
+# for rows an older run wrote under another walk, and such a file is listed as a candidate
+# although it is on disk (measured for an index with no record, and for a version-only
+# refusal).
+_REINDEX_STEP = (
+    "Run `TRELIX_INCREMENTAL=false trelix index <repo>` once, with the environment and "
+    "`--provider` that built the index, then prune again. The re-index records the walk as "
+    "it is now, not the one that wrote these rows, so check the files listed against the "
+    "disk before `--yes`."
+)
+
+# The step for an index a re-index cannot repair: see `_step_that_clears`.
+_REBUILD_STEP = (
+    "Delete `<repo>/.trelix/index.db` and run `trelix index <repo>` (this re-embeds "
+    "everything), then prune again."
+)
+
 
 @dataclass(frozen=True)
 class PrunePlan:
@@ -736,6 +768,76 @@ class PrunePlan:
         if self.indexed_count <= 0:
             return 0.0
         return len(self.candidates) / self.indexed_count
+
+
+def _step_that_clears(provenance: IndexProvenance) -> str:
+    """The one next step every refusal names, decided from the shape of the record.
+
+    A re-index records this run's walk config and ADDS its digest to `walk_config_history`,
+    which only grows (`_extend_walk_config_history`). So it clears the refusals only when
+    that leaves one member: for an index that recorded nothing (the re-index starts the
+    history), or one whose history already holds exactly the one known, comparable config
+    (a new version over the same walk). Every other shape ends in a second member and a
+    refusal for "N different walk configurations" (each measured on a real run): a walk
+    config with no history (3.1.2; 3.1.3 added the history), a record under an
+    older `.gitignore` digest scheme (the re-index writes a different digest), an
+    `unrecorded` member, or several members. Only a rebuild clears those, so every refusal
+    names the same step.
+    """
+    history = provenance.walk_config_history
+    nothing_recorded = not provenance.walk_config and not history
+    one_known_config = (
+        is_walk_config_comparable(provenance)
+        and len(history) == 1
+        and _UNKNOWN_DIGEST not in history
+    )
+    return _REINDEX_STEP if nothing_recorded or one_known_config else _REBUILD_STEP
+
+
+def _incomparable_walk_config_refusal(provenance: IndexProvenance) -> str:
+    """Why the recorded walk config cannot be compared, worded for the cause that applies.
+
+    `walk_config_comparable` is False for two different reasons and the user's situation
+    differs: an index that never recorded a walk config, and one whose record is there but
+    was written under an older `.gitignore` digest scheme (or is unreadable). Saying "records
+    no walk config" to the second sent people looking for a record that exists.
+
+    The re-index step carries its own caveat (`_REINDEX_STEP`): it certifies the walk as it
+    is NOW, not the one that wrote the rows. A rebuild writes every row under the current
+    walk, so it needs none.
+    """
+    if not provenance.walk_config:
+        why = "this index records no walk config"
+    else:
+        why = (
+            "this index's recorded walk config is in a form this version cannot compare "
+            "(written under an older `.gitignore` digest scheme, or unreadable)"
+        )
+    return (
+        f"{why}, so whether this walk used the same ignore rules that built it cannot be "
+        f"checked — and 'cannot tell' is not 'the same'. {_step_that_clears(provenance)}"
+    )
+
+
+def _unrecorded_history_refusal(provenance: IndexProvenance) -> str:
+    """Why the walk-config history is missing, with the step that actually clears it.
+
+    With nothing recorded, the re-index that `_incomparable_walk_config_refusal` prescribes
+    also starts the history. With a walk config recorded but no history, a re-index would
+    not (see `_step_that_clears`), and this is the refusal that says why.
+    """
+    step = _step_that_clears(provenance)
+    why_not_reindex = ""
+    if step == _REBUILD_STEP:
+        why_not_reindex = (
+            " A re-index would not clear this: it adds this run beside an `unrecorded` "
+            "member standing for the rows an earlier run wrote, and that is refused again."
+        )
+    return (
+        "this index does not record which walk configurations wrote its rows, so whether "
+        "every row was written under the walk config being compared cannot be established "
+        f"— one recorded walk config describes the LAST run only. {step}{why_not_reindex}"
+    )
 
 
 def plan_prune(
@@ -776,6 +878,10 @@ def plan_prune(
 
     The first three are exactly `DriftReport.missing_is_trustworthy`; it is re-derived
     field by field here so a refusal can name which one failed.
+
+    Every refusal that asks for a step names `_step_that_clears`, the same one in all of
+    them: never a plain `trelix index` (over an unchanged tree that writes nothing, so the
+    refusal it answers comes back), and never a re-index for a record it would leave refused.
     """
     from trelix import __version__
 
@@ -791,11 +897,7 @@ def plan_prune(
         )
 
     if not report.walk_config_comparable:
-        refusals.append(
-            "this index records no walk config, so whether this walk used the same ignore "
-            "rules that built it cannot be checked — and 'cannot tell' is not 'the same'. "
-            "A full `trelix index <repo>` writes provenance; prune after that."
-        )
+        refusals.append(_incomparable_walk_config_refusal(provenance))
     elif report.walk_config_changed:
         names = ", ".join(name for name, _recorded, _current in report.walk_config_diff)
         message = (
@@ -833,20 +935,14 @@ def plan_prune(
             "`<repo>/.trelix/index.db`, then `trelix index <repo>`), then prune."
         )
     elif not provenance.walk_config_history:
-        refusals.append(
-            "this index does not record which walk configurations wrote its rows, so "
-            "whether every row was written under the walk config being compared cannot be "
-            "established — one recorded walk config describes the LAST run only. A full "
-            "`trelix index <repo>` with this version records it; an index built before it "
-            "did must be rebuilt (delete `<repo>/.trelix/index.db`) before its rows can be "
-            "certified."
-        )
+        refusals.append(_unrecorded_history_refusal(provenance))
 
     if provenance.trelix_version != __version__:
         refusals.append(
             f"this index was built by trelix {provenance.trelix_version or '(unrecorded)'} "
-            f"and this is {__version__}; a different version can walk differently in ways "
-            "the recorded settings do not describe. Re-index with this version, then prune."
+            f"and this is {__version__}, and a release can change which files are walked "
+            "without changing any recorded setting (3.1.2, a patch release, started reading "
+            f"nested `.gitignore` files). {_step_that_clears(provenance)}"
         )
 
     # Last, and independent of the four above: even a fully-verified walk does not license
