@@ -111,6 +111,11 @@ there is none for `3`, because nothing had been reviewed. The CHANGELOG entry fo
 bold. The default of `4` is a judgement call, not a settled one: shipping it opt-in first and
 flipping the default in a flagged MINOR release would follow this policy more strictly.
 
+A `--base` or `--head` that git cannot resolve is the same kind of change: it used to print
+"No changes found in diff." and exit `0`, and now exits `1` (the default `HEAD~1` in a repository
+with a single commit included). So does any other `git diff` failure between refs that each resolve.
+There is no escape hatch, for the same reason as for `3`: no diff had been read.
+
 ### Behaviour changes shipped as fixes: the MCP `resources.subscribe` capability
 
 `trelix-mcp` used to force `resources.subscribe: true` into the capabilities it returns to a

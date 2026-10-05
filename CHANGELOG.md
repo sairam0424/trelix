@@ -46,6 +46,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   tree reports none.
 
 ### Fixed
+- **`trelix review --json` on a local diff printed text ahead of the JSON, so stdout did not
+  parse.** The `Reviewing N hunks across M files...` line went to stdout, and "No issues found.",
+  "No changes found in diff." and "No findings in the hunks that were reviewed." took the place of
+  an empty array. With `--json` the progress line now goes to stderr and stdout is exactly one JSON
+  array in every case: the findings, or `[]` for no findings, an empty diff, a review that did not
+  run (exit 3) and a partial review with no findings (exit 4). This is what `--pr` and
+  `docs/CLI_REFERENCE.md` already said. Without `--json` nothing changes.
+- **`trelix review` said "No changes found in diff." and exited 0 when `git diff` failed.** The
+  failure (an unknown `--base`, a blob compared with a commit, a timeout, output that is not UTF-8) was
+  read as an empty diff. A local git diff now checks `--base` and `--head` first (each must name one
+  object that exists, in any syntax that names a single revision, so the empty tree still works as the
+  base for a repository's first commit and a pair of blobs such as `HEAD~1:f` and `HEAD:f` still
+  compares; a range such as `A..B` never worked here and is rejected), and exits 1 with
+  `cannot resolve --base 'REF' to a git object` on stderr. Any other `git diff` failure exits 1 with
+  `git diff 'BASE' 'HEAD' failed: ...`. A `--base` that is also the name of a directory (a branch `docs`
+  in a repository with a `docs/` directory) is now read as the branch; `git diff` had refused it as
+  ambiguous. Refs that resolve but differ in nothing still say so and exit 0, and `--diff FILE` never
+  looks at the refs. **A caller that passed a missing ref (including the default `HEAD~1` in a
+  repository with a single commit) and relied on exit 0 now gets exit 1.**
 - **Extended thinking (`TRELIX_LLM_THINKING_ENABLED=true`) failed on Claude models that only
   accept adaptive thinking.** trelix always asked for a token budget
   (`thinking={"type": "enabled", "budget_tokens": N}`, and `reasoning_config` on Bedrock), which
