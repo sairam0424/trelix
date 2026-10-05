@@ -470,8 +470,8 @@ pip install trelix-mcp
 source .venv/bin/activate
 pip install trelix-mcp
 
-# Verify the binary is on PATH. trelix-mcp accepts no flags — invoking it starts the
-# stdio server, so read the version from the package instead of a --version flag.
+# Verify the binary is on PATH. trelix-mcp accepts only --help, --version and
+# --tools core|full — invoking it with no arguments starts the stdio server.
 which trelix-mcp
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 ```

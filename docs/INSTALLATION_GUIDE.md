@@ -103,7 +103,7 @@ Exposes Trelix as an MCP tool your AI assistant can call directly.
 
 ```bash
 pip install trelix-mcp
-which trelix-mcp   # trelix-mcp takes no arguments — running it starts the stdio server
+which trelix-mcp   # running trelix-mcp with no arguments starts the stdio server; see --help
 ```
 
 See [MCP_GUIDE.md](MCP_GUIDE.md) for the full Claude Code / Cursor setup.
