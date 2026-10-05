@@ -44,6 +44,7 @@ from tests.unit.eval_validate_harness import (
     NOTE_V1,
     golden_entry,
     invoke_eval_validate,
+    plain,
     v2_entries,
     write_golden,
 )
@@ -256,7 +257,8 @@ class TestStrataAndValidatedShare:
 
         assert result.exit_code == 2
         assert result.stdout == ""
-        assert f"Invalid value for '{option}': {value} is not in the range" in result.stderr
+        needle = f"Invalid value for '{option}': {value} is not in the range"
+        assert plain(needle) in plain(result.stderr)
 
 
 class TestAV1FileGetsOnlyTheV1Checks:

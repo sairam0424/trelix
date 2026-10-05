@@ -436,7 +436,7 @@ class TestPathsAtARevision:
         result = invoke_eval_validate(golden, "--repo", str(tmp_path / "absent"))
 
         assert result.exit_code == 1
-        assert "is not a directory" in result.stderr
+        assert "isnotadirectory" in "".join(result.stderr.split())  # Rich folds a long path
         assert result.stdout == ""
 
     def test_a_directory_that_is_no_git_repository_is_an_error(

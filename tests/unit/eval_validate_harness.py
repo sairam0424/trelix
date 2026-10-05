@@ -9,6 +9,7 @@ and a check that ignores ``--rev`` cannot pass both.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,20 @@ def invoke_eval_validate(*args: str) -> Result:
     except TypeError:  # click >= 8.2 has no mix_stderr; its result always separates them
         runner = CliRunner()
     return runner.invoke(app, ["eval-validate", *args])
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_BOX_DRAWING = re.compile("[─-╿]")
+
+
+def plain(text: str) -> str:
+    """`text` without colour codes, panel borders and ALL whitespace, for substring asserts.
+
+    On a GitHub Actions runner typer forces a terminal (`GITHUB_ACTIONS`), so a usage error is
+    a coloured panel wrapped at 80 columns; locally it is plain text. Compare `plain(needle)` with
+    `plain(output)` so the test does not depend on where the panel folds a line.
+    """
+    return "".join(_BOX_DRAWING.sub("", _ANSI.sub("", text)).split())
 
 
 def write_golden(tmp_path: Path, entries: list[dict[str, Any]], name: str = "golden.jsonl") -> str:
