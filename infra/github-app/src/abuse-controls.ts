@@ -6,6 +6,7 @@ import {
     parseInstallationList,
 } from "./policy.js";
 import type { QueueLimits } from "./queue.js";
+import { REVIEW_STAGES_TIMEOUT_MS } from "./review-timeouts.js";
 
 /**
  * The switches that limit what a flood of webhook deliveries can cost: the
@@ -26,10 +27,28 @@ export interface AbuseControls {
     readonly queue: QueueLimits;
 }
 
+const MS_PER_MINUTE = 60 * 1000;
+
+/**
+ * Room on top of the review's stage timeouts for what has no time limit set
+ * here: the three token requests, the Check post and the workspace cleanup.
+ * They take seconds when healthy; a hang in one of them is what the deadline
+ * is for.
+ */
+const JOB_DEADLINE_MARGIN_MS = 5 * MS_PER_MINUTE;
+
+/** Half of the wait line, rounded up (capacity is at least 1, so this is too): two installations can share it. */
+function defaultPerGroupCapacity(capacity: number): number {
+    return Math.ceil(capacity / 2);
+}
+
 export const DEFAULT_QUEUE_LIMITS: QueueLimits = {
     capacity: 20,
+    perGroupCapacity: defaultPerGroupCapacity(20),
     concurrency: 2,
     perGroupConcurrency: 1,
+    // Larger than the stages one after the other, so a healthy slow review is never cut.
+    jobTimeoutMs: REVIEW_STAGES_TIMEOUT_MS + JOB_DEADLINE_MARGIN_MS,
 };
 
 /** What a deployment gets with none of the variables set. */
@@ -47,10 +66,18 @@ export const QUEUE_CAPACITY_ENV = "TRELIX_APP_QUEUE_CAPACITY";
 export const CONCURRENCY_ENV = "TRELIX_APP_CONCURRENCY";
 export const CONCURRENCY_PER_INSTALLATION_ENV =
     "TRELIX_APP_CONCURRENCY_PER_INSTALLATION";
+export const QUEUE_CAPACITY_PER_INSTALLATION_ENV =
+    "TRELIX_APP_QUEUE_CAPACITY_PER_INSTALLATION";
+export const JOB_TIMEOUT_MINUTES_ENV = "TRELIX_APP_JOB_TIMEOUT_MINUTES";
 
 /** Upper bounds, so a typo cannot ask for an unbounded queue or an unbounded fan-out. */
 const MAX_QUEUE_CAPACITY = 1000;
 const MAX_CONCURRENCY = 16;
+/** Four hours: a typo cannot switch the watchdog off, and the delay stays far below setTimeout's 24-day limit. */
+const MAX_JOB_TIMEOUT_MINUTES = 240;
+/** Strictly more than the review's stages one after the other: at least a minute is left for the token requests and the Check post, which have no time limit of their own. */
+const MIN_JOB_TIMEOUT_MINUTES =
+    Math.floor(REVIEW_STAGES_TIMEOUT_MS / MS_PER_MINUTE) + 1;
 
 const TRUE_WORDS: readonly string[] = ["true", "1", "yes", "on"];
 const FALSE_WORDS: readonly string[] = ["false", "0", "no", "off"];
@@ -105,13 +132,40 @@ function readReviewsEnabled(env: NodeJS.ProcessEnv, warn: Warn): boolean {
     return false;
 }
 
+/** The per-job deadline, configured in whole minutes and used in milliseconds. */
+function readJobTimeoutMs(env: NodeJS.ProcessEnv, warn: Warn): number {
+    const minutes = readWholeNumber(
+        env,
+        {
+            name: JOB_TIMEOUT_MINUTES_ENV,
+            fallback: DEFAULT_QUEUE_LIMITS.jobTimeoutMs / MS_PER_MINUTE,
+            min: MIN_JOB_TIMEOUT_MINUTES,
+            max: MAX_JOB_TIMEOUT_MINUTES,
+        },
+        warn,
+    );
+    return minutes * MS_PER_MINUTE;
+}
+
 function readQueueLimits(env: NodeJS.ProcessEnv, warn: Warn): QueueLimits {
+    const capacity = readWholeNumber(
+        env,
+        {
+            name: QUEUE_CAPACITY_ENV,
+            fallback: DEFAULT_QUEUE_LIMITS.capacity,
+            min: 1,
+            max: MAX_QUEUE_CAPACITY,
+        },
+        warn,
+    );
     return {
-        capacity: readWholeNumber(
+        capacity,
+        // Unset: half of the capacity that was just read, not of the default one.
+        perGroupCapacity: readWholeNumber(
             env,
             {
-                name: QUEUE_CAPACITY_ENV,
-                fallback: DEFAULT_QUEUE_LIMITS.capacity,
+                name: QUEUE_CAPACITY_PER_INSTALLATION_ENV,
+                fallback: defaultPerGroupCapacity(capacity),
                 min: 1,
                 max: MAX_QUEUE_CAPACITY,
             },
@@ -137,6 +191,7 @@ function readQueueLimits(env: NodeJS.ProcessEnv, warn: Warn): QueueLimits {
             },
             warn,
         ),
+        jobTimeoutMs: readJobTimeoutMs(env, warn),
     };
 }
 

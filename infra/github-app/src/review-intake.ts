@@ -126,6 +126,21 @@ function readDelivery(payload: PullRequestPayload): Delivery | null {
     return { owner, repo, prNumber, installationId, label };
 }
 
+/** The warning for a delivery the queue refused: the cause, and the delivery as `owner/repo#n`. */
+function refusalLogLine(
+    result: "full" | "group_full" | "closed",
+    delivery: Delivery,
+): string {
+    switch (result) {
+        case "full":
+            return `[webhook] review queue is full: answering 503 for ${delivery.label}`;
+        case "group_full":
+            return `[webhook] installation ${delivery.installationId} already has its share of the review queue waiting: answering 503 for ${delivery.label}`;
+        case "closed":
+            return `[webhook] shutting down: answering 503 for ${delivery.label}`;
+    }
+}
+
 const NO_COMMIT_REASON =
     "pull_request payload has no usable repository id or head sha";
 const NO_DELIVERY_FIELDS_REASON =
@@ -146,8 +161,9 @@ const DUPLICATE_REASON =
  *    ignored, with the same body as the kill switch, so a sender learns
  *    nothing about the policy from the answer;
  * 5. the queue: claimed and queued (202), already claimed (202, ignored), no
- *    room (503 with Retry-After, so the redelivery backstop retries it) or
- *    shutting down (503).
+ *    room (503 with Retry-After, so the redelivery backstop retries it: the
+ *    wait line is full, or the installation already has its share of it
+ *    waiting; the sender gets the same answer for both) or shutting down (503).
  *
  * Nothing here waits for the review: the answer is ready as soon as the job
  * is queued, well inside GitHub's 10 seconds.
@@ -234,7 +250,7 @@ class ReviewIntake {
                 body: { ignored: true, reason: DUPLICATE_REASON },
             };
         }
-        return this.refuse(result, delivery.label);
+        return this.refuse(result, delivery);
     }
 
     /** Runs the review; "retry" when it ended without a verdict, so the commit may be sent again. */
@@ -248,20 +264,23 @@ class ReviewIntake {
         return outcome;
     }
 
-    /** The 503 for a job the queue could not take. */
-    private refuse(result: "full" | "closed", label: string): IntakeDecision {
-        const isFull = result === "full";
-        this.log.warn(
-            isFull
-                ? `[webhook] review queue is full: answering 503 for ${label}`
-                : `[webhook] shutting down: answering 503 for ${label}`,
-        );
+    /**
+     * The 503 for a job the queue could not take. An installation over its share
+     * of the wait line is told exactly what a full line is told; only the log
+     * line differs, and it names the installation id (not a secret), not the payload.
+     */
+    private refuse(
+        result: "full" | "group_full" | "closed",
+        delivery: Delivery,
+    ): IntakeDecision {
+        this.log.warn(refusalLogLine(result, delivery));
         return {
             status: 503,
             body: {
-                error: isFull
-                    ? "review queue is full"
-                    : "service is shutting down",
+                error:
+                    result === "closed"
+                        ? "service is shutting down"
+                        : "review queue is full",
             },
             retryAfterSeconds: RETRY_AFTER_SECONDS,
         };
@@ -277,10 +296,10 @@ export function createReviewIntake(
 }
 
 /**
- * The queue a deployment runs reviews on: the caps from `limits`, dedupe
- * claims kept 24 hours (at most 10,000), and job failures logged once, with
- * the webhook secret and the private key removed. `now` is injectable so a test
- * does not wait a day.
+ * The queue a deployment runs reviews on: the caps and the per-job deadline
+ * from `limits`, dedupe claims kept 4 days (at most 10,000), and job failures
+ * logged once, with the webhook secret and the private key removed. `now` is
+ * injectable so a test does not wait days.
  */
 export function createReviewQueue(
     config: AppConfig,
