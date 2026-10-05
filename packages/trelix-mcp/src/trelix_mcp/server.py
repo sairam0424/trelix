@@ -16,6 +16,7 @@ from pathlib import Path  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
 from fastmcp import Context, FastMCP  # noqa: E402
+from fastmcp.exceptions import ToolError  # noqa: E402
 from fastmcp.prompts import Message  # noqa: E402
 from fastmcp.tools.base import InputRequiredToolResult  # noqa: E402
 from mcp.types import (  # noqa: E402
@@ -27,6 +28,7 @@ from mcp.types import (  # noqa: E402
 
 from trelix.agent.loop import AgentLoop  # noqa: E402
 from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig  # noqa: E402
+from trelix.core.index_check import IndexNotFoundError, require_index  # noqa: E402
 from trelix.federation.registry import RepoRegistry  # noqa: E402
 from trelix.federation.retriever import FederatedRetriever  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
@@ -52,6 +54,22 @@ _retriever_cache: dict[str, Retriever] = {}
 _retriever_cache_lock = threading.Lock()
 
 
+def _require_index(config: IndexConfig) -> None:
+    """Raise the tool error a read tool answers with when `config`'s repo has no index.
+
+    Every read tool calls this BEFORE it builds a Retriever, GraphBuilder, AgentLoop or
+    Database: opening a missing index creates one, and an empty index left behind makes a
+    repository that was never indexed look indexed. A `ToolError` is this server's normal
+    error result (`isError: true` with the message as text, the session carries on, and
+    clients such as the VS Code extension already show or swallow it). The words are the
+    CLI's: "No index found at <path>. Run trelix index <repo> first."
+    """
+    try:
+        require_index(config)
+    except IndexNotFoundError as exc:
+        raise ToolError(str(exc)) from exc
+
+
 def _get_retriever(repo_path: str) -> Retriever:
     """Return a cached Retriever for repo_path, constructing one if needed."""
     key = str(Path(repo_path).resolve())
@@ -59,7 +77,9 @@ def _get_retriever(repo_path: str) -> Retriever:
         cached = _retriever_cache.get(key)
         if cached is not None:
             return cached
-        retriever = Retriever(IndexConfig(repo_path=repo_path))
+        config = IndexConfig(repo_path=repo_path)
+        _require_index(config)
+        retriever = Retriever(config)
         _retriever_cache[key] = retriever
         return retriever
 
@@ -425,6 +445,7 @@ def get_symbol(qualified_name: str, repo_path: str) -> dict[str, Any] | None:
     """
     _log.info("get_symbol qualified_name=%r repo_path=%r", qualified_name, repo_path)
     config = IndexConfig(repo_path=repo_path)
+    _require_index(config)
     db = Database(config.db_path_absolute)
     rows = db.get_symbol_by_name(qualified_name)
     if not rows:
@@ -495,6 +516,7 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
     """
     _log.info("blast_radius symbol_name=%r repo_path=%r", symbol_name, repo_path)
     config = IndexConfig(repo_path=repo_path)
+    _require_index(config)
     db = Database(config.db_path_absolute)
     try:
         # A bare name can match several symbols (same method name in different
@@ -608,6 +630,7 @@ def build_knowledge_graph(
 
     _log.info("build_knowledge_graph repo=%s concepts=%s", repo_path, extract_concepts)
     config = IndexConfig(repo_path=repo_path)
+    _require_index(config)
     result = GraphBuilder(config).build(extract_concepts=extract_concepts)
 
     summary = list(result.community_summary or [])
@@ -663,7 +686,8 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict[str, 
     _log.info("graph_search_mcp query=%r repo=%s k=%d", query, repo_path, k)
     config = IndexConfig(repo_path=repo_path)
 
-    # First find seed symbols via standard retrieval
+    # First find seed symbols via standard retrieval (_get_retriever refuses an unindexed
+    # repo, so GraphBuilder below is never reached for one)
     ctx = _get_retriever(repo_path).retrieve(query)
     seed_ids = [r.chunk.symbol_id for r in ctx.results[:5]]
 
@@ -840,7 +864,9 @@ def federation_search_all(
 
     ⚠️ IMPORTANT:
     - Requires repos to already be registered via federation_add_repo AND
-      already indexed (run index_codebase on each repo path beforehand).
+      already indexed (run index_codebase on each repo path beforehand). A
+      registered repo with no index is skipped, not searched, and not counted
+      in repos_searched; if none of the queried repos is indexed, error says so.
     - Results are merged via Reciprocal Rank Fusion weighted by each repo's
       registered weight, then deduplicated.
     - Only the first TRELIX_FEDERATION_MAX_REPOS registered repos (default
@@ -887,8 +913,24 @@ def federation_search_all(
 
     max_repos = RetrievalConfig().federation_max_repos
     fed = FederatedRetriever(registry, max_repos=max_repos)
-    repos_searched = fed.repos_queried_count(len(entries))
-    repos_skipped = len(entries) - repos_searched
+    repos_queried = fed.repos_queried_count(len(entries))
+    repos_skipped = len(entries) - repos_queried
+
+    # A registered repo with no index is not searched (searching it would create the empty
+    # index that makes it look indexed), so it is not counted in repos_searched. When that
+    # leaves nothing to search, say why instead of returning an empty page that reads as
+    # "no matches".
+    unindexed = fed.unindexed_repos()
+    repos_searched = repos_queried - len(unindexed)
+    if unindexed and repos_searched == 0:
+        return {
+            "results": [],
+            "next_cursor": None,
+            "total_available": 0,
+            "repos_searched": 0,
+            "repos_skipped": repos_skipped,
+            "error": " ".join(str(missing) for _, missing in unindexed),
+        }
 
     all_results = fed.retrieve(query, k=_FEDERATION_SEARCH_ALL_FETCH_WIDTH)
 
@@ -1003,6 +1045,7 @@ def ask_agent(
         "ask_agent query=%r repo=%s session_id=%r", effective_query, repo_path, resolved_session_id
     )
     config = IndexConfig(repo_path=repo_path)
+    _require_index(config)
     config.retrieval.agentic_enabled = True
     loop = AgentLoop(config)
     result = loop.run(effective_query, session_id=resolved_session_id)
@@ -1056,6 +1099,7 @@ def agent_list_sessions(repo_path: str, limit: int = 50) -> dict[str, Any]:
     """
     _log.info("agent_list_sessions repo=%s limit=%d", repo_path, limit)
     config = IndexConfig(repo_path=repo_path)
+    _require_index(config)
     db = Database(config.db_path_absolute)
     try:
         max_age = config.retrieval.agent_session_max_age_seconds
@@ -1080,6 +1124,7 @@ def agent_clear_session(repo_path: str, session_id: str) -> dict[str, Any]:
     """
     _log.info("agent_clear_session repo=%s session_id=%r", repo_path, session_id)
     config = IndexConfig(repo_path=repo_path)
+    _require_index(config)
     db = Database(config.db_path_absolute)
     try:
         existed = db.delete_agent_session(session_id)

@@ -1,4 +1,26 @@
+from pathlib import Path
+
 import pytest
+
+
+@pytest.fixture
+def mark_indexed():
+    """Return a function that gives a repo directory an empty but real index.
+
+    Every read tool refuses a repository with no `.trelix/index.db`. A test that patches
+    the Retriever or GraphBuilder behind a tool and points it at a bare `tmp_path` calls
+    this first to say "this repository is indexed".
+    """
+
+    def _mark(repo: Path) -> Path:
+        from trelix.core.config import IndexConfig
+        from trelix.store.db import Database
+
+        repo.mkdir(parents=True, exist_ok=True)
+        Database(IndexConfig(repo_path=str(repo)).db_path_absolute).close()
+        return repo
+
+    return _mark
 
 
 @pytest.fixture(autouse=True)

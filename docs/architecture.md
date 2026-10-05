@@ -1819,6 +1819,13 @@ Design note: `IndexConfig` and `Retriever` imported at module scope (not inside 
 # Error: "data: [ERROR: {exc}]\n\n"
 ```
 
+**Unindexed repositories:** every read route (`/search`, `/ask`, `/stats`, `/graph*`) depends on
+`require_indexed_repo`, which answers HTTP 400 `No index found at <db>. Run trelix index <repo> first.`
+before the route builds a Retriever, GraphBuilder or Database (opening a missing index would create
+one). It runs after `authenticate` and `confine_repo`. `POST /index` and `POST /parse` do not use it.
+The shared check is `trelix.core.index_check.require_index`, which the CLI read commands, MCP tools,
+LangChain/LlamaIndex retrievers, `search-all` and `review` use too.
+
 **Security guards:**
 - `/graph/visualize`: output path must start with `<repo_root>/.trelix/` — directory traversal protection
 - `/graph/search`: depth clamped to `max(1, min(depth, 10))`

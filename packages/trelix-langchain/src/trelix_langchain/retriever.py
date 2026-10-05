@@ -28,6 +28,7 @@ class TrelixRetriever(BaseRetriever):
         from typing import Literal, cast
 
         from trelix.core.config import EmbedderConfig, IndexConfig
+        from trelix.core.index_check import require_index
         from trelix.retrieval.retriever import Retriever
 
         config = IndexConfig(
@@ -50,6 +51,10 @@ class TrelixRetriever(BaseRetriever):
                 )
             ),
         )
+        # Raises IndexNotFoundError (a FileNotFoundError) for a repository that was never
+        # indexed. Building the Retriever would otherwise create an empty index there, and
+        # every later query would return [] instead of saying the repo is not indexed.
+        require_index(config)
         self._cached_retriever = Retriever(config)
         return self._cached_retriever
 

@@ -246,7 +246,7 @@ Weight multiplies each RRF score contribution from that repository before the gl
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `DimensionMismatchError` | Repositories were indexed with different embedding providers | Re-index all repositories with the same provider |
-| No results | Repository not yet indexed | Run `trelix index /path/to/repo` for each registered repo |
+| No results, or `Skipping <alias>: No index found at ...` | Repository not yet indexed; `search-all` and `federation_search_all` skip such a repo (and exit `1` / report `error` only when every queried repo is unindexed) | Run `trelix index /path/to/repo` for each registered repo |
 | Slow queries | Cache miss on every call | Use the default `cache_ttl=120.0`; avoid setting `cache_ttl=0` in production |
 | Stale results after re-index | TTL cache still holding old data | Call `fed.clear_cache()` after re-indexing |
 | `ConfigPathNotAllowedError` (MCP only) | `config_path` argument resolves outside `~/.config/trelix/` and `<cwd>/.trelix/` | Use a path within one of the allowed roots, or omit `config_path` to use the default |

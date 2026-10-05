@@ -270,12 +270,21 @@ def test_provider_cast_covers_every_value_core_actually_accepts():
 # ---------------------------------------------------------------------------
 
 
+def _mark_indexed(repo):
+    """Give `repo` an empty but real index: the retriever refuses a repository that has none."""
+    from trelix.core.config import IndexConfig
+    from trelix.store.db import Database
+
+    Database(IndexConfig(repo_path=str(repo)).db_path_absolute).close()
+
+
 def test_get_trelix_retriever_constructs_the_underlying_retriever_only_once(tmp_path):
     """Retriever construction is expensive (loads the embedding model from
     disk for the local provider) -- repeated calls on the same
     TrelixRetriever instance must reuse it, not rebuild every time."""
     from unittest.mock import patch
 
+    _mark_indexed(tmp_path)
     tr = TrelixRetriever(repo_path=str(tmp_path))
 
     with patch("trelix.retrieval.retriever.Retriever") as MockRetriever:
@@ -296,6 +305,8 @@ def test_different_trelix_retriever_instances_do_not_share_a_cached_retriever(tm
     repo_b = tmp_path / "b"
     repo_a.mkdir()
     repo_b.mkdir()
+    _mark_indexed(repo_a)
+    _mark_indexed(repo_b)
     tr_a = TrelixRetriever(repo_path=str(repo_a))
     tr_b = TrelixRetriever(repo_path=str(repo_b))
 
@@ -304,3 +315,52 @@ def test_different_trelix_retriever_instances_do_not_share_a_cached_retriever(tm
         tr_b._get_trelix_retriever()
 
     assert MockRetriever.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# A repository that was never indexed: a clear error, and nothing created
+# ---------------------------------------------------------------------------
+
+
+def test_an_unindexed_repo_raises_index_not_found_and_creates_nothing(tmp_path):
+    """Building the Retriever on a repo with no index would create an empty one, and
+    every later query would return [] instead of saying the repo is not indexed."""
+    from unittest.mock import patch
+
+    from trelix_langchain import TrelixRetriever
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tr = TrelixRetriever(repo_path=str(repo))
+
+    with patch("trelix.retrieval.retriever.Retriever") as MockRetriever:
+        with pytest.raises(FileNotFoundError) as excinfo:
+            tr.invoke("authenticate a user")
+
+    assert type(excinfo.value).__name__ == "IndexNotFoundError"
+    assert str(excinfo.value) == (
+        f"No index found at {repo.resolve()}/.trelix/index.db. "
+        f"Run trelix index {repo.resolve()} first."
+    )
+    MockRetriever.assert_not_called()
+    assert not (repo / ".trelix").exists()
+
+
+def test_a_refused_query_is_not_cached_so_indexing_fixes_it(tmp_path):
+    from unittest.mock import patch
+
+    from trelix_langchain import TrelixRetriever
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tr = TrelixRetriever(repo_path=str(repo))
+    with pytest.raises(FileNotFoundError):
+        tr.invoke("authenticate a user")
+
+    _mark_indexed(repo)
+    with patch("trelix.retrieval.retriever.Retriever") as MockRetriever:
+        MockRetriever.return_value.retrieve.return_value = MagicMock(results=[])
+        results = tr.invoke("authenticate a user")
+
+    assert list(results) == []
+    MockRetriever.assert_called_once()

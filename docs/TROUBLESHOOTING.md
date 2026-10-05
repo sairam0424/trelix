@@ -169,7 +169,9 @@ Maintainers: CI reports the SQLite version as a `::warning::` (affected range) o
 
 **Cause:** The repository has never been indexed. trelix requires an explicit indexing step before search is available.
 
-If instead `search` prints `No results found.` on a repository you never indexed, an older version (or the MCP server, the REST API, a LangChain or LlamaIndex retriever, or `trelix eval`, `eval-synthesis`, `review`, `telemetry`, `search-all`, `agent sessions`, or `taint` once it finds a flow) has left an empty `.trelix/index.db` behind. `trelix index .` fills it; to start clean, delete the repository's `.trelix` directory first.
+The MCP tools (`isError` result with the same text), the REST read routes (HTTP 400) and the LangChain and LlamaIndex retrievers (`IndexNotFoundError`) refuse the same way, and `trelix review` and `trelix search-all` no longer create an index either (`review` goes ahead without retrieved context; `search-all` skips the unindexed repo and names it).
+
+If instead `search` prints `No results found.` on a repository you never indexed, an older version (or a surface that still opens the index without checking: `trelix eval`, `eval-synthesis`, `telemetry`, `agent sessions`, or `taint` once it finds a flow) has left an empty `.trelix/index.db` behind. `trelix index .` fills it; to start clean, delete the repository's `.trelix` directory first.
 
 **Fix:**
 ```bash
