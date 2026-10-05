@@ -35,3 +35,20 @@ def steps(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 def action(step: dict[str, Any]) -> str:
     """`owner/repo[/path]` of a step's `uses:`, lower-cased (GitHub reads it without case)."""
     return str(step.get("uses", "")).split("@")[0].lower()
+
+
+_SETUP_CACHE_INPUTS = ("cache", "enable-cache", "package-manager-cache")
+
+
+def saves_a_cache(step: dict[str, Any]) -> bool:
+    """Whether the step can save a cache: `actions/cache` or `actions/cache/save`, or a `setup-*`
+    action with a cache input (`cache`, `enable-cache`, `package-manager-cache`) that is anything
+    but false. A setup action whose cache is on by default and that names no input is not seen
+    here; zizmor (run in CI) stays the authority for that."""
+    name = action(step)
+    if name in ("actions/cache", "actions/cache/save"):
+        return True
+    if "/setup-" not in name:
+        return False
+    inputs = step.get("with") or {}
+    return any(inputs.get(key) not in (None, False, "false") for key in _SETUP_CACHE_INPUTS)

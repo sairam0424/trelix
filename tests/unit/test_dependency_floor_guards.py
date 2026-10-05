@@ -5,21 +5,23 @@ and `[project.optional-dependencies]`) are, by default, open-ended (`>=X`, no ce
 plain `pip install trelix` can silently resolve to whatever the latest release of a dependency
 happens to be on install day, with no signal that anything changed.
 
-Two concrete incidents motivate the guards below:
+Three concrete cases motivate the guards below:
 
   * CVE-2026-58203 (GHSA-4xgf-cpjx-pc3j): a symlink-traversal bug in pydantic-settings'
     `NestedSecretsSettingsSource` (versions 2.12.0-2.14.1, fixed in 2.14.2). trelix's floor
     was `pydantic-settings>=2.3.0` with no ceiling, so the vulnerable range sat inside what a
     fresh install could already resolve to.
-  * `anthropic-sdk-python` v1.0.0 (2026-08-20) and `openai-python` v3.0.0 (2026-08-12) are
-    both intentional breaking releases — Anthropic's drops `temperature`/`top_p`/`top_k` from
-    every Messages method (which `AnthropicBackend` in
-    `src/trelix/llm/providers/anthropic_backend.py` unconditionally passes today), and OpenAI's
-    swaps default HTTP transport to "httpx2" (which `src/trelix/core/retry.py`'s
-    `is_retryable_http_error()` doesn't yet recognize). Both floors were unbounded
-    (`openai>=1.35.0`, `anthropic>=0.40.0`), so either breaking major could resolve silently
-    before the LLM abstraction layer is updated to handle it — see
+  * `anthropic-sdk-python` v1.0.0 (2026-08-20) is an intentional breaking release: it drops
+    `temperature`/`top_p`/`top_k` from every Messages method (which `AnthropicBackend` in
+    `src/trelix/llm/providers/anthropic_backend.py` unconditionally passes today). The floor
+    was unbounded (`anthropic>=0.40.0`), so that breaking major could resolve silently before
+    the LLM abstraction layer is updated to handle it — see
     `docs/reports/v4-0-0-upgrade-research-2026-09-11.md`.
+  * `openai>=3.0.0` (openai-python v3.0.0, 2026-08-12) cannot be installed together with
+    `trelix[litellm]`: litellm 1.104.0 (the latest when checked, 2026-10-05) requires
+    `openai>=2.20.0,<3.0.0`, and so does every litellm release since 1.84.0. The `openai`
+    ceiling is that one requirement; the retry layer is not the reason, because
+    `src/trelix/core/retry.py` has recognised the "httpx2" transport since 3.3.0.
 
 These tests pin the current, deliberate floors/ceilings so a future contributor loosening one
 (e.g. widening a version range during an unrelated dependency bump) gets a named, specific
@@ -73,15 +75,16 @@ def test_pydantic_settings_floor_excludes_symlink_traversal_cve() -> None:
     )
 
 
-def test_openai_ceiling_excludes_unmigrated_httpx2_major() -> None:
-    """openai-python v3.0.0 swaps default HTTP transport; retry.py doesn't recognize it yet."""
+def test_openai_ceiling_matches_litellm_requirement() -> None:
+    """litellm (checked at 1.104.0) requires openai<3.0.0, so trelix[litellm] needs the ceiling."""
     spec = _core_dependency_specifier("openai")
     assert "<3.0.0" in spec or re.search(r">=\s*3\.", spec), (
         f"openai specifier is {spec!r} — with no upper bound, a fresh install can resolve "
-        "openai-python>=3.0.0's breaking httpx2-transport switch, which "
-        "src/trelix/core/retry.py's is_retryable_http_error() does not yet recognize (see "
-        "docs/reports/v4-0-0-upgrade-research-2026-09-11.md); pin a <3.0.0 ceiling until "
-        "that's fixed, or bump to >=3.0.0 once it is"
+        "openai>=3.0.0, which trelix[litellm] cannot use: litellm 1.104.0 (the latest when "
+        "checked, 2026-10-05) and every release since 1.84.0 require openai>=2.20.0,<3.0.0. "
+        "Keep a <3.0.0 ceiling until a litellm release accepts openai 3 (re-check with "
+        "`uv pip compile` on litellm>=1.90.2 plus openai>=3.0.0), then raise the floor to "
+        ">=3.0.0"
     )
 
 

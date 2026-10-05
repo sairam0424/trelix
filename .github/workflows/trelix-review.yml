@@ -267,6 +267,16 @@ jobs:
               return capped === '' ? '(unprintable file name)' : capped.replace(/`/g, 'ˋ');
             }
 
+            // The title and summary count every finding, not only the ones that get an
+            // annotation. GitHub takes at most 50 annotations per check, so when some findings
+            // went without one this says how many; otherwise it adds nothing. The GitHub App's
+            // postCheckRun (infra/github-app/src/check-posting.ts) says the same.
+            function notShownNote(findingCount, annotationCount) {
+              const notShown = findingCount - annotationCount;
+              if (notShown <= 0) return '';
+              return ` ${notShown} of them could not be shown as inline annotations (GitHub allows 50 per check).`;
+            }
+
             function incompleteSummary(findings, annotationCount, outcome) {
               const lines = [];
               if (outcome === null) {
@@ -280,10 +290,7 @@ jobs:
               } else if (findings.length === 0) {
                 lines.push('No findings in the hunks that were reviewed.');
               } else {
-                lines.push(`${findings.length} issue(s) found in the hunks that were reviewed.`);
-                if (annotationCount < findings.length) {
-                  lines[lines.length - 1] += ` ${findings.length - annotationCount} of them could not be shown as inline annotations (GitHub allows 50 per check).`;
-                }
+                lines.push(`${findings.length} issue(s) found in the hunks that were reviewed.${notShownNote(findings.length, annotationCount)}`);
               }
               if (outcome !== null) {
                 const listed = outcome.hunks.slice(0, maxListedHunks);
@@ -337,7 +344,7 @@ jobs:
             const annotations = toAnnotations(findings);
 
             await publish(conclusionFor(reviewExitCode, findings), {
-              title: `trelix found ${annotations.length} issue(s)`,
-              summary: `trelix reviewed PR #${prNumber} and found ${annotations.length} issue(s).`,
+              title: `trelix found ${findings.length} issue(s)`,
+              summary: `trelix reviewed PR #${prNumber} and found ${findings.length} issue(s).${notShownNote(findings.length, annotations.length)}`,
               annotations,
             });
