@@ -338,7 +338,12 @@ def _lfs(tmp_path: Path, remote: Remote) -> Hostile:
         SECOND_FILES,
         name="lfs-remote",
     )
-    config = '[filter "lfs"]\n\trequired = true\n\tsmudge = false\n\tclean = cat\n'
+    # `process = false` too: a system gitconfig with git-lfs installed (ubuntu-latest has
+    # one) sets filter.lfs.process, and git never consults `smudge` once a process filter
+    # is configured. The hostile config must win over that file for the control to fire.
+    config = (
+        '[filter "lfs"]\n\trequired = true\n\tsmudge = false\n\tclean = cat\n\tprocess = false\n'
+    )
     env = {"GIT_CONFIG_GLOBAL": _config_file(tmp_path, config)}
 
     def control() -> bool:
