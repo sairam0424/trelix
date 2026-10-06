@@ -262,6 +262,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Peek References popup still lists the entries it has) and `@trelix /impact` says
   `has 150 dependent(s), showing the first 100`. An uncut list reads as before. No new setting and
   no new server call; `limit` is not passed.
+- **`docs/OBSERVABILITY.md` described the OpenTelemetry integration as planned, not as it runs.**
+  It said every retrieval leg span carries the query text (trelix hands it over, but
+  `opentelemetry-util-genai` records `gen_ai.retrieval.query.text` only when
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is `SPAN_ONLY` or `SPAN_AND_EVENT`; the default
+  `NO_CONTENT` drops it, so by default no query text reaches a span), that metrics cover embedding
+  only (the same library records a `gen_ai.client.operation.duration` histogram for every retrieval
+  leg span once a `MeterProvider` exists), that the library was `1.0b0` at time of writing (1.2b0 is
+  current; the `otel` extra still accepts `>=1.0b0`, and 1.2b0 renamed the cache-write and `top_k`
+  attributes), and it linked the GenAI conventions in the core `semantic-conventions` repository,
+  whose pages are now "Moved" stubs: the conventions live in `semantic-conventions-genai`, which has
+  no tags, so the link pins a commit. The library link now points at the `opentelemetry-util-genai`
+  1.2b0 tag in `opentelemetry-python-genai`. The primary-source spike behind these corrections
+  (pinned sources, the inference attribute table with requirement levels, the content opt-in and
+  the Logs-signal path, the util-genai 1.0b0 vs 1.2b0 API differences, the cache-token names and
+  the metrics the library already records) is `docs/reports/otel-genai-semconv-spike-2026-10-07.md`
+  (roadmap C-8, requirement R-C6-01). No package code changes;
+  `tests/unit/test_observability_doc_pins.py` pins the sentence about when trelix installs its
+  `MeterProvider` (on the first counted embedding provider call; never for `bge-code` or
+  `nomic-code`) to the embedder code.
 
 ### Added
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
