@@ -100,6 +100,7 @@ tuned via the three batching variables above, not by a worker/concurrency count.
 | `TRELIX_RETRIEVAL_XTR_TOKENS` | `100` | **Inert.** `RetrievalConfig.xtr_candidate_tokens` is declared and range-validated but read nowhere in `src/`, deliberately: the `xtr` provider is degenerate (one synthetic query token, so every output score is bit-identical to its input) and a real candidate-token budget needs the ColBERT-style multi-vector token index trelix does not build. The knob is kept for that future embedder; the provider logs this on every call |
 | `TRELIX_RETRIEVAL_FLARE` | `false` | Enable FLARE re-retrieval. Not the paper's token-log-probability method: after a synthesis completes, the answer is scanned for a fixed list of uncertainty phrases (`"i don't know"`, `"cannot find"`, …) and, on a hit, the query is enriched and re-synthesized. There is no probability threshold setting |
 | `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES` | `1` | Maximum FLARE iterations per query (min: 1, max: 3) |
+| `TRELIX_RETRIEVAL_CITATIONS` | `false` | Tag every block of the assembled context with `[C1]`, `[C2]`, … (in rendered order, one tag per symbol; a compressed body carries its tag on every kept-span header) and append an instruction to the synthesis system prompt to write the block's tag after each sentence that relies on it. The tag number is the only thing the model is asked to write about a source; `RetrievedContext.citation_sources` records what each tag refers to. `false` leaves the assembled context, the synthesis prompts and every command's output unchanged. Read by every Retriever, so it also tags the per-hunk context `trelix review` retrieves (the review prompt gives the tags no instruction) and the context REST `/ask` synthesizes from; `trelix ask --provider local` prints the tags with the context. |
 | `TRELIX_RETRIEVAL_HYDE_FALLBACK` | `false` | Enable HyDE (Hypothetical Document Embeddings) fallback when standard retrieval returns weak results |
 | `TRELIX_RETRIEVAL_FILE_SUMMARY_LEG` | `false` | Enable the file-summary retrieval leg — retrieves against LLM-generated file summaries in addition to raw chunks |
 | `TRELIX_RETRIEVAL_PAGERANK_BOOST` | `false` | Enable PageRank-based symbol boosting — surfaces frequently referenced symbols higher in results |
@@ -452,6 +453,10 @@ TRELIX_INDEXER_STREAMING=false
 # FLARE iterative re-retrieval (max retries: 1-3)
 TRELIX_RETRIEVAL_FLARE=false
 TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=1
+
+# Citation tags: prefix every context block with [C1], [C2], ... and ask the
+# synthesis model to cite them. Off: context and prompts unchanged.
+TRELIX_RETRIEVAL_CITATIONS=false
 
 # HyDE fallback
 TRELIX_RETRIEVAL_HYDE_FALLBACK=false
