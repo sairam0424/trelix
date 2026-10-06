@@ -225,12 +225,34 @@ claude mcp add trelix -- trelix-mcp --tools core
 answered as an unknown tool. (`repo_map` and `exact_search` do not exist in this server, so
 `core` does not list them.) Any other value is a usage error: exit code 2 and no server.
 
+### Output size and limits
+
+A tool result costs a client's context twice: FastMCP sends a dict result as a text block and again as `structuredContent`, and the text block holds the JSON as a string, so every quote in it is escaped: the wire is a little more than double the text. Measured through an in-process `fastmcp.Client` with 100,000-character bodies, before these limits: `search_code` with `k=10` was about 9,700 characters of text and 20,000 on the wire, and with `k=100` about 97,000 and 197,000 (over Claude Code's 25,000-token cap for one tool result). `graph_search_mcp` had no upper bound on `k`, and `blast_radius` costs about 127 characters per dependent file with short paths (more with long ones) and had no bound either.
+
+| Setting | Default | What it does |
+|---------|---------|--------------|
+| `TRELIX_MCP_MAX_K` | `50` | `k` (and `limit` on `agent_list_sessions`) is clamped to 1..this value, and `page_size` in the response says what was used. Blank means the default. A value that is not an integer of at least 1 stops `trelix-mcp` at start-up with exit code 2 |
+| `TRELIX_MCP_MAX_RESULT_CHARS` | `15000` | The budget for the text of a list result (`search_code`, `federation_search_all`, `graph_search_mcp`, `blast_radius`, `agent_list_sessions`); the tail is dropped to fit it. The budget counts both copies a client is sent (the text block, with each quote escaped, and `structuredContent`), so the whole response is at most twice the budget (30,000 characters by default) and its text under the budget. That makes it a limit on what is sent and not on the text alone: at the default the text can be about 14,800 characters when it holds no quotes or backslashes and about 10,000 when it is mostly quotes. `0` turns the cut off. Blank means the default; a negative or non-integer value stops the server at start-up |
+| `detail="concise"` | `"detailed"` | On `search_code`, `graph_search_mcp` and `federation_search_all`: drops each result's `body` and adds a one-line `signature` (its first line, at most 200 characters; the first line of the body when the signature is blank) |
+
+What a client sees when results are left out:
+
+- **Cursor-paged results** (`search_code`, `federation_search_all`): `truncated` is `true`, `omitted` counts the dropped results, and `next_cursor` points at the first dropped result, so the next page repeats nothing and skips nothing. The text block is the response, so the keys `results`, `next_cursor` and `total_available` are where they always were.
+- **Bare arrays** (`blast_radius`, `graph_search_mcp`): the first text block is still the JSON array, a second text block says what was left out, and `_meta.trelix` is `{"total_available": M, "omitted": K}`. A result that fits is unchanged: one text block, no `_meta.trelix`. `graph_search_mcp` has no cursor, and a larger `k` cannot help once the character budget is what cut it, so its note points at `detail="concise"`.
+- `agent_list_sessions`: the oldest sessions are left out and `truncated` and `omitted` say so (it has no cursor). A session's `query` (its most recent prompt, which has no bound of its own) is cut to its first 300 characters and that session gets `query_truncated: true`, so one long prompt cannot push a response past the ceilings.
+- `blast_radius` has no offset: `limit=500` with `TRELIX_MCP_MAX_RESULT_CHARS=0` returns the first 500 dependents, and the rest cannot be fetched.
+- One result is always kept, even under a tiny budget, so paging always advances; a single result longer than the budget is returned whole.
+- A negative `cursor` is an error result (`isError: true`) saying to use 0 or the previous `next_cursor`.
+- A cut result is sent within the 30,000-character ceiling however many quotes it holds (a test uses bodies full of quotes, 72-character paths and 200-character queries, at default arguments and at the maximum, and another a 100,000-character most recent prompt). An empty bare array (`blast_radius` for a symbol with no dependents, `graph_search_mcp` with no hits) has no text block at all, only `structuredContent` of `{"result": []}`.
+
+`build_knowledge_graph` and `federation_list_repos` are not cut: the first already caps its own community list (`min_community_size`, `max_communities`) and the second lists a registry that `TRELIX_FEDERATION_MAX_REPOS` caps when repos are added.
+
 ### Core Search & Indexing
 
 ### `search_code`
 
 ```
-search_code(query, repo_path, k=10, cursor=0, intent_hint=None, hyde_snippet_hint=None) → {results, next_cursor, total_available}
+search_code(query, repo_path, k=10, cursor=0, intent_hint=None, hyde_snippet_hint=None, detail="detailed") → {results, next_cursor, total_available, page_size, truncated, omitted}
 ```
 
 **What it does:** Runs trelix hybrid search (dense + sparse) over an indexed codebase. Returns ranked code snippets with file path, line range, symbol context, and relevance score.
@@ -245,10 +267,11 @@ search_code(query, repo_path, k=10, cursor=0, intent_hint=None, hyde_snippet_hin
 |-----------|------|---------|-------------|
 | `query` | str | required | Natural-language or keyword query |
 | `repo_path` | str | required | Absolute path to the indexed repository |
-| `k` | int | 10 | Number of results per page |
-| `cursor` | int | 0 | Pagination offset (see Section 11) |
+| `k` | int | 10 | Results per page, clamped to 1..`TRELIX_MCP_MAX_K` (default 50); `page_size` in the response is the value used |
+| `cursor` | int | 0 | Pagination offset (see [Output size and limits](#output-size-and-limits)); a negative value is an error |
 | `intent_hint` | str \| None | None | One of the 8 `IntentType` values — see below |
 | `hyde_snippet_hint` | str \| None | None | Short hypothetical code snippet (HyDE); only used when `intent_hint` is also valid |
+| `detail` | `"detailed"` \| `"concise"` | `"detailed"` | `concise` drops `body` from each result and adds a one-line `signature` |
 
 **Caller-supplied intent routing:** If the calling agent has already classified the query's intent, pass `intent_hint` — one of `symbol_lookup`, `file_overview`, `feature_flow`, `project_overview`, `comparison`, `config_lookup`, `dependency_map`, or `blast_radius` — to skip trelix's own internal LLM intent classification and route directly to that intent's retrieval strategy. This is useful when an orchestrating agent already knows, from its own reasoning, what kind of question it's asking, and wants to avoid the extra classification round-trip. An unrecognized or invalid `intent_hint` value is never rejected: the call silently falls through to trelix's normal internal classification, as if `intent_hint` had not been passed. `hyde_snippet_hint` is only honored when `intent_hint` is also valid — pass a short snippet of what the target code might look like to steer HyDE-style query expansion toward that shape.
 
@@ -268,7 +291,10 @@ search_code(query, repo_path, k=10, cursor=0, intent_hint=None, hyde_snippet_hin
     }
   ],
   "next_cursor": 10,
-  "total_available": 47
+  "total_available": 47,
+  "page_size": 10,
+  "truncated": false,
+  "omitted": 0
 }
 ```
 
@@ -285,7 +311,7 @@ cursor = 0
 while cursor is not None:
     page = search_code("authentication handler", "/path/to/repo", k=10, cursor=cursor)
     process(page["results"])
-    cursor = page["next_cursor"] if page["next_cursor"] < page["total_available"] else None
+    cursor = page["next_cursor"]  # null after the last page
 ```
 
 ---
@@ -324,7 +350,7 @@ index_codebase(repo_path, provider="local") → stats dict
 ### `get_symbol`
 
 ```
-get_symbol(qualified_name, repo_path) → symbol dict
+get_symbol(qualified_name, repo_path, max_body_chars=20000) → symbol dict
 ```
 
 **What it does:** Returns the full source, docstring, file location, and metadata for a specific symbol identified by its qualified name.
@@ -336,19 +362,26 @@ get_symbol(qualified_name, repo_path) → symbol dict
 |-----------|------|---------|-------------|
 | `qualified_name` | str | required | Dot-separated symbol path |
 | `repo_path` | str | required | Absolute path to the indexed repository |
+| `max_body_chars` | int | 20000 | Longest `body` to return; `0` means no limit, a negative value is an error |
 
 **Response shape:**
 ```json
 {
+  "name": "login",
   "qualified_name": "AuthService.login",
   "kind": "method",
   "file": "src/auth/service.py",
-  "start_line": 42,
-  "end_line": 67,
+  "line_start": 42,
+  "line_end": 67,
+  "signature": "def login(self, username: str, password: str) -> Token:",
   "docstring": "Authenticate a user and return a signed JWT.",
-  "source": "def login(self, username: str, password: str) -> Token:\n    ..."
+  "body": "def login(self, username: str, password: str) -> Token:\n    ...",
+  "language": "python",
+  "body_truncated": false
 }
 ```
+
+A body longer than `max_body_chars` is cut and `body_truncated` is `true`. The result is `null` when no symbol matches.
 
 **Example:**
 ```
@@ -362,7 +395,7 @@ get_symbol("utils.retry.exponential_backoff", "/path/to/repo")
 ### `blast_radius`
 
 ```
-blast_radius(symbol_name, repo_path) → list of dependent files
+blast_radius(symbol_name, repo_path, limit=100) → list of dependent symbols, one per file
 ```
 
 **What it does:** Queries the resolved call edges and import edges in the index for everything that **directly** depends on the given symbol — its callers, plus every file importing the module that defines it. One hop, not a transitive closure: on this repository a single hop from `AuditStore.append` is already 104 files, and a transitive walk reaches most of the codebase, which is not an actionable answer.
@@ -376,22 +409,22 @@ Answered from SQLite, so it needs no embedding model and costs 56-117 ms. Before
 |-----------|------|---------|-------------|
 | `symbol_name` | str | required | Qualified name of the symbol to analyze |
 | `repo_path` | str | required | Absolute path to the indexed repository |
+| `limit` | int | 100 | Most dependents to return, clamped to 1..500 |
 
-**Response shape:**
+**Response shape:** a bare JSON array (the VS Code extension reads it as one), one entry per dependent file:
 ```json
 [
   {
     "file": "src/api/routes/users.py",
-    "dependency_type": "direct_call",
-    "depth": 1
-  },
-  {
-    "file": "tests/integration/test_auth.py",
-    "dependency_type": "transitive_import",
-    "depth": 2
+    "symbol": "users.create_user",
+    "kind": "function",
+    "line_start": 31,
+    "language": "python"
   }
 ]
 ```
+
+Each dependent costs about 130 characters, so the list is bounded by `limit` and by `TRELIX_MCP_MAX_RESULT_CHARS`. When dependents are left out, the first text block is still the JSON array, a second text block says `Truncated: N of M dependents returned, K omitted. ...`, and `_meta.trelix` is `{"total_available": M, "omitted": K}`. A result that fits carries one text block and no `_meta.trelix`.
 
 **Workflow pattern:**
 ```
@@ -520,7 +553,7 @@ server-side cost is unchanged.
 ### `graph_search_mcp`
 
 ```
-graph_search_mcp(query, repo_path, k=10) → list of results
+graph_search_mcp(query, repo_path, k=10, detail="detailed") → list of results
 ```
 
 **What it does:** Combines the knowledge graph topology with semantic search to surface results that are structurally central — symbols that many other symbols depend on, or that are highly connected in the call graph.
@@ -532,22 +565,24 @@ graph_search_mcp(query, repo_path, k=10) → list of results
 |-----------|------|---------|-------------|
 | `query` | str | required | Natural-language or keyword query |
 | `repo_path` | str | required | Absolute path to the indexed repository |
-| `k` | int | 10 | Number of results to return |
+| `k` | int | 10 | Number of results to return, clamped to 1..`TRELIX_MCP_MAX_K` (default 50) |
+| `detail` | `"detailed"` \| `"concise"` | `"detailed"` | `concise` drops `body` and adds a one-line `signature` |
 
-**Response shape:**
+**Response shape:** a bare JSON array:
 ```json
 [
   {
-    "symbol": "DatabasePool.acquire",
     "file": "src/db/pool.py",
-    "graph_centrality": 0.87,
-    "semantic_score": 0.79,
-    "combined_score": 0.83,
-    "in_degree": 24,
-    "out_degree": 3
+    "symbol": "DatabasePool.acquire",
+    "kind": "method",
+    "score": 0.83,
+    "source": "graph_search",
+    "body": "def acquire(self) -> Connection:\n    ..."
   }
 ]
 ```
+
+Like `blast_radius`, a list cut to `TRELIX_MCP_MAX_RESULT_CHARS` keeps the array in the first text block and adds a note block and `_meta.trelix` (see [Output size and limits](#output-size-and-limits)).
 
 ---
 
@@ -654,7 +689,7 @@ federation_remove_repo(alias, config_path=None) → {removed, alias, error}
 #### `federation_search_all`
 
 ```
-federation_search_all(query, k=10, cursor=0, config_path=None) → {results, next_cursor, total_available, repos_searched, repos_skipped, error}
+federation_search_all(query, k=10, cursor=0, config_path=None, detail="detailed") → {results, next_cursor, total_available, page_size, truncated, omitted, repos_searched, repos_skipped, error}
 ```
 
 **What it does:** Searches across ALL registered repos simultaneously using Reciprocal Rank Fusion to merge results, weighted by each repo's registered `weight`.
@@ -673,9 +708,10 @@ federation_search_all(query, k=10, cursor=0, config_path=None) → {results, nex
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `query` | str | required | Natural-language or keyword query |
-| `k` | int | 10 | Number of results per page |
-| `cursor` | int | 0 | Pagination offset |
+| `k` | int | 10 | Results per page, clamped to 1..`TRELIX_MCP_MAX_K` (default 50) |
+| `cursor` | int | 0 | Pagination offset; a negative value is an error |
 | `config_path` | str\|None | None | Optional path to a custom repos.json |
+| `detail` | `"detailed"` \| `"concise"` | `"detailed"` | `concise` drops `body` and adds a one-line `signature` |
 
 **Response shape:**
 ```json
@@ -694,11 +730,16 @@ federation_search_all(query, k=10, cursor=0, config_path=None) → {results, nex
   ],
   "next_cursor": 10,
   "total_available": 47,
+  "page_size": 10,
+  "truncated": false,
+  "omitted": 0,
   "repos_searched": 2,
   "repos_skipped": 0,
   "error": null
 }
 ```
+
+The error and empty-registry responses keep the shorter shape they always had (no `page_size`, `truncated` or `omitted`).
 
 **New in v2.8.0.**
 
@@ -767,7 +808,7 @@ r2 = ask_agent(
 #### `agent_list_sessions`
 
 ```
-agent_list_sessions(repo_path, limit=50) → {sessions, count}
+agent_list_sessions(repo_path, limit=50) → {sessions, count, page_size, truncated, omitted}
 ```
 
 **What it does:** Lists recent agent sessions for a repo, most recently active first. Runs stale-session eviction first if `TRELIX_RETRIEVAL_AGENT_SESSION_MAX_AGE_SECONDS > 0`.
@@ -776,7 +817,7 @@ agent_list_sessions(repo_path, limit=50) → {sessions, count}
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `repo_path` | str | required | Absolute path to the repository root |
-| `limit` | int | 50 | Max sessions to return |
+| `limit` | int | 50 | Max sessions to return, clamped to 1..`TRELIX_MCP_MAX_K` (default 50) |
 
 **Response shape:**
 ```json
@@ -790,9 +831,14 @@ agent_list_sessions(repo_path, limit=50) → {sessions, count}
       "turn_count": 3
     }
   ],
-  "count": 1
+  "count": 1,
+  "page_size": 50,
+  "truncated": false,
+  "omitted": 0
 }
 ```
+
+If the response would pass the budget (`TRELIX_MCP_MAX_RESULT_CHARS`), the oldest sessions are left out: `truncated` is `true` and `omitted` counts them. `query` is the session's most recent prompt, cut to its first 300 characters; a session whose prompt was cut also has `query_truncated: true` (the key is absent otherwise).
 
 **New in v2.8.0.**
 
@@ -997,7 +1043,7 @@ results = response["results"]
 - Rename `offset=` to `cursor=` at all call sites
 - Update result extraction from `response` to `response["results"]`
 - Use `response["next_cursor"]` and `response["total_available"]` for pagination logic
-- If `next_cursor == total_available`, you have reached the last page
+- If `next_cursor` is null, you have reached the last page
 
 ---
 
@@ -1021,10 +1067,11 @@ def fetch_all_results(query: str, repo_path: str, page_size: int = 10) -> list:
         all_results.extend(batch)
 
         next_cursor = response["next_cursor"]
-        total = response["total_available"]
 
-        # Stop when we have consumed all available results
-        if next_cursor >= total or not batch:
+        # next_cursor is null after the last page. A page cut to fit the output budget
+        # (response["truncated"]) sets next_cursor to the first result it dropped, so the
+        # same loop continues without skipping or repeating a result.
+        if next_cursor is None or not batch:
             break
 
         cursor = next_cursor
@@ -1071,6 +1118,7 @@ Two lenses appear above every symbol reported by VS Code's own document-symbol p
 - Symbols come from `vscode.executeDocumentSymbolProvider`, i.e. whichever language extension you already have installed. A file with no symbol provider gets no lenses (and no error).
 - At most 200 symbols per document are annotated, and nesting is followed to depth 2 — top-level symbols, their children, and their grandchildren — so a deeply nested file does not produce an unreadable wall of lenses.
 - **Lens resolution is lazy, so typing never triggers MCP traffic.** `provideCodeLenses` makes zero MCP calls: it derives lens ranges locally and returns the count-bearing lens *unresolved*. The single `blast_radius` call happens in `resolveCodeLens`, which VS Code invokes only for lenses it actually paints. Each result is cached per `uri@version::symbol`, so scrolling back over the same revision is free, while an edit bumps the document version and correctly invalidates the count.
+- The `N dependents` count (and the `@trelix /impact` chat command's count) is at most 100, and lower when the character budget cuts first, with no sign that the list was cut: the extension calls `blast_radius` without `limit` and reads only the first text block, so it does not see `_meta.trelix.total_available` (see [Output size and limits](#output-size-and-limits)). Reading that field is a planned extension change; passing `limit` does not fix the count.
 - Lens failures are silent by design — never an error dialog. A `blast_radius` call that errors resolves the lens to `0 dependents` for that document revision, so treat a surprising zero as "check the server" rather than "nothing depends on this".
 - **Long dependent lists.** A `trelix-mcp` that cuts a long `blast_radius` list (the release that ships the output budget) sends the real count in `_meta.trelix.total_available`, and the extension reads it. The lens then shows the real count and how many the popup lists (`150 dependents (showing 100)`), and `@trelix /impact` says `has 150 dependent(s), showing the first 100`. When nothing was cut, or the server sends no `_meta` (an older release), the count is the number of entries received.
 

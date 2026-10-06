@@ -164,6 +164,38 @@ which the core ships from the release that contains this change. An older core u
 package fails on import (`trelix-mcp` at start-up, the adapters on their first query), so the
 release that ships this raises their `trelix>=` floors to that release.
 
+### Behaviour change: MCP list results are bounded
+
+`trelix-mcp` list tools used to return as much as the caller asked for. Measured through an
+in-process client with 100,000-character bodies, `search_code` with `k=100` was about 97,000
+characters of text and 197,000 on the wire (FastMCP sends a dict result as a text block, with every
+quote escaped, and again as `structuredContent`), past Claude Code's 25,000-token cap for one tool
+result; `graph_search_mcp` had no upper bound on `k`, and `blast_radius` returned every dependent
+file (about 127 characters each with short paths, more with long ones). Tool names and parameters
+are unchanged and every new argument has a default that keeps the old meaning, but these results now
+differ for a caller that asked for a lot:
+
+| Before | Now | Escape hatch |
+|--------|-----|--------------|
+| `k` (and `agent_list_sessions`'s `limit`) of any size was honoured | clamped to `1..50`; the response says what was used (`page_size`) | `TRELIX_MCP_MAX_K=<n>` |
+| A list result of any size | cut to fit `TRELIX_MCP_MAX_RESULT_CHARS` (15,000) by dropping the tail: the budget counts both copies a client is sent, so the response is at most 30,000 characters and its text under 15,000. `truncated` and `omitted` say so and `next_cursor` continues from the first dropped result. A bare array (`blast_radius`, `graph_search_mcp`) keeps the JSON array in the first text block and adds a note block and `_meta.trelix`. One result is always kept, so a single result longer than the budget is returned whole | `TRELIX_MCP_MAX_RESULT_CHARS=0` turns the cut off |
+| `blast_radius` returned every dependent | at most 100 by default; `limit` raises that up to 500, which is the most it can return (it has no offset), and the character cut still applies (about 108 dependents fit with paths like `src/callers/caller_module_0000.py`, about 84 with 72-character ones) | `limit=500` with `TRELIX_MCP_MAX_RESULT_CHARS=0` |
+| `get_symbol` returned the whole body | a body over 20,000 characters is cut and `body_truncated` is `true` | `max_body_chars=0` |
+| `agent_list_sessions` returned each session's most recent prompt (`query`) whole | a `query` over 300 characters is cut to its first 300 and that session gets `query_truncated: true`, so one long prompt cannot push a response past 30,000 characters | none: the full prompt is only in the caller's latest `ask_agent` call for that session |
+| A negative `cursor` sliced from the end of the result list | an error result (`isError: true`) | none: use `0` or the previous `next_cursor` |
+
+Everything else is additive: `search_code`, `federation_search_all` and `agent_list_sessions` responses
+gain `page_size`, `truncated` and `omitted`, `get_symbol` gains `body_truncated`, and the new
+arguments are `detail` (`concise` or `detailed`, default `detailed`, on `search_code`,
+`graph_search_mcp` and `federation_search_all`), `limit` (`blast_radius`) and `max_body_chars`
+(`get_symbol`). The first text block of every result keeps the keys it had, which is what the VS Code
+extension reads; its "N dependents" lens and its `@trelix /impact` chat command therefore show at most 100 dependents (fewer
+when the character budget cuts first), with no sign that the list was cut, until the extension reads
+`_meta.trelix.total_available` (a follow-up; passing `limit` does not help, because the character budget cuts
+the list first). The `federation_search_all` error and empty-registry responses keep their shorter shape.
+A value of `TRELIX_MCP_MAX_K` or `TRELIX_MCP_MAX_RESULT_CHARS` that is not an integer (at least 1 for
+the first, at least 0 for the second) stops `trelix-mcp` at start-up with exit code 2.
+
 ### Additive: MCP tool annotations, instructions, tool order and `--tools`
 
 `trelix-mcp` now sends tool annotation hints, server `instructions` and a five-minute cache hint, lists its tools in a fixed order (the two subscription tools, which came first, now come last) and accepts `--tools core|full` (default `full`, every tool); this is additive, because no tool name, parameter or result changes.

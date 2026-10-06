@@ -1,6 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
+import trelix_mcp.server as srv
+from budget_support import seed
 
 
 @pytest.fixture
@@ -41,3 +45,76 @@ def _reset_retriever_cache():
     server._retriever_cache.clear()
     yield
     server._retriever_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clean_output_limit_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An operator's TRELIX_MCP_MAX_K / TRELIX_MCP_MAX_RESULT_CHARS must not reach a test."""
+    monkeypatch.delenv("TRELIX_MCP_MAX_K", raising=False)
+    monkeypatch.delenv("TRELIX_MCP_MAX_RESULT_CHARS", raising=False)
+
+
+@pytest.fixture
+def backends(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Serve `backends.hits` from search_code, graph_search_mcp and federation_search_all."""
+    state = SimpleNamespace(hits=[], graph_max_results=None, retriever=MagicMock())
+    state.retriever.retrieve.side_effect = lambda *args, **kwargs: SimpleNamespace(
+        results=state.hits
+    )
+    monkeypatch.setattr(srv, "_get_retriever", lambda repo_path: state.retriever)
+
+    def graph_search(db, graph, seeds, depth, max_results):  # type: ignore[no-untyped-def]
+        state.graph_max_results = max_results
+        return state.hits[:max_results]
+
+    monkeypatch.setattr("trelix.graph.search.graph_search", graph_search)
+    monkeypatch.setattr("trelix.graph.builder.GraphBuilder", MagicMock())
+    # graph_search_mcp builds its own IndexConfig, and the tests' repo path is not a directory.
+    monkeypatch.setattr("trelix.core.config.IndexConfig", MagicMock())
+    registry = MagicMock()
+    registry.load.return_value.list.return_value = [SimpleNamespace(alias="repo-a")]
+    monkeypatch.setattr(srv, "RepoRegistry", registry)
+    federated = MagicMock()
+    federated.return_value.repos_queried_count.return_value = 1
+    federated.return_value.unindexed_repos.return_value = []
+    federated.return_value.retrieve.side_effect = lambda query, k: state.hits[:k]
+    monkeypatch.setattr(srv, "FederatedRetriever", federated)
+    return state
+
+
+@pytest.fixture
+def sessions(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Serve `sessions.items` from agent_list_sessions.
+
+    Replaces the server's IndexConfig and Database, so a test that also needs a real index
+    (blast_radius, get_symbol) must not use it.
+    """
+    state = SimpleNamespace(items=[], database=MagicMock())
+    state.database.list_agent_sessions.side_effect = lambda limit: state.items[:limit]
+    config = MagicMock()
+    config.return_value.retrieval.agent_session_max_age_seconds = 604_800.0
+    monkeypatch.setattr(srv, "IndexConfig", config)
+    monkeypatch.setattr(srv, "Database", MagicMock(return_value=state.database))
+    return state
+
+
+@pytest.fixture(scope="module")
+def dependents_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A real index: `target.run` with 520 dependents, one per file."""
+    return seed(tmp_path_factory.mktemp("dependents"), 520)
+
+
+@pytest.fixture(scope="module")
+def long_path_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A real index: `target.run` with 520 dependents whose files have long (72-character) paths."""
+    return seed(
+        tmp_path_factory.mktemp("long-paths"),
+        520,
+        caller_dir="src/some/deeply/nested/package/directory/structure",
+    )
+
+
+@pytest.fixture(scope="module")
+def small_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A real index: `target.run` with 3 dependents."""
+    return seed(tmp_path_factory.mktemp("small"), 3)

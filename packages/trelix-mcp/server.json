@@ -32,7 +32,7 @@
     },
     {
       "name": "blast_radius",
-      "description": "Find all files that depend on a symbol"
+      "description": "Find the files that depend on a symbol (100 by default, 500 at most)"
     },
     {
       "name": "build_knowledge_graph",
