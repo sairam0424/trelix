@@ -484,6 +484,12 @@ suite("dependentsTitle", () => {
             shown: 100,
             expected: "$(references) 150 dependents (showing 100)",
         },
+        {
+            name: "1 shown of 150: the noun follows the total, not the count shown",
+            total: 150,
+            shown: 1,
+            expected: "$(references) 150 dependents (showing 1)",
+        },
     ];
     for (const c of cases) {
         test(c.name, () => {
