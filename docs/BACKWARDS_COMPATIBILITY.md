@@ -164,6 +164,10 @@ which the core ships from the release that contains this change. An older core u
 package fails on import (`trelix-mcp` at start-up, the adapters on their first query), so the
 release that ships this raises their `trelix>=` floors to that release.
 
+### Additive: MCP tool annotations, instructions, tool order and `--tools`
+
+`trelix-mcp` now sends tool annotation hints, server `instructions` and a five-minute cache hint, lists its tools in a fixed order (the two subscription tools, which came first, now come last) and accepts `--tools core|full` (default `full`, every tool); this is additive, because no tool name, parameter or result changes.
+
 ### v3.3.0 Breaking Changes
 
 The following deprecated item was removed in v3.3.0. Its `AliasChoices`/`DeprecationWarning` backward-compat shim had been active since v2.4.0.

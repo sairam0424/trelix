@@ -36,8 +36,23 @@ from trelix.retrieval.retriever import Retriever  # noqa: E402
 from trelix.store.db import Database  # noqa: E402
 from trelix_mcp import __version__  # noqa: E402
 from trelix_mcp.subscriptions import SubscriptionLimitExceeded, SubscriptionRegistry  # noqa: E402
+from trelix_mcp.tool_metadata import (  # noqa: E402
+    LISTING_CACHE_SCOPE,
+    LISTING_CACHE_TTL_SECONDS,
+    SERVER_INSTRUCTIONS,
+    TOOL_PROFILES,
+    ToolMetadata,
+    apply_tool_profile,
+)
 
-mcp = FastMCP("trelix", version=__version__)
+mcp = FastMCP(
+    "trelix",
+    version=__version__,
+    instructions=SERVER_INSTRUCTIONS,
+    cache_ttl=LISTING_CACHE_TTL_SECONDS,
+    cache_scope=LISTING_CACHE_SCOPE,
+    transforms=[ToolMetadata()],
+)
 _log = logging.getLogger("trelix_mcp")
 
 # Retriever construction is the expensive part of every tool call that uses
@@ -1136,16 +1151,24 @@ def agent_clear_session(repo_path: str, session_id: str) -> dict[str, Any]:
 def main() -> None:
     """Entry point for the trelix-mcp server (stdio transport).
 
-    Parses argv only for --help/--version/unknown-flag rejection — the normal path (no
+    Parses argv for --help/--version/--tools and rejects unknown flags — the normal path (no
     args, launched by an MCP client's server config) falls straight through to running
-    the server, unchanged from before this parser existed.
+    the server with every tool, unchanged from before this parser existed.
     """
     parser = argparse.ArgumentParser(
         prog="trelix-mcp",
         description="MCP server for trelix — semantic code search over stdio.",
     )
     parser.add_argument("--version", action="version", version=f"trelix-mcp {__version__}")
-    parser.parse_args()
+    parser.add_argument(
+        "--tools",
+        choices=TOOL_PROFILES,
+        default="full",
+        help="tool profile: 'full' (default) lists every tool, 'core' lists only the everyday "
+        "search and indexing tools and hides the rest",
+    )
+    args = parser.parse_args()
+    apply_tool_profile(mcp, args.tools)
 
     def _handle_sigterm(signum: int, frame: Any) -> None:
         _log.info("Received SIGTERM — shutting down")
