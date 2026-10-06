@@ -283,6 +283,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `nomic-code`) to the embedder code.
 
 ### Added
+- **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
+  of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
+  answer the question; this one tags the context and instructs the model, nothing reads the model's
+  tags yet). With the flag on, every block header of the assembled context carries a tag, `[C1] [Lines
+  42-67] AuthMiddleware.verify`, numbered in rendered order with one number per symbol (a compressed
+  body carries its tag on each kept-span header; the intent preambles are not tagged), and
+  `RetrievedContext.citation_sources` records the path, lines and qualified name each tag refers to.
+  The synthesis system prompt (plain `ask`, FLARE and eval synthesis alike) then ends with an
+  instruction to write a block's tag after each sentence that relies on it and to cite only tags that
+  appear in the context; GraphRAG map-reduce prefixes its group headers with the same numbers and adds
+  one line to each of its prompts. The tag number is the only thing the model is asked to write about
+  a source. With the flag off (the default) the assembled context, the prompts and every command's
+  output are unchanged byte for byte (the assembler's frozen-digest and `v2.12.0` back-compat tests
+  cover the context; a prompt equality test covers the three synthesis paths). The flag is read by
+  every Retriever, so `trelix review`'s per-hunk context and REST `/ask` see the tags too when it is
+  on; `trelix ask --provider local` prints them with the context. No live model call was made: how
+  well a model follows the instruction is what the synthesis eval changes later in this series exist
+  to measure.
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
@@ -404,8 +422,64 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     `truncated` and `omitted`; `agent_list_sessions` gains the same three. The `federation_search_all`
     error and empty-registry responses keep their shorter shape.
   - Two environment variables, `TRELIX_MCP_MAX_K` and `TRELIX_MCP_MAX_RESULT_CHARS` (below).
+- **`suite.json` and a hardened, verified clone of its pinned repository** (groundwork for the command
+  that runs a suite, not a feature yet: `trelix eval-suite` is hidden from `--help` and only
+  `--prepare-only` works. It indexes nothing, replays nothing and writes no `results.json`. No
+  retrieval default changes).
+  - A suite is one repository at one 40-hex commit, a golden file and a file of frozen plans, named by
+    `suite.json` (`name`, `golden_version`, `repo.url`, `repo.sha`, `repo.license`, and a `path` and
+    `sha256` for each file). Every key is required; unknown and repeated keys are refused; all problems
+    are reported together. The hashes are over the raw bytes, so a line-ending rewrite refuses the
+    suite. Before anything is cloned the golden file must validate like `trelix eval-validate` (without
+    its v2 strata thresholds) and the plans file must hold a plan for every golden query, checked by the
+    planner's own cache class so the key rules cannot differ from a run. An empty or absent plans file
+    is refused: the planner would treat it as "record" and call the LLM for every query.
+  - The clone is made in `<cache>/clones/<sha>/<name>.partial`, checked out at the pin, verified, and
+    moved into place with one rename. Every git child gets a built environment (git's global and system
+    configuration pointed at the null device, `GIT_ALLOW_PROTOCOL`, no terminal prompt, no LFS smudge, no
+    optional index locks, and nothing else named `GIT_*`), `-c core.hooksPath=<null device>`, `git -C`
+    on a directory the run created and the URL after `--`; a clone has a 1800 s limit and every other
+    command 120 s. Nothing from the repository is executed, imported or installed. `repo.url` must be
+    `https://github.com/<owner>/<repo>`, optionally ending in `.git`, with no credentials, port, query
+    or fragment and owner and repo names GitHub allows, so a `suite.json` that arrives in a pull
+    request cannot make a CI job contact `localhost`, an internal address or any other host (the hosts
+    are the one constant `ALLOWED_REPO_HOSTS` and the refusal names them). A local path or `file://`
+    URL is accepted only through the `allow_local=True` keyword of the Python API (`load_suite`,
+    `ensure_clone`, `prepare_suite`), which the tests use and the command line never sets; public
+    repositories only, since git gets no credentials.
+    An existing clone is re-verified (HEAD is the pin, the worktree is pristine with ignored files
+    counted, the origin URL matches, and it is neither shallow nor partial) and is never repaired or
+    deleted; a `.partial` left by a killed run is refused with its path and never deleted. The cache is
+    `$XDG_CACHE_HOME/trelix/eval-suites` or `~/.cache/trelix/eval-suites`, or `--cache-dir`.
+  - Every gold path must exist at the pin and be in the set `FileWalker` would index with
+    `walker.follow_symlinks = false` (the default follows symlinks without resolving them, so a tracked
+    symlink to a file outside the clone would be read and indexed). On this repository 2 of the 54
+    queries of `eval/golden.jsonl` (lines 43 and 46) have gold files only under `packages/`, which the
+    default walker ignores: they would score 0 in every arm, so a suite over this repository must leave
+    them out. The refusal names the first five paths and counts the rest. A `.gitignore` line or a
+    `package.json` in the clone that makes the walker raise (`!` alone, `[z-a]`, a manifest nested
+    200,000 levels deep) is one `refused: the walker failed on the clone: ...` line as well, not a
+    traceback that comes back on every run. The walker also opens `.gitignore` and `package.json` by
+    name and reads them through a symlink wherever it points (`follow_symlinks = false` covers only
+    the files it iterates; a linked `.gitignore` shapes the walk, and a `package.json` linked to
+    `/dev/zero` or a FIFO is never read to its end), so a tracked symlink with either name, spelled in
+    any case (a case-insensitive filesystem opens a tracked `.GITIGNORE` as `.gitignore`), at any
+    depth, is refused before the walk: one `refused: the clone tracks N symlink(s) named .gitignore or
+    package.json, ...` line naming the first five.
+  - `trelix eval-suite SUITE.json [--cache-dir DIR] --prepare-only` prints the repository, the commit,
+    the two hashes, the number of golden queries and of gold files, and the clone path, and exits 0; any
+    refusal exits 1 with one `refused: ...` line per reason, and without `--prepare-only` it exits 1
+    saying the run is not available in this release. New modules `trelix.eval.suite`, `suite_git`,
+    `suite_gold` and `suite_prepare`. See `eval/README.md`.
 
 ### Changed
+- **Repository-root confinement moved to `trelix.core.confinement`** (`ALLOWED_ROOTS_ENV`,
+  `resolve_allowed_roots`, `is_within_allowed_roots`; the first now takes any number of explicit
+  roots, otherwise same bodies) so `trelix-mcp` can apply
+  the same rule to its `repo_path` arguments; `trelix.api.app` keeps the old private names bound to
+  them. `trelix.api.request_guard.is_health_probe` (the `GET`/`HEAD /health` exemption) is public for
+  the same reason, with the old private name kept. No behaviour change: the REST API's containment and
+  request-guard tests pass unchanged, and `tests/unit/test_confinement.py` pins the helpers directly.
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):
   `docker/build-push-action` 7.3.0 to 7.4.0, `github/codeql-action` (`init`, `analyze`, `upload-sarif`)
   4.38.1 to 4.38.2, `trufflesecurity/trufflehog` 3.97.6 to 3.97.9. npm: `supertest` 7.2.2 to 7.3.0 (the

@@ -58,6 +58,7 @@ BEAST_MODE_DEFAULTS: Mapping[str, str] = MappingProxyType(
         "TRELIX_RETRIEVAL_HYDE_FALLBACK": "false",
         "TRELIX_RETRIEVAL_MULTI_QUERY": "false",
         "TRELIX_RETRIEVAL_FLARE": "false",
+        "TRELIX_RETRIEVAL_CITATIONS": "false",
         "TRELIX_RETRIEVAL_PAGERANK_BOOST": "false",
         "TRELIX_TELEMETRY_ENABLED": "false",
         "TRELIX_OTEL_ENABLED": "false",

@@ -1,4 +1,4 @@
-"""What the eval file loaders (`prereg`, `results`) share: a bounded read and an error type.
+"""What the eval file loaders (`prereg`, `results`, `suite`) share: bounded reads and an error type.
 
 Both loaders report every problem they find in one go, like `_parse_golden`, so a file with
 three mistakes is fixed in one edit, not three.
@@ -28,18 +28,26 @@ class ProblemsError(ValueError):
         super().__init__("; ".join(self.problems))
 
 
-def read_text_capped(path: Path, max_bytes: int) -> str:
-    """The UTF-8 text of `path`, reading at most `max_bytes + 1` bytes of it.
+def read_bytes_capped(path: Path, max_bytes: int) -> bytes:
+    """The bytes of `path`, reading at most `max_bytes + 1` of them.
 
     Raises OSError when the file cannot be opened or read and ValueError when it is over
-    `max_bytes` or is not UTF-8 (`UnicodeDecodeError` is a ValueError). A file over the cap
-    is refused without being read into memory whole.
+    `max_bytes`. A file over the cap is refused without being read into memory whole.
     """
     with path.open("rb") as handle:
         data = handle.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise ValueError(f"is larger than {max_bytes} bytes")
-    return data.decode("utf-8")
+    return data
+
+
+def read_text_capped(path: Path, max_bytes: int) -> str:
+    """The UTF-8 text of `path`, read with `read_bytes_capped`.
+
+    Raises what that raises, and ValueError when the bytes are not UTF-8 (`UnicodeDecodeError`
+    is a ValueError).
+    """
+    return read_bytes_capped(path, max_bytes).decode("utf-8")
 
 
 def clip(text: str, limit: int = _CLIP_CHARS) -> str:
