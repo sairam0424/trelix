@@ -189,10 +189,10 @@ gain `page_size`, `truncated` and `omitted`, `get_symbol` gains `body_truncated`
 arguments are `detail` (`concise` or `detailed`, default `detailed`, on `search_code`,
 `graph_search_mcp` and `federation_search_all`), `limit` (`blast_radius`) and `max_body_chars`
 (`get_symbol`). The first text block of every result keeps the keys it had, which is what the VS Code
-extension reads; its "N dependents" lens and its `@trelix /impact` chat command therefore show at most 100 dependents (fewer
-when the character budget cuts first), with no sign that the list was cut, until the extension reads
-`_meta.trelix.total_available` (a follow-up; passing `limit` does not help, because the character budget cuts
-the list first). The `federation_search_all` error and empty-registry responses keep their shorter shape.
+extension reads; it also reads `_meta.trelix.total_available`, so its "N dependents" lens and its `@trelix /impact` chat
+command show the real count and say how many they list when a long list was cut (`150 dependents (showing 100)`).
+An extension build that predates this reads only the array and shows the cut length with no sign that the list
+was cut. The `federation_search_all` error and empty-registry responses keep their shorter shape.
 A value of `TRELIX_MCP_MAX_K` or `TRELIX_MCP_MAX_RESULT_CHARS` that is not an integer (at least 1 for
 the first, at least 0 for the second) stops `trelix-mcp` at start-up with exit code 2.
 

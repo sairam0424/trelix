@@ -442,9 +442,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   - **`blast_radius` returns at most 100 dependents by default** (it returned all of them); `limit`
     raises that to 500 (it has no offset), and the character cut still applies (about 108 dependents
     fit with short paths, about 84 with 72-character ones). The VS Code "N dependents" lens and the
-    `@trelix /impact` chat command therefore show at most 100 (fewer when the character budget cuts first), with no
-    sign that the list was cut, until the extension reads `_meta.trelix.total_available` (a follow-up: passing `limit`
-    does not help, the character budget cuts the list first).
+    `@trelix /impact` chat command read the real count from `_meta.trelix.total_available` and say how many
+    they list (see the VS Code entry under Fixed).
     **`get_symbol` cuts a body over 20,000 characters** (`max_body_chars=0` restores it).
   - A negative `cursor` returned a slice taken from the end of the list; it is now an error result.
     An unusable `TRELIX_MCP_MAX_K` or `TRELIX_MCP_MAX_RESULT_CHARS` stops `trelix-mcp` at start-up
