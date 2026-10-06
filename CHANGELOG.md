@@ -387,6 +387,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   - Two environment variables, `TRELIX_MCP_MAX_K` and `TRELIX_MCP_MAX_RESULT_CHARS` (below).
 
 ### Changed
+- **Repository-root confinement moved to `trelix.core.confinement`** (`ALLOWED_ROOTS_ENV`,
+  `resolve_allowed_roots`, `is_within_allowed_roots`; the first now takes any number of explicit
+  roots, otherwise same bodies) so `trelix-mcp` can apply
+  the same rule to its `repo_path` arguments; `trelix.api.app` keeps the old private names bound to
+  them. `trelix.api.request_guard.is_health_probe` (the `GET`/`HEAD /health` exemption) is public for
+  the same reason, with the old private name kept. No behaviour change: the REST API's containment and
+  request-guard tests pass unchanged, and `tests/unit/test_confinement.py` pins the helpers directly.
 - **Routine dependency bumps.** GitHub Actions pins (full SHA plus version comment):
   `docker/build-push-action` 7.3.0 to 7.4.0, `github/codeql-action` (`init`, `analyze`, `upload-sarif`)
   4.38.1 to 4.38.2, `trufflesecurity/trufflehog` 3.97.6 to 3.97.9. npm: `supertest` 7.2.2 to 7.3.0 (the

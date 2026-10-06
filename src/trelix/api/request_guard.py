@@ -22,7 +22,8 @@ probes send ``Host: <pod-ip>:<port>``.
 
 When it is switched on is decided elsewhere (``create_app`` / ``trelix serve``); this
 module holds the pure matching helpers, the settings class for
-``TRELIX_API_ALLOWED_HOSTS`` and the ASGI middleware. It is raw ASGI on purpose: no
+``TRELIX_API_ALLOWED_HOSTS``, the ``is_health_probe`` exemption rule shared with other
+ASGI layers, and the ASGI middleware. It is raw ASGI on purpose: no
 starlette import, so the module stays importable without ``trelix[serve]`` like
 ``api/app.py``.
 """
@@ -288,13 +289,21 @@ def _route_path(scope: _Scope) -> str:
     return str(rest) if not rest or rest.startswith("/") else str(path)
 
 
-def _is_health_probe(scope: _Scope) -> bool:
-    """Exact equality on the route path: ``/health/``, ``/HEALTH``, ``//health`` are not it."""
+def is_health_probe(scope: _Scope) -> bool:
+    """True for ``GET``/``HEAD`` ``/health``, the one request every ASGI check lets through.
+
+    Exact equality on the route path: ``/health/``, ``/HEALTH``, ``//health`` are not it.
+    Public so another ASGI layer (trelix-mcp's bearer check) applies the same exemption.
+    """
     return (
         scope["type"] == "http"
         and scope.get("method") in _HEALTH_METHODS
         and _route_path(scope) == HEALTH_PATH
     )
+
+
+# The name this helper had while it was private; kept so existing patch targets resolve.
+_is_health_probe = is_health_probe
 
 
 class _Violation(NamedTuple):
@@ -311,7 +320,7 @@ class RequestGuardMiddleware:
         self._allowed_hosts = frozenset(allowed_hosts)
 
     async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
-        if scope["type"] not in ("http", "websocket") or _is_health_probe(scope):
+        if scope["type"] not in ("http", "websocket") or is_health_probe(scope):
             await self.app(scope, receive, send)
             return
         violation = self._violation(scope)
