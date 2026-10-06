@@ -3,8 +3,13 @@ import * as vscode from "vscode";
 import {
     TrelixCodeLensProvider,
     TrelixCodeLens,
+    dependentsTitle,
 } from "../../code-lens-provider";
-import { TrelixMcpClient, BlastRadiusEntry } from "../../mcp-client";
+import {
+    TrelixMcpClient,
+    BlastRadiusEntry,
+    BlastRadiusResult,
+} from "../../mcp-client";
 
 const NO_CANCEL: vscode.CancellationToken = {
     isCancellationRequested: false,
@@ -29,6 +34,16 @@ function fakeEntry(
     };
 }
 
+/** A blast_radius result with `count` entries; `total` defaults to `count` (nothing cut). */
+function fakeResult(count: number, total = count): BlastRadiusResult {
+    return {
+        entries: Array.from({ length: count }, (_, i) =>
+            fakeEntry({ symbol: `caller${i}`, lineStart: i + 1 }),
+        ),
+        total,
+    };
+}
+
 /**
  * A fake client whose every method bumps a shared counter. The CRITICAL perf
  * assertion is that provideCodeLenses leaves this counter at 0. `blastRadius`
@@ -38,7 +53,7 @@ function countingClient(
     blastRadius: (
         name: string,
         repo: string,
-    ) => Promise<BlastRadiusEntry[]> = async () => [],
+    ) => Promise<BlastRadiusResult> = async () => fakeResult(0),
 ): { client: TrelixMcpClient; calls: () => number; blastCalls: () => number } {
     let calls = 0;
     let blastCalls = 0;
@@ -162,10 +177,9 @@ suite("TrelixCodeLensProvider", () => {
     });
 
     test("resolveCodeLens wires the command to VS Code's native Peek References popup (Visual CodeLens), not a custom QuickPick command", async () => {
-        const { client, blastCalls } = countingClient(async () => [
-            fakeEntry(),
-            fakeEntry({ symbol: "other" }),
-        ]);
+        const { client, blastCalls } = countingClient(async () =>
+            fakeResult(2),
+        );
         const provider = new TrelixCodeLensProvider(
             async () => client,
             () => "/repo",
@@ -190,9 +204,9 @@ suite("TrelixCodeLensProvider", () => {
             "trelix.blastRadius",
             "must not route through the old Invokable-CodeLens command / QuickPick",
         );
-        assert.ok(
-            resolved.command!.title.includes("2 dependents"),
-            `title was: ${resolved.command!.title}`,
+        assert.strictEqual(
+            resolved.command!.title,
+            "$(references) 2 dependents",
         );
 
         const [uri, position, locations] = resolved.command!.arguments as [
@@ -210,9 +224,9 @@ suite("TrelixCodeLensProvider", () => {
     });
 
     test("cache hit: second resolve at same uri@version does not re-call blastRadius", async () => {
-        const { client, blastCalls } = countingClient(async () => [
-            fakeEntry(),
-        ]);
+        const { client, blastCalls } = countingClient(async () =>
+            fakeResult(1),
+        );
         const provider = new TrelixCodeLensProvider(
             async () => client,
             () => "/repo",
@@ -233,9 +247,9 @@ suite("TrelixCodeLensProvider", () => {
     });
 
     test("cache miss: a version bump re-calls blastRadius", async () => {
-        const { client, blastCalls } = countingClient(async () => [
-            fakeEntry(),
-        ]);
+        const { client, blastCalls } = countingClient(async () =>
+            fakeResult(1),
+        );
         const provider = new TrelixCodeLensProvider(
             async () => client,
             () => "/repo",
@@ -313,9 +327,9 @@ suite("TrelixCodeLensProvider", () => {
     });
 
     test("clearCache forces a re-call at the same uri@version", async () => {
-        const { client, blastCalls } = countingClient(async () => [
-            fakeEntry(),
-        ]);
+        const { client, blastCalls } = countingClient(async () =>
+            fakeResult(1),
+        );
         const provider = new TrelixCodeLensProvider(
             async () => client,
             () => "/repo",
@@ -334,4 +348,152 @@ suite("TrelixCodeLensProvider", () => {
             "clearCache should drop the cached count",
         );
     });
+
+    test("a cut list shows the real total and says how many are listed", async () => {
+        const { client } = countingClient(async () => fakeResult(100, 150));
+        const provider = new TrelixCodeLensProvider(
+            async () => client,
+            () => "/repo",
+        );
+
+        const range = new vscode.Range(0, 0, 0, 0);
+        const lens = new TrelixCodeLens(range, "hub", "file:///a.py", 1);
+        const resolved = await provider.resolveCodeLens(lens, NO_CANCEL);
+
+        assert.strictEqual(
+            resolved.command!.title,
+            "$(references) 150 dependents (showing 100)",
+        );
+        const locations = resolved.command!.arguments![2] as vscode.Location[];
+        assert.strictEqual(
+            locations.length,
+            100,
+            "the popup lists the entries we hold, not a made-up 150",
+        );
+    });
+
+    test("a cached cut result keeps the real total", async () => {
+        const { client, blastCalls } = countingClient(async () =>
+            fakeResult(100, 150),
+        );
+        const provider = new TrelixCodeLensProvider(
+            async () => client,
+            () => "/repo",
+        );
+
+        const range = new vscode.Range(0, 0, 0, 0);
+        await provider.resolveCodeLens(
+            new TrelixCodeLens(range, "hub", "file:///a.py", 1),
+            NO_CANCEL,
+        );
+        const second = await provider.resolveCodeLens(
+            new TrelixCodeLens(range, "hub", "file:///a.py", 1),
+            NO_CANCEL,
+        );
+
+        assert.strictEqual(blastCalls(), 1, "second resolve must hit the cache");
+        assert.strictEqual(
+            second.command!.title,
+            "$(references) 150 dependents (showing 100)",
+        );
+    });
+
+    test("a failing blast_radius call resolves to 0 dependents and shows no error", async () => {
+        const { client } = countingClient(async () => {
+            throw new Error("index missing");
+        });
+        const provider = new TrelixCodeLensProvider(
+            async () => client,
+            () => "/repo",
+        );
+
+        const range = new vscode.Range(0, 0, 0, 0);
+        const resolved = await provider.resolveCodeLens(
+            new TrelixCodeLens(range, "target", "file:///a.py", 1),
+            NO_CANCEL,
+        );
+
+        assert.strictEqual(
+            resolved.command!.title,
+            "$(references) 0 dependents",
+        );
+    });
+
+    test("a cancelled resolve still lists the entries, titles the lens plainly and is not cached", async () => {
+        const { client, blastCalls } = countingClient(async () =>
+            fakeResult(2),
+        );
+        const provider = new TrelixCodeLensProvider(
+            async () => client,
+            () => "/repo",
+        );
+
+        const range = new vscode.Range(0, 0, 0, 0);
+        const cancelled = await provider.resolveCodeLens(
+            new TrelixCodeLens(range, "target", "file:///a.py", 1),
+            CANCELLED,
+        );
+
+        assert.strictEqual(
+            cancelled.command!.title,
+            "$(references) Blast radius",
+        );
+        const locations = cancelled.command!.arguments![2] as vscode.Location[];
+        assert.strictEqual(locations.length, 2);
+
+        await provider.resolveCodeLens(
+            new TrelixCodeLens(range, "target", "file:///a.py", 1),
+            NO_CANCEL,
+        );
+        assert.strictEqual(
+            blastCalls(),
+            2,
+            "a cancelled result must not be cached",
+        );
+    });
+});
+
+suite("dependentsTitle", () => {
+    const cases: Array<{
+        name: string;
+        total: number;
+        shown: number;
+        expected: string;
+    }> = [
+        {
+            name: "0 dependents",
+            total: 0,
+            shown: 0,
+            expected: "$(references) 0 dependents",
+        },
+        {
+            name: "1 dependent (singular)",
+            total: 1,
+            shown: 1,
+            expected: "$(references) 1 dependent",
+        },
+        {
+            name: "100 dependents, nothing cut",
+            total: 100,
+            shown: 100,
+            expected: "$(references) 100 dependents",
+        },
+        {
+            name: "100 of 150, list was cut",
+            total: 150,
+            shown: 100,
+            expected: "$(references) 150 dependents (showing 100)",
+        },
+        {
+            name: "1 shown of 150: the noun follows the total, not the count shown",
+            total: 150,
+            shown: 1,
+            expected: "$(references) 150 dependents (showing 1)",
+        },
+    ];
+    for (const c of cases) {
+        test(c.name, () => {
+            assert.strictEqual(dependentsTitle(c.total, c.shown), c.expected);
+        });
+    }
 });

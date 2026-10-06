@@ -219,15 +219,18 @@ suite("createTrelixChatHandler", () => {
 
     test("/impact emits one anchor per dependent, linking the inline symbol mention to its Location", async () => {
         const fakeClient = {
-            blastRadius: async () => [
-                {
-                    file: "src/caller.py",
-                    symbol: "caller",
-                    kind: "function",
-                    lineStart: 42,
-                    language: "python",
-                },
-            ],
+            blastRadius: async () => ({
+                entries: [
+                    {
+                        file: "src/caller.py",
+                        symbol: "caller",
+                        kind: "function",
+                        lineStart: 42,
+                        language: "python",
+                    },
+                ],
+                total: 1,
+            }),
         } as unknown as TrelixMcpClient;
 
         const handler = createTrelixChatHandler({
@@ -247,6 +250,88 @@ suite("createTrelixChatHandler", () => {
         assert.strictEqual(anchors.length, 1, "one anchor per dependent");
         assert.strictEqual(anchors[0].title, "caller");
         assert.ok(anchors[0].value instanceof vscode.Location);
+        assert.ok(
+            stream
+                .markdownText()
+                .includes("`validate_token` has 1 dependent(s):"),
+            "an uncut list reports its count with no 'showing the first' note",
+        );
+        assert.ok(!stream.markdownText().includes("showing the first"));
+    });
+
+    test("/impact reports the real total and says how many it lists when the server cut the list", async () => {
+        const fakeClient = {
+            blastRadius: async () => ({
+                entries: Array.from({ length: 100 }, (_, i) => ({
+                    file: `src/dep${i}.py`,
+                    symbol: `dep${i}`,
+                    kind: "function",
+                    lineStart: i + 1,
+                    language: "python",
+                })),
+                total: 150,
+            }),
+        } as unknown as TrelixMcpClient;
+
+        const handler = createTrelixChatHandler({
+            getClient: async () => fakeClient,
+            getRepoPath: DEPS_REPO,
+        });
+        const stream = new FakeStream();
+
+        await handler(
+            request({ prompt: "hub", command: "impact" }),
+            ctx([]),
+            stream,
+            NO_CANCEL,
+        );
+
+        assert.ok(
+            stream
+                .markdownText()
+                .includes("`hub` has 150 dependent(s), showing the first 100:"),
+            `markdown was: ${stream.markdownText().slice(0, 120)}`,
+        );
+        assert.strictEqual(
+            stream.anchors().length,
+            100,
+            "one anchor per entry we hold",
+        );
+    });
+
+    test("/impact says nothing depends on a symbol only when the total is 0", async () => {
+        const noDependents = {
+            blastRadius: async () => ({ entries: [], total: 0 }),
+        } as unknown as TrelixMcpClient;
+        // Degenerate server answer: a count but no entries. Must not claim "nothing".
+        const countOnly = {
+            blastRadius: async () => ({ entries: [], total: 5 }),
+        } as unknown as TrelixMcpClient;
+
+        const run = async (client: TrelixMcpClient): Promise<FakeStream> => {
+            const handler = createTrelixChatHandler({
+                getClient: async () => client,
+                getRepoPath: DEPS_REPO,
+            });
+            const stream = new FakeStream();
+            await handler(
+                request({ prompt: "orphan", command: "impact" }),
+                ctx([]),
+                stream,
+                NO_CANCEL,
+            );
+            return stream;
+        };
+
+        const none = await run(noDependents);
+        assert.ok(
+            none.markdownText().includes("Nothing depends on `orphan`."),
+        );
+        assert.strictEqual(none.anchors().length, 0);
+
+        const some = await run(countOnly);
+        assert.ok(!some.markdownText().includes("Nothing depends"));
+        assert.ok(some.markdownText().includes("`orphan` has 5 dependent(s)"));
     });
 
     test("a thrown client error is rendered as markdown and never rejects", async () => {

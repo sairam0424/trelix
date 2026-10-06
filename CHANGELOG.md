@@ -251,6 +251,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   file handle (and, in WAL mode, a `-wal` and `-shm` pair) open per call until collection. They now
   close it on every path: found, not found, and when a query raises. A test spies on every
   `Database` these open and requires each to refuse a query afterwards.
+- **VS Code: `N dependents` and `@trelix /impact` show the real count when `trelix-mcp` cuts a long
+  `blast_radius` list.** In the release that ships the MCP output budget the server cuts a long
+  `blast_radius` array and reports the real count in `_meta.trelix.total_available`. The extension
+  read only the array in the first text block, so the lens and the chat command would have shown at
+  most the cut length with no sign that the list was cut. `blastRadius()` now also reads that field
+  and returns `{ entries, total }`; `total` is the field when it is an integer at least as large as
+  the entries received, and otherwise (no `_meta`, an older server, a malformed or smaller value)
+  the entry count. When the list was cut, the lens title reads `150 dependents (showing 100)` (the
+  Peek References popup still lists the entries it has) and `@trelix /impact` says
+  `has 150 dependent(s), showing the first 100`. An uncut list reads as before. No new setting and
+  no new server call; `limit` is not passed.
 
 ### Added
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
@@ -431,9 +442,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   - **`blast_radius` returns at most 100 dependents by default** (it returned all of them); `limit`
     raises that to 500 (it has no offset), and the character cut still applies (about 108 dependents
     fit with short paths, about 84 with 72-character ones). The VS Code "N dependents" lens and the
-    `@trelix /impact` chat command therefore show at most 100 (fewer when the character budget cuts first), with no
-    sign that the list was cut, until the extension reads `_meta.trelix.total_available` (a follow-up: passing `limit`
-    does not help, the character budget cuts the list first).
+    `@trelix /impact` chat command read the real count from `_meta.trelix.total_available` and say how many
+    they list (see the VS Code entry under Fixed).
     **`get_symbol` cuts a body over 20,000 characters** (`max_body_chars=0` restores it).
   - A negative `cursor` returned a slice taken from the end of the list; it is now an error result.
     An unusable `TRELIX_MCP_MAX_K` or `TRELIX_MCP_MAX_RESULT_CHARS` stops `trelix-mcp` at start-up
