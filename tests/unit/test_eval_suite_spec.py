@@ -454,6 +454,16 @@ class TestGolden:
         assert problem.startswith("golden: ")
         assert "golden-metadata.json" in problem
 
+    def test_a_sidecar_that_is_a_directory_is_refused_and_not_raised(self, tmp_path: Path) -> None:
+        """The loader opens the sidecar whenever it exists; a directory raises an OSError, which
+        is not a ValueError. MUTATION THAT MUST FAIL THIS TEST: `except (OSError, ValueError)`
+        narrowed back to `except ValueError` around `_parse_golden`."""
+        spec = load_suite(_suite(tmp_path))
+        (tmp_path / "suite" / "golden-metadata.json").mkdir()
+        [problem] = input_problems(spec)
+        assert problem.startswith("golden: ")
+        assert "golden-metadata.json" in problem
+
 
 class TestNothingIsClonedUntilTheInputsAreProven:
     def _cache(self, tmp_path: Path) -> Path:

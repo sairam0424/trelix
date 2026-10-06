@@ -434,8 +434,58 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     refusal exits 1 with one `refused: ...` line per reason, and without `--prepare-only` it exits 1
     saying the run is not available in this release. New modules `trelix.eval.suite`, `suite_git`,
     `suite_gold` and `suite_prepare`. See `eval/README.md`.
+- **`trelix eval-suite SUITE.json --arm NAME --out results.json` runs one arm of a suite** (the second
+  half of the suite work, part 2 of 2: the groundwork above is now a visible command, and the
+  "`--prepare-only` only" state it describes is superseded). It prepares the suite exactly as
+  `--prepare-only` does, builds ONE index for ONE arm from the verified clone with the local
+  embedder, replays the frozen plans and writes a `results.json` (schema_version 1) that
+  `trelix eval-compare` reads. Exit 0 when the file was written and no query raised; 1 for every
+  refusal (one `refused: ...` line per reason on stderr; `--arm` missing or not
+  `[a-z0-9][a-z0-9_-]{0,62}`, `--out` in a missing directory or itself a directory, both checked
+  before anything is cloned; `--prepare-only` given together with `--arm` or `--out`), for an index
+  that reports any error or cannot be built at all (an `OSError`, or the `ImportError` of a missing
+  `local` extra) or a golden query without a frozen plan at run time (no file is written in those
+  cases, and the refusal ends with a line naming the claimed run directory as left behind), and for
+  queries that raised after the file was written; 2 for a usage error. No retrieval default changes.
+  - One index per arm, in `<cache>/arms/<sha>/<name>/<arm>/`, claimed with `exist_ok=False`: an
+    existing run directory is refused (`arm 'X' already has a run directory at PATH: choose another
+    --arm or delete it`), there is no reuse option, and the command deletes nothing under the cache.
+    The harness reads copies of the verified golden and plans bytes in that directory (re-hashed as
+    they are read), never the committed files.
+  - The settings that change the index or the ranking are forced to literal values whatever the
+    environment or `~/.config/trelix/env` says: no file summaries, no batch API, `embedder.provider`
+    `local`, `walker.follow_symlinks` false, `chunker.contextual` false, `store.backend` `sqlite` in
+    the run directory, `rerank`, `hyde_fallback_enabled`, `multi_query_enabled` and `flare_enabled`
+    false, and the plans copy as `plan_cache_file`. The rest of the effective configuration of
+    `walker`, `parser`, `chunker`, `store`, `retrieval`, `indexer` and `sparse` is recorded in the
+    file's `pipeline.config` with every field named like a secret (`key`, `secret`, `token`,
+    `password`, `endpoint`, `url`, `uri`: a `store.qdrant_url` may carry credentials) and the two
+    per-arm paths removed, and `chunker.max_tokens_per_chunk` kept by name because it changes the
+    index; `embedder` records the provider, the local model, the dimension and the
+    `sentence-transformers` version (`null` when not installed).
+  - The whole index build and query run get the same switched-off git configuration the clone did
+    (`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` the null device, `GIT_CONFIG_NOSYSTEM`,
+    `GIT_ALLOW_PROTOCOL=https`, no terminal prompt, no LFS smudge, no optional locks; restored
+    afterwards) and have `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR` and
+    `GIT_OBJECT_DIRECTORY` removed for the same span, because the Indexer's own `git` in
+    `trelix.store.provenance` inherits the process environment and runs with `cwd=` and no `-C`.
+    Ten real index builds of a tree with two byte-identical files agree record for record, so the
+    insertion order of parsed files did not need to change.
+  - `make eval-suite EVAL_SUITE=... EVAL_ARM=...` (results in `.trelix/eval-suite/results.json` by
+    default, a run artifact, never committed), `trelix.eval.suite_run`, `trelix.eval.suite_git.isolated_git`,
+    `trelix.eval.suite_prepare.prepare_spec`. See `eval/README.md`, "Suites".
+  - Three nits from the review of the groundwork: a `golden-metadata.json` sidecar that is a directory
+    or unreadable is a refusal, not a traceback; a `<name>.partial` beside an already-verified clone is
+    refused with the same text as before a clone exists; and the README says a sidecar that is not
+    valid JSON is a refusal while any other shape yields no labels.
 
 ### Changed
+- **The retriever's per-query debug trace is written beside the index, not beside the source.**
+  `Retriever._debug_dir` is `<directory of store.db_path>/debug/`, which is the same
+  `<repo>/.trelix/debug/` as before for the default `db_path`; an index kept elsewhere
+  (`TRELIX_STORE_DB_PATH` outside the repository, or a `trelix eval-suite` run) now gets its traces
+  there and the source tree stays untouched. Found by the first two-arm suite run: the trace landed
+  in the shared clone, and the second arm refused a worktree that was no longer pristine.
 - **Repository-root confinement moved to `trelix.core.confinement`** (`ALLOWED_ROOTS_ENV`,
   `resolve_allowed_roots`, `is_within_allowed_roots`; the first now takes any number of explicit
   roots, otherwise same bodies) so `trelix-mcp` can apply

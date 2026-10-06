@@ -186,8 +186,11 @@ need credentials the operator has set.
   every file. Three things write, and the same test file records each: with
   `TRELIX_TELEMETRY_ENABLED=true` each `search_code` adds a row to `query_telemetry`; the first
   open of an index written by an older trelix migrates that index; and every `search_code`
-  writes a small JSON trace of the query to `.trelix/debug/` (one new file per call, the same
-  trace `docs/OBSERVABILITY.md` describes, in a directory with its own `.gitignore`), which
+  writes a small JSON trace of the query to a `debug/` directory beside the index (`.trelix/debug/`
+  for the default `db_path`; one new file per call, the same trace `docs/OBSERVABILITY.md`
+  describes; the directory has no ignore file of its own, it is covered by the `.gitignore` one
+  level up that trelix writes beside the database, `.trelix/.gitignore` by default, which ignores
+  everything under it), which
   leaves the database as it was. `get_symbol` and `blast_radius` write no file. A client that
   reads `readOnlyHint` as "does not touch the repository directory" is therefore wrong for
   `search_code`.

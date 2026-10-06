@@ -54,7 +54,8 @@ def _hints(
 # index database, not about every file. Three things write, and that file records each:
 # TRELIX_TELEMETRY_ENABLED=true adds a query_telemetry row per search_code, the first open of an
 # index written by an older trelix migrates it, and every search_code writes a JSON trace of the
-# query to .trelix/debug/ (one new file per call; get_symbol and blast_radius write none). The
+# query to a debug/ directory beside the index (.trelix/debug/ for the default db_path; one new
+# file per call; get_symbol and blast_radius write none). The
 # federation reader tools (federation_list_repos, federation_search_all) are not covered by
 # that test yet, so they are listed as not read-only, which is the safe way to be wrong.
 TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {

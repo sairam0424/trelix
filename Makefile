@@ -2,7 +2,7 @@
 # via pypa/gh-action-pypi-publish and PyPI's OIDC trusted publisher, gated on the `pypi`
 # environment. A local target could not use OIDC — it would need a long-lived API token
 # on a developer machine. Use `make build check-dist` locally and push a tag to release.
-.PHONY: help install install-dev install-all test test-fast test-mcp test-cov test-e2e lint typecheck format check clean build check-dist docs-serve version eval eval-full index-example search-example binary binary-clean binary-install docker-build docker-build-local docker-run
+.PHONY: help install install-dev install-all test test-fast test-mcp test-cov test-e2e lint typecheck format check clean build check-dist docs-serve version eval eval-full eval-suite index-example search-example binary binary-clean binary-install docker-build docker-build-local docker-run
 
 # Paths ruff sees. Kept identical to the `lint` job in .github/workflows/ci.yml so that
 # a local `make lint` / `make format` that passes means CI's ruff steps pass. `scripts/`
@@ -118,6 +118,24 @@ eval-full:  ## Full self-eval over eval/golden.jsonl (needs a current index; spe
 	    '$(EVAL_PLAN_CACHE)'; \
 	fi
 	trelix eval . --golden eval/golden.jsonl --plan-cache-file '$(EVAL_PLAN_CACHE)'
+
+# One arm of a committed suite (eval/README.md, "Suites"): the pinned repository is cloned
+# into the suite cache, indexed ONCE for this arm with the local embedder, the frozen plans
+# are replayed, and results.json is written. A results file is a RUN ARTIFACT: it is never
+# committed (the default sits under .trelix/, which is gitignored), and a suite's baseline
+# changes only in a rebaseline PR that says why. `trelix eval-compare` judges two of them.
+# Both variables are required, because a default arm name would make two runs of the same
+# default indistinguishable from an experiment, and the run directory of an arm is never
+# reused or deleted by eval-suite (choose another EVAL_ARM, or delete it by hand).
+EVAL_SUITE ?=
+EVAL_ARM ?=
+EVAL_RESULTS ?= .trelix/eval-suite/results.json
+
+eval-suite:  ## Run a committed eval suite (pinned clone, frozen plans, local embedder) into results.json; set EVAL_SUITE and EVAL_ARM
+	@test -n '$(EVAL_SUITE)' || { echo 'set EVAL_SUITE=eval/suites/<name>/suite.json' >&2; exit 2; }
+	@test -n '$(EVAL_ARM)' || { echo 'set EVAL_ARM=<arm name>' >&2; exit 2; }
+	@mkdir -p "$$(dirname '$(EVAL_RESULTS)')"
+	trelix eval-suite '$(EVAL_SUITE)' --arm '$(EVAL_ARM)' --out '$(EVAL_RESULTS)'
 
 # ---------------------------------------------------------------------------
 # Code quality

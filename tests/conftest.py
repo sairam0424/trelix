@@ -91,6 +91,18 @@ SLOW_FILES = frozenset(
         "unit/test_eval_suite_clone.py",
         "unit/test_eval_suite_git_isolation.py",
         "unit/test_eval_suite_gold.py",
+        # The three `run_suite` files and the CLI run file. The indexer file is slow by
+        # construction: ten real index builds (two byte-identical files, four parse workers) plus
+        # one real-Indexer canary run, 17.3s at a load average of 48 to 52 on 2026-10-07 (11.5s +
+        # 1.0s at load 30; the real Chunker needs tiktoken's cl100k_base cache offline). The
+        # other two are 54 stub-driven tests that each clone the demo repository: 27.5s together
+        # at load 48 to 52. The CLI run file is six such tests through Typer, split out of
+        # test_cli_eval_suite.py (above) on 2026-10-07. (test_makefile_eval_suite_target.py
+        # reads one file and stays out.)
+        "unit/test_cli_eval_suite_run.py",
+        "unit/test_eval_suite_run.py",
+        "unit/test_eval_suite_run_indexer.py",
+        "unit/test_eval_suite_run_refusals.py",
         "unit/test_indexer_vector_repair.py",
         "unit/test_marker_taxonomy.py",
         "unit/test_otel_metrics.py",
@@ -183,6 +195,8 @@ SECURITY_FILES = frozenset(
         "unit/test_eval_suite_git_isolation.py",
         "unit/test_eval_suite_gold.py",
         "unit/test_eval_suite_repo_url.py",
+        "unit/test_eval_suite_run_indexer.py",
+        "unit/test_eval_suite_run_refusals.py",
         "unit/test_graph_visualizer_escaping.py",
         "unit/test_network_is_blocked.py",
         "unit/test_oidc.py",
