@@ -22,9 +22,9 @@ Verify the binary is on your PATH:
 which trelix-mcp
 ```
 
-`trelix-mcp` parses **no command-line arguments** — running it starts the stdio MCP
-server immediately, so there is no `--version` or `--help` flag. Read the installed
-version from the package instead:
+`trelix-mcp` accepts only `--help`, `--version` and `--tools core|full` (section 8) —
+running it with no arguments starts the stdio MCP server. `trelix-mcp --version` prints the
+installed version, and the package exposes it too:
 
 ```bash
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
@@ -147,6 +147,83 @@ Trelix-mcp exposes 15 MCP tools organized into four functional groups:
 3. **Resource subscriptions** (2 tools): `subscribe_resource`, `unsubscribe_resource`
 4. **Multi-repo federation** (4 tools): `federation_list_repos`, `federation_add_repo`, `federation_remove_repo`, `federation_search_all`
 5. **Persistent agent sessions** (3 tools): `ask_agent`, `agent_list_sessions`, `agent_clear_session`
+
+### What `tools/list` tells a client
+
+Every tool carries the four MCP annotation hints, taken from one table in
+`packages/trelix-mcp/src/trelix_mcp/tool_metadata.py`. `openWorldHint` is `false` for all of
+them: the tools act on a local index and registry, and the network calls they can make go to a
+closed list of destinations. `ask_agent`'s LLM calls go to the provider the operator configured.
+`index_codebase`'s embedding calls go to the provider its `provider` argument names (`local`,
+`openai`, `azure`, `voyage` or `local-code`), so the model picks among those; the hosted ones
+need credentials the operator has set.
+
+| Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` |
+|------|:--:|:--:|:--:|
+| `index_codebase` | false | false | true |
+| `search_code` | **true** | false | false |
+| `get_symbol` | **true** | false | false |
+| `blast_radius` | **true** | false | false |
+| `build_knowledge_graph` | false | false | false |
+| `graph_search_mcp` | false | false | false |
+| `ask_agent` | false | false | false |
+| `agent_list_sessions` | false | false | false |
+| `agent_clear_session` | false | **true** | false |
+| `federation_list_repos` | false | false | false |
+| `federation_add_repo` | false | false | false |
+| `federation_remove_repo` | false | **true** | false |
+| `federation_search_all` | false | false | false |
+| `subscribe_resource` | false | false | false |
+| `unsubscribe_resource` | false | false | false |
+
+- `readOnlyHint` is `true` only for the three tools whose calls are measured to leave
+  `.trelix/index.db` (and its `-wal` and `-shm` files) byte-identical:
+  `packages/trelix-mcp/tests/test_tool_readonly.py` indexes a real temporary repository, runs each
+  tool and hashes the files before and after, with every database connection closed at both
+  points (a running server keeps one open, and while one is open SQLite leaves an empty `-wal`
+  file and a `-shm` file beside the database). That holds for an index already at the current
+  schema with telemetry off (the default). It is a claim about the index database, not about
+  every file. Three things write, and the same test file records each: with
+  `TRELIX_TELEMETRY_ENABLED=true` each `search_code` adds a row to `query_telemetry`; the first
+  open of an index written by an older trelix migrates that index; and every `search_code`
+  writes a small JSON trace of the query to `.trelix/debug/` (one new file per call, the same
+  trace `docs/OBSERVABILITY.md` describes, in a directory with its own `.gitignore`), which
+  leaves the database as it was. `get_symbol` and `blast_radius` write no file. A client that
+  reads `readOnlyHint` as "does not touch the repository directory" is therefore wrong for
+  `search_code`.
+- `build_knowledge_graph` and `graph_search_mcp` are not read-only because both rebuild and save
+  the graph metadata. `agent_list_sessions` evicts sessions past the configured maximum age before
+  it lists.
+- `federation_list_repos` and `federation_search_all` only read, but that test does not cover
+  them yet, so they are left as `readOnlyHint: false`.
+
+`tools/list` returns the tools in a fixed order, the same on every run: the indexing and search
+workflow first (`index_codebase`, `search_code`, `get_symbol`, `blast_radius`,
+`build_knowledge_graph`, `graph_search_mcp`), then the agent-session tools, the federation
+tools, and last the two subscription tools, which deliver nothing today (section 17).
+
+The server also sends `instructions` (under 2,000 characters) when a client connects: what the
+tools are for and the order to use them in (index first, then `search_code`, then `get_symbol`
+or `blast_radius` for a symbol you know). They say that the subscription tools send no
+notifications. With `--tools core` the instructions leave out the tools that profile hides.
+
+On the 2026-07-28 protocol, list results carry `ttlMs: 300000` and `cacheScope: "private"`, so a
+client that opts in to caching may reuse the tool list for five minutes. FastMCP has one
+server-wide setting for this hint, so it is sent on the other list results and on
+`resources/read` as well: a caching client can show `trelix://` resource content up to five
+minutes old.
+
+#### `--tools core|full`
+
+```bash
+claude mcp add trelix -- trelix-mcp --tools core
+```
+
+`full` is the default and lists all 15 tools. `core` lists only `index_codebase`,
+`search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`, `graph_search_mcp` and
+`ask_agent`, in that order; the other eight are hidden, not removed, and a call to one is
+answered as an unknown tool. (`repo_map` and `exact_search` do not exist in this server, so
+`core` does not list them.) Any other value is a usage error: exit code 2 and no server.
 
 ### Core Search & Indexing
 
@@ -1100,7 +1177,7 @@ python -m site --user-base
 export PATH="$HOME/Library/Python/3.12/bin:$PATH"
 source ~/.zshrc
 
-# Verify (trelix-mcp takes no flags — starting it would launch the stdio server)
+# Verify (trelix-mcp with no arguments starts the stdio server; --version prints the version instead)
 which trelix-mcp
 python -c "import trelix_mcp; print(trelix_mcp.__version__)"
 ```
@@ -1141,7 +1218,7 @@ The knowledge graph must be built separately from the index. Call `build_knowled
 
 ### MCP server crashes silently in Cursor / Windsurf
 
-`trelix-mcp` accepts no CLI arguments and has no log-file or log-level setting — it logs
+`trelix-mcp` accepts only `--help`, `--version` and `--tools core|full`, and has no log-file or log-level setting — it logs
 unconditionally to **stderr** at INFO via a hardcoded `logging.basicConfig`. To capture that
 stream, point the MCP host at a tiny wrapper that redirects stderr to a file:
 

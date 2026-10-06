@@ -25,7 +25,8 @@ Three concrete cases motivate the guards below:
 
 These tests pin the current, deliberate floors/ceilings so a future contributor loosening one
 (e.g. widening a version range during an unrelated dependency bump) gets a named, specific
-failure instead of silent re-exposure.
+failure instead of silent re-exposure. The last guard reads `packages/trelix-mcp/pyproject.toml`
+instead: a floor that the code needs rather than one that avoids a CVE or a breaking major.
 """
 
 from __future__ import annotations
@@ -98,4 +99,22 @@ def test_anthropic_ceiling_excludes_removed_temperature_kwarg() -> None:
         "Messages method; src/trelix/llm/providers/anthropic_backend.py still passes "
         "temperature= unconditionally in complete()/stream() and would raise TypeError; pin "
         "a <1.0.0 ceiling until that's fixed, or bump to >=1.0.0 once it is"
+    )
+
+
+def test_trelix_mcp_fastmcp_floor_is_the_release_the_tool_metadata_was_run_against() -> None:
+    """trelix-mcp passes cache_ttl, cache_scope and transforms to FastMCP(...) and calls
+    server.disable(names=, components=); 4.0.10 is the release those were run against."""
+    with (_ROOT / "packages" / "trelix-mcp" / "pyproject.toml").open("rb") as fh:
+        deps = tomllib.load(fh)["project"]["dependencies"]
+    spec = next((dep for dep in deps if re.match(r"^fastmcp\s*[><=!~]", dep)), None)
+    assert spec is not None, "fastmcp not found in packages/trelix-mcp [project] dependencies"
+    match = re.search(r">=\s*(\d+)\.(\d+)\.(\d+)", spec)
+    assert match is not None, f"fastmcp specifier {spec!r} has no >=X.Y.Z floor to check"
+    floor = tuple(int(x) for x in match.groups())
+    assert floor >= (4, 0, 10), (
+        f"trelix-mcp declares {spec!r}, but server.py and tool_metadata.py use FastMCP's "
+        "cache_ttl, cache_scope and transforms arguments and server.disable(names=, "
+        "components=), which were run only against fastmcp 4.0.10; 4.0.0 to 4.0.9 were not "
+        "tested. Lower the floor only after running packages/trelix-mcp/tests on the older release"
     )

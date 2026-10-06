@@ -55,6 +55,12 @@ pip install trelix-mcp "trelix[llm-all]"     # all LLM providers
 claude mcp add trelix -- trelix-mcp
 ```
 
+To list only the everyday search and indexing tools, add `--tools core` (the default is `--tools full`, every tool):
+
+```bash
+claude mcp add trelix -- trelix-mcp --tools core
+```
+
 ### Cursor (`~/.cursor/mcp.json`)
 
 ```json
@@ -167,6 +173,10 @@ TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 ```
 
 ## Tools
+
+`tools/list` returns the tools in a fixed order and marks each one with MCP annotation hints; the server also sends short `instructions` that tell a model to index first and which search tool to use next. Only `search_code`, `get_symbol` and `blast_radius` are marked `readOnlyHint: true` (each is tested to leave the index database byte-identical once the server's database connections are closed, with telemetry off and the index already at the current schema; `TRELIX_TELEMETRY_ENABLED=true` adds a `query_telemetry` row per `search_code`, the first open of an index written by an older trelix migrates it, and every `search_code` writes a small JSON trace of the query to `.trelix/debug/`, so the hint means the index database is left alone, not the whole repository directory); `agent_clear_session` and `federation_remove_repo` are marked `destructiveHint: true`; every tool has `openWorldHint: false`. The full table is in [docs/MCP_GUIDE.md](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md), section 8.
+
+`--tools full` (default) lists all 15 tools. `--tools core` lists seven: `index_codebase`, `search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`, `graph_search_mcp` and `ask_agent`. The other eight are hidden, not removed. (`repo_map` and `exact_search` do not exist in this server, so `core` does not list them.)
 
 | Tool | Description |
 |------|-------------|

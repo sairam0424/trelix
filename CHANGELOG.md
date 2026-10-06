@@ -287,6 +287,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     is a usage error (exit 2). It reads the golden file only: a malformed `<stem>-metadata.json`
     beside it, which `trelix eval` refuses, is not reported. The shipped `eval/golden.jsonl` passes.
     See `eval/README.md` and `docs/CLI_REFERENCE.md`.
+- **`trelix-mcp` describes its own tools: annotations, a fixed order, server instructions and a
+  `--tools core` profile.** All additive: no tool is renamed or removed and no argument or result
+  changes.
+  - *Annotations.* `tools/list` carries `readOnlyHint`, `destructiveHint`, `idempotentHint` and
+    `openWorldHint` (`false` throughout) for every tool, from one table in
+    `trelix_mcp/tool_metadata.py`. Only `search_code`, `get_symbol` and `blast_radius` are
+    read-only, and a test checks that each leaves `.trelix/index.db` byte-identical (current
+    schema, telemetry off). That is a claim about the index database, not every file. Three things
+    write, and the test records each: `TRELIX_TELEMETRY_ENABLED=true` adds a `query_telemetry` row
+    per `search_code`, the first open of an index written by an older trelix migrates it, and every
+    `search_code` writes a JSON trace of the query to `.trelix/debug/` (one new file per call, the
+    database unchanged). `agent_clear_session` and `federation_remove_repo` are destructive;
+    `index_codebase` is idempotent. The federation reader tools (`federation_list_repos`,
+    `federation_search_all`) stay not read-only until that test covers them.
+  - *Order, instructions, cache hint.* `tools/list` follows a literal list (indexing and search
+    first, the two subscription tools last; they used to come first). The server sends
+    `instructions` (under 2,000 characters) that name only tools that exist (and, under
+    `--tools core`, only the tools that profile lists), and `cache_ttl=300`,
+    `cache_scope="private"`. FastMCP has one server-wide setting for the hint, so
+    `resources/read` carries it too: a client that opts in to caching can show `trelix://` resource
+    content up to five minutes old.
+  - *`trelix-mcp --tools core|full`.* The default `full` lists all 15 tools, as before. `core` lists
+    seven (`index_codebase`, `search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`,
+    `graph_search_mcp`, `ask_agent`); the rest are hidden, not removed, and a call to one is answered
+    as an unknown tool. `repo_map` and `exact_search` are not in `core` because they do not exist in
+    this server yet. Any other value is a usage error (exit 2). `docs/MCP_GUIDE.md` section 8 has the
+    table. Five guides (`MCP_GUIDE`, `TROUBLESHOOTING`, `INSTALLATION_GUIDE`, `USER_GUIDE`,
+    `integrations/vscode-plugin`) said `trelix-mcp` takes no arguments; they now say it accepts
+    `--help`, `--version` and `--tools` (the first two already worked).
 - **`trelix eval-compare` with a pre-registered decision rule, and the `results.json` format** (third
   change toward comparing retrieval runs honestly, and the judging half of it: the command that writes
   `results.json` for a whole suite comes next, so nothing produces the files yet except
@@ -359,6 +388,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   use the `secrets` context, no step may use an `actions/cache` action or a setup action's cache, and
   the `workflow_run` trigger must watch exactly `Release` and `Docker Publish`, the names of those
   two workflows. Each new rule has a fixture that must be flagged.
+- **`trelix-mcp` now requires `fastmcp>=4.0.10` (was `>=4.0.0`).** Its tool metadata passes
+  `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
+  `server.disable(names=, components=)`. 4.0.10 is the release those were run against (4.0.0 to
+  4.0.9 were not tested), and `tests/unit/test_dependency_floor_guards.py` pins it.
 
 ## [3.4.3] — 2026-10-04
 

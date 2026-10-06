@@ -47,7 +47,13 @@ classifiers = [
 # neither type exists below these floors. mcp 2.x is backward compatible with pre-2026-07-28
 # clients (they simply never receive an input_required leg), so this is safe to raise
 # unconditionally rather than gating on protocol version.
-dependencies = ["trelix>=3.1.5", "mcp>=2.0.0,<3.0", "fastmcp>=4.0.0,<5"]
+#
+# fastmcp>=4.0.10 (tool metadata): server.py passes cache_ttl, cache_scope and transforms to
+# FastMCP(...), and tool_metadata.py subclasses fastmcp.server.transforms.Transform and calls
+# server.disable(names=, components=). 4.0.10 is the release these were run against (4.0.0 to
+# 4.0.9 were not tested), so it is the floor; tests/unit/test_dependency_floor_guards.py fails
+# if it drops below.
+dependencies = ["trelix>=3.1.5", "mcp>=2.0.0,<3.0", "fastmcp>=4.0.10,<5"]
 
 [project.scripts]
 trelix-mcp = "trelix_mcp.server:main"
