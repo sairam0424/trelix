@@ -1866,6 +1866,7 @@ Most tuning is done through environment variables rather than flags; see
 | `eval [repo]` | --golden/-g | nDCG@10/Recall/MRR |
 | `eval-synthesis [repo]` | --golden/-g | GroUSE synthesis scoring |
 | `eval-validate <golden>` | --repo, --rev, --min-per-stratum, --min-validated | Check a golden file without running a query |
+| `eval-compare <base> <cand>` | --prereg | Judge a candidate results file against a baseline under a pre-registration (exit 0 PASS, 1 FAIL, 2 INCONCLUSIVE, 3 REFUSED) |
 | `taint [repo]` | --tier/-t, --severity/-s, --json | Semgrep taint analysis |
 | `review [repo]` | --diff/-d, --base, --head, --json, --max-files, --pr, --post-comments | Diff review (v2.4.0) |
 | `search-all <query>` | --config, --k, --json | Federated search |
