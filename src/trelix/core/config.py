@@ -845,6 +845,16 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_FLARE_MAX_RETRIES",
     )
 
+    # Tag every block of the assembled context with [C1], [C2], ... (rendered order, one
+    # tag per symbol) and instruct the synthesis model to cite those tags. Off: the
+    # assembled context and the synthesis prompts are byte-identical to before the flag
+    # existed. Read by every Retriever this process builds, so it also tags the per-hunk
+    # context `trelix review` retrieves (the review prompt gives the tags no instruction).
+    citations_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_CITATIONS",
+    )
+
     # PageRank-based symbol importance boost
     pagerank_boost_enabled: bool = Field(
         default=False,
