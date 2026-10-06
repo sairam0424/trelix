@@ -264,6 +264,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   no new server call; `limit` is not passed.
 
 ### Added
+- **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
+  of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
+  answer the question; this one tags the context and instructs the model, nothing reads the model's
+  tags yet). With the flag on, every block header of the assembled context carries a tag, `[C1] [Lines
+  42-67] AuthMiddleware.verify`, numbered in rendered order with one number per symbol (a compressed
+  body carries its tag on each kept-span header; the intent preambles are not tagged), and
+  `RetrievedContext.citation_sources` records the path, lines and qualified name each tag refers to.
+  The synthesis system prompt (plain `ask`, FLARE and eval synthesis alike) then ends with an
+  instruction to write a block's tag after each sentence that relies on it and to cite only tags that
+  appear in the context; GraphRAG map-reduce prefixes its group headers with the same numbers and adds
+  one line to each of its prompts. The tag number is the only thing the model is asked to write about
+  a source. With the flag off (the default) the assembled context, the prompts and every command's
+  output are unchanged byte for byte (the assembler's frozen-digest and `v2.12.0` back-compat tests
+  cover the context; a prompt equality test covers the three synthesis paths). The flag is read by
+  every Retriever, so `trelix review`'s per-hunk context and REST `/ask` see the tags too when it is
+  on; `trelix ask --provider local` prints them with the context. No live model call was made: how
+  well a model follows the instruction is what the synthesis eval changes later in this series exist
+  to measure.
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,

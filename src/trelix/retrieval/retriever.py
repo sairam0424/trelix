@@ -1664,6 +1664,7 @@ class Retriever:
             compressor=compressor,
             compression_ratio=ratio,
             compression_min_tokens=cfg.compression_min_tokens,
+            cite_tags=cfg.citations_enabled,
         )
         context = assembler.assemble(
             query=query,

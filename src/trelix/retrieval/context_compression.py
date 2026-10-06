@@ -211,7 +211,9 @@ def _rebuild(result: SearchResult, cresult: CompressionResult) -> SearchResult:
     )
 
 
-def format_compressed_blocks(result: SearchResult, cresult: CompressionResult) -> str:
+def format_compressed_blocks(
+    result: SearchResult, cresult: CompressionResult, *, header_prefix: str = ""
+) -> str:
     """
     Render a partially-kept body as SEPARATE line-range blocks.
 
@@ -229,6 +231,10 @@ def format_compressed_blocks(result: SearchResult, cresult: CompressionResult) -
 
     Falls back to a single block over the kept span envelope if the stored spans
     cannot be mapped onto the body (never raises, never renders nothing).
+
+    ``header_prefix`` (the assembler's ``[C<n>] `` citation tag) goes in front of
+    every header this function builds, the fallback's included, and never touches
+    the body text; the default ``""`` leaves the rendering byte-identical.
     """
     symbol = result.symbol
     body_lines = (symbol.body or "").splitlines()
@@ -238,7 +244,9 @@ def format_compressed_blocks(result: SearchResult, cresult: CompressionResult) -
         if symbol.line_start <= a <= b <= symbol.line_start + len(body_lines) - 1
     ]
     if not spans or not body_lines:
-        return _fallback_block(symbol.line_start, symbol.line_end, symbol.qualified_name, cresult)
+        return _fallback_block(
+            symbol.line_start, symbol.line_end, symbol.qualified_name, cresult, header_prefix
+        )
 
     parts: list[str] = []
     head_gap = spans[0][0] - symbol.line_start
@@ -253,7 +261,7 @@ def format_compressed_blocks(result: SearchResult, cresult: CompressionResult) -
         i0 = start - symbol.line_start
         i1 = end - symbol.line_start
         text = "\n".join(body_lines[i0 : i1 + 1])
-        parts.append(f"[Lines {start}-{end}] {symbol.qualified_name}\n{text}")
+        parts.append(f"{header_prefix}[Lines {start}-{end}] {symbol.qualified_name}\n{text}")
         previous_end = end
     # Measured against the body we actually HAVE, not symbol.line_end. An elision
     # marker means "compression removed lines we held"; when an extractor already
@@ -287,7 +295,11 @@ def _envelope(cresult: CompressionResult, line_start: int, line_end: int) -> tup
 
 
 def _fallback_block(
-    line_start: int, line_end: int, qualified_name: str, cresult: CompressionResult
+    line_start: int,
+    line_end: int,
+    qualified_name: str,
+    cresult: CompressionResult,
+    header_prefix: str = "",
 ) -> str:
     """One truthful block for when stored spans cannot be mapped onto the body.
 
@@ -304,4 +316,4 @@ def _fallback_block(
         leading += 1
     end = line_start + leading - 1 if leading > 0 else line_start
     end = min(max(end, line_start), hi)  # stay inside the symbol, never inverted
-    return f"[Lines {line_start}-{end}] {qualified_name}\n{cresult.text}"
+    return f"{header_prefix}[Lines {line_start}-{end}] {qualified_name}\n{cresult.text}"

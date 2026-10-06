@@ -8,9 +8,11 @@ from trelix.core.models import RetrievedContext
 
 
 def _make_context() -> RetrievedContext:
+    # A non-empty retrieval: these tests are about the client call, not the
+    # empty-results path (which `synthesize()` answers without a client).
     return RetrievedContext(
         query="how does auth work",
-        results=[],
+        results=[MagicMock()],
         context_text="def authenticate(user): ...",
         total_tokens=10,
     )

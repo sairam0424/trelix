@@ -85,6 +85,14 @@ _DEFAULT_SYSTEM_PROMPT = (
     "Be precise, cite the relevant file and function names, and avoid speculation."
 )
 
+# Appended to the system prompt only when the context carries citation tags
+# (RetrievedContext.citation_sources is non-empty, i.e. TRELIX_RETRIEVAL_CITATIONS is on).
+_CITATION_INSTRUCTION = (
+    "\n\nEvery block of the code context starts with a tag such as [C3]. After each sentence "
+    "that relies on a block, write that block's tag, for example "
+    "`validate_token checks the signature [C3].` Cite only tags that appear in the context."
+)
+
 _USER_TEMPLATE = """\
 ## Code Context
 {context_text}
@@ -272,7 +280,7 @@ class Synthesizer:
                 print(token, end="", flush=True)
         """
         intent = getattr(context, "intent", None) or "feature_flow"
-        system_prompt = _INTENT_PROMPTS.get(intent, _DEFAULT_SYSTEM_PROMPT)
+        system_prompt = self._system_prompt(intent, cited=bool(context.citation_sources))
 
         user_message = _USER_TEMPLATE.format(
             context_text=context.context_text,
@@ -309,8 +317,15 @@ class Synthesizer:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _system_prompt(self, intent: str) -> str:
-        return _INTENT_PROMPTS.get(intent, _DEFAULT_SYSTEM_PROMPT)
+    def _system_prompt(self, intent: str, *, cited: bool) -> str:
+        """The per-intent system prompt, plus the citation instruction for a tagged context.
+
+        The intent fallback is the caller's: ``stream()`` passes ``"feature_flow"`` for a
+        missing intent and ``_stream_response()`` passes ``context.intent`` as is, so an
+        empty intent still resolves to the same base prompt it did before tags existed.
+        """
+        prompt = _INTENT_PROMPTS.get(intent, _DEFAULT_SYSTEM_PROMPT)
+        return f"{prompt}{_CITATION_INSTRUCTION}" if cited else prompt
 
     def _stream_response(self, context: RetrievedContext, config: EmbedderConfig) -> str:
         """
@@ -327,6 +342,7 @@ class Synthesizer:
             query=context.query,
         )
         max_tokens: int = getattr(config, "synthesis_max_tokens", 2048)
+        system_prompt = self._system_prompt(context.intent, cited=bool(context.citation_sources))
         collected: list[str] = []
 
         # Detect if a raw client was injected directly (e.g. by tests) by checking
@@ -341,7 +357,7 @@ class Synthesizer:
         if isinstance(self._llm_client, TrelixChatClient) and not _use_raw:
             for chunk in self._llm_client.stream(
                 messages=[ChatMessage(role="user", content=user_message)],
-                system=self._system_prompt(context.intent),
+                system=system_prompt,
                 max_tokens=max_tokens,
                 temperature=0.2,
                 thinking=self._llm_config.thinking_enabled,
@@ -360,7 +376,7 @@ class Synthesizer:
             stream = self._client.chat.completions.create(  # type: ignore[union-attr]
                 model=model,
                 messages=[
-                    {"role": "system", "content": self._system_prompt(context.intent)},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
                 max_completion_tokens=max_tokens,
