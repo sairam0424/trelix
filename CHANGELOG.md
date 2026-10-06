@@ -246,6 +246,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   here, and unchanged: `trelix eval`, `eval-synthesis`, `telemetry`, `agent sessions` and `taint`
   do not check yet, and neither does `FederatedRetriever.record_exports` (a library method that no
   CLI or MCP path calls).
+- **VS Code: `N dependents` and `@trelix /impact` show the real count when `trelix-mcp` cuts a long
+  `blast_radius` list.** In the release that ships the MCP output budget the server cuts a long
+  `blast_radius` array and reports the real count in `_meta.trelix.total_available`. The extension
+  read only the array in the first text block, so the lens and the chat command would have shown at
+  most the cut length with no sign that the list was cut. `blastRadius()` now also reads that field
+  and returns `{ entries, total }`; `total` is the field when it is an integer at least as large as
+  the entries received, and otherwise (no `_meta`, an older server, a malformed or smaller value)
+  the entry count. When the list was cut, the lens title reads `150 dependents (showing 100)` (the
+  Peek References popup still lists the entries it has) and `@trelix /impact` says
+  `has 150 dependent(s), showing the first 100`. An uncut list reads as before. No new setting and
+  no new server call; `limit` is not passed.
 
 ### Added
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward

@@ -1065,13 +1065,14 @@ Two lenses appear above every symbol reported by VS Code's own document-symbol p
 | Lens | Calls | What you get |
 |------|-------|--------------|
 | `Find similar` | `search_code`, seeded with the symbol name | A QuickPick of semantically similar code; pick one to jump to it |
-| `N dependents` | `blast_radius` on that symbol | A QuickPick of the symbols that call/import it; pick one to jump to `file:line` |
+| `N dependents` | `blast_radius` on that symbol | VS Code's native Peek References popup listing the symbols that call/import it; pick one to jump to `file:line` |
 
 - **Setting:** `trelix.codeLens.enabled` (boolean, default `true`) — "Show trelix code lenses (Find similar, blast radius) above symbols". Flipping it re-queries lenses immediately; no window reload needed.
 - Symbols come from `vscode.executeDocumentSymbolProvider`, i.e. whichever language extension you already have installed. A file with no symbol provider gets no lenses (and no error).
 - At most 200 symbols per document are annotated, and nesting is followed to depth 2 — top-level symbols, their children, and their grandchildren — so a deeply nested file does not produce an unreadable wall of lenses.
 - **Lens resolution is lazy, so typing never triggers MCP traffic.** `provideCodeLenses` makes zero MCP calls: it derives lens ranges locally and returns the count-bearing lens *unresolved*. The single `blast_radius` call happens in `resolveCodeLens`, which VS Code invokes only for lenses it actually paints. Each result is cached per `uri@version::symbol`, so scrolling back over the same revision is free, while an edit bumps the document version and correctly invalidates the count.
 - Lens failures are silent by design — never an error dialog. A `blast_radius` call that errors resolves the lens to `0 dependents` for that document revision, so treat a surprising zero as "check the server" rather than "nothing depends on this".
+- **Long dependent lists.** A `trelix-mcp` that cuts a long `blast_radius` list (the release that ships the output budget) sends the real count in `_meta.trelix.total_available`, and the extension reads it. The lens then shows the real count and how many the popup lists (`150 dependents (showing 100)`), and `@trelix /impact` says `has 150 dependent(s), showing the first 100`. When nothing was cut, or the server sends no `_meta` (an older release), the count is the number of entries received.
 
 #### `@trelix` chat participant
 
@@ -1082,7 +1083,7 @@ In the Chat view, type `@trelix` followed by a question. The participant is stic
 | `@trelix <question>` | `ask_agent` | Runs the agentic ReAct loop and renders the answer as markdown (a progress note shows while retrieval runs; the answer itself arrives in one piece, not token-by-token) |
 | `@trelix /search <query>` | `search_code` | Up to 10 results, each listed as `` `symbol` — file:lines (kind) `` plus a clickable reference to that line range |
 | `@trelix /explain [question]` | `ask_agent` | Explains the active editor's selection (and/or the text you type) in the context of the codebase |
-| `@trelix /impact <symbol>` | `blast_radius` | Lists the symbols that depend on it, with a clickable reference each. Falls back to the editor selection if you pass no symbol name |
+| `@trelix /impact <symbol>` | `blast_radius` | Lists the symbols that depend on it, with a clickable reference each; if the server cut a long list it reports the real count and says `showing the first N`. Falls back to the editor selection if you pass no symbol name |
 
 Invoking `@trelix` with no prompt prints a usage hint instead of calling the server, and any client error is rendered as markdown in the chat rather than thrown.
 

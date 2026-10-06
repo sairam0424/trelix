@@ -1,5 +1,5 @@
 import * as assert from "assert";
-import { TrelixMcpClient } from "../../mcp-client";
+import { TrelixMcpClient, blastRadiusTotal } from "../../mcp-client";
 
 /** Injects a mocked MCP Client onto a TrelixMcpClient without a real stdio connection. */
 function withMockedClient(
@@ -291,6 +291,17 @@ suite("TrelixMcpClient.ask", () => {
     });
 });
 
+/** `count` blast_radius wire entries (snake_case, as the server sends them). */
+function dependents(count: number): Array<Record<string, unknown>> {
+    return Array.from({ length: count }, (_, i) => ({
+        file: `src/dep${i}.py`,
+        symbol: `dep${i}`,
+        kind: "function",
+        line_start: i + 1,
+        language: "python",
+    }));
+}
+
 suite("TrelixMcpClient.blastRadius", () => {
     test("parses the blast_radius tool's array into BlastRadiusEntry[] (line_start -> lineStart)", async () => {
         const client = new TrelixMcpClient();
@@ -313,13 +324,60 @@ suite("TrelixMcpClient.blastRadius", () => {
             }),
         });
 
-        const entries = await client.blastRadius("validate_token", "/repo");
+        const { entries, total } = await client.blastRadius(
+            "validate_token",
+            "/repo",
+        );
 
         assert.strictEqual(entries.length, 1);
         assert.strictEqual(entries[0].symbol, "Handler.dispatch");
         assert.strictEqual(entries[0].file, "src/api.py");
         assert.strictEqual(entries[0].lineStart, 42);
         assert.strictEqual(entries[0].language, "python");
+        assert.strictEqual(
+            total,
+            1,
+            "no _meta (nothing cut, or an older server): total is the entry count",
+        );
+    });
+
+    test("reports the real total from _meta.trelix.total_available when the server cut the list", async () => {
+        const client = new TrelixMcpClient();
+        withMockedClient(client, {
+            callTool: async () => ({
+                content: [
+                    { type: "text", text: JSON.stringify(dependents(100)) },
+                    {
+                        type: "text",
+                        text: "Truncated: 100 of 150 dependents",
+                    },
+                ],
+                _meta: { trelix: { total_available: 150, omitted: 50 } },
+            }),
+        });
+
+        const { entries, total } = await client.blastRadius("hub", "/repo");
+
+        assert.strictEqual(entries.length, 100);
+        assert.strictEqual(entries[99].symbol, "dep99");
+        assert.strictEqual(total, 150);
+    });
+
+    test("falls back to the entry count when _meta.trelix.total_available is malformed", async () => {
+        const client = new TrelixMcpClient();
+        withMockedClient(client, {
+            callTool: async () => ({
+                content: [
+                    { type: "text", text: JSON.stringify(dependents(3)) },
+                ],
+                _meta: { trelix: { total_available: "150" } },
+            }),
+        });
+
+        const { entries, total } = await client.blastRadius("hub", "/repo");
+
+        assert.strictEqual(entries.length, 3);
+        assert.strictEqual(total, 3);
     });
 
     test("forwards symbol_name and repo_path to the blast_radius tool", async () => {
@@ -347,8 +405,98 @@ suite("TrelixMcpClient.blastRadius", () => {
             callTool: async () => ({ content: [{ type: "text", text: "[]" }] }),
         });
 
-        const entries = await client.blastRadius("orphan", "/repo");
+        const result = await client.blastRadius("orphan", "/repo");
 
-        assert.deepStrictEqual(entries, []);
+        assert.deepStrictEqual(result, { entries: [], total: 0 });
     });
+});
+
+suite("blastRadiusTotal", () => {
+    const cases: Array<{
+        name: string;
+        meta: { [key: string]: unknown } | undefined;
+        entryCount: number;
+        expected: number;
+    }> = [
+        {
+            name: "no _meta (nothing cut, or an older server)",
+            meta: undefined,
+            entryCount: 3,
+            expected: 3,
+        },
+        {
+            name: "_meta without a trelix key",
+            meta: { other: { total_available: 9 } },
+            entryCount: 3,
+            expected: 3,
+        },
+        {
+            name: "trelix without total_available",
+            meta: { trelix: { omitted: 5 } },
+            entryCount: 3,
+            expected: 3,
+        },
+        {
+            name: "total_available above the entries (list was cut)",
+            meta: { trelix: { total_available: 150 } },
+            entryCount: 100,
+            expected: 150,
+        },
+        {
+            name: "total_available equal to the entries",
+            meta: { trelix: { total_available: 100 } },
+            entryCount: 100,
+            expected: 100,
+        },
+        {
+            name: "total_available below the entries",
+            meta: { trelix: { total_available: 2 } },
+            entryCount: 3,
+            expected: 3,
+        },
+        {
+            name: "negative total_available with no entries",
+            meta: { trelix: { total_available: -1 } },
+            entryCount: 0,
+            expected: 0,
+        },
+        {
+            name: "non-integer total_available",
+            meta: { trelix: { total_available: 150.5 } },
+            entryCount: 100,
+            expected: 100,
+        },
+        {
+            name: "string total_available",
+            meta: { trelix: { total_available: "150" } },
+            entryCount: 100,
+            expected: 100,
+        },
+        {
+            name: "null total_available",
+            meta: { trelix: { total_available: null } },
+            entryCount: 100,
+            expected: 100,
+        },
+        {
+            name: "trelix is null",
+            meta: { trelix: null },
+            entryCount: 3,
+            expected: 3,
+        },
+        {
+            name: "trelix is a string",
+            meta: { trelix: "150" },
+            entryCount: 3,
+            expected: 3,
+        },
+    ];
+    for (const c of cases) {
+        test(c.name, () => {
+            assert.strictEqual(
+                blastRadiusTotal(c.meta, c.entryCount),
+                c.expected,
+            );
+        });
+    }
 });

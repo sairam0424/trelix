@@ -1,6 +1,10 @@
 import * as path from "path";
 import * as vscode from "vscode";
-import { TrelixMcpClient, BlastRadiusEntry } from "./mcp-client";
+import {
+    TrelixMcpClient,
+    BlastRadiusEntry,
+    BlastRadiusResult,
+} from "./mcp-client";
 
 /** VS Code's built-in command that opens the native "Peek References" popup. */
 const SHOW_REFERENCES_COMMAND = "editor.action.showReferences";
@@ -16,6 +20,17 @@ function entryLocation(
     const uri = vscode.Uri.file(abs);
     const line = Math.max(0, entry.lineStart - 1);
     return new vscode.Location(uri, new vscode.Range(line, 0, line, 0));
+}
+
+/**
+ * Lens title for a resolved blast radius. `total` is the real dependent count
+ * and `shown` how many the Peek References popup can list. When the server cut
+ * the list the title says so, because the native popup has no header of its own.
+ */
+export function dependentsTitle(total: number, shown: number): string {
+    const noun = `${total} dependent${total === 1 ? "" : "s"}`;
+    const cut = shown < total ? ` (showing ${shown})` : "";
+    return `$(references) ${noun}${cut}`;
 }
 
 /** Max symbols we annotate per document — a hard cap so huge files stay fast. */
@@ -73,7 +88,7 @@ function symbolRange(
  * error dialog), and clearCache() for tests.
  */
 export class TrelixCodeLensProvider implements vscode.CodeLensProvider {
-    private readonly cache = new Map<string, BlastRadiusEntry[]>();
+    private readonly cache = new Map<string, BlastRadiusResult>();
     private readonly _onDidChangeCodeLenses = new vscode.EventEmitter<void>();
     readonly onDidChangeCodeLenses: vscode.Event<void> =
         this._onDidChangeCodeLenses.event;
@@ -176,13 +191,14 @@ export class TrelixCodeLensProvider implements vscode.CodeLensProvider {
         }
 
         const cacheKey = `${lens.docUri}@${lens.docVersion}::${symbolName}`;
-        let entries = this.cache.get(cacheKey);
-        if (!entries) {
+        let result = this.cache.get(cacheKey);
+        if (!result) {
             try {
                 const client = await this.getClient();
-                entries = await client.blastRadius(symbolName, repoPath);
+                result = await client.blastRadius(symbolName, repoPath);
             } catch {
-                entries = []; // silent no-op — never surface an error dialog
+                // silent no-op — never surface an error dialog
+                result = { entries: [], total: 0 };
             }
             if (token.isCancellationRequested) {
                 // Don't cache a result computed for a cancelled request.
@@ -192,22 +208,21 @@ export class TrelixCodeLensProvider implements vscode.CodeLensProvider {
                     arguments: [
                         docUri,
                         position,
-                        entries.map((e) => entryLocation(e, repoPath)),
+                        result.entries.map((e) => entryLocation(e, repoPath)),
                     ],
                 };
                 return lens;
             }
-            this.cache.set(cacheKey, entries);
+            this.cache.set(cacheKey, result);
         }
 
-        const count = entries.length;
         lens.command = {
-            title: `$(references) ${count} dependent${count === 1 ? "" : "s"}`,
+            title: dependentsTitle(result.total, result.entries.length),
             command: SHOW_REFERENCES_COMMAND,
             arguments: [
                 docUri,
                 position,
-                entries.map((e) => entryLocation(e, repoPath)),
+                result.entries.map((e) => entryLocation(e, repoPath)),
             ],
         };
         return lens;
