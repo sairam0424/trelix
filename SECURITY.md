@@ -359,8 +359,8 @@ Before indexing a repository you do not fully trust:
   then skips synthesis and prints the context (unless `TRELIX_RETRIEVAL_FLARE=true`,
   `TRELIX_RETRIEVAL_AGENTIC=true`, `--agentic` or `--session` is used; see `ask()` in
   `cli/main.py`), and indexing sends no chunk text to a remote embedding model.
-  Retrieval's query planner is separate: while a chat credential is set it still sends
-  the question text to the chat model, at most once per query per process (the in-memory
+  Retrieval's query planner is separate: while a chat credential or `TRELIX_LLM_BASE_URL` is
+  set it still sends the question text to the chat model, at most once per query per process (the in-memory
   plan cache does not persist between CLI runs; `docs/FAQ.md` explains how to switch that
   off).
   `local` is already the default (`EmbedderConfig.provider` in `core/config.py`), but a

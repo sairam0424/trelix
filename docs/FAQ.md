@@ -101,7 +101,7 @@ Indexing is a one-time cost. After that, `trelix watch` incrementally re-indexes
 
 | Command | Retrieval | LLM | Output | Offline |
 |---------|-----------|-----|--------|---------|
-| `trelix search` | Hybrid (vector + BM25 + grep) | Planner only — no synthesis | Ranked code chunks in a table | Only with no chat credential set |
+| `trelix search` | Hybrid (vector + BM25 + grep) | Planner only — no synthesis | Ranked code chunks in a table | Only with no chat credential and no `TRELIX_LLM_BASE_URL` set |
 | `trelix ask` | Hybrid + synthesis — no reranking, same as `search` | Yes | Synthesized natural-language answer | Requires API key |
 
 The `search` row used to read "LLM: No / Offline: Yes". That contradicted
@@ -127,10 +127,10 @@ It is not, however, unconditionally LLM-free. When a chat credential is resolvab
 
 Two ways to get the offline, deterministic, zero-cost behaviour this section used to promise unconditionally:
 
-- **Unset the chat credential.** With no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / Azure equivalent in the environment, retrieval makes **zero** LLM calls. (The planner object is still constructed — that happens unconditionally — but with no resolvable credential it holds no usable client, so it short-circuits to `default_plan()` without calling out. Measured: 0 calls.)
+- **Unset the chat credential, and `TRELIX_LLM_BASE_URL`.** With no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / Azure equivalent and no `TRELIX_LLM_BASE_URL` in the environment, retrieval makes **zero** LLM calls. (The planner object is still constructed — that happens unconditionally — but with no resolvable credential and no local-server URL it holds no usable client, so it short-circuits to `default_plan()` without calling out. Measured: 0 calls.) A keyless `TRELIX_LLM_BASE_URL` *is* a usable client: the planner then sends one call per distinct query to that server, and if the server is down each query waits out the retries before falling back to `default_plan()`.
 - **Freeze the plans.** Set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE` to a path. The first pass records each plan (one call per distinct query); every later pass replays from the file and makes **zero** calls. Commit that file to get a CI run that is both free and byte-for-byte reproducible.
 
-So `trelix query` is safe for CI — but for cost and determinism you must either withhold the credential or commit a recorded plan cache. A CI box that has a key set for `trelix ask` will otherwise pay one planner call per distinct query here too.
+So `trelix query` is safe for CI — but for cost and determinism you must either withhold the credential and `TRELIX_LLM_BASE_URL` or commit a recorded plan cache. A CI box that has a key or a local-server URL set for `trelix ask` will otherwise pay one planner call per distinct query here too.
 
 ```bash
 trelix query ./my-repo "rate limiting middleware"
