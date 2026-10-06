@@ -76,7 +76,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-import os
 from collections.abc import Generator, Sequence
 from pathlib import Path
 from typing import Any
@@ -95,6 +94,13 @@ from trelix.api.request_guard import (
     resolve_allowed_hosts,
 )
 from trelix.core.config import OPERATOR_ENV_FILE, IndexConfig, RetrievalConfig
+
+# Confinement lives in trelix.core so trelix-mcp can share it; the old private
+# names stay bound here because every call site below (and any external patch
+# target) was written against them.
+from trelix.core.confinement import ALLOWED_ROOTS_ENV as _ALLOWED_ROOTS_ENV
+from trelix.core.confinement import is_within_allowed_roots as _is_within_allowed_roots
+from trelix.core.confinement import resolve_allowed_roots as _resolve_allowed_roots
 from trelix.core.index_check import IndexNotFoundError, require_index
 from trelix.retrieval.otel_tracing import pipeline_stage_span
 from trelix.retrieval.retriever import Retriever
@@ -107,19 +113,6 @@ logger = logging.getLogger("trelix.api")
 # so this module stays importable without starlette/fastapi installed.
 _LOCAL_PRINCIPAL = "static-token"
 
-# Env var holding extra allow-listed repository roots, os.pathsep-separated
-# (":" on POSIX, ";" on Windows) — the same convention as PATH, so operators
-# do not have to learn a trelix-specific separator.
-#
-# Read straight from os.environ rather than through a BaseSettings with
-# env_file=".env" (as _ApiAuthSettings does) ON PURPOSE. A repo-local `.env` is
-# already a live configuration source for this process, and the repositories
-# this API serves are exactly the untrusted content an attacker can plant one
-# in. A `.env` that could widen the containment allow-list would let the
-# indexed material grant itself access to the rest of the host, which is the
-# one place that amplification must not reach.
-_ALLOWED_ROOTS_ENV = "TRELIX_ALLOWED_REPO_ROOTS"
-
 # Body/query fields naming a *repository root*. These are the trust anchors:
 # every per-route containment check in this module is written correctly but
 # anchored to one of these, so validating them is what makes those checks mean
@@ -131,45 +124,6 @@ _REPO_ROOT_FIELDS = ("repo", "repo_path")
 # (now-confined) repo root by the route and re-checked there, so confining it
 # here against the allow-list would reject legitimate "src/foo.py" callers.
 _REPO_RELATIVE_PATH_FIELDS = ("file_path", "output")
-
-
-def _resolve_allowed_roots(served_root: str | Path | None) -> tuple[Path, ...]:
-    """Canonicalize the allow-list once, at app construction.
-
-    Resolving here rather than per-request is what makes the roots untrusted
-    input's opposite: nothing a caller sends can extend this tuple. Both sides
-    of the later comparison are resolved, which matters on macOS where
-    ``/tmp`` is a symlink to ``/private/tmp`` — an unresolved root would reject
-    every legitimate request under it.
-    """
-    candidates: list[Path] = []
-    if served_root is not None:
-        candidates.append(Path(served_root))
-    candidates.extend(
-        Path(entry)
-        for entry in os.environ.get(_ALLOWED_ROOTS_ENV, "").split(os.pathsep)
-        if entry.strip()
-    )
-    # dict.fromkeys de-duplicates while preserving order; a new tuple is built
-    # rather than mutating anything the caller handed in.
-    return tuple(dict.fromkeys(p.expanduser().resolve() for p in candidates))
-
-
-def _is_within_allowed_roots(candidate: str, allowed_roots: Sequence[Path]) -> bool:
-    """True when ``candidate`` resolves inside one of ``allowed_roots``.
-
-    ``is_relative_to`` on resolved paths, never ``str.startswith`` — the same
-    property the per-route checks in this module already had, now applied to
-    the root itself. A prefix match would accept a sibling ``<root>-evil`` that
-    merely begins with the same characters. Equality is covered:
-    ``Path("/a").is_relative_to(Path("/a"))`` is True.
-
-    An empty allow-list returns False for everything. That is the whole point:
-    the previous behavior — no root configured, therefore every absolute path
-    on the host accepted — is the defect, not the compatible default.
-    """
-    resolved = Path(candidate).expanduser().resolve()
-    return any(resolved.is_relative_to(root) for root in allowed_roots)
 
 
 class _ApiAuthSettings(BaseSettings):

@@ -176,6 +176,7 @@ SECURITY_FILES = frozenset(
         "unit/test_cli_markup_safety.py",
         "unit/test_cli_serve_exposure_warning.py",
         "unit/test_config_error_redaction.py",
+        "unit/test_confinement.py",
         "unit/test_defuse.py",
         "unit/test_dotenv_anchoring.py",
         "unit/test_eval_suite_clone.py",
