@@ -149,8 +149,11 @@ def test_get_symbol_and_blast_radius_on_an_indexed_repo_still_answer(
 
     mark_indexed(repo)
 
-    assert get_symbol(qualified_name="add", repo_path=str(repo)) is None
-    assert blast_radius(symbol_name="add", repo_path=str(repo)) == []
+    # Both empty answers travel as a ToolResult, so that each carries a text block.
+    assert get_symbol(qualified_name="add", repo_path=str(repo)).structured_content == {
+        "result": None
+    }
+    assert blast_radius(symbol_name="add", repo_path=str(repo)).structured_content == {"result": []}
 
 
 def test_build_knowledge_graph_on_an_indexed_repo_still_builds(
@@ -306,6 +309,7 @@ def test_federation_search_all_skips_the_unindexed_repo_and_searches_the_rest(
 
     assert response["error"] is None
     assert response["repos_searched"] == 1
+    assert response["repos_unindexed"] == ["r0"], "the skipped alias must be named"
     assert [row["symbol"] for row in response["results"]] == ["handler"]
     assert retriever.call_count == 1
     assert not (repo / ".trelix").exists()
