@@ -832,6 +832,14 @@ class RetrievalConfig(BaseSettings):
         default=None,
         alias="OTEL_EXPORTER_OTLP_ENDPOINT",
     )
+    # Hand prompt, reply and query text to the GenAI instrumentation. Off by
+    # default; where the text then goes is decided by
+    # OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT (read once when tracing
+    # starts on util-genai 1.2b0; 1.0b0 and 1.1b0 re-read it per span).
+    otel_capture_content: bool = Field(
+        default=False,
+        alias="TRELIX_OTEL_CAPTURE_CONTENT",
+    )
 
     # FLARE-style confidence-gated re-retrieval
     flare_enabled: bool = Field(
