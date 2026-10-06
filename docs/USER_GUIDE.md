@@ -1132,7 +1132,7 @@ Returns full symbol metadata including body, docstring, line range, and call edg
 ```
 blast_radius(symbol_name="UserRepository.get_by_email", repo_path="./my-repo")
 ```
-Returns a list of dicts describing all callers and importers of the named symbol, ordered by dependency depth.
+Returns a list of dicts describing the callers and importers of the named symbol (at most 100 by default; `limit` raises that to 500), ordered by dependency depth.
 
 **`build_knowledge_graph`** — Build the Code Property Graph.
 ```

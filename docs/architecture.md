@@ -1367,7 +1367,7 @@ The `turn_index` is assigned atomically by `Database.insert_agent_turn()` as `MA
 
 **MCP Tools:**
 - `ask_agent(query, repo_path, session_id=None)` — returns `{"answer": str, "session_id": str, "turn_count": int}`
-- `agent_list_sessions(repo_path, limit=50)` — returns `{"sessions": [...], "count": int}`
+- `agent_list_sessions(repo_path, limit=50)` — returns `{"sessions": [...], "count": int, "page_size": int, "truncated": bool, "omitted": int}`
 - `agent_clear_session(repo_path, session_id)` — returns `{"cleared": bool, "session_id": str}`
 
 **`TurnHistory` + `HistoryCompressor`:**
@@ -1772,14 +1772,14 @@ def index_codebase(repo_path: str, provider: str = "local",
 def get_symbol(qualified_name: str, repo_path: str) -> dict | None:
     # Exact qualified_name match; fallback to bare name if not found
 
-def blast_radius(symbol_name: str, repo_path: str) -> list[dict]:
+def blast_radius(symbol_name: str, repo_path: str, limit: int = 100) -> list[dict]:
     # Query: f"blast radius dependencies of {symbol_name}"
     # Deduplicates by file.rel_path
 
 def build_knowledge_graph(repo_path: str, extract_concepts: bool = False) -> dict:
     # Full GraphBuilder.build() pipeline
 
-def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict]:
+def graph_search_mcp(query: str, repo_path: str, k: int = 10, detail: str = "detailed") -> list[dict]:
     # Two-phase: standard retrieval (top-5 seed) + CodeGraph BFS depth=2
 ```
 

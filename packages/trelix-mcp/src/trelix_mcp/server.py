@@ -29,12 +29,32 @@ from mcp.types import (  # noqa: E402
 from trelix.agent.loop import AgentLoop  # noqa: E402
 from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig  # noqa: E402
 from trelix.core.index_check import IndexNotFoundError, require_index  # noqa: E402
+from trelix.core.models import IndexedFile, Symbol  # noqa: E402
 from trelix.federation.registry import RepoRegistry  # noqa: E402
 from trelix.federation.retriever import FederatedRetriever  # noqa: E402
 from trelix.indexing.indexer import Indexer  # noqa: E402
 from trelix.retrieval.retriever import Retriever  # noqa: E402
 from trelix.store.db import Database  # noqa: E402
 from trelix_mcp import __version__  # noqa: E402
+from trelix_mcp.budget import (  # noqa: E402
+    DEFAULT_BLAST_LIMIT,
+    DEFAULT_MAX_BODY_CHARS,
+    MAX_BLAST_LIMIT,
+    MAX_RESULT_CHARS_ENV,
+    BudgetConfigError,
+    Detail,
+    Limits,
+    bare_array_result,
+    body_or_signature,
+    cap_session_query,
+    check_body_limit,
+    check_cursor,
+    clamp_page_size,
+    fit_page,
+    fit_rows,
+    limits_from_env,
+    truncate_body,
+)
 from trelix_mcp.subscriptions import SubscriptionLimitExceeded, SubscriptionRegistry  # noqa: E402
 from trelix_mcp.tool_metadata import (  # noqa: E402
     LISTING_CACHE_SCOPE,
@@ -82,6 +102,14 @@ def _require_index(config: IndexConfig) -> None:
     try:
         require_index(config)
     except IndexNotFoundError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+def _limits() -> Limits:
+    """The output limits in force for this call (see budget.py), as a tool error if unusable."""
+    try:
+        return limits_from_env()
+    except BudgetConfigError as exc:
         raise ToolError(str(exc)) from exc
 
 
@@ -321,6 +349,7 @@ def search_code(
     cursor: int = 0,
     intent_hint: str | None = None,
     hyde_snippet_hint: str | None = None,
+    detail: Detail = "detailed",
 ) -> dict[str, Any]:
     """
     Search the indexed codebase using natural language queries.
@@ -336,9 +365,17 @@ def search_code(
     - Find similar patterns to follow when adding code
 
     📄 Pagination:
-    - Use cursor=0 for first page (default).
+    - Use cursor=0 for first page (default). A negative cursor is an error.
     - If next_cursor is not null, pass it as cursor for the next page.
-    - k controls page size.
+    - k controls page size, from 1 up to TRELIX_MCP_MAX_K (default 50); page_size
+      in the response is the k the server used.
+    - The response text is capped at TRELIX_MCP_MAX_RESULT_CHARS (default
+      15000). When results are dropped to fit, truncated is true, omitted counts
+      them and next_cursor points at the first dropped result.
+
+    🪶 Detail:
+    - detail="detailed" (default) returns each result's body (first 800 chars).
+    - detail="concise" drops body and returns a one-line signature instead.
 
     🧭 Intent hint (optional):
     - If the calling agent already knows the query's intent, pass it as
@@ -351,8 +388,12 @@ def search_code(
       when intent_hint is also valid.
 
     Returns:
-        {"results": [...], "next_cursor": int|null, "total_available": int}
+        {"results": [...], "next_cursor": int|null, "total_available": int,
+         "page_size": int, "truncated": bool, "omitted": int}
     """
+    limits = _limits()
+    check_cursor(cursor)
+    k = clamp_page_size(k, limits.max_k)
     _log.info("search_code query=%r repo=%s k=%d cursor=%d", query, repo_path, k, cursor)
     from trelix.retrieval.planner.models import plan_from_intent_hint
 
@@ -364,26 +405,26 @@ def search_code(
     ctx = _get_retriever(repo_path).retrieve(query, plan=plan)
     all_results = ctx.results
 
-    page = all_results[cursor : cursor + k]
-    next_cursor = cursor + k if cursor + k < len(all_results) else None
-
-    return {
-        "results": [
-            {
-                "file": r.file.rel_path,
-                "symbol": r.symbol.qualified_name,
-                "kind": r.symbol.kind.value,
-                "lines": f"{r.symbol.line_start}-{r.symbol.line_end}",
-                "score": round(r.score, 4),
-                "source": r.source,
-                "body": r.symbol.body[:800],
-                "language": r.file.language.value,
-            }
-            for r in page
-        ],
-        "next_cursor": next_cursor,
-        "total_available": len(all_results),
-    }
+    rows = [
+        {
+            "file": r.file.rel_path,
+            "symbol": r.symbol.qualified_name,
+            "kind": r.symbol.kind.value,
+            "lines": f"{r.symbol.line_start}-{r.symbol.line_end}",
+            "score": round(r.score, 4),
+            "source": r.source,
+            **body_or_signature(r.symbol, detail, 800),
+            "language": r.file.language.value,
+        }
+        for r in all_results[cursor : cursor + k]
+    ]
+    return fit_page(
+        rows,
+        cursor=cursor,
+        page_size=k,
+        total=len(all_results),
+        max_chars=limits.max_result_chars,
+    )
 
 
 @mcp.tool()
@@ -446,40 +487,47 @@ def index_codebase(
     return stats
 
 
+def _find_symbol(db: Database, qualified_name: str) -> tuple[Symbol, IndexedFile] | None:
+    """The symbol named `qualified_name` and its file, or None when the index has no match."""
+    rows = db.get_symbol_by_name(qualified_name)
+    if not rows:
+        # "Class.method" may be stored under another prefix: fall back to the last segment.
+        rows = db.get_symbol_by_name(qualified_name.split(".")[-1])
+    if not rows:
+        return None
+    return db.get_symbol_with_file(rows[0].id)  # type: ignore[arg-type]
+
+
 @mcp.tool()
-def get_symbol(qualified_name: str, repo_path: str) -> dict[str, Any] | None:
+def get_symbol(
+    qualified_name: str, repo_path: str, max_body_chars: int = DEFAULT_MAX_BODY_CHARS
+) -> dict[str, Any] | None:
     """Look up a symbol by its fully-qualified name.
 
     Args:
         qualified_name: e.g. "MyClass.my_method" or "my_function".
         repo_path: Absolute path to the repository root.
+        max_body_chars: Longest body to return, in characters (default 20000;
+            0 means no limit). A longer body is cut and body_truncated is true.
 
     Returns:
         Symbol dict or None if not found.  Keys: name, qualified_name, kind,
-        file, line_start, line_end, signature, docstring, body, language.
+        file, line_start, line_end, signature, docstring, body, language,
+        body_truncated.
     """
     _log.info("get_symbol qualified_name=%r repo_path=%r", qualified_name, repo_path)
+    check_body_limit(max_body_chars)
     config = IndexConfig(repo_path=repo_path)
     _require_index(config)
     db = Database(config.db_path_absolute)
-    rows = db.get_symbol_by_name(qualified_name)
-    if not rows:
-        # Fall back to bare name lookup
-        name_only = qualified_name.split(".")[-1]
-        rows = db.get_symbol_by_name(name_only)
-        # Filter to exact qualified_name match when possible
-        exact = [s for s in rows if s.qualified_name == qualified_name]
-        if exact:
-            rows = exact
-
-    if not rows:
+    try:
+        found = _find_symbol(db, qualified_name)
+    finally:
+        db.close()
+    if found is None:
         return None
-
-    sym = rows[0]
-    sym_file = db.get_symbol_with_file(sym.id)  # type: ignore[arg-type]
-    if sym_file is None:
-        return None
-    symbol, file = sym_file
+    symbol, file = found
+    body, body_truncated = truncate_body(symbol.body, max_body_chars)
     return {
         "name": symbol.name,
         "qualified_name": symbol.qualified_name,
@@ -489,13 +537,16 @@ def get_symbol(qualified_name: str, repo_path: str) -> dict[str, Any] | None:
         "line_end": symbol.line_end,
         "signature": symbol.signature,
         "docstring": symbol.docstring,
-        "body": symbol.body,
+        "body": body,
         "language": file.language,
+        "body_truncated": body_truncated,
     }
 
 
 @mcp.tool()
-def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
+def blast_radius(
+    symbol_name: str, repo_path: str, limit: int = DEFAULT_BLAST_LIMIT
+) -> list[dict[str, Any]]:
     """Find all symbols that depend on (call or import) a given symbol.
 
     Useful for impact analysis: "if I change X, what else might break?"
@@ -503,6 +554,10 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
     Args:
         symbol_name: Name or qualified name of the symbol to analyse.
         repo_path: Absolute path to the repository root.
+        limit: Most dependents to return, from 1 to 500 (default 100). The list is also
+            capped at TRELIX_MCP_MAX_RESULT_CHARS characters (default 15000). When
+            dependents are left out, the result carries a second text block saying so and
+            `_meta.trelix` has total_available and omitted.
 
     Answered from the resolved call edges in the index, not by semantic search.
 
@@ -529,7 +584,9 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
         Deduplicated list of dependent-symbol dicts with keys: file, symbol,
         kind, line_start, language. Empty when the symbol is unknown to the index.
     """
-    _log.info("blast_radius symbol_name=%r repo_path=%r", symbol_name, repo_path)
+    max_chars = _limits().max_result_chars
+    limit = max(1, min(limit, MAX_BLAST_LIMIT))
+    _log.info("blast_radius symbol_name=%r repo_path=%r limit=%d", symbol_name, repo_path, limit)
     config = IndexConfig(repo_path=repo_path)
     _require_index(config)
     db = Database(config.db_path_absolute)
@@ -585,7 +642,16 @@ def blast_radius(symbol_name: str, repo_path: str) -> list[dict[str, Any]]:
                     else str(file.language),
                 }
             )
-        return output
+        return bare_array_result(
+            output[:limit],
+            total_available=len(output),
+            max_chars=max_chars,
+            noun="dependents",
+            remedy=(
+                f"The list is bounded by the limit argument (at most {MAX_BLAST_LIMIT}) and by "
+                f"{MAX_RESULT_CHARS_ENV}; raise either to see more."
+            ),
+        )
     finally:
         db.close()
 
@@ -682,7 +748,9 @@ def build_knowledge_graph(
 
 
 @mcp.tool()
-def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict[str, Any]]:
+def graph_search_mcp(
+    query: str, repo_path: str, k: int = 10, detail: Detail = "detailed"
+) -> list[dict[str, Any]]:
     """
     Graph-traversal search: find structurally related symbols by starting
     from semantically similar seeds and following code relationships.
@@ -693,11 +761,21 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict[str, 
     - "What other code is connected to X?" — follow call/import/type edges
     - "Find the blast radius of a class" — who calls or imports it?
     - "What lives in the same architectural cluster as X?"
+
+    📏 Size:
+    - k is the most results, from 1 up to TRELIX_MCP_MAX_K (default 50).
+    - detail="detailed" (default) returns each body (first 600 chars); detail="concise"
+      returns a one-line signature instead.
+    - The list is capped at TRELIX_MCP_MAX_RESULT_CHARS characters (default 15000). When
+      results are left out, the result carries a second text block saying so and
+      `_meta.trelix` has total_available and omitted.
     """
     from trelix.core.config import IndexConfig
     from trelix.graph.builder import GraphBuilder
     from trelix.graph.search import graph_search
 
+    limits = _limits()
+    k = clamp_page_size(k, limits.max_k)
     _log.info("graph_search_mcp query=%r repo=%s k=%d", query, repo_path, k)
     config = IndexConfig(repo_path=repo_path)
 
@@ -714,17 +792,27 @@ def graph_search_mcp(query: str, repo_path: str, k: int = 10) -> list[dict[str, 
     db = build_result.code_graph._db
     graph_results = graph_search(db, build_result.code_graph, seed_ids, depth=2, max_results=k)
 
-    return [
+    rows = [
         {
             "file": r.file.rel_path,
             "symbol": r.symbol.qualified_name,
             "kind": r.symbol.kind.value,
             "score": round(r.score, 4),
             "source": r.source,
-            "body": r.symbol.body[:600],
+            **body_or_signature(r.symbol, detail, 600),
         }
         for r in graph_results[:k]
     ]
+    return bare_array_result(
+        rows,
+        total_available=len(rows),
+        max_chars=limits.max_result_chars,
+        noun="results",
+        remedy=(
+            f"The list is bounded by {MAX_RESULT_CHARS_ENV}, not by k; "
+            'use detail="concise" for shorter results, or raise it, to see more.'
+        ),
+    )
 
 
 # Fixed, cursor-independent per-repo fan-out width for federation_search_all.
@@ -874,6 +962,7 @@ def federation_search_all(
     k: int = 10,
     cursor: int = 0,
     config_path: str | None = None,
+    detail: Detail = "detailed",
 ) -> dict[str, Any]:
     """Search across ALL registered repos simultaneously (federated search).
 
@@ -896,12 +985,22 @@ def federation_search_all(
     📄 Pagination: same cursor/k contract as search_code — pages are sliced
     from one fixed-width fetch, independent of cursor, so page contents are
     stable across calls (results don't shift/duplicate/vanish between
-    pages the way a cursor-scaled fetch width would cause).
+    pages the way a cursor-scaled fetch width would cause). k is clamped to
+    1..TRELIX_MCP_MAX_K, a negative cursor is an error, and the text is capped
+    at TRELIX_MCP_MAX_RESULT_CHARS (see search_code).
+
+    🪶 Detail: detail="concise" drops each body and returns a one-line signature.
 
     Returns:
         {"results": [...], "next_cursor": int|None, "total_available": int,
+         "page_size": int, "truncated": bool, "omitted": int,
          "repos_searched": int, "repos_skipped": int, "error": str|None}
+        The error and empty-registry responses keep their shorter shape (no
+        page_size, truncated or omitted).
     """
+    limits = _limits()
+    check_cursor(cursor)
+    k = clamp_page_size(k, limits.max_k)
     _log.info("federation_search_all query=%r k=%d cursor=%d", query, k, cursor)
     try:
         confined_path = _confine_federation_config_path(config_path)
@@ -949,29 +1048,27 @@ def federation_search_all(
 
     all_results = fed.retrieve(query, k=_FEDERATION_SEARCH_ALL_FETCH_WIDTH)
 
-    page = all_results[cursor : cursor + k]
-    next_cursor = cursor + k if cursor + k < len(all_results) else None
-
-    return {
-        "results": [
-            {
-                "repo": r.source.split(":")[0] if ":" in r.source else "",
-                "file": r.file.rel_path,
-                "symbol": r.symbol.qualified_name,
-                "kind": r.symbol.kind.value,
-                "score": round(r.score, 4),
-                "source": r.source,
-                "body": r.symbol.body[:800],
-                "language": r.file.language.value,
-            }
-            for r in page
-        ],
-        "next_cursor": next_cursor,
-        "total_available": len(all_results),
-        "repos_searched": repos_searched,
-        "repos_skipped": repos_skipped,
-        "error": None,
-    }
+    rows = [
+        {
+            "repo": r.source.split(":")[0] if ":" in r.source else "",
+            "file": r.file.rel_path,
+            "symbol": r.symbol.qualified_name,
+            "kind": r.symbol.kind.value,
+            "score": round(r.score, 4),
+            "source": r.source,
+            **body_or_signature(r.symbol, detail, 800),
+            "language": r.file.language.value,
+        }
+        for r in all_results[cursor : cursor + k]
+    ]
+    return fit_page(
+        rows,
+        cursor=cursor,
+        page_size=k,
+        total=len(all_results),
+        max_chars=limits.max_result_chars,
+        extra={"repos_searched": repos_searched, "repos_skipped": repos_skipped, "error": None},
+    )
 
 
 def _extract_elicit_answer(ctx: Context | None) -> str | None:
@@ -1106,12 +1203,18 @@ def agent_list_sessions(repo_path: str, limit: int = 50) -> dict[str, Any]:
 
     Args:
         repo_path: Absolute path to the repository root.
-        limit: Max sessions to return (default 50).
+        limit: Max sessions to return, from 1 up to TRELIX_MCP_MAX_K (default 50).
+            The text is also capped at TRELIX_MCP_MAX_RESULT_CHARS characters; when
+            the oldest sessions are left out, truncated is true and omitted counts them.
 
     Returns:
         {"sessions": [{"session_id", "created_at", "last_active_at", "query",
-         "turn_count"}, ...], "count": int}
+         "turn_count"}, ...], "count": int, "page_size": int, "truncated": bool,
+         "omitted": int}. query is the session's most recent prompt, cut to its first 300
+        characters, and then the session also has query_truncated: true.
     """
+    limits = _limits()
+    limit = clamp_page_size(limit, limits.max_k)
     _log.info("agent_list_sessions repo=%s limit=%d", repo_path, limit)
     config = IndexConfig(repo_path=repo_path)
     _require_index(config)
@@ -1120,10 +1223,20 @@ def agent_list_sessions(repo_path: str, limit: int = 50) -> dict[str, Any]:
         max_age = config.retrieval.agent_session_max_age_seconds
         if max_age > 0:
             db.evict_stale_agent_sessions(max_age)
-        sessions = db.list_agent_sessions(limit=limit)
+        sessions = [cap_session_query(row) for row in db.list_agent_sessions(limit=limit)]
     finally:
         db.close()
-    return {"sessions": sessions, "count": len(sessions)}
+
+    def build(kept: list[dict[str, Any]], omitted: int) -> dict[str, Any]:
+        return {
+            "sessions": kept,
+            "count": len(kept),
+            "page_size": limit,
+            "truncated": omitted > 0,
+            "omitted": omitted,
+        }
+
+    return fit_rows(sessions, build, limits.max_result_chars)
 
 
 @mcp.tool()
@@ -1168,6 +1281,10 @@ def main() -> None:
         "search and indexing tools and hides the rest",
     )
     args = parser.parse_args()
+    try:
+        limits_from_env()
+    except BudgetConfigError as exc:
+        parser.error(str(exc))
     apply_tool_profile(mcp, args.tools)
 
     def _handle_sigterm(signum: int, frame: Any) -> None:

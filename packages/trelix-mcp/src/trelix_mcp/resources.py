@@ -52,6 +52,7 @@ def get_index_stats(repo_path: str) -> str:
     """
     if not Path(repo_path).is_dir():
         return json.dumps({"error": f"repo_path is not a directory: {repo_path}"})
+    db: Database | None = None
     try:
         db = _open_index(repo_path)
         row = db._conn.execute(
@@ -75,6 +76,9 @@ def get_index_stats(repo_path: str) -> str:
     except Exception as exc:  # noqa: BLE001
         _log.debug("get_index_stats failed: %s", exc)
         return json.dumps({"error": str(exc), "hint": "Run: trelix index <repo>"})
+    finally:
+        if db is not None:
+            db.close()
 
 
 def get_repo_manifest(repo_path: str) -> str:
@@ -89,6 +93,7 @@ def get_repo_manifest(repo_path: str) -> str:
     """
     if not Path(repo_path).is_dir():
         return json.dumps({"error": f"repo_path is not a directory: {repo_path}"})
+    db: Database | None = None
     try:
         db = _open_index(repo_path)
         rows = db._conn.execute(
@@ -126,6 +131,9 @@ def get_repo_manifest(repo_path: str) -> str:
     except Exception as exc:  # noqa: BLE001
         _log.debug("get_repo_manifest failed: %s", exc)
         return json.dumps({"error": str(exc)})
+    finally:
+        if db is not None:
+            db.close()
 
 
 def get_symbol_source(repo_path: str, qualified_name: str) -> str:
@@ -141,6 +149,7 @@ def get_symbol_source(repo_path: str, qualified_name: str) -> str:
     """
     if not Path(repo_path).is_dir():
         return json.dumps({"error": f"repo_path is not a directory: {repo_path}"})
+    db: Database | None = None
     try:
         db = _open_index(repo_path)
         short_name = qualified_name.split(".")[-1]
@@ -162,3 +171,6 @@ def get_symbol_source(repo_path: str, qualified_name: str) -> str:
     except Exception as exc:  # noqa: BLE001
         _log.debug("get_symbol_source failed: %s", exc)
         return json.dumps({"error": str(exc)})
+    finally:
+        if db is not None:
+            db.close()
