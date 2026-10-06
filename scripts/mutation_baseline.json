@@ -110,6 +110,12 @@
       },
       "total_mutants": 187
     },
+    "indexing.embedding_cache": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/embedding_cache.py"
+      ]
+    },
     "indexing.parser.c": {
       "measured": false,
       "patterns": [

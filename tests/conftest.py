@@ -79,6 +79,9 @@ SLOW_FILES = frozenset(
         "unit/test_dotenv_anchoring.py",
         "unit/test_dry_run.py",
         "unit/test_embedder.py",
+        # Measured 24.65s for 15 tests on this tree (load 25-35): eight real Indexer runs
+        # over a tree-sitter-parsed tmp repo, plus two CliRunner invocations.
+        "unit/test_embedding_cache_indexer.py",
         "unit/test_eval_harness.py",
         "unit/test_indexer_vector_repair.py",
         "unit/test_marker_taxonomy.py",

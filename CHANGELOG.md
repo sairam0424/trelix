@@ -280,6 +280,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     bootstrap p-value for the mean paired difference; the same resampled queries are applied to both
     runs), `mde` (`2.8 * sigma_d / sqrt(n)`, the minimum detectable effect at 80 percent power and 5
     percent two-sided error) and `holm` (Holm-Bonferroni step-down). See `eval/README.md`.
+- **Opt-in on-disk cache of index-time embeddings** (`TRELIX_EMBEDDING_CACHE_ENABLED`, default
+  `false`; nothing is written when off, and indexing is byte-identical to before). With it on,
+  `Indexer` wraps its embedder in `CachedIndexEmbedder` (`src/trelix/indexing/embedding_cache.py`):
+  every chunk text is looked up by its sha256 in one SQLite file per **embedder fingerprint**
+  (provider, model id, the width knobs that change a vector for the same model id, the declared
+  width) under `TRELIX_EMBEDDING_CACHE_DIR` (absolute path; default
+  `$XDG_CACHE_HOME/trelix/embeddings`, a relative `XDG_CACHE_HOME` being ignored as the XDG spec
+  requires, else `~/.cache/trelix/embeddings`), and only the
+  de-duplicated misses reach the provider. A fresh index of unchanged text makes no embedding
+  calls and stores the same float32 bytes (a real-`Indexer` test pins both). The index-run stats
+  dict (the CLI's `Done.` line, the MCP `index_codebase` result) and `index_file()`'s result gain
+  `chunks_from_cache`, present on every `ok` result and 0 when off, in both the batch and the
+  streaming pipeline; the REST `IndexResponse` is unchanged. The directory is created `0o700`
+  and each file created `0o600`. `TRELIX_EMBEDDING_CACHE_MAX_MB` (default `4096`, per file,
+  minimum 1) is a least-recently-used trim applied after each run, not a limit during one, and
+  a trim that fails (file locked or deleted) is logged, never fatal; the cap is measured against
+  the file's live pages, so a trim whose `VACUUM` another indexer's lock defeated does not evict
+  the same fraction again on the next run (at most a small residual from partially emptied pages,
+  then none; the rest is reclaimed space). Refused before any model is
+  loaded: `--use-batch-api`/`TRELIX_USE_BATCH_API` with the `openai` provider while the cache is
+  on, and `trelix index --resume-batch` with the cache on (the Batch API path never consults the
+  cache; the plan's miss-partition before `submit_batch` is replaced by this refusal), a relative
+  `TRELIX_EMBEDDING_CACHE_DIR`, and an unusable directory; a cache file of another width or
+  schema is named and refused. `embed_query` is not cached here (that is
+  `TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`). The hosted GitHub App forwards every `TRELIX_*` host
+  variable into its `trelix index` child, so setting this on a multi-tenant host would share
+  one cache across tenants; SECURITY.md has the section. A `trelix cache` command group is not
+  part of this change.
 - **Golden file format v2 and `trelix eval-validate`** (second of three changes toward comparing
   retrieval runs honestly; no score is computed any differently).
   - A golden line may add `id`, `lang`, `kind` (`nl`, `keyword`, `commit` or `issue`), `source`,

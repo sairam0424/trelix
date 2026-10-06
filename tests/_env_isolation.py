@@ -61,6 +61,9 @@ BEAST_MODE_DEFAULTS: Mapping[str, str] = MappingProxyType(
         "TRELIX_RETRIEVAL_PAGERANK_BOOST": "false",
         "TRELIX_TELEMETRY_ENABLED": "false",
         "TRELIX_OTEL_ENABLED": "false",
+        # On-disk index-time embedding cache: a developer who enabled it locally must
+        # not have every indexer test read and write ~/.cache/trelix/embeddings.
+        "TRELIX_EMBEDDING_CACHE_ENABLED": "false",
     }
 )
 

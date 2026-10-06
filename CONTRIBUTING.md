@@ -230,6 +230,14 @@ trelix ships with built-in support for multiple embedding backends:
 - **Azure OpenAI Embeddings** — Enterprise deployment via Azure; set `TRELIX_EMBEDDER_PROVIDER=azure`
 - **Bedrock** — AWS-hosted embeddings via Bedrock
 
+A new provider must also be added to `EMBED_MODEL_FIELDS` in
+`src/trelix/indexing/embedding_cache.py` (the `EmbedderConfig` field holding its model id) and,
+if a configuration knob changes the vectors one model id produces (an output width, an endpoint,
+a normalisation flag), to `_KNOB_FIELDS` there. Those two tables are the on-disk embedding
+cache's fingerprint: a provider missing from them raises at `Indexer` construction with the
+cache on, and a knob missing from them lets two differently configured runs share one cache
+file. `tests/unit/test_embedding_cache.py` pins the provider set.
+
 To use BGE-Code or CodeRank embeddings, install the optional extra:
 
 ```bash

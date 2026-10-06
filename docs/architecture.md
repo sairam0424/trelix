@@ -662,6 +662,7 @@ class Indexer:
 ```
 
 - Creates `Database`, `BaseEmbedder`, `BaseVectorStore`
+- With `TRELIX_EMBEDDING_CACHE_ENABLED=true` (default off): refuses `use_batch_api` on the `openai` provider and an unusable cache directory **before** `make_embedder` runs, then wraps the embedder in `CachedIndexEmbedder` (`indexing/embedding_cache.py`) over one `EmbeddingCache` file per embedder fingerprint, sized by the built embedder's real `dimension`
 - Runs `DimensionGuard.check()` — raises `DimensionMismatchError` if provider changed
 - Builds `Chunker` or `ContextualChunker` (lazy LLM client, falls back to plain `Chunker` on API failure)
 - Builds optional `FileSummarizer` (only when `file_summaries_enabled=True`)
@@ -673,7 +674,7 @@ Phase weight constants used for progress reporting:
 
 ### `index() → dict[str, Any]`
 
-Returns stats: `files_found`, `files_indexed`, `files_skipped`, `symbols_extracted`, `chunks_total`, `chunks_embedded`, `errors`, `elapsed_seconds`.
+Returns stats: `files_found`, `files_indexed`, `files_skipped`, `symbols_extracted`, `chunks_total`, `chunks_embedded`, `chunks_from_cache` (Phase-3 chunks served by the embedding cache; always present, 0 when it is off), `errors`, `elapsed_seconds`.
 
 **Phase 0 — Discovery:**
 ```python
@@ -720,6 +721,7 @@ asyncio.run(_batch_embed_and_store_async(pending_chunks, stats))
 ```
 - `_make_token_batches()`: greedy grouping by `token_count ≤ embed_max_tokens_per_batch`. Single oversized chunk gets its own batch.
 - `asyncio.Semaphore(4)`: max 4 concurrent `embedder.embed_async()` calls
+- Every embedder call here, in the sync path and in the Phase 2.5/2.6 side embeds goes through `CachedIndexEmbedder` when the embedding cache is on: hits come from the cache file, only de-duplicated misses reach the provider, and the run's `chunks_from_cache` is the hit count across Phase 3
 - `asyncio.gather()` fans out all batches
 - `vector_store.upsert_batch()` is synchronous → `loop.run_in_executor(ThreadPoolExecutor(2))` to avoid blocking event loop
 - `_AsyncTpmRateLimiter`: asyncio-native token-per-minute rate limiter; `asyncio.Lock` prevents races in the limit check
@@ -743,7 +745,7 @@ Used by file watcher for single-file incremental updates.
 - Hash check → skip if unchanged
 - `_parse_one()` + `_insert_one()` + `_batch_embed_and_store()` (sync variant, not async)
 - Skips Phase 4 when `files_in_batch < 5` (default watch event = 1 file)
-- Returns `{"status": "ok", "symbols_updated": N, "chunks_updated": N, "ms": N}`
+- Returns `{"status": "ok", "symbols_updated": N, "chunks_updated": N, "chunks_from_cache": N, "ms": N}` (plus `"skipped": True` on the unchanged-file return)
 
 ### Language Parser Registry
 

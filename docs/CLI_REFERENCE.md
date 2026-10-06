@@ -135,7 +135,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel parse workers during `trelix index` |
-| `TRELIX_USE_BATCH_API` | `false` | Submit new embeddings through OpenAI's Batch API (50% cheaper, up to 24h) instead of embedding synchronously. Honoured by `trelix index`; the `--use-batch-api` flag turns it on for one run regardless. Takes effect only with the `openai` provider |
+| `TRELIX_USE_BATCH_API` | `false` | Submit new embeddings through OpenAI's Batch API (50% cheaper, up to 24h) instead of embedding synchronously. Honoured by `trelix index`; the `--use-batch-api` flag turns it on for one run regardless. Takes effect only with the `openai` provider. Refused together with `TRELIX_EMBEDDING_CACHE_ENABLED=true`, as is `trelix index --resume-batch` (`Cannot resume a Batch API job`): both exit `1` before any model is loaded, because the Batch API path never consults the cache |
 | `TRELIX_CHUNKER_MULTI_GRANULARITY` | `false` | Index sub-symbol blocks and statements (MGS3) |
 | `TRELIX_PARSER_DATAFLOW` | `false` | Extract def-use chains during parsing. Python-only in practice — the extractor requests the Python grammar unconditionally |
 | `TRELIX_PARSER_TAINT` | `false` | **Inert.** `ParserConfig.taint_enabled` is declared but read nowhere in `src/`, so setting this has no effect. Taint analysis happens only when you run `trelix taint`, which does not consult it |
