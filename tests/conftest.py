@@ -72,6 +72,7 @@ SLOW_FILES = frozenset(
         "regressions/test_regressions.py",
         "unit/test_audit_wipe_detection.py",
         "unit/test_cli_closed_stdout.py",
+        "unit/test_cli_eval_suite.py",
         "unit/test_cli_smoke.py",
         "unit/test_cli_watch_all_signals.py",
         "unit/test_connectors.py",
@@ -80,6 +81,16 @@ SLOW_FILES = frozenset(
         "unit/test_dry_run.py",
         "unit/test_embedder.py",
         "unit/test_eval_harness.py",
+        # The four `trelix eval-suite` files that make real git clones of a repository built in
+        # a temp directory (the CLI file is listed above with the other test_cli_* files).
+        # Measured 2026-10-06 as call+setup+teardown per file at a load average of 23 to 29:
+        # clone 16.2s, git isolation 8.2s, gold 6.3s, CLI 3.3s to 5.2s; the CLI file measured
+        # 9.3s at load 42 and 38.6s at load 70 to 83 on 2026-10-07, so every run but one is at
+        # or above the threshold and all are quoted, as for test_regressions.py. The spec file
+        # (1.7s) stays out.
+        "unit/test_eval_suite_clone.py",
+        "unit/test_eval_suite_git_isolation.py",
+        "unit/test_eval_suite_gold.py",
         "unit/test_indexer_vector_repair.py",
         "unit/test_marker_taxonomy.py",
         "unit/test_otel_metrics.py",
@@ -167,6 +178,10 @@ SECURITY_FILES = frozenset(
         "unit/test_config_error_redaction.py",
         "unit/test_defuse.py",
         "unit/test_dotenv_anchoring.py",
+        "unit/test_eval_suite_clone.py",
+        "unit/test_eval_suite_git_isolation.py",
+        "unit/test_eval_suite_gold.py",
+        "unit/test_eval_suite_repo_url.py",
         "unit/test_graph_visualizer_escaping.py",
         "unit/test_network_is_blocked.py",
         "unit/test_oidc.py",

@@ -87,7 +87,9 @@ _ARM_RE = re.compile(ARM_PATTERN)
 _LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _SHA1_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_SUITE_PATTERNS = {
+# The shape of each identity field, shared with `trelix.eval.suite` so that a suite.json the
+# loader accepts cannot describe a run that this reader would then refuse.
+SUITE_PATTERNS = {
     "name": _ARM_RE,
     "golden_version": _LABEL_RE,
     "repo_sha": _SHA1_RE,
@@ -304,7 +306,7 @@ def _suite_problems(suite: object) -> list[str]:
     if not isinstance(suite, dict):
         return ["suite: must be an object"]
     problems = _exact_keys("suite", suite, SUITE_KEYS)
-    for key, pattern in _SUITE_PATTERNS.items():
+    for key, pattern in SUITE_PATTERNS.items():
         value = suite.get(key)
         if key in suite and not (isinstance(value, str) and pattern.fullmatch(value)):
             problems.append(f"suite: {key!r} is not a valid value (got {show(value)})")
