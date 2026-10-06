@@ -354,8 +354,9 @@ One file per run. It is **not** the `--per-query-out` file: that one also says
 `schema_version: 1` but names no repository, commit or golden file, so `eval-compare`
 refuses it (`not a results.json`). The format lives in `trelix.eval.results`, which has the
 writer (`build_results`, `write_results`) beside the reader (`load_results`) so the two cannot
-drift; the command that writes these files for a whole suite, `trelix eval-suite`, is not part
-of this change. Written with sorted keys and mode 0600, like the per-query file:
+drift; the command that writes these files for a whole suite, `trelix eval-suite`, is not
+available yet (only its `--prepare-only` form is, below). Written with sorted keys and mode 0600,
+like the per-query file:
 
 ```json
 {
@@ -519,6 +520,135 @@ Lines before the `reason:` lines are informational and may gain fields; the `rea
 queries and 0.5 on the other half gives delta +0.1250, interval `[+0.0750, +0.1750]`, `sigma_d`
 0.1282 and MDE 0.0803: an `expected_effect` of 0.05 or 0.079 is INCONCLUSIVE (row 5 only, with the
 reason `expected_effect ... is below the minimum detectable effect 0.0803`), and 0.10 is PASS.
+
+### Suites and `trelix eval-suite --prepare-only`
+
+A suite is the committed definition of one measurement: ONE repository at ONE pinned commit, the
+golden file of queries about it, and the file of frozen plans recorded for those queries (above).
+`results.json` names the suite it measured, and `trelix eval-compare` refuses two runs of different
+suites. This change adds the definition and the verified, hardened clone of its repository; the
+command that indexes the clone, replays the plans and writes `results.json` is a later change. So
+`trelix eval-suite` is hidden from `trelix --help`, and only `--prepare-only` works (without it the
+command exits 1 and says the run is not available in this release). No suite is committed yet.
+
+```bash
+trelix eval-suite eval/suites/NAME/suite.json --prepare-only [--cache-dir DIR]
+```
+
+#### `suite.json`
+
+```json
+{
+  "schema_version": 1,
+  "name": "trelix-self",
+  "golden_version": "2026-10-r1",
+  "repo": {"url": "https://github.com/OWNER/REPO.git", "sha": "<40 hex>", "license": "MIT"},
+  "golden": {"path": "golden.jsonl", "sha256": "<64 hex>"},
+  "plans": {"path": "plans.jsonl", "sha256": "<64 hex>"}
+}
+```
+
+Every key is required; an unknown or a repeated key, `NaN` and a `schema_version` other than `1`
+are refused, and every problem found is listed, not the first. `name` is `[a-z0-9][a-z0-9_-]{0,62}`
+(it is a directory name of the clone and the `repo` label of every record), `golden_version` a label
+of `[A-Za-z0-9._-]`, `repo.sha` a full lower-case 40-hex commit id (not an abbreviation, a branch or
+a tag), `repo.license` an SPDX identifier that is recorded and not enforced, and `golden.path` and
+`plans.path` bare file names of files beside `suite.json` (a symlink to a file elsewhere is refused).
+`repo.url` is `https://github.com/<owner>/<repo>` or the same ending in `.git`, and nothing else: no
+`http`, `ssh` or `git@` form, no credentials, port, query, fragment or further path, no other host
+(`localhost`, an IP literal, a lookalike such as `github.com.evil.example`, a trailing dot and an
+upper-case host are all refused), and `<owner>` and `<repo>` must have the characters GitHub allows
+(an owner is letters, digits and single hyphens, 39 at most; a repo is letters, digits, `-`, `_` and
+`.`, 100 at most, and not `.` or `..`). A committed `suite.json` can arrive in a pull request, and a
+CI job that runs `eval-suite` would otherwise send a git request to whatever host it names (server-side
+request forgery from CI). The allowed hosts are the one constant `ALLOWED_REPO_HOSTS` in
+`trelix/eval/suite.py`, so adding a host is a one-line change for review, and the refusal names them.
+A local path or a `file://` URL is accepted only by the Python API, through the keyword `allow_local=True`
+of `load_suite`, `ensure_clone` and `prepare_suite` (the tests use it); the command line never sets it,
+so a `suite.json` cannot select a local or an internal remote. The sha256 values are over the raw bytes
+of the files as committed (`shasum -a 256 golden.jsonl`): one changed byte, a CRLF rewrite or a missing
+final newline refuses the suite, and the message prints both digests.
+
+#### What `--prepare-only` checks, in this order
+
+Nothing is cloned, and the cache directory is not created, until the first three are proven.
+
+1. `suite.json` is valid and both hashes match.
+2. The golden file validates as `trelix eval-validate` validates it (schema, duplicates), without its
+   repository and without the v2 strata thresholds (those decide whether a golden file may be committed,
+   not whether a suite may run). A `<stem>-metadata.json` beside it is read by the loader for `area`
+   labels (a malformed one is a refusal) but is covered by neither sha256; `--prepare-only` uses no
+   label, and the command that runs a suite must hash or refuse the file before a label reaches a
+   record.
+3. The plans file holds a plan for every golden query. It is read by the planner's own cache class and
+   asked the way the planner asks, so `"How Does Login Work "` is covered by a plan recorded for
+   `"how does login work"` exactly when a run would cover it. A plans file with no plans is refused: the
+   planner would read it as "record" and call the LLM for every query. Record plans once, with
+   `trelix eval . --golden GOLDEN --plan-cache-file PLANS` as above.
+4. The clone at `<cache>/clones/<sha>/<name>/` exists, or is made: cloned into `<name>.partial`,
+   `git checkout --detach <sha>`, `HEAD` equal to the pin, then one rename. An existing clone is
+   re-verified and never repaired or deleted: `HEAD` is the pin, the worktree is pristine (ignored files
+   count, because the walker indexes what git ignores), the origin URL is the suite's, and the clone is
+   neither shallow nor partial (git could complete either from the network). A `.partial` directory left
+   by a killed run is refused with its path and never deleted; remove it by hand.
+5. Every gold path exists at the pin and is in the set `FileWalker` would index with
+   `walker.follow_symlinks = false`. `trelix eval-validate` proves a path exists in git; a file that
+   exists in git and is not indexed scores 0 in every arm, which looks exactly like a retrieval miss. The
+   default walker ignores a directory called `packages`, and 2 of the 54 queries of `eval/golden.jsonl`
+   (lines 43 and 46) have gold files only there, so a suite over this repository has to leave those two
+   out (its golden file, and so its hash, differ from the shipped one). The refusal names the first
+   five paths and counts the rest. The walk uses the walker settings in effect, `TRELIX_WALKER_*`
+   environment included, apart from `follow_symlinks`, which is forced. Before the walk, a tracked
+   symlink named `.gitignore` or `package.json` is refused (see Security below).
+
+The cache is the directory given with `--cache-dir` (an empty value counts as not given), else
+`$XDG_CACHE_HOME/trelix/eval-suites` (a relative value is ignored), else
+`~/.cache/trelix/eval-suites`; with no home directory and no `--cache-dir` the command says to
+pass it.
+
+Output on success (exit 0), one line each: `suite:`, `repository:`, `sha:`, `golden:` (its sha256, the
+number of queries and of distinct gold files), `plans:` (its sha256), `clone:` and a last `prepared:`
+line. Any refusal is one `refused: ...` line per reason on stderr and exit 1.
+
+#### Security
+
+The repository is untrusted input. Nothing from it is executed, imported, built or installed: it is
+cloned, checked out, read, hashed, and (`.gitignore` and `package.json`) parsed as data.
+
+* git gets a built environment, not the operator's: `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are the
+  null device, `GIT_CONFIG_NOSYSTEM=1`, `GIT_ALLOW_PROTOCOL=https` (`https:file` for the clone command
+  alone, and only when the Python API is called with `allow_local=True`), `GIT_TERMINAL_PROMPT=0`,
+  `GIT_LFS_SKIP_SMUDGE=1`, `GIT_OPTIONAL_LOCKS=0`, and nothing else named
+  `GIT_*`; only `PATH`, a temp directory, the proxy and CA-bundle variables (`HTTPS_PROXY`,
+  `SSL_CERT_FILE`, ...) and, on Windows, `SYSTEMROOT` are passed on. A global `url.*.insteadOf`,
+  `core.hooksPath`, `init.templateDir`,
+  `filter.lfs.required` or an exported `GIT_DIR` therefore cannot shape a clone. The price is that
+  there are no credentials, so only public repositories can be used.
+* Every command is `git -C <directory>` on a directory this command created, with `-c
+  core.hooksPath=<null device>` and the URL after `--`; no submodule is fetched. A clone has 1800
+  seconds and any other command 120. A missing `git`, a timeout or any other OS error is a one-line
+  refusal.
+* The walker is confined to the clone (`follow_symlinks = false`). Its default follows symlinks and
+  does not resolve them, so a tracked symlink to a file outside the clone would be read, hashed and
+  indexed under a name that looks like it is inside. The tests plant one, with a canary file outside the
+  clone, and show the default walker reads it and this configuration does not. That setting covers
+  the files the walker iterates. It also opens two by name, `.gitignore` in every directory it enters
+  and `package.json` beside a `packages` or `bin` directory, and reads them through a symlink wherever
+  it points: a `.gitignore` linked to a regular file is read whole and its lines shape the walk; a
+  `package.json` is read with no check of what it is, so a link to `/dev/zero` or to a FIFO is never
+  read to its end. The name is matched in any case: a case-insensitive filesystem (macOS, Windows)
+  resolves the fixed name `.gitignore` the walker asks for to a tracked `.GITIGNORE`. So a tracked
+  symlink with either name, at any depth and whatever it points at, is refused before the walk starts:
+  one `refused: the clone tracks N symlink(s) named .gitignore or package.json, ...` line naming the
+  first five. A `.gitignore` line pathspec rejects or compiles into an invalid regex, or a `package.json`
+  nested too deep to decode, makes the walker raise; that is one `refused: the walker failed on the
+  clone: ...` line, on every run.
+* The planted-file test: `conftest.py`, `setup.py` and `sitecustomize.py` in the pinned commit write a
+  marker if they are ever run; a control runs one to show the marker fires, and none runs here.
+
+Not here yet, on purpose: indexing, plan replay, writing `results.json`, a Makefile target, reusing an
+index between arms, other embedders, and more than one repository per suite (several repositories are
+several suite directories).
 
 ## `golden_synthesis_sample.jsonl` — synthesis quality
 
