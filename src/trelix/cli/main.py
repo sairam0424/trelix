@@ -92,9 +92,14 @@ warnings.filterwarnings("ignore", message=".*huggingface.*")
 # red that does not look like the bug it is.
 #
 # What status to report when the reader walks away is the application's policy, not
-# rich's and not click's, so it is decided here once for every command instead of
-# inside stats. A fix inside stats would have left search/telemetry/graph — which
-# share the consoles below — failing exactly the same way.
+# rich's and not click's, so it is decided here once for every command (eval-compare
+# excepted, below) instead of inside stats. A fix inside stats would have left
+# search/telemetry/graph — which share the consoles below — failing exactly the same way.
+#
+# ONE COMMAND IS THE EXCEPTION: `eval-compare` (see `_print_verdict_line`). Its exit
+# status IS the verdict and the design lets only PASS exit 0, so "the reader left,
+# exit 0" would turn a FAIL piped into `head` under `pipefail` into a green step. It
+# silences the stream the same way, but keeps the verdict's exit code.
 
 # EINVAL is in this set because of Windows and only because of Windows. Keeping the
 # set to these two is the point: ENOSPC or EACCES on stdout is a real failure a
@@ -134,10 +139,8 @@ class _PacifiedStream:
         return getattr(self._wrapped, name)
 
 
-def _exit_quietly_after_closed_consumer(stream: Any = None) -> NoReturn:  # noqa: ANN401
-    """Stop writing to `stream`, leave no traceback, exit 0."""
-    target = sys.stdout if stream is None else stream
-
+def _silence_closed_stream(target: Any) -> None:  # noqa: ANN401 - any text stream
+    """Make every later write to `target` land in the null device and flush without raising."""
     # Point the file descriptor at the null device first. This is the half that
     # works when the bytes are already buffered inside a real TextIOWrapper: the
     # shutdown flush still happens, it just lands in /dev/null (NUL on Windows).
@@ -163,6 +166,10 @@ def _exit_quietly_after_closed_consumer(stream: Any = None) -> NoReturn:  # noqa
     elif target is sys.stderr:
         sys.stderr = cast("Any", _PacifiedStream(sys.stderr))
 
+
+def _exit_quietly_after_closed_consumer(stream: Any = None) -> NoReturn:  # noqa: ANN401
+    """Stop writing to `stream`, leave no traceback, exit 0."""
+    _silence_closed_stream(sys.stdout if stream is None else stream)
     raise SystemExit(0)
 
 
@@ -3398,6 +3405,60 @@ def eval_validate(
         console.print(line, markup=False, emoji=False, highlight=False, soft_wrap=True)
     if report.violations:
         raise typer.Exit(1)
+
+
+def _print_verdict_line(target: Console, text: str) -> None:
+    """Print one `eval-compare` line, and keep the exit status when the reader has gone.
+
+    The consoles and the entry point turn a closed consumer into exit 0, which suits
+    `stats | grep -q`. Here the exit status is the verdict and only PASS may exit 0, so a FAIL
+    piped into `head` under `pipefail` must not come out green. The stream is silenced the
+    same way, so the lines still to come are discarded; the exit code is not.
+
+    The text comes from the files being judged (ids, error messages, config keys), so it goes
+    through `safe_text`, which escapes Rich markup and strips control bytes, and is printed
+    with markup ON so the escapes render as the literal brackets.
+    """
+    try:
+        target.print(_safe_text(text), emoji=False, highlight=False, soft_wrap=True)
+    except SystemExit:
+        return  # EPIPE: `_PipeSafeConsole.on_broken_pipe` has already silenced the stream
+    except OSError as exc:
+        if not _is_closed_consumer_error(exc):
+            raise
+        _silence_closed_stream(target.file)  # Windows reports EINVAL, which rich does not catch
+
+
+@app.command("eval-compare")
+def eval_compare(
+    base: Annotated[str, typer.Argument(help="Results file of the baseline run.")],
+    cand: Annotated[str, typer.Argument(help="Results file of the candidate run.")],
+    prereg: Annotated[
+        str | None,
+        typer.Option(
+            "--prereg",
+            help=(
+                "The experiment's pre-registration file (YAML). Required: it is checked by "
+                "hand, so forgetting it ends in REFUSED (exit 3), not in a usage error (exit 2)."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Judge a candidate run against a baseline under a pre-registration.
+
+    Prints the evidence and a last line `verdict: PASS`, `FAIL`, `INCONCLUSIVE` or `REFUSED`.
+    Exit code 0 is PASS, 1 FAIL, 2 INCONCLUSIVE and 3 REFUSED; a usage error also exits 2 but
+    prints no verdict line. Only PASS exits 0. Needs no git, no index and no embedder.
+    """
+    from trelix.eval.compare import compare_files
+
+    verdict = compare_files(base, cand, prereg)
+    if verdict.outcome == "REFUSED":
+        for reason in verdict.reasons:
+            _print_verdict_line(err_console, f"refused: {reason}")
+    for line in verdict.lines:
+        _print_verdict_line(console, line)
+    raise typer.Exit(verdict.exit_code)
 
 
 # ---------------------------------------------------------------------------

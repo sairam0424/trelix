@@ -33,6 +33,7 @@ on most commands.
    - [eval](#trelix-eval)
    - [eval-synthesis](#trelix-eval-synthesis)
    - [eval-validate](#trelix-eval-validate)
+   - [eval-compare](#trelix-eval-compare)
    - [taint](#trelix-taint)
    - [review](#trelix-review)
    - [link-tickets](#trelix-link-tickets)
@@ -161,8 +162,9 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Error — configuration invalid, index not found, I/O failure, API error, or user cancelled with Ctrl+C |
-| `3` | `trelix review` only — the review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review) (see [`trelix review`](#trelix-review)) |
+| `1` | Error — configuration invalid, index not found, I/O failure, API error, or user cancelled with Ctrl+C. `trelix eval-compare` also exits `1` for a FAIL verdict (see [`trelix eval-compare`](#trelix-eval-compare)) |
+| `2` | `trelix eval-compare` only — INCONCLUSIVE: the candidate run is neither shown to be better nor worse (see [`trelix eval-compare`](#trelix-eval-compare)). A usage error of any command (an unknown option, a missing argument) also exits `2`; it prints no `verdict:` line |
+| `3` | `trelix review` and `trelix eval-compare` only. `trelix review`: the review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review) (see [`trelix review`](#trelix-review)). `trelix eval-compare`: REFUSED: the two runs cannot be compared, or an input is unusable (see [`trelix eval-compare`](#trelix-eval-compare)) |
 | `4` | `trelix review` only — the review ran but left more of the diff unreviewed than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` allows (default: any hunk). Whatever findings there are have already been printed (see [`trelix review`](#trelix-review)) |
 
 `trelix search`, `ask`, `query`, `call-graph`, `graph` and `stats` exit `1` when `<repo_path>` has
@@ -1264,6 +1266,78 @@ invalid: entries 3, violations 2
 - `--rev` has no effect without `--repo`.
 - It reads the golden file only. A malformed `<stem>-metadata.json` beside it, which
   `trelix eval` refuses, is not reported.
+
+---
+
+### `trelix eval-compare`
+
+#### Synopsis
+
+```
+trelix eval-compare <base> <cand> --prereg <experiment.yaml>
+```
+
+#### Description
+
+Judges a candidate run against a baseline run under a pre-registration, and is the only command
+that produces a PASS. `<base>` and `<cand>` are `results.json` files (schema_version 1, described in
+`eval/README.md`; not the `trelix eval --per-query-out` file, which names no repository or golden
+file and is refused), and the pre-registration is a YAML file fixed before the run: hypothesis
+(nDCG@10 increases), expected effect, `alpha`, the number of comparisons against this baseline
+(`family_size`), the minimum number of queries and the cost class that sets the hurdle. It needs no
+git, no index and no embedder, and makes no LLM call.
+
+The queries are paired by `id` and resampled with a fixed seed, so the same three files always give
+the same output. The decision set is the `test` records when the baseline file labels every query
+with a `split`, and every record when it labels none. The rule, with its nine rows, is in
+`eval/README.md`.
+
+#### Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `<base>` | | argument | *(required)* | Results file of the baseline run. |
+| `<cand>` | | argument | *(required)* | Results file of the candidate run. |
+| `--prereg` | | string | *(none)* | The pre-registration (YAML). Required, but checked by hand: leaving it out is a refusal (exit `3`) rather than a usage error (exit `2`). |
+
+#### Examples
+
+```bash
+trelix eval-compare /tmp/baseline.json /tmp/candidate.json --prereg /tmp/EXP-declaration-boost.yaml
+```
+
+#### Output
+
+Informational lines first (`comparison:`, `experiment:`, `suite:`, `runs:`, `queries:`, any
+`note:` lines, then `ndcg@10:`, `recall@10:`, `mde:` and `hurdle:`; a FAIL for a candidate query that
+raised and an INCONCLUSIVE for too few queries stop before the statistics and print none of those
+last four), then one `reason:` line for every
+row of the winning class when the verdict is not PASS, and always, last, `verdict:` with one of
+`PASS`, `FAIL`, `INCONCLUSIVE` or `REFUSED`. A refusal prints only the verdict line on stdout and one
+`refused: <reason>` line per reason on stderr. The `reason:` and `verdict:` lines are the contract;
+the lines before them may gain fields. Text that comes from the files (ids, error messages, config
+keys) is printed literally, with control bytes dropped and line breaks turned into spaces, so it
+cannot forge a `verdict:` line.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | PASS: the candidate is better by the pre-registered rule. The only success. |
+| `1` | FAIL: the candidate run has a query that raised, or is confidently worse on nDCG@10 or on recall@10. |
+| `2` | INCONCLUSIVE: too few queries, an expected effect below the minimum detectable effect, no demonstrated gain, a gain below the hurdle, or an unresolved recall guard. A usage error also exits `2` and prints no `verdict:` line, so read that line to tell them apart. |
+| `3` | REFUSED: a file is unreadable or malformed, `--prereg` is missing or invalid, or the runs are not comparable (different suite, queries or labels, not a frozen-plan rerank-off run, swapped arguments, a baseline with an error), or an internal error. |
+
+#### Notes
+
+- A FAIL or INCONCLUSIVE prints why; a refusal prints every reason it found, not just the first.
+- If the reader of stdout or stderr stops reading (`| head -n 20`), the lines still to come are
+  dropped and the exit code is still the verdict's, so a FAIL under `pipefail` is not reported as
+  success. The commands that print through the shared consoles (`stats`, `telemetry`, `graph`, `review`,
+  the search tables) exit `0` on a closed pipe.
+- `pipeline.config` of the two files, `trelix_version` and `embedder` may differ: they are printed as
+  `note:` lines, never refused on.
+- Holm is not applied; `family_size` widens the intervals by Bonferroni. See `eval/README.md`.
 
 ---
 
