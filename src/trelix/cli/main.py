@@ -3814,11 +3814,27 @@ def review(
     """Review a git diff using trelix retrieval-augmented analysis."""
     _setup_logging(False)
 
+    from pydantic import ValidationError as _PydanticValidationError
+
     from trelix.core.config import IndexConfig
     from trelix.review.diff_parser import DiffParser
     from trelix.review.reviewer import DiffReviewer
 
-    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    # The same pair of handlers the other commands use. Without them an invalid
+    # TRELIX_LLM_BASE_URL (a ValidationError) or a bad TRELIX_RETRIEVAL_*_WEIGHT_* (a plain
+    # ValueError from RetrievalConfig) reached the user as Typer's traceback, locals included.
+    try:
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except _PydanticValidationError as exc:
+        first_err = exc.errors()[0]
+        msg = first_err.get("msg", str(exc))
+        field = " -> ".join(str(x) for x in first_err.get("loc", []))
+        detail = f"{field}: {msg}" if field else msg
+        _print_error("Configuration error", detail)
+        raise typer.Exit(1) from exc
+    except (ValueError, FileNotFoundError) as exc:
+        _print_error("Error", exc)
+        raise typer.Exit(1) from exc
 
     # ------------------------------------------------------------------
     # GitHub PR path

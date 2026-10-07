@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from trelix.retrieval.citations import cite_tag
+
 if TYPE_CHECKING:
     from trelix.core.config import EmbedderConfig, RetrievalConfig
     from trelix.core.models import RetrievedContext, SearchResult
@@ -59,6 +61,23 @@ Partial answers:
 
 Provide a complete, synthesized answer that integrates all relevant information above.
 Cite specific file and function names where possible. Be precise and technical."""
+
+# Appended to the two templates only when the context carries citation tags
+# (RetrievedContext.citation_sources is non-empty); otherwise the prompts are unchanged.
+_MAP_CITE_LINE = (
+    "\nEach block starts with a tag such as [C3]; write the tag after each statement it supports."
+)
+_REDUCE_CITE_LINE = (
+    "\nKeep every [C#] tag from the partial answers beside the statement it supports; "
+    "do not invent tags."
+)
+
+
+def _prompt_templates(cited: bool) -> tuple[str, str]:
+    """The MAP and REDUCE templates, with the cite lines appended for a tagged context."""
+    if not cited:
+        return _MAP_PROMPT_TEMPLATE, _REDUCE_PROMPT_TEMPLATE
+    return _MAP_PROMPT_TEMPLATE + _MAP_CITE_LINE, _REDUCE_PROMPT_TEMPLATE + _REDUCE_CITE_LINE
 
 
 # ---------------------------------------------------------------------------
@@ -158,12 +177,15 @@ class GraphRAGSynthesizer:
             len(groups),
             context.total_tokens,
         )
+        # Citation tags by symbol_id (the assembler numbered them in rendered order).
+        tags = {source.symbol_id: source.tag for source in context.citation_sources}
+        map_template, reduce_template = _prompt_templates(bool(tags))
 
         # --- MAP phase ---
         partial_answers: list[str] = []
         for idx, group in enumerate(groups):
-            group_context = self._format_group(group)
-            prompt = _MAP_PROMPT_TEMPLATE.format(
+            group_context = self._format_group(group, tags)
+            prompt = map_template.format(
                 query=query,
                 group_context=group_context,
             )
@@ -181,7 +203,7 @@ class GraphRAGSynthesizer:
 
         # --- REDUCE phase ---
         numbered = "\n\n".join(f"[Partial {i + 1}]\n{ans}" for i, ans in enumerate(partial_answers))
-        reduce_prompt = _REDUCE_PROMPT_TEMPLATE.format(
+        reduce_prompt = reduce_template.format(
             query=query,
             partial_answers=numbered,
         )
@@ -205,11 +227,18 @@ class GraphRAGSynthesizer:
             groups.append(results[i : i + _MAP_RESULTS_PER_GROUP])
         return groups
 
-    def _format_group(self, results: list[SearchResult]) -> str:
-        """Format a group of SearchResults into a context block for the MAP prompt."""
+    def _format_group(self, results: list[SearchResult], tags: dict[int, int]) -> str:
+        """Format a group of SearchResults into a context block for the MAP prompt.
+
+        `tags` maps symbol_id to the citation tag the assembler gave that symbol; a
+        result whose symbol has a tag gets the same `[C<n>] ` header prefix the
+        assembled context carries, so the map answers cite the same numbers.
+        """
         parts: list[str] = []
         for r in results:
-            header = f"# {r.file.rel_path} — {r.symbol.name} ({r.symbol.kind})"
+            tag = tags.get(r.chunk.symbol_id)
+            prefix = cite_tag(tag) if tag is not None else ""
+            header = f"{prefix}# {r.file.rel_path} — {r.symbol.name} ({r.symbol.kind})"
             body = r.chunk.chunk_text.strip()
             parts.append(f"{header}\n{body}")
         return "\n\n".join(parts)

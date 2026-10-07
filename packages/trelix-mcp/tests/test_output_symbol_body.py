@@ -68,7 +68,10 @@ def test_get_symbol_closes_database(monkeypatch: pytest.MonkeyPatch, long_body_r
     opened = spy_on_database(monkeypatch, srv)
 
     assert srv.get_symbol("target.run", str(long_body_repo)) is not None
-    assert srv.get_symbol("no.such.symbol", str(long_body_repo)) is None
+    # An unknown symbol travels as a ToolResult (a `null` text block), not as a bare None.
+    assert srv.get_symbol("no.such.symbol", str(long_body_repo)).structured_content == {
+        "result": None
+    }
 
     assert_all_closed(opened, 2)
 

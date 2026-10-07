@@ -104,6 +104,8 @@ registered, and the HTTP API behaves exactly as it did in v2.12.0.
 | [PROVIDERS.md](PROVIDERS.md) | Provider configuration: OpenAI, Anthropic, Ollama, Azure, and more | All users |
 | [FEDERATION_GUIDE.md](FEDERATION_GUIDE.md) | Connecting multiple trelix instances for federated search | Platform engineers |
 | [integrations/vscode-plugin.md](integrations/vscode-plugin.md) | VS Code extension setup and usage | VS Code users |
+| [integrations/claude-code-plugin.md](integrations/claude-code-plugin.md) | Claude Code plugin: the trelix-mcp server plus a skill, installed from this repository's marketplace | Claude Code users |
+| [integrations/AGENTS_SNIPPET.md](integrations/AGENTS_SNIPPET.md) | Paste-able AGENTS.md block for any agent that has the trelix MCP tools | Agent / tool builders |
 
 ---
 

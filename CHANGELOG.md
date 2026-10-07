@@ -56,6 +56,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   tool goes back to a range or to no version.
 
 ### Fixed
+- **`trelix-mcp` answers every invalid input with a tool error that names the argument.** Measured
+  through an in-process client before the fix: a `repo_path` that did not exist, or held only
+  whitespace, was not a tool result at all but a JSON-RPC "Invalid request parameters" error
+  (`IndexConfig` rejects it with a pydantic `ValidationError`, which FastMCP forwards as a protocol
+  error instead of masking it into a result), so a client such as the VS Code extension saw an
+  exception that named no argument; a blank `repo_path` meant the server's working directory (the
+  no-index message named that directory, and `index_codebase` indexed it); a file was told to run
+  `trelix index <file>`; a blank `query` was searched by `search_code`, `graph_search_mcp` and
+  `federation_search_all`, and `ask_agent` persisted a session for it; `get_symbol` and
+  `blast_radius` answered a blank name with an empty result; `federation_add_repo` registered a
+  blank alias, a blank, relative, missing or file path, and a weight of 0 or less;
+  `federation_remove_repo`, `agent_clear_session` and `ask_agent` accepted a blank alias or
+  `session_id`; and a blank `config_path` on the four federation tools resolved to the server's
+  working directory and was refused with a 200 `error` dict that named the allowed roots and that
+  directory, none of which the caller had passed; and on Python 3.12 and 3.13 a `repo_path` whose
+  name the filesystem rejects (a component over 255 bytes) escaped as FastMCP's generic `Error
+  calling tool` text carrying the whole path (3.14's pathlib already answered "does not exist").
+  Each is now `isError: true` with one text block naming the argument, what was given (cut to 200
+  characters) and what is valid, for example
+  `repo_path is not a directory: '<path>'; pass the repository root, not a file in it.`; nothing
+  is opened or created first. The no-index wording is unchanged. Unchanged on purpose: `k` and
+  `limit` outside their range are clamped (as documented), `federation_remove_repo` of an
+  unregistered alias stays a no-op, the federation tools keep their `error` key for a duplicate
+  alias, a full registry, a non-blank `config_path` outside the allowed roots and a registry with
+  nothing indexed (a client contract, owner decision), and a wrong type or a value outside a
+  `Literal` is rejected by FastMCP itself with pydantic's text. The checks live in
+  `trelix_mcp.arguments`; `docs/MCP_GUIDE.md` has the table (section 8, Errors).
+- **Every `trelix-mcp` result carries a text block, including the empty ones.** FastMCP sends `[]`
+  and `None` as `structuredContent` alone, so `blast_radius` with no dependents (or an unknown
+  symbol), `graph_search_mcp` with no hits and `get_symbol` for an unknown symbol had no text
+  block, so a client that reads only the first text block had nothing to parse (the VS Code
+  extension defaults to `null` and `[]` for that case); they now carry `[]` or `null` as text,
+  equal to the structured content. `blast_radius`'s truncation note ended "raise either to see
+  more" even at `limit=500` or under `TRELIX_MCP_MAX_RESULT_CHARS=0`; it now names what can still
+  be raised, decided from what cut the list (the budget, the limit, or both) so that a raise it
+  names always shows more, or says that nothing can and the remaining dependents cannot be
+  fetched with this tool. `federation_search_all` with some registered repos indexed and some not
+  returned the indexed ones with no sign of the rest; the additive `repos_unindexed` key names the
+  skipped aliases (the `error` response when none is indexed is unchanged). Two documentation
+  fixes: the trelix-mcp README's Tools paragraph, one 200-word sentence, is split into sentences and
+  links section 8 of `docs/MCP_GUIDE.md`, and that guide no longer says the `search_code` trace
+  directory has "its own `.gitignore`" (the ignore file is `.trelix/.gitignore`, one level up).
 - **`trelix review --json` on a local diff printed text ahead of the JSON, so stdout did not
   parse.** The `Reviewing N hunks across M files...` line went to stdout, and "No issues found.",
   "No changes found in diff." and "No findings in the hunks that were reviewed." took the place of
@@ -262,8 +304,65 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Peek References popup still lists the entries it has) and `@trelix /impact` says
   `has 150 dependent(s), showing the first 100`. An uncut list reads as before. No new setting and
   no new server call; `limit` is not passed.
+- **`docs/OBSERVABILITY.md` described the OpenTelemetry integration as planned, not as it runs.**
+  It said every retrieval leg span carries the query text (trelix hands it over, but
+  `opentelemetry-util-genai` records `gen_ai.retrieval.query.text` only when
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is `SPAN_ONLY` or `SPAN_AND_EVENT`; the default
+  `NO_CONTENT` drops it, so by default no query text reaches a span), that metrics cover embedding
+  only (the same library records a `gen_ai.client.operation.duration` histogram for every retrieval
+  leg span once a `MeterProvider` exists), that the library was `1.0b0` at time of writing (1.2b0 is
+  current; the `otel` extra still accepts `>=1.0b0`, and 1.2b0 renamed the cache-write and `top_k`
+  attributes), and it linked the GenAI conventions in the core `semantic-conventions` repository,
+  whose pages are now "Moved" stubs: the conventions live in `semantic-conventions-genai`, which has
+  no tags, so the link pins a commit. The library link now points at the `opentelemetry-util-genai`
+  1.2b0 tag in `opentelemetry-python-genai`. The primary-source spike behind these corrections
+  (pinned sources, the inference attribute table with requirement levels, the content opt-in and
+  the Logs-signal path, the util-genai 1.0b0 vs 1.2b0 API differences, the cache-token names and
+  the metrics the library already records) is `docs/reports/otel-genai-semconv-spike-2026-10-07.md`
+  (roadmap C-8, requirement R-C6-01). No package code changes;
+  `tests/unit/test_observability_doc_pins.py` pins the sentence about when trelix installs its
+  `MeterProvider` (on the first counted embedding provider call; never for `bge-code` or
+  `nomic-code`) to the embedder code.
 
 ### Added
+- **A Claude Code plugin.** `claude plugin marketplace add sairam0424/trelix` then
+  `claude plugin install trelix@trelix` installs the `trelix-mcp` server (launched as
+  `uvx --from trelix-mcp==<newest published release> trelix-mcp`, so the plugin trails this
+  repository by one release and never points at an unpublished version) and a skill,
+  `/trelix:use-trelix-index`, that says when to search with trelix and when to fall back to grep.
+  Tool names are `mcp__plugin_trelix_trelix__<tool>`. Five decisions, recorded in
+  `plugins/trelix/README.md`: the server command carries no `trelix[local]` extra (the opt-in
+  command is documented, because that extra pulls PyTorch); this first version pins the published
+  3.4.3, which has no `--tools` flag and sends no server instructions, so the skill carries that
+  guidance until a pin-bump PR follows the next release; `plugin.json`'s `version` equals the
+  pin (a literal test that also compares it with the `.mcp.json` pin, so a pin bump that forgets
+  `version` fails) and a contents hash in `tests/unit/test_claude_plugin_manifest.py` makes
+  every plugin edit loud (it cannot see whether `version` was bumped with it);
+  `claude plugin validate --strict` stays a manual CONTRIBUTING step (CI runs the offline tests,
+  not the validator); and the pin check is offline only (a released CHANGELOG section, not newer
+  than the trelix-mcp stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
+  pin the manifests, the pin form (an exact `==` to a version with a released CHANGELOG section,
+  not newer than the trelix-mcp stamp), the plugin tree, and that the skill names only tools the
+  server registers. Guide: `docs/integrations/claude-code-plugin.md`; a paste-able block for other
+  agents: `docs/integrations/AGENTS_SNIPPET.md`.
+- **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
+  of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
+  answer the question; this one tags the context and instructs the model, nothing reads the model's
+  tags yet). With the flag on, every block header of the assembled context carries a tag, `[C1] [Lines
+  42-67] AuthMiddleware.verify`, numbered in rendered order with one number per symbol (a compressed
+  body carries its tag on each kept-span header; the intent preambles are not tagged), and
+  `RetrievedContext.citation_sources` records the path, lines and qualified name each tag refers to.
+  The synthesis system prompt (plain `ask`, FLARE and eval synthesis alike) then ends with an
+  instruction to write a block's tag after each sentence that relies on it and to cite only tags that
+  appear in the context; GraphRAG map-reduce prefixes its group headers with the same numbers and adds
+  one line to each of its prompts. The tag number is the only thing the model is asked to write about
+  a source. With the flag off (the default) the assembled context, the prompts and every command's
+  output are unchanged byte for byte (the assembler's frozen-digest and `v2.12.0` back-compat tests
+  cover the context; a prompt equality test covers the three synthesis paths). The flag is read by
+  every Retriever, so `trelix review`'s per-hunk context and REST `/ask` see the tags too when it is
+  on; `trelix ask --provider local` prints them with the context. No live model call was made: how
+  well a model follows the instruction is what the synthesis eval changes later in this series exist
+  to measure.
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
@@ -479,6 +578,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     refused with the same text as before a clone exists; and the README says a sidecar that is not
     valid JSON is a refusal while any other shape yields no labels.
 
+- **`TRELIX_LLM_BASE_URL` points the `openai` backend at an OpenAI-compatible server** (Ollama,
+  llama-server, a gateway). `OPENAI_API_KEY` is then optional: without it trelix sends the fixed
+  bearer `trelix-local`, which Ollama ignores. The output cap is sent as `max_tokens` for such a
+  server, because Ollama has no `max_completion_tokens` field and silently ran unbounded before. A
+  model tag under 20B parameters, or one with no readable size, logs one warning per LLM client
+  built (a review on an indexed repository builds two: the planner's and the reviewer's). A URL
+  without `http(s)://` and a host, one carrying a user name and password, or one containing
+  whitespace or a control character (a trailing newline from a secret store, which the URL parser
+  would otherwise drop silently) is a configuration error that names the variable and never the
+  value (`hide_input_in_errors` now covers the whole `TRELIX_LLM_*` section, so no LLM
+  configuration error echoes the value given, a provider typo included); `trelix review` now reports it as `Configuration error` and exits 1 like the other commands
+  instead of raising through Typer, and reports a plain-`ValueError` config error (a bad
+  `TRELIX_RETRIEVAL_*_WEIGHT_*`) as `Error`. `TRELIX_LLM_BASE_URL` with another
+  `TRELIX_LLM_PROVIDER` is ignored with one warning per LLM client built. `OPENAI_BASE_URL` keeps
+  working as before when the new variable is unset. A keyless local-server client is a usable
+  client, so with the variable set `search` and `query` plan through that server too (one call per
+  distinct query); the zero-LLM-call recipe in the FAQ, README, getting-started, user and
+  why-trelix guides and `SECURITY.md` now requires it unset as well as the chat credential.
+
 ### Changed
 - **The retriever's per-query debug trace is written beside the index, not beside the source.**
   `Retriever._debug_dir` is `<directory of store.db_path>/debug/`, which is the same
@@ -486,6 +604,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   (`TRELIX_STORE_DB_PATH` outside the repository, or a `trelix eval-suite` run) now gets its traces
   there and the source tree stays untouched. Found by the first two-arm suite run: the trace landed
   in the shared clone, and the second arm refused a worktree that was no longer pristine.
+- **`trelix ask` and `GET /ask` no longer call the LLM when retrieval found nothing, and an answer
+  can abstain** (second of six changes toward `trelix ask` answers that cite the retrieved code and
+  abstain when it does not answer the question). `Synthesizer.stream()`, behind plain `trelix ask`
+  with a non-local embedder and REST `/ask`, used to send the model `No relevant code found.` as the
+  whole code context and stream whatever it said; `synthesize()` (FLARE, `eval-synthesis`) already
+  answered with the notice and made no call. Both now answer with the one literal
+  `[trelix] No relevant code found — cannot synthesize an answer.`
+  (`trelix.retrieval.citations.NO_RESULTS_MESSAGE`) and make no LLM call; `trelix ask` exits `0`
+  (an unconfigured LLM is still reported first, as before) and REST `/ask`
+  streams that line then `[DONE]`. A caller that parsed the streamed text sees the notice where an
+  ungrounded answer was; there is no toggle (`docs/BACKWARDS_COMPATIBILITY.md`). With
+  `TRELIX_RETRIEVAL_CITATIONS=true` the citation instruction gains a fourth sentence: when the
+  context does not contain what the question needs, reply with exactly one line starting
+  `INSUFFICIENT_EVIDENCE:` followed by what is missing, and nothing else. That line is an answer: it
+  streams as one, `trelix ask` exits `0` with it on stdout and nothing on stderr,
+  `Synthesizer.last_error` stays `None`, and the new `Synthesizer.last_abstain_reason` says
+  `"insufficient_evidence"` (or `"no_results"`) once the whole answer is in; a stream closed early
+  records nothing. FLARE's uncertainty phrases gain `insufficient_evidence:`, so an abstention
+  triggers its re-retrieval. GraphRAG map-reduce prompts carry the cite lines but not the
+  abstention sentence, so a GraphRAG answer cannot abstain by protocol. With the flag off the
+  prompts are unchanged; the line is recognised either way. No live model call was made.
 - **Repository-root confinement moved to `trelix.core.confinement`** (`ALLOWED_ROOTS_ENV`,
   `resolve_allowed_roots`, `is_within_allowed_roots`; the first now takes any number of explicit
   roots, otherwise same bodies) so `trelix-mcp` can apply

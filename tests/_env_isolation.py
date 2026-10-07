@@ -58,6 +58,7 @@ BEAST_MODE_DEFAULTS: Mapping[str, str] = MappingProxyType(
         "TRELIX_RETRIEVAL_HYDE_FALLBACK": "false",
         "TRELIX_RETRIEVAL_MULTI_QUERY": "false",
         "TRELIX_RETRIEVAL_FLARE": "false",
+        "TRELIX_RETRIEVAL_CITATIONS": "false",
         "TRELIX_RETRIEVAL_PAGERANK_BOOST": "false",
         "TRELIX_TELEMETRY_ENABLED": "false",
         "TRELIX_OTEL_ENABLED": "false",
@@ -110,6 +111,9 @@ EMPTY_STRING_BY_DEFAULT: tuple[str, ...] = (
     "TRELIX_TESTRAIL_BASE_URL",
     "TRELIX_TESTRAIL_USERNAME",
     "TRELIX_TESTRAIL_API_KEY",
+    # LLMConfig reads a blank value as unset, so this pin cannot break config construction;
+    # without it an operator's local-server URL would redirect every "hosted openai" test.
+    "TRELIX_LLM_BASE_URL",
 )
 # Int-typed connector fields (project_id: int | None) can't take the ""
 # override above — pydantic would fail to parse "" as an int the same way

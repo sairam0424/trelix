@@ -55,6 +55,11 @@ pip install trelix-mcp "trelix[llm-all]"     # all LLM providers
 claude mcp add trelix -- trelix-mcp
 ```
 
+Or install the Claude Code plugin, which launches a pinned published release of this server
+through `uvx` and adds a skill that says when to use it: `claude plugin marketplace add
+sairam0424/trelix`, then `claude plugin install trelix@trelix` (see
+`docs/integrations/claude-code-plugin.md` in the repository).
+
 To list only the everyday search and indexing tools, add `--tools core` (the default is `--tools full`, every tool):
 
 ```bash
@@ -187,7 +192,7 @@ Both are read on every call. A blank value means the default; a value that is no
 
 ## Tools
 
-`tools/list` returns the tools in a fixed order and marks each one with MCP annotation hints; the server also sends short `instructions` that tell a model to index first and which search tool to use next. Only `search_code`, `get_symbol` and `blast_radius` are marked `readOnlyHint: true` (each is tested to leave the index database byte-identical once the server's database connections are closed, with telemetry off and the index already at the current schema; `TRELIX_TELEMETRY_ENABLED=true` adds a `query_telemetry` row per `search_code`, the first open of an index written by an older trelix migrates it, and every `search_code` writes a small JSON trace of the query to `.trelix/debug/`, so the hint means the index database is left alone, not the whole repository directory); `agent_clear_session` and `federation_remove_repo` are marked `destructiveHint: true`; every tool has `openWorldHint: false`. The full table is in [docs/MCP_GUIDE.md](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md), section 8.
+`tools/list` returns the tools in a fixed order and marks each one with MCP annotation hints; the server also sends short `instructions` that tell a model to index first and which search tool to use next. Only `search_code`, `get_symbol` and `blast_radius` are marked `readOnlyHint: true`, `agent_clear_session` and `federation_remove_repo` are marked `destructiveHint: true`, and every tool has `openWorldHint: false`. The read-only hint means the index database is left alone, not the whole repository directory: the caveats (query telemetry, the migration of an index written by an older trelix, the `search_code` trace files under `.trelix/debug/`) and the full table are in [docs/MCP_GUIDE.md, section 8](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#8-the-15-mcp-tools).
 
 `--tools full` (default) lists all 15 tools. `--tools core` lists seven: `index_codebase`, `search_code`, `get_symbol`, `blast_radius`, `build_knowledge_graph`, `graph_search_mcp` and `ask_agent`. The other eight are hidden, not removed. (`repo_map` and `exact_search` do not exist in this server, so `core` does not list them.)
 
@@ -209,7 +214,7 @@ Both are read on every call. A blank value means the default; a value that is no
 | `federation_list_repos(config_path=None)` | List all repos registered for federated search |
 | `federation_add_repo(alias, path, weight=1.0, config_path=None)` | Register a repo for federated search (absolute path required) |
 | `federation_remove_repo(alias, config_path=None)` | Unregister a repo by alias |
-| `federation_search_all(query, k=10, cursor=0, config_path=None, detail="detailed")` | Search across all registered repos with RRF-weighted fusion |
+| `federation_search_all(query, k=10, cursor=0, config_path=None, detail="detailed")` | Search across all registered repos with RRF-weighted fusion; `repos_unindexed` names the registered repos skipped for having no index |
 
 ### Persistent Agent Session Tools (v2.8.0)
 
@@ -265,6 +270,10 @@ A tool result costs a client's context twice (FastMCP sends a dict result as a t
 - `detail="concise"` drops each `body`; `get_symbol` cuts a body over `max_body_chars` and reports `body_truncated`; `agent_list_sessions` cuts each session's `query` (its most recent prompt) to 300 characters and reports `query_truncated`.
 
 The full description, with measured sizes, is in [docs/MCP_GUIDE.md](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#output-size-and-limits).
+
+## Errors
+
+An invalid input is a tool error (`isError: true`, one text block, the session carries on) whose text names the argument, shows what was given and says what is valid: a `repo_path` that is blank, does not exist or is a file; a blank `query`, `qualified_name`, `symbol_name`, `alias`, `session_id` or `config_path`; a `federation_add_repo` `path` that is not an absolute directory or a `weight` that is not positive; a negative `cursor` or `max_body_chars`. A repository with no index answers `No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`, and an argument of the wrong type or outside its choices is rejected by FastMCP itself, also as a tool error. `subscribe_resource` and `unsubscribe_resource` accept any string and are outside this contract. `k` and `limit` outside their range are clamped rather than rejected, and the federation tools keep their `error` key for a duplicate alias, a full registry, a non-blank `config_path` outside the allowed roots and a registry with nothing indexed. Every result, including an empty one (`[]`, `null`), carries a text block that parses to its structured content. Details: [docs/MCP_GUIDE.md, Errors](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#errors).
 
 ## Knowledge Graph Tools
 

@@ -1805,7 +1805,7 @@ Design note: `IndexConfig` and `Retriever` imported at module scope (not inside 
 |--------|------|---------|-------|
 | GET | `/health` | `{status, version}` | |
 | GET | `/search` | `list[result_dict]` | query, repo, k=10 |
-| GET | `/ask` | `StreamingResponse` | SSE token stream |
+| GET | `/ask` | `StreamingResponse` | SSE token stream; an empty retrieval streams the `[trelix] No relevant code found — cannot synthesize an answer.` notice then `[DONE]` with no LLM call; under `TRELIX_RETRIEVAL_CITATIONS` the model is asked to write `[C#]` markers into the tokens |
 | POST | `/index` | `index_stats_dict` | body: `{repo_path}` |
 | GET | `/stats` | `{files, symbols, chunks}` | repo param |
 | GET | `/graph` | `GraphBuildResult` | repo param |
@@ -1818,6 +1818,8 @@ Design note: `IndexConfig` and `Retriever` imported at module scope (not inside 
 # Yields: "data: {token}\n\n"
 # Terminates: "data: [DONE]\n\n"
 # Error: "data: [ERROR: {exc}]\n\n"
+# Empty retrieval: one "data: [trelix] No relevant code found — cannot synthesize an answer.\n\n"
+#                  frame, then [DONE]; the LLM is not called (Synthesizer.stream() guard)
 ```
 
 **Unindexed repositories:** every read route (`/search`, `/ask`, `/stats`, `/graph*`) depends on

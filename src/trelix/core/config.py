@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator
 from pydantic_core import PydanticUseDefault
@@ -845,6 +846,16 @@ class RetrievalConfig(BaseSettings):
         alias="TRELIX_RETRIEVAL_FLARE_MAX_RETRIES",
     )
 
+    # Tag every block of the assembled context with [C1], [C2], ... (rendered order, one
+    # tag per symbol) and instruct the synthesis model to cite those tags. Off: the
+    # assembled context and the synthesis prompts are byte-identical to before the flag
+    # existed. Read by every Retriever this process builds, so it also tags the per-hunk
+    # context `trelix review` retrieves (the review prompt gives the tags no instruction).
+    citations_enabled: bool = Field(
+        default=False,
+        alias="TRELIX_RETRIEVAL_CITATIONS",
+    )
+
     # PageRank-based symbol importance boost
     pagerank_boost_enabled: bool = Field(
         default=False,
@@ -1295,6 +1306,13 @@ class RetrievalConfig(BaseSettings):
         }
 
 
+_BASE_URL_SHAPE_ERROR = "TRELIX_LLM_BASE_URL must be an http:// or https:// URL with a host"
+_BASE_URL_USERINFO_ERROR = "TRELIX_LLM_BASE_URL must not carry a user name or password"
+_BASE_URL_WHITESPACE_ERROR = (
+    "TRELIX_LLM_BASE_URL must not contain whitespace or non-printable characters"
+)
+
+
 class LLMConfig(BaseSettings):
     """
     Chat/synthesis LLM provider config.
@@ -1308,6 +1326,10 @@ class LLMConfig(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
+        # This class holds keys, and pydantic otherwise appends `input_value=...` to every
+        # validation error: a credential pasted into TRELIX_LLM_BASE_URL would be echoed
+        # onto stderr and into a CI log.
+        hide_input_in_errors=True,
     )
 
     provider: Literal["openai", "azure", "anthropic", "bedrock", "vertex", "litellm"] = "openai"
@@ -1315,6 +1337,52 @@ class LLMConfig(BaseSettings):
 
     # ── OpenAI ──────────────────────────────────────────────────────────────
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+
+    # ── OpenAI-compatible local server (TRELIX_LLM_BASE_URL) ──────────────────
+    # Ollama, llama-server or any OpenAI-compatible endpoint, read by the `openai` backend
+    # only (any other provider ignores it with one warning). OPENAI_API_KEY becomes optional.
+    # Blank is unset; the SDK's own OPENAI_BASE_URL is left alone when this is unset.
+    base_url: str | None = None
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def _blank_base_url_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            raise PydanticUseDefault()
+        return value
+
+    @field_validator("base_url")
+    @classmethod
+    def _base_url_is_a_plain_http_url(cls, value: str | None) -> str | None:
+        """Accept `http(s)://host[:port][/path]`, stored verbatim; refuse everything else.
+
+        The messages name the variable and never the value (`hide_input_in_errors` above keeps
+        pydantic from appending it): a URL carrying a user name and password must not reach
+        stderr or a CI log. A port that is not an integer in range is refused here rather than
+        inside the SDK constructor, where `trelix review` would have read it as "LLM not
+        configured" (DiffReviewer swallows constructor errors). Whitespace and control
+        characters are refused for the same reason: `urlsplit` silently drops leading spaces
+        and every tab, CR and LF, so a trailing newline from a secret store would pass the
+        shape check and then fail in httpx, and a space would be percent-encoded into every
+        request path. `isprintable()` admits only one whitespace character, the ASCII space.
+        `urlsplit` itself raises ValueError for an unbalanced IPv6 bracket and for a netloc whose
+        NFKC form introduces one of `/?#@:` (`host℀`); the latter message echoes the whole
+        netloc, user name and password included, so both are mapped to the shape error too.
+        """
+        if value is None:
+            return None
+        if " " in value or not value.isprintable():
+            raise ValueError(_BASE_URL_WHITESPACE_ERROR)
+        try:
+            parts = urlsplit(value)
+            _ = parts.port
+        except ValueError:
+            raise ValueError(_BASE_URL_SHAPE_ERROR) from None
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError(_BASE_URL_SHAPE_ERROR)
+        if "@" in parts.netloc:
+            raise ValueError(_BASE_URL_USERINFO_ERROR)
+        return value
 
     # ── Azure OpenAI ─────────────────────────────────────────────────────────
     azure_api_key: str | None = Field(default=None, alias="AZURE_API_KEY")

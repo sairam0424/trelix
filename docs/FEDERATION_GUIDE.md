@@ -109,9 +109,10 @@ result = await client.call_tool(
     k=10,
     cursor=0
 )
-# Returns: {"results": [...], "next_cursor": int|None,
-#           "total_available": int, "repos_searched": int,
-#           "repos_skipped": int, "error": str|None}
+# Returns: {"results": [...], "next_cursor": int|None, "total_available": int,
+#           "page_size": int, "truncated": bool, "omitted": int,
+#           "repos_searched": int, "repos_skipped": int,
+#           "repos_unindexed": [alias, ...], "error": str|None}
 ```
 
 ### Security: `config_path` Confinement (v2.8.1)
