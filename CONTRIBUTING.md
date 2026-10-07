@@ -123,8 +123,11 @@ The retrieval enhancement modules live at `src/trelix/retrieval/` and are organi
 | `query_expansion.py` | HyDEExpander (synthetic snippet embedding), MultiQueryExpander (N-variant recall) |
 | `flare.py` | FLARELoop — confidence-gated re-retrieval, _contains_uncertainty phrase check |
 | `telemetry.py` | TelemetryWriter — crash-safe per-query latency/intent recorder |
+| `citations.py` | `[C#]` citation tags (CitationSource; the numbering itself lives in `ContextAssembler._cite_prefix`, called only from `_format_context`), abstention detection (is_abstention) and verify_citations — the model's markers checked against the retrieved sources and the files on disk, reading nothing from the model's text but a marker's digits |
 
-All three modules are crash-safe (return empty/original on any failure) and gated by config flags.
+`query_expansion.py`, `flare.py` and `telemetry.py` are crash-safe (return empty/original on any
+failure) and gated by config flags; `citations.py` is pure (answer text, sources and the filesystem
+in, frozen dataclasses out), and its tags are gated by `TRELIX_RETRIEVAL_CITATIONS`.
 
 **Opt-in config keys** (all default to off — zero impact when disabled):
 
