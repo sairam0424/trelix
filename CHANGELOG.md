@@ -745,6 +745,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `int(TRELIX_LLM_LOCAL_CONTEXT_TOKENS × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`, and an
   explicit integer budget still wins. Setting it without `TRELIX_LLM_BASE_URL` is a configuration
   error that names both variables and never the value.
+- **e2e: `trelix review` against a stdlib OpenAI-compatible fake server on `127.0.0.1`** (good,
+  cut-off, prompt-truncated, garbage-body and prose replies; exit 4 and the outcome record
+  asserted). `tests/e2e/fake_openai_server.py` is `http.server` plus `threading`, binds port 0,
+  answers `/v1/chat/completions` as JSON or as SSE when the request streams, and records every
+  request; the installed `trelix` console script runs as a real subprocess with a scrubbed
+  environment, so the `trelix-local` bearer, the `max_tokens` field, the `prompt_truncated`
+  detail and the secret-free `Configuration error` for a URL carrying a credential are proven at
+  the process boundary. Runs in CI's `e2e` job and in the release smoke job against the built
+  wheel, never in `make test`.
 - **`docs/OFFLINE.md`: running trelix without a cloud key.** Ollama and llama-server settings for the
   `openai` backend through `TRELIX_LLM_BASE_URL`, why the context length should be 64k and how
   `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` sizes the retrieval budget, what the prompt-truncation check
