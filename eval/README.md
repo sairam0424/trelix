@@ -354,9 +354,8 @@ One file per run. It is **not** the `--per-query-out` file: that one also says
 `schema_version: 1` but names no repository, commit or golden file, so `eval-compare`
 refuses it (`not a results.json`). The format lives in `trelix.eval.results`, which has the
 writer (`build_results`, `write_results`) beside the reader (`load_results`) so the two cannot
-drift; the command that writes these files for a whole suite, `trelix eval-suite`, is not
-available yet (only its `--prepare-only` form is, below). Written with sorted keys and mode 0600,
-like the per-query file:
+drift; `trelix eval-suite ... --arm ARM --out PATH` (below) writes one per arm. Written with sorted
+keys and mode 0600, like the per-query file:
 
 ```json
 {
@@ -521,18 +520,21 @@ queries and 0.5 on the other half gives delta +0.1250, interval `[+0.0750, +0.17
 0.1282 and MDE 0.0803: an `expected_effect` of 0.05 or 0.079 is INCONCLUSIVE (row 5 only, with the
 reason `expected_effect ... is below the minimum detectable effect 0.0803`), and 0.10 is PASS.
 
-### Suites and `trelix eval-suite --prepare-only`
+### Suites and `trelix eval-suite`
 
 A suite is the committed definition of one measurement: ONE repository at ONE pinned commit, the
 golden file of queries about it, and the file of frozen plans recorded for those queries (above).
 `results.json` names the suite it measured, and `trelix eval-compare` refuses two runs of different
-suites. This change adds the definition and the verified, hardened clone of its repository; the
-command that indexes the clone, replays the plans and writes `results.json` is a later change. So
-`trelix eval-suite` is hidden from `trelix --help`, and only `--prepare-only` works (without it the
-command exits 1 and says the run is not available in this release). No suite is committed yet.
+suites. `trelix eval-suite` verifies the suite and its pinned clone, builds ONE index for ONE arm
+from that clone, replays the frozen plans and writes a `results.json`; `--prepare-only` stops after
+the verification, and given together with `--arm` or `--out` it is refused rather than silently
+winning (`--prepare-only runs nothing and takes no --arm or --out: ...`). No suite is committed yet
+(the first one needs its plans recorded by someone with an LLM key; see "Recording the plans" below).
 
 ```bash
+trelix eval-suite eval/suites/NAME/suite.json --arm ARM --out results.json [--cache-dir DIR]
 trelix eval-suite eval/suites/NAME/suite.json --prepare-only [--cache-dir DIR]
+make eval-suite EVAL_SUITE=eval/suites/NAME/suite.json EVAL_ARM=baseline   # EVAL_RESULTS defaults to .trelix/eval-suite/results.json
 ```
 
 #### `suite.json`
@@ -577,9 +579,10 @@ Nothing is cloned, and the cache directory is not created, until the first three
 2. The golden file validates as `trelix eval-validate` validates it (schema, duplicates), without its
    repository and without the v2 strata thresholds (those decide whether a golden file may be committed,
    not whether a suite may run). A `<stem>-metadata.json` beside it is read by the loader for `area`
-   labels (a malformed one is a refusal) but is covered by neither sha256; `--prepare-only` uses no
-   label, and the command that runs a suite must hash or refuse the file before a label reaches a
-   record.
+   labels but is covered by neither sha256: one that is not valid JSON, or that cannot be read (a
+   directory, no permission), is a refusal; any other shape yields no labels. No label from it reaches
+   a record: `--prepare-only` uses none, and a run reads a copy of the golden file in the run
+   directory, where no sidecar exists (below).
 3. The plans file holds a plan for every golden query. It is read by the planner's own cache class and
    asked the way the planner asks, so `"How Does Login Work "` is covered by a plan recorded for
    `"how does login work"` exactly when a run would cover it. A plans file with no plans is refused: the
@@ -590,7 +593,8 @@ Nothing is cloned, and the cache directory is not created, until the first three
    re-verified and never repaired or deleted: `HEAD` is the pin, the worktree is pristine (ignored files
    count, because the walker indexes what git ignores), the origin URL is the suite's, and the clone is
    neither shallow nor partial (git could complete either from the network). A `.partial` directory left
-   by a killed run is refused with its path and never deleted; remove it by hand.
+   by a killed run is refused with its path and never deleted, also when it sits beside a clone that
+   verifies (the same refusal, on every run until it is removed); remove it by hand.
 5. Every gold path exists at the pin and is in the set `FileWalker` would index with
    `walker.follow_symlinks = false`. `trelix eval-validate` proves a path exists in git; a file that
    exists in git and is not indexed scores 0 in every arm, which looks exactly like a retrieval miss. The
@@ -606,9 +610,93 @@ The cache is the directory given with `--cache-dir` (an empty value counts as no
 `~/.cache/trelix/eval-suites`; with no home directory and no `--cache-dir` the command says to
 pass it.
 
-Output on success (exit 0), one line each: `suite:`, `repository:`, `sha:`, `golden:` (its sha256, the
-number of queries and of distinct gold files), `plans:` (its sha256), `clone:` and a last `prepared:`
-line. Any refusal is one `refused: ...` line per reason on stderr and exit 1.
+Output of `--prepare-only` on success (exit 0), one line each: `suite:`, `repository:`, `sha:`,
+`golden:` (its sha256, the number of queries and of distinct gold files), `plans:` (its sha256),
+`clone:` and a last `prepared:` line. Any refusal is one `refused: ...` line per reason on stderr and
+exit 1.
+
+#### Running an arm
+
+`--arm ARM --out results.json` runs the five checks above and then, in this order:
+
+0. Before any of them, `--out` is checked: its directory must exist and be writable, and it must not
+   be a directory itself. A missing directory should fail in a second, not after the index is built.
+1. The run directory `<cache>/arms/<sha>/<name>/<arm>/` is created and is the claim on the arm. One
+   that exists is refused: `arm 'X' already has a run directory at PATH: choose another --arm or delete
+   it`. **One index per arm, never reused, never deleted by eval-suite.** An index built by other trelix
+   code (a candidate branch with the same version string, a changed chunker) would otherwise be
+   measured as if it were current, which is the quiet way to run an experiment that measures nothing.
+   Sharing an index between arms that differ only in retrieval-time flags needs a cache key that sees
+   the chunker and the embedder; until that is designed, every arm builds its own. Nothing under the
+   cache is ever deleted by eval-suite, so a refused or interrupted arm is deleted by hand, and every
+   refusal after this step ends with one more line saying so: `the run directory PATH is left as it
+   is; delete it before running this arm again`.
+2. The verified golden and plans bytes are copied into the run directory as `golden.jsonl` and
+   `plans.jsonl`, each re-checked against its sha256 as it is read, and THOSE copies are what the
+   harness reads. The committed files are never written to, the bytes replayed are the bytes hashed,
+   and the copy has no `<stem>-metadata.json` beside it. A copy that cannot be written (disk full)
+   is a refusal naming the file.
+3. The configuration is `IndexConfig(repo_path=<clone>)` with these forced to literal values, whatever
+   `TRELIX_*` or `~/.config/trelix/env` says: `file_summaries_enabled=false`, `use_batch_api=false`,
+   `embedder.provider=local`, `walker.follow_symlinks=false`, `chunker.contextual=false`,
+   `store.backend=sqlite` with the index at `<run dir>/index.db`, `retrieval.rerank`,
+   `hyde_fallback_enabled`, `multi_query_enabled` and `flare_enabled` `false`, and
+   `retrieval.plan_cache_file` the plans copy. Everything else (the embedder's `local_model`, every
+   ranking knob of `RetrievalConfig`, the walker's ignore lists) is taken from the environment and
+   recorded, not forced: see `pipeline.config` below.
+4. The index is built with `Indexer(config, quiet=True)` and, if it reports any error, the run is
+   refused and no results are written (whether a parse error on an exotic file should be tolerated is
+   an owner decision, once the self-index is measured). An index that cannot be built or opened at
+   all (an `OSError`, or the `ImportError` of a missing `local` extra) is one refusal too, not a
+   traceback. The build and the query run happen with the operator's git configuration switched off
+   for the whole process (`GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` the null device,
+   `GIT_CONFIG_NOSYSTEM=1`, `GIT_ALLOW_PROTOCOL=https`, `GIT_TERMINAL_PROMPT=0`,
+   `GIT_LFS_SKIP_SMUDGE=1`, `GIT_OPTIONAL_LOCKS=0`, put back afterwards) and with `GIT_DIR`,
+   `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR` and `GIT_OBJECT_DIRECTORY` removed for the
+   same span (put back too), because the Indexer's own `git rev-parse` and `git status` in the clone
+   inherit the process environment and run with `cwd=` and no `-C`: an exported `GIT_DIR` (a git
+   hook's shell has one) would make the index's provenance rows describe another repository. The
+   index and the per-query debug traces live in the run directory, so the clone stays pristine (the
+   next arm re-verifies it).
+5. The queries run through the real `EvalHarness` over the plans copy. A golden query the plans do not
+   cover at run time (`PlanCacheMissError`, only possible if the pre-flight was wrong) stops the run,
+   is printed as a refusal, writes no `results.json` and exits 1; it is never scored as a miss.
+6. `results.json` is written, even when queries raised (the file names every failed query and the
+   command then exits 1, listing the first five on stderr, as `trelix eval` does).
+
+Output on success (exit 0): the six `--prepare-only` lines, then `arm:`, `run directory:`, `index:
+built, embedding dimension N`, one line with `ndcg@10`, `recall@10`, `mrr`, the number of queries and
+the rerank summary, and `results: <path>`. No PASS or FAIL: only `trelix eval-compare` judges.
+
+**Recording the plans.** A plan is a function of the query text alone (the planner is given no
+repository), so `plans.jsonl` can be recorded from ANY indexed checkout, once, by someone with an LLM
+key: `trelix eval . --golden eval/suites/NAME/golden.jsonl --plan-cache-file
+eval/suites/NAME/plans.jsonl`, then `shasum -a 256` of both files into `suite.json`. eval-suite never
+records: an empty plans file is refused before anything is cloned.
+
+**What the results file records about the pipeline.** Besides the four forced retrieval flags,
+`plans: "replayed"` and the rerank summary, `pipeline.config` holds, for each of `walker`, `parser`,
+`chunker`, `store`, `retrieval`, `indexer` and `sparse`, the section's effective values, with every
+field whose name contains `key`, `secret`, `token`, `password`, `endpoint`, `url` or `uri` removed (a
+results file is a pull request artifact, and an operator's `store.qdrant_url` or `store.lance_uri` may
+carry credentials although neither backend is used by a run; the word `token` would also drop token
+counts, so `chunker.max_tokens_per_chunk`, `retrieval.context_token_budget` and `sparse.top_k_tokens`
+are kept by name because each changes the index or the ranking) and with `store.db_path` and `retrieval.plan_cache_file` removed (they differ per arm
+by construction). `embedder` holds the provider, `local_model`, the dimension the index was built with
+and the `sentence-transformers` version (`null` when it is not installed). `trelix eval-compare` never
+refuses on any of these; it prints `note: pipeline.config identical` or up to 20 `note: pipeline.config
+differs: <section>.<field> (base X, cand Y)` lines (then one line counting the rest), and a `note:` for a differing
+`trelix_version` or `embedder`, so a reviewer of a result sees exactly what the arms changed, and
+sees an ambient setting that the arms did not mean to change.
+
+**Two judgement calls `eval-compare` makes, stated here because the plan does not define them.** (i) A
+recall@10 change whose point estimate is below -0.02 but whose interval reaches 0 (say -0.3 on 2 of
+20 queries: mean -0.03, interval about [-0.075, 0]) is INCONCLUSIVE by the recall-guard row, not
+FAIL, although the plan's wording "Recall@10 CI lower bound >= -0.02" can be read as a hard guard;
+FAIL is reserved for a recall interval entirely below -0.02. (ii) The plan says "Holm-adjusted across
+experiments in one batch"; `eval-compare` sees one pair at a time and widens the interval to
+`1 - alpha / family_size` instead (Bonferroni), which is never less conservative than Holm and needs
+no other arm's p-value. Both are open for the owner to change.
 
 #### Security
 
@@ -622,8 +710,11 @@ cloned, checked out, read, hashed, and (`.gitignore` and `package.json`) parsed 
   `GIT_*`; only `PATH`, a temp directory, the proxy and CA-bundle variables (`HTTPS_PROXY`,
   `SSL_CERT_FILE`, ...) and, on Windows, `SYSTEMROOT` are passed on. A global `url.*.insteadOf`,
   `core.hooksPath`, `init.templateDir`,
-  `filter.lfs.required` or an exported `GIT_DIR` therefore cannot shape a clone. The price is that
-  there are no credentials, so only public repositories can be used.
+  `filter.lfs.required` or an exported `GIT_DIR` therefore cannot shape a clone. While the index is
+  built and the queries run, the process itself gets the same configuration variables and has
+  `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR` and `GIT_OBJECT_DIRECTORY` removed,
+  so the Indexer's own git describes the clone and nothing else. The price is that there are no
+  credentials, so only public repositories can be used.
 * Every command is `git -C <directory>` on a directory this command created, with `-c
   core.hooksPath=<null device>` and the URL after `--`; no submodule is fetched. A clone has 1800
   seconds and any other command 120. A missing `git`, a timeout or any other OS error is a one-line
@@ -646,9 +737,16 @@ cloned, checked out, read, hashed, and (`.gitignore` and `package.json`) parsed 
 * The planted-file test: `conftest.py`, `setup.py` and `sitecustomize.py` in the pinned commit write a
   marker if they are ever run; a control runs one to show the marker fires, and none runs here.
 
-Not here yet, on purpose: indexing, plan replay, writing `results.json`, a Makefile target, reusing an
-index between arms, other embedders, and more than one repository per suite (several repositories are
-several suite directories).
+* A run keeps its index, its input copies and its debug traces in the run directory, outside the
+  clone; the clone is re-verified pristine before the next arm. The tests plant `conftest.py`,
+  `setup.py` and `sitecustomize.py` (a control runs one) and a symlinked `src/leak.py` with a canary
+  word outside the clone, run the real `Indexer`, and show the markers never appear, the clone's
+  `git status --porcelain --untracked-files=all --ignored` is empty, and no `files` row or chunk
+  carries the leak.
+
+Not here, on purpose: reusing an index between arms (`--reuse-index`, `--index-from`, a stamp), an
+embedder fingerprint, other embedders, more than one repository per suite (several repositories are
+several suite directories), and a committed suite (the first one lands with its own data PR).
 
 ## `golden_synthesis_sample.jsonl` — synthesis quality
 

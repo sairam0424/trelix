@@ -13,7 +13,8 @@ MUTATIONS THAT MUST MAKE THIS FILE FAIL
    any ONE of the three partial-clone settings left out  (TestAnExistingCloneIsVerifiedNotRepaired)
 3. `--ignored` or `--untracked-files=all` dropped from the status call   (the ignored case)
 4. the stale-`.partial` refusal removed, or `.partial` deleted when found, or a parent that
-   cannot be made blamed on a `.partial`                                   (TestPartialDirectory)
+   cannot be made blamed on a `.partial`, or a `.partial` beside a verified clone passed over
+                                                                           (TestPartialDirectory)
 5. the `_discard` on failure removed, or the `OSError` branch of the rename removed, or the
    check that HEAD is the pin after the checkout removed      (TestAFailedCloneLeavesNothing)
 6. a timeout, a missing git or an OSError not turned into a SuiteError, or Ctrl-C leaving the
@@ -326,6 +327,22 @@ class TestPartialDirectory:
         assert "eval-suite never deletes it" in text
         assert (partial / "keep.txt").read_text() == "from a killed run"
         assert not (partial.parent / "demo").exists()
+
+    def test_a_stale_partial_beside_a_verified_clone_is_refused_with_the_same_text(
+        self, cloned: tuple[SuiteSpec, Path], tmp_path: Path
+    ) -> None:
+        """A clone that verifies does not hide a `.partial` beside it: the operator hears about it
+        on every run until it is removed, in the same words as when no clone exists yet."""
+        spec, clone = cloned
+        partial = clone.with_name("demo.partial")
+        partial.mkdir()
+        (partial / "keep.txt").write_text("from a killed run")
+        assert _problems(spec, tmp_path / "cache") == (
+            f"{partial} is in the way: a run that was killed left it, or another eval-suite "
+            "is cloning now. eval-suite never deletes it; remove it and run again"
+        )
+        assert (partial / "keep.txt").read_text() == "from a killed run"
+        assert check_clone(clone, spec) == []
 
     def test_a_partial_that_is_a_file_is_refused_too(self, tmp_path: Path, remote: Remote) -> None:
         spec = _spec(tmp_path, remote.path, remote.first)
