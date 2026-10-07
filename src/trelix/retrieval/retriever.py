@@ -344,9 +344,11 @@ class Retriever:
         Returns the explicit budget when context_token_budget is an int.
         When context_token_budget is None, auto-derives from model window:
           effective_budget = window_size * context_window_fraction
+        where the window is `llm.local_context_tokens` (TRELIX_LLM_LOCAL_CONTEXT_TOKENS,
+        the context length of a local server) when set, else resolve_window(model).
 
         Falls back to 12,000 when:
-        - Model name is not recognized by resolve_window()
+        - Model name is not recognized by resolve_window() and no local window is set
         - LLM config is invalid/missing
 
         Logged at INFO level so operators can see the resolved budget in logs.
@@ -366,7 +368,10 @@ class Retriever:
             from trelix.llm.context_windows import resolve_window
 
             model = self.config.llm.model
-            window = resolve_window(model)
+            local = self.config.llm.local_context_tokens
+            if local is not None:
+                logger.info("Context window %d from TRELIX_LLM_LOCAL_CONTEXT_TOKENS", local)
+            window = local if local is not None else resolve_window(model)
             if window is None:
                 logger.warning(
                     "Model %r not recognized by context_windows — falling back to 12,000 tokens",
