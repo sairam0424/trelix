@@ -30,11 +30,15 @@ dedupe by sorted tag instead of first appearance -> test_markers_keep_first_appe
 the per-call line-count cache dropped -> test_one_cited_file_is_opened_once_*;
 whole-file `read()` instead of 1 MiB pieces -> test_count_lines_reads_a_large_file_in_*;
 the detail literals changed -> test_the_design_answer_* (compared whole);
-`frozen=True` dropped from Citation -> test_a_citation_is_immutable.
+`frozen=True` dropped from Citation -> test_a_citation_is_immutable;
+an OSError from the file check left to propagate -> test_an_unreadable_cited_file_* (raises
+    PermissionError out of the verifier instead of a `file_missing` row).
 """
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
@@ -76,6 +80,9 @@ A1 = (
 )
 
 ONE_MIB = 1048576
+
+# chmod 0o000 denies nothing to root, and on Windows it does not deny reads at all.
+_CANNOT_DENY_READ = sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0
 
 
 def _rows(citations: list[Citation]) -> list[tuple[Any, ...]]:
@@ -184,6 +191,31 @@ def test_a_cited_path_that_is_now_a_directory_is_file_missing(repo: Path) -> Non
             5,
             "pkg",
             "src/auth/pkg is not in the repository; re-index",
+        ),
+    ]
+
+
+@pytest.mark.skipif(_CANNOT_DENY_READ, reason="chmod 0o000 does not deny reads here")
+def test_an_unreadable_cited_file_is_file_missing_with_the_errors_name(repo: Path) -> None:
+    """A cited file the process may no longer read (`chmod 0`): `is_file()` is True, `open`
+    raises PermissionError. `trelix ask` verifies after the answer has streamed, so the
+    verifier reports the file instead of crashing the footer. MUTATION: let the OSError
+    propagate and this raises."""
+    (repo / JWT).chmod(0o000)
+    try:
+        rows = _rows(verify_citations("[C3]", S, repo))
+    finally:
+        (repo / JWT).chmod(0o644)  # tmp_path cleanup must be able to remove it
+    assert rows == [
+        (
+            "[C3]",
+            3,
+            "file_missing",
+            JWT,
+            10,
+            30,
+            "decode_token",
+            "src/auth/jwt.py could not be read (PermissionError); re-index",
         ),
     ]
 
