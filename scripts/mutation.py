@@ -355,6 +355,9 @@ DESELECTED_FILES: tuple[str, ...] = (
     # Same attach-to-the-incumbent TracerProvider fixture as test_otel_tracing.py, same
     # one-shot global. Its SDK-free twin, test_otel_llm_wrapper.py, stays in the kill set.
     "tests/unit/test_otel_llm_spans.py",
+    # Same attach-to-the-incumbent TracerProvider fixture as test_otel_tracing.py, same
+    # one-shot global, around the reviewer's per-hunk span; it cannot run twice in one process.
+    "tests/unit/test_reviewer_otel_span.py",
 )
 # ROUND 8 (mutation:widen-scope retry), NOT reproduced from this tuple -- reverted
 # back to the 4 above after the run that needed it, per this task's own prescribed

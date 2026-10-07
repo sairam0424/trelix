@@ -270,6 +270,8 @@ class pipeline_stage_span:
     attributes (these are trelix-specific pipeline concepts, not `gen_ai.*`
     operations, so they get trelix's own namespace rather than borrowing the
     GenAI conventions). No-op under the same conditions as retrieval_leg_span.
+    `set_attribute()` adds an attribute whose value is known only after the
+    stage started (the reviewer's per-hunk status).
     """
 
     def __init__(self, cfg: Any, stage: str, attributes: Mapping[str, Any] | None = None) -> None:
@@ -299,6 +301,16 @@ class pipeline_stage_span:
                 logger.debug("Failed to enter '%s' pipeline span: %s", self._stage, exc)
                 self._span_cm = None
         return self
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        """Best-effort: set `trelix.{stage}.{key}` on the entered span; no-op when not tracing
+        or before `__enter__`."""
+        if self._span is None:
+            return
+        try:
+            self._span.set_attribute(f"trelix.{self._stage}.{key}", value)
+        except Exception as exc:
+            logger.debug("Failed to set '%s' on '%s' pipeline span: %s", key, self._stage, exc)
 
     def __exit__(
         self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: Any

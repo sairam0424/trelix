@@ -21,6 +21,7 @@ from trelix.core.index_check import IndexNotFoundError, require_index
 from trelix.llm.finish_reasons import CONTENT_FILTER, LENGTH, PAUSED, REFUSAL, STOP
 from trelix.llm.offline import PROMPT_TRUNCATED
 from trelix.llm.prompt import fenced_block
+from trelix.retrieval.otel_tracing import pipeline_stage_span
 from trelix.review.hunk_status import (
     HunkResult,
     HunkStatus,
@@ -255,20 +256,25 @@ class DiffReviewer:
         return comments
 
     def _review_one(self, hunk: DiffHunk, client: Any) -> _HunkReview:
-        """Review one hunk. `LLMNotConfiguredError` passes through (the caller stops the
-        review); any other exception becomes an `error` result."""
-        try:
-            review = self._review_hunk(hunk, client)
-        except LLMNotConfiguredError:
-            raise
-        except Exception as exc:
-            logger.warning("DiffReviewer: hunk review failed (non-fatal): %s", exc)
-            return _HunkReview(
-                [],
-                _error_result(
-                    hunk, f"exception:{safe_token(type(exc).__name__, default='unknown')}"
-                ),
-            )
+        """Review one hunk inside its `trelix.review` span, whose `hunk_status` is set once the
+        status is known. `LLMNotConfiguredError` passes through (the caller stops the review);
+        any other exception becomes an `error` result."""
+        with pipeline_stage_span(self._config.retrieval, "review") as span:
+            try:
+                review = self._review_hunk(hunk, client)
+            except LLMNotConfiguredError:
+                span.set_attribute("hunk_status", HunkStatus.ERROR.value)
+                raise
+            except Exception as exc:
+                span.set_attribute("hunk_status", HunkStatus.ERROR.value)
+                logger.warning("DiffReviewer: hunk review failed (non-fatal): %s", exc)
+                return _HunkReview(
+                    [],
+                    _error_result(
+                        hunk, f"exception:{safe_token(type(exc).__name__, default='unknown')}"
+                    ),
+                )
+            span.set_attribute("hunk_status", review.result.status.value)
         if not review.result.reviewed:
             logger.warning(
                 "DiffReviewer: %s:%d was not reviewed (%s: %s)",

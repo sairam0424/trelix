@@ -361,6 +361,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Owner decisions taken: the `otel` extra floor (under Changed), the placeholder span, request-only
   `stream()`/`tool_call()` spans, the custom `litellm` value, the one-time WARNING and the
   class-name-only error text.
+- **One `trelix.review` span per reviewed hunk, carrying `trelix.review.hunk_status`** (roadmap
+  C-8, requirement R-C6-02, PR 4 of 4). With `TRELIX_OTEL_ENABLED=true`, `DiffReviewer.review()`
+  opens a `trelix.review` span around each hunk it attempts; the hunk's `trelix.retrieve` span, its
+  legs and its `chat` span(s) nest under it, and once the hunk's status is known the span carries
+  `trelix.review.hunk_status` = `reviewed`, `truncated`, `refused`, `parse_failed` or `error` (the
+  status is decided after the reply has returned, so it cannot sit on the chat span). A review that
+  meets the no-credentials placeholder stops after the first hunk and emits one span (`error`,
+  carrying the SDK's record of that exception: its class, the backend's constant placeholder text
+  and a stack trace) however many hunks the outcome counts. The exception text of any other failed
+  call never reaches the span. `pipeline_stage_span` gains `set_attribute()` for attributes known
+  only after a stage started. Off by default; no span and no `opentelemetry` import when the flag
+  is off.
 - **`trelix-mcp --root PATH` (repeatable) and `TRELIX_ALLOWED_REPO_ROOTS`** confine every
   `repo_path`, `federation_add_repo.path` and `trelix://repo/...` URI to those roots; a path
   outside answers `isError` with 'repo_path is not inside an allowed repository root';

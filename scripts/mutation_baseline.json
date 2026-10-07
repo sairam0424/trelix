@@ -4,7 +4,8 @@
     "tests/unit/test_otel_metrics_reentry.py",
     "tests/unit/test_otel_tracing.py",
     "tests/unit/test_structured_logging.py",
-    "tests/unit/test_otel_llm_spans.py"
+    "tests/unit/test_otel_llm_spans.py",
+    "tests/unit/test_reviewer_otel_span.py"
   ],
   "excluded_scopes": {
     "embedder.*": "tests construct a real torch model; 245/317 mutants segfault in torch/nn/modules/module.py convert, identically at --max-children 1 and 8. http_proxy= workaround moved 245 -> 245. Hard limit, not a todo.",

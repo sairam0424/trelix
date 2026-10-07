@@ -446,6 +446,11 @@ class TestCheckedInBaseline:
         )
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def test_baseline_deselected_files_equal_the_drivers_tuple(self) -> None:
+        """MUTATION: add a DESELECTED_FILES entry, skip the baseline edit -> the lists differ."""
+        baseline = self._baseline()
+        assert baseline["deselected_files"] == list(driver.DESELECTED_FILES)
+
     def test_baseline_module_keys_match_the_scope_table(self) -> None:
         """MUTATION: delete a module entry from scripts/mutation_baseline.json.
 
