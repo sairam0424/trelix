@@ -349,6 +349,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   not newer than the trelix-mcp stamp), the plugin tree, and that the skill names only tools the
   server registers. Guide: `docs/integrations/claude-code-plugin.md`; a paste-able block for other
   agents: `docs/integrations/AGENTS_SNIPPET.md`.
+- **`TRELIX_OTEL_CAPTURE_CONTENT` (default `false`): trelix's own gate in front of OpenTelemetry's content
+  opt-in** (roadmap C-8, requirement R-C6-03, PR 2 of 4). Retrieval leg spans hand their `query_text` to
+  `opentelemetry-util-genai` only when this flag is on; where the text then goes is still decided by
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (default `NO_CONTENT`; read once when tracing
+  starts on `opentelemetry-util-genai` 1.2b0, re-read per span on 1.0b0 and 1.1b0): `SPAN_ONLY` puts it
+  on span attributes; `EVENT_ONLY`/`SPAN_AND_EVENT`, or
+  `OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT=true`, also emit one `gen_ai.client.inference.operation.details`
+  log record per chat call on the Logs signal (content-free under `NO_CONTENT`); trelix installs no
+  `LoggerProvider`, so these go nowhere unless the host configures one. With the trelix flag on and the
+  upstream mode `NO_CONTENT`, trelix logs one WARNING saying so (best effort: parallel legs on the
+  first query may repeat it), decided from the memoised
+  handler rather than a re-read of the environment. A host that opted another library into content
+  capture no longer receives trelix's query text (and, once chat spans ship, prompts and repository code)
+  without asking for it. A malformed value behaves like a malformed `TRELIX_OTEL_ENABLED`.
+  `docs/OBSERVABILITY.md` gains a "Content capture" section; `docs/CONFIGURATION.md` and `.env.example`
+  list both names.
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
   of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
   answer the question; this one tags the context and instructs the model, nothing reads the model's
@@ -578,6 +594,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   triggers its re-retrieval. GraphRAG map-reduce prompts carry the cite lines but not the
   abstention sentence, so a GraphRAG answer cannot abstain by protocol. With the flag off the
   prompts are unchanged; the line is recognised either way. No live model call was made.
+- **Retrieval `query_text` is now emitted only when `TRELIX_OTEL_CAPTURE_CONTENT=true` as well.** Before,
+  trelix handed the text to every leg span and the upstream `SPAN_ONLY` mode alone put
+  `gen_ai.retrieval.query.text` on it; hosts that relied on the upstream variable alone must set the
+  trelix flag too. (The other way round, the trelix flag without the upstream mode, logs one WARNING.)
 - **Repository-root confinement moved to `trelix.core.confinement`** (`ALLOWED_ROOTS_ENV`,
   `resolve_allowed_roots`, `is_within_allowed_roots`; the first now takes any number of explicit
   roots, otherwise same bodies) so `trelix-mcp` can apply
