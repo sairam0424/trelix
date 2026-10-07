@@ -6,6 +6,7 @@ Uses unittest.mock.patch to avoid touching real files or embedding models.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -112,6 +113,7 @@ def test_search_code_returns_dict_envelope() -> None:
     mock_ctx = _make_mock_context(mock_results)
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.Retriever") as MockRetriever,
     ):
@@ -144,6 +146,7 @@ def test_search_code_respects_k_limit() -> None:
     mock_ctx = _make_mock_context(mock_results)
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.Retriever") as MockRetriever,
     ):
@@ -166,6 +169,7 @@ def test_repeated_search_code_calls_reuse_the_same_retriever_instance() -> None:
     mock_ctx = _make_mock_context([_make_mock_result()])
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.Retriever") as MockRetriever,
     ):
@@ -190,6 +194,7 @@ def test_different_repo_paths_get_independent_retriever_instances() -> None:
     mock_ctx = _make_mock_context([_make_mock_result()])
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.Retriever") as MockRetriever,
     ):
@@ -208,6 +213,7 @@ def test_relative_and_resolved_spellings_of_the_same_path_share_one_cache_entry(
 
     mock_ctx = _make_mock_context([_make_mock_result()])
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.Retriever") as MockRetriever,
         patch("trelix_mcp.server.Path") as MockPath,
@@ -228,6 +234,7 @@ def test_index_codebase_invalidates_the_cached_retriever_for_that_repo() -> None
     mock_ctx = _make_mock_context([_make_mock_result()])
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.Retriever") as MockRetriever,
         patch("trelix_mcp.server.EmbedderConfig"),
@@ -267,6 +274,7 @@ def test_index_codebase_returns_dict() -> None:
     }
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.EmbedderConfig"),
         patch("trelix_mcp.server.Indexer") as MockIndexer,
@@ -420,10 +428,14 @@ class TestBlastRadiusUsesTheCallGraph:
         assert len(results) == 2
 
     def test_an_unknown_symbol_returns_an_empty_list(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """An empty list travels as a ToolResult, so that it carries a `[]` text block."""
         import trelix_mcp.server as srv
 
         _seed_call_graph(tmp_path)
-        assert srv.blast_radius("does.not.exist", str(tmp_path)) == []
+        result = srv.blast_radius("does.not.exist", str(tmp_path))
+
+        assert result.structured_content == {"result": []}
+        assert [block.text for block in result.content] == ["[]"]
 
 
 # ---------------------------------------------------------------------------
@@ -478,21 +490,22 @@ def test_federation_list_repos_rejects_unconfined_config_path() -> None:
     MockRegistry.load.assert_not_called()
 
 
-def test_federation_add_repo_success() -> None:
+def test_federation_add_repo_success(tmp_path: Path) -> None:
     import trelix_mcp.server as srv
 
     reg = MagicMock()
+    repo = str(tmp_path)
 
     with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
         MockRegistry.load.return_value = reg
-        response = srv.federation_add_repo(alias="myrepo", path="/repo", weight=1.5)
+        response = srv.federation_add_repo(alias="myrepo", path=repo, weight=1.5)
 
-    reg.add.assert_called_once_with("myrepo", "/repo", 1.5, max_repos=50)
+    reg.add.assert_called_once_with("myrepo", repo, 1.5, max_repos=50)
     reg.save.assert_called_once()
-    assert response == {"added": True, "alias": "myrepo", "path": "/repo", "error": None}
+    assert response == {"added": True, "alias": "myrepo", "path": repo, "error": None}
 
 
-def test_federation_add_repo_duplicate_alias_returns_error() -> None:
+def test_federation_add_repo_duplicate_alias_returns_error(tmp_path: Path) -> None:
     import trelix_mcp.server as srv
 
     reg = MagicMock()
@@ -500,18 +513,20 @@ def test_federation_add_repo_duplicate_alias_returns_error() -> None:
 
     with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
         MockRegistry.load.return_value = reg
-        response = srv.federation_add_repo(alias="myrepo", path="/repo")
+        response = srv.federation_add_repo(alias="myrepo", path=str(tmp_path))
 
     assert response["added"] is False
     assert "already registered" in response["error"]
     reg.save.assert_not_called()
 
 
-def test_federation_add_repo_rejects_unconfined_config_path() -> None:
+def test_federation_add_repo_rejects_unconfined_config_path(tmp_path: Path) -> None:
     import trelix_mcp.server as srv
 
     with patch("trelix_mcp.server.RepoRegistry") as MockRegistry:
-        response = srv.federation_add_repo(alias="myrepo", path="/repo", config_path="/etc/passwd")
+        response = srv.federation_add_repo(
+            alias="myrepo", path=str(tmp_path), config_path="/etc/passwd"
+        )
 
     assert response["added"] is False
     assert response["error"] is not None
@@ -600,6 +615,7 @@ def test_federation_search_all_returns_dict_envelope() -> None:
 
     assert response["repos_searched"] == 1
     assert response["repos_skipped"] == 0
+    assert response["repos_unindexed"] == []
     assert response["total_available"] == 1
     assert len(response["results"]) == 1
     assert response["results"][0]["repo"] == "myrepo"
@@ -672,6 +688,7 @@ def test_ask_agent_returns_dict_with_session_id() -> None:
     mock_db.get_agent_turns.return_value = [{"turn_index": 0}, {"turn_index": 1}]
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.AgentLoop", return_value=mock_loop),
         patch("trelix_mcp.server.Database", return_value=mock_db),
@@ -698,6 +715,7 @@ def test_ask_agent_generates_session_id_when_omitted() -> None:
     mock_db.get_agent_turns.return_value = []
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.AgentLoop", return_value=mock_loop),
         patch("trelix_mcp.server.Database", return_value=mock_db),
@@ -726,6 +744,7 @@ def test_ask_agent_returns_input_required_result_when_agent_needs_clarification(
     )
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.AgentLoop", return_value=mock_loop),
     ):
@@ -758,6 +777,7 @@ def test_ask_agent_resumes_with_the_clients_answer_on_retry() -> None:
     ctx.input_responses = {"clarification": elicit_result}
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.AgentLoop", return_value=mock_loop),
         patch("trelix_mcp.server.Database", return_value=mock_db),
@@ -813,6 +833,7 @@ def test_agent_list_sessions_returns_dict() -> None:
     ]
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig") as MockIndexConfig,
         patch("trelix_mcp.server.Database", return_value=mock_db),
     ):
@@ -830,6 +851,7 @@ def test_agent_clear_session_returns_dict() -> None:
     mock_db.delete_agent_session.return_value = True
 
     with (
+        patch("trelix_mcp.server.check_repo_dir"),
         patch("trelix_mcp.server.IndexConfig"),
         patch("trelix_mcp.server.Database", return_value=mock_db),
     ):
@@ -1154,7 +1176,8 @@ class TestKnowledgeGraphPayloadIsCapped:
         import trelix_mcp.server as srv
 
         with (
-            patch("trelix.core.config.IndexConfig"),
+            patch("trelix_mcp.server.check_repo_dir"),
+            patch("trelix_mcp.server.IndexConfig"),
             patch("trelix.graph.builder.GraphBuilder") as MockBuilder,
         ):
             MockBuilder.return_value.build.return_value = self._mock_result()
@@ -1214,7 +1237,8 @@ class TestKnowledgeGraphPayloadIsCapped:
         result.concept_symbols_total = 12184
 
         with (
-            patch("trelix.core.config.IndexConfig"),
+            patch("trelix_mcp.server.check_repo_dir"),
+            patch("trelix_mcp.server.IndexConfig"),
             patch("trelix.graph.builder.GraphBuilder") as MockBuilder,
         ):
             MockBuilder.return_value.build.return_value = result

@@ -88,16 +88,28 @@ async def test_text_block_matches_structured_content(
     assert json.loads(texts(result)[0]) == structured(result)
 
 
-async def test_an_empty_bare_array_has_no_text_block(backends: Any, small_repo: Path) -> None:
-    """The documented exception to the text block matching the structured content (MCP_GUIDE)."""
+async def test_an_empty_result_has_a_text_block_that_matches(
+    backends: Any, small_repo: Path, lonely_repo: Path
+) -> None:
+    """FastMCP sends `[]` and `null` with no text block at all; the server adds one.
+
+    The VS Code extension reads the first text block, so until this an empty blast radius or an
+    unknown symbol gave it nothing to parse (MCP_GUIDE used to document that as the one exception).
+    Both empty paths of blast_radius are covered: a symbol the index does not know, and one it
+    knows that nothing depends on.
+    """
     backends.hits = []
     results = [
         await call("blast_radius", symbol_name="nothing.here", repo_path=str(small_repo)),
+        await call("blast_radius", symbol_name="target.run", repo_path=str(lonely_repo)),
         await call("graph_search_mcp", query="q", repo_path=REPO),
     ]
 
     for result in results:
-        assert (result.is_error, texts(result), structured(result)) == (False, [], [])
+        assert (result.is_error, texts(result), structured(result)) == (False, ["[]"], [])
+
+    symbol = await call("get_symbol", qualified_name="nothing.here", repo_path=str(small_repo))
+    assert (symbol.is_error, texts(symbol), structured(symbol)) == (False, ["null"], None)
 
 
 async def test_vscode_contract_keys(backends: Any, small_repo: Path, dependents_repo: Path) -> None:

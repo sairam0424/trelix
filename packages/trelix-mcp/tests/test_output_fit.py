@@ -174,12 +174,99 @@ async def test_a_cut_bare_array_keeps_the_array_first_and_says_so(dependents_rep
     }
     assert note.text == (
         "Truncated: 100 of 520 dependents returned, 420 omitted. The list is bounded by the "
-        "limit argument (at most 500) and by TRELIX_MCP_MAX_RESULT_CHARS; raise either to see more."
+        "limit argument (at most 500); TRELIX_MCP_MAX_RESULT_CHARS did not cut it, so raise limit "
+        "to see more."
     )
     assert result.meta["trelix"] == {"total_available": 520, "omitted": 420}
     assert result.structured_content == {"result": entries}
     assert result.meta["fastmcp"] == {"wrap_result": True}
     assert result.is_error is False
+
+
+BUDGET_CUT_AT_MAXIMUM_LIMIT = (
+    "The list is bounded by TRELIX_MCP_MAX_RESULT_CHARS; limit is already at its maximum of 500, "
+    "so raise TRELIX_MCP_MAX_RESULT_CHARS to see more."
+)
+LIMIT_CUT = (
+    "The list is bounded by the limit argument (at most 500); TRELIX_MCP_MAX_RESULT_CHARS did not "
+    "cut it, so raise limit to see more."
+)
+NOTHING_CAN_BE_RAISED = (
+    "limit is already at its maximum of 500 and TRELIX_MCP_MAX_RESULT_CHARS did not cut the list, "
+    "so nothing can be raised: the remaining dependents cannot be fetched with this tool."
+)
+
+
+@pytest.mark.parametrize(
+    ("limit", "budget", "kept_range", "remedy"),
+    [
+        (500, None, (1, 499), BUDGET_CUT_AT_MAXIMUM_LIMIT),
+        (500, "3000", (1, 499), BUDGET_CUT_AT_MAXIMUM_LIMIT),
+        (
+            100,
+            "3000",
+            (1, 99),
+            "The list is bounded by TRELIX_MCP_MAX_RESULT_CHARS and then by the limit argument (at "
+            "most 500); raise TRELIX_MCP_MAX_RESULT_CHARS, then limit, to see more.",
+        ),
+        (100, "0", (100, 100), LIMIT_CUT),
+        (100, "10000000", (100, 100), LIMIT_CUT),
+        (500, "0", (500, 500), NOTHING_CAN_BE_RAISED),
+        (500, "10000000", (500, 500), NOTHING_CAN_BE_RAISED),
+    ],
+    ids=[
+        "budget-cut-at-maximum-limit",
+        "small-budget-cut-at-maximum-limit",
+        "budget-cut-then-limit",
+        "limit-cut-budget-off",
+        "limit-cut-budget-large",
+        "nothing-budget-off",
+        "nothing-budget-large",
+    ],
+)
+async def test_the_blast_radius_note_names_what_can_still_be_raised(
+    monkeypatch: pytest.MonkeyPatch,
+    dependents_repo: Path,
+    limit: int,
+    budget: str | None,
+    kept_range: tuple[int, int],
+    remedy: str,
+) -> None:
+    """The remedy follows from what cut the list, so a raise it names always shows more.
+
+    The note used to end "raise either to see more" when only one bound had cut, and at
+    `limit=500` under a budget large enough for 500 rows it said to raise
+    TRELIX_MCP_MAX_RESULT_CHARS, which could show nothing: the limit alone had cut."""
+    if budget is not None:
+        monkeypatch.setenv("TRELIX_MCP_MAX_RESULT_CHARS", budget)
+    arguments = {"symbol_name": "target.run", "repo_path": str(dependents_repo), "limit": limit}
+
+    result = await call("blast_radius", **arguments)
+
+    array, note = texts(result)
+    kept = len(json.loads(array))
+    assert kept_range[0] <= kept <= kept_range[1]
+    assert note == f"Truncated: {kept} of 520 dependents returned, {520 - kept} omitted. {remedy}"
+
+
+@pytest.mark.parametrize("limit", [3, 100], ids=["limit-equal-to-total", "limit-above-total"])
+async def test_the_note_does_not_name_limit_when_the_limit_did_not_cut(
+    monkeypatch: pytest.MonkeyPatch, small_repo: Path, limit: int
+) -> None:
+    """Three dependents under a budget that holds one: raising `limit` could show nothing."""
+    monkeypatch.setenv("TRELIX_MCP_MAX_RESULT_CHARS", "300")
+
+    result = await call(
+        "blast_radius", symbol_name="target.run", repo_path=str(small_repo), limit=limit
+    )
+
+    array, note = texts(result)
+    assert len(json.loads(array)) == 1
+    assert note == (
+        "Truncated: 1 of 3 dependents returned, 2 omitted. The list is bounded by "
+        "TRELIX_MCP_MAX_RESULT_CHARS; limit did not cut it, so raise TRELIX_MCP_MAX_RESULT_CHARS "
+        "to see more."
+    )
 
 
 async def test_a_bare_array_over_budget_counts_the_note_in_the_budget(
