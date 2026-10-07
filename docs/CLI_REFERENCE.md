@@ -1230,9 +1230,10 @@ trelix eval-synthesis [<repo_path>] --golden <file> [--per-query-out <file>]
 Evaluates LLM synthesis quality (not just retrieval) by running every query in
 a golden JSONL file through the full retrieve-and-synthesize pipeline and
 scoring the generated answer GroUSE-style: hallucination rate, completeness,
-and faithfulness against the expected answer fragments and symbols. Every
+and faithfulness against the expected answer fragments and symbols, plus
+whether the answer abstained and whether its `[C#]` citations verify. Every
 query becomes one record (`SynthesisEvalHarness.run_detailed`); the table
-prints their means and counts, and `--per-query-out` writes the records.
+prints their means, ratios and counts, and `--per-query-out` writes the records.
 
 #### Options
 
@@ -1271,8 +1272,10 @@ adding optional fields:
   queries are counted under `Unanswerable queries` and left out of the four
   scores.
 - `gold_answer` — a non-empty string; stored for a future judge, never scored.
-- `expected_citations` — repo-relative paths a correct answer cites; validated
-  and stored here, counted by the next change.
+- `expected_citations` — repo-relative paths a correct answer cites, read as a
+  set (a repeated path counts once); a hit is one that a `valid` `[C#]` marker
+  of the answer refers to (`expected_citations_hit` of
+  `expected_citations_total`).
 - A field present with another type (`"answerable": "no"`, `"gold_answer": ""`,
   `"expected_citations": "a.py"`, any of them `null`), or a line that is JSON
   but not an object, is refused with its line number and no query runs; a line
@@ -1283,22 +1286,31 @@ adding optional fields:
 
 #### Output
 
-Three golden lines, the second query's retrieval having raised:
+Six golden lines, three of them unanswerable, run with `TRELIX_RETRIEVAL_CITATIONS=true`:
+two answers abstained, four carried `[C#]` markers and two lines expected citations (the
+worked example of `eval/README.md`):
 
 ```
-             Synthesis Quality Results (GroUSE-style)              
-┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Metric               ┃  Score ┃ Direction                       ┃
-┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ Hallucination rate   │ 0.3333 │ lower = better                  │
-│ Completeness         │ 0.6667 │ higher = better                 │
-│ Faithfulness         │ 0.4444 │ higher = better                 │
-│ Overall              │ 0.6222 │ higher = better                 │
-│ Queries evaluated    │      3 │                                 │
-│ Unanswerable queries │      0 │ not in the four scores above    │
-│ Unscoreable queries  │      1 │ placeholder scores; see the log │
-└──────────────────────┴────────┴─────────────────────────────────┘
+                  Synthesis Quality Results (GroUSE-style)                   
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Metric               ┃  Score ┃ Direction                                 ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Hallucination rate   │ 0.0000 │ lower = better                            │
+│ Completeness         │ 0.6667 │ higher = better                           │
+│ Faithfulness         │ 0.2222 │ higher = better                           │
+│ Overall              │ 0.7111 │ higher = better                           │
+│ Abstention precision │ 0.5000 │ higher = better; of 2 abstained           │
+│ Abstention recall    │ 0.3333 │ higher = better; of 3 unanswerable        │
+│ Citation validity    │ 0.6250 │ higher = better; of 4 cited answers       │
+│ Citation recall      │ 0.5000 │ higher = better; of 2 expecting citations │
+│ Queries evaluated    │      6 │                                           │
+│ Unanswerable queries │      3 │ not in the four scores above              │
+│ Unscoreable queries  │      0 │ placeholder scores; see the log           │
+└──────────────────────┴────────┴───────────────────────────────────────────┘
 ```
+
+Each `Direction` cell of the four ratio rows names the denominator the ratio
+ran over, so a `0.5000` is never read without its sample size.
 
 #### Notes
 
@@ -1316,18 +1328,38 @@ Three golden lines, the second query's retrieval having raised:
   so the fallback applies, while plain `trelix ask` streams at
   `TRELIX_RETRIEVAL_SYNTHESIS_MAX_TOKENS` (12,000). Pre-existing: the eval
   measures a shorter answer than the CLI gives.
+- The citation rows measure nothing unless `TRELIX_RETRIEVAL_CITATIONS=true`
+  for the run: with the flag off no block is tagged, so every record has
+  `citations_total 0`, `Citation validity` and `Citation recall` read `0.0000`
+  and `Citation validity` reads `of 0 cited answers`, while `Citation recall`
+  still reads `of N expecting citations` for the N lines that carry
+  `expected_citations`.
+- Abstention is read from the answer (`INSUFFICIENT_EVIDENCE:` as its first
+  non-blank characters, `abstain_reason` `insufficient_evidence`) and from an
+  empty retrieval (`no_results`), not from the model's output otherwise; an
+  abstention is still scored by the four means when its line is answerable.
+  The prompt asks the model for `INSUFFICIENT_EVIDENCE:` only when
+  `TRELIX_RETRIEVAL_CITATIONS=true`, so with the flag unset only an empty
+  retrieval registers in practice and the two abstention rows measure little: an
+  `Abstention recall` of `0.0000` then means the model was never asked to refuse.
 - `--per-query-out` writes `{"schema_version": 1, "harness": "synthesis",
   "records": [...], "aggregate": {...}}` (ASCII-escaped JSON with sorted keys,
   mode 0600, written atomically through a temporary file beside the target)
-  after the table. Each record has exactly the eight fields `id` (the line's
-  `id`, else `q0001`-style by position), `query`, `answerable`,
-  `hallucination`, `completeness`, `faithfulness`, `overall` and `error`
+  after the table. Each record has exactly the fifteen fields `id` (the line's
+  `id`, else `q0001`-style by position), `query`, `answerable`, `abstained`,
+  `abstain_reason` (`no_results`, `insufficient_evidence` or `null`),
+  `hallucination`, `completeness`, `faithfulness`, `overall`,
+  `citations_total`, `citations_valid`, `citation_statuses` (an object with a
+  count per `valid`, `file_missing`, `line_out_of_range` and `unknown` status
+  found), `expected_citations_hit`, `expected_citations_total` and `error`
   (`null` unless the query raised; then the message, cut at 200 characters,
-  beside the placeholder scores). The golden's `gold_answer` and `expected_citations`
-  stay in the golden file and are not copied into the record; the next change adds
-  the citation facts. `aggregate` holds the seven printed values
-  under `hallucination_rate`, `completeness`, `faithfulness`, `overall`,
-  `n_queries`, `unscoreable` and `n_unanswerable`. Exits `1` with a one-line
+  beside the placeholder scores and zeroed abstention and citation facts). The
+  golden's `gold_answer` and `expected_citations` stay in the golden file and
+  are not copied into the record. `aggregate` holds sixteen values: the
+  fourteen the table prints (its eleven rows, with `n_abstained`,
+  `n_cited_entries` and `n_expected_citation_entries` inside the `Direction`
+  cells) and `citations_total` and `citations_valid`, which only the file
+  carries; `eval/README.md` defines each one. Exits `1` with a one-line
   error if the file cannot be written: the directory must exist, and the path
   must name a file.
 

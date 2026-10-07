@@ -2139,7 +2139,7 @@ A sample file is provided at `eval/golden_synthesis_sample.jsonl`. Copy and adap
 - `expected_symbols` (optional) — qualified names that should appear WITHOUT being hallucinated
 - `answerable` (optional, default `true`) — `false` marks a question the repository does not answer; such queries are counted and left out of the four scores
 - `gold_answer` (optional) — a non-empty reference answer, stored for a future judge and never scored
-- `expected_citations` (optional) — repo-relative paths a correct answer cites; validated and stored, counted by the next change
+- `expected_citations` (optional) — repo-relative paths a correct answer cites; the eval counts the ones that a `valid` `[C#]` marker of the answer refers to (`Citation recall`), which needs `TRELIX_RETRIEVAL_CITATIONS=true` for the run
 
 ### Running the evaluation
 
@@ -2150,19 +2150,27 @@ trelix eval-synthesis ./my-repo --golden ./eval/golden_synthesis.jsonl
 
 Output:
 ```
-             Synthesis Quality Results (GroUSE-style)
-┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Metric               ┃  Score ┃ Direction                       ┃
-┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ Hallucination rate   │ 0.0000 │ lower = better                  │
-│ Completeness         │ 0.8333 │ higher = better                 │
-│ Faithfulness         │ 0.7250 │ higher = better                 │
-│ Overall              │ 0.8783 │ higher = better                 │
-│ Queries evaluated    │      3 │                                 │
-│ Unanswerable queries │      0 │ not in the four scores above    │
-│ Unscoreable queries  │      0 │ placeholder scores; see the log │
-└──────────────────────┴────────┴─────────────────────────────────┘
+                  Synthesis Quality Results (GroUSE-style)
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Metric               ┃  Score ┃ Direction                                 ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Hallucination rate   │ 0.0000 │ lower = better                            │
+│ Completeness         │ 0.8333 │ higher = better                           │
+│ Faithfulness         │ 0.7250 │ higher = better                           │
+│ Overall              │ 0.8783 │ higher = better                           │
+│ Abstention precision │ 0.0000 │ higher = better; of 0 abstained           │
+│ Abstention recall    │ 0.0000 │ higher = better; of 0 unanswerable        │
+│ Citation validity    │ 0.0000 │ higher = better; of 0 cited answers       │
+│ Citation recall      │ 0.0000 │ higher = better; of 0 expecting citations │
+│ Queries evaluated    │      3 │                                           │
+│ Unanswerable queries │      0 │ not in the four scores above              │
+│ Unscoreable queries  │      0 │ placeholder scores; see the log           │
+└──────────────────────┴────────┴───────────────────────────────────────────┘
 ```
+
+The four ratio rows read `0.0000` in this run because `TRELIX_RETRIEVAL_CITATIONS` is unset: no block is
+tagged, so the model is never asked to cite or to abstain with `INSUFFICIENT_EVIDENCE:`. See
+`eval/README.md` for how each row is computed.
 
 ### Python API
 

@@ -3459,8 +3459,19 @@ def eval(
     _exit_if_queries_failed(records)
 
 
+# The four trust rows of the `eval-synthesis` table: label, ratio key, denominator key, its noun.
+# The Direction cell names the denominator so a ratio is never read without its sample size.
+_TRUST_ROWS = (
+    ("Abstention precision", "abstention_precision", "n_abstained", "abstained"),
+    ("Abstention recall", "abstention_recall", "n_unanswerable", "unanswerable"),
+    ("Citation validity", "citation_validity", "n_cited_entries", "cited answers"),
+    ("Citation recall", "citation_recall", "n_expected_citation_entries", "expecting citations"),
+)
+
+
 def _synthesis_table(metrics: Mapping[str, float]) -> Table:
-    """The `eval-synthesis` results table: the four GroUSE means, then the three counts."""
+    """The `eval-synthesis` results table: the four GroUSE means, the four trust ratios with
+    their denominators, then the three counts."""
     table = Table(title="Synthesis Quality Results (GroUSE-style)")
     table.add_column("Metric", style="bold")
     table.add_column("Score", justify="right")
@@ -3469,6 +3480,9 @@ def _synthesis_table(metrics: Mapping[str, float]) -> Table:
     table.add_row("Completeness", f"{metrics['completeness']:.4f}", "higher = better")
     table.add_row("Faithfulness", f"{metrics['faithfulness']:.4f}", "higher = better")
     table.add_row("Overall", f"{metrics['overall']:.4f}", "higher = better")
+    for label, key, count, noun in _TRUST_ROWS:
+        direction = f"higher = better; of {int(metrics[count])} {noun}"
+        table.add_row(label, f"{metrics[key]:.4f}", direction)
     table.add_row("Queries evaluated", str(int(metrics["n_queries"])), "")
     table.add_row(
         "Unanswerable queries", str(int(metrics["n_unanswerable"])), "not in the four scores above"

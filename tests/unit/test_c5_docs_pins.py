@@ -200,7 +200,72 @@ def test_eval_readme_tabulates_the_three_synthesis_fields() -> None:
 
     for name in ("answerable", "gold_answer", "expected_citations"):
         assert f"| `{name}` |" in section
-    assert "nothing in the eval reads them yet" in _squash(section)
+    assert "nothing in the eval reads them yet" not in _squash(section)
+
+
+def test_eval_readme_documents_the_abstention_and_citation_metrics() -> None:
+    text = (_REPO_ROOT / "eval/README.md").read_text(encoding="utf-8")
+    section = _squash(
+        text[text.index("## `golden_synthesis_sample.jsonl`") : text.index("## Related tooling")]
+    )
+
+    for key in (
+        "abstention_precision",
+        "abstention_recall",
+        "citation_validity",
+        "citation_recall",
+    ):
+        assert f"| `{key}` |" in section, key
+    assert "At least 15% of a set's questions should be unanswerable" in section
+    assert (
+        "`trelix eval-synthesis` verifies them per answer and reports the counts as "
+        "`citation_statuses`" in section
+    )
+    assert "set it to `true` for the run you measure" in section
+    assert (
+        "The prompt asks for `INSUFFICIENT_EVIDENCE:` only when `TRELIX_RETRIEVAL_CITATIONS` is "
+        "`true` (see the end of this section), so with the flag unset only `no_results` registers "
+        "in practice"
+    ) in section
+    assert (
+        "an `abstention_recall` of `0.0` then means the model was never asked to refuse" in section
+    )
+    assert "scores completeness `0.0` only when it lists `expected_answer_fragments`" in section
+    assert "with no fragments it scores completeness `1.0`" in section
+    assert "compared exactly as the index spells them (`./a.py` never matches `a.py`)" in section
+
+
+def test_cli_reference_architecture_and_contributing_name_the_trust_metrics() -> None:
+    text = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+    start, end = text.index("### `trelix eval-synthesis`"), text.index("### `trelix eval-validate`")
+    section = _squash(text[start:end])
+
+    assert "measure nothing unless `TRELIX_RETRIEVAL_CITATIONS=true`" in section
+    assert (
+        "The prompt asks the model for `INSUFFICIENT_EVIDENCE:` only when "
+        "`TRELIX_RETRIEVAL_CITATIONS=true`, so with the flag unset only an empty retrieval "
+        "registers in practice and the two abstention rows measure little"
+    ) in section
+    assert (
+        "`Abstention recall` of `0.0000` then means the model was never asked to refuse" in section
+    )
+    for label in (
+        "Abstention precision",
+        "Abstention recall",
+        "Citation validity",
+        "Citation recall",
+    ):
+        assert label in section, label
+    assert "the next change adds the citation facts" not in section
+    assert "`aggregate` holds sixteen values: the fourteen the table prints" in section
+    assert "`citations_total` and `citations_valid`, which only the file carries" in section
+    assert "`Citation validity` reads `of 0 cited answers`" in section
+    assert "`Citation recall` still reads `of N expecting citations`" in section
+    assert (
+        "| `eval-synthesis [repo]` | --golden/-g, --per-query-out | GroUSE synthesis scoring, "
+        "abstention and citation metrics |"
+    ) in (_REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8")
+    assert "eval.synthesis_records" in (_REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
 
 
 def test_the_sample_golden_has_four_valid_lines_the_last_unanswerable() -> None:

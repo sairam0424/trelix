@@ -1,8 +1,7 @@
 """The per-query records of `trelix eval-synthesis`: `aggregate_synthesis_metrics` over
 hand-built records, the `--per-query-out` document and the command that prints the table and
 writes the file. Records are built only through `make_record` (tests/unit/
-synthesis_eval_fixtures.py), so the next change in this series, which inserts seven fields,
-changes that helper's defaults and nothing here.
+synthesis_eval_fixtures.py), so a new record field changes that helper's defaults, not every test.
 
 MUTATIONS THAT MUST MAKE THIS FILE FAIL (each applied alone, sha256-proved restore; results in
 the PR body)
@@ -19,6 +18,19 @@ the PR body)
    row's Direction text, 8. print `n_queries + 1`, 9. swap the two count rows -> each fails
    `test_the_table_prints_every_row_with_its_value_and_direction_in_order` (distinct counts).
 10. Print `""` instead of the write error -> `test_an_unwritable_file_exits_1_after_the_table`.
+11. Drop a `_TRUST_ROWS` row -> `test_the_eleven_rows_print_the_r5b_ratios_with_their_denominators`
+    (a label is missing) and `test_the_table_prints_every_row...` (a regex finds nothing).
+12. Swap a row's denominator key (`n_unanswerable` in the precision row) -> `of 2 abstained` reads
+    `of 3 abstained` in the R5b test and `of 4 abstained` reads `of 3 abstained` in the regex one.
+13. Serialise `citation_statuses` unsorted (a plain `json.dump`) -> the squashed-text literal of
+    `test_the_r5b_document_carries_the_abstention_and_citation_facts` fails, and so do the
+    mode and sorted-keys tests.
+14. Read `citations_total` in the table (an output-neutral extra read) ->
+    `test_the_table_reads_fourteen_of_the_sixteen_aggregate_values`.
+15. Count only cited lines in `n_expected_citation_entries`, or read `n_cited_entries` for the
+    recall row -> `test_with_the_flag_off_the_citation_rows_read_zero_and_...`.
+(The records here are built by `make_record`, so a mutation inside `scored_record` is killed by
+test_synthesis_eval_metrics.py's end-to-end test, not here.)
 """
 
 from __future__ import annotations
@@ -36,7 +48,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner, Result
 
-from tests.unit.synthesis_eval_fixtures import AGGREGATE_KEYS, make_record
+from tests.unit.synthesis_eval_fixtures import AGGREGATE_KEYS, make_record, metrics_records
 from trelix.cli.main import _synthesis_table, app
 from trelix.eval import synthesis_records
 from trelix.eval.synthesis import SynthesisEvalHarness
@@ -58,6 +70,8 @@ R = [
 ]
 # An input to the file writer, never an expected value.
 _AGGREGATE = aggregate_synthesis_metrics(R)
+# The six records of the design's R5b example, two abstentions and four cited answers among them.
+M = metrics_records()
 
 
 def test_the_means_run_over_answerable_records_and_the_counts_over_all() -> None:
@@ -70,6 +84,17 @@ def test_the_means_run_over_answerable_records_and_the_counts_over_all() -> None
             "n_queries": 4.0,
             "unscoreable": 1.0,
             "n_unanswerable": 1.0,
+            # No record abstained or cited: every trust ratio and count is 0.0 (e4 is an
+            # unanswerable query that answered, so recall is 0 of 1).
+            "n_abstained": 0.0,
+            "abstention_precision": 0.0,
+            "abstention_recall": 0.0,
+            "citation_validity": 0.0,
+            "n_cited_entries": 0.0,
+            "citation_recall": 0.0,
+            "n_expected_citation_entries": 0.0,
+            "citations_total": 0.0,
+            "citations_valid": 0.0,
         }
     )
 
@@ -105,8 +130,27 @@ class TestTheDocument:
             return dict(pairs)
 
         json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=record_order)
-        assert len(key_orders) == 6  # the document, its four records and the aggregate
+        # The document, its four records, their four citation_statuses objects and the aggregate.
+        assert len(key_orders) == 10
         assert all(order == sorted(order) for order in key_orders)
+
+    def test_the_r5b_document_carries_the_abstention_and_citation_facts(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "out.json"
+        assert write_synthesis_per_query_file(str(path), M, aggregate_synthesis_metrics(M)) is None
+        raw = path.read_text(encoding="utf-8")
+        document = json.loads(raw)
+        records = document["records"]
+        names = {f.name for f in dataclasses.fields(SynthesisRecord)}
+        assert len(records) == 6
+        assert all(set(record) == names and len(record) == 15 for record in records)
+        assert records[2]["abstain_reason"] == "insufficient_evidence"
+        assert records[3]["citation_statuses"] == {"unknown": 1, "valid": 1}
+        # Sorted inside the nested object too: `metrics_records` inserted `valid` before `unknown`.
+        assert '"citation_statuses": { "unknown": 1, "valid": 1 }' in _squash(raw)
+        assert set(document["aggregate"]) == AGGREGATE_KEYS
+        assert document["aggregate"]["citations_valid"] == 4.0
 
     def test_non_ascii_text_round_trips_through_ascii_with_one_trailing_newline(
         self, tmp_path: Path
@@ -138,10 +182,17 @@ class TestTheDocument:
         assert calls == [target]
 
 
-def _invoke(tmp_path: Path, *extra: str, run_detailed: Any = None) -> Result:
+def _squash(text: str) -> str:
+    """Undo Rich's cell wrapping so a row's text can be matched as one string."""
+    return " ".join(text.split())
+
+
+def _invoke(
+    tmp_path: Path, *extra: str, run_detailed: Any = None, records: list[SynthesisRecord] = R
+) -> Result:
     """`eval-synthesis REPO --golden G ...` with the harness built as a no-op and `run_detailed`
-    returning `R` (or raising what `run_detailed` names)."""
-    outcome = {"side_effect": run_detailed} if run_detailed else {"return_value": R}
+    returning `records` (or raising what `run_detailed` names)."""
+    outcome = {"side_effect": run_detailed} if run_detailed else {"return_value": records}
     args = ["eval-synthesis", str(tmp_path), "--golden", str(tmp_path / "g.jsonl"), *extra]
     with (
         patch.object(SynthesisEvalHarness, "__init__", lambda self, config: None),
@@ -150,14 +201,25 @@ def _invoke(tmp_path: Path, *extra: str, run_detailed: Any = None) -> Result:
         return runner.invoke(app, args)
 
 
-# Seven distinct values, so a row printing another row's key or an off-by-one count cannot pass.
+# Sixteen distinct values, so a row printing another row's key or an off-by-one count cannot pass.
 _TABLE_METRICS = {"hallucination_rate": 0.25, "completeness": 0.5, "faithfulness": 0.75}
 _TABLE_METRICS |= {"overall": 0.6, "n_queries": 7.0, "unscoreable": 2.0, "n_unanswerable": 3.0}
+_TABLE_METRICS |= {"abstention_precision": 0.1, "abstention_recall": 0.2, "n_abstained": 4.0}
+_TABLE_METRICS |= {"citation_validity": 0.3, "citation_recall": 0.4, "n_cited_entries": 5.0}
+_TABLE_METRICS |= {
+    "n_expected_citation_entries": 6.0,
+    "citations_total": 9.0,
+    "citations_valid": 8.0,
+}
 _TABLE_ROWS = [
     r"Hallucination rate\s*│\s*0\.2500\s*│\s*lower = better",
     r"Completeness\s*│\s*0\.5000\s*│\s*higher = better",
     r"Faithfulness\s*│\s*0\.7500\s*│\s*higher = better",
     r"Overall\s*│\s*0\.6000\s*│\s*higher = better",
+    r"Abstention precision\s*│\s*0\.1000\s*│\s*higher = better; of 4 abstained",
+    r"Abstention recall\s*│\s*0\.2000\s*│\s*higher = better; of 3 unanswerable",
+    r"Citation validity\s*│\s*0\.3000\s*│\s*higher = better; of 5 cited answers",
+    r"Citation recall\s*│\s*0\.4000\s*│\s*higher = better; of 6 expecting citations",
     r"Queries evaluated\s*│\s*7\s*│\s*│",
     r"Unanswerable queries\s*│\s*3\s*│\s*not in the four scores above",
     r"Unscoreable queries\s*│\s*2\s*│\s*placeholder scores; see the log",
@@ -173,6 +235,35 @@ def test_the_table_prints_every_row_with_its_value_and_direction_in_order() -> N
     assert all(matches), text
     starts = [match.start() for match in matches if match]
     assert starts == sorted(starts), text
+
+
+class _ReadKeys(dict):
+    """A metrics mapping that remembers which keys were read from it."""
+
+    def __init__(self, items: dict[str, float]) -> None:
+        super().__init__(items)
+        self.read: set[str] = set()
+
+    def __getitem__(self, key: str) -> float:
+        self.read.add(key)
+        return super().__getitem__(key)
+
+
+def test_the_table_reads_fourteen_of_the_sixteen_aggregate_values() -> None:
+    metrics = _ReadKeys(_TABLE_METRICS)
+    _synthesis_table(metrics)
+    assert len(metrics.read) == 14
+    assert metrics.read == AGGREGATE_KEYS - {"citations_total", "citations_valid"}
+
+
+def test_with_the_flag_off_the_citation_rows_read_zero_and_recall_keeps_its_denominator() -> None:
+    records = [make_record(expected_citations_total=1), make_record(expected_citations_total=2)]
+    buffer = io.StringIO()
+    table = _synthesis_table(aggregate_synthesis_metrics(records))
+    Console(file=buffer, width=120, force_terminal=False).print(table)
+    text = buffer.getvalue()
+    assert re.search(r"Citation validity\s*│\s*0\.0000\s*│\s*higher = better; of 0 cited", text)
+    assert re.search(r"Citation recall\s*│\s*0\.0000\s*│\s*higher = better; of 2 expecting", text)
 
 
 class TestTheCommand:
@@ -211,3 +302,30 @@ class TestTheCommand:
         assert result.exit_code == 1
         assert "Evaluation failed" in result.output
         assert "Traceback" not in result.output
+
+
+_LABELS = ("Hallucination rate", "Completeness", "Faithfulness", "Overall", "Abstention precision")
+_LABELS += ("Abstention recall", "Citation validity", "Citation recall", "Queries evaluated")
+_LABELS += ("Unanswerable queries", "Unscoreable queries")
+_R5B_CELLS = ("0.5000", "0.3333", "0.6250", "of 2 abstained", "of 3 unanswerable")
+_R5B_CELLS += ("of 4 cited answers", "of 2 expecting citations")
+_R5B_IDS = ["e1", "e2", "e3", "e4", "e5", "e6"]
+
+
+class TestTheCommandOverTheR5bRecords:
+    def test_the_eleven_rows_print_the_r5b_ratios_with_their_denominators(
+        self, tmp_path: Path
+    ) -> None:
+        out = tmp_path / "out.json"
+        plain = _invoke(tmp_path, records=M)
+        with_file = _invoke(tmp_path, "--per-query-out", str(out), records=M)
+        assert (plain.exit_code, with_file.exit_code) == (0, 0)
+        assert plain.output == with_file.output
+        text = _squash(plain.output)
+        for label in _LABELS:
+            assert label in text, label
+        for cell in _R5B_CELLS:
+            assert cell in text, cell
+        document = json.loads(out.read_text(encoding="utf-8"))
+        assert document["aggregate"]["citations_valid"] == 4.0
+        assert [record["id"] for record in document["records"]] == _R5B_IDS

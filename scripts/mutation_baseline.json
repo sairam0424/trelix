@@ -60,6 +60,27 @@
       },
       "total_mutants": 52
     },
+    "eval.synthesis_records": {
+      "ceilings": {
+        "no_tests": 0,
+        "survived": 0
+      },
+      "counts": {
+        "killed": 247
+      },
+      "files_mutated": 1,
+      "files_with_results": 1,
+      "measured": true,
+      "measured_at": "2026-10-25T22:14:35+00:00",
+      "mutmut_exit_code": 0,
+      "patterns": [
+        "src/trelix/eval/synthesis_records.py"
+      ],
+      "source_sha256": {
+        "src/trelix/eval/synthesis_records.py": "f9bf04855c64a5d00999d5001bc0eb0c1117138fb721ce1f20acf971d9b6bc43"
+      },
+      "total_mutants": 247
+    },
     "graph": {
       "ceilings": {
         "no_tests": 5,
