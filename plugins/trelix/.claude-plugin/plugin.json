@@ -1,6 +1,6 @@
 {
   "name": "trelix",
-  "version": "3.4.3.1",
+  "version": "3.4.3.2",
   "description": "Semantic code search for the repository you are working in, through the trelix MCP server (a pinned trelix-mcp release), a skill that says when to use it and when to fall back to grep, and a SessionStart line that says whether the repository is indexed.",
   "author": {
     "name": "Trelix Contributors",

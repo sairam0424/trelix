@@ -348,9 +348,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   pin (a literal test that also compares it with the `.mcp.json` pin, so a pin bump that forgets
   `version` fails) and a contents hash in `tests/unit/test_claude_plugin_manifest.py` makes
   every plugin edit loud (it cannot see whether `version` was bumped with it);
-  `claude plugin validate --strict` stays a manual CONTRIBUTING step (CI runs the offline tests,
-  not the validator); and the pin check is offline only (a released CHANGELOG section, not newer
-  than the trelix-mcp stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
+  `claude plugin validate --strict` runs in CI (the bullet below) and before committing; and the
+  pin check is offline only (a released CHANGELOG section, not newer than the trelix-mcp
+  stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
   pin the manifests, the pin form (an exact `==` to a version with a released CHANGELOG section,
   not newer than the trelix-mcp stamp), the plugin tree, and that the skill names only tools the
   server registers. Guide: `docs/integrations/claude-code-plugin.md`; a paste-able block for other
@@ -390,6 +390,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   joins the ruff scope in CI and `make lint`; the plugin README, the skill, the integration guide
   and SECURITY.md describe the line and what the hook runs; the plugin version moves to
   `3.4.3.1` (a plugin-only change on the same pin).
+- **CI runs `claude plugin validate --strict` on the marketplace and the plugin** (roadmap B-3,
+  PR 4 of 4). The `TypeScript SDK` job of `ci.yml` runs Claude Code's own validator, through an
+  exactly pinned `npx -y @anthropic-ai/claude-code@<version>` from the repository root, over
+  `.claude-plugin/marketplace.json` and `plugins/trelix/`, with warnings treated as errors, so a
+  manifest Claude Code would warn on (an unquoted `${CLAUDE_PLUGIN_ROOT}`, an unrecognised field,
+  a missing `version`) fails CI instead of reaching users; the offline tests keep pinning the
+  shapes this repository chose. The validator runs with
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the package download is its only network use.
+  A test pins the step (its three command lines, the working directory, the position after the
+  Node setup, no masking) and requires every `npx` in every workflow to carry an exact `@X.Y.Z`;
+  the Claude Code version is a literal in `ci.yml` and that test only. The plugin version moves
+  to `3.4.3.2` (a README sentence; same pin).
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
   of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
   answer the question; this one tags the context and instructs the model, nothing reads the model's

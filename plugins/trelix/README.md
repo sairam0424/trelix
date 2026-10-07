@@ -162,9 +162,11 @@ claude plugin marketplace remove trelix   # from the last scope that declares it
   not the JSON `hookSpecificOutput` form; it uses only the standard library, opens the index
   read-only, and exits 0 on every path so that it can never block a session. Hooks on other
   events are a later roadmap item.
-- **`claude plugin validate --strict` stays a manual step, and the pin check is offline.** CI runs
-  the offline tests, not the validator (it would need an npm install of Claude Code); the tests
-  check that the pin has a released CHANGELOG section and is not newer than the trelix-mcp stamp,
-  and PyPI itself is checked by hand in the pin-bump PR body (CONTRIBUTING.md).
+- **`claude plugin validate --strict` runs in CI and before committing; the pin check is offline.**
+  CI's `TypeScript SDK` job runs Claude Code's validator over the marketplace and this directory
+  through a pinned release of `@anthropic-ai/claude-code` (`.github/workflows/ci.yml`; the version
+  is a test literal, never written here), with warnings treated as errors; the tests check that
+  the pin has a released CHANGELOG section and is not newer than the trelix-mcp stamp, and PyPI
+  itself is checked by hand in the pin-bump PR body (CONTRIBUTING.md).
 
 Full guide: `docs/integrations/claude-code-plugin.md`.
