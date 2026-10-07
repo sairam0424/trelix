@@ -218,6 +218,13 @@ def test_port_path_roots_and_host_are_validated(
     assert str(info.value) == message
 
 
+def test_only_the_exact_health_path_is_refused(tmp_path: Path) -> None:
+    """MUTATION: `path.startswith(HEALTH_PATH)` in `_check_path` (a `/healthz` service path is
+    refused with E4 although only `/health` itself is the probe)."""
+    assert _settings(tmp_path, path="/healthz").path == "/healthz"
+    assert _settings(tmp_path, path="/health/mcp").path == "/health/mcp"
+
+
 def test_port_bounds_are_inclusive(tmp_path: Path) -> None:
     assert _settings(tmp_path, port=1).port == 1
     assert _settings(tmp_path, port=65535).port == 65535

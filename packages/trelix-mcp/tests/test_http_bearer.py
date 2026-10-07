@@ -176,6 +176,10 @@ async def test_health_route_on_a_fastmcp_app(tmp_path: Path) -> None:
         assert (status, json.loads(text)) == (200, body)
         status, _, _ = await raw(app, "GET", "/healthz", headers=[HOST, BEARER])
         assert status == 404
+        # The route is GET (and Starlette's implied HEAD) only. MUTATION: `methods=["GET",
+        # "POST"]` on the custom route (a write-shaped method on the probe path answers 200).
+        status, _, _ = await raw(app, "POST", "/health", headers=[HOST, BEARER])
+        assert status == 405
 
         client = asgi_factory(app)(headers={"host": "127.0.0.1:8766"}, follow_redirects=True)
         async with client:
