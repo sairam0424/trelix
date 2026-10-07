@@ -313,10 +313,10 @@ class TestCacheGc:
         for args in (["cache"], ["cache", "gc"], ["cache", "clear"]):
             result = _invoke(*args, "--help")
             assert result.exit_code == 0, result.output
-        # Rich wraps the option help inside a box: drop the box drawing, then the wrapping.
-        gc_help = " ".join(
-            re.sub(r"[│╭╮╰╯─]", " ", _invoke("cache", "gc", "--help").output).split()
-        )
+        # Typer colours its help under GITHUB_ACTIONS (ANSI codes split the words) and Rich
+        # wraps it inside a box: drop the codes and the box drawing, then the wrapping.
+        raw_help = re.sub(r"\x1b\[[0-9;]*m", "", _invoke("cache", "gc", "--help").output)
+        gc_help = " ".join(re.sub(r"[│╭╮╰╯─]", " ", raw_help).split())
         assert "TRELIX_EMBEDDING_CACHE_MAX_MB" in gc_help
         # The help's literal default and the config's are pinned to the same number.
         assert EmbeddingCacheConfig.model_fields["max_mb"].default == 4096
