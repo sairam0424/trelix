@@ -392,6 +392,7 @@ replace `TRELIX_API_AUTH_TOKEN`; see [SECURITY.md](../SECURITY.md#rest-api--host
 | `TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS` | `3600` | Time-to-live (seconds) for an inactive resource subscription before it is evicted from the `SubscriptionRegistry`. Expired subscriptions are swept lazily on the next registry access. |
 | `TRELIX_MCP_MAX_K` | `50` (min: `1`) | Largest page a list tool returns: `k` on `search_code`, `graph_search_mcp` and `federation_search_all`, and `limit` on `agent_list_sessions`, is clamped to `1..TRELIX_MCP_MAX_K`, and `page_size` in the response says what was used. (`blast_radius`'s own `limit` clamps to `1..500`.) Read on every call; blank means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up (exit code 2) and makes a tool call return an error. |
 | `TRELIX_MCP_MAX_RESULT_CHARS` | `15000` (min: `0`) | Budget for the text of a list result, in characters. The budget counts both copies a client is sent (the text block, with each quote escaped, and `structuredContent`), so the whole response is at most twice the budget (30,000 characters by default) and its text under the budget. Over it, the tail of the list is dropped and the response says so (`truncated`, `omitted`, and for a bare array a second text block and `_meta.trelix`); `next_cursor` continues from the first dropped result. One result is always kept. `0` turns the cut off. Read on every call; blank means the default; a negative or non-integer value is a start-up error. See [MCP_GUIDE.md](MCP_GUIDE.md#output-size-and-limits). |
+| `TRELIX_MCP_RETRIEVER_CACHE_SIZE` | `8` (min: `1`) | Most Retrievers `trelix-mcp` keeps across tool calls, one per repository (`search_code` and `graph_search_mcp` reuse them, and each may hold an embedding model with the `local` provider). Past the bound the least recently used one is dropped, not closed (a call in another worker thread may still hold it); a later call for that repository builds it again. Read on every call; blank means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up (exit code 2) and makes a tool call return an error. |
 
 ### Observability (OpenTelemetry)
 
@@ -402,6 +403,7 @@ Requires `pip install trelix[otel]`. See [OBSERVABILITY.md](OBSERVABILITY.md) fo
 | `TRELIX_OTEL_ENABLED` | `false` | Emit one OpenTelemetry span per retrieval leg (vector/BM25/grep/sparse/sub-chunk/file-summary) plus pipeline-stage spans (planner/fusion/expansion/rerank/pagerank/assembly). Zero import cost and zero behavior change when disabled. |
 | `OTEL_SERVICE_NAME` | `trelix` | Service name attached to the installed `TracerProvider`'s resource attributes. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | _(none)_ | OTLP collector endpoint. If unset, spans are still created but have nowhere to export to unless a host application configures its own exporter/processor before trelix runs. |
+| `TRELIX_OTEL_CAPTURE_CONTENT` | `false` | Hand retrieval query text (and prompts and replies, once LLM chat spans exist) to the GenAI instrumentation. Off by default; the text includes repository code. Where it then goes is decided by OpenTelemetry's own `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` (not `TRELIX_`-prefixed; default `NO_CONTENT`; read once when tracing starts on `opentelemetry-util-genai` 1.2b0, re-read per span on 1.0b0 and 1.1b0): `SPAN_ONLY` puts the text on the retrieval (and chat) span attributes, `EVENT_ONLY` puts prompts and replies in a `gen_ai.client.inference.operation.details` record on the OpenTelemetry Logs signal (only when a `LoggerProvider` is configured; retrieval spans emit no such record), `SPAN_AND_EVENT` does both, `NO_CONTENT` discards it and trelix logs one WARNING. A pydantic boolean like `TRELIX_OTEL_ENABLED`: `true/1/yes/on`, `false/0/no/off`; a blank value or `maybe` is a `Configuration error` (exit 1) where the CLI catches it; the other two paths are in [OBSERVABILITY.md § Content capture](OBSERVABILITY.md#content-capture). |
 
 ---
 
@@ -624,6 +626,7 @@ TRELIX_STORE_BACKEND=sqlite
 # TRELIX_MCP_SUBSCRIPTION_TTL_SECONDS=3600
 # TRELIX_MCP_MAX_K=50
 # TRELIX_MCP_MAX_RESULT_CHARS=15000
+# TRELIX_MCP_RETRIEVER_CACHE_SIZE=8
 ```
 
 ---
