@@ -77,7 +77,22 @@ dependencies = [
     "tree-sitter-language-pack>=1.17.0",
     "PyYAML>=6.0",
     # --- Storage ---
-    "sqlite-vec>=0.1.6",
+    # Floor and ceiling are both deliberate. 0.1.7 made DELETE reclaim space in vec0
+    # tables; trelix's upsert is DELETE + INSERT per chunk (store/vector.py) and `--prune`
+    # deletes rows, so below 0.1.7 every re-index grows the file. 0.1.9 (latest stable,
+    # 2026-03-31) is the release the vec0 contract tests were verified against
+    # (tests/unit/test_vector_store_contract.py) and fixes a DELETE error on vec0 tables
+    # with long metadata text columns; the floor sits there, not at 0.1.7, because 0.1.9
+    # is the only release this tree has run on since. The ceiling keeps the 0.1.10
+    # pre-releases out: they add ivf/diskann on-disk features nothing here has tested, and
+    # PEP 440 places every 0.1.10aN inside <0.1.10 (checked with packaging's SpecifierSet:
+    # 0.1.9 in; 0.1.8, 0.1.10a1, 0.1.10a4 and 0.1.10 out, also with prereleases=True). pip
+    # already resolved 0.1.9, so a fresh install is unchanged. Dependabot (pip at "/",
+    # target develop) proposes the bump when 0.1.10 ships; re-run
+    # tests/unit/test_vector_store_contract.py and test_store.py on it before raising the
+    # ceiling. tests/unit/test_dependency_floor_guards.py pins the requirement string and
+    # the installed release.
+    "sqlite-vec>=0.1.9,<0.1.10",
     # --- Embeddings ---
     # The <3.0.0 ceiling is deliberate, and litellm is the one reason for it: litellm
     # 1.104.0 (the latest when checked, 2026-10-05) requires openai>=2.20.0,<3.0.0, and
@@ -201,7 +216,9 @@ sso = [
 otel = [
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
-    "opentelemetry-util-genai>=1.0b0",  # gen_ai.* retrieval/embedding spans (Development stability)
+    # gen_ai.* retrieval and chat spans (Development stability). Inference spans need suspend()
+    # and the cache_write attribute name; verified 1.2b0 on 2026-10-07.
+    "opentelemetry-util-genai>=1.2b0",
     "opentelemetry-exporter-otlp-proto-http>=1.27.0",  # only used if OTEL_EXPORTER_OTLP_ENDPOINT is set
 ]
 dev = [

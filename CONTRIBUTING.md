@@ -69,6 +69,20 @@ markers`, and `addopts` carries `--strict-markers` so a typo becomes a collectio
 Both matter — while the marker was unregistered, `-m "not integration"` matched nothing
 and quietly ran the entire suite including the live Azure/Bedrock tests.
 
+### E2E tests
+
+`tests/e2e/` is the real-subprocess suite (the installed `trelix` and `trelix-mcp` console
+scripts, fresh venvs from freshly-built wheels, real sockets). `tests/e2e/conftest.py` tags
+every test there `e2e`, `enable_socket` and `requires_network` by directory, so the suite is
+outside `make test`/`make test-fast` (those name `tests/unit/` only) and runs
+with `make test-e2e`, in CI's `e2e` job and in the release smoke job against the built wheels.
+`tests/e2e/test_review_offline_e2e.py` is the real-socket example that needs no model and no
+network: `trelix review` runs against `tests/e2e/fake_openai_server.py`, a stdlib
+OpenAI-compatible server on `127.0.0.1`. The test loads tiktoken's `cl100k_base` at collection
+so the child process finds it on disk (a cold machine downloads it once there). The console
+script on PATH is what runs, so install your worktree editable (or export
+`PYTHONPATH=<worktree>/src`) before trusting a local run.
+
 ## Branch Strategy
 
 ```

@@ -98,6 +98,7 @@ EXPECTED_SCOPE_KEYS = frozenset(
         "indexing.parser.yaml_config",
         "indexing.walker",
         "llm.offline",
+        "llm.otel",
         "retrieval.bm25",
         "retrieval.citations",
         "retrieval.fusion",
@@ -141,6 +142,7 @@ EXPECTED_SCOPE_WITNESS = {
     "indexing.parser.yaml_config": "src/trelix/indexing/parser/extractors/yaml_config.py",
     "indexing.walker": "src/trelix/indexing/walker.py",
     "llm.offline": "src/trelix/llm/offline.py",
+    "llm.otel": "src/trelix/llm/otel.py",
     "retrieval.bm25": "src/trelix/retrieval/bm25.py",
     "retrieval.citations": "src/trelix/retrieval/citations.py",
     "retrieval.fusion": "src/trelix/retrieval/fusion.py",
@@ -186,6 +188,7 @@ EXPECTED_SCOPE_NON_WITNESS = {
     "indexing.parser.yaml_config": "src/trelix/indexing/chunker.py",
     "indexing.walker": "src/trelix/indexing/chunker.py",
     "llm.offline": "src/trelix/llm/factory.py",
+    "llm.otel": "src/trelix/llm/factory.py",
     "retrieval.bm25": "src/trelix/retrieval/fusion.py",
     "retrieval.citations": "src/trelix/retrieval/fusion.py",
     "retrieval.fusion": "src/trelix/retrieval/bm25.py",
@@ -442,6 +445,11 @@ class TestCheckedInBaseline:
             f"`--check` has nothing to ratchet against."
         )
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_baseline_deselected_files_equal_the_drivers_tuple(self) -> None:
+        """MUTATION: add a DESELECTED_FILES entry, skip the baseline edit -> the lists differ."""
+        baseline = self._baseline()
+        assert baseline["deselected_files"] == list(driver.DESELECTED_FILES)
 
     def test_baseline_module_keys_match_the_scope_table(self) -> None:
         """MUTATION: delete a module entry from scripts/mutation_baseline.json.

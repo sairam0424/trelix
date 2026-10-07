@@ -59,9 +59,12 @@ def test_ask_flare_branch_prints_the_answer_exactly_once(tmp_path: Path) -> None
     ):
         # `ask` exits 1 when the synthesizer reports a failure; a bare MagicMock
         # attribute would read as one. The abstention reason is mirrored for the same
-        # reason: a real Synthesizer that answered leaves both None.
+        # reason: a real Synthesizer that answered leaves both None. `last_context` is
+        # what `ask` verifies citations against after the loop; a real one records the
+        # context it answered from.
         MockSynthesizer.return_value.last_error = None
         MockSynthesizer.return_value.last_abstain_reason = None
+        MockSynthesizer.return_value.last_context = _context()
         MockRetriever.return_value.retrieve.return_value = _context()
         result = runner.invoke(
             app,
