@@ -665,15 +665,21 @@ that lists every command the plugin runs) are read by Claude Code, not by this p
 - **The skill describes the pinned release, not `develop`.** A tool or parameter that only
   `develop` has stays out of `SKILL.md` until the pin reaches a release that has it;
   `tests/unit/test_claude_plugin_skill.py` pins the tool names and the develop-only parameters.
-- **Validate before committing** (a manual step: CI runs the offline tests, not the validator,
-  which would need an npm install of Claude Code):
+- **Validate before committing; CI validates too.** `.github/workflows/ci.yml`'s `TypeScript SDK`
+  job runs the same two commands through a pinned `npx -y @anthropic-ai/claude-code@<version>`
+  with `--strict`, so a manifest Claude Code would warn on fails CI; the version is a literal in
+  `tests/unit/test_claude_plugin_validate_ci.py` and in the three `npx` lines, moved together by
+  hand (put the output of `npm view @anthropic-ai/claude-code@<version> version dist.integrity`
+  and the two `✔ Validation passed` lines at that version in the PR body; a newer validator that
+  warns on something the old one accepted is a plugin change to make, not a warning to silence).
+  Locally:
 
   ```bash
   claude plugin validate --strict .
   claude plugin validate --strict plugins/trelix
   ```
 
-  Both must end with `✔ Validation passed`.
+  Both must end with `✔ Validation passed`; `--strict` turns a warning into exit 1.
 - **Smoke-test from the checkout.** `claude plugin marketplace add /path/to/this/checkout` loads
   the plugin in place (edits take effect at the next session or after `/reload-plugins`, no
   version bump needed); then `claude plugin install trelix@trelix`, open a scratch project, and

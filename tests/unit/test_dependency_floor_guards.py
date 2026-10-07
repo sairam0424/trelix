@@ -5,7 +5,7 @@ and `[project.optional-dependencies]`) are, by default, open-ended (`>=X`, no ce
 plain `pip install trelix` can silently resolve to whatever the latest release of a dependency
 happens to be on install day, with no signal that anything changed.
 
-Three concrete cases motivate the guards below:
+Four concrete cases motivate the guards below:
 
   * CVE-2026-58203 (GHSA-4xgf-cpjx-pc3j): a symlink-traversal bug in pydantic-settings'
     `NestedSecretsSettingsSource` (versions 2.12.0-2.14.1, fixed in 2.14.2). trelix's floor
@@ -22,18 +22,30 @@ Three concrete cases motivate the guards below:
     `openai>=2.20.0,<3.0.0`, and so does every litellm release since 1.84.0. The `openai`
     ceiling is that one requirement; the retry layer is not the reason, because
     `src/trelix/core/retry.py` has recognised the "httpx2" transport since 3.3.0.
+  * `sqlite-vec` is the second guard of the fastmcp kind: a floor the code needs and a ceiling
+    on untested releases, not a CVE or a breaking major: it is pinned `>=0.1.9,<0.1.10`; 0.1.7
+    made `DELETE` reclaim space, which trelix's `DELETE`+`INSERT` upsert and `--prune` rely on;
+    0.1.9 is the release the vec0 contract tests were verified against; the ceiling keeps the
+    untested 0.1.10 pre-releases (ivf/diskann) out, and PEP 440 places every `0.1.10aN` under
+    `<0.1.10`.
 
 These tests pin the current, deliberate floors/ceilings so a future contributor loosening one
 (e.g. widening a version range during an unrelated dependency bump) gets a named, specific
 failure instead of silent re-exposure. The last guard reads `packages/trelix-mcp/pyproject.toml`
 instead: a floor that the code needs rather than one that avoids a CVE or a breaking major.
+The sqlite-vec pair is the only pair in this file that also checks the INSTALLED package,
+deliberately: the requirement string says what pip may resolve, the installed check says what
+this venv runs, and a venv on another release must fail with the reason rather than skip.
 """
 
 from __future__ import annotations
 
 import re
+import sqlite3
 import tomllib
 from pathlib import Path
+
+import sqlite_vec
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -99,6 +111,47 @@ def test_anthropic_ceiling_excludes_removed_temperature_kwarg() -> None:
         "Messages method; src/trelix/llm/providers/anthropic_backend.py still passes "
         "temperature= unconditionally in complete()/stream() and would raise TypeError; pin "
         "a <1.0.0 ceiling until that's fixed, or bump to >=1.0.0 once it is"
+    )
+
+
+def test_sqlite_vec_is_pinned_to_the_verified_0_1_9_line() -> None:
+    """The floor is 0.1.7's DELETE space reclamation, placed at 0.1.9 (the release the vec0
+    contract tests were verified against); the ceiling keeps the untested 0.1.10 pre-releases
+    out. `_core_dependency_specifier` returns the full requirement string (critique B1).
+    Mutations: `>=0.1.6` restored; ceiling dropped (`>=0.1.9`); ceiling loosened (`<0.1.11`).
+    """
+    spec = _core_dependency_specifier("sqlite-vec")
+    assert spec == "sqlite-vec>=0.1.9,<0.1.10", (
+        f"sqlite-vec specifier is {spec!r} — keep exactly >=0.1.9,<0.1.10: 0.1.7 made DELETE "
+        "reclaim space (trelix upserts by DELETE+INSERT and --prune deletes), 0.1.9 is the "
+        "release the vec0 contract tests were verified against, and <0.1.10 keeps the untested "
+        "0.1.10 pre-releases (ivf/diskann) out under PEP 440; raise the ceiling only after "
+        "re-running tests/unit/test_vector_store_contract.py and test_store.py on the new release"
+    )
+
+
+def test_installed_sqlite_vec_is_the_pinned_release() -> None:
+    """Environment-coupled on purpose and without a skip: this is the guard, so a venv on
+    another release fails with the reason. The package version and the loaded extension's
+    `vec_version()` must both say 0.1.9. Mutations: `"0.1.9"` -> `"0.1.8"` (package
+    assertion); `"v0.1.9"` -> `"v0.1.8"` (extension assertion).
+    """
+    assert sqlite_vec.__version__ == "0.1.9", (
+        f"installed sqlite-vec is {sqlite_vec.__version__}; pyproject pins >=0.1.9,<0.1.10 and "
+        "the vec0 contract tests were verified on 0.1.9 — reinstall (pip install -e .) before "
+        "trusting this suite"
+    )
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        loaded = conn.execute("select vec_version()").fetchone()[0]
+    finally:
+        conn.close()
+    assert loaded == "v0.1.9", (
+        f"the loaded sqlite-vec extension reports {loaded!r} while the package says "
+        f"{sqlite_vec.__version__}; the two must agree at v0.1.9"
     )
 
 
