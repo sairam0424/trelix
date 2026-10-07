@@ -1869,7 +1869,7 @@ Most tuning is done through environment variables rather than flags; see
 | `graph <repo>` | --visualize/-v, --output/-o, --concepts/-c, --json | Build knowledge graph |
 | `telemetry [repo]` | --limit/-n | Query telemetry |
 | `eval [repo]` | --golden/-g | nDCG@10/Recall/MRR |
-| `eval-synthesis [repo]` | --golden/-g | GroUSE synthesis scoring |
+| `eval-synthesis [repo]` | --golden/-g, --per-query-out | GroUSE synthesis scoring, one record per query |
 | `eval-validate <golden>` | --repo, --rev, --min-per-stratum, --min-validated | Check a golden file without running a query |
 | `eval-compare <base> <cand>` | --prereg | Judge a candidate results file against a baseline under a pre-registration (exit 0 PASS, 1 FAIL, 2 INCONCLUSIVE, 3 REFUSED) |
 | `eval-suite <suite.json>` | --arm, --out, --cache-dir, --prepare-only | Verify a committed suite and its pinned clone, index it once for one arm, replay the frozen plans, write results.json (exit 0 written, 1 refused or a query raised) |

@@ -168,6 +168,12 @@ The evaluation harness lives at `src/trelix/eval/` and is organized as:
 |------|----------------|
 | `ndcg.py` | Pure-Python ndcg_at_k, recall_at_k, mrr — no pandas dependency |
 | `harness.py` | EvalHarness.run(golden_path) — reads JSONL, retrieves, returns aggregate metrics |
+| `synthesis.py` | SynthesisEvalHarness.run_detailed(golden_path) — one `SynthesisRecord` per golden line; `run()` is their aggregate |
+| `synthesis_records.py` | `SynthesisRecord`, `aggregate_synthesis_metrics` (means with their denominators) and the `--per-query-out` file; pure |
+
+A synthesis golden line may carry the v2 fields `answerable`, `gold_answer` and `expected_citations`;
+the loader refuses a mistyped one with its line number (`validate_synthesis_entry` names the
+field; see `eval/README.md`).
 
 **Usage:**
 
