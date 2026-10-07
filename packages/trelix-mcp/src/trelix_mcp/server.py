@@ -12,6 +12,7 @@ logging.basicConfig(
 
 import signal  # noqa: E402
 import threading  # noqa: E402
+from collections import OrderedDict  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any, Literal  # noqa: E402
 
@@ -95,7 +96,11 @@ _log = logging.getLogger("trelix_mcp")
 # path so relative/absolute spellings of the same repo share one entry.
 # Invalidated by index_codebase (see there) -- a re-index can switch
 # embedder providers, which changes what Retriever.__init__ needs to build.
-_retriever_cache: dict[str, Retriever] = {}
+# Bounded: an LRU of TRELIX_MCP_RETRIEVER_CACHE_SIZE entries (default 8), since
+# each one may hold an embedding model and a client can name any number of
+# distinct repositories. Insertion order is recency: a hit moves its entry to
+# the end, and _get_retriever drops entries from the front past the bound.
+_retriever_cache: OrderedDict[str, Retriever] = OrderedDict()
 _retriever_cache_lock = threading.Lock()
 
 
@@ -143,18 +148,26 @@ def _get_retriever(repo_path: str) -> Retriever:
     """Return a cached Retriever for repo_path, constructing one if needed.
 
     The directory check comes before the cache lookup: a blank repo_path resolves to the server's
-    working directory, which may well be a cached repo.
+    working directory, which may well be a cached repo. The cache keeps the
+    TRELIX_MCP_RETRIEVER_CACHE_SIZE most recently used entries (a hit counts as a use).
     """
     check_repo_dir(repo_path)
     key = str(Path(repo_path).resolve())
     with _retriever_cache_lock:
         cached = _retriever_cache.get(key)
         if cached is not None:
+            _retriever_cache.move_to_end(key)
             return cached
+        size = _limits().retriever_cache_size
         config = IndexConfig(repo_path=repo_path)
         _require_index(config)
         retriever = Retriever(config)
         _retriever_cache[key] = retriever
+        # Evicted, not closed: a tool call in another worker thread may still hold the entry
+        # (tools run in FastMCP's thread pool), and index_codebase already pops without closing.
+        # Its SQLite connection closes with the last reference.
+        while len(_retriever_cache) > size:
+            _retriever_cache.popitem(last=False)
         return retriever
 
 

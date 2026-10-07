@@ -47,7 +47,7 @@ Expected output, captured from a real run against a three-file example repo — 
   Embedding… ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%
 
 Done. {'files_found': 3, 'files_unreadable': 0, 'files_indexed': 3, 'files_skipped': 0,
-'symbols_extracted': 3, 'chunks_total': 3, 'chunks_embedded': 3, 'file_summaries_generated': 0,
+'symbols_extracted': 3, 'chunks_total': 3, 'chunks_embedded': 3, 'chunks_from_cache': 0, 'file_summaries_generated': 0,
 'file_summaries_failed': 0, 'file_summaries_embedded': 0, 'chunks_missing_vectors': 0,
 'chunks_reconciled': 0, 'errors': 0, 'elapsed_seconds': 4.2}
         Index Summary
@@ -174,7 +174,7 @@ All trelix capabilities are exposed as CLI subcommands. Here is the full referen
 |---------|-------------|
 | `trelix index ./my-repo` | Parse, embed, and write the index to `.trelix/index.db` |
 | `trelix search ./my-repo "query"` | Hybrid semantic + keyword search, returns ranked chunks |
-| `trelix query ./my-repo "question"` | Structured query over the index with no LLM **synthesis**. Fast, and offline/deterministic when no chat credential is set — with one set, retrieval draws a query plan from the LLM (one call per distinct query). See [FAQ: What is `trelix query`?](FAQ.md#what-is-trelix-query) for the two ways to make it free and reproducible |
+| `trelix query ./my-repo "question"` | Structured query over the index with no LLM **synthesis**. Fast, and offline/deterministic when no chat credential and no `TRELIX_LLM_BASE_URL` is set — with either set, retrieval draws a query plan from the LLM (one call per distinct query). See [FAQ: What is `trelix query`?](FAQ.md#what-is-trelix-query) for the two ways to make it free and reproducible |
 | `trelix ask ./my-repo "question"` | Retrieval-augmented answer using an LLM (requires `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or equivalent); `--session <id>` resumes a persisted agentic session (implies `--agentic`) |
 | `trelix agent sessions list/show/clear ./my-repo` | List, inspect, or delete persisted agentic (ReAct) sessions |
 | `trelix stats ./my-repo` | Index statistics: file, symbol and chunk counts, DB size, plus the commit / embedder / timestamp the index was built from. Add `--drift` to also compare every file on disk against its stored hash |

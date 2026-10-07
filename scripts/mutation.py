@@ -150,7 +150,11 @@ SCOPE: dict[str, tuple[str, ...]] = {
     "indexing.parser.typescript": ("src/trelix/indexing/parser/extractors/typescript.py",),
     "indexing.parser.yaml_config": ("src/trelix/indexing/parser/extractors/yaml_config.py",),
     "indexing.chunker": ("src/trelix/indexing/chunker.py",),
+    # Under indexing/, not embedder/, on purpose: embedder.* is the excluded torch scope
+    # below, and this module touches no model -- sha256, struct and sqlite only.
+    "indexing.embedding_cache": ("src/trelix/indexing/embedding_cache.py",),
     "indexing.walker": ("src/trelix/indexing/walker.py",),
+    "llm.offline": ("src/trelix/llm/offline.py",),
     "retrieval.fusion": ("src/trelix/retrieval/fusion.py",),
     "retrieval.bm25": ("src/trelix/retrieval/bm25.py",),
     "retrieval.citations": ("src/trelix/retrieval/citations.py",),

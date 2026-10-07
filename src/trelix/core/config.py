@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator
 from pydantic_core import PydanticUseDefault
@@ -832,6 +833,14 @@ class RetrievalConfig(BaseSettings):
         default=None,
         alias="OTEL_EXPORTER_OTLP_ENDPOINT",
     )
+    # Hand prompt, reply and query text to the GenAI instrumentation. Off by
+    # default; where the text then goes is decided by
+    # OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT (read once when tracing
+    # starts on util-genai 1.2b0; 1.0b0 and 1.1b0 re-read it per span).
+    otel_capture_content: bool = Field(
+        default=False,
+        alias="TRELIX_OTEL_CAPTURE_CONTENT",
+    )
 
     # FLARE-style confidence-gated re-retrieval
     flare_enabled: bool = Field(
@@ -1305,6 +1314,13 @@ class RetrievalConfig(BaseSettings):
         }
 
 
+_BASE_URL_SHAPE_ERROR = "TRELIX_LLM_BASE_URL must be an http:// or https:// URL with a host"
+_BASE_URL_USERINFO_ERROR = "TRELIX_LLM_BASE_URL must not carry a user name or password"
+_BASE_URL_WHITESPACE_ERROR = (
+    "TRELIX_LLM_BASE_URL must not contain whitespace or non-printable characters"
+)
+
+
 class LLMConfig(BaseSettings):
     """
     Chat/synthesis LLM provider config.
@@ -1318,6 +1334,10 @@ class LLMConfig(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
+        # This class holds keys, and pydantic otherwise appends `input_value=...` to every
+        # validation error: a credential pasted into TRELIX_LLM_BASE_URL would be echoed
+        # onto stderr and into a CI log.
+        hide_input_in_errors=True,
     )
 
     provider: Literal["openai", "azure", "anthropic", "bedrock", "vertex", "litellm"] = "openai"
@@ -1325,6 +1345,52 @@ class LLMConfig(BaseSettings):
 
     # ── OpenAI ──────────────────────────────────────────────────────────────
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+
+    # ── OpenAI-compatible local server (TRELIX_LLM_BASE_URL) ──────────────────
+    # Ollama, llama-server or any OpenAI-compatible endpoint, read by the `openai` backend
+    # only (any other provider ignores it with one warning). OPENAI_API_KEY becomes optional.
+    # Blank is unset; the SDK's own OPENAI_BASE_URL is left alone when this is unset.
+    base_url: str | None = None
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def _blank_base_url_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            raise PydanticUseDefault()
+        return value
+
+    @field_validator("base_url")
+    @classmethod
+    def _base_url_is_a_plain_http_url(cls, value: str | None) -> str | None:
+        """Accept `http(s)://host[:port][/path]`, stored verbatim; refuse everything else.
+
+        The messages name the variable and never the value (`hide_input_in_errors` above keeps
+        pydantic from appending it): a URL carrying a user name and password must not reach
+        stderr or a CI log. A port that is not an integer in range is refused here rather than
+        inside the SDK constructor, where `trelix review` would have read it as "LLM not
+        configured" (DiffReviewer swallows constructor errors). Whitespace and control
+        characters are refused for the same reason: `urlsplit` silently drops leading spaces
+        and every tab, CR and LF, so a trailing newline from a secret store would pass the
+        shape check and then fail in httpx, and a space would be percent-encoded into every
+        request path. `isprintable()` admits only one whitespace character, the ASCII space.
+        `urlsplit` itself raises ValueError for an unbalanced IPv6 bracket and for a netloc whose
+        NFKC form introduces one of `/?#@:` (`host℀`); the latter message echoes the whole
+        netloc, user name and password included, so both are mapped to the shape error too.
+        """
+        if value is None:
+            return None
+        if " " in value or not value.isprintable():
+            raise ValueError(_BASE_URL_WHITESPACE_ERROR)
+        try:
+            parts = urlsplit(value)
+            _ = parts.port
+        except ValueError:
+            raise ValueError(_BASE_URL_SHAPE_ERROR) from None
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError(_BASE_URL_SHAPE_ERROR)
+        if "@" in parts.netloc:
+            raise ValueError(_BASE_URL_USERINFO_ERROR)
+        return value
 
     # ── Azure OpenAI ─────────────────────────────────────────────────────────
     azure_api_key: str | None = Field(default=None, alias="AZURE_API_KEY")
@@ -1699,6 +1765,58 @@ class ImageConnectorConfig(BaseSettings):
 # ---------------------------------------------------------------------------
 
 
+class EmbeddingCacheConfig(BaseSettings):
+    """On-disk cache of index-time document embeddings. Off by default.
+
+    Distinct from ``TRELIX_RETRIEVAL_QUERY_CACHE_SIZE``, the in-memory LRU for
+    ``embed_query()``: this one persists the vectors of indexed chunk text across runs
+    (``src/trelix/indexing/embedding_cache.py``), so a fresh index of unchanged text
+    makes no embedding calls. ``dir`` must be absolute; unset means
+    ``$XDG_CACHE_HOME/trelix/embeddings`` else ``~/.cache/trelix/embeddings``, resolved
+    at use by ``resolve_cache_dir`` (``XDG_CACHE_HOME`` is read from ``os.environ``
+    there, never as a settings field). ``max_mb`` is a per-fingerprint-file trim
+    applied after each index run, not a hard limit during one.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="TRELIX_EMBEDDING_CACHE_",
+        env_file=OPERATOR_ENV_FILE,
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    enabled: bool = False
+    dir: Path | None = None
+    max_mb: int = Field(default=4096, ge=1)
+
+    @field_validator("enabled", "dir", "max_mb", mode="before")
+    @classmethod
+    def _blank_is_the_default(cls, value: object) -> object:
+        """A blank `TRELIX_EMBEDDING_CACHE_*=` is unset (an undefined CI variable).
+
+        Raises ``PydanticUseDefault`` as the review validators above do: returning
+        ``None`` here would fail the ``bool``/``int`` validation that follows.
+        """
+        if isinstance(value, str) and not value.strip():
+            raise PydanticUseDefault()
+        return value
+
+    @field_validator("dir", mode="after")
+    @classmethod
+    def _dir_must_be_absolute(cls, value: Path | None) -> Path | None:
+        """Refuse a relative cache directory: it would resolve against the process cwd,
+        which is routinely inside a repository trelix does not own."""
+        if value is None:
+            return None
+        expanded = value.expanduser()
+        if not expanded.is_absolute():
+            raise ValueError(
+                f"TRELIX_EMBEDDING_CACHE_DIR must be an absolute path (got {str(value)!r})"
+            )
+        return expanded
+
+
 class IndexConfig(BaseSettings):
     """
     Top-level config. Instantiate once and pass through the whole pipeline.
@@ -1730,6 +1848,7 @@ class IndexConfig(BaseSettings):
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     git_linker: GitLinkerConfig = Field(default_factory=GitLinkerConfig)
     image: ImageConnectorConfig = Field(default_factory=ImageConnectorConfig)
+    embedding_cache: EmbeddingCacheConfig = Field(default_factory=EmbeddingCacheConfig)
 
     # Multi-granularity indexing: generate LLM file-level summaries (RAPTOR-style).
     # Requires LLM API access. Off by default — zero cost when disabled.

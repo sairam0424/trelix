@@ -112,6 +112,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | `TRELIX_EMBEDDER_PROVIDER` | `local` | Default embedding provider (overridden per command by `--provider`) |
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI chat model for synthesis |
 | `TRELIX_LLM_PROVIDER` | `openai` | LLM backend for synthesis: `openai` \| `azure` \| `anthropic` \| `bedrock` \| `vertex` \| `litellm` |
+| `TRELIX_LLM_BASE_URL` | _(unset)_ | OpenAI-compatible server (Ollama, llama-server, a gateway) for the `openai` backend; `OPENAI_API_KEY` is optional with it set and the output cap is sent as `max_tokens`. `http://` or `https://` with a host, no user name or password, no whitespace. See [CONFIGURATION.md](CONFIGURATION.md#llm--synthesis) |
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | Reranker: `cohere` \| `cross_encoder` \| `plaid` |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant connection URL |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |
@@ -135,7 +136,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TRELIX_PARSE_WORKERS` | `4` | Parallel parse workers during `trelix index` |
-| `TRELIX_USE_BATCH_API` | `false` | Submit new embeddings through OpenAI's Batch API (50% cheaper, up to 24h) instead of embedding synchronously. Honoured by `trelix index`; the `--use-batch-api` flag turns it on for one run regardless. Takes effect only with the `openai` provider |
+| `TRELIX_USE_BATCH_API` | `false` | Submit new embeddings through OpenAI's Batch API (50% cheaper, up to 24h) instead of embedding synchronously. Honoured by `trelix index`; the `--use-batch-api` flag turns it on for one run regardless. Takes effect only with the `openai` provider. Refused together with `TRELIX_EMBEDDING_CACHE_ENABLED=true`, as is `trelix index --resume-batch` (`Cannot resume a Batch API job`): both exit `1` before any model is loaded, because the Batch API path never consults the cache |
 | `TRELIX_CHUNKER_MULTI_GRANULARITY` | `false` | Index sub-symbol blocks and statements (MGS3) |
 | `TRELIX_PARSER_DATAFLOW` | `false` | Extract def-use chains during parsing. Python-only in practice — the extractor requests the Python grammar unconditionally |
 | `TRELIX_PARSER_TAINT` | `false` | **Inert.** `ParserConfig.taint_enabled` is declared but read nowhere in `src/`, so setting this has no effect. Taint analysis happens only when you run `trelix taint`, which does not consult it |
@@ -1479,8 +1480,8 @@ With `--pr`, fetches the diff directly from the GitHub API.
 |------|---------|
 | `0` | The review covered every hunk it was given: "no issues found", or findings with every hunk reviewed. A partial review also exits `0` when `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` allows the share of unreviewed hunks (a warning with the counts goes to stderr). |
 | `1` | Error: invalid configuration, GitHub API failure, unreadable diff, or (without `--diff`) a `--base` or `--head` that git cannot resolve to an object, or a `git diff` between them that fails. |
-| `3` | The review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review). A hunk cut off after some complete findings keeps them and counts as a partial review, not as one that did not run. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) and nothing else, so an empty array alone does not mean "clean": check the exit code. |
-| `4` | The review ran but more than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` of the hunks were not reviewed because the reply was cut off (even after a retry), refused, filtered, not a review, or the call failed. The default `0.0` means any hunk. The findings are printed first, so stdout carries what there is (with `--json`, the array as usual); the counts go to stderr. Set the variable to `1` to exit `0` for a partial review. |
+| `3` | The review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, had its prompt cut by a local server, refused or not a review). A hunk cut off after some complete findings keeps them and counts as a partial review, not as one that did not run. The reason is printed to stderr. With `--json`, stdout still carries an empty array (`[]`) and nothing else, so an empty array alone does not mean "clean": check the exit code. |
+| `4` | The review ran but more than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` of the hunks were not reviewed because the reply was cut off (even after a retry), a local server cut the prompt (`detail: prompt_truncated`), refused, filtered, not a review, or the call failed. The default `0.0` means any hunk. The findings are printed first, so stdout carries what there is (with `--json`, the array as usual); the counts go to stderr. Set the variable to `1` to exit `0` for a partial review. |
 
 Exit code `2` is not used by `review` itself (it is the usage-error code), so
 `3` and `4` are unambiguous for CI wrappers. With `--post-comments`, nothing is posted
@@ -1540,6 +1541,14 @@ GITHUB_TOKEN=$TOKEN trelix review . --pr acme/backend#142 --post-comments
   and status lines such as `Reviewing N hunks across M files...` go to stderr. An error exit (`1`) writes
   nothing to stdout. `--pr` with `--post-comments` prints `Posted review with N inline comments.` to stdout
   after the array once the review is posted, so stdout is then more than the array.
+- With `TRELIX_LLM_BASE_URL` set (an OpenAI-compatible local server), a hunk is reported as `truncated`
+  with `detail: prompt_truncated` in the outcome file when the server's reported `prompt_tokens` is
+  under 0.85 x the cl100k_base count of what trelix sent: Ollama drops the head of a prompt longer than
+  its context length (the system prompt goes first) and answers HTTP 200 with a normal finish reason.
+  Nothing is kept from that reply and the hunk is not retried; a review where every hunk was cut this
+  way exits `3`. The check needs `usage` in the reply and the cl100k_base encoding on disk; when either
+  is missing it warns once and stays off. Only the review call is checked: `trelix ask` (a stream) and
+  the query planner's tool call are not.
 - Binary and oversized files from GitHub PRs are skipped automatically.
 - PRs with more than 3,000 changed files will trigger a truncation warning.
 

@@ -1,0 +1,13 @@
+{
+  "name": "trelix",
+  "version": "3.4.3",
+  "description": "Semantic code search for the repository you are working in, through the trelix MCP server (a pinned trelix-mcp release) plus a skill that says when to use it and when to fall back to grep.",
+  "author": {
+    "name": "Trelix Contributors",
+    "url": "https://github.com/sairam0424/trelix"
+  },
+  "homepage": "https://github.com/sairam0424/trelix/blob/main/docs/integrations/claude-code-plugin.md",
+  "repository": "https://github.com/sairam0424/trelix",
+  "license": "MIT",
+  "keywords": ["code-search", "mcp", "semantic-search", "call-graph", "trelix"]
+}

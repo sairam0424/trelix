@@ -222,8 +222,9 @@ extension reads; it also reads `_meta.trelix.total_available`, so its "N depende
 command show the real count and say how many they list when a long list was cut (`150 dependents (showing 100)`).
 An extension build that predates this reads only the array and shows the cut length with no sign that the list
 was cut. The `federation_search_all` error and empty-registry responses keep their shorter shape.
-A value of `TRELIX_MCP_MAX_K` or `TRELIX_MCP_MAX_RESULT_CHARS` that is not an integer (at least 1 for
-the first, at least 0 for the second) stops `trelix-mcp` at start-up with exit code 2.
+A value of `TRELIX_MCP_MAX_K`, `TRELIX_MCP_RETRIEVER_CACHE_SIZE` or `TRELIX_MCP_MAX_RESULT_CHARS` that is
+not an integer (at least 1 for the first two, at least 0 for the last) stops `trelix-mcp` at start-up with
+exit code 2.
 
 ### Additive: MCP tool annotations, instructions, tool order and `--tools`
 
@@ -270,6 +271,13 @@ upstream frameworks (LangChain, LlamaIndex) release breaking changes, we:
 1. Support the previous major version for 1 minor trelix release
 2. Add the new version support in the same or next minor release
 3. Drop old version support only on a trelix minor or major version bump
+
+**The Claude Code plugin is not a version stamp.** `plugins/trelix/.mcp.json` pins the newest
+*published* `trelix-mcp` with `==`, so a release PR never touches it and `main` never points at
+a version PyPI does not have yet; a follow-up PR moves the pin after PyPI shows the release, so
+the plugin trails the core by one release. The plugin's own `version`
+(`plugins/trelix/.claude-plugin/plugin.json`) is that pin, or `<pin>.N` for a plugin-only
+change, and the twelve-stamp release gate described below does not include it.
 
 ### Why lockstep, and not "independent cadence"
 

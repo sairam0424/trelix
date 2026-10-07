@@ -52,6 +52,32 @@ trelix processes local repository contents and makes network calls to configured
   do not warn. See "trelix warned about SQLite WAL reset" in
   [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
+### Embedding cache on disk (`TRELIX_EMBEDDING_CACHE_ENABLED`)
+
+Off by default; nothing is written. When on, `Indexer` stores the float32 vector of every chunk
+it embeds in `$XDG_CACHE_HOME/trelix/embeddings/<fingerprint>.db` (else
+`~/.cache/trelix/embeddings/`, or `TRELIX_EMBEDDING_CACHE_DIR`, which must be an absolute path),
+keyed by `sha256(chunk_text)`. The file holds no chunk text — hashes and vectors only — but a
+vector is a lossy encoding of the text, and the hash lets anyone who can read the file test
+whether a given text was ever indexed (membership inference). The cache therefore carries the
+sensitivity of every index that wrote to it.
+
+What the code does about it: the directory is created `0o700` and each file created `0o600`
+(POSIX; Windows applies neither); the location comes only from the operator environment
+(`TRELIX_EMBEDDING_CACHE_DIR`, `XDG_CACHE_HOME`, `HOME`), never from the repository or the
+cwd; a relative directory, a `TRELIX_EMBEDDING_CACHE_MAX_MB` below 1, or an unusable directory
+stops the run before any model is loaded rather than running uncached; indexed text is hashed and
+its vector stored, never interpreted.
+
+What it does not do: the hosted GitHub App (`infra/github-app`) forwards every `TRELIX_*` host
+variable except `TRELIX_APP_*` and `TRELIX_GIT_TOKEN` to its `trelix index` child and passes
+`HOME` and `XDG_CONFIG_HOME`, so the child also reads the operator env file. An App host that sets
+`TRELIX_EMBEDDING_CACHE_ENABLED=true` in either place turns the cache on for every tenant's
+index run, and every tenant then shares one `<fingerprint>.db` — a tenant who can read that file
+can test whether another tenant's text was embedded. Never set it on a multi-tenant host. To
+remove a cache, delete the `<fingerprint>.db` files (and any `-journal` sidecar) in that
+directory.
+
 ### REST API — /graph/visualize output path constraint
 
 The `output` query parameter on `GET /graph/visualize` is validated server-side:
@@ -359,8 +385,8 @@ Before indexing a repository you do not fully trust:
   then skips synthesis and prints the context (unless `TRELIX_RETRIEVAL_FLARE=true`,
   `TRELIX_RETRIEVAL_AGENTIC=true`, `--agentic` or `--session` is used; see `ask()` in
   `cli/main.py`), and indexing sends no chunk text to a remote embedding model.
-  Retrieval's query planner is separate: while a chat credential is set it still sends
-  the question text to the chat model, at most once per query per process (the in-memory
+  Retrieval's query planner is separate: while a chat credential or `TRELIX_LLM_BASE_URL` is
+  set it still sends the question text to the chat model, at most once per query per process (the in-memory
   plan cache does not persist between CLI runs; `docs/FAQ.md` explains how to switch that
   off).
   `local` is already the default (`EmbedderConfig.provider` in `core/config.py`), but a

@@ -110,6 +110,12 @@
       },
       "total_mutants": 187
     },
+    "indexing.embedding_cache": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/indexing/embedding_cache.py"
+      ]
+    },
     "indexing.parser.c": {
       "measured": false,
       "patterns": [
@@ -299,6 +305,12 @@
         "src/trelix/indexing/walker.py": "412b59ed4c36f8f139f89ca915030a348060e8443c462eef75ede083c8782452"
       },
       "total_mutants": 354
+    },
+    "llm.offline": {
+      "measured": false,
+      "patterns": [
+        "src/trelix/llm/offline.py"
+      ]
     },
     "retrieval.bm25": {
       "ceilings": {

@@ -55,6 +55,11 @@ pip install trelix-mcp "trelix[llm-all]"     # all LLM providers
 claude mcp add trelix -- trelix-mcp
 ```
 
+Or install the Claude Code plugin, which launches a pinned published release of this server
+through `uvx` and adds a skill that says when to use it: `claude plugin marketplace add
+sairam0424/trelix`, then `claude plugin install trelix@trelix` (see
+`docs/integrations/claude-code-plugin.md` in the repository).
+
 To list only the everyday search and indexing tools, add `--tools core` (the default is `--tools full`, every tool):
 
 ```bash
@@ -184,6 +189,17 @@ TRELIX_MCP_MAX_RESULT_CHARS=15000
 ```
 
 Both are read on every call. A blank value means the default; a value that is not an integer (of at least 1 for `TRELIX_MCP_MAX_K`, at least 0 for `TRELIX_MCP_MAX_RESULT_CHARS`) stops `trelix-mcp` at start-up with exit code 2. See [Result size](#result-size).
+
+### Retriever cache
+
+```bash
+# Most Retrievers kept across tool calls, one per repository (search_code and graph_search_mcp
+# reuse them; each may hold an embedding model with the local provider). Past this bound the
+# least recently used one is dropped, not closed, and the next call for that repo rebuilds it.
+TRELIX_MCP_RETRIEVER_CACHE_SIZE=8
+```
+
+Read on every call. A blank value means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up with exit code 2 and makes a tool call return an error.
 
 ## Tools
 

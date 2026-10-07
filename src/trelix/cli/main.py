@@ -723,6 +723,18 @@ def index(
         raise typer.Exit(1) from exc
 
     if resume_batch:
+        # The poll path hands vectors straight from OpenAI to the store and never consults
+        # the embedding cache, so with the cache on the wrapper would reach the Batch API
+        # method's own type guard and die with a message about CachedIndexEmbedder.
+        # Refused here, before Indexer() loads a model, with the way out named.
+        if config.embedding_cache.enabled:
+            _print_error(
+                "Cannot resume a Batch API job",
+                "TRELIX_EMBEDDING_CACHE_ENABLED=true is set, and the Batch API poll path "
+                "bypasses the cache. Re-run with TRELIX_EMBEDDING_CACHE_ENABLED=false to "
+                "collect the job, then re-enable it.",
+            )
+            raise typer.Exit(1)
         try:
             indexer = Indexer(config)
             job = indexer.db.get_pending_batch_job(config.repo_path)
@@ -3740,11 +3752,27 @@ def review(
     """Review a git diff using trelix retrieval-augmented analysis."""
     _setup_logging(False)
 
+    from pydantic import ValidationError as _PydanticValidationError
+
     from trelix.core.config import IndexConfig
     from trelix.review.diff_parser import DiffParser
     from trelix.review.reviewer import DiffReviewer
 
-    config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    # The same pair of handlers the other commands use. Without them an invalid
+    # TRELIX_LLM_BASE_URL (a ValidationError) or a bad TRELIX_RETRIEVAL_*_WEIGHT_* (a plain
+    # ValueError from RetrievalConfig) reached the user as Typer's traceback, locals included.
+    try:
+        config = IndexConfig(repo_path=str(Path(repo).resolve()))
+    except _PydanticValidationError as exc:
+        first_err = exc.errors()[0]
+        msg = first_err.get("msg", str(exc))
+        field = " -> ".join(str(x) for x in first_err.get("loc", []))
+        detail = f"{field}: {msg}" if field else msg
+        _print_error("Configuration error", detail)
+        raise typer.Exit(1) from exc
+    except (ValueError, FileNotFoundError) as exc:
+        _print_error("Error", exc)
+        raise typer.Exit(1) from exc
 
     # ------------------------------------------------------------------
     # GitHub PR path
