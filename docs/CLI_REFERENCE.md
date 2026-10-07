@@ -1204,7 +1204,7 @@ reports the same. See `eval/README.md`.
 #### Synopsis
 
 ```
-trelix eval-synthesis [<repo_path>] --golden <file>
+trelix eval-synthesis [<repo_path>] --golden <file> [--per-query-out <file>]
 ```
 
 #### Description
@@ -1212,13 +1212,16 @@ trelix eval-synthesis [<repo_path>] --golden <file>
 Evaluates LLM synthesis quality (not just retrieval) by running every query in
 a golden JSONL file through the full retrieve-and-synthesize pipeline and
 scoring the generated answer GroUSE-style: hallucination rate, completeness,
-and faithfulness against the expected answer fragments and symbols.
+and faithfulness against the expected answer fragments and symbols. Every
+query becomes one record (`SynthesisEvalHarness.run_detailed`); the table
+prints their means and counts, and `--per-query-out` writes the records.
 
 #### Options
 
 | Option | Short | Type | Default | Description |
 |--------|-------|------|---------|-------------|
 | `--golden` | `-g` | string | `.trelix/golden_synthesis.jsonl` | Path to the golden JSONL file. |
+| `--per-query-out` | | string | *(none)* | Also write every query's scores and the aggregate to this JSON file. The printed results are the same with or without it. |
 
 #### Examples
 
@@ -1226,40 +1229,57 @@ and faithfulness against the expected answer fragments and symbols.
 # Evaluate with the default golden file
 trelix eval-synthesis .
 
-# Use a custom golden file
-trelix eval-synthesis . --golden tests/golden_synthesis_queries.jsonl
-trelix eval-synthesis /my/repo -g /shared/golden_synthesis.jsonl
+# Use the sample golden file, and keep every query's scores
+trelix eval-synthesis . --golden eval/golden_synthesis_sample.jsonl
+trelix eval-synthesis /my/repo -g /shared/golden_synthesis.jsonl --per-query-out /tmp/synth-a.json
 ```
 
 #### Golden file format
 
 Each line is a JSON object — a superset of `trelix eval`'s golden format,
-adding two optional fields:
+adding optional fields:
 
 ```jsonl
 {"query": "how does JWT validation work?", "relevant_files": ["src/auth/middleware.py"], "expected_answer_fragments": ["decode", "secret", "bearer"], "expected_symbols": ["AuthMiddleware.verify", "jwt.decode"]}
+{"query": "how is a jwt verified", "relevant_files": ["src/auth/middleware.py"], "expected_answer_fragments": ["decode"], "answerable": true, "gold_answer": "AuthMiddleware.verify decodes the bearer token.", "expected_citations": ["src/auth/middleware.py"]}
 ```
 
 - `expected_answer_fragments` — substrings the synthesized answer should
   contain (case-insensitive). Optional.
 - `expected_symbols` — qualified symbol names the answer should reference.
   Optional.
-- Queries that omit both optional fields still contribute to `n_queries` with
-  a score of `1.0`.
+- `answerable` — `true` or `false`; absent means `true`. The right answer to an
+  unanswerable question is an `INSUFFICIENT_EVIDENCE:` line; unanswerable
+  queries are counted under `Unanswerable queries` and left out of the four
+  scores.
+- `gold_answer` — a non-empty string; stored for a future judge, never scored.
+- `expected_citations` — repo-relative paths a correct answer cites; validated
+  and stored here, counted by the next change.
+- A field present with another type (`"answerable": "no"`, `"gold_answer": ""`,
+  `"expected_citations": "a.py"`, any of them `null`), or a line that is JSON
+  but not an object, is refused with its line number and no query runs; a line
+  that is not JSON is skipped.
+- Queries that omit `expected_answer_fragments` and `expected_symbols` still
+  contribute to `n_queries` with completeness `1.0` (faithfulness still depends
+  on the answer).
 
 #### Output
 
+Three golden lines, the second query's retrieval having raised:
+
 ```
-    Synthesis Quality Results (GroUSE-style)     
-┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
-┃ Metric             ┃  Score ┃ Direction       ┃
-┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
-│ Hallucination rate │ 0.0500 │ lower = better  │
-│ Completeness       │ 0.9100 │ higher = better │
-│ Faithfulness       │ 0.9400 │ higher = better │
-│ Overall            │ 0.9300 │ higher = better │
-│ Queries evaluated  │     12 │                 │
-└────────────────────┴────────┴─────────────────┘
+             Synthesis Quality Results (GroUSE-style)              
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Metric               ┃  Score ┃ Direction                       ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Hallucination rate   │ 0.3333 │ lower = better                  │
+│ Completeness         │ 0.6667 │ higher = better                 │
+│ Faithfulness         │ 0.4444 │ higher = better                 │
+│ Overall              │ 0.6222 │ higher = better                 │
+│ Queries evaluated    │      3 │                                 │
+│ Unanswerable queries │      0 │ not in the four scores above    │
+│ Unscoreable queries  │      1 │ placeholder scores; see the log │
+└──────────────────────┴────────┴─────────────────────────────────┘
 ```
 
 #### Notes
@@ -1267,11 +1287,29 @@ adding two optional fields:
 - `<repo_path>` defaults to `.` if omitted.
 - Requires a configured LLM provider (synthesis makes real LLM calls) —
   unlike `trelix eval`, which only exercises retrieval.
-- **Unlike `trelix eval`**, a missing golden file does *not* raise an error
-  or exit non-zero — it exits `0` and prints a table of all-zero scores with
-  `Queries evaluated = 0`. Double-check the `--golden` path if you see an
-  all-zero result; it usually means the file wasn't found, not that
-  synthesis quality is actually zero.
+- A missing golden file prints `Golden file not found: <path>` and exits `1`;
+  a file with only blank or non-JSON lines prints the all-zero table and
+  exits `0`.
+- A query that raised (in retrieval or scoring; a model failure is an empty
+  answer, not an error) is counted under `Unscoreable queries` with placeholder
+  scores (hallucination 1.0, the rest 0.0) and the command still exits `0`.
+- Answers on this path are capped at 2,048 tokens: `synthesize()` hands
+  `_stream_response` an `EmbedderConfig`, which has no `synthesis_max_tokens`,
+  so the fallback applies, while plain `trelix ask` streams at
+  `TRELIX_RETRIEVAL_SYNTHESIS_MAX_TOKENS` (12,000). Pre-existing: the eval
+  measures a shorter answer than the CLI gives.
+- `--per-query-out` writes `{"schema_version": 1, "harness": "synthesis",
+  "records": [...], "aggregate": {...}}` (ASCII-escaped JSON with sorted keys,
+  mode 0600, written atomically through a temporary file beside the target)
+  after the table. Each record has exactly the eight fields `id` (the line's
+  `id`, else `q0001`-style by position), `query`, `answerable`,
+  `hallucination`, `completeness`, `faithfulness`, `overall` and `error`
+  (`null` unless the query raised; then the message, cut at 200 characters,
+  beside the placeholder scores); `aggregate` holds the seven printed values
+  under `hallucination_rate`, `completeness`, `faithfulness`, `overall`,
+  `n_queries`, `unscoreable` and `n_unanswerable`. Exits `1` with a one-line
+  error if the file cannot be written: the directory must exist, and the path
+  must name a file.
 
 ---
 

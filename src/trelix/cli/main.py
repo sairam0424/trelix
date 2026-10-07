@@ -43,7 +43,7 @@ from trelix.store.provenance import _PRUNE_MAX_FRACTION_DEFAULT
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from trelix.core.config import EmbedderConfig, IndexConfig
     from trelix.core.models import IndexedFile
@@ -3403,21 +3403,56 @@ def eval(
     _exit_if_queries_failed(records)
 
 
+def _synthesis_table(metrics: Mapping[str, float]) -> Table:
+    """The `eval-synthesis` results table: the four GroUSE means, then the three counts."""
+    table = Table(title="Synthesis Quality Results (GroUSE-style)")
+    table.add_column("Metric", style="bold")
+    table.add_column("Score", justify="right")
+    table.add_column("Direction", style="dim")
+    table.add_row("Hallucination rate", f"{metrics['hallucination_rate']:.4f}", "lower = better")
+    table.add_row("Completeness", f"{metrics['completeness']:.4f}", "higher = better")
+    table.add_row("Faithfulness", f"{metrics['faithfulness']:.4f}", "higher = better")
+    table.add_row("Overall", f"{metrics['overall']:.4f}", "higher = better")
+    table.add_row("Queries evaluated", str(int(metrics["n_queries"])), "")
+    table.add_row(
+        "Unanswerable queries", str(int(metrics["n_unanswerable"])), "not in the four scores above"
+    )
+    table.add_row(
+        "Unscoreable queries", str(int(metrics["unscoreable"])), "placeholder scores; see the log"
+    )
+    return table
+
+
 @app.command("eval-synthesis")
 def eval_synthesis(
     repo: Annotated[str, typer.Argument(help="Path to the indexed repository.")] = ".",
     golden: Annotated[
         str, typer.Option("--golden", "-g", help="Path to golden JSONL file.")
     ] = ".trelix/golden_synthesis.jsonl",
+    per_query_out: Annotated[
+        str | None,
+        typer.Option(
+            "--per-query-out",
+            help=(
+                "Also write every query's scores and the aggregate to this JSON file "
+                "(schema_version 1), for comparing two runs query by query. The printed "
+                "results are the same with or without it."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Evaluate synthesis quality against a golden QA file (GroUSE-style)."""
     from trelix.core.config import IndexConfig
     from trelix.eval.synthesis import SynthesisEvalHarness
+    from trelix.eval.synthesis_records import (
+        aggregate_synthesis_metrics,
+        write_synthesis_per_query_file,
+    )
 
     config = IndexConfig(repo_path=repo)
     harness = SynthesisEvalHarness(config)
     try:
-        metrics = harness.run(golden)
+        records = harness.run_detailed(golden)
     except FileNotFoundError:
         console.print(f"[red]Golden file not found: {_safe_text(golden)}[/red]")
         console.print("Create a golden_synthesis.jsonl with lines like:")
@@ -3430,16 +3465,14 @@ def eval_synthesis(
         _print_error("Evaluation failed", exc)
         raise typer.Exit(1) from exc
 
-    table = Table(title="Synthesis Quality Results (GroUSE-style)")
-    table.add_column("Metric", style="bold")
-    table.add_column("Score", justify="right")
-    table.add_column("Direction", style="dim")
-    table.add_row("Hallucination rate", f"{metrics['hallucination_rate']:.4f}", "lower = better")
-    table.add_row("Completeness", f"{metrics['completeness']:.4f}", "higher = better")
-    table.add_row("Faithfulness", f"{metrics['faithfulness']:.4f}", "higher = better")
-    table.add_row("Overall", f"{metrics['overall']:.4f}", "higher = better")
-    table.add_row("Queries evaluated", str(int(metrics["n_queries"])), "")
-    console.print(table)
+    # Pure, so outside the `try`: a failure here is a bug, not an evaluation failure.
+    metrics = aggregate_synthesis_metrics(records)
+    console.print(_synthesis_table(metrics))
+    if per_query_out is not None:
+        error = write_synthesis_per_query_file(per_query_out, records, metrics)
+        if error is not None:
+            _print_error("Could not write per-query results", error)
+            raise typer.Exit(1)
 
 
 def _reject_nan(value: float) -> float:

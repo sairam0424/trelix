@@ -494,6 +494,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `retrieval.citations` was re-measured on this tree: 155 mutants, 154 killed, 1 survived, so its
   `survived` ceiling moves `0` → `1` for one equivalent mutant (`and` → `or` in the `lines` guard
   of `citation_as_json`, where a `Citation` has both line fields set or both `None`).
+- **`trelix eval-synthesis` reads golden v2 lines and keeps one record per query** (fifth of six
+  changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not answer
+  the question; this one adds the schema, the records and the per-query file, and the stacked PR that
+  follows extends this bullet with the abstention and citation metrics over those records). A golden
+  line may carry `answerable` (`true`/`false`; absent means `true`), `gold_answer` (a non-empty string,
+  stored and never scored) and `expected_citations` (a list of non-empty repo-relative paths, validated
+  and stored); a field of another type, or a line that is JSON but not an object, is refused with its
+  line number and no query runs (a non-object line used to crash the run). The harness keeps one
+  `SynthesisRecord` per line (`run_detailed`); the four GroUSE means run over the answerable records,
+  so the aggregate's keys are `hallucination_rate`, `completeness`, `faithfulness`, `overall`,
+  `n_queries`, `unscoreable` and the new `n_unanswerable`, and the table gains the rows `Unanswerable
+  queries` and `Unscoreable queries` (that count existed and was never printed). A v1 file returns the
+  numbers it always did: three lines where the second query's retrieval raises still report
+  `hallucination_rate 0.3333` and `unscoreable 1.0`, because an errored record keeps its placeholder
+  scores inside the means. `--per-query-out FILE` writes `{"schema_version": 1, "harness": "synthesis",
+  "records": [...], "aggregate": {...}}` through the same hardened writer as `trelix eval` (sorted
+  keys, mode 0600, atomic; exit `1` if it cannot be written), each record with the eight fields `id`,
+  `query`, `answerable`, `hallucination`, `completeness`, `faithfulness`, `overall`, `error`. The
+  module docstring's ninth failure mode is now worded for `line_out_of_range`. Answers on this path are
+  capped at 2,048 tokens (`synthesize()` hands `_stream_response` an `EmbedderConfig`) while plain
+  `trelix ask` streams at 12,000: pre-existing, documented now.
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
