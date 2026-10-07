@@ -168,7 +168,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 |------|---------|
 | `0` | Success |
 | `1` | Error — configuration invalid, index not found, I/O failure, API error, or user cancelled with Ctrl+C. `trelix eval-compare` also exits `1` for a FAIL verdict (see [`trelix eval-compare`](#trelix-eval-compare)) |
-| `2` | `trelix eval-compare` only — INCONCLUSIVE: the candidate run is neither shown to be better nor worse (see [`trelix eval-compare`](#trelix-eval-compare)). A usage error of any command (an unknown option, a missing argument) also exits `2`; it prints no `verdict:` line |
+| `2` | `trelix eval-compare` only — INCONCLUSIVE: the candidate run is neither shown to be better nor worse (see [`trelix eval-compare`](#trelix-eval-compare)). A usage error of any command (an unknown option, a missing argument, `trelix ask --json` with `--agentic` or `--session`) also exits `2`; it prints no `verdict:` line |
 | `3` | `trelix review` and `trelix eval-compare` only. `trelix review`: the review did not run: no usable LLM is configured, or no hunk got a usable review and none kept a finding (every LLM call failed, or every reply was cut off, refused or not a review) (see [`trelix review`](#trelix-review)). `trelix eval-compare`: REFUSED: the two runs cannot be compared, or an input is unusable (see [`trelix eval-compare`](#trelix-eval-compare)) |
 | `4` | `trelix review` only — the review ran but left more of the diff unreviewed than `TRELIX_REVIEW_MAX_UNREVIEWED_FRACTION` allows (default: any hunk). Whatever findings there are have already been printed (see [`trelix review`](#trelix-review)) |
 
@@ -438,7 +438,7 @@ trelix search /my/repo "database connection pool" --provider openai
 #### Synopsis
 
 ```
-trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session ID]
+trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session ID] [--json]
 ```
 
 #### Description
@@ -446,7 +446,7 @@ trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session I
 Retrieves relevant code context and synthesizes a natural-language answer
 using an LLM. With `--provider local` (FLARE and agentic mode off), trelix prints the
 retrieved context text instead of a synthesized answer. Streaming output is
-used when an LLM is available.
+used when an LLM is available; `--json` prints one JSON object instead (schema below).
 
 #### Options
 
@@ -455,6 +455,7 @@ used when an LLM is available.
 | `--provider` | string | `local` | Embedding provider for retrieval. |
 | `--agentic` | flag | `false` | Enable a multi-turn ReAct loop: the agent can issue multiple sub-queries, observe results, and refine its answer. Requires an LLM API key. |
 | `--session` | string | — | Resume a persisted agent session by ID. Implies `--agentic`. See [`trelix agent sessions list`](#trelix-agent-sessions-list). |
+| `--json` | flag | `false` | Print one JSON object (`query`, `answer`, `abstained`, `abstain_reason`, `citations`) instead of streaming; errors go to stderr and stdout stays empty. Needs LLM synthesis: a usage error with `--agentic`/`--session` (exit `2`), refused in context-only mode (exit `1`); see the schema and Notes below. |
 
 #### Examples
 
@@ -467,7 +468,41 @@ OPENAI_API_KEY=sk-... trelix ask . "explain the caching strategy"
 
 # Agentic mode for complex questions
 OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to database" --agentic
+
+# One JSON object with verified citations (tags need TRELIX_RETRIEVAL_CITATIONS=true)
+OPENAI_API_KEY=sk-... TRELIX_RETRIEVAL_CITATIONS=true trelix ask . "how is a jwt verified" --json
 ```
+
+#### JSON output schema
+
+With `--json`, stdout carries exactly one object and nothing else (the answer is not streamed):
+
+```json
+{
+  "query": "how is a jwt verified",
+  "answer": "The token is read from the header [C2] and verified by `verify` [C1].",
+  "abstained": false,
+  "abstain_reason": null,
+  "citations": [
+    {"marker": "[C2]", "status": "valid", "path": "src/auth/middleware.py", "lines": "70-80", "symbol": "AuthMiddleware.bearer", "detail": ""},
+    {"marker": "[C1]", "status": "valid", "path": "src/auth/middleware.py", "lines": "42-67", "symbol": "AuthMiddleware.verify", "detail": ""}
+  ]
+}
+```
+
+- `answer`: the whole answer; after an abstention the `INSUFFICIENT_EVIDENCE:` line, after an
+  empty retrieval the notice `[trelix] No relevant code found — cannot synthesize an answer.`.
+- `abstained`, `abstain_reason`: `true` with `"insufficient_evidence"` or `"no_results"` for the
+  two abstentions, otherwise `false` and `null`. An abstention exits `0` like an answer.
+- `citations`: one object per distinct `[C#]` marker of the answer, in order of first appearance,
+  with exactly the keys `marker`, `status`, `path`, `lines`, `symbol`, `detail`. `status` is
+  `valid`, `file_missing`, `line_out_of_range` or `unknown` (no retrieved chunk carries the tag);
+  `lines` is `"<start>-<end>"`; `detail` is `""` when valid, one line ending `re-index` for
+  `file_missing` and `line_out_of_range` (the index is behind the tree) and `no retrieved chunk
+  has this tag` for `unknown`; `path`, `lines` and `symbol` are `null` for an `unknown` marker.
+  The list is `[]` when the answer has no marker, when it abstained, and whenever
+  `TRELIX_RETRIEVAL_CITATIONS` is off (the prompt never asked for tags, so a `[C1]` in the answer
+  is text). Path, lines and symbol come from the index, never from the model's text.
 
 #### Notes
 
@@ -514,6 +549,30 @@ OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to data
   whether the model is told to write it. GraphRAG map-reduce answers (large contexts under the
   `openai` or `azure` embedder, FLARE path only) are not given the sentence and so never abstain
   this way.
+- With `TRELIX_RETRIEVAL_CITATIONS=true`, when the model answered (no abstention, no empty
+  retrieval), a blank line and a `Sources:` footer follow the streamed answer, one row per distinct
+  `[C#]` marker in order of first appearance: `  [C2] src/auth/middleware.py:70-80
+  AuthMiddleware.bearer` for a marker whose chunk still fits the file on disk (`valid`),
+  `  [C3] unverified (line_out_of_range): <detail>` for the others (`file_missing` and
+  `line_out_of_range`, whose detail ends `re-index`; `unknown`, whose detail is `no retrieved chunk
+  has this tag`), and `Sources: none cited.` for an answer without markers. The answer text itself
+  is never rewritten: it has already streamed.
+  With the flag off nothing is verified, no footer is printed and stdout is what it was before the
+  footer existed. Under `TRELIX_RETRIEVAL_FLARE=true` the footer follows the last round's answer.
+- `--json` prints one JSON object on stdout and nothing else (schema above); the exit code is `0`
+  for an answer or an abstention. On a synthesis failure stdout stays empty, the reason goes to
+  stderr and the command exits `1`, under `TRELIX_RETRIEVAL_FLARE=true` too: the synthesizer's own
+  notices, which reach stdout in human mode, are kept off it under `--json`. Three refusals, each
+  before the index is opened or the query embedded: `--json` with `--agentic` or `--session` is a
+  usage error, `--json cannot be combined with --agentic or --session.`, exit `2` (raised before
+  the index check); `--json` with `TRELIX_RETRIEVAL_AGENTIC=true` prints `Error: --json is not
+  available in agentic mode (TRELIX_RETRIEVAL_AGENTIC=true): the agent loop prints its own result.
+  Unset it or drop --json.` to stderr and exits `1`; `--json` in context-only mode (`--provider
+  local`, FLARE off) prints `Error: --json needs LLM synthesis; with the local embedder and FLARE
+  off, trelix ask prints the retrieved context only. Use trelix search --json for machine-readable
+  retrieval, or a non-local --provider.` to stderr and exits `1` (with FLARE on, the `local`
+  embedder synthesises, so `--json` works). The index check (`No index found ...`, exit `1`) runs
+  before the last two.
 - Reranking is off for this command and cannot be enabled by environment: `ask` builds
   `RetrievalConfig(rerank=False)` (`ask()` in `src/trelix/cli/main.py`), which outranks
   `TRELIX_RETRIEVAL_RERANK`. Applies to the plain, `--agentic` and FLARE paths alike —

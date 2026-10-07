@@ -31,6 +31,7 @@ _READ_COMMANDS = [
     pytest.param(["search", "{repo}", "q", "--provider", "local"], id="search"),
     pytest.param(["ask", "{repo}", "q", "--provider", "local"], id="ask"),
     pytest.param(["ask", "{repo}", "q", "--agentic", "--provider", "local"], id="ask-agentic"),
+    pytest.param(["ask", "{repo}", "q", "--json", "--provider", "local"], id="ask-json"),
     pytest.param(["query", "{repo}", "q", "--provider", "local"], id="query"),
     pytest.param(["call-graph", "{repo}", "sym", "--provider", "local"], id="call-graph"),
     pytest.param(["graph", "{repo}"], id="graph"),

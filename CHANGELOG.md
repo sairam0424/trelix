@@ -329,6 +329,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `nomic-code`) to the embedder code.
 
 ### Added
+- **GenAI `chat` spans for every LLM call, behind `TRELIX_OTEL_ENABLED`** (roadmap C-8, requirement
+  R-C6-02; PR 3 of 4). `build_chat_client()` returns the backend wrapped in a `TracedChatClient`
+  (`src/trelix/llm/otel.py`) when the flag resolves true from the environment, and every
+  `complete()`, `stream()` and `tool_call()` emits one `chat {request model}` span through the same
+  `TelemetryHandler` as the retrieval legs (same instrumentation scope, no new provider). Every span
+  carries `gen_ai.operation.name`, `gen_ai.provider.name` (`openai`, `azure.ai.openai`, `anthropic`,
+  `aws.bedrock`, `gcp.gemini` or `gcp.vertex_ai`, and the custom value `litellm`),
+  `gen_ai.request.model` (the backend's active id: the Azure deployment, the LiteLLM model, Bedrock's
+  possibly swapped id) and `gen_ai.request.max_tokens` (the effective cap). A `complete()` span adds
+  `gen_ai.response.model`, `gen_ai.response.finish_reasons` (the provider's raw word),
+  `trelix.finish_reason` (the normalised one), `gen_ai.usage.input_tokens` (input plus cache read
+  plus cache write, as the GenAI Anthropic conventions require), `gen_ai.usage.output_tokens` and
+  the two cache counts when non-zero; `stream()` and `tool_call()` spans carry request attributes
+  only (`ToolCallResponse` has no usage; a stream is not buffered). A backend exception ends the
+  span `ERROR` with `error.type` and the status description both set to the exception's class name
+  (never `str(exc)`, which can echo a provider error body) and is re-raised unchanged. Prompt,
+  system instruction and reply text reach a span only under `TRELIX_OTEL_CAPTURE_CONTENT=true` AND
+  a span content mode in `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`; `stream()` replies
+  and images never do. The off path returns the same backend object and type as before and imports
+  nothing from `opentelemetry` (one memoised `RetrievalConfig()` read per process). With the flag
+  on but `opentelemetry-util-genai` not installed, one WARNING per process names the cause and the
+  bare backend is returned. The wrapper exposes the backend's `_client` by identity (the
+  synthesizer, the planner's decomposition path and GraphRAG read it to choose the
+  `TrelixChatClient` path over a legacy raw-OpenAI path) and nothing else. The placeholder reply of
+  an unconfigured backend is recorded like any other (`gen_ai.response.model="none"`). With a
+  `MeterProvider` installed, the library also records `gen_ai.client.operation.duration` and
+  `gen_ai.client.token.usage` for these spans. `docs/OBSERVABILITY.md` § LLM chat spans has the
+  attribute table, the provider map and the stream lifecycle; `scripts/mutation.py` gains the
+  `llm.otel` scope and deselects the new span test file (the global TracerProvider is one-shot).
+  Owner decisions taken: the `otel` extra floor (under Changed), the placeholder span, request-only
+  `stream()`/`tool_call()` spans, the custom `litellm` value, the one-time WARNING and the
+  class-name-only error text.
 - **`trelix-mcp --root PATH` (repeatable) and `TRELIX_ALLOWED_REPO_ROOTS`** confine every
   `repo_path`, `federation_add_repo.path` and `trelix://repo/...` URI to those roots; a path
   outside answers `isError` with 'repo_path is not inside an allowed repository root';
@@ -348,9 +380,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   pin (a literal test that also compares it with the `.mcp.json` pin, so a pin bump that forgets
   `version` fails) and a contents hash in `tests/unit/test_claude_plugin_manifest.py` makes
   every plugin edit loud (it cannot see whether `version` was bumped with it);
-  `claude plugin validate --strict` stays a manual CONTRIBUTING step (CI runs the offline tests,
-  not the validator); and the pin check is offline only (a released CHANGELOG section, not newer
-  than the trelix-mcp stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
+  `claude plugin validate --strict` runs in CI (the bullet below) and before committing; and the
+  pin check is offline only (a released CHANGELOG section, not newer than the trelix-mcp
+  stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
   pin the manifests, the pin form (an exact `==` to a version with a released CHANGELOG section,
   not newer than the trelix-mcp stamp), the plugin tree, and that the skill names only tools the
   server registers. Guide: `docs/integrations/claude-code-plugin.md`; a paste-able block for other
@@ -390,6 +422,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   joins the ruff scope in CI and `make lint`; the plugin README, the skill, the integration guide
   and SECURITY.md describe the line and what the hook runs; the plugin version moves to
   `3.4.3.1` (a plugin-only change on the same pin).
+- **CI runs `claude plugin validate --strict` on the marketplace and the plugin** (roadmap B-3,
+  PR 4 of 4). The `TypeScript SDK` job of `ci.yml` runs Claude Code's own validator, through an
+  exactly pinned `npx -y @anthropic-ai/claude-code@<version>` from the repository root, over
+  `.claude-plugin/marketplace.json` and `plugins/trelix/`, with warnings treated as errors, so a
+  manifest Claude Code would warn on (an unquoted `${CLAUDE_PLUGIN_ROOT}`, an unrecognised field,
+  a missing `version`) fails CI instead of reaching users; the offline tests keep pinning the
+  shapes this repository chose. The validator runs with
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the package download is its only network use.
+  A test pins the step (its three command lines, the working directory, the position after the
+  Node setup, no masking) and requires every `npx` in every workflow to carry an exact `@X.Y.Z`;
+  the Claude Code version is a literal in `ci.yml` and that test only. The plugin version moves
+  to `3.4.3.2` (a README sentence; same pin).
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
   of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
   answer the question; this one tags the context and instructs the model, nothing reads the model's
@@ -421,6 +465,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   newline-terminated 7-line file has 8 lines, so its whole-file `<module>` symbol (`1-8` from the
   Python parser) verifies as `valid` on a fresh index. The module joins the mutation driver's scope
   as `retrieval.citations`.
+- **`trelix ask --json`, and a verified `Sources:` footer after a cited answer** (fourth of six
+  changes toward `trelix ask` answers that cite the retrieved code; the first one a user sees).
+  `--json` prints exactly one JSON object on stdout, `{query, answer, abstained, abstain_reason,
+  citations}`, and nothing else: `answer` is the whole answer, the `INSUFFICIENT_EVIDENCE:` line or
+  the no-results notice; `abstained` is `true` for either abstention, which exits `0` like an
+  answer and leaves `citations` empty; each element of `citations` is `{marker, status, path,
+  lines, symbol, detail}`, `lines` as `"70-80"`, and `path`, `lines`, `symbol` are `null` for a
+  marker no retrieved chunk carries.
+  A synthesis failure leaves stdout empty and exits `1`, under `TRELIX_RETRIEVAL_FLARE=true` too:
+  the Synthesizer's own notices stay off stdout under `--json`. `--json` is refused before the
+  index is opened: with `--agentic`/`--session` as a usage error (exit `2`), with
+  `TRELIX_RETRIEVAL_AGENTIC=true` (exit `1`, the agent loop prints its own result) and in
+  context-only mode (`--provider local`, FLARE off: exit `1`, pointing at `trelix search --json`).
+  In human mode, when `TRELIX_RETRIEVAL_CITATIONS=true` tagged the context and the model answered,
+  a blank line and a `Sources:` footer follow the streamed answer: `  [C2]
+  src/auth/middleware.py:70-80 AuthMiddleware.bearer` for a marker that verifies, `  [C3]
+  unverified (line_out_of_range): <detail>` otherwise, `Sources: none cited.` for an answer without
+  markers. The answer text is never rewritten (it has already streamed), and the path, lines and
+  symbol in both renderings come from the index, never from the model. With the flag off nothing is
+  verified (a `[C1]` the prompt never asked for is text), no footer is printed and stdout is byte for
+  byte what it was. Also: a cited file the process can no longer read is reported as `file_missing`
+  with the error's name (`could not be read (PermissionError); re-index`) instead of crashing the
+  footer after the answer streamed; `Synthesizer(stream_to_stdout=False)` and
+  `Synthesizer.last_context` are new; REST `GET /ask`, `trelix review` and the MCP `ask_agent`
+  tool are unchanged. The mutation driver's throwaway tree now carries `plugins/` and
+  `.claude-plugin/` (the Claude Code plugin tests read them from the tree root) and
+  `retrieval.citations` was re-measured on this tree: 155 mutants, 154 killed, 1 survived, so its
+  `survived` ceiling moves `0` → `1` for one equivalent mutant (`and` → `or` in the `lines` guard
+  of `citation_as_json`, where a `Citation` has both line fields set or both `None`).
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
@@ -730,8 +803,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `int(TRELIX_LLM_LOCAL_CONTEXT_TOKENS × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`, and an
   explicit integer budget still wins. Setting it without `TRELIX_LLM_BASE_URL` is a configuration
   error that names both variables and never the value.
+- **e2e: `trelix review` against a stdlib OpenAI-compatible fake server on `127.0.0.1`** (good,
+  cut-off, prompt-truncated, garbage-body and prose replies; exit 4 and the outcome record
+  asserted). `tests/e2e/fake_openai_server.py` is `http.server` plus `threading`, binds port 0,
+  answers `/v1/chat/completions` as JSON or as SSE when the request streams, and records every
+  request; the installed `trelix` console script runs as a real subprocess with a scrubbed
+  environment, so the `trelix-local` bearer, the `max_tokens` field, the `prompt_truncated`
+  detail and the secret-free `Configuration error` for a URL carrying a credential are proven at
+  the process boundary. Runs in CI's `e2e` job and in the release smoke job against the built
+  wheel, never in `make test`.
+- **`docs/OFFLINE.md`: running trelix without a cloud key.** Ollama and llama-server settings for the
+  `openai` backend through `TRELIX_LLM_BASE_URL`, why the context length should be 64k and how
+  `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` sizes the retrieval budget, what the prompt-truncation check
+  (0.85 x the cl100k_base count) does and does not catch, the 20B model-size floor the warnings
+  assume (an assumption, not a measurement: the candidate models are listed as unmeasured against
+  R-C4-05's bar), the planner calls every search makes once the variable is set, the one-time
+  prefetch for the embedder (`HF_HUB_OFFLINE`), the grammars and tiktoken (`TIKTOKEN_CACHE_DIR`; the
+  default cache is under the temp directory), and a troubleshooting table keyed on the outcome-file
+  details (`exception:NotFoundError`, `prompt_truncated`, `exception:APIConnectionError`, ...).
+  Linked from `docs/README.md`, the user guide, the FAQ and TROUBLESHOOTING.md; the three warnings
+  that already pointed at it now resolve.
 
 ### Changed
+- **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim
+  space in vec0 tables, which trelix's `DELETE`+`INSERT` upsert and `--prune` rely on; 0.1.9 is
+  the release the vec0 contract tests were verified against; the ceiling keeps the 0.1.10
+  pre-releases (ivf/diskann) out until they are tested, and PEP 440 places every `0.1.10aN` under
+  `<0.1.10`. `pip install` already resolved 0.1.9, so nothing changes for a fresh install.
+  `tests/unit/test_dependency_floor_guards.py` now pins the requirement string and the installed
+  release (`sqlite_vec.__version__` and `select vec_version()`), so a venv on an older release
+  fails one test with the reason instead of running on it silently.
 - **The retriever's per-query debug trace is written beside the index, not beside the source.**
   `Retriever._debug_dir` is `<directory of store.db_path>/debug/`, which is the same
   `<repo>/.trelix/debug/` as before for the default `db_path`; an index kept elsewhere
@@ -832,6 +933,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     An unusable `TRELIX_MCP_MAX_K` or `TRELIX_MCP_MAX_RESULT_CHARS` stops `trelix-mcp` at start-up
     with exit code 2. `docs/MCP_GUIDE.md` and `docs/BACKWARDS_COMPATIBILITY.md` describe the limits.
   - Not covered: `build_knowledge_graph` and `federation_list_repos` are not cut.
+- **The `otel` extra now requires `opentelemetry-util-genai>=1.2b0`** (it accepted `>=1.0b0`). The
+  chat spans need two things that exist only from 1.2b0: `suspend()`, which detaches a `stream()`
+  span from the caller's context while the stream is drained (without it every span the consumer
+  opens mid-stream would nest under the chat span), and the `gen_ai.usage.cache_write.input_tokens`
+  attribute name (1.0b0 and 1.1b0 emit `gen_ai.usage.cache_creation.input_tokens`, which the GenAI
+  registry no longer has). Verified against 1.2b0 on 2026-10-07; `pip install 'trelix[otel]'` picks
+  it up, and `tests/unit/test_dependency_floor_guards.py` pins the floor. Nothing changes for a
+  default install: the extra is optional.
+- **`trelix.retrieval.otel_tracing` keeps every public name; the OTLP metrics wiring moved.** The
+  metrics endpoint mapping, the `MeterProvider` builder and the embedding counter definitions now
+  live in `trelix.retrieval.otel_metrics` and are re-exported, so `otel_tracing.py` stays under the
+  500-line limit with the `is_enabled_from_env()` and `handler_from_env()` helpers the LLM factory
+  uses. No behaviour change; the metrics tests (`tests/unit/test_otel_metrics*.py`) were not touched
+  by the move.
 
 ## [3.4.3] — 2026-10-04
 

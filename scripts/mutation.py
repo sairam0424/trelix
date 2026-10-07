@@ -155,6 +155,7 @@ SCOPE: dict[str, tuple[str, ...]] = {
     "indexing.embedding_cache": ("src/trelix/indexing/embedding_cache.py",),
     "indexing.walker": ("src/trelix/indexing/walker.py",),
     "llm.offline": ("src/trelix/llm/offline.py",),
+    "llm.otel": ("src/trelix/llm/otel.py",),
     "retrieval.fusion": ("src/trelix/retrieval/fusion.py",),
     "retrieval.bm25": ("src/trelix/retrieval/bm25.py",),
     "retrieval.citations": ("src/trelix/retrieval/citations.py",),
@@ -290,9 +291,15 @@ MUTMUT_CONFIG: dict[str, object] = {
     # (test_request_guard_deployment_contracts). `_SYNC_DIRS` / `_SYNC_FILES` below gained
     # the same four, since the throwaway tree is what mutmut copies from.
     #
+    # `plugins` and `.claude-plugin` joined when #479 added the Claude Code plugin after
+    # `retrieval.citations` was first measured: the Claude Code plugin tests
+    # (tests/unit/test_claude_plugin_*.py) read both from the tree root, so without them the
+    # stats pass failed under `-x` on the merged tree (`_SYNC_DIRS` gained the same two).
+    #
     # The alternative -- deselecting those files -- was rejected: it shrinks the
     # kill set, which is the one thing a survivor count must not do.
     "also_copy": [
+        ".claude-plugin",
         ".env.example",
         ".gitignore",
         ".github",
@@ -308,6 +315,7 @@ MUTMUT_CONFIG: dict[str, object] = {
         "LICENSE",
         "Makefile",
         "packages",
+        "plugins",
         "README.md",
         "scripts",
         "SECURITY.md",
@@ -351,6 +359,9 @@ DESELECTED_FILES: tuple[str, ...] = (
     "tests/unit/test_otel_metrics_reentry.py",
     "tests/unit/test_otel_tracing.py",
     "tests/unit/test_structured_logging.py",
+    # Same attach-to-the-incumbent TracerProvider fixture as test_otel_tracing.py, same
+    # one-shot global. Its SDK-free twin, test_otel_llm_wrapper.py, stays in the kill set.
+    "tests/unit/test_otel_llm_spans.py",
 )
 # ROUND 8 (mutation:widen-scope retry), NOT reproduced from this tuple -- reverted
 # back to the 4 above after the run that needed it, per this task's own prescribed
@@ -515,6 +526,8 @@ _SYNC_DIRS = (
     "config",
     "eval",
     "infra",
+    "plugins",
+    ".claude-plugin",
 )
 _SYNC_FILES = (
     "pyproject.toml",

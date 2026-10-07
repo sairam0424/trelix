@@ -69,6 +69,20 @@ markers`, and `addopts` carries `--strict-markers` so a typo becomes a collectio
 Both matter — while the marker was unregistered, `-m "not integration"` matched nothing
 and quietly ran the entire suite including the live Azure/Bedrock tests.
 
+### E2E tests
+
+`tests/e2e/` is the real-subprocess suite (the installed `trelix` and `trelix-mcp` console
+scripts, fresh venvs from freshly-built wheels, real sockets). `tests/e2e/conftest.py` tags
+every test there `e2e`, `enable_socket` and `requires_network` by directory, so the suite is
+outside `make test`/`make test-fast` (those name `tests/unit/` only) and runs
+with `make test-e2e`, in CI's `e2e` job and in the release smoke job against the built wheels.
+`tests/e2e/test_review_offline_e2e.py` is the real-socket example that needs no model and no
+network: `trelix review` runs against `tests/e2e/fake_openai_server.py`, a stdlib
+OpenAI-compatible server on `127.0.0.1`. The test loads tiktoken's `cl100k_base` at collection
+so the child process finds it on disk (a cold machine downloads it once there). The console
+script on PATH is what runs, so install your worktree editable (or export
+`PYTHONPATH=<worktree>/src`) before trusting a local run.
+
 ## Branch Strategy
 
 ```
@@ -665,15 +679,21 @@ that lists every command the plugin runs) are read by Claude Code, not by this p
 - **The skill describes the pinned release, not `develop`.** A tool or parameter that only
   `develop` has stays out of `SKILL.md` until the pin reaches a release that has it;
   `tests/unit/test_claude_plugin_skill.py` pins the tool names and the develop-only parameters.
-- **Validate before committing** (a manual step: CI runs the offline tests, not the validator,
-  which would need an npm install of Claude Code):
+- **Validate before committing; CI validates too.** `.github/workflows/ci.yml`'s `TypeScript SDK`
+  job runs the same two commands through a pinned `npx -y @anthropic-ai/claude-code@<version>`
+  with `--strict`, so a manifest Claude Code would warn on fails CI; the version is a literal in
+  `tests/unit/test_claude_plugin_validate_ci.py` and in the three `npx` lines, moved together by
+  hand (put the output of `npm view @anthropic-ai/claude-code@<version> version dist.integrity`
+  and the two `✔ Validation passed` lines at that version in the PR body; a newer validator that
+  warns on something the old one accepted is a plugin change to make, not a warning to silence).
+  Locally:
 
   ```bash
   claude plugin validate --strict .
   claude plugin validate --strict plugins/trelix
   ```
 
-  Both must end with `✔ Validation passed`.
+  Both must end with `✔ Validation passed`; `--strict` turns a warning into exit 1.
 - **Smoke-test from the checkout.** `claude plugin marketplace add /path/to/this/checkout` loads
   the plugin in place (edits take effect at the next session or after `/reload-plugins`, no
   version bump needed); then `claude plugin install trelix@trelix`, open a scratch project, and

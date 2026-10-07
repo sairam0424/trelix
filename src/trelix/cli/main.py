@@ -53,6 +53,8 @@ if TYPE_CHECKING:
     from trelix.eval.suite_run import SuiteRun
     from trelix.indexing.embedding_cache import EmbeddingCache
     from trelix.indexing.indexer import Indexer
+    from trelix.retrieval.retriever import Retriever
+    from trelix.retrieval.synthesizer import Synthesizer
     from trelix.review.diff_parser import DiffHunk, DiffParser
     from trelix.review.reviewer import ReviewOutcome
     from trelix.store.db import Database
@@ -1608,6 +1610,17 @@ def search(
 # ask
 # ---------------------------------------------------------------------------
 
+# `--json` promises one JSON object on stdout, which only the synthesis paths can keep.
+_ASK_JSON_CONTEXT_ONLY = (
+    "--json needs LLM synthesis; with the local embedder and FLARE off, trelix ask prints the "
+    "retrieved context only. Use trelix search --json for machine-readable retrieval, or a "
+    "non-local --provider."
+)
+_ASK_JSON_AGENTIC_ENV = (
+    "--json is not available in agentic mode (TRELIX_RETRIEVAL_AGENTIC=true): the agent loop "
+    "prints its own result. Unset it or drop --json."
+)
+
 
 @app.command()
 def ask(
@@ -1623,9 +1636,21 @@ def ask(
             "--session", help="Resume a persisted agent session by ID (implies --agentic)."
         ),
     ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=(
+                "Print one JSON object (query, answer, abstained, abstain_reason, citations) "
+                "instead of streaming; errors go to stderr."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Ask a question — retrieval + LLM synthesis (requires OPENAI_API_KEY for full synthesis)"""
     _setup_logging(False)
+    if json_output and (agentic or session is not None):
+        raise typer.BadParameter("--json cannot be combined with --agentic or --session.")
 
     from pydantic import ValidationError as _PydanticValidationError
 
@@ -1655,6 +1680,14 @@ def ask(
     # --agentic flag overrides the config field; --session implies --agentic
     if session is not None or agentic:
         config.retrieval.agentic_enabled = True
+    # Both refusals are decided from config alone, before the index is opened or the query
+    # embedded (the flag-form of the first one was a usage error above).
+    if json_output and config.retrieval.agentic_enabled:
+        _print_error("Error", _ASK_JSON_AGENTIC_ENV)
+        raise typer.Exit(1)
+    if json_output and config.embedder.provider == "local" and not config.retrieval.flare_enabled:
+        _print_error("Error", _ASK_JSON_CONTEXT_ONLY)
+        raise typer.Exit(1)
 
     try:
         if config.retrieval.agentic_enabled:
@@ -1680,50 +1713,108 @@ def ask(
         raise typer.Exit(1) from exc
 
     try:
-        synth = Synthesizer(config.embedder, llm_config=config.llm)
-        if config.retrieval.flare_enabled:
-            from trelix.retrieval.flare import FLARELoop
-
-            # Synthesizer.synthesize() (called inside FLARELoop.run()) already
-            # streamed every token to stdout as it arrived — printing the
-            # returned string here would print the whole answer a second time.
-            loop = FLARELoop(retriever, synth, config)
-            loop.run(query)
-        else:
-            context = retriever.retrieve(query)
-            # If provider=local (no API key), print the context text directly.
-            # Read the resolved provider off config, not the raw CLI arg — the
-            # effective value may come from TRELIX_EMBEDDER_PROVIDER when
-            # --provider wasn't passed.
-            if config.embedder.provider == "local":
-                console.print(
-                    Panel(f"[bold cyan]Context for:[/bold cyan] {_safe_text(query)}", expand=False)
-                )
-                if context.context_text:
-                    console.print(_safe_text(context.context_text))
-                else:
-                    console.print("[yellow]No relevant code found.[/yellow]")
-                return
-            # Escaped per token, not per answer: each print() renders in
-            # isolation, so a bracket pair split across two tokens can never
-            # form a tag, and a complete "[/!]" inside one token can no longer
-            # abort the stream mid-answer.
-            for token in synth.stream(context, config.retrieval):
-                # stream() never raises: it records the failure in last_error before
-                # yielding its banner / "not configured" placeholder. Neither is an
-                # answer, so neither goes to stdout.
-                if synth.last_error is not None:
-                    break
-                console.print(_safe_text(token), end="", highlight=False)
-            console.print()  # final newline
+        synth = Synthesizer(
+            config.embedder, llm_config=config.llm, stream_to_stdout=not json_output
+        )
+        answer = _ask_synthesize(config, retriever, synth, query, json_output)
     except Exception as exc:
         _print_error("Synthesis failed", exc)
         raise typer.Exit(1) from exc
 
+    if answer is None:  # context-only mode printed the retrieved context; nothing to verify
+        return
     # Outside the try: typer.Exit is a RuntimeError, which the handler above would catch.
     if synth.last_error is not None:
         _print_error("Synthesis failed", synth.last_error)
         raise typer.Exit(1)
+    _ask_emit(config, synth, query, answer, json_output)
+
+
+def _ask_synthesize(
+    config: IndexConfig, retriever: Retriever, synth: Synthesizer, query: str, json_output: bool
+) -> str | None:
+    """Run `ask`'s synthesis mode and return the answer text.
+
+    Returns None when context-only mode (local embedder, FLARE off) printed the retrieved
+    context instead; `ask` refused `--json` for that mode before retrieval. Under `--json`
+    nothing here reaches stdout: the plain path collects the tokens and the FLARE path's
+    Synthesizer was built with `stream_to_stdout=False`.
+    """
+    if config.retrieval.flare_enabled:
+        from trelix.retrieval.flare import FLARELoop
+
+        # Synthesizer.synthesize() (called inside FLARELoop.run()) already streamed every
+        # token to stdout as it arrived — the returned string is for verification and
+        # `--json` only; printing it would print the whole answer a second time.
+        return FLARELoop(retriever, synth, config).run(query)
+
+    context = retriever.retrieve(query)
+    # If provider=local (no API key), print the context text directly. Read the resolved
+    # provider off config, not the raw CLI arg — the effective value may come from
+    # TRELIX_EMBEDDER_PROVIDER when --provider wasn't passed.
+    if config.embedder.provider == "local":
+        console.print(
+            Panel(f"[bold cyan]Context for:[/bold cyan] {_safe_text(query)}", expand=False)
+        )
+        if context.context_text:
+            console.print(_safe_text(context.context_text))
+        else:
+            console.print("[yellow]No relevant code found.[/yellow]")
+        return None
+
+    tokens: list[str] = []
+    # Escaped per token, not per answer: each print() renders in isolation, so a bracket
+    # pair split across two tokens can never form a tag, and a complete "[/!]" inside one
+    # token can no longer abort the stream mid-answer.
+    for token in synth.stream(context, config.retrieval):
+        # stream() never raises: it records the failure in last_error before yielding its
+        # banner / "not configured" placeholder. Neither is an answer, so neither goes to
+        # stdout (nor into the answer).
+        if synth.last_error is not None:
+            break
+        tokens.append(token)
+        if not json_output:
+            console.print(_safe_text(token), end="", highlight=False)
+    if not json_output:
+        console.print()  # final newline
+    return "".join(tokens)
+
+
+def _ask_emit(
+    config: IndexConfig, synth: Synthesizer, query: str, answer: str, json_output: bool
+) -> None:
+    """Print what follows a synthesised answer: the JSON object under `--json`, otherwise the
+    verified `Sources:` footer when the context carried citation tags and the model answered.
+
+    Verification runs only when the context carried `citation_sources` (the prompt asked for
+    tags) and the model answered: with the flag off a `[C1]` in the answer is text, and an
+    abstention names what is missing, not sources. Either way `citations` is empty and no footer
+    is printed, so the JSON and the footer agree.
+    """
+    from trelix.retrieval.citations import citation_as_json, footer_lines, verify_citations
+
+    context = synth.last_context
+    sources = context.citation_sources if context is not None else ()
+    cited = bool(sources) and synth.last_abstain_reason is None
+    citations = verify_citations(answer, sources, Path(config.repo_path)) if cited else []
+    if json_output:
+        _print_json(
+            {
+                "query": query,
+                "answer": answer,
+                "abstained": synth.last_abstain_reason is not None,
+                "abstain_reason": synth.last_abstain_reason,
+                "citations": [citation_as_json(c) for c in citations],
+            }
+        )
+        return
+    if cited:
+        console.print()
+        for line in footer_lines(citations):
+            # soft_wrap: Rich would otherwise hard-wrap a row at the console width (80 columns
+            # in a pipe), breaking a long path mid-word; see _print_json. highlight=False as
+            # for the answer tokens above.
+            console.print(_safe_text(line), highlight=False, soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------
