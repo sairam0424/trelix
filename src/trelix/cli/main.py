@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -45,11 +46,14 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Sequence
 
-    from trelix.core.config import EmbedderConfig, IndexConfig
-    from trelix.core.models import IndexedFile
+    from pydantic import ValidationError
+
+    from trelix.core.config import EmbedderConfig, EmbeddingCacheConfig, IndexConfig
+    from trelix.core.models import Chunk, IndexedFile
     from trelix.eval.harness import QueryRecord
     from trelix.eval.suite_prepare import PreparedSuite
     from trelix.eval.suite_run import SuiteRun
+    from trelix.indexing.embedding_cache import EmbeddingCache
     from trelix.indexing.indexer import Indexer
     from trelix.retrieval.retriever import Retriever
     from trelix.retrieval.synthesizer import Synthesizer
@@ -248,6 +252,14 @@ def _print_error(label: str, detail: object) -> None:
     """
 
     err_console.print(f"[red]{label}:[/red] {_safe_text(str(detail))}")
+
+
+def _print_configuration_error(exc: ValidationError) -> None:
+    """`Configuration error: <field>: <msg>` from the first problem pydantic reports."""
+    first_err = exc.errors()[0]
+    msg = first_err.get("msg", str(exc))
+    field = " -> ".join(str(x) for x in first_err.get("loc", []))
+    _print_error("Configuration error", f"{field}: {msg}" if field else msg)
 
 
 def _require_index(config: IndexConfig, repo: str) -> None:
@@ -715,11 +727,7 @@ def index(
         if use_batch_api:
             config.use_batch_api = True
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -814,6 +822,10 @@ def index(
     table.add_row("Files skipped", str(stats.get("files_skipped", 0)))
     table.add_row("Symbols extracted", str(stats.get("symbols_extracted", 0)))
     table.add_row("Chunks embedded", str(stats.get("chunks_embedded", 0)))
+    # Only when it happened, like "Chunks repaired" below: with the cache off (the default)
+    # the value is always 0 and a permanent row would read as a feature that was tried.
+    if stats.get("chunks_from_cache"):
+        table.add_row("Chunks from cache", str(stats["chunks_from_cache"]))
     # Only when it happened. A permanent "Chunks repaired 0" row invites reading its
     # absence as "not checked", which is a different thing that the stats command reports.
     if stats.get("chunks_reconciled"):
@@ -1075,24 +1087,15 @@ _EMBED_PRICE_PER_MTOK_USD: dict[tuple[str, str], float] = {
 # it is not a token bill, and reporting $0.00 for them would read as "free".
 _LOCAL_EMBED_PROVIDERS = frozenset({"local", "local-code", "bge-code", "nomic-code"})
 
-# Which EmbedderConfig field holds the model name for each provider. There is no single
-# `model` attribute, so this is the mapping the price lookup keys on.
-_EMBED_MODEL_FIELDS = {
-    "openai": "openai_model",
-    "azure": "azure_embeddings_deployment",
-    "voyage": "voyage_model",
-    "local": "local_model",
-    "local-code": "local_code_model",
-    "bge-code": "bge_code_model",
-    "nomic-code": "nomic_code_model",
-    "bedrock-titan": "bedrock_titan_model",
-    "bedrock-cohere": "bedrock_cohere_model",
-    "cohere": "cohere_model",
-}
-
 
 def _embed_model_name(embedder: EmbedderConfig) -> str:
-    field = _EMBED_MODEL_FIELDS.get(str(embedder.provider))
+    """The model id the price lookup keys on. There is no single `model` attribute; the
+    per-provider field table is the embedding cache's (`EMBED_MODEL_FIELDS`), which names
+    the model for the cache fingerprint, so the two cannot drift apart. Imported here, not
+    at module level: the cache module pulls in the config and embedder packages."""
+    from trelix.indexing.embedding_cache import EMBED_MODEL_FIELDS
+
+    field = EMBED_MODEL_FIELDS.get(str(embedder.provider))
     return str(getattr(embedder, field, "") or "") if field else "unknown"
 
 
@@ -1134,6 +1137,9 @@ def _print_cost_preview(config: IndexConfig) -> None:
     chunk_count = 0
     token_count = 0
     no_symbols = 0
+    cache = _open_cache_for_preview(config)
+    cached_chunks = 0
+    cached_tokens = 0
 
     with make_progress(console) as progress:
         task = progress.add_task("Chunking (no embedding)…", total=len(to_embed))
@@ -1169,6 +1175,12 @@ def _print_cost_preview(config: IndexConfig) -> None:
             )
             chunk_count += len(chunks)
             token_count += sum(c.token_count for c in chunks)
+            if cache is not None:
+                cache, cached_chunks, cached_tokens = _add_cache_hits(
+                    cache, chunks, cached_chunks, cached_tokens
+                )
+    if cache is not None:
+        cache.close()
 
     table = Table(
         title="Cost preview (nothing embedded)", show_header=True, header_style="bold cyan"
@@ -1193,6 +1205,11 @@ def _print_cost_preview(config: IndexConfig) -> None:
         table.add_row("Repair tokens", f"{repair_tokens:,}")
     table.add_row("Chunks to embed", f"{chunk_count:,}")
     table.add_row("Embedding tokens", f"{token_count:,}")
+    # Only with a cache file to consult: these rows say what the real run will NOT send to
+    # the provider, and the two rows above keep their from-scratch meaning.
+    if cache is not None:
+        table.add_row("Chunks already cached", f"{cached_chunks:,}")
+        table.add_row("Tokens already cached", f"{cached_tokens:,}")
     console.print(table)
 
     if index_read_error is not None:
@@ -1227,8 +1244,83 @@ def _print_cost_preview(config: IndexConfig) -> None:
             "re-embed. Run [bold]trelix stats[/bold] for the count and the remedy."
         )
 
-    _print_cost_estimate(config, token_count + repair_tokens)
+    # Cached chunks are subtracted from the from-scratch count only. Repair chunks are not
+    # looked up: the preview is already an upper bound for them (docstring), and a repair
+    # that is in the cache merely costs less than quoted.
+    _print_cost_estimate(config, token_count - cached_tokens + repair_tokens)
     _print_cost_caveats(config)
+
+
+def _open_cache_for_preview(config: IndexConfig) -> EmbeddingCache | None:
+    """The embedding cache file this configuration would use, opened READ-ONLY, or None.
+
+    None when the cache is off, or when its file does not exist yet: the preview then
+    prices every chunk, which is what the real run would embed. Nothing is created —
+    `EmbeddingCache.open_readonly` connects with `mode=ro` and never touches the
+    directory, the same rule `_readonly_vec_conn` applies to the index — and the file is
+    opened at the width IT records, because `config.embedder.effective_dimension` is a
+    constant 384 for every `local` model and the preview has no embedder to ask. A file
+    that is not a readable trelix cache is reported and priced as if absent, so the
+    estimate stays an upper bound rather than a traceback.
+    """
+    if not config.embedding_cache.enabled:
+        return None
+    from trelix.indexing.embedding_cache import (
+        EmbeddingCache,
+        EmbeddingCacheError,
+        embedder_fingerprint,
+        resolve_cache_dir,
+    )
+
+    try:
+        cache_dir = resolve_cache_dir(config.embedding_cache)
+        return EmbeddingCache.open_readonly(
+            cache_dir / f"{embedder_fingerprint(config.embedder)}.db"
+        )
+    except EmbeddingCacheError as exc:
+        _print_cache_unreadable(str(exc))
+        return None
+
+
+def _print_cache_unreadable(detail: str) -> None:
+    """The preview's one note for a cache it cannot consult, at the open or at a lookup."""
+    console.print(
+        f"[yellow]The embedding cache could not be read[/yellow] "
+        f"({_safe_text(detail)}), so no cached chunk is subtracted below."
+    )
+
+
+def _add_cache_hits(
+    cache: EmbeddingCache, chunks: Sequence[Chunk], cached_chunks: int, cached_tokens: int
+) -> tuple[EmbeddingCache | None, int, int]:
+    """`(cache, cached_chunks, cached_tokens)` with the hits among `chunks` added.
+
+    A lookup that fails (a lock taken after the open: a concurrent run's end-of-run VACUUM,
+    say) prints the unreadable-cache note, closes the cache and returns `(None, 0, 0)`: from
+    here every chunk is priced, as if there were no cache, the hits already counted included,
+    or the priced figure would subtract tokens the table no longer shows.
+    """
+    try:
+        hits = _cached_chunks(cache, chunks)
+    except sqlite3.Error as exc:
+        _print_cache_unreadable(str(exc))
+        cache.close()
+        return None, 0, 0
+    return cache, cached_chunks + len(hits), cached_tokens + sum(c.token_count for c in hits)
+
+
+def _cached_chunks(cache: EmbeddingCache, chunks: Sequence[Chunk]) -> list[Chunk]:
+    """The chunks whose text the cache already holds a vector for.
+
+    Keyed by `text_key` — the wrapper's own key over `chunk_text`, which is exactly what
+    Phase 3 hands the embedder — so the preview and the run agree on what is a hit. A
+    lookup that fails (`sqlite3.Error`: a lock taken after the open) is the caller's.
+    """
+    from trelix.indexing.embedding_cache import text_key
+
+    keys = [text_key(c.chunk_text) for c in chunks]
+    found = cache.get_many(keys)
+    return [c for c, key in zip(chunks, keys, strict=True) if key in found]
 
 
 def _files_needing_embedding(
@@ -1466,11 +1558,7 @@ def search(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1587,11 +1675,7 @@ def ask(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1765,11 +1849,7 @@ def query(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1845,11 +1925,7 @@ def call_graph(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1935,11 +2011,7 @@ def stats(
     try:
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2386,11 +2458,7 @@ def link_tickets(
     try:
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2526,11 +2594,7 @@ def update_index(
             embedder=_build_embedder_config(provider),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2685,11 +2749,7 @@ def migrate_vectors(
         # Build config pointing at the existing SQLite index
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2827,11 +2887,7 @@ def watch(
             embedder=_build_embedder_config(provider),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -3929,11 +3985,7 @@ def review(
     try:
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -4888,6 +4940,146 @@ def audit_prune(
         )
     finally:
         store.close()
+
+
+# ---------------------------------------------------------------------------
+# cache sub-app (the on-disk index-time embedding cache, TRELIX_EMBEDDING_CACHE_*)
+# ---------------------------------------------------------------------------
+
+cache_app = typer.Typer(help="Manage the on-disk embedding cache (TRELIX_EMBEDDING_CACHE_*).")
+app.add_typer(cache_app, name="cache")
+
+# A cache file is `<32 hex chars of embedder fingerprint>.db`; SQLite may leave a `-journal`
+# beside it. Anything else in the directory — a stray note, a subdirectory, another
+# program's file — is not ours and is never opened or removed, so pointing
+# TRELIX_EMBEDDING_CACHE_DIR at the wrong place cannot cost anything but cache files.
+_CACHE_FILE_NAME = re.compile(r"[0-9a-f]{32}\.db")
+_CACHE_FILE_OR_JOURNAL_NAME = re.compile(r"[0-9a-f]{32}\.db(-journal)?")
+
+
+def _embedding_cache_location() -> tuple[EmbeddingCacheConfig, Path]:
+    """The cache settings and the directory they resolve to, from `TRELIX_EMBEDDING_CACHE_*`
+    alone: no repository argument, no IndexConfig, no index opened, nothing created. A bad
+    value is the same `Configuration error` line `trelix index` prints."""
+    from pydantic import ValidationError as _PydanticValidationError
+
+    from trelix.core.config import EmbeddingCacheConfig
+    from trelix.indexing.embedding_cache import EmbeddingCacheError, resolve_cache_dir
+
+    try:
+        cfg = EmbeddingCacheConfig()
+        return cfg, resolve_cache_dir(cfg)
+    except _PydanticValidationError as exc:
+        _print_configuration_error(exc)
+        raise typer.Exit(1) from exc
+    except EmbeddingCacheError as exc:  # no HOME and no passwd entry to resolve ~/.cache
+        _print_error("Configuration error", exc)
+        raise typer.Exit(1) from exc
+
+
+def _cache_files(cache_dir: Path, name: re.Pattern[str]) -> list[Path]:
+    """Direct children of `cache_dir` whose whole name matches, sorted — the directory
+    listing order is the filesystem's, and the output order must not be. A directory that
+    happens to carry a cache file's name is not ours and is left alone by both commands; a
+    symlink is kept for `clear`, which unlinks it without following it, and skipped by `gc`,
+    which never trims a file outside the directory. A cache directory that exists
+    but cannot be listed (owned by another user, say) is `Embedding cache unreadable`, exit
+    1: the exit-code tables in CLI_REFERENCE promise a line, not a traceback."""
+    try:
+        return sorted(
+            path
+            for path in cache_dir.iterdir()
+            if name.fullmatch(path.name) and (path.is_symlink() or not path.is_dir())
+        )
+    except OSError as exc:
+        _print_error("Embedding cache unreadable", exc)
+        raise typer.Exit(1) from exc
+
+
+def _print_no_embedding_cache(cache_dir: Path) -> None:
+    console.print(f"No embedding cache at {_safe_text(str(cache_dir))}.")
+
+
+@cache_app.command("gc")
+def cache_gc(
+    max_mb: int | None = typer.Option(
+        None,
+        "--max-mb",
+        min=1,
+        help=(
+            "Trim every cache file to about this many MB, evicting its least recently used "
+            "rows. Default: TRELIX_EMBEDDING_CACHE_MAX_MB (4096 when unset)."
+        ),
+    ),
+) -> None:
+    """Trim the embedding cache files to their size cap (least recently used rows first)."""
+    from trelix.indexing.embedding_cache import EmbeddingCacheError
+
+    cfg, cache_dir = _embedding_cache_location()
+    if not cache_dir.is_dir():
+        _print_no_embedding_cache(cache_dir)
+        return
+    max_bytes = (cfg.max_mb if max_mb is None else max_mb) * 1024 * 1024
+    failed = False
+    for path in _cache_files(cache_dir, _CACHE_FILE_NAME):
+        if path.is_symlink():  # `clear` unlinks it; `gc` never reaches outside the directory
+            continue
+        # Each file is trimmed on its own and a bad one does not stop the rest; the exit
+        # code says afterwards that not every file was handled.
+        try:
+            console.print(_safe_text(_trim_cache_file(path, max_bytes)))
+        except (EmbeddingCacheError, sqlite3.Error, OSError) as exc:
+            _print_error("Embedding cache unreadable", exc)
+            failed = True
+    if failed:
+        raise typer.Exit(1)
+
+
+def _trim_cache_file(path: Path, max_bytes: int) -> str:
+    """Trim one file and describe it: `<name>: <rows> -> <rows> rows, <bytes> -> <bytes> bytes`.
+
+    Opened with `dimension=None`: `gc` has no embedder to compare the recorded width
+    against, so the file's own `meta.dimension` is trusted and a width check cannot fire.
+    """
+    from trelix.indexing.embedding_cache import EmbeddingCache
+
+    cache = EmbeddingCache.open(path, dimension=None)
+    try:
+        rows_before = cache.row_count()
+        bytes_before = path.stat().st_size
+        cache.enforce_size_cap(max_bytes)
+        rows_after = cache.row_count()
+        bytes_after = path.stat().st_size
+    finally:
+        cache.close()
+    return f"{path.name}: {rows_before} -> {rows_after} rows, {bytes_before} -> {bytes_after} bytes"
+
+
+@cache_app.command("clear")
+def cache_clear() -> None:
+    """Delete every embedding cache file (and journal sidecar) in the cache directory."""
+    _cfg, cache_dir = _embedding_cache_location()
+    if not cache_dir.is_dir():
+        _print_no_embedding_cache(cache_dir)
+        return
+    removed = 0
+    freed = 0
+    failed = False
+    for path in _cache_files(cache_dir, _CACHE_FILE_OR_JOURNAL_NAME):
+        # A symlink is unlinked, never followed — `lstat` and `unlink` both act on the link
+        # itself — so the directory can never reach outside itself.
+        try:
+            size = path.lstat().st_size
+            path.unlink()
+        except OSError as exc:
+            _print_error("Could not remove", exc)
+            failed = True
+            continue
+        removed += 1
+        freed += size
+    console.print(f"Removed {removed} file(s), {freed} bytes, from {_safe_text(str(cache_dir))}")
+    if failed:
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------

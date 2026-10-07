@@ -90,7 +90,7 @@ at search time.
 |---|---|---|
 | `TRELIX_EMBEDDING_CACHE_ENABLED` | `false` | Turn the cache on. Refused together with `TRELIX_USE_BATCH_API`/`--use-batch-api` on the `openai` provider, and by `trelix index --resume-batch` (the Batch API path never consults the cache); both exit 1 before any model is loaded |
 | `TRELIX_EMBEDDING_CACHE_DIR` | _(unset)_ | Directory for the cache files. **Must be absolute** (`~` is expanded); a relative value is a configuration error, because it would resolve against whatever repository is being indexed. Unset means `$XDG_CACHE_HOME/trelix/embeddings` (a relative `XDG_CACHE_HOME` is ignored, as the XDG spec requires), else `~/.cache/trelix/embeddings` |
-| `TRELIX_EMBEDDING_CACHE_MAX_MB` | `4096` | Size trim per cache file (one file per embedder fingerprint), minimum `1`. Applied after each index run: the least recently used rows go until the file fits. Not a limit during a run — one run can write past it |
+| `TRELIX_EMBEDDING_CACHE_MAX_MB` | `4096` | Size trim per cache file (one file per embedder fingerprint), minimum `1`. Applied after each index run and by `trelix cache gc [--max-mb N]`: the least recently used rows go until the file fits. Not a limit during a run — one run can write past it |
 
 One SQLite file per **embedder fingerprint**: provider, model id, the configuration knobs that
 change a vector for the same model id (`TRELIX_EMBEDDER_OPENAI_DIMENSIONS`,
@@ -102,7 +102,14 @@ every run, including a pre-existing directory you point `TRELIX_EMBEDDING_CACHE_
 give the cache a directory of its own — and each file created `0o600` (POSIX; Windows applies
 neither). Two indexers may share a file; first opens of a new file are serialised, and a trim
 that finds the file locked or deleted is skipped for that run. The run reports
-`chunks_from_cache` beside `chunks_embedded`.
+`chunks_from_cache` beside `chunks_embedded`, and the `trelix index` summary adds a
+`Chunks from cache` row when it is above zero; `trelix index --dry-run` reads the cache file
+(read-only, creating nothing) and adds `Chunks already cached` and `Tokens already cached`,
+subtracting the cached tokens from the priced count. `trelix cache gc [--max-mb N]` applies
+the trim on demand and `trelix cache clear` deletes every cache file; both read these three
+variables and nothing else (plus `XDG_CACHE_HOME`/`HOME` when the directory is unset), and
+work whether or not the cache is enabled (see
+[CLI_REFERENCE.md](CLI_REFERENCE.md#trelix-cache-gc)).
 **Single-operator machines only:** the hosted GitHub App forwards every `TRELIX_*` host variable
 into its `trelix index` child, so setting this on a multi-tenant host shares one cache across
 every tenant it indexes — see [SECURITY.md](../SECURITY.md#embedding-cache-on-disk-trelix_embedding_cache_enabled).

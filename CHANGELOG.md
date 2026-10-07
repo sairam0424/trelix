@@ -550,6 +550,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   variable into its `trelix index` child, so setting this on a multi-tenant host would share
   one cache across tenants; SECURITY.md has the section. A `trelix cache` command group is not
   part of this change.
+- **`trelix cache gc` and `trelix cache clear`, and the cache in `trelix index`'s output** (the
+  command group the bullet above deferred). `trelix cache gc [--max-mb N]` trims every cache file
+  (`<fingerprint>.db` in `TRELIX_EMBEDDING_CACHE_DIR`, else `$XDG_CACHE_HOME/trelix/embeddings`,
+  else `~/.cache/trelix/embeddings`) to the cap, least recently used rows first, and prints
+  `<name>: <rows> -> <rows> rows, <bytes> -> <bytes> bytes` per file in name order; the default
+  cap is `TRELIX_EMBEDDING_CACHE_MAX_MB`, which is a trim applied after each index run and by this
+  command, not a limit during a run. Each file is opened at the width it records (no embedder is
+  loaded, no width check can fail); a file that cannot be opened or trimmed is reported as
+  `Embedding cache unreadable` and the rest are still trimmed, exit 1 afterwards (`gc` creates
+  nothing: an empty file or a symlink with no target is refused before SQLite touches it); a
+  directory that exists but cannot be listed is the same line and exit 1 at once, for both
+  commands; a directory that happens to carry a cache file's name is left alone by both, and
+  `gc` skips every symlink, whatever it points at (`clear` unlinks the link without following it).
+  `trelix cache clear`
+  deletes every `<fingerprint>.db` and `.db-journal` directly in that directory (nothing else, no
+  recursion, a symlink is unlinked and never followed) and prints `Removed N file(s), M bytes,
+  from <dir>`. With no cache directory both print `No embedding cache at <dir>.` and exit 0;
+  neither takes a repository argument or opens an index. The Index Summary gains a `Chunks from
+  cache` row when the count is above zero. `trelix index --dry-run` with the cache on opens the
+  cache file read-only (`EmbeddingCache.open_readonly`, new; it creates nothing and never reads
+  the configured width, which is a constant 384 for every `local` model), adds `Chunks already
+  cached` and `Tokens already cached` rows, and prices `Embedding tokens - Tokens already cached
+  + Repair tokens`; an absent file adds no rows; one that cannot be read, at the open or at a
+  lookup (a concurrent run's end-of-run `VACUUM` holding the lock), is reported and priced as
+  absent. `trelix index --resume-batch` with the cache on is refused before any model is loaded
+  (`Cannot resume a Batch API job`, exit 1, the way out named), as the bullet above says; the
+  refusal is now also in `docs/CLI_REFERENCE.md`'s exit codes. The CLI's cost preview takes the
+  per-provider model-field table from the cache module (`EMBED_MODEL_FIELDS`) instead of a
+  private copy.
 - **Golden file format v2 and `trelix eval-validate`** (second of three changes toward comparing
   retrieval runs honestly; no score is computed any differently).
   - A golden line may add `id`, `lang`, `kind` (`nl`, `keyword`, `commit` or `issue`), `source`,
