@@ -473,6 +473,26 @@ jobs:
         run: npm run build
       - name: Test
         run: npm test
+      # Claude Code's own validator over the marketplace and the plugin, with --strict so a
+      # warning (an unquoted ${CLAUDE_PLUGIN_ROOT} in hooks.json, an unrecognised manifest
+      # field, a missing version) fails the job. The offline tests in
+      # test_claude_plugin_{manifest,skill,session_start}.py pin the shapes this repository chose; this pins what
+      # Claude Code accepts. Pinned to one release of @anthropic-ai/claude-code, the npm
+      # counterpart of release.yml's `build==X.Y.Z twine==X.Y.Z`: npm checks the tarball against
+      # the registry's integrity field, and the version moves only by hand, together with the
+      # literal in tests/unit/test_claude_plugin_validate_ci.py. The step runs from the
+      # repository root because this job's default working directory is the SDK package and `.`
+      # must be the marketplace. CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC keeps the validator off
+      # the network (no update check, telemetry or error reports); the package download is the
+      # only network use, and the second and third lines reuse npx's cache from the first.
+      - name: Validate the Claude Code marketplace and plugin
+        working-directory: ${{ github.workspace }}
+        env:
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+        run: |
+          npx -y @anthropic-ai/claude-code@2.1.292 --version
+          npx -y @anthropic-ai/claude-code@2.1.292 plugin validate --strict .
+          npx -y @anthropic-ai/claude-code@2.1.292 plugin validate --strict plugins/trelix
 
   docker-build:
     name: Docker build smoke test

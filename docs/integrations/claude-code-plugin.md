@@ -138,7 +138,10 @@ touches it, so `main` never points at a version PyPI does not have yet; after Py
 release, a separate PR moves the pin and `plugin.json`'s `version`. The plugin therefore trails
 this repository by one release. A test fails when the pin is newer than the repository's own
 stamp or names a version with no `## [X.Y.Z]` CHANGELOG section. Marketplaces are fetched from
-the repository's default branch, so a change becomes installable when it reaches `main`.
+the repository's default branch, so a change becomes installable when it reaches `main`. CI also
+runs Claude Code's own `claude plugin validate --strict` (a pinned release of
+`@anthropic-ai/claude-code`, through `npx`) over the marketplace and the plugin on every push and
+pull request, so a manifest Claude Code would warn on does not merge.
 
 ## Troubleshooting
 
