@@ -284,7 +284,11 @@ class TestRefusals:
             result = runner.invoke(app, ["ask", str(repo), QUERY, "--json", *flags])
 
         assert result.exit_code == 2, result.output
-        assert CONFLICT_REFUSAL in one_line(result.output)
+        # Strip ANSI codes before asserting: Typer forces colour under GITHUB_ACTIONS (and
+        # FORCE_COLOR) and styles each `--flag` of its own error panel as two escape-wrapped
+        # pieces, so the plain sentence never matches on CI (test_cli_smoke.py does the same).
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert CONFLICT_REFUSAL in one_line(plain)
         agent_loop.assert_not_called()
 
     def test_json_with_agentic_mode_from_the_environment_exits_1(self, repo: Path) -> None:
