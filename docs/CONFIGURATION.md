@@ -171,6 +171,7 @@ Unknown or absent intents fall back to `TRELIX_RETRIEVAL_COMPRESSION_RATIO` (`0.
 |---|---|---|
 | `TRELIX_LLM_PROVIDER` | `openai` | LLM provider used for answer synthesis. One of: `openai`, `azure`, `anthropic`, `bedrock`, `vertex`, `litellm` — see [PROVIDERS.md](PROVIDERS.md#llm-providers-for-trelix-ask) |
 | `TRELIX_LLM_MODEL` | `gpt-4o` | Chat model for synthesis. Used verbatim by the `openai`, `anthropic`, and `vertex` backends, and it is the model name the auto-derived context budget resolves its window from — see [Model-Aware Context Budget](#model-aware-context-budget). |
+| `TRELIX_LLM_BASE_URL` | _(unset)_ | Base URL of an OpenAI-compatible server for the `openai` backend: Ollama (`http://127.0.0.1:11434/v1`), llama-server, a gateway. Must be `http://` or `https://` with a host, must not carry a user name or password and must not contain whitespace or control characters such as a trailing newline (the error names the variable, never the value); a blank value is unset. With it set, `OPENAI_API_KEY` is optional — without one trelix sends the fixed bearer `trelix-local`, which Ollama ignores — the output cap is sent as `max_tokens` (Ollama has no `max_completion_tokens` field), and a model tag under 20B parameters, or with no readable size, logs one warning each time a backend is built (a `review` on an indexed repository builds two). Any other `TRELIX_LLM_PROVIDER` ignores it with one warning per LLM client built. The openai SDK's own `OPENAI_BASE_URL` keeps working as before when this is unset. See [PROVIDERS.md](PROVIDERS.md#openai-with-a-local-openai-compatible-server). |
 | `AZURE_CHAT_MODEL` | `gpt-4o` | Azure chat deployment name — what the `azure` backend actually calls, instead of `TRELIX_LLM_MODEL` |
 | `ANTHROPIC_API_KEY` | _(none)_ | Anthropic API key — required when `TRELIX_LLM_PROVIDER=anthropic` |
 | `TRELIX_LLM_THINKING_ENABLED` | `false` | Opt the answer synthesizer into Claude extended thinking. Only has an effect when `TRELIX_LLM_PROVIDER` is `anthropic` or `bedrock` (a Claude model on Bedrock) — every other backend accepts the flag and ignores it. On adaptive-only models (Claude 5 and newer; see below) the model decides whether to think, so a response may carry no thinking block. See [Extended Thinking (Anthropic)](#extended-thinking-anthropic). |
@@ -510,6 +511,10 @@ TRELIX_LLM_PROVIDER=openai
 # window from, for every provider.
 TRELIX_LLM_MODEL=gpt-4o
 # OPENAI_API_KEY=sk-...  (shared with embedder if both use OpenAI)
+
+# OpenAI-compatible local server (Ollama, llama-server) for the openai backend;
+# OPENAI_API_KEY is optional with it set
+# TRELIX_LLM_BASE_URL=http://127.0.0.1:11434/v1
 
 # Azure chat — the azure backend calls this deployment, not TRELIX_LLM_MODEL
 # AZURE_CHAT_MODEL=gpt-4o

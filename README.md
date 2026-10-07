@@ -171,7 +171,7 @@ Step 3 above, for real — `trelix query` against trelix's own `retrieval/` + `g
 | Call graph for a symbol | `trelix call-graph ./repo AuthService.login` |
 | Build a knowledge graph | `trelix graph ./repo` |
 
-**Every query is answered without LLM synthesis by default.** Retrieval is fully offline — no data leaves your machine — as long as no chat credential is set. With one in the environment, retrieval draws a query plan from the LLM (one call per distinct query), which sends the query text; unset the credential, or set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, for genuinely zero calls. Enable LLM synthesis for natural-language answers.
+**Every query is answered without LLM synthesis by default.** Retrieval is fully offline — no data leaves your machine — as long as no chat credential and no `TRELIX_LLM_BASE_URL` is set. With either in the environment, retrieval draws a query plan from the LLM (one call per distinct query), which sends the query text; unset both, or set `TRELIX_RETRIEVAL_PLAN_CACHE_FILE`, for genuinely zero calls. Enable LLM synthesis for natural-language answers.
 
 ---
 
@@ -202,7 +202,7 @@ Full version history: [CHANGELOG.md](CHANGELOG.md).
 - **Universal LLM client** — OpenAI, Azure, Anthropic, Bedrock, Vertex AI, LiteLLM (100+ providers)
 - **Zero-infra default** — single SQLite file (`.trelix/index.db`) with sqlite-vec (flat scan) + FTS5 BM25
 - **Real-time watching** — `trelix watch` auto-indexes on every file save
-- **Works offline** — `--provider local` uses sentence-transformers, no API key needed for embeddings. It selects the *embedder* only: if a chat credential is present, the retrieval planner still makes one LLM call per distinct query. Unset it for a fully offline path
+- **Works offline** — `--provider local` uses sentence-transformers, no API key needed for embeddings. It selects the *embedder* only: if a chat credential or `TRELIX_LLM_BASE_URL` is present, the retrieval planner still makes one LLM call per distinct query. Unset both for a fully offline path
 - **BGE-Code-v1 / Nomic CodeRankEmbed** — code-specialized embedding providers (`bge-code`, `nomic-code`). `bge-code` is **experimental**: its pooling is unverified against BAAI's published `pooling_mode_lasttoken: true`, so no quality claim is made — see [docs/PROVIDERS.md](docs/PROVIDERS.md#bge-code-baaibge-code-v1)
 - **Matryoshka voyage embeddings** — compact 256/512-dim voyage-code-3 via `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS`
 - **PLAID late-interaction reranker** — 7–45× faster ColBERT via RAGatouille (`rerank_provider=plaid`)
@@ -347,6 +347,7 @@ TRELIX_EMBEDDER_PROVIDER=azure           # Azure text-embedding-3-large (default
 |---|---|---|
 | `TRELIX_LLM_PROVIDER` | `openai` | `openai` \| `azure` \| `anthropic` \| `bedrock` \| `vertex` \| `litellm` |
 | `TRELIX_LLM_MODEL` | `gpt-4o` | Chat model override |
+| `TRELIX_LLM_BASE_URL` | — | OpenAI-compatible local server (Ollama, llama-server) for the `openai` backend; `OPENAI_API_KEY` optional with it set |
 | `TRELIX_LLM_BEDROCK_PRIMARY_MODEL` | `us.anthropic.claude-sonnet-4-6` | Bedrock primary model |
 | `TRELIX_LLM_BEDROCK_FALLBACK_MODEL` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock fallback on ValidationException |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (`trelix[anthropic]`) |

@@ -112,6 +112,7 @@ listed below; less common ones follow the same `TRELIX_<SECTION>_<FIELD>` patter
 | `TRELIX_EMBEDDER_PROVIDER` | `local` | Default embedding provider (overridden per command by `--provider`) |
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI chat model for synthesis |
 | `TRELIX_LLM_PROVIDER` | `openai` | LLM backend for synthesis: `openai` \| `azure` \| `anthropic` \| `bedrock` \| `vertex` \| `litellm` |
+| `TRELIX_LLM_BASE_URL` | _(unset)_ | OpenAI-compatible server (Ollama, llama-server, a gateway) for the `openai` backend; `OPENAI_API_KEY` is optional with it set and the output cap is sent as `max_tokens`. `http://` or `https://` with a host, no user name or password, no whitespace. See [CONFIGURATION.md](CONFIGURATION.md#llm--synthesis) |
 | `TRELIX_RETRIEVAL_RERANK_PROVIDER` | `cohere` | Reranker: `cohere` \| `cross_encoder` \| `plaid` |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant connection URL |
 | `QDRANT_COLLECTION` | `trelix` | Qdrant collection name |

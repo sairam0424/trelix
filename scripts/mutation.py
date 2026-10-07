@@ -151,6 +151,7 @@ SCOPE: dict[str, tuple[str, ...]] = {
     "indexing.parser.yaml_config": ("src/trelix/indexing/parser/extractors/yaml_config.py",),
     "indexing.chunker": ("src/trelix/indexing/chunker.py",),
     "indexing.walker": ("src/trelix/indexing/walker.py",),
+    "llm.offline": ("src/trelix/llm/offline.py",),
     "retrieval.fusion": ("src/trelix/retrieval/fusion.py",),
     "retrieval.bm25": ("src/trelix/retrieval/bm25.py",),
     "eval.ndcg": ("src/trelix/eval/ndcg.py",),
