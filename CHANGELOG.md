@@ -788,6 +788,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
   `server.disable(names=, components=)`. 4.0.10 is the release those were run against (4.0.0 to
   4.0.9 were not tested), and `tests/unit/test_dependency_floor_guards.py` pins it.
+- **`trelix-mcp` gains the pieces of a Streamable HTTP transport as a module nothing wires yet**
+  (`trelix_mcp.http`: settings resolution with its start-up errors, a bearer-token ASGI middleware
+  that answers `401` with `WWW-Authenticate: Bearer`, and a `GET /health` route). Internal, no
+  user-visible change: `trelix-mcp` still serves stdio only and accepts the same flags. `starlette`
+  is now a declared dependency of `trelix-mcp` (it was already installed through `fastmcp`; nothing
+  new is resolved).
 - **`trelix-mcp` list results are bounded, and a cut says so.** A tool result costs a client twice
   (FastMCP sends a dict result as a text block, where every quote is escaped, and as
   `structuredContent`): measured with 100,000-character bodies, `search_code` at `k=100` was about
