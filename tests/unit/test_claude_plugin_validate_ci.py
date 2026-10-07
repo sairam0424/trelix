@@ -86,16 +86,16 @@ def _setup_node_index(job: dict[str, Any]) -> int:
 
 
 def npx_problems(workflow: dict[str, Any]) -> tuple[list[str], list[tuple[str, str]]]:
-    """Every stripped non-empty `run:` line that contains the token `npx` must match
-    `_PINNED_NPX` as a whole-line prefix. Returns the problems and the (package, version)
-    pairs found, in document order."""
+    """Every stripped non-empty, non-comment `run:` line that contains the token `npx` must
+    match `_PINNED_NPX` as a whole-line prefix (a `#` line is shell commentary, not a command).
+    Returns the problems and the (package, version) pairs found, in document order."""
     problems: list[str] = []
     pins: list[tuple[str, str]] = []
     for job_id, job in (workflow.get("jobs") or {}).items():
         for index, step in enumerate(job.get("steps") or []):
             for raw in str(step.get("run") or "").splitlines():
                 line = raw.strip()
-                if not line or not re.search(r"\bnpx\b", line):
+                if not line or line.startswith("#") or not re.search(r"\bnpx\b", line):
                     continue
                 match = _PINNED_NPX.match(line)
                 if match is None:
@@ -233,3 +233,8 @@ class TestTheCheckersBite:
         reusable = {"jobs": {"call": {"uses": "org/repo/.github/workflows/x.yml@" + "0" * 40}}}
         assert npx_problems(checkout_only) == ([], [])
         assert npx_problems(reusable) == ([], [])
+
+    def test_a_shell_comment_that_mentions_npx_is_not_a_command(self) -> None:
+        """MUTATION that must make this fail: drop the `line.startswith("#")` clause."""
+        script = "# npx is deliberately not used here\nnpm ci\n"
+        assert npx_problems(_run_step(script)) == ([], [])

@@ -349,8 +349,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `version` fails) and a contents hash in `tests/unit/test_claude_plugin_manifest.py` makes
   every plugin edit loud (it cannot see whether `version` was bumped with it);
   `claude plugin validate --strict` runs in CI (the bullet below) and before committing; and the
-  pin check is offline only (a released CHANGELOG section, not newer
-  than the trelix-mcp stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
+  pin check is offline only (a released CHANGELOG section, not newer than the trelix-mcp
+  stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
   pin the manifests, the pin form (an exact `==` to a version with a released CHANGELOG section,
   not newer than the trelix-mcp stamp), the plugin tree, and that the skill names only tools the
   server registers. Guide: `docs/integrations/claude-code-plugin.md`; a paste-able block for other
