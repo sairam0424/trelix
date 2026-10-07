@@ -7,6 +7,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
 ## [Unreleased]
 
 ### Security
+- **`trelix-mcp --transport http` is guarded from the first release that serves it.** DNS
+  rebinding and drive-by browser requests: the REST API's Host/Origin check is always on (loopback
+  names, a specific bind address, `--allowed-host`, `TRELIX_MCP_ALLOWED_HOSTS` with fallback
+  `TRELIX_API_ALLOWED_HOSTS`; `*` turns it off with a warning; FastMCP's own guard and the SDK's
+  DNS-rebinding check stay off so there is one allow-list). A reachable port: a bearer token
+  (`TRELIX_MCP_AUTH_TOKEN`, fallback `TRELIX_API_AUTH_TOKEN`; `hmac.compare_digest`, a fixed 401
+  body with `WWW-Authenticate: Bearer`, no header value logged) is required for any non-loopback
+  bind unless `--allow-unauthenticated`. Path escape: at least one `--root` or
+  `TRELIX_ALLOWED_REPO_ROOTS` is required (exit 2 without), so every `repo_path` a remote client
+  names is confined. Information leak: an exception a tool did not expect answers
+  `Error calling tool '<name>'` with no path or traceback; stdio keeps its unmasked texts.
 - **The advisory `zizmor` job now reports no findings** (`zizmor 1.30.1` over `.github/`: one
   informational and three high before; two ignored with reasons now). It stays advisory.
   - *Fixed, `cache-poisoning` (twice).* `release.yml` publishes to PyPI, and its `test` and
@@ -329,6 +340,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `nomic-code`) to the embedder code.
 
 ### Added
+- **`trelix-mcp --transport http` serves MCP over Streamable HTTP** on `127.0.0.1:8766/mcp`
+  (stateless; both the 2025-11-25 and 2026-07-28 protocol eras), with the Host/Origin guard always
+  on, a bearer token from `TRELIX_MCP_AUTH_TOKEN` (fallback `TRELIX_API_AUTH_TOKEN`) when set,
+  unauthenticated `GET /health`, masked unexpected errors, and a start-up error (exit 2) for a
+  non-loopback bind without a token or for no `--root`. New flags `--transport stdio|http`,
+  `--host`, `--port`, `--path`, `--allowed-host`, `--stateful` and `--allow-unauthenticated` (the
+  last six are `--transport http` only and a usage error on stdio); a port in `--host`, a blank
+  `--host` or `--path`, and an `--allowed-host` that is `*` or not one hostname or IP address (a
+  comma list, a URL, a wildcard, a blank) are refused (pass the port with `--port` and repeat
+  `--allowed-host` for more than one; only `TRELIX_MCP_ALLOWED_HOSTS=*` turns the guard off) and
+  `--host [::1]` binds `::1`. stdio with no flags is unchanged. See `docs/MCP_GUIDE.md` section 19.
 - **GenAI `chat` spans for every LLM call, behind `TRELIX_OTEL_ENABLED`** (roadmap C-8, requirement
   R-C6-02; PR 3 of 4). `build_chat_client()` returns the backend wrapped in a `TracedChatClient`
   (`src/trelix/llm/otel.py`) when the flag resolves true from the environment, and every

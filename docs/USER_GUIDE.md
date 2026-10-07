@@ -1037,7 +1037,7 @@ pip install trelix-mcp
 claude mcp add trelix -- trelix-mcp
 ```
 
-That is the entire setup. trelix-mcp launches as a stdio MCP server. Claude Code can now use trelix tools in any conversation.
+That is the entire setup. trelix-mcp launches as a stdio MCP server by default; `--transport http` serves remote clients instead, see MCP_GUIDE section 19. Claude Code can now use trelix tools in any conversation.
 
 ### Cursor
 
@@ -1648,7 +1648,7 @@ that copy-pasted commands fail loudly rather than silently:
 | `--since`, `--query-filter`, `--json` (on `telemetry`) | `--limit`/`-n`, or query the `query_telemetry` table with `sqlite3` |
 | `--repo` (on any command but `eval-validate`) | the repo is positional |
 | `--embedder` | `--provider` |
-| `trelix-mcp --cache-dir` | nothing — `trelix-mcp` accepts only `--help`, `--version`, `--tools core\|full` and `--root PATH` |
+| `trelix-mcp --cache-dir` | nothing — `trelix-mcp` accepts only `--help`, `--version`, `--tools core\|full`, `--root PATH` and the HTTP flags `--transport stdio\|http`, `--host`, `--port`, `--path`, `--allowed-host`, `--stateful` and `--allow-unauthenticated` (MCP_GUIDE section 19) |
 
 There is also no `trelix config`, `trelix doctor`, `trelix mcp`, or `trelix federation
 stats` command. `trelix --help` lists the real 26 top-level commands.

@@ -79,6 +79,23 @@ then searches only the registered repos inside the roots and reports the others 
 claude mcp add trelix -- trelix-mcp --root /Users/you/myrepo
 ```
 
+### Streamable HTTP (remote clients)
+
+For a client that cannot spawn the process, serve Streamable HTTP instead of stdio. A root is
+required, and a token guards everything but `GET`/`HEAD /health`:
+
+```bash
+TRELIX_MCP_AUTH_TOKEN=... trelix-mcp --transport http --root /Users/you/myrepo
+claude mcp add --transport http trelix http://127.0.0.1:8766/mcp --header "Authorization: Bearer $TRELIX_MCP_AUTH_TOKEN"
+```
+
+Defaults: `--host 127.0.0.1`, `--port 8766`, `--path /mcp`, stateless. `TRELIX_MCP_AUTH_TOKEN`
+(fallback `TRELIX_API_AUTH_TOKEN`) is the token and `TRELIX_MCP_ALLOWED_HOSTS` (fallback
+`TRELIX_API_ALLOWED_HOSTS`) adds hostnames to the Host/Origin guard, which is always on; a
+non-loopback `--host` needs a token or `--allow-unauthenticated`. Add `--stateful` for a client
+that opens a server-initiated GET stream. stdio with no flags is unchanged. Every flag, error text
+and proxy note: [docs/MCP_GUIDE.md, section 19](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#19-streamable-http-transport).
+
 ### Cursor (`~/.cursor/mcp.json`)
 
 ```json
@@ -297,7 +314,7 @@ The full description, with measured sizes, is in [docs/MCP_GUIDE.md](https://git
 
 ## Errors
 
-An invalid input is a tool error (`isError: true`, one text block, the session carries on) whose text names the argument, shows what was given and says what is valid: a `repo_path` that is blank, does not exist or is a file; a blank `query`, `qualified_name`, `symbol_name`, `alias`, `session_id` or `config_path`; a `federation_add_repo` `path` that is not an absolute directory or a `weight` that is not positive; a negative `cursor` or `max_body_chars`. A repository with no index answers `No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`, and an argument of the wrong type or outside its choices is rejected by FastMCP itself, also as a tool error. `subscribe_resource` and `unsubscribe_resource` accept any string and are outside this contract. `k` and `limit` outside their range are clamped rather than rejected, and the federation tools keep their `error` key for a duplicate alias, a full registry, a non-blank `config_path` outside the allowed roots and a registry with nothing indexed. Every result, including an empty one (`[]`, `null`), carries a text block that parses to its structured content. Details: [docs/MCP_GUIDE.md, Errors](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#errors).
+An invalid input is a tool error (`isError: true`, one text block, the session carries on) whose text names the argument, shows what was given and says what is valid: a `repo_path` that is blank, does not exist or is a file; a blank `query`, `qualified_name`, `symbol_name`, `alias`, `session_id` or `config_path`; a `federation_add_repo` `path` that is not an absolute directory or a `weight` that is not positive; a negative `cursor` or `max_body_chars`. A repository with no index answers `No index found at <repo>/.trelix/index.db. Run trelix index <repo> first.`, and an argument of the wrong type or outside its choices is rejected by FastMCP itself, also as a tool error. `subscribe_resource` and `unsubscribe_resource` accept any string and are outside this contract. `k` and `limit` outside their range are clamped rather than rejected, and the federation tools keep their `error` key for a duplicate alias, a full registry, a non-blank `config_path` outside the allowed roots and a registry with nothing indexed. Every result, including an empty one (`[]`, `null`), carries a text block that parses to its structured content. Over `--transport http`, an exception a tool did not expect answers `isError: true` with `Error calling tool '<name>'` (no path, no traceback) while every text above is unchanged. Details: [docs/MCP_GUIDE.md, Errors](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#errors).
 
 ## Knowledge Graph Tools
 

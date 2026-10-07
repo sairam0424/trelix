@@ -231,7 +231,7 @@ After restarting Claude Code, the trelix tools are available in every conversati
 3. Set the command to `trelix-mcp` (no arguments needed).
 4. Save and restart Cursor.
 
-Cursor will discover the trelix tools automatically via the MCP stdio protocol.
+Cursor will discover the trelix tools automatically via the MCP stdio protocol, the default transport.
 
 ---
 

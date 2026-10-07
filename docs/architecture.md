@@ -1734,9 +1734,9 @@ def parse_pr_ref(pr_ref: str) -> tuple[str, str, int]
 
 **Package:** `packages/trelix-mcp/src/trelix_mcp/server.py`
 
-Transport: `stdio` (subprocess model — IDE spawns `trelix-mcp` as child process).
+Transport: `stdio` (default; the IDE spawns `trelix-mcp` as a child process) or Streamable HTTP (`--transport http`, [MCP_GUIDE §19](MCP_GUIDE.md#19-streamable-http-transport)).
 
-**Critical:** All logging directed to `stderr`. `stdout` is the exclusive MCP JSON protocol pipe.
+**Critical:** All of the server's own logging is directed to `stderr`. Over stdio, `stdout` is the exclusive MCP JSON protocol pipe; over `--transport http` it is not the protocol channel, and uvicorn writes its access lines there.
 
 ```python
 logging.basicConfig(stream=sys.stderr)  # FIRST LINE — before any imports

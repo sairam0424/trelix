@@ -182,12 +182,12 @@ commercial use pick `local` (Apache 2.0), `voyage`, or `bedrock-cohere`.
 
 ### 8. MCP-Native — 6 Tools, 3 Resources, 3 Prompts
 
-**What it does:** `trelix-mcp` is a first-class MCP server that exposes Trelix retrieval to any MCP client (Claude Code, Cursor, Windsurf, Continue.dev). It speaks stdio transport and integrates in two commands.
+**What it does:** `trelix-mcp` is a first-class MCP server that exposes Trelix retrieval to any MCP client (Claude Code, Cursor, Windsurf, Continue.dev). It speaks stdio (default) or Streamable HTTP (`--transport http`) and integrates in two commands.
 
 **MCP tools:**
 
 ```
-trelix-mcp (stdio transport)
+trelix-mcp (stdio or Streamable HTTP transport)
   ├── search_code(query, repo_path, k=10, cursor=0)                              → {results, next_cursor, total_available}
   ├── index_codebase(repo_path, provider)                                         → dict (stats) + progress notifications
   ├── get_symbol(qualified_name, repo_path)                                       → dict | None
@@ -398,7 +398,7 @@ If you just want IDE autocomplete, Copilot or Cursor is the right tool. Trelix e
 | FederatedRetriever with TTL cache (~90% hit rate) | Advanced taint analysis (Semgrep integration GA) |
 | 20-language Tree-sitter AST parsing | Hosted cloud index option |
 | 6 LLM backends + LiteLLM 100+ providers | |
-| MCP server (15 tools, stdio transport) | |
+| MCP server (15 tools, stdio or Streamable HTTP) | |
 | Extended thinking on Anthropic synthesis (`TRELIX_LLM_THINKING_ENABLED`, opt-in) | |
 | Model-aware context budget derived from the LLM's real context window (opt-in) | |
 | SeleCom query-conditioned context compression (opt-in, result-lossless) | |
