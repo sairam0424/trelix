@@ -549,7 +549,7 @@ trelix ask ./my-repo "<question>"
 - You are debugging and need a summary of what a chain of functions does.
 - You want an architecture overview.
 
-**Requires:** An LLM API key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY`, etc.) or a local Ollama instance via LiteLLM.
+**Requires:** An LLM API key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY`, etc.) or an OpenAI-compatible local server (Ollama, llama-server) via `TRELIX_LLM_BASE_URL`, with no key — see [OFFLINE.md](OFFLINE.md).
 
 **Key options:** `trelix ask` takes three flags — `--provider`, `--agentic`, and
 `--session`. Streaming is the built-in behaviour whenever an LLM is available; there is
