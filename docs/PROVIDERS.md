@@ -564,6 +564,9 @@ All variables trelix reads, with their defaults. Variables marked `(required)` h
 |---|---|---|
 | `TRELIX_EMBEDDER_EMBED_MAX_TOKENS_PER_BATCH` | `100000` | Max tokens per embedding batch |
 | `TRELIX_EMBEDDER_TPM_LIMIT` | `0` | Tokens-per-minute rate limit (0 = unlimited) |
+| `TRELIX_EMBEDDING_CACHE_ENABLED` | `false` | On-disk cache of index-time chunk embeddings, one SQLite file per embedder fingerprint (provider, model id, width knobs). A fresh index of unchanged text makes no provider calls. Refused with `TRELIX_USE_BATCH_API` on `openai`. Not the query cache (`TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`). Single-operator machines only — see [CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time) |
+| `TRELIX_EMBEDDING_CACHE_DIR` | _(unset)_ | Cache directory, absolute path only. Unset: `$XDG_CACHE_HOME/trelix/embeddings`, else `~/.cache/trelix/embeddings`. Created `0o700`, files `0o600` |
+| `TRELIX_EMBEDDING_CACHE_MAX_MB` | `4096` | Per-file LRU trim applied after each index run (minimum 1); not a limit during a run |
 
 ### LLM — Provider-specific
 
