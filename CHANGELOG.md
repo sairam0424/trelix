@@ -808,6 +808,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   that already pointed at it now resolve.
 
 ### Changed
+- **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows
+  the declared return type of its `retry()` decorator to its own wrapper class, which made mypy
+  reject `with_retry()`'s `Callable[[F], F]` contract and turned every CI run red; the decorator
+  return now carries a version-agnostic `type: ignore` that states that contract. No runtime
+  change: the decorated functions, the backoff and the Retry-After handling are the same.
 - **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim
   space in vec0 tables, which trelix's `DELETE`+`INSERT` upsert and `--prune` rely on; 0.1.9 is
   the release the vec0 contract tests were verified against; the ceiling keeps the 0.1.10
