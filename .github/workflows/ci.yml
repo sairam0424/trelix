@@ -36,8 +36,11 @@ jobs:
       # docs/README.md, and packages/*/tests are the only tests the three adapter
       # packages have. Both are already clean under `ruff check` (verified: 0
       # findings), so widening to them costs nothing and closes the hole.
+      # plugins/trelix/scripts holds the Claude Code plugin's SessionStart hook, a stdlib-only
+      # script that nothing else imports; it is in both the check and the format scope (and
+      # in the Makefile's RUFF_FORMAT_PATHS, kept identical to these lines).
       - name: Ruff check
-        run: ruff check src/ tests/ scripts/ packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src packages/trelix-mcp/tests packages/trelix-langchain/tests packages/trelix-llama-index/tests
+        run: ruff check src/ tests/ scripts/ packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src packages/trelix-mcp/tests packages/trelix-langchain/tests packages/trelix-llama-index/tests plugins/trelix/scripts
       # packages/*/tests is added here too (all 8 files already pass `ruff format
       # --check`). scripts/ is deliberately NOT in the format scope: it is the one
       # widening that does not pass today — `ruff format --check scripts/` reports
@@ -46,8 +49,8 @@ jobs:
       # reformatting that file; do both in the same commit.
       - name: Ruff format check
         run: |
-          ruff format src/ tests/ packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src packages/trelix-mcp/tests packages/trelix-langchain/tests packages/trelix-llama-index/tests
-          git diff --exit-code -- src/ tests/ packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src packages/trelix-mcp/tests packages/trelix-langchain/tests packages/trelix-llama-index/tests || (echo "ruff format changed files — commit the formatted output" && exit 1)
+          ruff format src/ tests/ packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src packages/trelix-mcp/tests packages/trelix-langchain/tests packages/trelix-llama-index/tests plugins/trelix/scripts
+          git diff --exit-code -- src/ tests/ packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src packages/trelix-mcp/tests packages/trelix-langchain/tests packages/trelix-llama-index/tests plugins/trelix/scripts || (echo "ruff format changed files — commit the formatted output" && exit 1)
       # This job installs only [local,sso,dev], so voyageai, google-genai and watchdog
       # are absent and every expression touching them degrades to Any. That is what
       # makes this run report zero errors while six real ones exist — NOT the

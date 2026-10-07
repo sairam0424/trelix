@@ -71,6 +71,14 @@ SLOW_FILES = frozenset(
     {
         "regressions/test_regressions.py",
         "unit/test_audit_wipe_detection.py",
+        # The Claude Code plugin's SessionStart hook: 13 of the file's 17 tests run the hook
+        # script as a child interpreter (one to six runs each) and six of those build a git
+        # repository first, so its cost is structural (about 20 child processes). Measured
+        # 2026-10-07 on two runs: 11.82s at a load average of 31 to 35 (the slowest test, five
+        # child runs, 2.00s; the git-backed ones 1.1s to 1.4s each) and 3.67s at a load of 11
+        # to 19; both are quoted, as for test_regressions.py, and the loaded run is the one the
+        # full suite sees.
+        "unit/test_claude_plugin_session_start.py",
         "unit/test_cli_closed_stdout.py",
         "unit/test_cli_eval_suite.py",
         "unit/test_cli_smoke.py",
@@ -175,6 +183,7 @@ SECURITY_FILES = frozenset(
         "unit/test_audit_undetectable.py",
         "unit/test_audit_verify_snapshot.py",
         "unit/test_audit_wipe_detection.py",
+        "unit/test_claude_plugin_session_start.py",
         "unit/test_cli_audit_read_only.py",
         "unit/test_cli_markup_safety.py",
         "unit/test_cli_serve_exposure_warning.py",
