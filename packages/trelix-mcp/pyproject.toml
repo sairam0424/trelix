@@ -64,3 +64,8 @@ Homepage = "https://github.com/sairam0424/trelix"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Sockets stay enabled here (test_tool_readonly.py drives real tools on a real index). A test
+# file that opts out with `pytest.mark.disable_socket` still needs the socketpair() that
+# asyncio_mode = "auto" makes for every async test's event loop; the root pyproject's addopts
+# allow it for the same reason, and without this the marker fails every async test at setup.
+addopts = "--allow-unix-socket"
