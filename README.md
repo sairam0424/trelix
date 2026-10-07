@@ -77,6 +77,16 @@ export OPENAI_API_KEY=sk-...
 
 ## Use in Claude Code / Cursor / Windsurf (MCP)
 
+**Claude Code plugin** (the server plus a skill that says when to search with trelix; see
+[docs/integrations/claude-code-plugin.md](docs/integrations/claude-code-plugin.md)):
+
+```bash
+claude plugin marketplace add sairam0424/trelix
+claude plugin install trelix@trelix
+```
+
+**Server only**, in Claude Code or any other MCP client:
+
 ```bash
 pip install trelix-mcp
 claude mcp add trelix -- trelix-mcp   # Claude Code
@@ -646,6 +656,7 @@ trelix works across the AI developer ecosystem:
 | Integration | Install | Usage |
 |---|---|---|
 | **MCP** (Claude Code, Cursor, Windsurf, Continue.dev) | `pip install trelix-mcp` | `claude mcp add trelix -- trelix-mcp` |
+| **Claude Code plugin** (server + skill) | `claude plugin marketplace add sairam0424/trelix` | `claude plugin install trelix@trelix` |
 | **LangChain** | `pip install trelix-langchain` | `TrelixRetriever(repo_path=".")` |
 | **LlamaIndex** | `pip install trelix-llama-index` | `TrelixIndexRetriever(repo_path=".")` |
 | **GitHub Action** | `uses: sairam0424/trelix-index-action@v1` | Auto-index on push |

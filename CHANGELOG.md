@@ -325,24 +325,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `nomic-code`) to the embedder code.
 
 ### Added
-- **`TRELIX_LLM_BASE_URL` points the `openai` backend at an OpenAI-compatible server** (Ollama,
-  llama-server, a gateway). `OPENAI_API_KEY` is then optional: without it trelix sends the fixed
-  bearer `trelix-local`, which Ollama ignores. The output cap is sent as `max_tokens` for such a
-  server, because Ollama has no `max_completion_tokens` field and silently ran unbounded before. A
-  model tag under 20B parameters, or one with no readable size, logs one warning per LLM client
-  built (a review on an indexed repository builds two: the planner's and the reviewer's). A URL
-  without `http(s)://` and a host, one carrying a user name and password, or one containing
-  whitespace or a control character (a trailing newline from a secret store, which the URL parser
-  would otherwise drop silently) is a configuration error that names the variable and never the
-  value (`hide_input_in_errors` now covers the whole `TRELIX_LLM_*` section, so no LLM
-  configuration error echoes the value given, a provider typo included); `trelix review` now reports it as `Configuration error` and exits 1 like the other commands
-  instead of raising through Typer, and reports a plain-`ValueError` config error (a bad
-  `TRELIX_RETRIEVAL_*_WEIGHT_*`) as `Error`. `TRELIX_LLM_BASE_URL` with another
-  `TRELIX_LLM_PROVIDER` is ignored with one warning per LLM client built. `OPENAI_BASE_URL` keeps
-  working as before when the new variable is unset. A keyless local-server client is a usable
-  client, so with the variable set `search` and `query` plan through that server too (one call per
-  distinct query); the zero-LLM-call recipe in the FAQ, README, getting-started, user and
-  why-trelix guides and `SECURITY.md` now requires it unset as well as the chat credential.
+- **A Claude Code plugin.** `claude plugin marketplace add sairam0424/trelix` then
+  `claude plugin install trelix@trelix` installs the `trelix-mcp` server (launched as
+  `uvx --from trelix-mcp==<newest published release> trelix-mcp`, so the plugin trails this
+  repository by one release and never points at an unpublished version) and a skill,
+  `/trelix:use-trelix-index`, that says when to search with trelix and when to fall back to grep.
+  Tool names are `mcp__plugin_trelix_trelix__<tool>`. Five decisions, recorded in
+  `plugins/trelix/README.md`: the server command carries no `trelix[local]` extra (the opt-in
+  command is documented, because that extra pulls PyTorch); this first version pins the published
+  3.4.3, which has no `--tools` flag and sends no server instructions, so the skill carries that
+  guidance until a pin-bump PR follows the next release; `plugin.json`'s `version` equals the
+  pin (a literal test that also compares it with the `.mcp.json` pin, so a pin bump that forgets
+  `version` fails) and a contents hash in `tests/unit/test_claude_plugin_manifest.py` makes
+  every plugin edit loud (it cannot see whether `version` was bumped with it);
+  `claude plugin validate --strict` stays a manual CONTRIBUTING step (CI runs the offline tests,
+  not the validator); and the pin check is offline only (a released CHANGELOG section, not newer
+  than the trelix-mcp stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
+  pin the manifests, the pin form (an exact `==` to a version with a released CHANGELOG section,
+  not newer than the trelix-mcp stamp), the plugin tree, and that the skill names only tools the
+  server registers. Guide: `docs/integrations/claude-code-plugin.md`; a paste-able block for other
+  agents: `docs/integrations/AGENTS_SNIPPET.md`.
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
   of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
   answer the question; this one tags the context and instructs the model, nothing reads the model's
@@ -531,6 +533,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     refusal exits 1 with one `refused: ...` line per reason, and without `--prepare-only` it exits 1
     saying the run is not available in this release. New modules `trelix.eval.suite`, `suite_git`,
     `suite_gold` and `suite_prepare`. See `eval/README.md`.
+- **`TRELIX_LLM_BASE_URL` points the `openai` backend at an OpenAI-compatible server** (Ollama,
+  llama-server, a gateway). `OPENAI_API_KEY` is then optional: without it trelix sends the fixed
+  bearer `trelix-local`, which Ollama ignores. The output cap is sent as `max_tokens` for such a
+  server, because Ollama has no `max_completion_tokens` field and silently ran unbounded before. A
+  model tag under 20B parameters, or one with no readable size, logs one warning per LLM client
+  built (a review on an indexed repository builds two: the planner's and the reviewer's). A URL
+  without `http(s)://` and a host, one carrying a user name and password, or one containing
+  whitespace or a control character (a trailing newline from a secret store, which the URL parser
+  would otherwise drop silently) is a configuration error that names the variable and never the
+  value (`hide_input_in_errors` now covers the whole `TRELIX_LLM_*` section, so no LLM
+  configuration error echoes the value given, a provider typo included); `trelix review` now reports it as `Configuration error` and exits 1 like the other commands
+  instead of raising through Typer, and reports a plain-`ValueError` config error (a bad
+  `TRELIX_RETRIEVAL_*_WEIGHT_*`) as `Error`. `TRELIX_LLM_BASE_URL` with another
+  `TRELIX_LLM_PROVIDER` is ignored with one warning per LLM client built. `OPENAI_BASE_URL` keeps
+  working as before when the new variable is unset. A keyless local-server client is a usable
+  client, so with the variable set `search` and `query` plan through that server too (one call per
+  distinct query); the zero-LLM-call recipe in the FAQ, README, getting-started, user and
+  why-trelix guides and `SECURITY.md` now requires it unset as well as the chat credential.
 
 ### Changed
 - **`trelix ask` and `GET /ask` no longer call the LLM when retrieval found nothing, and an answer
