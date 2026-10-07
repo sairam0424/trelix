@@ -12,9 +12,17 @@ from an index it keeps in `<repo_path>/.trelix/index.db`. Every trelix tool take
 
 ## Index first
 
-1. Check that `<repo_path>/.trelix/index.db` exists before any search (for example
-   `ls <repo_path>/.trelix/index.db`). A file left behind by the trap in step 3 exists but is
-   empty and also answers `[]`; when in doubt, grep first.
+1. Read the line in the session context that starts with `trelix:` (the plugin's SessionStart
+   hook writes it on startup, resume and `/clear`). It has one of three shapes:
+   `trelix: no index at <repo>/.trelix/index.db. Call index_codebase(...) before search_code;
+   until then, use grep.`; `trelix: the index at <repo>/.trelix/index.db is empty (0 files).
+   Call index_codebase(...) before search_code; until then, use grep.`; or `trelix: <repo> is
+   indexed: N files, M symbols; built <when> from commit <sha> (<distance>); embedder
+   <provider>. Pass repo_path="<repo>" to every trelix tool.` Only the third means search, and
+   its `<repo>` is the `repo_path` to pass. Without such a line (the hook did not run), check
+   that `<repo_path>/.trelix/index.db` exists (for example `ls <repo_path>/.trelix/index.db`).
+   A file left behind by the trap in step 3 exists but is empty and also answers `[]`; when in
+   doubt, grep first.
 2. If it does not exist, do not search. Ask the user before calling
    `mcp__plugin_trelix_trelix__index_codebase(repo_path)`: it embeds every symbol in the
    repository, which takes minutes on a large tree and costs money with an API embedder.
@@ -51,8 +59,9 @@ others prompt for permission because they always write to the index or spend mon
 
 - The index does not exist (step 1 above), or the user declined to index.
 - The index is stale: a symbol you can see in the working tree is missing from every
-  result, or the last index predates the commits you are working on. Say so, and either
-  ask to re-index (`index_codebase` is incremental on an existing index) or grep.
+  result, or the last index predates the commits you are working on (the SessionStart line
+  says `HEAD is N commits ahead`). Say so, and either ask to re-index (`index_codebase` is
+  incremental on an existing index) or grep.
 - A tool error names `sentence-transformers`: the server has no local embedding model.
   Fall back to grep and point the user at the plugin README's embeddings section.
 - You need an exact identifier match, a regular expression, or a file-name pattern:

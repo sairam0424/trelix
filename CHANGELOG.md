@@ -365,6 +365,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   without asking for it. A malformed value behaves like a malformed `TRELIX_OTEL_ENABLED`.
   `docs/OBSERVABILITY.md` gains a "Content capture" section; `docs/CONFIGURATION.md` and `.env.example`
   list both names.
+- **The Claude Code plugin tells Claude at session start whether the repository has a trelix
+  index** (files, symbols, when and from which commit it was built, how many commits HEAD is
+  ahead, which embedder provider), from a stdlib-only script (`plugins/trelix/scripts/session_start.py`,
+  run by a `SessionStart` hook on `startup`, `resume` and `clear` with a 15 s timeout) that opens
+  the index read-only, creates nothing under the project, and never blocks the session: exit 0 on
+  every path, nothing on stdout on an error (one `trelix session_start: skipped (<reason>)` line
+  on stderr, which Claude Code keeps in its debug log), at most 1,000 characters. It prints one of
+  three literal lines: `trelix: no index at <repo>/.trelix/index.db. Call
+  index_codebase(repo_path="<repo>") before search_code; until then, use grep.`; the same for an
+  index that `is empty (0 files)` (what a search on the pinned release leaves behind); or
+  `trelix: <repo> is indexed: N files, M symbols; built <when> from commit <12 hex> (= HEAD |
+  HEAD is 1 commit ahead | HEAD is N commits ahead | distance from HEAD unknown); embedder
+  <provider>. Pass repo_path="<repo>" to every trelix tool.` `CLAUDE_PROJECT_DIR` names the
+  project; the hook's stdin `cwd` is used only when it is unset or does not name a directory.
+  Tests pin the hook file (one event, one command), the script's import roots (no `trelix`, no
+  network), each line, the cap and the exit-0 behaviour on bad input; `plugins/trelix/scripts`
+  joins the ruff scope in CI and `make lint`; the plugin README, the skill, the integration guide
+  and SECURITY.md describe the line and what the hook runs; the plugin version moves to
+  `3.4.3.1` (a plugin-only change on the same pin).
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
   of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
   answer the question; this one tags the context and instructs the model, nothing reads the model's

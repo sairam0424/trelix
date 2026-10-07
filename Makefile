@@ -10,10 +10,12 @@
 # reports 1 file it would rewrite (scripts/measure_index_hygiene.py), so widening the
 # format scope would fail on an unrelated file. packages/ is enumerated rather than passed
 # whole to match ci.yml literally; the two cover the same files today — these six are the
-# only directories under packages/ containing .py.
+# only directories under packages/ containing .py. plugins/trelix/scripts is the Claude Code
+# plugin's SessionStart hook script (stdlib-only, imported by nothing else).
 RUFF_FORMAT_PATHS := src/ tests/ \
     packages/trelix-mcp/src packages/trelix-langchain/src packages/trelix-llama-index/src \
-    packages/trelix-mcp/tests packages/trelix-langchain/tests packages/trelix-llama-index/tests
+    packages/trelix-mcp/tests packages/trelix-langchain/tests packages/trelix-llama-index/tests \
+    plugins/trelix/scripts
 RUFF_CHECK_PATHS := $(RUFF_FORMAT_PATHS) scripts/
 
 help:  ## Show this help
