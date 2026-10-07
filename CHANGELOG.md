@@ -694,6 +694,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   needs `usage` in the reply and the cl100k_base encoding on disk; when either is missing it warns
   once and stays out of the way. `trelix ask` (a stream) and the query planner's tool call are not
   checked.
+- **`TRELIX_LLM_LOCAL_CONTEXT_TOKENS`** tells the model-aware context budget
+  (`TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null`) the context length of the server behind
+  `TRELIX_LLM_BASE_URL`, instead of falling back to 12,000 for a tag `context_windows` does not
+  know. Optional, `1024` to `2000000`, blank is unset; the budget is then
+  `int(TRELIX_LLM_LOCAL_CONTEXT_TOKENS × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`, and an
+  explicit integer budget still wins. Setting it without `TRELIX_LLM_BASE_URL` is a configuration
+  error that names both variables and never the value.
 
 ### Changed
 - **The retriever's per-query debug trace is written beside the index, not beside the source.**
