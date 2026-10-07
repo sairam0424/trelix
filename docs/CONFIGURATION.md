@@ -77,6 +77,36 @@ anywhere. See [Per-Project Configuration](#per-project-configuration).
 There is **no embedding concurrency setting.** Indexing throughput against a remote provider is
 tuned via the three batching variables above, not by a worker/concurrency count.
 
+### Embedding cache (index time)
+
+Off by default. When on, anything that constructs an `Indexer` (`trelix index`, `watch`,
+`update-index`, the REST `POST /index`, the MCP `index_codebase` tool) looks every chunk's text
+up by its sha256 in an on-disk cache before calling the embedding provider, and only the misses
+are embedded. A fresh index of unchanged text makes no provider calls and stores byte-identical
+vectors. Distinct from `TRELIX_RETRIEVAL_QUERY_CACHE_SIZE`, the in-memory LRU for `embed_query()`
+at search time.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRELIX_EMBEDDING_CACHE_ENABLED` | `false` | Turn the cache on. Refused together with `TRELIX_USE_BATCH_API`/`--use-batch-api` on the `openai` provider, and by `trelix index --resume-batch` (the Batch API path never consults the cache); both exit 1 before any model is loaded |
+| `TRELIX_EMBEDDING_CACHE_DIR` | _(unset)_ | Directory for the cache files. **Must be absolute** (`~` is expanded); a relative value is a configuration error, because it would resolve against whatever repository is being indexed. Unset means `$XDG_CACHE_HOME/trelix/embeddings` (a relative `XDG_CACHE_HOME` is ignored, as the XDG spec requires), else `~/.cache/trelix/embeddings` |
+| `TRELIX_EMBEDDING_CACHE_MAX_MB` | `4096` | Size trim per cache file (one file per embedder fingerprint), minimum `1`. Applied after each index run: the least recently used rows go until the file fits. Not a limit during a run — one run can write past it |
+
+One SQLite file per **embedder fingerprint**: provider, model id, the configuration knobs that
+change a vector for the same model id (`TRELIX_EMBEDDER_OPENAI_DIMENSIONS`,
+`TRELIX_EMBEDDER_AZURE_DIMENSIONS` and `AZURE_ENDPOINT`, `TRELIX_EMBEDDER_VOYAGE_OUTPUT_DIMENSIONS`,
+the Titan dimensions and normalize flags) and the declared width. Changing the model is a
+different file, never a mixed one, and a file whose recorded width disagrees with the embedder
+actually built is refused by name. The directory is created `0o700` — and set to `0o700` on
+every run, including a pre-existing directory you point `TRELIX_EMBEDDING_CACHE_DIR` at, so
+give the cache a directory of its own — and each file created `0o600` (POSIX; Windows applies
+neither). Two indexers may share a file; first opens of a new file are serialised, and a trim
+that finds the file locked or deleted is skipped for that run. The run reports
+`chunks_from_cache` beside `chunks_embedded`.
+**Single-operator machines only:** the hosted GitHub App forwards every `TRELIX_*` host variable
+into its `trelix index` child, so setting this on a multi-tenant host shares one cache across
+every tenant it indexes — see [SECURITY.md](../SECURITY.md#embedding-cache-on-disk-trelix_embedding_cache_enabled).
+
 ### Retrieval
 
 | Variable | Default | Description |
@@ -554,6 +584,15 @@ TRELIX_STORE_BACKEND=sqlite
 
 # Parallel read-only BM25 connections (0 = disabled, default)
 # TRELIX_STORE_BM25_READ_POOL_SIZE=4
+
+# ---------------------------------------------------------------------------
+# Embedding cache (index time) — off by default; single-operator machines only
+# ---------------------------------------------------------------------------
+# TRELIX_EMBEDDING_CACHE_ENABLED=false
+# Absolute path only. Unset: $XDG_CACHE_HOME/trelix/embeddings, else ~/.cache/trelix/embeddings
+# TRELIX_EMBEDDING_CACHE_DIR=/home/me/.cache/trelix/embeddings
+# Per-file LRU trim after each run, in MB (minimum 1); not a limit during a run
+# TRELIX_EMBEDDING_CACHE_MAX_MB=4096
 
 # ---------------------------------------------------------------------------
 # Federation

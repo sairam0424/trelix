@@ -47,7 +47,7 @@ Expected output, captured from a real run against a three-file example repo — 
   Embedding… ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%
 
 Done. {'files_found': 3, 'files_unreadable': 0, 'files_indexed': 3, 'files_skipped': 0,
-'symbols_extracted': 3, 'chunks_total': 3, 'chunks_embedded': 3, 'file_summaries_generated': 0,
+'symbols_extracted': 3, 'chunks_total': 3, 'chunks_embedded': 3, 'chunks_from_cache': 0, 'file_summaries_generated': 0,
 'file_summaries_failed': 0, 'file_summaries_embedded': 0, 'chunks_missing_vectors': 0,
 'chunks_reconciled': 0, 'errors': 0, 'elapsed_seconds': 4.2}
         Index Summary

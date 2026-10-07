@@ -723,6 +723,18 @@ def index(
         raise typer.Exit(1) from exc
 
     if resume_batch:
+        # The poll path hands vectors straight from OpenAI to the store and never consults
+        # the embedding cache, so with the cache on the wrapper would reach the Batch API
+        # method's own type guard and die with a message about CachedIndexEmbedder.
+        # Refused here, before Indexer() loads a model, with the way out named.
+        if config.embedding_cache.enabled:
+            _print_error(
+                "Cannot resume a Batch API job",
+                "TRELIX_EMBEDDING_CACHE_ENABLED=true is set, and the Batch API poll path "
+                "bypasses the cache. Re-run with TRELIX_EMBEDDING_CACHE_ENABLED=false to "
+                "collect the job, then re-enable it.",
+            )
+            raise typer.Exit(1)
         try:
             indexer = Indexer(config)
             job = indexer.db.get_pending_batch_job(config.repo_path)
