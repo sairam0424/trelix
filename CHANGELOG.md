@@ -477,6 +477,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   newline-terminated 7-line file has 8 lines, so its whole-file `<module>` symbol (`1-8` from the
   Python parser) verifies as `valid` on a fresh index. The module joins the mutation driver's scope
   as `retrieval.citations`.
+- **`trelix ask --json`, and a verified `Sources:` footer after a cited answer** (fourth of six
+  changes toward `trelix ask` answers that cite the retrieved code; the first one a user sees).
+  `--json` prints exactly one JSON object on stdout, `{query, answer, abstained, abstain_reason,
+  citations}`, and nothing else: `answer` is the whole answer, the `INSUFFICIENT_EVIDENCE:` line or
+  the no-results notice; `abstained` is `true` for either abstention, which exits `0` like an
+  answer and leaves `citations` empty; each element of `citations` is `{marker, status, path,
+  lines, symbol, detail}`, `lines` as `"70-80"`, and `path`, `lines`, `symbol` are `null` for a
+  marker no retrieved chunk carries.
+  A synthesis failure leaves stdout empty and exits `1`, under `TRELIX_RETRIEVAL_FLARE=true` too:
+  the Synthesizer's own notices stay off stdout under `--json`. `--json` is refused before the
+  index is opened: with `--agentic`/`--session` as a usage error (exit `2`), with
+  `TRELIX_RETRIEVAL_AGENTIC=true` (exit `1`, the agent loop prints its own result) and in
+  context-only mode (`--provider local`, FLARE off: exit `1`, pointing at `trelix search --json`).
+  In human mode, when `TRELIX_RETRIEVAL_CITATIONS=true` tagged the context and the model answered,
+  a blank line and a `Sources:` footer follow the streamed answer: `  [C2]
+  src/auth/middleware.py:70-80 AuthMiddleware.bearer` for a marker that verifies, `  [C3]
+  unverified (line_out_of_range): <detail>` otherwise, `Sources: none cited.` for an answer without
+  markers. The answer text is never rewritten (it has already streamed), and the path, lines and
+  symbol in both renderings come from the index, never from the model. With the flag off nothing is
+  verified (a `[C1]` the prompt never asked for is text), no footer is printed and stdout is byte for
+  byte what it was. Also: a cited file the process can no longer read is reported as `file_missing`
+  with the error's name (`could not be read (PermissionError); re-index`) instead of crashing the
+  footer after the answer streamed; `Synthesizer(stream_to_stdout=False)` and
+  `Synthesizer.last_context` are new; REST `GET /ask`, `trelix review` and the MCP `ask_agent`
+  tool are unchanged. The mutation driver's throwaway tree now carries `plugins/` and
+  `.claude-plugin/` (the Claude Code plugin tests read them from the tree root) and
+  `retrieval.citations` was re-measured on this tree: 155 mutants, 154 killed, 1 survived, so its
+  `survived` ceiling moves `0` → `1` for one equivalent mutant (`and` → `or` in the `lines` guard
+  of `citation_as_json`, where a `Citation` has both line fields set or both `None`).
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
@@ -757,6 +786,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `int(TRELIX_LLM_LOCAL_CONTEXT_TOKENS × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`, and an
   explicit integer budget still wins. Setting it without `TRELIX_LLM_BASE_URL` is a configuration
   error that names both variables and never the value.
+- **e2e: `trelix review` against a stdlib OpenAI-compatible fake server on `127.0.0.1`** (good,
+  cut-off, prompt-truncated, garbage-body and prose replies; exit 4 and the outcome record
+  asserted). `tests/e2e/fake_openai_server.py` is `http.server` plus `threading`, binds port 0,
+  answers `/v1/chat/completions` as JSON or as SSE when the request streams, and records every
+  request; the installed `trelix` console script runs as a real subprocess with a scrubbed
+  environment, so the `trelix-local` bearer, the `max_tokens` field, the `prompt_truncated`
+  detail and the secret-free `Configuration error` for a URL carrying a credential are proven at
+  the process boundary. Runs in CI's `e2e` job and in the release smoke job against the built
+  wheel, never in `make test`.
+- **`docs/OFFLINE.md`: running trelix without a cloud key.** Ollama and llama-server settings for the
+  `openai` backend through `TRELIX_LLM_BASE_URL`, why the context length should be 64k and how
+  `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` sizes the retrieval budget, what the prompt-truncation check
+  (0.85 x the cl100k_base count) does and does not catch, the 20B model-size floor the warnings
+  assume (an assumption, not a measurement: the candidate models are listed as unmeasured against
+  R-C4-05's bar), the planner calls every search makes once the variable is set, the one-time
+  prefetch for the embedder (`HF_HUB_OFFLINE`), the grammars and tiktoken (`TIKTOKEN_CACHE_DIR`; the
+  default cache is under the temp directory), and a troubleshooting table keyed on the outcome-file
+  details (`exception:NotFoundError`, `prompt_truncated`, `exception:APIConnectionError`, ...).
+  Linked from `docs/README.md`, the user guide, the FAQ and TROUBLESHOOTING.md; the three warnings
+  that already pointed at it now resolve.
 
 ### Changed
 - **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim
