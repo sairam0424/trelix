@@ -1,4 +1,3 @@
-import argparse
 import json
 import logging
 import os
@@ -10,7 +9,6 @@ logging.basicConfig(
     format="[trelix-mcp] %(levelname)s %(message)s",
 )
 
-import signal  # noqa: E402
 import threading  # noqa: E402
 from collections import OrderedDict  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -29,7 +27,6 @@ from mcp.types import (  # noqa: E402
 
 from trelix.agent.loop import AgentLoop  # noqa: E402
 from trelix.core.config import EmbedderConfig, IndexConfig, RetrievalConfig  # noqa: E402
-from trelix.core.confinement import resolve_allowed_roots  # noqa: E402
 from trelix.core.index_check import IndexNotFoundError, require_index  # noqa: E402
 from trelix.core.models import IndexedFile, Symbol  # noqa: E402
 from trelix.federation.registry import _DEFAULT_CONFIG, RepoRegistry  # noqa: E402
@@ -78,9 +75,7 @@ from trelix_mcp.tool_metadata import (  # noqa: E402
     LISTING_CACHE_SCOPE,
     LISTING_CACHE_TTL_SECONDS,
     SERVER_INSTRUCTIONS,
-    TOOL_PROFILES,
     ToolMetadata,
-    apply_tool_profile,
 )
 
 mcp = FastMCP(
@@ -1386,47 +1381,9 @@ def agent_clear_session(repo_path: str, session_id: str) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Entry point for the trelix-mcp server (stdio transport).
-
-    Parses argv for --help/--version/--tools/--root and rejects unknown flags — the normal path
-    (no args, launched by an MCP client's server config) falls straight through to running
-    the server with every tool and no confinement, unchanged from before this parser existed.
+    """Console-script entry point (`trelix-mcp = trelix_mcp.server:main`); the CLI lives in
+    `trelix_mcp.cli`.
     """
-    parser = argparse.ArgumentParser(
-        prog="trelix-mcp",
-        description="MCP server for trelix — semantic code search over stdio.",
-    )
-    parser.add_argument("--version", action="version", version=f"trelix-mcp {__version__}")
-    parser.add_argument(
-        "--tools",
-        choices=TOOL_PROFILES,
-        default="full",
-        help="tool profile: 'full' (default) lists every tool, 'core' lists only the everyday "
-        "search and indexing tools and hides the rest",
-    )
-    parser.add_argument(
-        "--root",
-        action="append",
-        default=[],
-        metavar="PATH",
-        help="a repository root every repo_path, federation path and trelix://repo/... URI must "
-        "lie inside; repeatable, and TRELIX_ALLOWED_REPO_ROOTS (os.pathsep-separated) adds more. "
-        "With neither, nothing is confined",
-    )
-    args = parser.parse_args()
-    if any(not root.strip() for root in args.root):
-        parser.error("--root must not be blank")
-    try:
-        limits_from_env()
-    except BudgetConfigError as exc:
-        parser.error(str(exc))
-    apply_tool_profile(mcp, args.tools)
-    _install_confinement(resolve_allowed_roots(*args.root))
+    from trelix_mcp.cli import main as cli_main  # lazy: trelix_mcp.cli imports this module
 
-    def _handle_sigterm(signum: int, frame: Any) -> None:
-        _log.info("Received SIGTERM — shutting down")
-        sys.exit(0)
-
-    signal.signal(signal.SIGTERM, _handle_sigterm)
-    _log.info("trelix-mcp starting (transport=stdio)")
-    mcp.run(transport="stdio")
+    cli_main()
