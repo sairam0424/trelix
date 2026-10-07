@@ -1305,7 +1305,9 @@ Three golden lines, the second query's retrieval having raised:
   `id`, else `q0001`-style by position), `query`, `answerable`,
   `hallucination`, `completeness`, `faithfulness`, `overall` and `error`
   (`null` unless the query raised; then the message, cut at 200 characters,
-  beside the placeholder scores); `aggregate` holds the seven printed values
+  beside the placeholder scores). The golden's `gold_answer` and `expected_citations`
+  stay in the golden file and are not copied into the record; the next change adds
+  the citation facts. `aggregate` holds the seven printed values
   under `hallucination_rate`, `completeness`, `faithfulness`, `overall`,
   `n_queries`, `unscoreable` and `n_unanswerable`. Exits `1` with a one-line
   error if the file cannot be written: the directory must exist, and the path
