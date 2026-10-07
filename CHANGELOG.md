@@ -808,6 +808,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   that already pointed at it now resolve.
 
 ### Changed
+- **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows
+  the declared return type of its `retry()` decorator to its own wrapper class, which made mypy
+  reject `with_retry()`'s `Callable[[F], F]` contract and turned every CI run red; the decorator
+  return now carries a version-agnostic `type: ignore` that states that contract. No runtime
+  change: the decorated functions, the backoff and the Retry-After handling are the same.
 - **The `trelix-mcp` command line moved to `trelix_mcp.cli`.** `trelix_mcp.server` keeps the
   FastMCP server and every tool; its `main()` is now a two-line entry point that calls
   `trelix_mcp.cli.main()`, so `[project.scripts]` (`trelix_mcp.server:main`) and every
