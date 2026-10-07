@@ -396,6 +396,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   newline-terminated 7-line file has 8 lines, so its whole-file `<module>` symbol (`1-8` from the
   Python parser) verifies as `valid` on a fresh index. The module joins the mutation driver's scope
   as `retrieval.citations`.
+- **`trelix ask --json`, and a verified `Sources:` footer after a cited answer** (fourth of six
+  changes toward `trelix ask` answers that cite the retrieved code; the first one a user sees).
+  `--json` prints exactly one JSON object on stdout, `{query, answer, abstained, abstain_reason,
+  citations}`, and nothing else: `answer` is the whole answer, the `INSUFFICIENT_EVIDENCE:` line or
+  the no-results notice; `abstained` is `true` for either abstention, which exits `0` like an
+  answer and leaves `citations` empty; each element of `citations` is `{marker, status, path,
+  lines, symbol, detail}`, `lines` as `"70-80"`, and `path`, `lines`, `symbol` are `null` for a
+  marker no retrieved chunk carries.
+  A synthesis failure leaves stdout empty and exits `1`, under `TRELIX_RETRIEVAL_FLARE=true` too:
+  the Synthesizer's own notices stay off stdout under `--json`. `--json` is refused before the
+  index is opened: with `--agentic`/`--session` as a usage error (exit `2`), with
+  `TRELIX_RETRIEVAL_AGENTIC=true` (exit `1`, the agent loop prints its own result) and in
+  context-only mode (`--provider local`, FLARE off: exit `1`, pointing at `trelix search --json`).
+  In human mode, when `TRELIX_RETRIEVAL_CITATIONS=true` tagged the context and the model answered,
+  a blank line and a `Sources:` footer follow the streamed answer: `  [C2]
+  src/auth/middleware.py:70-80 AuthMiddleware.bearer` for a marker that verifies, `  [C3]
+  unverified (line_out_of_range): <detail>` otherwise, `Sources: none cited.` for an answer without
+  markers. The answer text is never rewritten (it has already streamed), and the path, lines and
+  symbol in both renderings come from the index, never from the model. With the flag off nothing is
+  verified (a `[C1]` the prompt never asked for is text), no footer is printed and stdout is byte for
+  byte what it was. Also: a cited file the process can no longer read is reported as `file_missing`
+  with the error's name (`could not be read (PermissionError); re-index`) instead of crashing the
+  footer after the answer streamed; `Synthesizer(stream_to_stdout=False)` and
+  `Synthesizer.last_context` are new; REST `GET /ask`, `trelix review` and the MCP `ask_agent`
+  tool are unchanged. The mutation driver's throwaway tree now carries `plugins/` and
+  `.claude-plugin/` (the Claude Code plugin tests read them from the tree root) and
+  `retrieval.citations` was re-measured on this tree: 155 mutants, 154 killed, 1 survived, so its
+  `survived` ceiling moves `0` → `1` for one equivalent mutant (`and` → `or` in the `lines` guard
+  of `citation_as_json`, where a `Citation` has both line fields set or both `None`).
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,

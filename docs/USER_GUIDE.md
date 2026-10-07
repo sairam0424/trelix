@@ -541,7 +541,7 @@ trelix ask ./my-repo "<question>"
 
 **What it does:** Runs the full retrieval pipeline, assembles a context window from the top results, and sends the context to an LLM to synthesize a natural language answer. Streams tokens live as they are generated. For large contexts (>8,000 tokens or >20 results), activates GraphRAG map-reduce to avoid context window overflows.
 
-**Output:** Streaming natural language answer with source citations at the end.
+**Output:** a streamed natural-language answer. With `TRELIX_RETRIEVAL_CITATIONS=true` the answer cites `[C#]` tags and ends with a `Sources:` footer that verifies each tag against the retrieved chunk and the file on disk. `--json` prints one JSON object (`query`, `answer`, `abstained`, `abstain_reason`, `citations`) instead of streaming.
 
 **When to use it:**
 - You want to understand *how something works*, not just find where it is.

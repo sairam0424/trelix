@@ -26,6 +26,10 @@ file on disk. The only thing taken from the model's text is the digits of a ``[C
 marker, matched by :data:`MARKER_RE`; the path, lines and symbol of every
 :class:`Citation` come from the index. The verifier opens at most one file per distinct
 cited path, under ``repo_root / rel_path`` only, and reads it for its newline count alone.
+
+``trelix ask`` shows the verdicts two ways, both built here so the two agree:
+:func:`footer_lines` is the ``Sources:`` footer printed after a streamed answer and
+:func:`citation_as_json` is one element of the ``citations`` list of ``trelix ask --json``.
 """
 
 from __future__ import annotations
@@ -150,7 +154,10 @@ def verify_citations(
     file-summary source (``TRELIX_RETRIEVAL_FILE_SUMMARY_LEG``, a synthetic ``symbol_id``
     below zero with the representative symbol's range) is checked like any other: its path
     and lines are real index data. Each distinct path is counted once per call. Pure given
-    the answer, the sources and the filesystem; an unreadable file raises its ``OSError``.
+    the answer, the sources and the filesystem. A path that raises an ``OSError`` while it
+    is checked (a permission denied on the file or a directory above it) is reported as
+    ``file_missing`` with the exception's name in the detail, so a stale or unreadable tree
+    never makes the caller crash after the answer has already been shown.
     """
     by_tag = {source.tag: source for source in sources}
     line_counts: dict[str, int] = {}
@@ -172,12 +179,16 @@ def _classify(
             marker, tag, "unknown", None, None, None, None, "no retrieved chunk has this tag"
         )
     file = repo_root / source.path
-    if not file.is_file():
-        return _cited(
-            marker, source, "file_missing", f"{source.path} is not in the repository; re-index"
-        )
-    if source.path not in line_counts:
-        line_counts[source.path] = count_lines(file)
+    try:
+        if not file.is_file():
+            return _cited(
+                marker, source, "file_missing", f"{source.path} is not in the repository; re-index"
+            )
+        if source.path not in line_counts:
+            line_counts[source.path] = count_lines(file)
+    except OSError as exc:
+        detail = f"{source.path} could not be read ({type(exc).__name__}); re-index"
+        return _cited(marker, source, "file_missing", detail)
     lines = line_counts[source.path]
     if source.line_end > lines:
         detail = (
@@ -199,3 +210,46 @@ def _cited(marker: str, source: CitationSource, status: CitationStatus, detail: 
         source.symbol,
         detail,
     )
+
+
+def footer_lines(citations: Sequence[Citation]) -> list[str]:
+    """The ``Sources:`` footer ``trelix ask`` prints after an answer, one string per line.
+
+    A valid row is ``  [C2] src/auth/middleware.py:70-80 AuthMiddleware.bearer``; any other
+    status is ``  [C3] unverified (line_out_of_range): <detail>``. An answer with no markers
+    gives the single line ``Sources: none cited.``. Rows keep the verifier's order.
+    """
+    if not citations:
+        return ["Sources: none cited."]
+    lines = ["Sources:"]
+    for citation in citations:
+        if citation.status == "valid":
+            lines.append(
+                f"  {citation.marker} {citation.path}:{citation.line_start}-"
+                f"{citation.line_end} {citation.symbol}"
+            )
+        else:
+            lines.append(f"  {citation.marker} unverified ({citation.status}): {citation.detail}")
+    return lines
+
+
+def citation_as_json(citation: Citation) -> dict[str, object]:
+    """One element of ``trelix ask --json``'s ``citations`` list.
+
+    Exactly the keys ``marker, status, path, lines, symbol, detail``; ``lines`` is the
+    ``"a-b"`` string the other JSON surfaces use (``trelix search --json``) and, like
+    ``path`` and ``symbol``, ``None`` for an ``unknown`` marker.
+    """
+    lines = (
+        f"{citation.line_start}-{citation.line_end}"
+        if citation.line_start is not None and citation.line_end is not None
+        else None
+    )
+    return {
+        "marker": citation.marker,
+        "status": citation.status,
+        "path": citation.path,
+        "lines": lines,
+        "symbol": citation.symbol,
+        "detail": citation.detail,
+    }

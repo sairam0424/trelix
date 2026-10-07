@@ -10,7 +10,9 @@ Usage::
     synth.synthesize(context, config)   # streams answer to stdout
 
 Design principles:
-- Streams tokens to stdout so the user sees output immediately.
+- Streams tokens to stdout so the user sees output immediately (``synthesize()``;
+  ``stream_to_stdout=False`` keeps every stdout write in, for a caller that prints the
+  answer itself, such as ``trelix ask --json``). ``stream()`` never writes: it yields.
 - Adapts to provider: openai, azure, or local (no-op with a clear message).
 - Falls back gracefully when no API key is present.
 - Uses per-intent system prompts to guide the response shape.
@@ -142,8 +144,13 @@ class Synthesizer:
         config: EmbedderConfig,
         retrieval_config: RetrievalConfig | None = None,
         llm_config: LLMConfig | None = None,
+        *,
+        stream_to_stdout: bool = True,
     ) -> None:
         self._config = config
+        # False silences every stdout write of synthesize() (the streamed tokens, the
+        # closing newline and the three notices); the returned string is unchanged.
+        self._stream_to_stdout = stream_to_stdout
         from trelix.llm.client import ChatMessage as _ChatMessage  # noqa: F401 – ensure import
 
         if llm_config is not None:
@@ -191,6 +198,10 @@ class Synthesizer:
         # Why the last synthesize()/stream() call abstained instead of answering; None when
         # it answered (or failed: an abstention is not an error, so the two never both hold).
         self.last_abstain_reason: AbstainReason | None = None
+        # The context the last synthesize()/stream() call answered from, so a caller can
+        # verify the answer's [C#] markers against its citation_sources after FLARE, whose
+        # final context is private to its loop. stream() sets it when iteration starts.
+        self.last_context: RetrievedContext | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -219,19 +230,19 @@ class Synthesizer:
         cfg = config or self._config
         self.last_error = None
         self.last_abstain_reason = None
+        self.last_context = context
 
         if self._client is None:
             self.last_error = NOT_CONFIGURED_MESSAGE
-            msg = (
+            self._notice(
                 "[trelix] No LLM API key configured — skipping synthesis. "
                 "Set OPENAI_API_KEY (or AZURE_API_KEY + AZURE_ENDPOINT) to enable answers."
             )
-            print(msg, flush=True)
             return ""
 
         if not context.results:
             self.last_abstain_reason = "no_results"
-            print(NO_RESULTS_MESSAGE, flush=True)
+            self._notice(NO_RESULTS_MESSAGE)
             return NO_RESULTS_MESSAGE
 
         # Delegate to GraphRAG map-reduce for large contexts.
@@ -261,7 +272,7 @@ class Synthesizer:
             self.last_error = str(exc)
             msg = f"[trelix] Synthesis failed: {exc}"
             logger.warning(msg)
-            print(f"\n{msg}", flush=True)
+            self._notice(f"\n{msg}")
             return ""
         if not answer.strip():
             # The call succeeded but carried nothing readable: an endpoint that ignores
@@ -290,11 +301,14 @@ class Synthesizer:
         ``last_error`` set, whatever retrieval found); an answer that opens with
         ``INSUFFICIENT_EVIDENCE:`` streams as any answer does and records
         ``"insufficient_evidence"`` when the stream ends (a stream closed early records nothing).
+        ``last_context`` is assigned inside this generator, so it is set on the first
+        ``next()``, not when ``stream()`` is called: iterate before reading it.
 
         Usage::
             for token in synth.stream(context, config):
                 print(token, end="", flush=True)
         """
+        self.last_context = context
         self.last_abstain_reason = None
         self.last_error = None if self.is_configured else NOT_CONFIGURED_MESSAGE
         if self.is_configured and not context.results:
@@ -354,6 +368,21 @@ class Synthesizer:
         if is_abstention(answer):
             self.last_abstain_reason = "insufficient_evidence"
 
+    def _notice(self, msg: str) -> None:
+        """One of ``synthesize()``'s three stdout notices, printed only when streaming to stdout.
+
+        The notices are not the answer (the return value and ``last_error`` carry that), so a
+        caller that owns stdout, like ``trelix ask --json``, must be able to keep them off it.
+        """
+        if self._stream_to_stdout:
+            print(msg, flush=True)
+
+    def _emit(self, text: str) -> None:
+        """Write one streamed piece to stdout, unless the caller asked for silence."""
+        if self._stream_to_stdout:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
     def _system_prompt(self, intent: str, *, cited: bool) -> str:
         """The per-intent system prompt, plus the citation instruction for a tagged context.
 
@@ -366,8 +395,8 @@ class Synthesizer:
 
     def _stream_response(self, context: RetrievedContext, config: EmbedderConfig) -> str:
         """
-        Call the chat API with streaming, print tokens to stdout, and return
-        the full assembled text.
+        Call the chat API with streaming, print tokens to stdout (unless
+        ``stream_to_stdout`` is off), and return the full assembled text.
 
         Uses TrelixChatClient when available; falls back to raw _client for
         backward compat with tests that inject mock._client directly.
@@ -399,8 +428,7 @@ class Synthesizer:
                 temperature=0.2,
                 thinking=self._llm_config.thinking_enabled,
             ):
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
+                self._emit(chunk)
                 collected.append(chunk)
         else:
             # Legacy path: raw openai client (backward compat / test injection via _client)
@@ -423,13 +451,11 @@ class Synthesizer:
             for chunk in stream:
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta and delta.content:
-                    sys.stdout.write(delta.content)
-                    sys.stdout.flush()
+                    self._emit(delta.content)
                     collected.append(delta.content)
 
         # Ensure we end on a newline
         if collected and not collected[-1].endswith("\n"):
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            self._emit("\n")
 
         return "".join(collected)
