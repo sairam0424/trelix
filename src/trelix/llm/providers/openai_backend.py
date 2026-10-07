@@ -16,6 +16,7 @@ from trelix.llm.client import (
     TrelixChatClient,
 )
 from trelix.llm.finish_reasons import classify_chat_choice
+from trelix.llm.offline import LOCAL_PLACEHOLDER_KEY, small_model_warning
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
@@ -34,8 +35,15 @@ _LEGACY_MAX_TOKENS_PREFIXES = ("gpt-4-", "gpt-4 ", "gpt-3.5")
 _LEGACY_MAX_TOKENS_EXACT = {"gpt-4", "gpt-4-32k", "gpt-3.5-turbo", "gpt-3.5-turbo-16k"}
 
 
-def _token_limit_param(model: str, value: int) -> dict[str, int]:
-    """Return the correct token-limit kwarg for the given model name."""
+def _token_limit_param(model: str, value: int, *, local_server: bool = False) -> dict[str, int]:
+    """Return the correct token-limit kwarg for the given model name.
+
+    A local OpenAI-compatible server (TRELIX_LLM_BASE_URL) gets `max_tokens` whatever the
+    model is called: Ollama has no `max_completion_tokens` field and ran unbounded when that
+    was the only limit sent.
+    """
+    if local_server:
+        return {"max_tokens": value}
     base = model.split("/")[-1].lower().strip()
     if base in _LEGACY_MAX_TOKENS_EXACT or any(
         base.startswith(p) for p in _LEGACY_MAX_TOKENS_PREFIXES
@@ -59,7 +67,18 @@ class OpenAIBackend(TrelixChatClient):
         self._config = config
         self._is_azure = config.provider == "azure"
         self._model = config.azure_chat_deployment if self._is_azure else config.model
+        # Only the plain openai path reads TRELIX_LLM_BASE_URL; Azure has azure_endpoint.
+        self._local_server = config.base_url is not None and not self._is_azure
         self._client = self._build_client(config)
+        if self._local_server:
+            warning = small_model_warning(self._model)
+            if warning:
+                logger.warning(warning)
+
+    def _token_limit(self, max_tokens: int | None) -> dict[str, int]:
+        return _token_limit_param(
+            self._model, max_tokens or self._config.max_tokens, local_server=self._local_server
+        )
 
     def _build_client(self, config: LLMConfig) -> Any | None:
         # max_retries=0: the SDK's own default retry (2 attempts) would
@@ -84,6 +103,20 @@ class OpenAIBackend(TrelixChatClient):
                 logger.debug("OpenAIBackend: could not build AzureOpenAI: %s", exc)
                 return None
         else:
+            if self._local_server:
+                # The SDK refuses to build without a key and Ollama ignores whatever is
+                # sent, so a configured key wins (llama-server --api-key, a gateway) and the
+                # public placeholder stands in otherwise. No try/except: with the URL set, a
+                # constructor failure propagates. That is loud for `search` and `ask` (the
+                # planner and the synthesizer let it through) but not for `review`, whose
+                # DiffReviewer._get_client swallows it into "LLM not configured" (exit 3), so
+                # LLMConfig's validator refuses up front the shapes known to fail here (a bad
+                # port, whitespace, control characters) rather than relying on this path.
+                return OpenAI(
+                    api_key=config.openai_api_key or LOCAL_PLACEHOLDER_KEY,
+                    base_url=config.base_url,
+                    max_retries=0,
+                )
             if not config.openai_api_key:
                 logger.debug("OpenAIBackend: OPENAI_API_KEY not set.")
                 return None
@@ -130,7 +163,7 @@ class OpenAIBackend(TrelixChatClient):
                 model=UNCONFIGURED_MODEL,
                 finish_reason="stop",
             )
-        token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
+        token_kwarg = self._token_limit(max_tokens)
         response = self._create(
             model=self._model,
             messages=self._build_messages(messages, system),
@@ -166,7 +199,7 @@ class OpenAIBackend(TrelixChatClient):
         if self._client is None:
             yield "[trelix] LLM not configured — set OPENAI_API_KEY or AZURE_API_KEY."
             return
-        token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
+        token_kwarg = self._token_limit(max_tokens)
         # Retry only the call that opens the stream — the connection is made
         # synchronously here (create() blocks until headers arrive), before
         # any chunk is yielded. Retrying mid-iteration over an already-open
@@ -194,7 +227,7 @@ class OpenAIBackend(TrelixChatClient):
         tool_choice: Any = (
             {"type": "function", "function": {"name": force_tool}} if force_tool else "auto"
         )
-        token_kwarg = _token_limit_param(self._model, max_tokens or self._config.max_tokens)
+        token_kwarg = self._token_limit(max_tokens)
         response = self._create(
             model=self._model,
             messages=self._build_messages(messages, None),
