@@ -745,6 +745,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `int(TRELIX_LLM_LOCAL_CONTEXT_TOKENS × TRELIX_RETRIEVAL_CONTEXT_WINDOW_FRACTION)`, and an
   explicit integer budget still wins. Setting it without `TRELIX_LLM_BASE_URL` is a configuration
   error that names both variables and never the value.
+- **`docs/OFFLINE.md`: running trelix without a cloud key.** Ollama and llama-server settings for the
+  `openai` backend through `TRELIX_LLM_BASE_URL`, why the context length should be 64k and how
+  `TRELIX_LLM_LOCAL_CONTEXT_TOKENS` sizes the retrieval budget, what the prompt-truncation check
+  (0.85 x the cl100k_base count) does and does not catch, the 20B model-size floor the warnings
+  assume (an assumption, not a measurement: the candidate models are listed as unmeasured against
+  R-C4-05's bar), the planner calls every search makes once the variable is set, the one-time
+  prefetch for the embedder (`HF_HUB_OFFLINE`), the grammars and tiktoken (`TIKTOKEN_CACHE_DIR`; the
+  default cache is under the temp directory), and a troubleshooting table keyed on the outcome-file
+  details (`exception:NotFoundError`, `prompt_truncated`, `exception:APIConnectionError`, ...).
+  Linked from `docs/README.md`, the user guide, the FAQ and TROUBLESHOOTING.md; the three warnings
+  that already pointed at it now resolve.
 
 ### Changed
 - **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim

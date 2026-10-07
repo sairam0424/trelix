@@ -46,7 +46,10 @@ Locking down the HTTP API (OIDC bearer auth, audit trail)?
   → SSO.md, then AUDIT.md
 
 Using a specific provider (OpenAI, Ollama, etc.)?
-  → PROVIDERS.md
+  → PROVIDERS.md (local servers: OFFLINE.md)
+
+Running against a local model (Ollama, llama-server) or air-gapped?
+  → OFFLINE.md
 
 Something broken?
   → TROUBLESHOOTING.md
@@ -79,6 +82,7 @@ Looking for a specific term?
 | [CONFIGURATION.md](CONFIGURATION.md) | Every config key, environment variable, and default value | Operators, power users |
 | [CLI_REFERENCE.md](CLI_REFERENCE.md) | Full CLI command reference with flags and examples | CLI users |
 | [OBSERVABILITY.md](OBSERVABILITY.md) | OpenTelemetry tracing: what's traced, how to enable, stability caveats | Operators, SRE |
+| [OFFLINE.md](OFFLINE.md) | Running without a cloud key: Ollama and llama-server through `TRELIX_LLM_BASE_URL`, context length, the 20B model-size floor, the prompt-truncation check, prefetch for air-gapped machines | Operators, local-model users |
 
 ---
 
@@ -101,7 +105,7 @@ registered, and the HTTP API behaves exactly as it did in v2.12.0.
 |------|-------------|----------|
 | [MCP_GUIDE.md](MCP_GUIDE.md) | Running trelix as a Model Context Protocol server | Agent / tool builders |
 | [LANGCHAIN_LLAMAINDEX_GUIDE.md](LANGCHAIN_LLAMAINDEX_GUIDE.md) | Using trelix from Python with LangChain and LlamaIndex | Python developers |
-| [PROVIDERS.md](PROVIDERS.md) | Provider configuration: OpenAI, Anthropic, Ollama, Azure, and more | All users |
+| [PROVIDERS.md](PROVIDERS.md) | Provider configuration: OpenAI, Anthropic, Ollama, Azure, and more (the local-server recipe is in OFFLINE.md) | All users |
 | [FEDERATION_GUIDE.md](FEDERATION_GUIDE.md) | Connecting multiple trelix instances for federated search | Platform engineers |
 | [integrations/vscode-plugin.md](integrations/vscode-plugin.md) | VS Code extension setup and usage | VS Code users |
 | [integrations/claude-code-plugin.md](integrations/claude-code-plugin.md) | Claude Code plugin: the trelix-mcp server plus a skill, installed from this repository's marketplace | Claude Code users |
@@ -166,4 +170,4 @@ per-file — see the note at the top.
 
 ---
 
-*Last updated: 2026-10-04 — trelix v3.4.3*
+*Last updated: 2026-10-07 — trelix v3.4.3*
