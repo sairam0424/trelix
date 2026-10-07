@@ -1025,14 +1025,20 @@ class TestIndexCodebaseProgress:
 # ---------------------------------------------------------------------------
 
 
-def test_server_import_produces_no_stdout(capsys: pytest.CaptureFixture[str]) -> None:
+def test_server_import_produces_no_stdout(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Importing server.py must not write anything to stdout.
 
-    stdout is the MCP JSON protocol pipe — any spurious bytes corrupt the stream.
+    stdout is the MCP JSON protocol pipe — any spurious bytes corrupt the stream. The fresh module
+    is put back at teardown: `trelix_mcp.cli` binds `trelix_mcp.server` once, and every other test
+    patches the module object it imported at collection.
     """
     # Force a fresh import to catch any module-level print/write
-    if "trelix_mcp.server" in sys.modules:
-        del sys.modules["trelix_mcp.server"]
+    import trelix_mcp
+
+    monkeypatch.setattr(trelix_mcp, "server", trelix_mcp.server)
+    monkeypatch.delitem(sys.modules, "trelix_mcp.server")
 
     import trelix_mcp.server  # noqa: F401
 

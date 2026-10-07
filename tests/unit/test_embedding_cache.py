@@ -493,3 +493,234 @@ class TestEmbeddingCacheFile:
             "If another indexer holds it, retry; otherwise fix the directory or set "
             "TRELIX_EMBEDDING_CACHE_ENABLED=false."
         )
+
+
+# ---------------------------------------------------------------------------
+# The two openers without an embedder: `open(dimension=None)` (gc) and
+# `open_readonly` (--dry-run)
+# ---------------------------------------------------------------------------
+
+
+def _last_used_at(path: Path, key: bytes) -> int:
+    conn = sqlite3.connect(str(path))
+    try:
+        row = conn.execute(
+            "SELECT last_used_at FROM embeddings WHERE text_sha256 = ?", (key,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return int(row[0])
+
+
+class TestOpeningAtTheRecordedWidth:
+    def test_dimension_none_trusts_the_recorded_width(self, tmp_path: Path) -> None:
+        """MUTATION: `None` compared as a width (the file is refused as `4` vs `None`);
+        the recorded width not returned (the cache reads 4-float rows at another width and
+        reports a miss)."""
+        cache = _open(tmp_path, dimension=4)
+        cache.put_many([(_key("a"), [0.5, 0.25, -1.0, 2.0])])
+        cache.close()
+
+        reopened = EmbeddingCache.open(cache.path, dimension=None)
+        try:
+            assert reopened.dimension == 4
+            assert reopened.get_many([_key("a")]) == {_key("a"): [0.5, 0.25, -1.0, 2.0]}
+        finally:
+            reopened.close()
+
+    def test_dimension_none_cannot_initialise_an_empty_file(self, tmp_path: Path) -> None:
+        """Nothing is recorded in a 0-byte file, so there is no width to trust; `gc`
+        reports it rather than inventing one. MUTATION: both refusals dropped, the one
+        before `os.open` and the no-tables one (the file is initialised with a
+        `meta.dimension` of `None`); the first alone is caught by test_cli_cache.py's
+        dangling-symlink test, the second alone by the no-tables test below."""
+        cache_dir = prepare_cache_dir(tmp_path / "cache")
+        path = cache_dir / "f.db"
+        path.touch()
+        with pytest.raises(EmbeddingCacheError) as excinfo:
+            EmbeddingCache.open(path, dimension=None)
+        assert str(excinfo.value) == (
+            f"{path} is not a trelix embedding cache (no meta table). Move it away."
+        )
+        assert path.stat().st_size == 0
+
+    def test_dimension_none_cannot_initialise_a_file_with_no_tables(self, tmp_path: Path) -> None:
+        """A SQLite file with a header but no tables (`PRAGMA user_version` on a new file
+        writes page 1) is not empty, so the refusal before `os.open` does not fire; the
+        no-tables branch must refuse too, before it writes a `meta.dimension` of `None`
+        into the file. MUTATION: that branch initialises with `None` (the file gains the
+        tables and a meta row; the error text alone cannot tell, so the tables are checked)."""
+        cache_dir = prepare_cache_dir(tmp_path / "cache")
+        path = cache_dir / "f.db"
+        conn = sqlite3.connect(str(path))
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+        conn.close()
+        assert path.stat().st_size > 0
+        with pytest.raises(EmbeddingCacheError) as excinfo:
+            EmbeddingCache.open(path, dimension=None)
+        assert str(excinfo.value) == (
+            f"{path} is not a trelix embedding cache (no meta table). Move it away."
+        )
+        conn = sqlite3.connect(str(path))
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        conn.close()
+        assert tables == []
+
+    def test_open_readonly_is_none_for_a_missing_file(self, tmp_path: Path) -> None:
+        """MUTATION: the missing file created (`open` semantics) or raised on; `is_file()`
+        loosened to `exists()` (a directory at the path is opened and raises)."""
+        cache_dir = prepare_cache_dir(tmp_path / "cache")
+        assert EmbeddingCache.open_readonly(cache_dir / "missing.db") is None
+        (cache_dir / "d.db").mkdir()
+        assert EmbeddingCache.open_readonly(cache_dir / "d.db") is None
+        assert sorted(p.name for p in cache_dir.iterdir()) == ["d.db"]
+
+    def test_open_readonly_serves_hits_at_the_recorded_width_and_writes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """MUTATION: `mode=ro` dropped (the `put_many` below succeeds); the read-only flag
+        ignored (`get_many` tries the `last_used_at` refresh and raises on the read-only
+        connection); the width taken from anywhere but `meta.dimension`."""
+        now = [10.0]
+        cache = _open(tmp_path, dimension=4, clock=lambda: now[0])
+        cache.put_many([(_key("a"), [0.5, 0.25, -1.0, 2.0])])
+        cache.close()
+        assert _last_used_at(cache.path, _key("a")) == 10
+
+        readonly = EmbeddingCache.open_readonly(cache.path)
+        assert readonly is not None
+        try:
+            assert readonly.dimension == 4
+            assert readonly.get_many([_key("a"), _key("b")]) == {_key("a"): [0.5, 0.25, -1.0, 2.0]}
+            assert _last_used_at(cache.path, _key("a")) == 10
+            with pytest.raises(sqlite3.OperationalError, match="readonly database"):
+                readonly.put_many([(_key("b"), [1.0, 1.0, 1.0, 1.0])])
+        finally:
+            readonly.close()
+        assert _last_used_at(cache.path, _key("a")) == 10
+
+    def test_open_readonly_refuses_a_foreign_file_by_name(self, tmp_path: Path) -> None:
+        """MUTATION: the `meta` check dropped (an `OperationalError: no such table` escapes
+        instead of `EmbeddingCacheError`); the `DatabaseError` handler dropped."""
+        cache_dir = prepare_cache_dir(tmp_path / "cache")
+        not_sqlite = cache_dir / "a.db"
+        not_sqlite.write_bytes(b"not a database")
+        with pytest.raises(EmbeddingCacheError) as excinfo:
+            EmbeddingCache.open_readonly(not_sqlite)
+        assert str(excinfo.value) == (
+            f"{not_sqlite} is not a trelix embedding cache (no meta table). Move it away."
+        )
+
+        no_meta = cache_dir / "b.db"
+        conn = sqlite3.connect(str(no_meta))
+        conn.execute("CREATE TABLE other (x INTEGER)")
+        conn.commit()
+        conn.close()
+        with pytest.raises(EmbeddingCacheError) as excinfo:
+            EmbeddingCache.open_readonly(no_meta)
+        assert str(excinfo.value) == (
+            f"{no_meta} is not a trelix embedding cache (no meta table). Move it away."
+        )
+
+    def test_open_readonly_encodes_the_path_into_the_uri(self, tmp_path: Path) -> None:
+        """A `?` or `#` in the directory name would otherwise end the URI's query string and
+        drop `mode=ro`. MUTATION: the raw path interpolated (the file at `dir?x/f.db` is not
+        found, or is opened read-write)."""
+        cache_dir = prepare_cache_dir(tmp_path / "odd?name#here")
+        cache = EmbeddingCache.open(cache_dir / "f.db", dimension=4)
+        cache.put_many([(_key("a"), [1.0, 2.0, 3.0, 4.0])])
+        cache.close()
+
+        readonly = EmbeddingCache.open_readonly(cache.path)
+        assert readonly is not None
+        try:
+            assert readonly.get_many([_key("a")]) == {_key("a"): [1.0, 2.0, 3.0, 4.0]}
+            with pytest.raises(sqlite3.OperationalError, match="readonly database"):
+                readonly.put_many([(_key("b"), [1.0, 1.0, 1.0, 1.0])])
+        finally:
+            readonly.close()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file with no permissions")
+    @pytest.mark.parametrize("unreadable", ["file", "directory"])
+    def test_open_readonly_reports_a_file_it_cannot_read_as_unusable_not_foreign(
+        self, tmp_path: Path, unreadable: str
+    ) -> None:
+        """SECURITY.md's shared-host case: a valid cache file, or its directory, owned by
+        another user. The preview must get `EmbeddingCacheError` carrying SQLite's or the
+        OS's own words and the retry/fix advice — not a raw `OperationalError` from
+        `connect` or `PermissionError` from `is_file()`, and not "Move it away" (the file
+        may well be a valid cache).
+
+        MUTATION: `is_file()`/`connect()` outside the `try` (the raw exception escapes);
+        the handler mapped to `_NOT_A_CACHE`."""
+        cache = _open(tmp_path, dimension=4)
+        cache.put_many([(_key("a"), [0.5, 0.25, -1.0, 2.0])])
+        cache.close()
+        locked = cache.path if unreadable == "file" else cache.path.parent
+        locked.chmod(0)
+        try:
+            with pytest.raises(EmbeddingCacheError) as excinfo:
+                EmbeddingCache.open_readonly(cache.path)
+        finally:
+            locked.chmod(0o600 if unreadable == "file" else 0o700)
+        message = str(excinfo.value)
+        assert message.startswith(f"embedding cache {cache.path} cannot be opened (")
+        assert message.endswith(
+            "). If another indexer holds it, retry; otherwise fix the directory or set "
+            "TRELIX_EMBEDDING_CACHE_ENABLED=false."
+        )
+        assert "Move it away" not in message
+
+    def test_open_readonly_reports_a_locked_file_as_unusable_not_foreign(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`database is locked` past SQLite's timeout is an `OperationalError` from the first
+        query, as it is in `open`; the advice is retry, never "Move it away". The lock is
+        simulated (a real one costs the connection's 5s timeout per test).
+
+        MUTATION: the `OperationalError` branch dropped (falls into `DatabaseError`)."""
+        cache = _open(tmp_path, dimension=4)
+        cache.close()
+
+        def _locked(_conn: sqlite3.Connection) -> set[str]:
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(EmbeddingCache, "_table_names", staticmethod(_locked))
+        with pytest.raises(EmbeddingCacheError) as excinfo:
+            EmbeddingCache.open_readonly(cache.path)
+        assert str(excinfo.value) == (
+            f"embedding cache {cache.path} cannot be opened (database is locked). If another "
+            "indexer holds it, retry; otherwise fix the directory or set "
+            "TRELIX_EMBEDDING_CACHE_ENABLED=false."
+        )
+
+    def test_a_meta_dimension_that_is_not_a_number_is_refused_not_a_traceback(
+        self, tmp_path: Path
+    ) -> None:
+        """`open(dimension=None)` and `open_readonly` trust `meta.dimension`; a row that is
+        not a number, or no row at all, must be the foreign-file line `gc` and `--dry-run`
+        handle, not the `ValueError`/`TypeError` of `int()`, which neither handler catches.
+        MUTATION: the `isdecimal` guard dropped (`int('abc')` escapes); loosened to `isdigit`
+        (SUPERSCRIPT TWO is a digit to `str` but not to `int()`: `int('²')` escapes); only its
+        `stored is None` half dropped (`None.isdecimal()` escapes)."""
+        _open(tmp_path).close()
+        path = tmp_path / "cache" / "f.db"
+        expected = f"{path} is not a trelix embedding cache (no meta table). Move it away."
+        for statement in (
+            "UPDATE meta SET value = 'abc' WHERE key = 'dimension'",
+            "UPDATE meta SET value = '²' WHERE key = 'dimension'",
+            "DELETE FROM meta WHERE key = 'dimension'",
+        ):
+            conn = sqlite3.connect(str(path))
+            conn.execute(statement)
+            conn.commit()
+            conn.close()
+            with pytest.raises(EmbeddingCacheError) as excinfo:
+                EmbeddingCache.open(path, dimension=None)
+            assert str(excinfo.value) == expected, statement
+            with pytest.raises(EmbeddingCacheError) as excinfo:
+                EmbeddingCache.open_readonly(path)
+            assert str(excinfo.value) == expected, statement

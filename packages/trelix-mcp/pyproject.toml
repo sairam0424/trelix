@@ -53,7 +53,12 @@ classifiers = [
 # server.disable(names=, components=). 4.0.10 is the release these were run against (4.0.0 to
 # 4.0.9 were not tested), so it is the floor; tests/unit/test_dependency_floor_guards.py fails
 # if it drops below.
-dependencies = ["trelix>=3.1.5", "mcp>=2.0.0,<3.0", "fastmcp>=4.0.10,<5"]
+#
+# starlette>=1.0.1 (HTTP module): trelix_mcp/http.py imports starlette.middleware.Middleware,
+# starlette.requests.Request and starlette.responses.JSONResponse directly.
+# fastmcp-slim[server]==4.0.10 already requires starlette>=1.0.1, so this declares a direct
+# import that was already resolved; it raises nothing and changes no install.
+dependencies = ["trelix>=3.1.5", "mcp>=2.0.0,<3.0", "fastmcp>=4.0.10,<5", "starlette>=1.0.1"]
 
 [project.scripts]
 trelix-mcp = "trelix_mcp.server:main"

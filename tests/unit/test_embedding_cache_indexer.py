@@ -397,8 +397,12 @@ class TestRefusals:
         refused = runner.invoke(app, ["index", str(repo), "--resume-batch"])
         assert refused.exit_code == 1
         output = " ".join(refused.output.split())
-        assert "Cannot resume a Batch API job" in output
-        assert "Re-run with TRELIX_EMBEDDING_CACHE_ENABLED=false" in output
+        # The whole sentence, as docs/CLI_REFERENCE.md quotes it under "Exit codes".
+        assert (
+            "Cannot resume a Batch API job: TRELIX_EMBEDDING_CACHE_ENABLED=true is set, and "
+            "the Batch API poll path bypasses the cache. Re-run with "
+            "TRELIX_EMBEDDING_CACHE_ENABLED=false to collect the job, then re-enable it."
+        ) in output
         assert "an Indexer was constructed" not in output
 
         monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_ENABLED", "false")

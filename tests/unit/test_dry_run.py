@@ -19,6 +19,7 @@ characters/4 heuristic, so it is the same number Phase 3 reports when the run is
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -398,3 +399,246 @@ class TestItDoesNotDuplicateTheShellScript:
         assert "--dry-run" in body
         assert "files would be indexed" in body
         assert "Estimated cost" not in body
+
+
+class TestItSubtractsWhatTheEmbeddingCacheAlreadyHolds:
+    """With `TRELIX_EMBEDDING_CACHE_ENABLED=true`, a real run serves every chunk whose text
+    is in the cache file without calling the provider, so a preview that prices those
+    chunks over-quotes the run. Two rows say what is cached and the priced count drops
+    by the cached tokens.
+
+    The cache file is seeded directly, through `EmbeddingCache` with the preview's own
+    chunking (as `_seed` does for the index), because the autouse fixture forbids an
+    `Indexer` here; the real-run round trip is `test_cli_cache_index_rows.py`. Seeded at
+    width 8 on purpose: `config.embedder.effective_dimension` is a constant 384 for every
+    `local` model (and 3072 for openai), and the preview must open the file at the width
+    IT records, or a fully cached repository previews as uncached (design critique C7).
+    """
+
+    def _chunks(self, repo: Path) -> list:  # type: ignore[type-arg]
+        from trelix.indexing.chunker import Chunker
+        from trelix.indexing.indexer import Indexer
+
+        config = IndexConfig(repo_path=str(repo))
+        chunker = Chunker(config.chunker)
+        chunks = []
+        for file in FileWalker(config).walk():
+            parsed = Indexer._parse_one(None, file)  # type: ignore[arg-type]
+            assert parsed.parse_result is not None
+            symbols = parsed.parse_result.symbols
+            chunks.extend(
+                chunker.build_chunks(
+                    symbols=symbols,
+                    imports=parsed.parse_result.import_edges,
+                    file_rel_path=file.rel_path,
+                    language=file.language.value,
+                    parent_symbols=dict(enumerate(symbols)),
+                )
+            )
+        assert len(chunks) >= 2, "fixture produced too few chunks"
+        return chunks
+
+    def _cache_path(self, repo: Path, cache_dir: Path) -> Path:
+        from trelix.indexing.embedding_cache import embedder_fingerprint
+
+        config = IndexConfig(repo_path=str(repo))
+        return cache_dir / f"{embedder_fingerprint(config.embedder)}.db"
+
+    def _seed_cache(self, repo: Path, cache_dir: Path, texts: list[str]) -> None:
+        from trelix.indexing.embedding_cache import EmbeddingCache, prepare_cache_dir, text_key
+
+        prepare_cache_dir(cache_dir)
+        cache = EmbeddingCache.open(self._cache_path(repo, cache_dir), dimension=8)
+        cache.put_many([(text_key(text), [0.5] * 8) for text in texts])
+        cache.close()
+
+    def _enable(self, monkeypatch: pytest.MonkeyPatch, cache_dir: Path) -> None:
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_ENABLED", "true")
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(cache_dir))
+
+    def test_a_fully_cached_repo_reports_every_chunk_and_prices_zero_tokens(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MUTATION: the subtraction dropped from the priced count (it equals `Embedding
+        tokens`, not 0); the file opened at `effective_dimension` (3072 here: refused as
+        another width, or zero hits); the rows not added."""
+        monkeypatch.setenv("TRELIX_EMBEDDER_PROVIDER", "openai")
+        monkeypatch.setenv("TRELIX_EMBEDDER_OPENAI_MODEL", "text-embedding-3-large")
+        cache_dir = tmp_path / "cache"
+        self._enable(monkeypatch, cache_dir)
+        chunks = self._chunks(repo)
+        self._seed_cache(repo, cache_dir, [c.chunk_text for c in chunks])
+
+        output = _run(repo)
+
+        assert _number(output, "Chunks to embed") == len(chunks)
+        assert _number(output, "Chunks already cached") == len(chunks)
+        assert _number(output, "Tokens already cached") == _number(output, "Embedding tokens") > 0
+        priced = re.search(r"Estimated cost.*?([\d,]+) tokens at", output)
+        assert priced, output
+        assert int(priced.group(1).replace(",", "")) == 0
+
+    def test_a_partly_cached_repo_prices_only_the_misses(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MUTATION: hits counted per file rather than per chunk (all or nothing); the cached
+        tokens summed over every chunk of a file with one hit."""
+        monkeypatch.setenv("TRELIX_EMBEDDER_PROVIDER", "openai")
+        monkeypatch.setenv("TRELIX_EMBEDDER_OPENAI_MODEL", "text-embedding-3-large")
+        cache_dir = tmp_path / "cache"
+        self._enable(monkeypatch, cache_dir)
+        first, *_rest = self._chunks(repo)
+        self._seed_cache(repo, cache_dir, [first.chunk_text])
+
+        output = _run(repo)
+
+        assert _number(output, "Chunks already cached") == 1
+        cached_tokens = _number(output, "Tokens already cached")
+        assert cached_tokens == first.token_count > 0
+        total = _number(output, "Embedding tokens")
+        priced = re.search(r"Estimated cost.*?([\d,]+) tokens at", output)
+        assert priced, output
+        assert int(priced.group(1).replace(",", "")) == total - cached_tokens > 0
+
+    def test_the_default_local_config_is_served_from_a_file_of_another_width(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C7 as stated: the default `local` config declares 384, the file records 8, and
+        `Chunks already cached` must equal the chunk count. MUTATION: the preview opens
+        the file at `effective_dimension`."""
+        cache_dir = tmp_path / "cache"
+        self._enable(monkeypatch, cache_dir)
+        chunks = self._chunks(repo)
+        self._seed_cache(repo, cache_dir, [c.chunk_text for c in chunks])
+
+        output = _run(repo)
+
+        assert _number(output, "Chunks already cached") == len(chunks)
+        assert "no API cost" in output
+
+    def test_an_absent_cache_file_adds_no_rows_and_creates_nothing(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MUTATION: the preview opens the file read-write (`EmbeddingCache.open`, which
+        creates it, or `prepare_cache_dir`, which creates the directory); an absent file
+        is an error."""
+        cache_dir = tmp_path / "cache"
+        self._enable(monkeypatch, cache_dir)
+
+        output = _run(repo)
+
+        assert "already cached" not in output
+        assert "could not be read" not in output
+        assert _number(output, "Chunks to embed") >= 2
+        assert not cache_dir.exists()
+
+    def test_a_populated_cache_is_ignored_while_the_cache_is_off(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MUTATION: the `enabled` check dropped (the rows appear with the cache off)."""
+        cache_dir = tmp_path / "cache"
+        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(cache_dir))
+        chunks = self._chunks(repo)
+        self._seed_cache(repo, cache_dir, [c.chunk_text for c in chunks])
+
+        output = _run(repo)
+
+        assert "already cached" not in output
+
+    def test_an_unreadable_cache_file_is_reported_and_priced_as_absent(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cost preview must not end in a traceback over a file it only reads.
+        MUTATION: the `EmbeddingCacheError` handler dropped (exit 1); the note dropped."""
+        cache_dir = tmp_path / "cache"
+        self._enable(monkeypatch, cache_dir)
+        cache_dir.mkdir()
+        self._cache_path(repo, cache_dir).write_bytes(b"not a database")
+
+        output = _run(repo)
+
+        assert "The embedding cache could not be read" in output
+        assert "is not a trelix embedding cache" in output
+        assert "already cached" not in output
+        assert _number(output, "Chunks to embed") >= 2
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file with no permissions")
+    def test_a_cache_file_the_process_cannot_read_is_reported_and_priced_as_absent(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SECURITY.md's shared-host case: a VALID cache file owned by another user. Exit 0,
+        the note with SQLite's words, no cache rows, every chunk priced.
+
+        MUTATION: `open_readonly` lets `connect`'s `OperationalError` escape (exit 1, no
+        cost table); the note dropped."""
+        cache_dir = tmp_path / "cache"
+        self._enable(monkeypatch, cache_dir)
+        self._seed_cache(repo, cache_dir, [c.chunk_text for c in self._chunks(repo)])
+        path = self._cache_path(repo, cache_dir)
+        path.chmod(0)
+        try:
+            output = _run(repo)
+        finally:
+            path.chmod(0o600)
+
+        assert "The embedding cache could not be read" in output
+        assert "cannot be opened (unable to open database file)" in output
+        assert "Move it away" not in output
+        assert "already cached" not in output
+        assert _number(output, "Chunks to embed") >= 2
+
+    def test_a_lock_taken_after_the_open_is_reported_and_priced_as_absent(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The open succeeds and a later lookup fails: a concurrent `trelix index` on the
+        same fingerprint reaches its end-of-run VACUUM while the preview is chunking, and
+        the preview's SELECT times out. Two files, the second one's lookup failing, so the
+        hits already counted for the first must be forgotten: cache rows missing while the
+        priced figure quietly subtracts them would contradict each other.
+
+        MUTATION: the `sqlite3.Error` handler around the lookup dropped (exit 1, no cost
+        table); the note dropped; the counters not zeroed (the priced count is below
+        `Embedding tokens`); the cache kept after the failure (the two rows appear); the
+        close on the failure path dropped, or the cache closed twice (the count)."""
+        import sqlite3
+
+        from trelix.indexing.embedding_cache import EmbeddingCache
+
+        monkeypatch.setenv("TRELIX_EMBEDDER_PROVIDER", "openai")
+        monkeypatch.setenv("TRELIX_EMBEDDER_OPENAI_MODEL", "text-embedding-3-large")
+        (repo / "second.py").write_text(_SAMPLE.replace("greet", "wave"), encoding="utf-8")
+        cache_dir = tmp_path / "cache"
+        self._enable(monkeypatch, cache_dir)
+        chunks = self._chunks(repo)
+        self._seed_cache(repo, cache_dir, [c.chunk_text for c in chunks])
+        real_get_many, real_close = EmbeddingCache.get_many, EmbeddingCache.close
+        lookups: list[int] = []
+        closes: list[bool] = []
+
+        def _locked_on_the_second_file(
+            cache: EmbeddingCache, keys: list[bytes]
+        ) -> dict[bytes, list[float]]:
+            lookups.append(len(keys))
+            if len(lookups) == 2:
+                raise sqlite3.OperationalError("database is locked")
+            return real_get_many(cache, keys)
+
+        def _counted_close(cache: EmbeddingCache) -> None:
+            closes.append(True)
+            real_close(cache)
+
+        monkeypatch.setattr(EmbeddingCache, "get_many", _locked_on_the_second_file)
+        monkeypatch.setattr(EmbeddingCache, "close", _counted_close)
+
+        output = _run(repo)
+
+        assert len(lookups) == 2
+        assert len(closes) == 1  # on the failure, and not again after the loop
+        assert "The embedding cache could not be read (database is locked)" in output
+        assert "already cached" not in output
+        assert _number(output, "Chunks to embed") == len(chunks)
+        total = _number(output, "Embedding tokens")
+        priced = re.search(r"Estimated cost.*?([\d,]+) tokens at", output)
+        assert priced, output
+        assert int(priced.group(1).replace(",", "")) == total > 0

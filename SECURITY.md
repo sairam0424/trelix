@@ -75,8 +75,10 @@ variable except `TRELIX_APP_*` and `TRELIX_GIT_TOKEN` to its `trelix index` chil
 `TRELIX_EMBEDDING_CACHE_ENABLED=true` in either place turns the cache on for every tenant's
 index run, and every tenant then shares one `<fingerprint>.db` — a tenant who can read that file
 can test whether another tenant's text was embedded. Never set it on a multi-tenant host. To
-remove a cache, delete the `<fingerprint>.db` files (and any `-journal` sidecar) in that
-directory.
+remove a cache, run `trelix cache clear` under the same `TRELIX_EMBEDDING_CACHE_DIR` (or
+`XDG_CACHE_HOME`/`HOME`), or delete the `<fingerprint>.db` files (and any `-journal` sidecar)
+in that directory by hand; the command removes exactly those names, nothing else, and never
+follows a symlink.
 
 ### REST API — /graph/visualize output path constraint
 
