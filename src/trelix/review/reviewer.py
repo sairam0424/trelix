@@ -236,31 +236,15 @@ class DiffReviewer:
         llm_available = True
         for hunk in hunks:
             try:
-                review = self._review_hunk(hunk, client)
+                review = self._review_one(hunk, client)
             except LLMNotConfiguredError as exc:
                 # Every remaining hunk would get the same placeholder answer.
                 logger.warning("DiffReviewer: %s", exc)
                 llm_available = False
                 results = [_error_result(h, "not_configured") for h in hunks]
                 break
-            except Exception as exc:
-                logger.warning("DiffReviewer: hunk review failed (non-fatal): %s", exc)
-                results.append(
-                    _error_result(
-                        hunk, f"exception:{safe_token(type(exc).__name__, default='unknown')}"
-                    )
-                )
-                continue
             comments.extend(review.comments)
             results.append(review.result)
-            if not review.result.reviewed:
-                logger.warning(
-                    "DiffReviewer: %s:%d was not reviewed (%s: %s)",
-                    review.result.file_path,
-                    review.result.line,
-                    review.result.status.value,
-                    review.result.detail or "no detail",
-                )
 
         self.last_outcome = ReviewOutcome(
             llm_available=llm_available,
@@ -269,6 +253,31 @@ class DiffReviewer:
             hunk_results=tuple(results),
         )
         return comments
+
+    def _review_one(self, hunk: DiffHunk, client: Any) -> _HunkReview:
+        """Review one hunk. `LLMNotConfiguredError` passes through (the caller stops the
+        review); any other exception becomes an `error` result."""
+        try:
+            review = self._review_hunk(hunk, client)
+        except LLMNotConfiguredError:
+            raise
+        except Exception as exc:
+            logger.warning("DiffReviewer: hunk review failed (non-fatal): %s", exc)
+            return _HunkReview(
+                [],
+                _error_result(
+                    hunk, f"exception:{safe_token(type(exc).__name__, default='unknown')}"
+                ),
+            )
+        if not review.result.reviewed:
+            logger.warning(
+                "DiffReviewer: %s:%d was not reviewed (%s: %s)",
+                review.result.file_path,
+                review.result.line,
+                review.result.status.value,
+                review.result.detail or "no detail",
+            )
+        return review
 
     def _call(self, client: Any, user_content: str, max_tokens: int) -> Any:
         from trelix.llm.client import UNCONFIGURED_MODEL, ChatMessage
