@@ -126,7 +126,8 @@ eval-full:  ## Full self-eval over eval/golden.jsonl (needs a current index; spe
 # changes only in a rebaseline PR that says why. `trelix eval-compare` judges two of them.
 # Both variables are required, because a default arm name would make two runs of the same
 # default indistinguishable from an experiment, and the run directory of an arm is never
-# reused or deleted by eval-suite (choose another EVAL_ARM, or delete it by hand).
+# reused or deleted by eval-suite (choose another EVAL_ARM, or delete it by hand). EVAL_RESULTS
+# must name a new file per arm: eval-suite refuses to overwrite an existing results file.
 EVAL_SUITE ?=
 EVAL_ARM ?=
 EVAL_RESULTS ?= .trelix/eval-suite/results.json

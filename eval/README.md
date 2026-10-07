@@ -679,13 +679,13 @@ records: an empty plans file is refused before anything is cloned.
 `chunker`, `store`, `retrieval`, `indexer` and `sparse`, the section's effective values, with every
 field whose name contains `key`, `secret`, `token`, `password`, `endpoint`, `url` or `uri` removed (a
 results file is a pull request artifact, and an operator's `store.qdrant_url` or `store.lance_uri` may
-carry credentials although neither backend is used by a run; the rule also drops token counts such
-as `top_k_tokens`, except `chunker.max_tokens_per_chunk`, which is kept by name because it changes
-the index) and with `store.db_path` and `retrieval.plan_cache_file` removed (they differ per arm
+carry credentials although neither backend is used by a run; the word `token` would also drop token
+counts, so `chunker.max_tokens_per_chunk`, `retrieval.context_token_budget` and `sparse.top_k_tokens`
+are kept by name because each changes the index or the ranking) and with `store.db_path` and `retrieval.plan_cache_file` removed (they differ per arm
 by construction). `embedder` holds the provider, `local_model`, the dimension the index was built with
 and the `sentence-transformers` version (`null` when it is not installed). `trelix eval-compare` never
-refuses on any of these; it prints `note: pipeline.config identical` or one `note: pipeline.config
-differs: <section>.<field> (base X, cand Y)` line per differing leaf, and a `note:` for a differing
+refuses on any of these; it prints `note: pipeline.config identical` or up to 20 `note: pipeline.config
+differs: <section>.<field> (base X, cand Y)` lines (then one line counting the rest), and a `note:` for a differing
 `trelix_version` or `embedder`, so a reviewer of a result sees exactly what the arms changed, and
 sees an ambient setting that the arms did not mean to change.
 

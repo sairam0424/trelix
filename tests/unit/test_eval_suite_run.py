@@ -196,11 +196,13 @@ class TestTheResultsFile:
         assert "plan_cache_file" not in config["retrieval"]
         assert "qdrant_api_key" not in config["store"]
         assert "qdrant_url" not in config["store"]
+        # Ranking knobs the `token` word rule would hide; kept by name (mutation: drop either name).
+        assert config["retrieval"]["context_token_budget"] == 12000
+        assert config["sparse"]["top_k_tokens"] == 128
         assert "lance_uri" not in config["store"]
         assert "cohere_api_key" not in config["retrieval"]
         assert "cohere_endpoint" not in config["retrieval"]
         assert "otel_exporter_endpoint" not in config["retrieval"]
-        assert "top_k_tokens" not in config["sparse"]
         assert isinstance(config["chunker"]["max_tokens_per_chunk"], int)
 
     @pytest.mark.parametrize(
@@ -427,3 +429,15 @@ class TestForcedSettings:
         factory = stub_harness_factory()
         stub_run(tmp_path, spec, harness_factory=factory)
         assert factory.configs[0].embedder.provider == "local"
+
+
+def test_an_ambient_context_budget_is_recorded_in_pipeline_config(
+    tmp_path: Path, spec: SuiteSpec, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A laptop baseline at 4000 and a CI candidate at 12000 must not compare as identical.
+
+    MUTATION that must make this fail: remove `context_token_budget` from KEPT_FIELDS.
+    """
+    monkeypatch.setenv("TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET", "4000")
+    config = results_doc(stub_run(tmp_path, spec))["pipeline"]["config"]
+    assert config["retrieval"]["context_token_budget"] == 4000

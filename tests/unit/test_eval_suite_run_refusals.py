@@ -112,6 +112,20 @@ class TestRefusals:
         )
         assert not (tmp_path / "cache").exists()
 
+    def test_an_out_that_already_exists_is_refused_before_the_cache_is_touched(
+        self, tmp_path: Path, spec: SuiteSpec
+    ) -> None:
+        """MUTATION that must make this fail: drop the `out.exists()` check (file replaced)."""
+        existing = tmp_path / "old.json"
+        existing.write_text("{}", encoding="utf-8")
+        with pytest.raises(SuiteError) as caught:
+            stub_run(tmp_path, spec, out=existing)
+        assert caught.value.problems == (
+            f"--out {existing} already exists: each arm needs its own results file",
+        )
+        assert existing.read_text(encoding="utf-8") == "{}"
+        assert not (tmp_path / "cache").exists()
+
     def test_an_out_that_is_a_directory_is_refused_before_the_cache_is_touched(
         self, tmp_path: Path, spec: SuiteSpec
     ) -> None:

@@ -73,11 +73,14 @@ _ARM_RE = re.compile(ARM_PATTERN)
 CONFIG_SECTIONS = ("walker", "parser", "chunker", "store", "retrieval", "indexer", "sparse")
 # A field whose name contains one of these is left out of the record: a results file is a pull
 # request artifact, and a URL or URI (`store.qdrant_url`, `store.lance_uri`; neither backend is
-# used by a run) may carry credentials. The rule also drops token counts such as `top_k_tokens`.
+# used by a run) may carry credentials. The word rule is blunt (`token` also matches token counts),
+# so the exact-name allowlist below keeps the ranking knobs it would otherwise hide.
 SECRET_WORDS = ("key", "secret", "token", "password", "endpoint", "url", "uri")
-# Exact names the word rule would drop that are kept: `max_tokens_per_chunk` sets the chunk size,
-# which changes the index, and the record exists to show what two arms differed in.
-KEPT_FIELDS = frozenset({"max_tokens_per_chunk"})
+# Exact names the word rule would drop that are kept: `max_tokens_per_chunk` sets the chunk size
+# (changes the index), `context_token_budget` sets the assembler budget and, with
+# scale_top_k_to_budget, the effective top_k (changes which files the harness scores), and
+# `top_k_tokens` is the sparse leg's width. The record exists to show what two arms differed in.
+KEPT_FIELDS = frozenset({"max_tokens_per_chunk", "context_token_budget", "top_k_tokens"})
 # Fields that differ between arms by construction and say nothing about the pipeline.
 _PER_ARM_FIELDS: Mapping[str, tuple[str, ...]] = {
     "store": ("db_path",),
@@ -117,6 +120,8 @@ def out_problems(out: Path) -> list[str]:
     """Why `--out` cannot be written, found before anything is cloned or indexed; `[]` if it can."""
     if out.is_dir():
         return [f"--out {out} is a directory: name the results file itself"]
+    if out.exists():
+        return [f"--out {out} already exists: each arm needs its own results file"]
     parent = out.parent
     if not parent.is_dir():
         return [f"--out: the directory {parent} does not exist; create it before the run"]

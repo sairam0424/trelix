@@ -559,8 +559,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     `walker`, `parser`, `chunker`, `store`, `retrieval`, `indexer` and `sparse` is recorded in the
     file's `pipeline.config` with every field named like a secret (`key`, `secret`, `token`,
     `password`, `endpoint`, `url`, `uri`: a `store.qdrant_url` may carry credentials) and the two
-    per-arm paths removed, and `chunker.max_tokens_per_chunk` kept by name because it changes the
-    index; `embedder` records the provider, the local model, the dimension and the
+    per-arm paths removed, and `chunker.max_tokens_per_chunk`, `retrieval.context_token_budget` and
+    `sparse.top_k_tokens` kept by name because each changes the index or the ranking; an `--out` that
+    already exists is refused before anything is cloned (each arm needs its own results file);
+    `embedder` records the provider, the local model, the dimension and the
     `sentence-transformers` version (`null` when not installed).
   - The whole index build and query run get the same switched-off git configuration the clone did
     (`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` the null device, `GIT_CONFIG_NOSYSTEM`,
