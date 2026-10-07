@@ -340,6 +340,14 @@ TRELIX_LLM_MODEL=qwen2.5-coder:7b                # the server's own tag (the def
 - The output cap is sent as `max_tokens`, whatever the model is called. Ollama has no
   `max_completion_tokens` field and ran unbounded when that was the only limit sent, which also made
   `TRELIX_REVIEW_MAX_TOKENS` and the retry on a cut-off reply inert.
+- `trelix review` reports a hunk as `truncated` with `detail: prompt_truncated` when the server's
+  reported `prompt_tokens` is under 0.85 x the cl100k_base count of what trelix sent, keeps nothing
+  from that reply and does not retry it. Ollama drops the head of a prompt longer than its context
+  length (the system prompt goes first) and answers HTTP 200 with a normal finish reason; the smaller
+  count is the only trace. llama-server rejects an oversize prompt with HTTP 400 instead, which trelix
+  reports as `error` (`exception:BadRequestError`). The check needs `usage` in the reply and the
+  cl100k_base encoding on disk (one warning, then off, when either is missing), and it covers the
+  review call only: `trelix ask` (a stream) and the query planner's tool call are not checked.
 - A model tag under 20B parameters (`qwen2.5-coder:7b`), or one with no readable size (`glm-4.5-air`;
   a mixture tag such as `mixtral-8x7b` counts as unreadable), logs one warning each time a backend
   is built: a `review` on an indexed repository builds two (the query planner's and the
