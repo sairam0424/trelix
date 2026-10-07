@@ -29,6 +29,8 @@ import logging
 import os
 import shutil
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from trelix.eval._loading import clip
@@ -61,23 +63,66 @@ _INHERITED_ENV = (
     "CURL_CA_BUNDLE",
 )
 
+# What every git child gets, and what the whole process gets while a suite is indexed and its
+# queries run (`isolated_git`): the Indexer's own `git rev-parse` and `git status` in
+# `trelix.store.provenance` inherit the process environment, so the operator's configuration
+# must be switched off there too. `GIT_ALLOW_PROTOCOL` is `https` here; only the clone of a
+# local test repository adds `file` (`git_env(allow_local=True)`).
+ISOLATION_ENV: dict[str, str] = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_ALLOW_PROTOCOL": "https",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_LFS_SKIP_SMUDGE": "1",
+    "GIT_OPTIONAL_LOCKS": "0",
+}
+# What `isolated_git` removes from the process for the block: each of these makes git answer
+# for a repository other than the directory it runs in (a hook or a shell with `GIT_DIR`
+# exported), and `trelix.store.provenance` runs `git` with `cwd=` and no `-C`, so an index's
+# provenance rows would otherwise name another repository's commit. A git child of this module
+# never sees them: `git_env` builds its environment from `_INHERITED_ENV` alone.
+REPOSITORY_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+)
+
 
 def git_env(*, allow_local: bool = False) -> dict[str, str]:
     """The complete environment of one git child; `allow_local` adds git's `file` transport."""
     env = {name: os.environ[name] for name in _INHERITED_ENV if name in os.environ}
-    env.update(
-        {
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_SYSTEM": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            # `file` covers a local path and a file:// URL; only the tests may use either.
-            "GIT_ALLOW_PROTOCOL": "https:file" if allow_local else "https",
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_LFS_SKIP_SMUDGE": "1",
-            "GIT_OPTIONAL_LOCKS": "0",
-        }
-    )
+    env.update(ISOLATION_ENV)
+    if allow_local:
+        # `file` covers a local path and a file:// URL; only the tests may use either.
+        env["GIT_ALLOW_PROTOCOL"] = "https:file"
     return env
+
+
+@contextmanager
+def isolated_git() -> Iterator[None]:
+    """Set `ISOLATION_ENV` and remove `REPOSITORY_ENV` in this process for the block, and put
+    back what was there before.
+
+    For the index build and the query run of a suite: every git child trelix itself spawns in
+    the clone then runs with the operator's global and system configuration switched off, like
+    the clone did, and answers for the clone and not for an exported `GIT_DIR`. A variable that
+    was absent is removed again; one that was set gets its old value, also when the block raises.
+    """
+    previous = {name: os.environ.get(name) for name in (*ISOLATION_ENV, *REPOSITORY_ENV)}
+    for name in REPOSITORY_ENV:
+        os.environ.pop(name, None)
+    os.environ.update(ISOLATION_ENV)
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def run_git(
@@ -207,6 +252,7 @@ def ensure_clone(spec: SuiteSpec, cache_root: Path, *, allow_local: bool = False
     and `allow_local` (the tests only, never the command line) adds its `file` transport.
     """
     final = clone_path(cache_root, spec)
+    partial = final.with_name(f"{spec.name}.partial")
     if final.exists() or final.is_symlink():
         problems = check_clone(final, spec)
         if problems:
@@ -216,8 +262,12 @@ def ensure_clone(spec: SuiteSpec, cache_root: Path, *, allow_local: bool = False
                     f"eval-suite never repairs or deletes a clone: remove {final} and run again",
                 ]
             )
+        # A `.partial` beside a verified clone is a killed or concurrent run as well: the same
+        # refusal as when no clone exists yet, so the operator sees it on every run until it is
+        # removed, not only on the first.
+        if partial.exists() or partial.is_symlink():
+            raise SuiteError([_in_the_way(partial)])
         return final
-    partial = final.with_name(f"{spec.name}.partial")
     _claim(partial)
     try:
         _clone_into(partial, spec, allow_local)
@@ -244,14 +294,16 @@ def _claim(partial: Path) -> None:
     try:
         partial.mkdir()
     except FileExistsError as exc:
-        raise SuiteError(
-            [
-                f"{partial} is in the way: a run that was killed left it, or another eval-suite "
-                "is cloning now. eval-suite never deletes it; remove it and run again"
-            ]
-        ) from exc
+        raise SuiteError([_in_the_way(partial)]) from exc
     except OSError as exc:
         raise SuiteError([f"cannot create {partial}: {exc}"]) from exc
+
+
+def _in_the_way(partial: Path) -> str:
+    return (
+        f"{partial} is in the way: a run that was killed left it, or another eval-suite "
+        "is cloning now. eval-suite never deletes it; remove it and run again"
+    )
 
 
 def _clone_into(partial: Path, spec: SuiteSpec, allow_local: bool) -> None:

@@ -8,6 +8,9 @@ wire is what the SDK would send (the bearer, the path, which token-limit field t
 `complete()`, `stream()` and `tool_call()` each get a wire test: the query planner calls
 `tool_call()` and `trelix ask` calls `stream()`, and a flag forgotten at one call site would
 ship `max_completion_tokens` to Ollama, which has no such field and runs unbounded.
+
+The prompt-truncation guard (R-C4-02) is tested the same way: the body's `usage.prompt_tokens`
+against what the SDK sent, on a local-server backend and on a hosted one.
 """
 
 from __future__ import annotations
@@ -20,11 +23,16 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+import tiktoken
 from openai import OpenAI
 
 from trelix.core.config import LLMConfig
 from trelix.llm.client import ChatMessage
 from trelix.llm.providers.openai_backend import OpenAIBackend, _token_limit_param
+
+# Loaded at collection, the shape of test_chunker_token_budget_boundary.py: the process cache is
+# warm before pytest-socket's per-test ban, so the guard's estimate never needs the network.
+_ENC = tiktoken.get_encoding("cl100k_base")
 
 _LOCAL_URL = "http://127.0.0.1:11434/v1"
 _MODEL = "qwen2.5-coder:7b"
@@ -113,7 +121,21 @@ class _Wire:
         return self.requests[0].headers[name]
 
 
-def _patched_constructor(wire: _Wire) -> Callable[..., OpenAI]:
+class _FixedWire:
+    """Records every request and answers each with the same body."""
+
+    def __init__(self, body: dict[str, Any]) -> None:
+        self.body = body
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(200, json=self.body)
+
+
+def _patched_constructor(
+    wire: Callable[[httpx.Request], httpx.Response],
+) -> Callable[..., OpenAI]:
     def construct(**kwargs: Any) -> OpenAI:
         return OpenAI(http_client=httpx.Client(transport=httpx.MockTransport(wire)), **kwargs)
 
@@ -124,7 +146,9 @@ def _llm(**fields: object) -> LLMConfig:
     return LLMConfig(_env_file=None, **fields)  # type: ignore[call-arg]
 
 
-def _wired_backend(wire: _Wire, **fields: object) -> OpenAIBackend:
+def _wired_backend(
+    wire: Callable[[httpx.Request], httpx.Response], **fields: object
+) -> OpenAIBackend:
     with patch("trelix.llm.providers.openai_backend.OpenAI", new=_patched_constructor(wire)):
         return OpenAIBackend(_llm(**fields))
 
@@ -325,3 +349,132 @@ class TestSizeFloorWarningAtConstruction:
             OpenAIBackend(_llm(provider="openai", openai_api_key=_FAKE_KEY))
 
         assert _backend_warnings(caplog) == []
+
+
+# A model at the size floor, so construction logs nothing and the lists below are exact.
+_QUIET_MODEL = "gpt-oss:20b"
+# `system="hello world"` (2 tokens) + `hi` (1): the estimate is 3, and a reported 1 is under
+# 0.85 x 3 = 2.55. The system prompt is part of the count (mutation: estimate the user
+# messages only, 1 < 0.85 is false and the signal is lost).
+_SYSTEM = "hello world"
+_W3_1_OF_3 = (
+    "Local server truncated the prompt: it reports 1 prompt tokens, trelix sent about 3 "
+    "(cl100k_base); the hunk is reported as truncated"
+)
+_W4 = "Local server reports no token usage; the prompt-truncation check is off for this run"
+_CONTENT_FILTER_WARNING = (
+    "LLM reply carries content_filter_error; the provider's content filter did not run on it"
+)
+
+
+def _reply_with_usage(prompt_tokens: int | None, *, filter_error: bool = False) -> dict[str, Any]:
+    """A `[]` reply with the given `usage.prompt_tokens` (`None`: no `usage` key at all)."""
+    choice: dict[str, Any] = {
+        "index": 0,
+        "message": {"role": "assistant", "content": "[]"},
+        "finish_reason": "stop",
+    }
+    if filter_error:
+        choice = {**choice, "content_filter_results": {"error": {"code": "content_filter_error"}}}
+    reply: dict[str, Any] = {
+        "id": "c",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "m",
+        "choices": [choice],
+    }
+    if prompt_tokens is None:
+        return reply
+    usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": 1,
+        "total_tokens": prompt_tokens + 1,
+    }
+    return {**reply, "usage": usage}
+
+
+class TestPromptTruncationGuard:
+    def test_a_count_under_the_floor_adds_the_signal_and_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """MUTATION: never append the signal; log the estimate and the count the other way
+        round (the pinned text says `reports 1 ... sent about 3`)."""
+        wire = _FixedWire(_reply_with_usage(1))
+        backend = _wired_backend(wire, provider="openai", base_url=_LOCAL_URL, model=_QUIET_MODEL)
+
+        with caplog.at_level(logging.WARNING, logger=_BACKEND_LOGGER):
+            response = backend.complete(_MESSAGES, system=_SYSTEM)
+
+        assert response.signals == ["prompt_truncated"]
+        assert response.finish_reason == "stop"
+        assert response.content == "[]"
+        assert response.input_tokens == 1
+        assert _backend_warnings(caplog) == [_W3_1_OF_3]
+
+    def test_a_count_at_or_over_the_floor_adds_nothing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        wire = _FixedWire(_reply_with_usage(10_000))
+        backend = _wired_backend(wire, provider="openai", base_url=_LOCAL_URL, model=_QUIET_MODEL)
+
+        with caplog.at_level(logging.WARNING, logger=_BACKEND_LOGGER):
+            response = backend.complete(_MESSAGES, system=_SYSTEM)
+
+        assert response.signals == []
+        assert response.input_tokens == 10_000
+        assert _backend_warnings(caplog) == []
+
+    def test_no_usage_turns_the_check_off_with_one_warning_per_backend(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """MUTATION: warn on every call (two W4 lines); read a missing count as truncated."""
+        wire = _FixedWire(_reply_with_usage(None))
+        backend = _wired_backend(wire, provider="openai", base_url=_LOCAL_URL, model=_QUIET_MODEL)
+
+        with caplog.at_level(logging.WARNING, logger=_BACKEND_LOGGER):
+            first = backend.complete(_MESSAGES, system=_SYSTEM)
+            second = backend.complete(_MESSAGES, system=_SYSTEM)
+
+        assert (first.signals, second.signals) == ([], [])
+        assert first.input_tokens == 0
+        assert len(wire.requests) == 2
+        assert _backend_warnings(caplog) == [_W4]
+
+    def test_a_zero_count_is_unknown_not_truncated(self, caplog: pytest.LogCaptureFixture) -> None:
+        """MUTATION: `prompt_tokens == 0` read as truncated (0 < 2.55)."""
+        wire = _FixedWire(_reply_with_usage(0))
+        backend = _wired_backend(wire, provider="openai", base_url=_LOCAL_URL, model=_QUIET_MODEL)
+
+        with caplog.at_level(logging.WARNING, logger=_BACKEND_LOGGER):
+            response = backend.complete(_MESSAGES, system=_SYSTEM)
+
+        assert response.signals == []
+        assert _backend_warnings(caplog) == [_W4]
+
+    def test_a_hosted_client_never_gets_the_signal(self, caplog: pytest.LogCaptureFixture) -> None:
+        """MUTATION: run the guard whatever `_local_server` says (the hosted reply with a
+        `prompt_tokens` of 1 would then be flagged)."""
+        wire = _FixedWire(_reply_with_usage(1))
+        backend = _wired_backend(wire, provider="openai", openai_api_key=_FAKE_KEY)
+
+        with caplog.at_level(logging.WARNING, logger=_BACKEND_LOGGER):
+            response = backend.complete(_MESSAGES, system=_SYSTEM)
+
+        assert backend._local_server is False
+        assert response.signals == []
+        assert response.input_tokens == 1
+        assert _backend_warnings(caplog) == []
+
+    def test_a_filter_outage_and_a_cut_prompt_are_both_recorded(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The existing content-filter line stays byte-identical (test_llm_finish_reason_matrix
+        pins `content filter did not run`) and W3 is a second line, not a replacement."""
+        wire = _FixedWire(_reply_with_usage(1, filter_error=True))
+        backend = _wired_backend(wire, provider="openai", base_url=_LOCAL_URL, model=_QUIET_MODEL)
+
+        with caplog.at_level(logging.WARNING, logger=_BACKEND_LOGGER):
+            response = backend.complete(_MESSAGES, system=_SYSTEM)
+
+        assert response.signals == ["content_filter_error", "prompt_truncated"]
+        assert _backend_warnings(caplog) == [_CONTENT_FILTER_WARNING, _W3_1_OF_3]

@@ -383,6 +383,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   on; `trelix ask --provider local` prints them with the context. No live model call was made: how
   well a model follows the instruction is what the synthesis eval changes later in this series exist
   to measure.
+- **A verifier for the `[C#]` markers a model writes** (internal, third of six changes toward
+  `trelix ask` answers that cite the retrieved code; no user-visible change until the next change in
+  this series wires it into `trelix ask`). `trelix.retrieval.citations.verify_citations(answer,
+  sources, repo_root)` classifies every distinct `[C1]`..`[C999]` marker of an answer, in order of
+  first appearance, as `valid`, `file_missing` (the tag's path is no longer a file under the
+  repository root), `line_out_of_range` (the cited chunk ends past the file's current line count) or
+  `unknown` (no retrieved chunk carries that tag), each stale case with a one-line detail ending in
+  `re-index`. Nothing is taken from the model's text but a marker's digits: path, lines and symbol
+  come from `RetrievedContext.citation_sources`, and the only file access is one newline count per
+  distinct cited file. Lines are counted as the extractors count them, `count("\n") + 1`: a
+  newline-terminated 7-line file has 8 lines, so its whole-file `<module>` symbol (`1-8` from the
+  Python parser) verifies as `valid` on a fresh index. The module joins the mutation driver's scope
+  as `retrieval.citations`.
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
@@ -581,6 +594,53 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     refusal exits 1 with one `refused: ...` line per reason, and without `--prepare-only` it exits 1
     saying the run is not available in this release. New modules `trelix.eval.suite`, `suite_git`,
     `suite_gold` and `suite_prepare`. See `eval/README.md`.
+- **`trelix eval-suite SUITE.json --arm NAME --out results.json` runs one arm of a suite** (the second
+  half of the suite work, part 2 of 2: the groundwork above is now a visible command, and the
+  "`--prepare-only` only" state it describes is superseded). It prepares the suite exactly as
+  `--prepare-only` does, builds ONE index for ONE arm from the verified clone with the local
+  embedder, replays the frozen plans and writes a `results.json` (schema_version 1) that
+  `trelix eval-compare` reads. Exit 0 when the file was written and no query raised; 1 for every
+  refusal (one `refused: ...` line per reason on stderr; `--arm` missing or not
+  `[a-z0-9][a-z0-9_-]{0,62}`, `--out` in a missing directory or itself a directory, both checked
+  before anything is cloned; `--prepare-only` given together with `--arm` or `--out`), for an index
+  that reports any error or cannot be built at all (an `OSError`, or the `ImportError` of a missing
+  `local` extra) or a golden query without a frozen plan at run time (no file is written in those
+  cases, and the refusal ends with a line naming the claimed run directory as left behind), and for
+  queries that raised after the file was written; 2 for a usage error. No retrieval default changes.
+  - One index per arm, in `<cache>/arms/<sha>/<name>/<arm>/`, claimed with `exist_ok=False`: an
+    existing run directory is refused (`arm 'X' already has a run directory at PATH: choose another
+    --arm or delete it`), there is no reuse option, and the command deletes nothing under the cache.
+    The harness reads copies of the verified golden and plans bytes in that directory (re-hashed as
+    they are read), never the committed files.
+  - The settings that change the index or the ranking are forced to literal values whatever the
+    environment or `~/.config/trelix/env` says: no file summaries, no batch API, `embedder.provider`
+    `local`, `walker.follow_symlinks` false, `chunker.contextual` false, `store.backend` `sqlite` in
+    the run directory, `rerank`, `hyde_fallback_enabled`, `multi_query_enabled` and `flare_enabled`
+    false, and the plans copy as `plan_cache_file`. The rest of the effective configuration of
+    `walker`, `parser`, `chunker`, `store`, `retrieval`, `indexer` and `sparse` is recorded in the
+    file's `pipeline.config` with every field named like a secret (`key`, `secret`, `token`,
+    `password`, `endpoint`, `url`, `uri`: a `store.qdrant_url` may carry credentials) and the two
+    per-arm paths removed, and `chunker.max_tokens_per_chunk`, `retrieval.context_token_budget` and
+    `sparse.top_k_tokens` kept by name because each changes the index or the ranking; an `--out` that
+    already exists is refused before anything is cloned (each arm needs its own results file);
+    `embedder` records the provider, the local model, the dimension and the
+    `sentence-transformers` version (`null` when not installed).
+  - The whole index build and query run get the same switched-off git configuration the clone did
+    (`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` the null device, `GIT_CONFIG_NOSYSTEM`,
+    `GIT_ALLOW_PROTOCOL=https`, no terminal prompt, no LFS smudge, no optional locks; restored
+    afterwards) and have `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR` and
+    `GIT_OBJECT_DIRECTORY` removed for the same span, because the Indexer's own `git` in
+    `trelix.store.provenance` inherits the process environment and runs with `cwd=` and no `-C`.
+    Ten real index builds of a tree with two byte-identical files agree record for record, so the
+    insertion order of parsed files did not need to change.
+  - `make eval-suite EVAL_SUITE=... EVAL_ARM=...` (results in `.trelix/eval-suite/results.json` by
+    default, a run artifact, never committed), `trelix.eval.suite_run`, `trelix.eval.suite_git.isolated_git`,
+    `trelix.eval.suite_prepare.prepare_spec`. See `eval/README.md`, "Suites".
+  - Three nits from the review of the groundwork: a `golden-metadata.json` sidecar that is a directory
+    or unreadable is a refusal, not a traceback; a `<name>.partial` beside an already-verified clone is
+    refused with the same text as before a clone exists; and the README says a sidecar that is not
+    valid JSON is a refusal while any other shape yields no labels.
+
 - **`TRELIX_LLM_BASE_URL` points the `openai` backend at an OpenAI-compatible server** (Ollama,
   llama-server, a gateway). `OPENAI_API_KEY` is then optional: without it trelix sends the fixed
   bearer `trelix-local`, which Ollama ignores. The output cap is sent as `max_tokens` for such a
@@ -599,6 +659,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   client, so with the variable set `search` and `query` plan through that server too (one call per
   distinct query); the zero-LLM-call recipe in the FAQ, README, getting-started, user and
   why-trelix guides and `SECURITY.md` now requires it unset as well as the chat credential.
+- **`trelix review` reports a hunk as `truncated` (`detail: prompt_truncated`) when a local server
+  cut the prompt.** Ollama drops the head of a prompt that exceeds its context length and answers
+  HTTP 200 with a normal finish reason (the system prompt is the first thing to go); the only trace
+  is a `prompt_tokens` smaller than the prompt. With `TRELIX_LLM_BASE_URL` set, a reported count
+  below 0.85 x the cl100k_base count of what was sent marks the hunk unreviewed, nothing is salvaged
+  from the reply and the hunk is not retried. Exit codes 3/4 and the outcome record are unchanged in
+  shape (the workflow and the GitHub App validate `status` only and never read `detail`). The check
+  needs `usage` in the reply and the cl100k_base encoding on disk; when either is missing it warns
+  once and stays out of the way. `trelix ask` (a stream) and the query planner's tool call are not
+  checked.
 - **`TRELIX_LLM_LOCAL_CONTEXT_TOKENS`** tells the model-aware context budget
   (`TRELIX_RETRIEVAL_CONTEXT_TOKEN_BUDGET=null`) the context length of the server behind
   `TRELIX_LLM_BASE_URL`, instead of falling back to 12,000 for a tag `context_windows` does not
@@ -608,6 +678,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   error that names both variables and never the value.
 
 ### Changed
+- **The retriever's per-query debug trace is written beside the index, not beside the source.**
+  `Retriever._debug_dir` is `<directory of store.db_path>/debug/`, which is the same
+  `<repo>/.trelix/debug/` as before for the default `db_path`; an index kept elsewhere
+  (`TRELIX_STORE_DB_PATH` outside the repository, or a `trelix eval-suite` run) now gets its traces
+  there and the source tree stays untouched. Found by the first two-arm suite run: the trace landed
+  in the shared clone, and the second arm refused a worktree that was no longer pristine.
 - **`trelix ask` and `GET /ask` no longer call the LLM when retrieval found nothing, and an answer
   can abstain** (second of six changes toward `trelix ask` answers that cite the retrieved code and
   abstain when it does not answer the question). `Synthesizer.stream()`, behind plain `trelix ask`
