@@ -7,7 +7,7 @@ of flags, so that nobody hunts for a `--cache-dir` or a log-level option that do
 MCP_GUIDE.md contradicted its own section 8, which documents `--root`. The first pin holds each
 sentence to the complete list, in that document's own spelling (code spans, a table cell with an
 escaped pipe, a shell comment wrapped onto two lines). The second holds the list to the flags
-`server.py` declares, read as text because this suite's environment has no fastmcp to import the
+`cli.py` declares, read as text because this suite's environment has no fastmcp to import the
 module with: a new flag fails here until every sentence names it.
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
-_SERVER = _ROOT / "packages" / "trelix-mcp" / "src" / "trelix_mcp" / "server.py"
+_CLI = _ROOT / "packages" / "trelix-mcp" / "src" / "trelix_mcp" / "cli.py"
 _SENTENCES = [
     pytest.param(
         "docs/MCP_GUIDE.md",
@@ -71,5 +71,5 @@ def test_each_document_names_every_flag(document: str, sentence: str) -> None:
 
 def test_the_documented_list_is_the_parser_flag_list() -> None:
     """`--version`, `--tools` and `--root`, and nothing else: a fourth flag must reach all five."""
-    declared = _declared_flags(_SERVER.read_text(encoding="utf-8"))
+    declared = _declared_flags(_CLI.read_text(encoding="utf-8"))
     assert declared == {"--version", "--tools", "--root"}
