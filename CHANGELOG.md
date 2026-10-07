@@ -383,6 +383,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   on; `trelix ask --provider local` prints them with the context. No live model call was made: how
   well a model follows the instruction is what the synthesis eval changes later in this series exist
   to measure.
+- **A verifier for the `[C#]` markers a model writes** (internal, third of six changes toward
+  `trelix ask` answers that cite the retrieved code; no user-visible change until the next change in
+  this series wires it into `trelix ask`). `trelix.retrieval.citations.verify_citations(answer,
+  sources, repo_root)` classifies every distinct `[C1]`..`[C999]` marker of an answer, in order of
+  first appearance, as `valid`, `file_missing` (the tag's path is no longer a file under the
+  repository root), `line_out_of_range` (the cited chunk ends past the file's current line count) or
+  `unknown` (no retrieved chunk carries that tag), each stale case with a one-line detail ending in
+  `re-index`. Nothing is taken from the model's text but a marker's digits: path, lines and symbol
+  come from `RetrievedContext.citation_sources`, and the only file access is one newline count per
+  distinct cited file. Lines are counted as the extractors count them, `count("\n") + 1`: a
+  newline-terminated 7-line file has 8 lines, so its whole-file `<module>` symbol (`1-8` from the
+  Python parser) verifies as `valid` on a fresh index. The module joins the mutation driver's scope
+  as `retrieval.citations`.
 - **Per-query eval results and the statistics to compare two runs** (first of three changes toward
   comparing retrieval runs honestly; the comparison command and the versioned golden set come next).
   - `EvalHarness.run_detailed()` returns one `QueryRecord` per query with `id`, `repo`, `kind`, `lang`,
