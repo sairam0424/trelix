@@ -12,6 +12,10 @@ bound it here, all reading the environment on each call:
   response stays within twice the budget (30,000 characters by default), not just its text.
 * `detail="concise"` swaps each result's `body` for a one-line `signature`.
 
+`TRELIX_MCP_RETRIEVER_CACHE_SIZE` (default 8, at least 1) bounds memory rather than output: it is
+the most Retrievers server.py keeps across calls (see `_get_retriever` there). It lives here
+because it is read and validated with the two limits above, at start-up and on each call.
+
 Kept out of server.py on purpose: server.py is already very large and its tools only call in
 here. Every helper returns today's shapes (an envelope dict or a bare array) plus additive keys.
 """
@@ -30,8 +34,10 @@ from mcp.types import TextContent
 
 MAX_K_ENV = "TRELIX_MCP_MAX_K"
 MAX_RESULT_CHARS_ENV = "TRELIX_MCP_MAX_RESULT_CHARS"
+RETRIEVER_CACHE_SIZE_ENV = "TRELIX_MCP_RETRIEVER_CACHE_SIZE"
 DEFAULT_MAX_K = 50
 DEFAULT_MAX_RESULT_CHARS = 15_000
+DEFAULT_RETRIEVER_CACHE_SIZE = 8
 DEFAULT_MAX_BODY_CHARS = 20_000
 DEFAULT_BLAST_LIMIT = 100
 MAX_BLAST_LIMIT = 500
@@ -56,6 +62,7 @@ class BudgetConfigError(ValueError):
 class Limits:
     max_k: int
     max_result_chars: int
+    retriever_cache_size: int
 
 
 def _read_int(environ: Mapping[str, str], name: str, default: int, minimum: int) -> int:
@@ -78,6 +85,9 @@ def limits_from_env(environ: Mapping[str, str] | None = None) -> Limits:
     return Limits(
         max_k=_read_int(env, MAX_K_ENV, DEFAULT_MAX_K, 1),
         max_result_chars=_read_int(env, MAX_RESULT_CHARS_ENV, DEFAULT_MAX_RESULT_CHARS, 0),
+        retriever_cache_size=_read_int(
+            env, RETRIEVER_CACHE_SIZE_ENV, DEFAULT_RETRIEVER_CACHE_SIZE, minimum=1
+        ),
     )
 
 

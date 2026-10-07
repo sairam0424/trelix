@@ -49,9 +49,11 @@ def _reset_retriever_cache():
 
 @pytest.fixture(autouse=True)
 def _clean_output_limit_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An operator's TRELIX_MCP_MAX_K / TRELIX_MCP_MAX_RESULT_CHARS must not reach a test."""
+    """An operator's TRELIX_MCP_MAX_K, TRELIX_MCP_MAX_RESULT_CHARS or
+    TRELIX_MCP_RETRIEVER_CACHE_SIZE must not reach a test."""
     monkeypatch.delenv("TRELIX_MCP_MAX_K", raising=False)
     monkeypatch.delenv("TRELIX_MCP_MAX_RESULT_CHARS", raising=False)
+    monkeypatch.delenv("TRELIX_MCP_RETRIEVER_CACHE_SIZE", raising=False)
 
 
 @pytest.fixture

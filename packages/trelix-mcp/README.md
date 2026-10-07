@@ -185,6 +185,17 @@ TRELIX_MCP_MAX_RESULT_CHARS=15000
 
 Both are read on every call. A blank value means the default; a value that is not an integer (of at least 1 for `TRELIX_MCP_MAX_K`, at least 0 for `TRELIX_MCP_MAX_RESULT_CHARS`) stops `trelix-mcp` at start-up with exit code 2. See [Result size](#result-size).
 
+### Retriever cache
+
+```bash
+# Most Retrievers kept across tool calls, one per repository (search_code and graph_search_mcp
+# reuse them; each may hold an embedding model with the local provider). Past this bound the
+# least recently used one is dropped, not closed, and the next call for that repo rebuilds it.
+TRELIX_MCP_RETRIEVER_CACHE_SIZE=8
+```
+
+Read on every call. A blank value means the default; a value that is not an integer of at least 1 stops `trelix-mcp` at start-up with exit code 2 and makes a tool call return an error.
+
 ## Tools
 
 `tools/list` returns the tools in a fixed order and marks each one with MCP annotation hints; the server also sends short `instructions` that tell a model to index first and which search tool to use next. Only `search_code`, `get_symbol` and `blast_radius` are marked `readOnlyHint: true`, `agent_clear_session` and `federation_remove_repo` are marked `destructiveHint: true`, and every tool has `openWorldHint: false`. The read-only hint means the index database is left alone, not the whole repository directory: the caveats (query telemetry, the migration of an index written by an older trelix, the `search_code` trace files under `.trelix/debug/`) and the full table are in [docs/MCP_GUIDE.md, section 8](https://github.com/sairam0424/trelix/blob/main/docs/MCP_GUIDE.md#8-the-15-mcp-tools).
