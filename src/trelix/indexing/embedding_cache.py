@@ -35,6 +35,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import struct
 import tempfile
 import threading
@@ -207,11 +208,14 @@ class EmbeddingCache:
         conn: sqlite3.Connection,
         dimension: int,
         clock: Callable[[], float],
+        *,
+        readonly: bool = False,
     ) -> None:
         self._path = path
         self._conn = conn
         self._dimension = dimension
         self._clock = clock
+        self._readonly = readonly
         self._lock = threading.Lock()
         self.hits = 0
         self.misses = 0
@@ -229,7 +233,7 @@ class EmbeddingCache:
         cls,
         path: Path,
         *,
-        dimension: int,
+        dimension: int | None,
         clock: Callable[[], float] = time.time,
     ) -> EmbeddingCache:
         """Open or initialise ``path`` for ``dimension``-wide vectors.
@@ -237,13 +241,21 @@ class EmbeddingCache:
         Never creates directories (``path.parent`` must exist). A new file is created
         ``0o600``; SQLite's ``-journal`` sidecar copies that mode. An existing file must
         be a schema-1 trelix cache of exactly this width, otherwise
-        ``EmbeddingCacheError`` names what it is instead.
+        ``EmbeddingCacheError`` names what it is instead. ``dimension=None`` means "trust
+        the width the file records" (what ``trelix cache gc`` passes: it has no embedder
+        to compare against); an empty or missing file cannot be initialised that way and is
+        refused before anything is created.
         """
         if not path.parent.is_dir():
             raise EmbeddingCacheError(
                 _DIR_UNUSABLE.format(dir=path.parent, exc="no such directory")
             )
         is_new = not path.exists() or path.stat().st_size == 0
+        if is_new and dimension is None:
+            # Nothing is recorded, so there is no width to trust. Refused BEFORE the os.open
+            # below, which would otherwise create a 0-byte file — through a dangling symlink,
+            # one outside the cache directory — for `gc` to then report as foreign.
+            raise EmbeddingCacheError(_NOT_A_CACHE.format(path=path))
         try:
             fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
             os.close(fd)
@@ -255,7 +267,7 @@ class EmbeddingCache:
         try:
             conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=NORMAL")
-            cls._verify_or_initialise(conn, path, dimension)
+            stored = cls._verify_or_initialise(conn, path, dimension)
         except sqlite3.OperationalError as exc:  # locked, read-only, I/O: says what SQLite said
             conn.close()
             raise EmbeddingCacheError(_FILE_UNUSABLE.format(path=path, exc=exc)) from exc
@@ -265,12 +277,65 @@ class EmbeddingCache:
         except EmbeddingCacheError:
             conn.close()
             raise
-        return cls(path, conn, dimension, clock)
+        return cls(path, conn, stored, clock)
 
     @classmethod
-    def _verify_or_initialise(cls, conn: sqlite3.Connection, path: Path, dimension: int) -> None:
+    def open_readonly(cls, path: Path) -> EmbeddingCache | None:
+        """``path`` opened ``mode=ro`` at the width it records, or ``None`` when it is absent.
+
+        For ``trelix index --dry-run``: the preview must create nothing (no directory, no
+        file, no ``last_used_at`` refresh) and has no embedder whose width it could check,
+        so the file's own ``meta.dimension`` sizes the length check. The path is
+        percent-encoded before it enters the URI, as ``cli/main.py`` does for the index:
+        a raw ``?`` or ``#`` in it would end the query string and drop ``mode=ro``. A file
+        that is not a schema-1 trelix cache raises the same ``EmbeddingCacheError`` as
+        :meth:`open`, and so does one the process cannot read (a file or directory owned
+        by another user: SECURITY.md's shared-host case), so the preview never tracebacks.
+        Absence is decided with an explicit ``stat()``: ``Path.is_file()`` swallows a
+        ``PermissionError`` from Python 3.13 on and would turn an unreadable directory into
+        "no cache" instead of the error above (a directory at the path is "no cache").
+        """
+        import urllib.request
+
+        try:
+            try:
+                mode = path.stat().st_mode
+            except (FileNotFoundError, NotADirectoryError):
+                return None
+            if not stat.S_ISREG(mode):
+                return None
+            uri = f"file:{urllib.request.pathname2url(str(path))}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+        except (OSError, sqlite3.Error) as exc:  # unreadable directory or file
+            raise EmbeddingCacheError(_FILE_UNUSABLE.format(path=path, exc=exc)) from exc
+        try:
+            tables = cls._table_names(conn)
+            if "meta" not in tables:
+                raise EmbeddingCacheError(_NOT_A_CACHE.format(path=path))
+            stored = cls._recorded_dimension(conn, path, None)
+        except sqlite3.OperationalError as exc:  # locked, I/O: may well be a valid cache
+            conn.close()
+            raise EmbeddingCacheError(_FILE_UNUSABLE.format(path=path, exc=exc)) from exc
+        except sqlite3.DatabaseError as exc:  # not a SQLite file at all, or corrupt
+            conn.close()
+            raise EmbeddingCacheError(_NOT_A_CACHE.format(path=path)) from exc
+        except EmbeddingCacheError:
+            conn.close()
+            raise
+        return cls(path, conn, stored, time.time, readonly=True)
+
+    @staticmethod
+    def _table_names(conn: sqlite3.Connection) -> set[str]:
+        return {
+            name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+
+    @classmethod
+    def _verify_or_initialise(
+        cls, conn: sqlite3.Connection, path: Path, dimension: int | None
+    ) -> int:
         """Initialise an empty file, or check that an existing one is a schema-1 cache of
-        this width.
+        this width; return the width the file records.
 
         ``BEGIN IMMEDIATE`` takes SQLite's write lock BEFORE the inspection, so two indexers
         first-opening the same new file are serialised: the second waits (up to the
@@ -279,23 +344,33 @@ class EmbeddingCache:
         no ``meta`` is a foreign file.
         """
         conn.execute("BEGIN IMMEDIATE")
-        tables = {
-            name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
+        tables = cls._table_names(conn)
         if not tables:
+            if dimension is None:
+                raise EmbeddingCacheError(_NOT_A_CACHE.format(path=path))
             cls._initialise(conn, dimension)
         elif "meta" not in tables:
             raise EmbeddingCacheError(_NOT_A_CACHE.format(path=path))
         conn.commit()
+        return cls._recorded_dimension(conn, path, dimension)
+
+    @classmethod
+    def _recorded_dimension(
+        cls, conn: sqlite3.Connection, path: Path, dimension: int | None
+    ) -> int:
+        """The width in ``meta``, checked against ``dimension`` unless that is ``None``."""
         meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
         version = meta.get("schema_version")
         if version != str(cls.SCHEMA_VERSION):
             raise EmbeddingCacheError(_WRONG_SCHEMA.format(path=path, version=version))
         stored = meta.get("dimension")
-        if stored != str(dimension):
+        if dimension is not None and stored != str(dimension):
             raise EmbeddingCacheError(
                 _WIDTH_MISMATCH.format(path=path, stored=stored, current=dimension)
             )
+        if stored is None or not stored.isdecimal():
+            raise EmbeddingCacheError(_NOT_A_CACHE.format(path=path))
+        return int(stored)
 
     @classmethod
     def _initialise(cls, conn: sqlite3.Connection, dimension: int) -> None:
@@ -311,7 +386,8 @@ class EmbeddingCache:
 
     def get_many(self, keys: Sequence[bytes]) -> dict[bytes, list[float]]:
         """Vectors for the keys that are present and the right width; absent keys are
-        simply absent (never ``None``). Hits have their ``last_used_at`` refreshed."""
+        simply absent (never ``None``). Hits have their ``last_used_at`` refreshed, except
+        through :meth:`open_readonly`, which cannot write and must not count as use."""
         found: dict[bytes, list[float]] = {}
         width = self._dimension * _FLOAT32_BYTES
         fmt = f"<{self._dimension}f"
@@ -329,7 +405,7 @@ class EmbeddingCache:
                     if len(blob) == width:
                         found[key] = list(struct.unpack(fmt, blob))
                         hit_keys.append(key)
-                if hit_keys:
+                if hit_keys and not self._readonly:
                     hit_marks = ",".join("?" * len(hit_keys))
                     self._conn.execute(
                         "UPDATE embeddings SET last_used_at = ? "
@@ -420,7 +496,9 @@ class EmbeddingCache:
             self._conn.close()
 
 
-def _text_key(text: str) -> bytes:
+def text_key(text: str) -> bytes:
+    """The row key for ``text``: ``sha256(utf-8)``. The one definition the wrapper writes
+    with and the ``--dry-run`` preview reads with, so the two cannot disagree."""
     return hashlib.sha256(text.encode("utf-8")).digest()
 
 
@@ -458,7 +536,7 @@ class CachedIndexEmbedder(BaseEmbedder):
     def _lookup(
         self, texts: list[str]
     ) -> tuple[list[bytes], dict[bytes, list[float]], dict[bytes, str]]:
-        keys = [_text_key(t) for t in texts]
+        keys = [text_key(t) for t in texts]
         found = self._cache.get_many(keys)
         # A dict keyed by the hash, so a text that repeats in `texts` is one miss.
         missing: dict[bytes, str] = {}

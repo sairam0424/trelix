@@ -361,6 +361,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   Owner decisions taken: the `otel` extra floor (under Changed), the placeholder span, request-only
   `stream()`/`tool_call()` spans, the custom `litellm` value, the one-time WARNING and the
   class-name-only error text.
+- **One `trelix.review` span per reviewed hunk, carrying `trelix.review.hunk_status`** (roadmap
+  C-8, requirement R-C6-02, PR 4 of 4). With `TRELIX_OTEL_ENABLED=true`, `DiffReviewer.review()`
+  opens a `trelix.review` span around each hunk it attempts; the hunk's `trelix.retrieve` span, its
+  legs and its `chat` span(s) nest under it, and once the hunk's status is known the span carries
+  `trelix.review.hunk_status` = `reviewed`, `truncated`, `refused`, `parse_failed` or `error` (the
+  status is decided after the reply has returned, so it cannot sit on the chat span). A review that
+  meets the no-credentials placeholder stops after the first hunk and emits one span (`error`,
+  carrying the SDK's record of that exception: its class, the backend's constant placeholder text
+  and a stack trace) however many hunks the outcome counts. The exception text of any other failed
+  call never reaches the span. `pipeline_stage_span` gains `set_attribute()` for attributes known
+  only after a stage started. Off by default; no span and no `opentelemetry` import when the flag
+  is off.
 - **`trelix-mcp --root PATH` (repeatable) and `TRELIX_ALLOWED_REPO_ROOTS`** confine every
   `repo_path`, `federation_add_repo.path` and `trelix://repo/...` URI to those roots; a path
   outside answers `isError` with 'repo_path is not inside an allowed repository root';
@@ -538,6 +550,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   variable into its `trelix index` child, so setting this on a multi-tenant host would share
   one cache across tenants; SECURITY.md has the section. A `trelix cache` command group is not
   part of this change.
+- **`trelix cache gc` and `trelix cache clear`, and the cache in `trelix index`'s output** (the
+  command group the bullet above deferred). `trelix cache gc [--max-mb N]` trims every cache file
+  (`<fingerprint>.db` in `TRELIX_EMBEDDING_CACHE_DIR`, else `$XDG_CACHE_HOME/trelix/embeddings`,
+  else `~/.cache/trelix/embeddings`) to the cap, least recently used rows first, and prints
+  `<name>: <rows> -> <rows> rows, <bytes> -> <bytes> bytes` per file in name order; the default
+  cap is `TRELIX_EMBEDDING_CACHE_MAX_MB`, which is a trim applied after each index run and by this
+  command, not a limit during a run. Each file is opened at the width it records (no embedder is
+  loaded, no width check can fail); a file that cannot be opened or trimmed is reported as
+  `Embedding cache unreadable` and the rest are still trimmed, exit 1 afterwards (`gc` creates
+  nothing: an empty file or a symlink with no target is refused before SQLite touches it); a
+  directory that exists but cannot be listed is the same line and exit 1 at once, for both
+  commands; a directory that happens to carry a cache file's name is left alone by both, and
+  `gc` skips every symlink, whatever it points at (`clear` unlinks the link without following it).
+  `trelix cache clear`
+  deletes every `<fingerprint>.db` and `.db-journal` directly in that directory (nothing else, no
+  recursion, a symlink is unlinked and never followed) and prints `Removed N file(s), M bytes,
+  from <dir>`. With no cache directory both print `No embedding cache at <dir>.` and exit 0;
+  neither takes a repository argument or opens an index. The Index Summary gains a `Chunks from
+  cache` row when the count is above zero. `trelix index --dry-run` with the cache on opens the
+  cache file read-only (`EmbeddingCache.open_readonly`, new; it creates nothing and never reads
+  the configured width, which is a constant 384 for every `local` model), adds `Chunks already
+  cached` and `Tokens already cached` rows, and prices `Embedding tokens - Tokens already cached
+  + Repair tokens`; an absent file adds no rows; one that cannot be read, at the open or at a
+  lookup (a concurrent run's end-of-run `VACUUM` holding the lock), is reported and priced as
+  absent. `trelix index --resume-batch` with the cache on is refused before any model is loaded
+  (`Cannot resume a Batch API job`, exit 1, the way out named), as the bullet above says; the
+  refusal is now also in `docs/CLI_REFERENCE.md`'s exit codes. The CLI's cost preview takes the
+  per-provider model-field table from the cache module (`EMBED_MODEL_FIELDS`) instead of a
+  private copy.
 - **Golden file format v2 and `trelix eval-validate`** (second of three changes toward comparing
   retrieval runs honestly; no score is computed any differently).
   - A golden line may add `id`, `lang`, `kind` (`nl`, `keyword`, `commit` or `issue`), `source`,
@@ -819,6 +860,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   guarantee.
 
 ### Changed
+- **`with_retry()` type-checks under tenacity 9.2.** tenacity 9.2.1 (released 2026-10-07) narrows
+  the declared return type of its `retry()` decorator to its own wrapper class, which made mypy
+  reject `with_retry()`'s `Callable[[F], F]` contract and turned every CI run red; the decorator
+  return now carries a version-agnostic `type: ignore` that states that contract. No runtime
+  change: the decorated functions, the backoff and the Retry-After handling are the same.
+- **The `trelix-mcp` command line moved to `trelix_mcp.cli`.** `trelix_mcp.server` keeps the
+  FastMCP server and every tool; its `main()` is now a two-line entry point that calls
+  `trelix_mcp.cli.main()`, so `[project.scripts]` (`trelix_mcp.server:main`) and every
+  `import trelix_mcp.server` are unchanged. Internal, no user-visible change: the flags (`--help`,
+  `--version`, `--tools core|full`, `--root PATH`), their texts and exit codes are the same. Done
+  ahead of the Streamable HTTP transport so that `server.py` (1,432 lines) stops growing.
 - **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim
   space in vec0 tables, which trelix's `DELETE`+`INSERT` upsert and `--prune` rely on; 0.1.9 is
   the release the vec0 contract tests were verified against; the ceiling keeps the 0.1.10
@@ -900,6 +952,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `cache_ttl`, `cache_scope` and `transforms` to `FastMCP(...)` and calls
   `server.disable(names=, components=)`. 4.0.10 is the release those were run against (4.0.0 to
   4.0.9 were not tested), and `tests/unit/test_dependency_floor_guards.py` pins it.
+- **`trelix-mcp` gains the pieces of a Streamable HTTP transport as a module nothing wires yet**
+  (`trelix_mcp.http`: settings resolution with its start-up errors, a bearer-token ASGI middleware
+  that answers `401` with `WWW-Authenticate: Bearer`, and a `GET /health` route). Internal, no
+  user-visible change: `trelix-mcp` still serves stdio only and accepts the same flags. `starlette`
+  is now a declared dependency of `trelix-mcp` (it was already installed through `fastmcp`; nothing
+  new is resolved).
 - **`trelix-mcp` list results are bounded, and a cut says so.** A tool result costs a client twice
   (FastMCP sends a dict result as a text block, where every quote is escaped, and as
   `structuredContent`): measured with 100,000-character bodies, `search_code` at `k=100` was about

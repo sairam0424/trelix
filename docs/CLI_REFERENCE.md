@@ -51,6 +51,8 @@ on most commands.
    - [audit list](#trelix-audit-list)
    - [audit verify](#trelix-audit-verify)
    - [audit export](#trelix-audit-export)
+   - [cache gc](#trelix-cache-gc)
+   - [cache clear](#trelix-cache-clear)
 
 ---
 
@@ -183,6 +185,18 @@ index (`index`, `update-index`, `watch`) still create it on first use, and so do
 `eval-synthesis`, `telemetry`, `agent sessions` and (only once it finds a flow) `taint`, which do
 not check yet.
 
+`trelix cache gc` and `trelix cache clear` exit `0` when the cache directory does not exist
+(they print `No embedding cache at <dir>.` and create nothing). `cache gc` exits `1` after
+trimming every other file when one cache file cannot be opened or trimmed (`Embedding cache
+unreadable: ...`); `cache clear` exits `1` after the rest when one file cannot be removed
+(`Could not remove: ...`); both exit `1` at once, touching nothing, when the directory exists
+but cannot be listed (`Embedding cache unreadable: ...`), and with `Configuration error:` for
+a relative `TRELIX_EMBEDDING_CACHE_DIR` or a `TRELIX_EMBEDDING_CACHE_MAX_MB` below `1`. `trelix index
+<repo_path> --resume-batch` exits `1` before loading any model when `TRELIX_EMBEDDING_CACHE_ENABLED=true`
+is set, printing `Cannot resume a Batch API job: TRELIX_EMBEDDING_CACHE_ENABLED=true is set, and the
+Batch API poll path bypasses the cache. Re-run with TRELIX_EMBEDDING_CACHE_ENABLED=false to collect
+the job, then re-enable it.`
+
 ---
 
 ## Embedding providers
@@ -227,6 +241,10 @@ Scans `<repo_path>`, parses source files with tree-sitter, chunks and embeds
 every symbol, and stores the result in `<repo_path>/.trelix/index.db`. On
 subsequent runs only changed files are re-indexed (incremental mode). Prints
 a summary table with file counts, symbol count, chunk count, and elapsed time.
+With the on-disk embedding cache on (`TRELIX_EMBEDDING_CACHE_ENABLED=true`, see
+[CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time)) the table adds a
+`Chunks from cache` row — the chunks served from the cache instead of the
+provider — whenever that count is above zero.
 
 #### Options
 
@@ -234,7 +252,7 @@ a summary table with file counts, symbol count, chunk count, and elapsed time.
 |--------|------|---------|-------------|
 | `--provider` | string | `local` | Embedding provider. See [Embedding providers](#embedding-providers). |
 | `--verbose`, `-v` | flag | `false` | Show DEBUG-level log output from the indexer and embedder. |
-| `--dry-run` | flag | `false` | Cost preview only: walks, chunks and counts tokens, embeds nothing and writes nothing to the index. With `--prune` it also prints the prune plan against the index as it stands. Cannot be combined with `--yes`. |
+| `--dry-run` | flag | `false` | Cost preview only: walks, chunks and counts tokens, embeds nothing and writes nothing to the index. With the embedding cache on and its file present, the table adds `Chunks already cached` and `Tokens already cached` (read from the cache file read-only, at the width it records; nothing is created) and the priced token count is `Embedding tokens - Tokens already cached + Repair tokens`. With `--prune` it also prints the prune plan against the index as it stands. Cannot be combined with `--yes`. |
 | `--prune` | flag | `false` | After indexing, remove the rows and embeddings of files no longer in the repository. Previews only unless `--yes` is also given, and refuses unless the walk can be shown to be trustworthy. See [Pruning files that no longer exist](#pruning-files-that-no-longer-exist---prune). |
 | `--yes` | flag | `false` | Actually delete what `--prune` found. Only valid with `--prune`. |
 | `--prune-max-percent` | float | `10` | Refuse a prune that would remove more than this percentage of the index. Applies only above 10 candidates, so a small repository can still drop a few files. Raise it only after reading the previewed list. |
@@ -2510,6 +2528,134 @@ trelix audit prune --retention-days 90
 # Cron entry: prune daily at 03:00
 0 3 * * * TRELIX_AUDIT_DB_PATH=/var/log/trelix/audit.db trelix audit prune >> /var/log/trelix/prune.log 2>&1
 ```
+
+---
+
+### `trelix cache gc`
+
+#### Synopsis
+
+```
+trelix cache gc [--max-mb N]
+```
+
+#### Description
+
+Trims every file of the on-disk index-time embedding cache
+(`TRELIX_EMBEDDING_CACHE_*`, see
+[CONFIGURATION.md](CONFIGURATION.md#embedding-cache-index-time)) to its size cap,
+evicting the least recently used rows first and returning the space with
+`VACUUM`. `trelix index` applies the same trim at the end of each run; this is the
+same trim on demand, for instance after lowering `TRELIX_EMBEDDING_CACHE_MAX_MB`.
+It takes no repository argument and never opens an index: the directory comes from
+`TRELIX_EMBEDDING_CACHE_DIR`, else `$XDG_CACHE_HOME/trelix/embeddings`, else
+`~/.cache/trelix/embeddings`. Only files named `<32 hex chars>.db` (one per
+embedder fingerprint) are opened, in name order (a directory carrying such a name
+is left alone, as `clear` leaves it, and so is any symlink, whatever it points at:
+`gc` never trims a file outside the directory, and `clear` unlinks the link without
+following it); each is opened at the width it records, so no embedder is loaded and
+no width check can fail.
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--max-mb` | integer >= 1 | `TRELIX_EMBEDDING_CACHE_MAX_MB` (`4096` when unset) | Trim every file to about this many MB. `0` is a usage error (exit 2). |
+
+#### Examples
+
+```bash
+# Trim every cache file to the configured cap
+trelix cache gc
+
+# Trim to 512 MB per file this once, without changing the environment
+trelix cache gc --max-mb 512
+```
+
+#### Output
+
+One line per cache file, in name order:
+
+```
+9837970b2d56d811957572da7bae6138.db: 512000 -> 327680 rows, 838860800 -> 536870912 bytes
+```
+
+A file already within the cap prints with unchanged counts. With no cache
+directory: `No embedding cache at <dir>.`
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Every file was trimmed (or was already within the cap), or there is no cache directory. |
+| `1` | At least one file could not be opened or trimmed (`Embedding cache unreadable: ...`; the others were still trimmed), the directory exists but cannot be listed (`Embedding cache unreadable: ...`; nothing trimmed), or `TRELIX_EMBEDDING_CACHE_*` is invalid (`Configuration error: ...`). |
+| `2` | Usage error, e.g. `--max-mb 0`. |
+
+#### Notes
+
+- The cap is a trim, not a limit: one `trelix index` run can write past it, and
+  the trim after that run (or this command) brings the file back.
+- Rows are evicted by `last_used_at`; a chunk served from the cache during an index
+  run counts as used, a `--dry-run` preview does not (it opens the file read-only).
+- A file of a model you no longer use is never removed by `gc` (it only shrinks);
+  `trelix cache clear` removes every file.
+- `gc` creates nothing. A 0-byte file (a first open interrupted before its first
+  commit, which `trelix index` would initialise) is reported as `not a trelix
+  embedding cache`, exit 1; a symlink carrying a cache file's name is skipped whatever
+  its target, so nothing is created or trimmed outside the directory; `trelix cache
+  clear` removes both.
+
+---
+
+### `trelix cache clear`
+
+#### Synopsis
+
+```
+trelix cache clear
+```
+
+#### Description
+
+Deletes every embedding cache file (`<32 hex chars>.db`) and SQLite journal
+sidecar (`<32 hex chars>.db-journal`) directly inside the cache directory, and
+prints what it removed. Nothing else in that directory is touched: no other
+name, no subdirectory (it never recurses), and a symlink carrying a cache file's
+name is unlinked, never followed. The directory itself stays. This is the removal
+step [SECURITY.md](../SECURITY.md#embedding-cache-on-disk-trelix_embedding_cache_enabled)
+describes, and the way out when a cache file is refused as another width or
+schema.
+
+#### Options
+
+None.
+
+#### Examples
+
+```bash
+trelix cache clear
+# Removed 2 file(s), 1073819648 bytes, from /home/me/.cache/trelix/embeddings
+```
+
+#### Output
+
+`Removed N file(s), M bytes, from <dir>` (`M` is the sum of the removed files'
+sizes), or `No embedding cache at <dir>.` when the directory does not exist.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Every matching file was removed, or there is no cache directory. |
+| `1` | At least one file could not be removed (`Could not remove: ...`; the others were still removed and counted), the directory exists but cannot be listed (`Embedding cache unreadable: ...`; nothing removed), or `TRELIX_EMBEDDING_CACHE_*` is invalid (`Configuration error: ...`). |
+
+#### Notes
+
+- Run it with the same `TRELIX_EMBEDDING_CACHE_DIR` (or `XDG_CACHE_HOME`/`HOME`)
+  as the `trelix index` runs that wrote the cache; the command reads only those
+  variables and has no repository argument.
+- The next `trelix index` with the cache on re-embeds every chunk once and
+  refills the cache.
 
 ---
 
