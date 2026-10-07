@@ -250,6 +250,43 @@ class TestRetrieverInit:
         expected = Path(str(tmp_path)) / ".trelix" / "debug"
         assert retriever._debug_dir == expected
 
+    def test_debug_dir_follows_the_index_not_the_repository(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
+        """With `store.db_path` outside the repository, the traces go beside the index.
+
+        MUTATION THAT MUST FAIL THIS TEST: `_debug_dir` derived from `repo_path` again. A suite
+        run keeps its index outside the pristine clone it measures; a trace written into the
+        clone would make the next arm refuse it.
+        """
+        from pathlib import Path
+
+        from trelix.retrieval.retriever import Retriever
+
+        repo = Path(str(tmp_path)) / "repo"
+        repo.mkdir()
+        elsewhere = Path(str(tmp_path)) / "elsewhere"
+        elsewhere.mkdir()
+        with (
+            patch("trelix.retrieval.retriever.Database"),
+            patch("trelix.retrieval.retriever.make_embedder") as mock_make_embedder,
+            patch("trelix.retrieval.retriever.make_vector_store"),
+            patch("trelix.retrieval.retriever.QueryPlanner"),
+            patch.dict(os.environ, {"OPENAI_API_KEY": "test-placeholder-not-real"}),
+        ):
+            mock_embedder = MagicMock()
+            mock_embedder.dimension = 1536
+            mock_make_embedder.return_value = mock_embedder
+
+            base = IndexConfig(repo_path=str(repo))
+            config = base.model_copy(
+                update={
+                    "store": base.store.model_copy(update={"db_path": str(elsewhere / "index.db")})
+                }
+            )
+            retriever = Retriever(config)
+
+        assert retriever._debug_dir == elsewhere / "debug"
+        assert not str(retriever._debug_dir).startswith(str(repo))
+
 
 class TestRetrieveWithExternalPlan:
     def test_retrieve_returns_retrieved_context(self, tmp_path: Path) -> None:  # type: ignore[name-defined]
