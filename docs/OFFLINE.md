@@ -96,7 +96,8 @@ log says `Context window 65536 from TRELIX_LLM_LOCAL_CONTEXT_TOKENS` (INFO). See
 
 ## What the truncation check catches and what it does not
 
-- Ollama drops the head of a prompt longer than its context length (the system prompt goes first) and
+- Ollama drops the head of a prompt longer than its context length (the system prompt goes first;
+  ollama/ollama `runner/llamarunner/runner.go`, issue #17427) and
   answers HTTP 200 with a normal finish reason. The only trace is `usage.prompt_tokens`. With
   `TRELIX_LLM_BASE_URL` set, `trelix review` compares that count with the cl100k_base count of what it
   sent: a reported count under `0.85` x the estimate marks the hunk `truncated` with
@@ -109,7 +110,8 @@ log says `Context window 65536 from TRELIX_LLM_LOCAL_CONTEXT_TOKENS` (INFO). See
   `4 of 5 hunks could not be fully reviewed`.
 - What it misses: a server that fills its whole window hides an overflow under 15%. Current Ollama
   truncates to about half the window (ollama/ollama issue #17427), which is caught. The estimate uses
-  cl100k_base; the Qwen and Llama tokenizers are a few percent more efficient on code, so the margin
+  cl100k_base; the Qwen and Llama tokenizers are typically a few percent more efficient on code
+  (unmeasured; R-C4-05 records the ratio per model), so the margin
   above `0.85` is thin, and there is no knob: the floor is a constant.
 - A reply without `usage` is never marked truncated, and the WARNING `Local server reports no token
   usage; the prompt-truncation check is off for this run` is logged once per backend; a later reply
@@ -168,8 +170,8 @@ makes no planner call: `trelix review` on it reviews from the diff alone.
 
 ## Prefetch
 
-Four one-time steps while online; the three warnings that mention this guide (`docs/OFFLINE.md
-assumes`, `docs/OFFLINE.md: prefetch`) point here.
+Four one-time steps while online. The W5 pointer (`docs/OFFLINE.md: prefetch`) lands here; the two
+model-size warnings (`docs/OFFLINE.md assumes`) refer to the 20B floor above.
 
 1. The embedder. `pip install "trelix[local]"`, then the command CI uses to warm the model cache, and
    `HF_HUB_OFFLINE=1` for every later run (Hugging Face Hub environment variable):

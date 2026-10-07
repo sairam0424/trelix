@@ -16,6 +16,7 @@ delete any row here and the matching doc line; the row for that file fails.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -128,3 +129,32 @@ def test_every_plan_cache_offer_names_the_refusal() -> None:
     assert offers, "the guide no longer offers TRELIX_RETRIEVAL_PLAN_CACHE_FILE"
     for block in offers:
         assert "PlanCacheMissError" in block, f"offer without the refusal: {block[:80]!r}"
+
+
+def _module_string_constant(source: str, name: str) -> str:
+    """The value of the module-level string constant `name` in `source`, read from the AST so an
+    implicitly concatenated literal comes back as one string."""
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            value = ast.literal_eval(node.value)
+            assert isinstance(value, str), name
+            return value
+    raise AssertionError(f"{name} is not a module-level constant")
+
+
+def test_the_quoted_backend_warnings_match_the_source() -> None:
+    """The guide quotes W3 and W4 from `trelix.llm.providers.openai_backend` (numbers in place of
+    the `%d` placeholders); a later rewording of either constant must fail here instead of leaving
+    the guide quoting an old line. Text is whitespace-normalised because the guide wraps at 100
+    columns. MUTATION that must make this fail: reword `it reports` in the guide's W3 quote."""
+    source = (_REPO_ROOT / "src/trelix/llm/providers/openai_backend.py").read_text(encoding="utf-8")
+    guide = " ".join((_REPO_ROOT / "docs/OFFLINE.md").read_text(encoding="utf-8").split())
+    for name in ("_PROMPT_TRUNCATED_WARNING", "_NO_USAGE_WARNING"):
+        for fragment in _module_string_constant(source, name).split("%d"):
+            fragment = " ".join(fragment.split())
+            if len(fragment) > 8:
+                assert fragment in guide, (
+                    f"{name} fragment missing from docs/OFFLINE.md: {fragment!r}"
+                )
