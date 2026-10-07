@@ -715,6 +715,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   error that names both variables and never the value.
 
 ### Changed
+- **sqlite-vec is pinned to `>=0.1.9,<0.1.10` (was `>=0.1.6`).** 0.1.7 made `DELETE` reclaim
+  space in vec0 tables, which trelix's `DELETE`+`INSERT` upsert and `--prune` rely on; 0.1.9 is
+  the release the vec0 contract tests were verified against; the ceiling keeps the 0.1.10
+  pre-releases (ivf/diskann) out until they are tested, and PEP 440 places every `0.1.10aN` under
+  `<0.1.10`. `pip install` already resolved 0.1.9, so nothing changes for a fresh install.
+  `tests/unit/test_dependency_floor_guards.py` now pins the requirement string and the installed
+  release (`sqlite_vec.__version__` and `select vec_version()`), so a venv on an older release
+  fails one test with the reason instead of running on it silently.
 - **The retriever's per-query debug trace is written beside the index, not beside the source.**
   `Retriever._debug_dir` is `<directory of store.db_path>/debug/`, which is the same
   `<repo>/.trelix/debug/` as before for the default `db_path`; an index kept elsewhere
