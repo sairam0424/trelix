@@ -550,7 +550,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   nothing: an empty file or a symlink with no target is refused before SQLite touches it); a
   directory that exists but cannot be listed is the same line and exit 1 at once, for both
   commands; a directory that happens to carry a cache file's name is left alone by both, and
-  `gc` also skips a symlink to one (`clear` unlinks the link, as it does any symlink).
+  `gc` skips every symlink, whatever it points at (`clear` unlinks the link without following it).
   `trelix cache clear`
   deletes every `<fingerprint>.db` and `.db-journal` directly in that directory (nothing else, no
   recursion, a symlink is unlinked and never followed) and prints `Removed N file(s), M bytes,

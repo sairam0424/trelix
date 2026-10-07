@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from trelix.core.config import EmbeddingCacheConfig
 from trelix.indexing.embedding_cache import EmbeddingCache, text_key
 
 runner = CliRunner()
@@ -205,27 +206,35 @@ class TestCacheGc:
     ) -> None:
         """Only regular files whose whole name is a fingerprint are opened: not a `-journal`
         sidecar (a concurrent `trelix index` holds one), not a directory carrying a cache
-        file's name (`clear` leaves it alone too), not a symlink to a directory (`clear`
-        unlinks that one). MUTATION: the name filter loosened to `.*\\.db` (`notes.db` is
-        opened, found foreign, exit 1); `fullmatch` -> `match` (the journal is opened the
-        same way); the directory skip in `_cache_files` dropped; the `is_dir()` skip in
-        `cache_gc` dropped (`os.open` on the link hits EISDIR: `unreadable`, exit 1)."""
+        file's name (`clear` leaves it alone too), not a symlink, whatever it points at (a
+        directory, a cache file outside the directory, nothing): `clear` unlinks those, `gc`
+        never reaches outside the directory through one. MUTATION: the name filter loosened
+        to `.*\\.db` (`notes.db` is opened, found foreign, exit 1); `fullmatch` -> `match` (the
+        journal is opened the same way); the directory skip in `_cache_files` dropped; the
+        `is_symlink()` skip in `cache_gc` dropped (the link to the outside file is trimmed
+        and printed; the dangling one is `unreadable`, exit 1)."""
         cache_dir = tmp_path / "cache"
         monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(cache_dir))
         _cache_file(cache_dir, _A, dimension=4, rows=1)
         (cache_dir / (_A + "-journal")).write_bytes(b"\x00" * 100)
         (cache_dir / _B).mkdir()
-        if os.name != "nt":  # a symlink to a directory, kept by `_cache_files` for `clear`
+        elsewhere = tmp_path / "elsewhere"
+        target = _cache_file(elsewhere, _A, dimension=4, rows=3)
+        if os.name != "nt":  # symlinks: `_cache_files` keeps them for `clear`; `gc` skips them
             (cache_dir / ("c" * 32 + ".db")).symlink_to(cache_dir / _B, target_is_directory=True)
+            (cache_dir / ("d" * 32 + ".db")).symlink_to(target)
+            (cache_dir / ("e" * 32 + ".db")).symlink_to(elsewhere / "missing.db")
         (cache_dir / "notes.db").write_bytes(b"not a database")
         (cache_dir / ("c" * 31 + ".db")).write_bytes(b"not a database")  # 31 hex chars
 
         result = _invoke("cache", "gc")
 
         assert result.exit_code == 0, result.output
-        assert f"{_A}: 1 -> 1 rows" in _squash(result.output)
-        assert "notes.db" not in result.output and "journal" not in result.output
-        assert "unreadable" not in result.output
+        output = _squash(result.output)
+        assert f"{_A}: 1 -> 1 rows" in output
+        assert "notes.db" not in output and "journal" not in output and "unreadable" not in output
+        assert "c" * 32 not in output and "d" * 32 not in output and "e" * 32 not in output
+        assert sorted(p.name for p in elsewhere.iterdir()) == [_A]  # nothing created or opened
 
     def test_gc_uses_the_recorded_dimension(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -300,37 +309,18 @@ class TestCacheGc:
         assert f"{_A}:" not in output
         assert f"{_B}: 3 -> 3 rows" in output
 
-    @_POSIX_ONLY
-    def test_a_dangling_symlink_named_like_a_cache_file_creates_nothing_and_is_reported(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`gc` opens with `dimension=None`, and a link whose target is missing has nothing
-        recorded to trust: it is refused before SQLite touches it, so no file appears at the
-        target (outside the cache directory) and the directory cannot reach outside itself
-        through `gc` any more than through `clear`.
-        MUTATION: the refusal before `os.open` in `EmbeddingCache.open` dropped (a 0-byte
-        file appears at the target; the exit code and the lines are unchanged)."""
-        cache_dir = tmp_path / "cache"
-        monkeypatch.setenv("TRELIX_EMBEDDING_CACHE_DIR", str(cache_dir))
-        _cache_file(cache_dir, _B, dimension=4, rows=3)
-        elsewhere = tmp_path / "elsewhere"
-        elsewhere.mkdir()
-        (cache_dir / _A).symlink_to(elsewhere / "target.db")
-
-        result = _invoke("cache", "gc")
-
-        assert result.exit_code == 1, result.output
-        output = _squash(result.output)
-        assert "Embedding cache unreadable:" in output
-        assert "is not a trelix embedding cache" in output
-        assert f"{_B}: 3 -> 3 rows" in output
-        assert sorted(p.name for p in elsewhere.iterdir()) == []
-
     def test_help_for_the_group_and_both_commands(self) -> None:
         for args in (["cache"], ["cache", "gc"], ["cache", "clear"]):
             result = _invoke(*args, "--help")
             assert result.exit_code == 0, result.output
-        assert "TRELIX_EMBEDDING_CACHE_MAX_MB" in _invoke("cache", "gc", "--help").output
+        # Rich wraps the option help inside a box: drop the box drawing, then the wrapping.
+        gc_help = " ".join(
+            re.sub(r"[│╭╮╰╯─]", " ", _invoke("cache", "gc", "--help").output).split()
+        )
+        assert "TRELIX_EMBEDDING_CACHE_MAX_MB" in gc_help
+        # The help's literal default and the config's are pinned to the same number.
+        assert EmbeddingCacheConfig.model_fields["max_mb"].default == 4096
+        assert "(4096 when unset)" in gc_help
 
 
 # ---------------------------------------------------------------------------

@@ -2551,9 +2551,10 @@ It takes no repository argument and never opens an index: the directory comes fr
 `TRELIX_EMBEDDING_CACHE_DIR`, else `$XDG_CACHE_HOME/trelix/embeddings`, else
 `~/.cache/trelix/embeddings`. Only files named `<32 hex chars>.db` (one per
 embedder fingerprint) are opened, in name order (a directory carrying such a name
-is left alone, as `clear` leaves it, and so is a symlink to a directory, which
-`clear` unlinks); each is opened at the width it records, so no embedder is
-loaded and no width check can fail.
+is left alone, as `clear` leaves it, and so is any symlink, whatever it points at:
+`gc` never trims a file outside the directory, and `clear` unlinks the link without
+following it); each is opened at the width it records, so no embedder is loaded and
+no width check can fail.
 
 #### Options
 
@@ -2599,9 +2600,10 @@ directory: `No embedding cache at <dir>.`
 - A file of a model you no longer use is never removed by `gc` (it only shrinks);
   `trelix cache clear` removes every file.
 - `gc` creates nothing. A 0-byte file (a first open interrupted before its first
-  commit, which `trelix index` would initialise) or a symlink whose target is
-  missing is reported as `not a trelix embedding cache`, exit 1, and no file is
-  created at the link's target; `trelix cache clear` removes both.
+  commit, which `trelix index` would initialise) is reported as `not a trelix
+  embedding cache`, exit 1; a symlink carrying a cache file's name is skipped whatever
+  its target, so nothing is created or trimmed outside the directory; `trelix cache
+  clear` removes both.
 
 ---
 

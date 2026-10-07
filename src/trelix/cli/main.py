@@ -46,6 +46,8 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Sequence
 
+    from pydantic import ValidationError
+
     from trelix.core.config import EmbedderConfig, EmbeddingCacheConfig, IndexConfig
     from trelix.core.models import Chunk, IndexedFile
     from trelix.eval.harness import QueryRecord
@@ -250,6 +252,14 @@ def _print_error(label: str, detail: object) -> None:
     """
 
     err_console.print(f"[red]{label}:[/red] {_safe_text(str(detail))}")
+
+
+def _print_configuration_error(exc: ValidationError) -> None:
+    """`Configuration error: <field>: <msg>` from the first problem pydantic reports."""
+    first_err = exc.errors()[0]
+    msg = first_err.get("msg", str(exc))
+    field = " -> ".join(str(x) for x in first_err.get("loc", []))
+    _print_error("Configuration error", f"{field}: {msg}" if field else msg)
 
 
 def _require_index(config: IndexConfig, repo: str) -> None:
@@ -717,11 +727,7 @@ def index(
         if use_batch_api:
             config.use_batch_api = True
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1169,21 +1175,10 @@ def _print_cost_preview(config: IndexConfig) -> None:
             )
             chunk_count += len(chunks)
             token_count += sum(c.token_count for c in chunks)
-            if cache is None:
-                continue
-            try:
-                hits = _cached_chunks(cache, chunks)
-            except sqlite3.Error as exc:
-                # A lock taken after the open (a concurrent run's end-of-run VACUUM, say).
-                # From here every chunk is priced, as if there were no cache — the hits
-                # already counted included, or the priced figure would subtract tokens the
-                # table no longer shows.
-                _print_cache_unreadable(str(exc))
-                cache.close()
-                cache, cached_chunks, cached_tokens = None, 0, 0
-            else:
-                cached_chunks += len(hits)
-                cached_tokens += sum(c.token_count for c in hits)
+            if cache is not None:
+                cache, cached_chunks, cached_tokens = _add_cache_hits(
+                    cache, chunks, cached_chunks, cached_tokens
+                )
     if cache is not None:
         cache.close()
 
@@ -1293,6 +1288,25 @@ def _print_cache_unreadable(detail: str) -> None:
         f"[yellow]The embedding cache could not be read[/yellow] "
         f"({_safe_text(detail)}), so no cached chunk is subtracted below."
     )
+
+
+def _add_cache_hits(
+    cache: EmbeddingCache, chunks: Sequence[Chunk], cached_chunks: int, cached_tokens: int
+) -> tuple[EmbeddingCache | None, int, int]:
+    """`(cache, cached_chunks, cached_tokens)` with the hits among `chunks` added.
+
+    A lookup that fails (a lock taken after the open: a concurrent run's end-of-run VACUUM,
+    say) prints the unreadable-cache note, closes the cache and returns `(None, 0, 0)`: from
+    here every chunk is priced, as if there were no cache, the hits already counted included,
+    or the priced figure would subtract tokens the table no longer shows.
+    """
+    try:
+        hits = _cached_chunks(cache, chunks)
+    except sqlite3.Error as exc:
+        _print_cache_unreadable(str(exc))
+        cache.close()
+        return None, 0, 0
+    return cache, cached_chunks + len(hits), cached_tokens + sum(c.token_count for c in hits)
 
 
 def _cached_chunks(cache: EmbeddingCache, chunks: Sequence[Chunk]) -> list[Chunk]:
@@ -1544,11 +1558,7 @@ def search(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1665,11 +1675,7 @@ def ask(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1843,11 +1849,7 @@ def query(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -1923,11 +1925,7 @@ def call_graph(
             retrieval=RetrievalConfig(rerank=False),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2013,11 +2011,7 @@ def stats(
     try:
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2464,11 +2458,7 @@ def link_tickets(
     try:
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2604,11 +2594,7 @@ def update_index(
             embedder=_build_embedder_config(provider),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2763,11 +2749,7 @@ def migrate_vectors(
         # Build config pointing at the existing SQLite index
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -2905,11 +2887,7 @@ def watch(
             embedder=_build_embedder_config(provider),
         )
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -4007,11 +3985,7 @@ def review(
     try:
         config = IndexConfig(repo_path=str(Path(repo).resolve()))
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        detail = f"{field}: {msg}" if field else msg
-        _print_error("Configuration error", detail)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except (ValueError, FileNotFoundError) as exc:
         _print_error("Error", exc)
@@ -4996,10 +4970,7 @@ def _embedding_cache_location() -> tuple[EmbeddingCacheConfig, Path]:
         cfg = EmbeddingCacheConfig()
         return cfg, resolve_cache_dir(cfg)
     except _PydanticValidationError as exc:
-        first_err = exc.errors()[0]
-        msg = first_err.get("msg", str(exc))
-        field = " -> ".join(str(x) for x in first_err.get("loc", []))
-        _print_error("Configuration error", f"{field}: {msg}" if field else msg)
+        _print_configuration_error(exc)
         raise typer.Exit(1) from exc
     except EmbeddingCacheError as exc:  # no HOME and no passwd entry to resolve ~/.cache
         _print_error("Configuration error", exc)
@@ -5010,8 +4981,8 @@ def _cache_files(cache_dir: Path, name: re.Pattern[str]) -> list[Path]:
     """Direct children of `cache_dir` whose whole name matches, sorted — the directory
     listing order is the filesystem's, and the output order must not be. A directory that
     happens to carry a cache file's name is not ours and is left alone by both commands; a
-    symlink is kept (`clear` unlinks it, never following it; `gc` opens one that leads to a
-    file and skips one that leads to a directory). A cache directory that exists
+    symlink is kept for `clear`, which unlinks it without following it, and skipped by `gc`,
+    which never trims a file outside the directory. A cache directory that exists
     but cannot be listed (owned by another user, say) is `Embedding cache unreadable`, exit
     1: the exit-code tables in CLI_REFERENCE promise a line, not a traceback."""
     try:
@@ -5051,7 +5022,7 @@ def cache_gc(
     max_bytes = (cfg.max_mb if max_mb is None else max_mb) * 1024 * 1024
     failed = False
     for path in _cache_files(cache_dir, _CACHE_FILE_NAME):
-        if path.is_dir():  # a symlink to a directory: not a cache file, `clear` unlinks it
+        if path.is_symlink():  # `clear` unlinks it; `gc` never reaches outside the directory
             continue
         # Each file is trimmed on its own and a bad one does not stop the rest; the exit
         # code says afterwards that not every file was handled.
