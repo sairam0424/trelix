@@ -325,6 +325,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   `nomic-code`) to the embedder code.
 
 ### Added
+- **A Claude Code plugin.** `claude plugin marketplace add sairam0424/trelix` then
+  `claude plugin install trelix@trelix` installs the `trelix-mcp` server (launched as
+  `uvx --from trelix-mcp==<newest published release> trelix-mcp`, so the plugin trails this
+  repository by one release and never points at an unpublished version) and a skill,
+  `/trelix:use-trelix-index`, that says when to search with trelix and when to fall back to grep.
+  Tool names are `mcp__plugin_trelix_trelix__<tool>`. Five decisions, recorded in
+  `plugins/trelix/README.md`: the server command carries no `trelix[local]` extra (the opt-in
+  command is documented, because that extra pulls PyTorch); this first version pins the published
+  3.4.3, which has no `--tools` flag and sends no server instructions, so the skill carries that
+  guidance until a pin-bump PR follows the next release; `plugin.json`'s `version` equals the
+  pin (a literal test that also compares it with the `.mcp.json` pin, so a pin bump that forgets
+  `version` fails) and a contents hash in `tests/unit/test_claude_plugin_manifest.py` makes
+  every plugin edit loud (it cannot see whether `version` was bumped with it);
+  `claude plugin validate --strict` stays a manual CONTRIBUTING step (CI runs the offline tests,
+  not the validator); and the pin check is offline only (a released CHANGELOG section, not newer
+  than the trelix-mcp stamp; PyPI is checked by hand in the pin-bump PR body). Offline tests
+  pin the manifests, the pin form (an exact `==` to a version with a released CHANGELOG section,
+  not newer than the trelix-mcp stamp), the plugin tree, and that the skill names only tools the
+  server registers. Guide: `docs/integrations/claude-code-plugin.md`; a paste-able block for other
+  agents: `docs/integrations/AGENTS_SNIPPET.md`.
 - **Citation tags on retrieved context, behind `TRELIX_RETRIEVAL_CITATIONS` (default `false`)** (first
   of six changes toward `trelix ask` answers that cite the retrieved code and abstain when it does not
   answer the question; this one tags the context and instructs the model, nothing reads the model's

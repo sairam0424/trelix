@@ -271,6 +271,13 @@ upstream frameworks (LangChain, LlamaIndex) release breaking changes, we:
 2. Add the new version support in the same or next minor release
 3. Drop old version support only on a trelix minor or major version bump
 
+**The Claude Code plugin is not a version stamp.** `plugins/trelix/.mcp.json` pins the newest
+*published* `trelix-mcp` with `==`, so a release PR never touches it and `main` never points at
+a version PyPI does not have yet; a follow-up PR moves the pin after PyPI shows the release, so
+the plugin trails the core by one release. The plugin's own `version`
+(`plugins/trelix/.claude-plugin/plugin.json`) is that pin, or `<pin>.N` for a plugin-only
+change, and the twelve-stamp release gate described below does not include it.
+
 ### Why lockstep, and not "independent cadence"
 
 CONTRIBUTING.md used to claim the opposite — that `trelix-langchain` and

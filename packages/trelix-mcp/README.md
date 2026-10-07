@@ -55,6 +55,11 @@ pip install trelix-mcp "trelix[llm-all]"     # all LLM providers
 claude mcp add trelix -- trelix-mcp
 ```
 
+Or install the Claude Code plugin, which launches a pinned published release of this server
+through `uvx` and adds a skill that says when to use it: `claude plugin marketplace add
+sairam0424/trelix`, then `claude plugin install trelix@trelix` (see
+`docs/integrations/claude-code-plugin.md` in the repository).
+
 To list only the everyday search and indexing tools, add `--tools core` (the default is `--tools full`, every tool):
 
 ```bash
