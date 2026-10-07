@@ -72,6 +72,11 @@ SLOW_FILES = frozenset(
         "regressions/test_regressions.py",
         "unit/test_audit_wipe_detection.py",
         "unit/test_cli_closed_stdout.py",
+        # Measured 5.21s for 4 tests on this tree (load 34-38): two real Indexer runs over a
+        # tree-sitter-parsed tmp repo (the first loads the parsers). Its sibling
+        # test_cli_cache.py (gc/clear, 17 tests, one 30,000-row cache file) measured 1.53s on
+        # the same run and is not listed.
+        "unit/test_cli_cache_index_rows.py",
         "unit/test_cli_eval_suite.py",
         "unit/test_cli_smoke.py",
         "unit/test_cli_watch_all_signals.py",
