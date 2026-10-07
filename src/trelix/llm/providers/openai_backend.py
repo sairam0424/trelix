@@ -16,12 +16,28 @@ from trelix.llm.client import (
     TrelixChatClient,
 )
 from trelix.llm.finish_reasons import classify_chat_choice
-from trelix.llm.offline import LOCAL_PLACEHOLDER_KEY, small_model_warning
+from trelix.llm.offline import (
+    LOCAL_PLACEHOLDER_KEY,
+    estimate_prompt_tokens,
+    is_token_count,
+    prompt_truncation_signal,
+    small_model_warning,
+)
 
 if TYPE_CHECKING:
     from trelix.core.config import LLMConfig
 
 logger = logging.getLogger("trelix.llm.openai_backend")
+
+# Logged by the prompt-truncation check for a local server (TRELIX_LLM_BASE_URL). Two integers
+# and fixed text: never the prompt, the URL or the key.
+_PROMPT_TRUNCATED_WARNING = (
+    "Local server truncated the prompt: it reports %d prompt tokens, trelix sent about %d "
+    "(cl100k_base); the hunk is reported as truncated"
+)
+_NO_USAGE_WARNING = (
+    "Local server reports no token usage; the prompt-truncation check is off for this run"
+)
 
 # Module-level imports so patch() can target openai_backend.OpenAI / AzureOpenAI
 try:
@@ -69,6 +85,7 @@ class OpenAIBackend(TrelixChatClient):
         self._model = config.azure_chat_deployment if self._is_azure else config.model
         # Only the plain openai path reads TRELIX_LLM_BASE_URL; Azure has azure_endpoint.
         self._local_server = config.base_url is not None and not self._is_azure
+        self._usage_warned = False
         self._client = self._build_client(config)
         if self._local_server:
             warning = small_model_warning(self._model)
@@ -164,9 +181,10 @@ class OpenAIBackend(TrelixChatClient):
                 finish_reason="stop",
             )
         token_kwarg = self._token_limit(max_tokens)
+        request_messages = self._build_messages(messages, system)
         response = self._create(
             model=self._model,
-            messages=self._build_messages(messages, system),
+            messages=request_messages,
             temperature=temperature if temperature is not None else self._config.temperature,
             **token_kwarg,
         )
@@ -177,6 +195,11 @@ class OpenAIBackend(TrelixChatClient):
                 "LLM reply carries %s; the provider's content filter did not run on it",
                 ", ".join(finish.signals),
             )
+        signals = list(finish.signals)
+        if self._local_server:
+            truncation = self._prompt_truncation(request_messages, response.usage)
+            if truncation is not None:
+                signals.append(truncation)
         return ChatResponse(
             content=choice.message.content or "",
             model=response.model,
@@ -185,8 +208,28 @@ class OpenAIBackend(TrelixChatClient):
             output_tokens=response.usage.completion_tokens if response.usage else 0,
             raw_finish_reason=finish.raw_finish_reason,
             refusal=finish.refusal,
-            signals=list(finish.signals),
+            signals=signals,
         )
+
+    def _prompt_truncation(self, request_messages: list[dict[str, str]], usage: Any) -> str | None:
+        """The prompt-truncation signal for a local server's reply, or None.
+
+        Ollama drops the head of a prompt longer than its context length and answers HTTP 200
+        with a normal finish reason; the only trace is a `prompt_tokens` smaller than what was
+        sent (system prompt included). A reply with no usable count turns the check off, warned
+        once per backend. `stream()` and `tool_call()` are not checked.
+        """
+        reported = getattr(usage, "prompt_tokens", None)
+        if not is_token_count(reported):
+            if not self._usage_warned:
+                self._usage_warned = True
+                logger.warning(_NO_USAGE_WARNING)
+            return None
+        estimated = estimate_prompt_tokens(request_messages)
+        signal = prompt_truncation_signal(estimated, reported)
+        if signal is not None:
+            logger.warning(_PROMPT_TRUNCATED_WARNING, reported, estimated)
+        return signal
 
     def stream(
         self,
