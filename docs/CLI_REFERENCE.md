@@ -473,6 +473,27 @@ OPENAI_API_KEY=sk-... trelix ask . "trace the data flow from API request to data
   `TRELIX_RETRIEVAL_AGENTIC=true`) does not go through this check: if the LLM is missing or
   fails, the agent loop falls back to the observations it has (or prints "Could not find
   sufficient context for: <question>") and `ask` exits `0`.
+- When retrieval finds nothing (and an LLM is configured: a missing key is still reported first,
+  as above), the answer is the one-line notice
+  `[trelix] No relevant code found — cannot synthesize an answer.` on stdout, the command exits
+  `0` and the LLM is not called: an answer synthesised from no code context could not be
+  grounded. This holds for the plain path (any non-local embedder) and under
+  `TRELIX_RETRIEVAL_FLARE=true`, where the notice itself contains the uncertainty phrase
+  `no relevant code`, so FLARE re-retrieves and prints the notice once per retrieval round (twice
+  at the default `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=1`), still with no LLM call and exit `0`; in
+  context-only mode (`--provider local`, FLARE off) the assembler's `No relevant code found.` is
+  printed instead, as before.
+- With `TRELIX_RETRIEVAL_CITATIONS=true` the synthesis prompt asks the model to reply with
+  exactly one line starting `INSUFFICIENT_EVIDENCE:` (followed by what is missing, and nothing
+  else) when the retrieved context does not contain what the question needs. That line is the
+  answer: it is streamed to stdout as any answer is, stderr stays empty and the command exits
+  `0`. Under `TRELIX_RETRIEVAL_FLARE=true` it counts as an uncertainty phrase, so FLARE
+  re-retrieves with an enriched query and synthesises again, as for any uncertainty phrase (once
+  at the default `TRELIX_RETRIEVAL_FLARE_MAX_RETRIES=1`; every answer streams). The line is
+  recognised whichever way the flag is set; the flag only decides
+  whether the model is told to write it. GraphRAG map-reduce answers (large contexts under the
+  `openai` or `azure` embedder, FLARE path only) are not given the sentence and so never abstain
+  this way.
 - Reranking is off for this command and cannot be enabled by environment: `ask` builds
   `RetrievalConfig(rerank=False)` (`ask()` in `src/trelix/cli/main.py`), which outranks
   `TRELIX_RETRIEVAL_RERANK`. Applies to the plain, `--agentic` and FLARE paths alike —

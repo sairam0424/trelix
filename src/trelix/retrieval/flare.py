@@ -38,6 +38,8 @@ _DEFAULT_UNCERTAINTY_PHRASES: list[str] = [
     "not enough information",
     "couldn't find",
     "could not find",
+    # The abstention line the citation protocol asks for (citations.ABSTAIN_PREFIX, lower-cased).
+    "insufficient_evidence:",
 ]
 
 

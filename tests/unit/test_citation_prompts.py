@@ -43,7 +43,9 @@ DEFAULT_PROMPT = (
 CITATION_INSTRUCTION = (
     "\n\nEvery block of the code context starts with a tag such as [C3]. After each sentence "
     "that relies on a block, write that block's tag, for example "
-    "`validate_token checks the signature [C3].` Cite only tags that appear in the context."
+    "`validate_token checks the signature [C3].` Cite only tags that appear in the context. "
+    "If the context does not contain what the question needs, reply with exactly one line "
+    "starting with INSUFFICIENT_EVIDENCE: followed by what is missing, and nothing else."
 )
 
 # Tags deliberately NOT in rank order: verify (rank 1, symbol 11) is [C2], bearer is [C1].

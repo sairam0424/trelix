@@ -164,6 +164,35 @@ which the core ships from the release that contains this change. An older core u
 package fails on import (`trelix-mcp` at start-up, the adapters on their first query), so the
 release that ships this raises their `trelix>=` floors to that release.
 
+### Behaviour change shipped as a fix: `Synthesizer.stream()` on an empty retrieval
+
+When retrieval found no results, `Synthesizer.synthesize()` (FLARE, `eval-synthesis`) already
+answered with `[trelix] No relevant code found — cannot synthesize an answer.` and made no LLM
+call, but `Synthesizer.stream()` (plain `trelix ask` with a non-local embedder, REST `GET /ask`)
+sent the model `No relevant code found.` as the whole code context and streamed whatever it said.
+That answer could not be grounded in the repository, so `stream()` now does what `synthesize()`
+does:
+
+| Surface | Before | Now |
+|---------|--------|-----|
+| `trelix ask <repo> <question> --provider openai` (any non-local embedder; FLARE and agentic mode off) | an LLM answer written without any retrieved code, exit `0` | the notice line on stdout, exit `0`, no LLM call |
+| REST `GET /ask` | `data: <token>` frames of that answer, then `data: [DONE]` | `data: [trelix] No relevant code found — cannot synthesize an answer.` then `data: [DONE]`, no LLM call |
+| `trelix ask` with `TRELIX_RETRIEVAL_FLARE=true`; `trelix eval-synthesis` | the notice, no LLM call | unchanged |
+| `trelix ask --provider local` (context only) | the assembler's `No relevant code found.` | unchanged |
+| `trelix ask --provider openai` with no LLM key configured, whatever retrieval found | `Synthesis failed: LLM not configured` on stderr, exit `1` | unchanged: `stream()` checks the key before the retrieval result, as `synthesize()` always did |
+
+There is no toggle: no answer existed to lose, only one the retrieved code did not support. A
+caller that parsed the streamed text now sees the notice literal (the same one `synthesize()` has
+always returned) in its place; `Synthesizer.last_error` stays `None`, as it did for `synthesize()`.
+
+Additive: `Synthesizer.last_abstain_reason` (`"no_results"`, `"insufficient_evidence"` or `None`)
+says why the last call abstained, and `trelix.retrieval.citations` gains `NO_RESULTS_MESSAGE`,
+`ABSTAIN_PREFIX`, `AbstainReason` and `is_abstention()`. With `TRELIX_RETRIEVAL_CITATIONS=true`
+the synthesis prompt also asks the model to reply with exactly one line starting
+`INSUFFICIENT_EVIDENCE:` when the context does not contain what the question needs; that line
+streams as an answer (exit `0`) and FLARE treats it as an uncertainty phrase. With the flag off (the
+default) the prompts are unchanged.
+
 ### Behaviour change: MCP list results are bounded
 
 `trelix-mcp` list tools used to return as much as the caller asked for. Measured through an

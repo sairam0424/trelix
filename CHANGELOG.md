@@ -56,6 +56,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
   tool goes back to a range or to no version.
 
 ### Fixed
+- **`trelix-mcp` answers every invalid input with a tool error that names the argument.** Measured
+  through an in-process client before the fix: a `repo_path` that did not exist, or held only
+  whitespace, was not a tool result at all but a JSON-RPC "Invalid request parameters" error
+  (`IndexConfig` rejects it with a pydantic `ValidationError`, which FastMCP forwards as a protocol
+  error instead of masking it into a result), so a client such as the VS Code extension saw an
+  exception that named no argument; a blank `repo_path` meant the server's working directory (the
+  no-index message named that directory, and `index_codebase` indexed it); a file was told to run
+  `trelix index <file>`; a blank `query` was searched by `search_code`, `graph_search_mcp` and
+  `federation_search_all`, and `ask_agent` persisted a session for it; `get_symbol` and
+  `blast_radius` answered a blank name with an empty result; `federation_add_repo` registered a
+  blank alias, a blank, relative, missing or file path, and a weight of 0 or less;
+  `federation_remove_repo`, `agent_clear_session` and `ask_agent` accepted a blank alias or
+  `session_id`; and a blank `config_path` on the four federation tools resolved to the server's
+  working directory and was refused with a 200 `error` dict that named the allowed roots and that
+  directory, none of which the caller had passed; and on Python 3.12 and 3.13 a `repo_path` whose
+  name the filesystem rejects (a component over 255 bytes) escaped as FastMCP's generic `Error
+  calling tool` text carrying the whole path (3.14's pathlib already answered "does not exist").
+  Each is now `isError: true` with one text block naming the argument, what was given (cut to 200
+  characters) and what is valid, for example
+  `repo_path is not a directory: '<path>'; pass the repository root, not a file in it.`; nothing
+  is opened or created first. The no-index wording is unchanged. Unchanged on purpose: `k` and
+  `limit` outside their range are clamped (as documented), `federation_remove_repo` of an
+  unregistered alias stays a no-op, the federation tools keep their `error` key for a duplicate
+  alias, a full registry, a non-blank `config_path` outside the allowed roots and a registry with
+  nothing indexed (a client contract, owner decision), and a wrong type or a value outside a
+  `Literal` is rejected by FastMCP itself with pydantic's text. The checks live in
+  `trelix_mcp.arguments`; `docs/MCP_GUIDE.md` has the table (section 8, Errors).
+- **Every `trelix-mcp` result carries a text block, including the empty ones.** FastMCP sends `[]`
+  and `None` as `structuredContent` alone, so `blast_radius` with no dependents (or an unknown
+  symbol), `graph_search_mcp` with no hits and `get_symbol` for an unknown symbol had no text
+  block, so a client that reads only the first text block had nothing to parse (the VS Code
+  extension defaults to `null` and `[]` for that case); they now carry `[]` or `null` as text,
+  equal to the structured content. `blast_radius`'s truncation note ended "raise either to see
+  more" even at `limit=500` or under `TRELIX_MCP_MAX_RESULT_CHARS=0`; it now names what can still
+  be raised, decided from what cut the list (the budget, the limit, or both) so that a raise it
+  names always shows more, or says that nothing can and the remaining dependents cannot be
+  fetched with this tool. `federation_search_all` with some registered repos indexed and some not
+  returned the indexed ones with no sign of the rest; the additive `repos_unindexed` key names the
+  skipped aliases (the `error` response when none is indexed is unchanged). Two documentation
+  fixes: the trelix-mcp README's Tools paragraph, one 200-word sentence, is split into sentences and
+  links section 8 of `docs/MCP_GUIDE.md`, and that guide no longer says the `search_code` trace
+  directory has "its own `.gitignore`" (the ignore file is `.trelix/.gitignore`, one level up).
 - **`trelix review --json` on a local diff printed text ahead of the JSON, so stdout did not
   parse.** The `Reviewing N hunks across M files...` line went to stdout, and "No issues found.",
   "No changes found in diff." and "No findings in the hunks that were reviewed." took the place of
@@ -491,6 +533,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [Semantic V
     `suite_gold` and `suite_prepare`. See `eval/README.md`.
 
 ### Changed
+- **`trelix ask` and `GET /ask` no longer call the LLM when retrieval found nothing, and an answer
+  can abstain** (second of six changes toward `trelix ask` answers that cite the retrieved code and
+  abstain when it does not answer the question). `Synthesizer.stream()`, behind plain `trelix ask`
+  with a non-local embedder and REST `/ask`, used to send the model `No relevant code found.` as the
+  whole code context and stream whatever it said; `synthesize()` (FLARE, `eval-synthesis`) already
+  answered with the notice and made no call. Both now answer with the one literal
+  `[trelix] No relevant code found — cannot synthesize an answer.`
+  (`trelix.retrieval.citations.NO_RESULTS_MESSAGE`) and make no LLM call; `trelix ask` exits `0`
+  (an unconfigured LLM is still reported first, as before) and REST `/ask`
+  streams that line then `[DONE]`. A caller that parsed the streamed text sees the notice where an
+  ungrounded answer was; there is no toggle (`docs/BACKWARDS_COMPATIBILITY.md`). With
+  `TRELIX_RETRIEVAL_CITATIONS=true` the citation instruction gains a fourth sentence: when the
+  context does not contain what the question needs, reply with exactly one line starting
+  `INSUFFICIENT_EVIDENCE:` followed by what is missing, and nothing else. That line is an answer: it
+  streams as one, `trelix ask` exits `0` with it on stdout and nothing on stderr,
+  `Synthesizer.last_error` stays `None`, and the new `Synthesizer.last_abstain_reason` says
+  `"insufficient_evidence"` (or `"no_results"`) once the whole answer is in; a stream closed early
+  records nothing. FLARE's uncertainty phrases gain `insufficient_evidence:`, so an abstention
+  triggers its re-retrieval. GraphRAG map-reduce prompts carry the cite lines but not the
+  abstention sentence, so a GraphRAG answer cannot abstain by protocol. With the flag off the
+  prompts are unchanged; the line is recognised either way. No live model call was made.
 - **Repository-root confinement moved to `trelix.core.confinement`** (`ALLOWED_ROOTS_ENV`,
   `resolve_allowed_roots`, `is_within_allowed_roots`; the first now takes any number of explicit
   roots, otherwise same bodies) so `trelix-mcp` can apply
