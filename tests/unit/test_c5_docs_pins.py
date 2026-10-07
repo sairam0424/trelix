@@ -61,6 +61,89 @@ def test_cli_reference_documents_both_abstentions_under_ask() -> None:
     assert "stderr stays empty and the command exits `0`" in ask_section
 
 
+def test_cli_reference_documents_ask_json_and_the_sources_footer() -> None:
+    text = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+    ask_section = _squash(text[text.index("### `trelix ask`") : text.index("### `trelix query`")])
+
+    assert (
+        "trelix ask <repo_path> <question> [--provider PROVIDER] [--agentic] [--session ID] "
+        "[--json]" in ask_section
+    )
+    assert (
+        "with exactly the keys `marker`, `status`, `path`, `lines`, `symbol`, `detail`"
+        in ask_section
+    )
+    assert "`--json cannot be combined with --agentic or --session.`, exit `2`" in ask_section
+    assert (
+        "`Error: --json needs LLM synthesis; with the local embedder and FLARE off, trelix ask "
+        "prints the retrieved context only. Use trelix search --json for machine-readable "
+        "retrieval, or a non-local --provider.` to stderr and exits `1`" in ask_section
+    )
+    assert "`Error: --json is not available in agentic mode" in ask_section
+    assert (
+        "[C2] src/auth/middleware.py:70-80 AuthMiddleware.bearer` for a marker whose chunk still "
+        "fits the file on disk (`valid`)" in ask_section
+    )
+    assert "`Sources: none cited.` for an answer without markers" in ask_section
+    assert "The answer text itself is never rewritten: it has already streamed." in ask_section
+    # The `unknown` detail is `no retrieved chunk has this tag`; only the two stale statuses end
+    # `re-index` (src/trelix/retrieval/citations.py, pinned by test_cli_ask_footer.py).
+    assert (
+        '`detail` is `""` when valid, one line ending `re-index` for `file_missing` and '
+        "`line_out_of_range` (the index is behind the tree) and `no retrieved chunk has this "
+        "tag` for `unknown`" in ask_section
+    )
+    assert (
+        "(`file_missing` and `line_out_of_range`, whose detail ends `re-index`; `unknown`, whose "
+        "detail is `no retrieved chunk has this tag`)" in ask_section
+    )
+    # `_ask_emit` verifies nothing after an abstention (test_cli_ask_json.py pins the `[]`).
+    assert (
+        "The list is `[]` when the answer has no marker, when it abstained, and whenever "
+        "`TRELIX_RETRIEVAL_CITATIONS` is off" in ask_section
+    )
+
+
+def test_cli_reference_exit_code_table_names_ask_json_with_agentic_as_a_usage_error() -> None:
+    text = (_REPO_ROOT / "docs/CLI_REFERENCE.md").read_text(encoding="utf-8")
+
+    assert (
+        "a missing argument, `trelix ask --json` with `--agentic` or `--session`) also exits `2`"
+        in text
+    )
+
+
+def test_user_guide_ask_output_names_the_footer_and_json() -> None:
+    text = _squash((_REPO_ROOT / "docs/USER_GUIDE.md").read_text(encoding="utf-8"))
+
+    assert (
+        "**Output:** a streamed natural-language answer. With `TRELIX_RETRIEVAL_CITATIONS=true` "
+        "the answer cites `[C#]` tags and ends with a `Sources:` footer that verifies each tag "
+        "against the retrieved chunk and the file on disk. `--json` prints one JSON object "
+        "(`query`, `answer`, `abstained`, `abstain_reason`, `citations`) instead of streaming."
+        in text
+    )
+
+
+def test_security_ask_row_says_the_footer_and_json_print_index_data_only() -> None:
+    text = (_REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+
+    assert (
+        "the `Sources:` footer and `trelix ask --json` print the index's path, lines and symbol "
+        "for each marker, never text the model wrote |" in text
+    )
+
+
+def test_backwards_compatibility_lists_ask_json_and_the_footer_as_additive() -> None:
+    text = _squash((_REPO_ROOT / "docs/BACKWARDS_COMPATIBILITY.md").read_text(encoding="utf-8"))
+
+    assert (
+        "Additive: `trelix ask --json` prints one JSON object (`query`, `answer`, `abstained`, "
+        "`abstain_reason`, `citations`) and nothing else on stdout" in text
+    )
+    assert "`Synthesizer(stream_to_stdout=False)` keeps every stdout write in" in text
+
+
 def test_backwards_compatibility_has_the_empty_retrieval_section() -> None:
     text = (_REPO_ROOT / "docs/BACKWARDS_COMPATIBILITY.md").read_text(encoding="utf-8")
 

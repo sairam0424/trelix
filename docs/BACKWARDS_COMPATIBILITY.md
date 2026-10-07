@@ -193,6 +193,15 @@ the synthesis prompt also asks the model to reply with exactly one line starting
 streams as an answer (exit `0`) and FLARE treats it as an uncertainty phrase. With the flag off (the
 default) the prompts are unchanged.
 
+Additive: `trelix ask --json` prints one JSON object (`query`, `answer`, `abstained`,
+`abstain_reason`, `citations`) and nothing else on stdout; it is a usage error with
+`--agentic`/`--session` (exit `2`) and refused in context-only mode and with
+`TRELIX_RETRIEVAL_AGENTIC=true` (exit `1`). In human mode a `Sources:` footer follows the answer only
+when `TRELIX_RETRIEVAL_CITATIONS=true` tagged the context and the model answered; with the flag off
+(the default) stdout is unchanged. `Synthesizer(stream_to_stdout=False)` keeps every stdout write
+in, `Synthesizer.last_context` is the context the last call answered from, and
+`trelix.retrieval.citations` gains `footer_lines()` and `citation_as_json()`.
+
 ### Behaviour change: MCP list results are bounded
 
 `trelix-mcp` list tools used to return as much as the caller asked for. Measured through an
