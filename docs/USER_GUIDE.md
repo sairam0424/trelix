@@ -2137,6 +2137,9 @@ A sample file is provided at `eval/golden_synthesis_sample.jsonl`. Copy and adap
 - `relevant_files` (optional) — files that should be retrieved (not currently used by the harness scorer, but useful for documentation)
 - `expected_answer_fragments` (optional) — strings that MUST appear in a correct answer (case-insensitive)
 - `expected_symbols` (optional) — qualified names that should appear WITHOUT being hallucinated
+- `answerable` (optional, default `true`) — `false` marks a question the repository does not answer; such queries are counted and left out of the four scores
+- `gold_answer` (optional) — a non-empty reference answer, stored for a future judge and never scored
+- `expected_citations` (optional) — repo-relative paths a correct answer cites; validated and stored, counted by the next change
 
 ### Running the evaluation
 
@@ -2147,16 +2150,18 @@ trelix eval-synthesis ./my-repo --golden ./eval/golden_synthesis.jsonl
 
 Output:
 ```
-                     Synthesis Quality Results (GroUSE-style)
-┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┓
-┃ Metric              ┃  Score ┃ Direction         ┃
-┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━┩
-│ Hallucination rate  │ 0.0000 │ lower = better    │
-│ Completeness        │ 0.8333 │ higher = better   │
-│ Faithfulness        │ 0.7250 │ higher = better   │
-│ Overall             │ 0.8783 │ higher = better   │
-│ Queries evaluated   │      3 │                   │
-└─────────────────────┴────────┴───────────────────┘
+             Synthesis Quality Results (GroUSE-style)
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Metric               ┃  Score ┃ Direction                       ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Hallucination rate   │ 0.0000 │ lower = better                  │
+│ Completeness         │ 0.8333 │ higher = better                 │
+│ Faithfulness         │ 0.7250 │ higher = better                 │
+│ Overall              │ 0.8783 │ higher = better                 │
+│ Queries evaluated    │      3 │                                 │
+│ Unanswerable queries │      0 │ not in the four scores above    │
+│ Unscoreable queries  │      0 │ placeholder scores; see the log │
+└──────────────────────┴────────┴─────────────────────────────────┘
 ```
 
 ### Python API
